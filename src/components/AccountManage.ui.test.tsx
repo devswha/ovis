@@ -9,6 +9,10 @@ import * as Leave from "../lib/account/leave.ts";
 import * as Service from "../lib/account/service.ts";
 import * as Store from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import type { AccountList, AccountListView } from "../lib/account/accountList.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
+import * as Relay from "../lib/relay.ts";
+import * as UseRelay from "../lib/useRelay.ts";
 
 const MY_KEY = "my-key";
 const NOW = Date.now();
@@ -40,6 +44,11 @@ class FakeService {
   } }; }
 }
 await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountService: FakeService }));
+// a PC that leaves by an entry of the account's list: what the page asks of the list, and whether it forgot a pairing for it
+await mock.module("../lib/account/listRemove.ts", () => ({ removeListPc: async (_list: unknown, endpoint: string, options: { expect?: { account: string; list: string } }) => { calls.push(`list-remove ${endpoint} for ${options.expect?.account} ${options.expect?.list}`); return { removed: true }; } }));
+let inShell = false;
+await mock.module("../lib/useRelay.ts", () => ({ ...UseRelay, inRelayShell: () => inShell }));
+await mock.module("../lib/relay.ts", () => ({ ...Relay, loadRelayShell: async () => ({ forgetSavedPc: async (id: string) => { calls.push(`forget pairing ${id}`); } }) }));
 const { AccountManageLists } = await import("./AccountManage.tsx");
 const { HostedAccountGroup } = await import("./AccountHead.tsx");
 const { RelayShell } = await import("./RelayShell.tsx");
@@ -137,6 +146,36 @@ describe("Manage account's devices and PCs", () => {
     expect(textOf(dialog(root))).toContain("Remove Dead box from your account?");
     await act(async () => { await press(root, "Remove"); });
     expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
+  });
+
+  it("on an account with a list, removes a PC by an entry of the list and keeps this device's own pairing with it; a PC with no way to it is removable, and the rows follow the list", async () => {
+    const LIST = "5c".repeat(32);
+    const listed = (n: string, label: string) => ({ endpoint: n.repeat(64), server_id: n.repeat(32), how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });
+    let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [listed("c", "Laptop"), listed("a", "Desk")] };
+    const heard: (() => void)[] = [];
+    setPageAccountList({ view: () => view, subscribe: (listener: () => void) => { heard.push(listener); return () => {}; } } as unknown as AccountList);
+    inShell = true;
+    try {
+      // the directory routes Desk (heard from lately) and names Dead box alone; the list holds Laptop with no route
+      pcs = [{ ...pcs[0]!, public_key: "a".repeat(64), relay: "wss://relay.example" }, pcs[1]!] as Service.DirectoryPc[];
+      const root = await mount();
+      expect(rows(root, "account-pcs")).toEqual(["OfflineLaptopRemove", "OnlineDesk", "OfflineDead box · Not in your account's list yetRemove"]);
+      const removes = () => root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-pc");
+      await act(async () => { removes()[0]!.props.onClick(); });
+      expect(textOf(dialog(root))).toContain("Remove Laptop from your account?");
+      await act(async () => { await press(root, "Remove"); });
+      // signed into the list, for the account and the list the row came from, and no pairing of this device's was forgotten
+      expect(calls).toEqual([`list-remove ${"c".repeat(64)} for acct ${LIST}`]);
+      // another device put Desk out: the rows are drawn again from the list, with no reload
+      view = { ...view, pcs: [] };
+      await act(async () => { for (const tell of heard) tell(); });
+      expect(rows(root, "account-pcs").some((row) => row.includes("Laptop"))).toBe(false);
+      // the directory's own removal still forgets the pairing, as before
+      calls.length = 0;
+      await act(async () => { removes().at(-1)!.props.onClick(); });
+      await act(async () => { await press(root, "Remove"); });
+      expect(calls).toEqual([`remove ${"b".repeat(32)}`, `forget pairing ${"b".repeat(32)}`]);
+    } finally { setPageAccountList(null); inShell = false; }
   });
 
   it("keeps the confirm up with a retry line when the removal fails", async () => {

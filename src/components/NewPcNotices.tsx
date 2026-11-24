@@ -8,7 +8,7 @@ import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutErr
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { deviceOs } from "../lib/phone.ts";
-import { usePcRemoval } from "./usePcRemoval.tsx";
+import { pcRemovalFailure, usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
@@ -137,7 +137,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
   const expiresAt = pc.admitted_before_you ? Number.POSITIVE_INFINITY : Date.parse(pc.new_until ?? "");
   const [hidden, setHidden] = useState(() => newPcNoticeClosed(dismissalKey));
   const [sending, setSending] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const inFlight = useRef(false);
   const removal = usePcRemoval(indexedAccountService, () => {
     setHidden(true);
@@ -156,12 +156,12 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
     if (inFlight.current || !(expiresAt > Date.now())) return;
     inFlight.current = true;
     setSending(true);
-    setFailed(false);
+    setFailed(null);
     try {
       await removal.remove(session, pc.server_id);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
-      setFailed(true);
+      setFailed(pcRemovalFailure(error, t, t("The PC could not be removed. Try again.")));
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -173,7 +173,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
     try { localStorage.setItem(dismissalKey, "1"); }
     catch (error) { if (!(error instanceof DOMException)) throw error; }
   };
-  const failure = failed && <span className="account-error" role="alert">{t("The PC could not be removed. Try again.")}</span>;
+  const failure = failed !== null && <span className="account-error" role="alert">{failed}</span>;
   if (pc.admitted_before_you) {
     // #29: added before this device joined, asked once in the main area by name; never a row in the sidebar
     const os = deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0);

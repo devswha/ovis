@@ -832,3 +832,35 @@ it("a launch asks to join no PC that this device's list of the account does not 
   const row = (id: string, more: Partial<MyPc> = {}): MyPc => ({ server_id: id, name: id, state: "needs-approval", last_seen_at: new Date().toISOString(), added_at: null, listed: true, paired: false, linked: false, join: { server_public_key: "k", relay: "wss://relay.ovis.sh" }, ...more });
   expect(accountLaunchPcs([row("outside", { notInList: true }), row("held", { byList: true }), row("plain")]).map((pc) => pc.server_id).sort()).toEqual(["held", "plain"]);
 });
+
+it("a PC the list put out while this device was on its way to it is not opened the way from before", async () => {
+  const came: string[] = [];
+  const listed = { holds: true };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    came.push((await cameBy(offer, options)).how);
+    // another device removed the PC, and this page's list took the removal, before the PC answered
+    listed.holds = false;
+    throw new AccountListUnsupportedError();
+  } });
+  await run.openPage();
+  await run.settled(() => run.navigations.length > 0 || run.current().state.kind === "failed");
+  expect([came, run.apps()]).toEqual([["list"], 0]);
+});
+
+it("a list key that the PC refuses after it was let in leads to the join, and nothing says the PC removed the device", async () => {
+  const came: string[] = [];
+  const fatal: ((error: Error) => void)[] = [];
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => {
+    came.push((await cameBy(offer, options)).how);
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect(came).toEqual(["list"]);
+  // later the PC refuses that key at a reconnect: the device is not in that PC's list any more
+  fatal[0]!(new MuxProtocolError("auth_failed", ""));
+  await run.settled(() => run.navigations.length > 0);
+  expect(run.navigations[0]).toStartWith(`/s/${run.serverId}/#offer=`);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});

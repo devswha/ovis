@@ -23,8 +23,12 @@ import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableErro
  * - `busy`: the list kept moving, or the account service kept asking for the request again, for every try.
  * - `refused`: the account service refused the entry, or this device would not count it.
  * - `unreached`: the account service did not answer.
+ * - `changed`: the account or the list is no longer the one the write was begun for (WriteOptions.expect): nothing was signed.
  */
-export type WriteRefusal = "no_list" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached";
+export type WriteRefusal = "no_list" | "not_claimed" | "budget" | "stopped" | "busy" | "refused" | "unreached" | "changed";
+
+/** The most entries one request places (the account service takes no more). */
+export const WRITE_ENTRIES_MAX = 16;
 
 /** How often one write reads the list and signs anew, after the head moved under it or the account service judged otherwise. */
 export const WRITE_TRIES = 4;
@@ -96,6 +100,11 @@ export async function signedWithEpoch(writer: ListWriter, current: EpochKey, bef
 
 export interface WriteOptions {
   readonly wait?: (ms: number) => Promise<void>;
+  /**
+   * The account and the list the write was begun for: what the person saw when they pressed. Held against the writer
+   * after every read, so a sign-in that another tab changed, or another list, ends the write with nothing signed.
+   */
+  readonly expect?: { readonly account: string; readonly list: string };
   /** The writer to sign on, read after each read of the list: for a device's removal of its own key, `list.writer({ self: true })`. The list's own by default. */
   readonly writer?: () => ListWriter | null;
   /**
@@ -125,6 +134,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
   for (let tries = 0; tries < WRITE_TRIES; tries += 1) {
     const view = await list.sync();
     const writer = (options.writer ?? (() => list.writer()))();
+    if (options.expect !== undefined && (view.account !== options.expect.account || (writer !== null && (writer.account !== options.expect.account || writer.list !== options.expect.list)))) return refused("changed");
     if (writer === null) return refused(view.status.at === "following" && !view.reached ? "unreached" : "no_list");
     let request: Written;
     try {

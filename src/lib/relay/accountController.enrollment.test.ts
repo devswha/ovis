@@ -45,7 +45,7 @@ describe("account enrollment ownership", () => {
     readonly accountAnswer?: (route: string, sent: number, init?: RequestInit) => Response | Error | undefined | Promise<Response | Error | undefined>;
     readonly viewActive?: boolean;
     /** this device follows its account's signed list (`following`), waits to be let into it (`waiting`), or the round that tells has not ended (`unread`) */
-    readonly list?: "following" | "waiting" | "unread";
+    readonly list?: "following" | "waiting" | "unread" | "unanswered";
     /** the PC lets its account's devices in by the account's signed list alone: it refuses a link */
     readonly pinned?: true;
     /** whether the PC is in the account, where that is not what `linking` says */
@@ -132,9 +132,11 @@ describe("account enrollment ownership", () => {
       : { at: "following", list: "5c".repeat(32), standing: "in", head: 1, read_at: 1, trouble: null };
     const listView: AccountListView = { account: "account", reached: true, status: listStatus, devices: [], pcs: [] };
     const unread: AccountListView = { account: null, reached: true, status: { at: "off" }, devices: [], pcs: [] };
+    // the account service did not say whether the account has a list, and this page holds no copy that says so
+    const unanswered: AccountListView = { account: "account", reached: false, status: { at: "off" }, devices: [], pcs: [] };
     let listRead = options.list !== "unread";
     const accountList: AccountList | undefined = options.list === undefined ? undefined : {
-      sync: async () => { listRead = true; return listView; }, follows: async () => true, view: () => listRead ? listView : unread, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
+      sync: async () => { listRead = true; return options.list === "unanswered" ? unanswered : listView; }, follows: async () => true, view: () => options.list === "unanswered" ? unanswered : listRead ? listView : unread, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
       shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView, writer: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
     };
     const open = async (target: RelayOffer = offer) => { const transport = target.server_id === offer.server_id ? new Admitted(offer) : new Peer(target); transports.push(transport); return transport; };
@@ -203,7 +205,7 @@ describe("account enrollment ownership", () => {
   describe("on an account that lets its PCs in by its signed list", () => {
     /** what the row of the PC then says, as My PCs draws it */
     const rowSays = async (run: Run): Promise<string> => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(EnrollmentStatus, { state: enrollmentOf((await run.store.get(run.original.server_id))!) }) }));
-    for (const list of ["following", "waiting", "unread"] as const) {
+    for (const list of ["following", "waiting", "unread", "unanswered"] as const) {
       it(`opening a saved pairing lists no PC and starts no enrollment, though one was planned (${list})`, async () => {
         // the account service refuses that listing from a sign-in older than ten minutes: nothing is sent for it to refuse
         const run = await fixture("unused", { list, accountAnswer: (route) => route === "PUT /v1/pcs/" + run.original.server_id ? Response.json({ error: { code: "session_not_fresh", message: "" } }, { status: 403 }) : undefined });

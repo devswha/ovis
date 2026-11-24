@@ -259,8 +259,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   // the list moved: the rows are drawn again from it and the directory last read, and the two are compared again
   lists?.subscribe(() => {
-    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList);
-    else void compareList();
+    const failed = (error: unknown): void => console.warn("Ovis: the account's PCs were not drawn again by its list", error instanceof Error ? error.name : error);
+    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList).catch(failed);
+    else void compareList().catch(failed);
   });
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
@@ -666,7 +667,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (lists === null) return false;
     let view = lists.view();
     if (view.account !== account) view = await lists.sync().catch(() => lists.view());
-    return view.account === account && view.status.at !== "off" && view.status.at !== "none";
+    // Not answered (no word of the account service this round, and no copy here that says): the writes of the way from
+    // before wait for a round that tells. The pairing opens all the same.
+    if (view.account !== account || (!view.reached && (view.status.at === "off" || view.status.at === "none"))) return true;
+    return view.status.at !== "off" && view.status.at !== "none";
   };
   const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled, signal }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
     signal?.throwIfAborted();

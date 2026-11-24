@@ -8,7 +8,7 @@
  */
 import { pcRemoval, type ListKind } from "../../../shared/account-list.ts";
 import type { AccountList } from "./accountList.ts";
-import { overTime, placeOf, signedOn, signedWithEpoch, writeToList, type WriteRefusal } from "./listWrite.ts";
+import { WRITE_ENTRIES_MAX, overTime, placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
 
 export type PcRemovalOutcome =
   | { readonly removed: true }
@@ -19,7 +19,7 @@ export type PcRemovalOutcome =
  * no more, is out already: nothing is sent. A device that holds no key of the current epoch signs the removal alone,
  * and the next writer that has names to seal opens the epoch. Only a sign-in that ended throws.
  */
-export async function removeListPc(list: AccountList, endpoint: string, options: { readonly wait?: (ms: number) => Promise<void> } = {}): Promise<PcRemovalOutcome> {
+export async function removeListPc(list: AccountList, endpoint: string, options: Pick<WriteOptions, "wait" | "expect"> = {}): Promise<PcRemovalOutcome> {
   const outcome = await writeToList(list, async (writer) => {
     const { state, clock } = writer;
     const removal = pcRemoval(state, endpoint);
@@ -28,7 +28,8 @@ export async function removeListPc(list: AccountList, endpoint: string, options:
     if (current === null) return { request: await signedOn(writer, removal) };
     // with the epoch that this request opens anyway, the keys whose time is over go too: names are sealed again after it
     const ends = new Set(removal.flatMap((kind) => kind.kind === "remove" && "ends" in kind ? [kind.ends] : []));
-    const tidied = overTime(state, clock).filter((key) => !ends.has(key)).map((key): ListKind => ({ kind: "remove", ends: key }));
+    // as many of them as one request takes beside the PC's own removal and the epoch: the rest waits for a later writer
+    const tidied = overTime(state, clock).filter((key) => !ends.has(key)).slice(0, WRITE_ENTRIES_MAX - removal.length - 1).map((key): ListKind => ({ kind: "remove", ends: key }));
     return { request: await signedWithEpoch(writer, current, [...tidied, ...removal]) };
   }, options);
   return outcome.written ? { removed: true } : { removed: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };

@@ -696,7 +696,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // round: the PC lets its account's devices in by the list (`account_list_required`, or its session ended as a
     // row that changed, at the moment it pinned), so the device reads its list and comes with its list key, once,
     // whether or not its copy names that PC: a PC that follows this device's list lets in the keys that list holds.
-    if (attempt.listOpen !== undefined && error instanceof AccountListUnsupportedError && !attempt.retriedListOpen) {
+    // (only while the list still holds that PC: one it put out meanwhile is not opened the way from before by itself)
+    if (attempt.listOpen !== undefined && error instanceof AccountListUnsupportedError && !attempt.retriedListOpen && account.listHolds(attempt.offer.server_id)) {
       const openKey = account.openKey;
       const { listOpen: _key, ...rest } = attempt;
       if (openKey !== null) { await connect({ ...rest, accountOpen: openKey, retriedListOpen: true }); return; }
@@ -910,7 +911,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}) };
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}),
+      // which key this session signed in with stays with it: a refusal at a later reconnect is read by that
+      ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}), ...(attempt.retriedListOpen ? { retriedListOpen: true } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;

@@ -1132,7 +1132,8 @@ The list is read before the account's PCs are first drawn on a device that keeps
 no row is drawn as the account's own by the account service's word alone, not even for a moment.
 
 **What opens by itself.** A PC the list holds, that the directory gives a route for, and that is
-not new to this device; never a PC the list does not hold. That the account service ever saw the PC is not asked: the entry is what
+not new to this device; never a PC the list does not hold. The sidebar of a PC's page adds none
+of those by itself either. That the account service ever saw the PC is not asked: the entry is what
 makes it the account's. The sign-in is the one of
 [What a pinned PC asks of the app](#what-a-pinned-pc-asks-of-the-app).
 
@@ -1153,12 +1154,26 @@ PC is out once the device's own copy shows the last entry at its place, as for a
 same tries. A device that holds no key of the current epoch signs the removal alone. A PC that is
 out never comes back with its key: it joins again only as a new PC.
 
+- **The removal belongs to the account and the list whose row was pressed.** Both are held against
+  the device's writer after every read; where another tab's sign-in changed either, nothing is
+  signed and the removal says that it failed.
+- **One request holds 16 entries at most.** The PC's own removal and the epoch always go; of the
+  keys whose time is over, as many as fit beside them, and the rest waits for a later writer.
+- **A pairing this device made with the PC itself stays.** The PC leaves the account; the key of a
+  pairing made at the PC still opens it, as the question before the removal says, and only Forget
+  takes that key from the device.
+- **A PC the list holds with no route** reads as off in Settings, where it can be removed, and has
+  a row in the sidebar that says it cannot be reached. Settings draws its rows again when the list
+  moves.
+
 **A pairing that was only opened lists nothing.** Opening a saved pairing used to list the PC in
 the directory and enroll it where an enrollment was planned. On an account with a list, the
 account service refuses that listing, and a PC comes into the account by an entry. So for a saved
 pairing on such an account the app sends no listing and starts no enrollment, sends no link to a
 PC that is in no account, and says nothing at the row: the pairing opens the PC as before. This
-holds for a device that follows the list and for one that waits to be let in. A new pairing made
+holds for a device that follows the list and for one that waits to be let in, and while the
+account service has not answered whether the account has a list: those writes wait for a read
+that tells. A new pairing made
 from **Add** is not changed by this.
 
 **A PC that lets devices in by the list alone** answers a link `409 list_followed` and writes
@@ -1175,7 +1190,8 @@ the list holds for it, the account key, and no longer by the key a sign-in regis
   required only when the device comes with the key the list holds.
 - **A PC the device's list holds** is opened with the account key, under the device id that key
   gives for that PC, with `account-list-1` required. A PC that does not select it follows no
-  list: the device comes once more the way from before, with the key its sign-in registered.
+  list: the device comes once more the way from before, with the key its sign-in registered, and
+  only while its list still holds that PC.
 - **`account_list_required`** is the PC's answer to a device that offered the feature and came
   with another key. The device reads its list at once, and comes again with the account key if
   the list holds the device, whether or not its copy names that PC: a PC that follows the
