@@ -52,6 +52,10 @@ export class AgentToolHub {
     this.settingsChanged();
   }
   get setting() { return this.options.setting(); }
+  private verbs(depth: number): readonly string[] {
+    const policy = this.setting;
+    return policy.level === "off" ? [] : policy.level === "start" && depth < policy.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS;
+  }
   async reconcileLaunches() {
     const terminals = await this.options.acp.terminals();
     const found = new Set<string>();
@@ -126,22 +130,27 @@ export class AgentToolHub {
     const deny = () => this.setting.level === "off" ? refuse("tools_off", "Agent tools are off.") : refuse("not_granted", "This run is not granted that operation.");
     const began = this.now();
     const run = auth();
+    if (!run && verb === "scope" && !this.closed && this.setting.level !== "off" && typeof token === "string") {
+      const depth = this.runs.discoveryDepth(token);
+      if (depth !== undefined) return answer("scope", { verbs: this.verbs(depth) });
+    }
     if (!run) return deny();
     const limited = this.rate.take(run.id, this.now());
     if (limited) return limited;
-    if (verb === "scope") return answer("scope", { verbs: this.setting.level === "start" && run.depth < this.setting.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS });
+    if (verb === "scope") return answer("scope", { verbs: this.verbs(run.depth) });
     if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");
     if (!isView(verb) && this.setting.level !== "start") return deny();
     if (!validArgs(verb, args)) return refuse("bad_request", "Invalid or unexpected argument.");
     const privilegedRead = verb === "read" && (args.what === "result" || args.what === "screen");
-    if (privilegedRead && this.setting.level !== "start") return deny();
+    if (privilegedRead && !this.verbs(run.depth).includes("result")) return deny();
     if (isView(verb)) {
       const result = await this.view.query(verb, args, this.turns);
-      return auth() && !(privilegedRead && this.setting.level !== "start") ? result : deny();
+      return auth() && (!privilegedRead || this.verbs(run.depth).includes("result")) ? result : deny();
     }
-    const allowed = () => !!auth() && this.setting.level === "start";
+    const allowed = () => !!auth() && this.verbs(run.depth).includes(verb);
     const session = String(args.session ?? "");
     if (verb === "start" || verb === "ask") {
+      if (!allowed()) return refuse("depth_exceeded", "This run is at its depth limit.");
       const started = await this.serial(run.id, async () => {
         if (!allowed()) return deny();
         return this.start(run, args, allowed);
@@ -160,6 +169,7 @@ export class AgentToolHub {
     }
     if (session === run.self) return refuse("self_target", "A run cannot target itself.");
     if (this.runs.ancestors(run).includes(session)) return refuse("ancestor_target", "A run cannot target an ancestor.");
+    if (!allowed()) return deny();
     const row = this.ledger.children.get(session);
     if (!row) return refuse("unknown_session", "Unknown session.");
     if (row.starter !== run.id) return refuse("not_owner", "Not your child.");
@@ -224,7 +234,7 @@ export class AgentToolHub {
     const cwd = typeof args.cwd === "string" ? args.cwd : (await coreConnection().call("terminal.get", { terminal: run.self })).cwd;
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return refuse("bad_request", "The folder does not exist.");
     if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) return refuse("not_granted", "The grant changed.");
-    const key = this.runs.reserve();
+    const key = this.runs.reserve(run.depth + 1);
     const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, created: this.now() };
     try {
       if (typeof args.key === "string") this.runs.rememberStart(run.id, args.key, key.id);

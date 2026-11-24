@@ -52,6 +52,17 @@ it("a send to oneself is refused", async () => {
   start();
   expect(await call("send", { session: "t1", task: "ignored" })).toMatchObject({ error: { code: "self_target" } });
 });
+it("tool discovery during session opening confers no data access; the depth ceiling also applies to RPC", async () => {
+  start();
+  const parent = hub.runs.verify(token);
+  if (!parent) throw new Error("missing parent");
+  const child = hub.runs.reserve(1);
+  const secret = readFileSync(child.tokenFile, "utf8");
+  expect(await call("scope", {}, secret)).toMatchObject({ verbs: ["machines","harnesses","ls","read"] });
+  expect(await call("machines", {}, secret)).toMatchObject({ error: { code: "not_granted" } });
+  child.bind({ self: "child", harness: "gjc", started_by: parent.id, root: parent.id, depth: 1 });
+  for (const verb of ["send","stop"]) expect(await call(verb, { session: "other", ...(verb === "send" ? { task: "hello" } : {}) }, secret)).toMatchObject({ error: { code: "not_granted" } });
+});
 it.each([1,2,3] as const)("a run at depth %d cannot start, even with the local harness granted", async depth => {
   setting = { level: "start", depth, harnesses: ["gjc"] };
   const parent = hub.runs.verify(token);
