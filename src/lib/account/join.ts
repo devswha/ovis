@@ -345,15 +345,25 @@ export async function allowIntoList(list: AccountList | null, joining: { key: st
  * admitToAccount.
  */
 export async function admitWithList(list: AccountList | null, options: Omit<Parameters<typeof admitToAccount>[0], "allow"> & { joining: { key: string; label: string; os: Admission["os"] } }): Promise<AddRecord> {
-  if (list === null) return admitToAccount(options);
+  // Whether this device goes by a list is read from what it holds itself: the view this page drew, or the copy in its
+  // own store. With neither it has no list to write to, and the approval goes as before lists, at once: it waits for
+  // no answer of the account service's about lists, and nothing that fails there holds it back.
+  const drawn = list?.view();
+  const follows = list !== null && ((drawn !== undefined && drawn.account === options.account && holdsList(drawn)) || await list.follows(options.account).catch(() => false));
+  if (list === null || !follows) return admitToAccount(options);
   // The approval belongs to the account it was begun under. A page whose list is another account's by now (a sign-in
   // changed in another tab) signs nothing: neither into that list, nor by the way of an account with no list.
   const view = await list.sync();
   if (view.account !== options.account) throw new ListAllowError("changed", null);
-  if (!holdsList(view)) return admitToAccount(options);
+  // What stops this device from writing is said before anything goes to the PC: the account service is away, or the
+  // device's own copy stands in its way (it was put out, it is stopped, alarmed, or does not read).
+  if (list.writer() === null) throw new ListAllowError(holdsList(view) && view.status.at === "following" && view.status.standing === "in" && view.status.trouble === null && !view.reached ? "unreached" : "blocked", null);
+  if (!view.reached) throw new ListAllowError("unreached", null);
   let offer: ListOffer | null = null;
   const add = await admitToAccount({ ...options, allow: async () => {
     offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.wait === undefined ? {} : { wait: options.wait }) });
+    // an account that turns out to have no list for this device to write (it lost its copy meanwhile) admits nobody the old way from here
+    if (offer === null) throw new ListAllowError("blocked", null);
     return offer;
   } });
   const placed = offer as ListOffer | null;

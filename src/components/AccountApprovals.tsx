@@ -182,7 +182,9 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
               await admitted();
               onStalled(request.key, null);
             } catch (error) {
-              if (!(error instanceof ListAllowError)) throw error;
+              // anything else failed after the list took the device (the introduction, the account's other PCs): the
+              // card, which says that the list did not take it, goes, and the failure is the caller's to say
+              if (!(error instanceof ListAllowError)) { onStalled(request.key, null); throw error; }
               onStalled(request.key, { key: request.key, device: admission.label, pc: where.pcName, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
             }
           };
