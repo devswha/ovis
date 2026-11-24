@@ -303,14 +303,17 @@ export class AccountDeviceStore implements AccountRowSource {
     this.republish();
     const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
-      if (!this.ports.hasNoticeSlot()) break;
+      // whoever comes in new, or again, gets a notice; with none to give nobody does
+      const slot = this.ports.hasNoticeSlot();
       const existing = this.file.devices.find((row) => row.key === entry.key);
       if (existing) {
-        if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
-        // a person has just let this very key in: a row a read made for it a moment before waits no longer either
+        if (slot && sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        // a person has just let this very key in: a row a read made for it a moment before waits no longer either.
+        // Its row is there already and takes no notice, so this holds while no notice can be made too
         else if (existing.state === "hold" && settled(entry.key)) this.goLive(existing.id);
         continue;
       }
+      if (!slot) continue;
       // This new key needs a slot. A later proved replacement in the same list does not.
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;

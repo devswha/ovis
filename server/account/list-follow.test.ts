@@ -8,7 +8,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { entryFromText, entryHash } from "../../shared/account-list-entry.ts";
+import { entryFromText, entryHash, readBody } from "../../shared/account-list-entry.ts";
+import { readKind } from "../../shared/account-list.ts";
 import { PC_READ_SECONDS, pinList, writeSave } from "../../shared/account-list-follower.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
@@ -16,9 +17,9 @@ import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import { loadRelayIdentity } from "../relay/identity.ts";
 import { privateStateFs } from "../private-state.ts";
 import type { ListCommit } from "./account-device-state.ts";
-import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
+import { ACCOUNT_LIST_ALLOW_FILE, ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
 import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
-import { listMember, TestList } from "./list.test-helpers.ts";
+import { claimKey, listMember, memberCard, TestList } from "./list.test-helpers.ts";
 import { AccountServiceRefusal } from "./mailbox.ts";
 
 const ACCOUNT = "acct_1";
@@ -75,6 +76,7 @@ async function following(options: { stateDir?: string; seconds?: number; account
     binding: () => world.bound ? { account: ACCOUNT, id: world.bind, list: world.pinned, alarmed: world.alarmed } : null,
     pin: (_bindId, id) => { world.pinned = id; return true; },
     alarm: () => { if (world.alarmFails) return false; world.alarmed = true; return true; },
+    bind: (account, id) => { world.bound = true; world.pinned = id; return { id: world.bind, account, list: id, won: true }; },
     removedFrom: () => false,
     rowKey: () => null,
     now: () => world.real === null ? world.seconds * 1000 : world.seconds * 1000 + (Date.now() - world.real),
@@ -82,11 +84,13 @@ async function following(options: { stateDir?: string; seconds?: number; account
     commit: (rows) => { world.commits.push(rows); },
     leave: () => { world.left++; world.bound = false; return true; },
     recheck: () => { world.rechecks++; },
-    call: async (path, body) => {
+    call: async (path, body, ready) => {
       world.calls.push(path);
       if (world.gate !== null) await world.gate;
       if (world.log !== null && path === "/v2/pc/list/log") return world.log(body);
-      const answer = await service.fetch(new Request(`${SERVICE}${path}`, { method: "POST", body: JSON.stringify({ ...await prove(), ...body }) }));
+      const proof = await prove();
+      ready?.();
+      const answer = await service.fetch(new Request(`${SERVICE}${path}`, { method: "POST", body: JSON.stringify({ ...proof, ...body }) }));
       const said = await answer.json() as Record<string, unknown>;
       if (!answer.ok) throw new AccountServiceRefusal(answer.status, (said.error as { code?: string } | undefined)?.code ?? null, path);
       return path === "/v2/pc/list/keys" && world.until !== null ? { ...said, until: world.until } : said;
@@ -687,6 +691,127 @@ describe("what the PC acted on and could not save", () => {
   });
 });
 
+describe("an entry this PC signed and does not know to be placed", () => {
+  test("is kept over a restart: the next Allow at the same head sends that very entry, and signs no other", async () => {
+    const pc = await following();
+    await pc.pin();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(pc.service, ACCOUNT, pc.account.id, phone), label: "Phone" };
+    const sent: string[] = [];
+    const watch = (of: Awaited<ReturnType<typeof following>>, away: boolean) => {
+      const real = of.deps.call;
+      return spyOn(of.deps, "call").mockImplementation(async (path, body, ready) => {
+        if (path === "/v2/pc/list/entries") sent.push((body.entries as string[])[0]!);
+        // nothing of the service answers: whether the entry was placed is not known
+        if (away && (path === "/v2/pc/list/entries" || path === "/v2/pc/list/log")) throw new Error("no answer");
+        return await real(path, body, ready);
+      });
+    };
+    const first = watch(pc, true);
+    try { expect(await pc.list.allowDevice(device, true)).toMatchObject({ refused: "service_away" }); } finally { first.mockRestore(); }
+    expect(new Set(sent).size).toBe(1);
+    const signed = sent[0]!;
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    sent.length = 0;
+    const second = watch(again, false);
+    try { expect(await again.list.allowDevice(device, true)).toMatchObject({ allowed: { id: pc.account.id } }); } finally { second.mockRestore(); }
+    expect(sent).toEqual([signed]);
+    expect(existsSync(join(pc.stateDir, ACCOUNT_LIST_ALLOW_FILE))).toBe(false);
+  });
+
+  /** A pinned PC, two devices that claimed their keys, and what the PC sent to place entries; `away`: nothing of the service answers; `proving`: run before each placement's proof. */
+  async function twoAsked() {
+    const pc = await following();
+    await pc.pin();
+    const asking = async (label: string) => { const member = await listMember(); return { key: member.key, enc: member.enc, card: await claimKey(pc.service, ACCOUNT, pc.account.id, member), label }; };
+    const phone = await asking("Phone");
+    const tablet = await asking("Tablet");
+    const sent: string[] = [];
+    const state = { away: false, proving: null as (() => Promise<unknown>) | null };
+    const real = pc.deps.call;
+    const calls = spyOn(pc.deps, "call").mockImplementation(async (path, body, ready) => {
+      // what happens while this PC proves itself for the placement
+      if (path === "/v2/pc/list/entries") await state.proving?.();
+      if (state.away && (path === "/v2/pc/list/entries" || path === "/v2/pc/list/log")) {
+        if (path === "/v2/pc/list/entries") sent.push((body.entries as string[])[0]!);
+        throw new Error("no answer");
+      }
+      return await real(path, body, path !== "/v2/pc/list/entries" ? ready : () => { ready?.(); sent.push((body.entries as string[])[0]!); });
+    });
+    stops.push(() => calls.mockRestore());
+    const signer = (text: string) => { const kind = readKind(readBody(entryFromText(text).body)); return kind?.kind === "device" ? kind.key : null; };
+    return { pc, phone, tablet, sent, state, signer, kept: join(pc.stateDir, ACCOUNT_LIST_ALLOW_FILE) };
+  }
+
+  test("goes first when another device is allowed at the same head: no second entry is signed on the head it stands on", async () => {
+    const { pc, phone, tablet, sent, state, signer } = await twoAsked();
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    const first = sent[0]!;
+    sent.length = 0;
+    state.away = false;
+    expect(await pc.list.allowDevice(tablet, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    // the phone's entry as it was signed, then the tablet's on the head that followed
+    expect(sent[0]).toBe(first);
+    expect(sent.map(signer)).toEqual([phone.key, tablet.key]);
+    const held = pc.service.accountList(ACCOUNT)!;
+    expect(held.state.signers[tablet.key]!.seq).toBe(held.state.signers[phone.key]!.seq + 1);
+  });
+
+  test("of a device this PC has come to hold back is not sent, and nothing else is signed on its head", async () => {
+    const { pc, phone, tablet, sent, state } = await twoAsked();
+    state.away = true;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ refused: "service_away" });
+    sent.length = 0;
+    state.away = false;
+    pc.deps.mayAdmit = (key) => key !== phone.key;
+    expect(await pc.list.allowDevice(tablet, true)).toEqual({ refused: "not_written", detail: "place_kept" });
+    expect(sent).toEqual([]);
+    expect(pc.service.accountList(ACCOUNT)!.state.signers[tablet.key]).toBeUndefined();
+  });
+
+  test("is forgotten when the account service itself says it did not place it", async () => {
+    const { pc, phone, sent, kept } = await twoAsked();
+    // a card nobody of the account claimed: the service refuses the entry by name
+    const stranger = await listMember();
+    const unclaimed = { key: stranger.key, enc: stranger.enc, card: await memberCard(stranger, pc.account.id), label: "Stranger" };
+    expect(await pc.list.allowDevice(unclaimed, true)).toMatchObject({ refused: "not_claimed" });
+    expect(existsSync(kept)).toBe(false);
+    sent.length = 0;
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    expect(sent).toHaveLength(1);
+  });
+
+  test("that the PC cannot read lets it sign nobody in: what it signed is not known", async () => {
+    const { pc, phone, sent, kept } = await twoAsked();
+    writeFileSync(kept, "{ not an entry", { mode: 0o600 });
+    expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "not_written", detail: "kept_unreadable" });
+    expect(sent).toEqual([]);
+    expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+
+  test("is not sent once this PC may sign no more: what a member's page brought while the PC proved itself is asked before the entry goes out", async () => {
+    const { pc, phone, sent, state } = await twoAsked();
+    // a device hands this PC an entry this Ovis is too old to read, while the PC's proof for the placement is made
+    const later = await pc.account.signLater();
+    const head = pc.account.place;
+    state.proving = () => pc.list.takeFromPeer({ list: pc.account.id, after: head.seq, entries: [later], head: { seq: head.seq + 1, hash: entryHash(entryFromText(later).body) } });
+    expect(await pc.list.allowDevice(phone, true)).toEqual({ refused: "behind", detail: null });
+    expect(pc.list.status().behind).toBe(true);
+    expect(sent).toEqual([]);
+    expect(pc.service.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+
+  test("of another binding of this PC is none of this one's", async () => {
+    const { pc, phone, sent, kept } = await twoAsked();
+    writeFileSync(kept, JSON.stringify({ v: 1, server_id: loadRelayIdentity(pc.stateDir).server_id, bind_id: "cd".repeat(16), list: pc.account.id, seq: 0, on_head: "00".repeat(32), key: phone.key, enc: phone.enc, entries: ["x"], wraps: [] }), { mode: 0o600 });
+    expect(await pc.list.allowDevice(phone, true)).toMatchObject({ allowed: { id: pc.account.id } });
+    expect(sent).toHaveLength(1);
+    expect(existsSync(kept)).toBe(false);
+  });
+});
+
 describe("the wait of one sign-in", () => {
   test("a returning device's sign-in waits its few seconds and no longer, also behind a read the mailbox began", async () => {
     const pc = await following();
@@ -945,5 +1070,31 @@ describe("found in review", () => {
     await pc.pull();
     expect(posts()).toBe(2);
     expect(pc.list.status().posted_until).not.toBeNull();
+  });
+});
+
+describe("a PC in no account joins by the list", () => {
+  test("is not said to have joined while the copy it read is not on disk; the next ask says so once it is", async () => {
+    const pc = await following();
+    pc.world.bound = false;
+    const named = { account: ACCOUNT, list: pc.account.id, by: null };
+    expect(await pc.list.joinList(named)).toEqual({ waiting: "waiting" });
+    await pc.account.addPostedPc(pc.endpoint);
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((_from, to) => {
+      if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    });
+    try {
+      // bound and pinned by now, which is on disk with the binding; the copy is not
+      expect(await pc.list.joinList(named)).toEqual({ waiting: "in" });
+      expect(pc.world.pinned).toBe(pc.account.id);
+      expect(await pc.list.joinList(named)).toEqual({ waiting: "in" });
+    } finally { failing.mockRestore(); }
+    expect(await pc.list.joinList(named)).toMatchObject({ joined: { pinned: true, standing: "in" } });
+    pc.list.stop();
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.list.start();
+    await again.list.settled();
+    expect(again.list.status()).toMatchObject({ pinned: true, standing: "in", head: pc.account.place });
+    expect(again.world.calls).toEqual([]);
   });
 });

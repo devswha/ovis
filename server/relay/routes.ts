@@ -5,7 +5,7 @@ import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetRegistryUnavailableError } from "./service.ts";
+import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetNotAskedError, ResetRegistryUnavailableError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -75,6 +75,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       outcome = service.approvals.decideForList(body.id, body.decision === "approve", typeof body.digits === "string" ? body.digits : "", peer.device);
     }
     if (outcome.outcome !== "decided") {
+      // a join into the list is approved only once the new device confirmed its digits (`confirmed` in the list of
+      // waiting joins): its approver signs the device's entry, and signs for nobody who gave up before that
+      if (outcome.outcome === "not_confirmed") return fail("not_confirmed", "That device has not confirmed its digits yet. Allow it once it has.", 409);
       return outcome.outcome === "gone"
         ? fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404)
         : fail("wrong_digits", "Those are not the digits the new device shows; it was not let in.", 409);
@@ -205,7 +208,20 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         setRequestRoute("/api/relay/reset-identity");
         // Reset ends every relay row: a PC under account policy requires the same local authority as Revoke all.
         if (context.services.devices.accountPolicyActive() && !local) return fail("local_required", "Resetting the relay identity is done at that PC", 403);
-        const status = await service.resetIdentity();
+        // `removed`: the reset that makes a PC its account's list removed a new one names the identity the person was
+        // asked about, and the account. It resets that identity alone: an answer to an old question, given after the
+        // PC was reset and added again, must not reset the PC it has become
+        const text = await request.text();
+        let named: unknown;
+        try { named = text === "" ? undefined : (JSON.parse(text) as { removed?: unknown } | null)?.removed; } catch { return fail("invalid_json", "request body must be JSON", 400); }
+        let removed: { account: string; server_id: string } | undefined;
+        if (named !== undefined) {
+          const { account, server_id } = (typeof named === "object" && named !== null ? named : {}) as { account?: unknown; server_id?: unknown };
+          if (typeof account !== "string" || typeof server_id !== "string") return fail("invalid_reset", "Name the account and the relay identity that was removed from it", 400);
+          removed = { account, server_id };
+        }
+        // a PC that is in an account again, or another PC by now, is not reset: asked in the turn that resets (409)
+        const status = await service.resetIdentity(removed);
         return reply(status, status.blocked ? 409 : 200);
       }
       default: return fail("method_not_allowed", "Unknown relay action.", 405);
@@ -224,6 +240,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
     if (error instanceof ResetRegistryUnavailableError) return fail(error.code, error.message, 503);
+    if (error instanceof ResetNotAskedError) return fail(error.code, error.message, 409);
     // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
     if (error instanceof AccountServiceOffError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there
