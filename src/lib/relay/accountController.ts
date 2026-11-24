@@ -27,7 +27,7 @@ import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { indexedDeviceStore, type SavedDevice, type EnrollmentState, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { offerOf } from "./shellState.ts";
 import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
-import { AdmissionRefusedError, firstLinkRefusal, refusalOf } from "./firstLink.ts";
+import { AdmissionRefusedError, firstLinkRefusal, listRemovedLink, refusalOf } from "./firstLink.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { accountOpenablePcs } from "./pcPick.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
@@ -305,6 +305,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
     document.removeEventListener("visibilitychange", seen);
     unfollow?.();
+    // the list's own clock too: its timer, and its listener for the page coming back
+    followed?.stop();
   };
   const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
   const signOut = (): void => {
@@ -652,7 +654,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled, signal });
     void done.finally(() => { mine.delete(stop); if (mine.size === 0 && stops.get(serverId) === mine) stops.delete(serverId); }).catch(() => {});
     // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
-    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null) settled(); });
+    // a link refused for a PC the account's list removed is said on the pairing's own screen, in place of the app
+    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null && !listRemovedLink(error)) settled(); });
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
@@ -959,10 +962,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
   const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
-  /** Whether the account's list holds this device only until a time that is past, by this device's own clock. */
+  /**
+   * Whether the account's list holds this device only until a time that is past, by the time this device shows by:
+   * its own clock held against the latest time it saved and the list's own (AccountList.shown). So a clock set back
+   * after that time ran out leads to no join by itself, and to no word that the device was removed.
+   */
   const listTimeOver = (): boolean => {
     const view = lists?.view();
-    return view !== undefined && view.status.at === "following" && view.devices.some((device) => device.self && device.until !== null && device.until <= Math.floor(Date.now() / 1000));
+    const now = lists?.shown() ?? Math.floor(Date.now() / 1000);
+    return view !== undefined && view.status.at === "following" && view.devices.some((device) => device.self && device.until !== null && device.until <= now);
   };
   /** Reads the list now, as when a PC said that it lets devices in by it (shell.tsx). */
   const readList = async (): Promise<void> => {
