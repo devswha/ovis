@@ -107,6 +107,28 @@ describe("runSupervised", () => {
     expect(processesWith(`PTY_TEST_MARK=${env.PTY_TEST_MARK}`, env.HOME)).toEqual([]);
   }, TEST_MS);
 
+  it("holds a continue that came before the entry stopped itself until it has stopped, as a shell does", async () => {
+    // like the screen, the entry gives the terminal back at SIGTSTP and stops itself after: here only once a line is typed
+    const script = [
+      'process.on("SIGTSTP", () => {',
+      '  process.stdout.write("given back\\n");',
+      '  process.stdin.once("data", () => { process.kill(process.pid, "SIGSTOP"); process.stdout.write("continued\\n"); process.exit(0); });',
+      "});",
+      'process.stdout.write("ready\\n");',
+      "process.stdin.resume();",
+    ].join("\n");
+    const run = runSupervised({ entry: [process.execPath, "-e", script], env: ENV });
+    await run.until("ready");
+    run.signal("SIGTSTP");
+    await run.until("given back");
+    run.signal("SIGCONT");
+    // the supervisor answers in order: once the termios is read, the continue was dealt with, before the entry stopped
+    await run.stty();
+    run.type("go\r");
+    await run.until("continued");
+    expect((await run.ended).code).toBe(0);
+  }, TEST_MS);
+
   it("reads the termios while the entry runs, and names a signal that ended it", async () => {
     const run = runSupervised({ entry: ["sh", "-c", "stty -icanon -echo; printf ready; exec sleep 30"], env: ENV });
     await run.until("ready");
