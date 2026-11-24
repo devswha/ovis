@@ -11,10 +11,10 @@
  * What the two differ in is recorded (listShadow.ts).
  */
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { listView, type DeviceView, type ListNames, type ListRole, type ListState } from "../../../shared/account-list.ts";
+import type { ListNames, ListRole, ListState } from "../../../shared/account-list.ts";
 import { entryFromText, entryHash, isListHash, ListEntryError, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
-  admitsSession, followStep, heardHead, pcOfKey, pinList, readSave, shownPcs, standing, startRead, takePage, writeSave,
+  followStep, heardHead, pcOfKey, pinList, readSave, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
   type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type SaveRefusal, type Standing,
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH } from "../../../shared/account-list-seal.ts";
@@ -34,7 +34,7 @@ import type { AccountSession, AccountStore } from "./store.ts";
  *
  * - `fork`: two histories of the list, each signed by a member. It stays until a person resets this device's copy.
  * - `stuck`: the account service shows another history under what this device already holds.
- * - `other_list`: the account service names another list for the account than the one this device follows, or none.
+ * - `other_list`: the account service names another list for the account than the one this device follows.
  * - `refused`: the log holds an entry that no member would take.
  * - `unsigned`: the log holds an entry that no member signed. The account service places none, so it wrote this one.
  * - `wrong_key`: the account service handed this device a key to the names that is not the list's.
@@ -56,7 +56,7 @@ export type NoGenesis = "not_new" | "not_first_device" | "has_pcs" | "not_own_si
 
 /** What a device that holds no copy is at. */
 type Without =
-  /** Not signed in, or the account service keeps no list for this account. */
+  /** Not signed in, the account service keeps no list for this account, or it has not been reached yet. */
   | { readonly at: "off" }
   /** The account may have a list, has none, and this device starts none. */
   | { readonly at: "none"; readonly why: NoGenesis }
@@ -139,6 +139,16 @@ export interface AccountListOptions {
 
 /** A device asks again this often, in seconds, while the account has no list or it is in none. */
 export const NO_LIST_SECONDS = 300;
+/**
+ * How long the account service's word that it keeps no list for an account stands, in seconds: the device asks no
+ * more often than this, whatever page asks and however often the app starts.
+ */
+export const OFF_SECONDS = 24 * 60 * 60;
+/**
+ * How long a device waits, in seconds, after one, two, three and more rounds in a row that did not reach the account
+ * service: a service that is away or has no such routes is not asked every five minutes for good.
+ */
+export const UNREACHED_SECONDS: readonly number[] = [300, 900, 3600, 6 * 3600];
 /** The most pages one round reads: what is left waits for the next. */
 const ROUND_PAGES_MAX = 128;
 /** A round's requests end after this long: it holds the lock that another tab's round waits for. */
@@ -161,6 +171,11 @@ function hashOf(text: string | undefined): string | null {
     if (error instanceof ListEntryError) return null;
     throw error;
   }
+}
+
+/** When the account service said that it keeps no list for the account, in seconds, as this device kept it; null for no such record. */
+function readOff(value: unknown): number | null {
+  return isRecord(value) && value.v === RECORD_VERSION && typeof value.off_at === "number" && Number.isSafeInteger(value.off_at) && value.off_at >= 0 ? value.off_at : null;
 }
 
 function readPending(value: unknown, keys: DeviceListKeys): PendingGenesis | null {
@@ -201,16 +216,6 @@ const worst = (troubles: readonly (ListTrouble | null)[]): ListTrouble | null =>
 function sameHistory(a: FollowerCopy, b: FollowerCopy): boolean {
   return a.list === b.list && a.entries.length === b.entries.length && a.entries.at(-1) === b.entries.at(-1) && a.stop === b.stop
     && (a.state === null) === (b.state === null) && JSON.stringify(a.alarm) === JSON.stringify(b.alarm);
-}
-
-/**
- * The devices that are in, in the order they came in: none while this device is not in itself, and under an alarm
- * only those it held when the alarm rose, as the follower holds a PC's sessions to (admitsSession). A device past its
- * `until` is still listed: it is still a signer, and no PC lets it in.
- */
-function shownDevices(copy: FollowerCopy): DeviceView[] {
-  if (copy.state === null || standing(copy) !== "in") return [];
-  return listView(copy.state).devices.filter((row) => row.ended === null && admitsSession(copy, row.key, 0).why !== "frozen");
 }
 
 /** One account's list in this page's memory. */
@@ -284,6 +289,10 @@ export function accountList(options: AccountListOptions): AccountList {
   let wrapsAsked: { readonly saved: string | null; readonly at: number } | null = null;
   let shown: AccountListView = OFF;
   let askedAt: number | null = null;
+  /** Rounds in a row that did not reach the account service. */
+  let misses = 0;
+  /** When the account service last said that it keeps no list for the account in view, in seconds; null otherwise. */
+  let offAt: number | null = null;
   let running: Promise<AccountListView> | null = null;
   /** The one round that follows the round under way, for whoever asked meanwhile: the sign-in may have changed under it. */
   let queued: Promise<AccountListView> | null = null;
@@ -474,10 +483,11 @@ export function accountList(options: AccountListOptions): AccountList {
     const heard = heardHead(copy, hint === null ? null : { list: hint.list, place: hint.head }, seconds());
     ({ copy } = heard);
     let verdict: FollowVerdict = heard.verdict === "same" ? "caught_up" : "older";
-    // the account service names another list, or none: that is no hint, and the device reads its own at its own pace
-    const other = heard.verdict === "not_my_list" || heard.verdict === "none";
+    // The account service names another list, which the device says, or none, which is no hint at all (the follower's
+    // rule). Either way the device reads its own list at its own pace: a removal must still reach it.
+    const other = heard.verdict === "not_my_list";
     if (heard.verdict === "read") ({ copy, verdict } = await read(bound, copy, signal));
-    else if (other) {
+    else if (other || heard.verdict === "none") {
       try {
         ({ copy, verdict } = await read(bound, copy, signal));
       } catch (error) {
@@ -496,23 +506,43 @@ export function accountList(options: AccountListOptions): AccountList {
     askedAt = seconds();
     if (session === undefined) {
       held = null;
+      offAt = null;
+      misses = 0;
       return publish(OFF);
     }
     const bound = service.forSignIn(session);
     const { account } = session;
     return lock(account, async () => {
       const signal = AbortSignal.timeout(ROUND_MS);
+      const saved = await store.get("copy", account);
+      const off = (at: number): AccountListView => {
+        held = null;
+        offAt = at;
+        misses = 0;
+        return publish({ account, status: { at: "off" }, reached: true, devices: [], pcs: [] });
+      };
+      // The account service said, less than a day ago, that it keeps no list for this account: it is not asked again
+      // by this page or any other, however often the app starts. A device that follows a list asks all the same.
+      const told = saved === undefined ? readOff(await store.get("asked", account)) : null;
+      const at = seconds();
+      if (told !== null && told <= at && at - told < OFF_SECONDS) return off(told);
+      offAt = null;
       let hint: ListHint | null | "off" | undefined;
       try {
         hint = await bound.accountList(signal);
       } catch (error) {
         if (!unreached(error)) throw error;
       }
-      const saved = await store.get("copy", account);
-      // an account the service keeps no list for, on a device that follows none: nothing is made, no key and no record
-      if (saved === undefined && (hint === undefined || hint === "off")) {
-        if (hint === "off" || held?.account !== account) held = null;
-        return publish({ account, status: held?.without ?? { at: "off" }, reached: hint !== undefined, devices: [], pcs: [] });
+      // an account the service keeps no list for, on a device that follows none: no key is made, and one record is
+      // kept, the time of that answer
+      if (saved === undefined && hint === "off") {
+        await store.set("asked", account, { v: RECORD_VERSION, off_at: at });
+        return off(at);
+      }
+      if (saved === undefined && hint === undefined) {
+        misses += 1;
+        if (held?.account !== account) held = null;
+        return publish({ account, status: held?.without ?? { at: "off" }, reached: false, devices: [], pcs: [] });
       }
       const keys = await deviceListKeys(accountStore);
       const loaded = await load(account, keys, saved);
@@ -532,6 +562,7 @@ export function accountList(options: AccountListOptions): AccountList {
           reached = false;
         }
       }
+      misses = reached ? 0 : misses + 1;
       held = next;
       return publish(await viewOf(next, keys, reached ? { bound, signal } : null));
     });
@@ -572,7 +603,11 @@ export function accountList(options: AccountListOptions): AccountList {
     },
     due(inFront) {
       const { status } = shown;
-      if (!inFront || shown.account === null || status.at === "damaged" || (status.at === "off" && shown.reached)) return null;
+      if (!inFront || shown.account === null || status.at === "damaged") return null;
+      // the account service keeps no list for the account: once a day
+      if (offAt !== null) return (offAt + OFF_SECONDS) * 1000;
+      // it was not reached: a longer wait after each round in a row that was not
+      if (misses > 0) return ((askedAt ?? seconds()) + (UNREACHED_SECONDS[Math.min(misses, UNREACHED_SECONDS.length) - 1] ?? NO_LIST_SECONDS)) * 1000;
       if (status.at !== "following" || held?.copy == null) return ((askedAt ?? seconds()) + NO_LIST_SECONDS) * 1000;
       const step = followStep(held.copy, seconds(), { event: "tick", asked_at: askedAt, busy: true });
       return step.do === "read" ? now() : step.do === "wait" && step.until !== null ? step.until * 1000 : null;
@@ -596,7 +631,7 @@ export function accountList(options: AccountListOptions): AccountList {
       if (wrongKey === account) wrongKey = null;
       named = null;
       wrapsAsked = null;
-      if (shown.account === account) publish(OFF);
+      if (shown.account === account) { offAt = null; misses = 0; publish(OFF); }
     },
   };
 }

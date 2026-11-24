@@ -5,8 +5,7 @@
  * device itself and then forgotten: the wrap is all that is kept of it, here and at the account service.
  */
 import { accountLabel, type AccountOs } from "../../../shared/account-asker.ts";
-import { isListLabel, kindBody, namesFields, type ListNames } from "../../../shared/account-list.ts";
-import { entryHash, entryToText, signEntry } from "../../../shared/account-list-entry.ts";
+import { isListLabel, namesFields, signGenesis, type ListNames } from "../../../shared/account-list.ts";
 import { epochKeyCommitment, newEpochKey, sealFields, wrapEpochKey, wrapToText } from "../../../shared/account-list-seal.ts";
 import type { DeviceListKeys } from "./listKeys.ts";
 
@@ -34,13 +33,10 @@ export async function makeGenesis(given: { readonly account: string; readonly ke
   // entry 0 has no list id yet: its place is the empty list id, and so is its commitment's (shared/account-list-seal.ts)
   const opens = epochKeyCommitment({ list: "", epoch });
   const sealed = names === null ? null : { epoch: 0, bytes: await sealFields({ place: { list: "", seq: 0 }, epoch, commitment: opens, fields: namesFields(names) }) };
-  const body = kindBody(
-    { issued_at: Math.floor(given.now / 1000), list: "", prev: "", seq: 0, signer: keys.key },
-    { kind: "genesis", account, enc: keys.enc.key, opens, sealed },
-  );
-  const entry = await signEntry(body, keys.signs);
-  const list = entryHash(entry.body);
+  // signed through the kinds' own writer, which signs entry 0 only when it starts a list a member follows
+  const written = await signGenesis({ kind: "genesis", account, enc: keys.enc.key, opens, sealed }, { key: keys.key, privateKey: keys.signs }, Math.floor(given.now / 1000));
+  const { list } = written.state;
   const wrap = await wrapEpochKey({ list, epoch, member: keys.enc.key });
   if (wrap === null) throw new RangeError("This device's encryption key is no point of the curve");
-  return { list, entry: entryToText(entry), enc: keys.enc.key, wrap: wrapToText(wrap) };
+  return { list, entry: written.text, enc: keys.enc.key, wrap: wrapToText(wrap) };
 }

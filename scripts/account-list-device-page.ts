@@ -2,7 +2,7 @@
  * What scripts/account-list-device-browser-qa.ts runs inside a real browser: a device's own copy of its account's
  * signed list, with the stores, the keys and the locks the app uses there (IndexedDB, WebCrypto, Web Locks).
  */
-import { LIST_LEVEL, kindBody, namesFields, replayList, sealEpoch } from "../shared/account-list.ts";
+import { LIST_LEVEL, kindBody, namesFields, replayList, sealEpoch, signListEntry } from "../shared/account-list.ts";
 import { entryToText, signEntry } from "../shared/account-list-entry.ts";
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText } from "../shared/account-list-seal.ts";
 import { accountList, type AccountListView } from "../src/lib/account/accountList.ts";
@@ -85,20 +85,24 @@ export async function addPc(pc: { readonly endpoint: string; readonly key: strin
   const { list: id } = view.status;
   const log = await service.listLog(id, null);
   const replayed = await replayList(log.entries, LIST_LEVEL, { saved: null, given: id });
+  if (replayed.member === null) throw new Error("The log does not replay");
+  const { state } = replayed.member;
+  const at = Math.floor(Date.now() / 1000);
   // the kinds say whether a writer may seal, and under which epoch: no writer decides it
-  const where = replayed.member === null ? null : sealEpoch(replayed.member.state);
+  const where = sealEpoch(state, at);
   if (where === null) throw new Error("No name may be sealed where the list stands");
   const wrap = readWraps(await indexedListStore.get("wraps", session.account), id, keys.enc.key).wraps.get(where.epoch);
   const opened = await openWrap({ list: id, epoch: where.epoch, commitment: where.opens, wrap: wrap === undefined ? null : wrapFromText(wrap), member: keys.enc });
   if (!opened.open) throw new Error(`The device's wrap does not open: ${opened.why}`);
-  const place = { list: id, seq: log.head.seq + 1 };
+  const place = { list: id, seq: state.footing.seq + 1 };
   const sealed = { epoch: where.epoch, bytes: await sealFields({ place, epoch: opened.value, commitment: where.opens, fields: namesFields({ label, os: "linux" }) }) };
-  const body = kindBody({ issued_at: Math.floor(Date.now() / 1000), list: id, prev: log.head.hash, seq: place.seq, signer: keys.key }, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card: pc.card, sealed });
+  // and a member signs only through the kinds' writer, which signs nothing that would not count
+  const written = await signListEntry(state, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card: pc.card, sealed }, { key: keys.key, privateKey: keys.signs }, at);
   const forPc = await wrapEpochKey({ list: id, epoch: opened.value, member: pc.enc });
   if (forPc === null) throw new Error("The PC's encryption key is no key of the list");
   const response = await fetch(`/v2/lists/${id}/entries`, {
     method: "POST", headers: { authorization: `Bearer ${session.access_token}`, "content-type": "application/json" },
-    body: JSON.stringify({ entries: [entryToText(await signEntry(body, keys.signs))], wraps: [{ epoch: where.epoch, member: pc.enc, wrap: wrapToText(forPc) }] }),
+    body: JSON.stringify({ entries: [written.text], wraps: [{ epoch: where.epoch, member: pc.enc, wrap: wrapToText(forPc) }] }),
   });
   return response.status;
 }

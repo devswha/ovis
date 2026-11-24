@@ -1,7 +1,8 @@
 /**
  * What this device keeps of its accounts' signed lists (docs/account-list.md, "On a device"), by account: its
  * verified copy of the list, the wraps of the epoch keys it was given, a genesis it signed and has not seen placed,
- * and what its copy and the account service's answers differed in. In an IndexedDB database of its own,
+ * what its copy and the account service's answers differed in, and when the account service last said that it
+ * keeps no list for the account. In an IndexedDB database of its own,
  * `ovis-account-list`: `ovis-account` (store.ts) stays at its one version, which a page of an older build still
  * opens, and a copy can grow to megabytes beside records that are read on every request.
  *
@@ -11,7 +12,7 @@
  * Every record is read back as `unknown`: whoever owns it reads it strictly and reports what is not in its form.
  */
 
-export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow"] as const;
+export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked"] as const;
 export type ListRecord = (typeof LIST_RECORDS)[number];
 
 /** Each call is one transaction. */

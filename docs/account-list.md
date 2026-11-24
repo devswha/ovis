@@ -816,8 +816,10 @@ own about who is in.
 Two things bound what this does today:
 
 - **Only for an account the account service keeps lists for** (the service's switch). For any other
-  account the app asks one question when it reads a sign-in, `GET /v2/lists/mine`, is answered as
-  for an unknown route, and makes, keeps and sends nothing more: no key, no record, no request.
+  account the app asks one question when it reads a sign-in, `GET /v2/lists/mine`, and is answered
+  as for an unknown route (`404`). It keeps the time of that answer and asks again a day later at
+  the earliest, however often the app starts and whichever page asks. It makes no key and sends
+  nothing else.
 - **Nothing decides by the copy.** My PCs, what opens by itself and the notices still go by the
   account service's directory, as [Linking devices with an account](account.md) says. The device
   only records where its list would have said otherwise
@@ -850,6 +852,7 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
 | `wraps` | the wraps of the epoch keys, as text, that opened to the key the list commits to |
 | `genesis` | an entry 0 that this device signed and has not yet found in its copy, to send again as it is |
 | `shadow` | what the copy and the directory differed in |
+| `asked` | when the account service last said that it keeps no list for the account |
 
 - **No key is in it.** An epoch key is never stored: each page opens the wraps again with the
   device's encryption key and holds the keys in memory. So what is kept is text and numbers, and a
@@ -877,8 +880,9 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
 
 A device makes entry 0 itself: a `genesis` under its member key that names the account and its
 encryption key, opens epoch 0 by the commitment to a new key, and seals the device's own name under
-that key. It wraps the key to itself, sends the entry and that one wrap (`POST /v2/lists`), and
-forgets the key: the wrap is what is left of it.
+that key. It signs through the kinds' own writer (`signGenesis`), which signs entry 0 only when it
+starts a list a member follows. It wraps the key to itself, sends the entry and that one wrap
+(`POST /v2/lists`), and forgets the key: the wrap is what is left of it.
 
 It does so by itself only when all of these hold, asked in this order at each read:
 
@@ -920,10 +924,10 @@ Never the one the account service names, on that word alone. A device follows a 
   started the list, in this page or another), or
 - a member that let it in handed it the list id and its own head (not built yet).
 
-A device that follows a list keeps to it: a service that names another list for the account, or
-none, changes nothing the device holds, and the device says so (`other_list`). What the service
-names is then no hint at all, and the device goes on reading its own list by its id, so that an
-entry which puts somebody out still reaches it.
+A device that follows a list keeps to it. A service that names another list for the account
+changes nothing the device holds, and the device says so (`other_list`). A service that names none
+is no hint and no alarm, as the follower has it. Either way the device goes on reading its own
+list by its id, so that an entry which puts somebody out still reaches it.
 
 A device that follows none asks for entry 0 of the list the service names, and for nothing else of
 it. It is `not_in` that list, for one of three reasons: the entry is that list's and is not its
@@ -947,7 +951,8 @@ It reads:
 - every 30 seconds while the app is in front, and never by the clock while it is not;
 - when the app comes to the front, at once if its last read began 30 seconds ago or more. That is
   also how a ring of the account's doorbell reaches a page that was not in front;
-- every five minutes in front while the account has no list or the device is in none;
+- every five minutes in front while the account may have a list and has none, or the device is
+  in none;
 - never twice within five seconds, whatever answers;
 - one read at a time for an account among the tabs of a browser, and a read's requests end after
   30 seconds.
@@ -959,8 +964,16 @@ Each of these requests is sent once, and whatever it is answered is that request
 more: a `401` neither refreshes the device's tokens nor ends its sign-in, as it does for the
 requests a person's own act makes. The app asks them by itself, on a clock, also of a service that
 has no such routes, and what that service says of a route it does not know must not sign anybody
-out. Only `404` to `GET /v2/lists/mine` says that the service keeps no list for the account; after
-any other refusal the device asks again in five minutes.
+out. Only `404` to `GET /v2/lists/mine` says that the service keeps no list for the account.
+
+How often the device asks while it gets no list:
+
+- after that `404`, once a day at most for the account (the time is kept on the device, so a new
+  page or a new start of the app asks nothing in between);
+- after a round that did not reach the service (no answer, or any other refusal), in 5 minutes,
+  then 15, then an hour, then every 6 hours, until one round reaches it. That holds for a device
+  that follows a list too, for which a `404` is the service being away;
+- never while signed out.
 
 ### What the device says is wrong
 
@@ -971,7 +984,7 @@ anybody in.
 |---|---|
 | `fork` | the account service showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found |
 | `stuck` | the account service shows another history under what the device holds, which no member signed |
-| `other_list` | the account service names another list for the account, or none, or answers with entries of another list |
+| `other_list` | the account service names another list for the account than the one the device follows |
 | `refused` | the log holds an entry that does not hold: a changed byte, a broken chain |
 | `unsigned` | the log holds an entry that no member signed. The account service places none, so it wrote this one |
 | `wrong_key` | the account service handed the device a key to the names that is not the one the list commits to. The key is not kept |

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { LIST_LEVEL, kindBody, listView, namesFields, replayList, sealEpoch, signCard, type ListKind } from "../../../shared/account-list.ts";
+import { LIST_LEVEL, kindBody, listView, namesFields, replayList, sealEpoch, signCard, signListEntry, type ListKind } from "../../../shared/account-list.ts";
 import { entryFromText, entryHash, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { pcAddSigningBytes } from "../../../shared/account-records.ts";
@@ -9,10 +9,10 @@ import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { fromBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { askingPc, postPcKeys, type AskingPc } from "./accountList.fixture.ts";
-import { accountList, NO_LIST_SECONDS, type AccountList, type AccountListView, type GenesisMode } from "./accountList.ts";
+import { accountList, NO_LIST_SECONDS, OFF_SECONDS, type AccountList, type AccountListView, type GenesisMode } from "./accountList.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { readWraps } from "./listNames.ts";
-import { memoryListLock, memoryListStore, type ListStore } from "./listStore.ts";
+import { LIST_RECORDS, memoryListLock, memoryListStore, type ListStore } from "./listStore.ts";
 import { AccountService } from "./service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "./signin.ts";
 import { memoryAccountStore, memoryLock, newKey, type AccountSession, type AccountStore } from "./store.ts";
@@ -129,7 +129,7 @@ async function epochKey(of: Device): Promise<EpochKey> {
   return opened.value;
 }
 
-/** An entry at the list's head, signed with `by`'s account key; `kind` is told where it stands. */
+/** An entry at the list's head with any signature a test wants on it, as a lying service or a stolen key writes one; `kind` is told where it stands. */
 async function signed(by: DeviceListKeys | { key: string; signs: CryptoKey }, kind: (place: { list: string; seq: number }) => ListKind | Promise<ListKind>, at = held()): Promise<string> {
   const place = { list: at.id, seq: at.head.seq + 1 };
   const body = kindBody({ issued_at: Math.floor(now / 1000), list: at.id, prev: at.head.hash, seq: place.seq, signer: by.key }, await kind(place));
@@ -149,23 +149,27 @@ async function post(from: Device, entries: readonly string[], wraps: readonly { 
  */
 async function addPc(from: Device, label: string): Promise<AskingPc> {
   const pc = await askingPc();
-  const card = await postPcKeys(fake.fetch, ORIGIN, (await from.store.get("session"))!.access_token, pc, held().id);
+  const { id, state } = held();
+  const card = await postPcKeys(fake.fetch, ORIGIN, (await from.store.get("session"))!.access_token, pc, id);
+  const keys = await from.keys();
   // the kinds say whether a writer may seal, and under which epoch: no writer decides it
-  const where = sealEpoch(held().state);
+  const where = sealEpoch(state, Math.floor(now / 1000));
   if (where === null) throw new Error("No name may be sealed where the list stands");
   const key = await epochKey(from);
-  const text = await signed(await from.keys(), async (place) => ({
-    kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card,
-    sealed: { epoch: where.epoch, bytes: await sealFields({ place, epoch: key, commitment: where.opens, fields: namesFields({ label, os: "linux" }) }) },
-  }));
-  const wrap = await wrapEpochKey({ list: held().id, epoch: key, member: pc.enc });
-  const placed = await post(from, [text], [{ epoch: key.epoch, member: pc.enc, wrap: wrapToText(wrap!) }]);
+  const place = { list: id, seq: state.footing.seq + 1 };
+  const sealed = { epoch: where.epoch, bytes: await sealFields({ place, epoch: key, commitment: where.opens, fields: namesFields({ label, os: "linux" }) }) };
+  // and a member signs only through the kinds' writer, which signs nothing that would not count
+  const written = await signListEntry(state, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card, sealed }, { key: keys.key, privateKey: keys.signs }, Math.floor(now / 1000));
+  const wrap = await wrapEpochKey({ list: id, epoch: key, member: pc.enc });
+  const placed = await post(from, [written.text], [{ epoch: key.epoch, member: pc.enc, wrap: wrapToText(wrap!) }]);
   expect([placed.status, placed.ok ? null : await placed.text()]).toEqual([200, null]);
   return pc;
 }
 
 async function removePc(from: Device, pc: AskingPc): Promise<void> {
-  expect((await post(from, [await signed(await from.keys(), () => ({ kind: "remove", ends: pc.key }))])).status).toBe(200);
+  const keys = await from.keys();
+  const written = await signListEntry(held().state, { kind: "remove", ends: pc.key }, { key: keys.key, privateKey: keys.signs }, Math.floor(now / 1000));
+  expect((await post(from, [written.text])).status).toBe(200);
 }
 
 /** A key that is no member's, and an entry it signs at the head: what the account service could write by itself. */
@@ -183,7 +187,7 @@ beforeEach(() => {
 });
 
 describe("an account the service keeps no list for", () => {
-  it("is as before: one question, and nothing made, kept or sent", async () => {
+  it("is as before: one question, no key made, and nothing kept but when it was answered", async () => {
     fake.listAccounts = "";
     const phone = await device();
     const view = await phone.list.sync();
@@ -191,8 +195,30 @@ describe("an account the service keeps no list for", () => {
     expect(phone.sent.map((each) => `${each.method} ${each.path}`)).toEqual(["GET /v2/lists/mine"]);
     expect(await phone.store.get("enc_key")).toBeUndefined();
     for (const record of ["copy", "wraps", "genesis", "shadow"] as const) expect(await phone.lists.get(record, ACCOUNT)).toBeUndefined();
+    expect(await phone.lists.get("asked", ACCOUNT)).toEqual({ v: 1, off_at: Math.floor(now / 1000) });
     expect(fake.accountList(ACCOUNT)).toBeNull();
-    expect(phone.list.due(true)).toBeNull();
+  });
+
+  it("is asked once a day at most, however often the app starts and whichever page asks", async () => {
+    fake.listAccounts = "";
+    const phone = await device();
+    await phone.list.sync();
+    expect([phone.list.due(true), phone.list.due(false)]).toEqual([now + OFF_SECONDS * 1000, null]);
+    // the same page again, and the app started again an hour later and a second before the day is over: nothing is asked
+    await phone.list.sync();
+    for (const later of [60 * MINUTE, OFF_SECONDS * 1000 - 60 * MINUTE - 1000]) {
+      now += later;
+      const again = reloaded(phone);
+      expect(await again.list.sync()).toEqual({ account: ACCOUNT, status: { at: "off" }, reached: true, devices: [], pcs: [] });
+      expect(again.sent).toEqual([]);
+    }
+    expect(asked(phone, "GET /v2/lists/mine")).toBe(1);
+    // a day after the answer it is asked once more, and the account service keeps lists for the account by then
+    now += 1000;
+    fake.listAccounts = ACCOUNT;
+    const next = reloaded(phone, "never");
+    expect((await next.list.sync()).status).toEqual({ at: "none", why: "switched_off" });
+    expect(asked(next, "GET /v2/lists/mine")).toBe(1);
   });
 
   it("is as before for a device that is not signed in: nothing is asked", async () => {
@@ -238,11 +264,43 @@ describe("an account service that answers the list's questions as it does not fo
     }
   });
 
-  it("is not asked for a list again by the clock once it says the account has none to keep: 404 is the one answer that says so", async () => {
+  it("is asked again a day later once it says the account has no list to keep: 404 is the one answer that says so", async () => {
     const phone = await device();
     phone.wire.answer = answers(404, "not_found")((pathname) => pathname.startsWith("/v2/"));
     expect(await phone.list.sync()).toEqual({ account: ACCOUNT, status: { at: "off" }, reached: true, devices: [], pcs: [] });
-    expect(phone.list.due(true)).toBeNull();
+    expect(phone.list.due(true)).toBe(now + OFF_SECONDS * 1000);
+  });
+
+  it("is asked less and less often while it does not answer: 5 minutes, 15, an hour, then every 6 hours", async () => {
+    const phone = await device();
+    phone.wire.answer = answers(500, "internal")((pathname) => pathname.startsWith("/v2/"));
+    const waits: number[] = [];
+    for (let round = 0; round < 6; round += 1) {
+      expect((await phone.list.sync()).reached).toBe(false);
+      waits.push((phone.list.due(true)! - now) / 1000);
+      now = phone.list.due(true)!;
+    }
+    expect(waits).toEqual([300, 900, 3600, 21600, 21600, 21600]);
+    expect(await phone.lists.get("asked", ACCOUNT)).toBeUndefined();
+    // one answer and it is back to its own pace (the sign-in is hours old by now, so it starts no list)
+    phone.wire.answer = null;
+    expect(await phone.list.sync()).toMatchObject({ status: { at: "none", why: "not_new" }, reached: true });
+    expect(phone.list.due(true)).toBe(now + NO_LIST_SECONDS * 1000);
+  });
+
+  it("waits longer too where it follows a list and the account service stops answering for it", async () => {
+    const phone = await device();
+    await phone.list.sync();
+    fake.listAccounts = "";
+    const waits: number[] = [];
+    for (let round = 0; round < 3; round += 1) {
+      now = phone.list.due(true)!;
+      const view = await phone.list.sync();
+      expect([view.reached, following(view).standing]).toEqual([false, "in"]);
+      waits.push((phone.list.due(true)! - now) / 1000);
+    }
+    expect(waits).toEqual([300, 900, 3600]);
+    expect(await phone.lists.get("asked", ACCOUNT)).toBeUndefined();
   });
 });
 
@@ -468,7 +526,7 @@ describe("catching up", () => {
     expect([waiting.list.due(true), waiting.list.due(false)]).toEqual([now + NO_LIST_SECONDS * 1000, null]);
   });
 
-  it("asks again where the account service did not answer, and not where it keeps no list for the account", async () => {
+  it("asks again in five minutes where the account service did not answer, and in a day where it keeps no list for the account", async () => {
     const phone = await device();
     phone.wire.down = true;
     expect(await phone.list.sync()).toEqual({ account: ACCOUNT, status: { at: "off" }, reached: false, devices: [], pcs: [] });
@@ -476,7 +534,7 @@ describe("catching up", () => {
     phone.wire.down = false;
     fake.listAccounts = "";
     expect((await phone.list.sync()).reached).toBe(true);
-    expect(phone.list.due(true)).toBeNull();
+    expect([phone.list.due(true), phone.list.due(false)]).toEqual([now + OFF_SECONDS * 1000, null]);
   });
 
   it("runs one more round for whoever asks while one is under way: the sign-in may have changed under it", async () => {
@@ -701,17 +759,18 @@ describe("an account service that lies", () => {
     expect(following(await phone.list.sync())).toMatchObject({ head: 2, trouble: null });
   });
 
-  it("is caught naming another list for the account, or none: the device keeps the one it follows, and goes on reading it", async () => {
+  it("is caught naming another list for the account, and is no hint where it names none: the device keeps the one it follows, and goes on reading it", async () => {
     const { phone, view, desk } = await follower();
     const mine = held().id;
     const mineIs = (answer: unknown) => (request: Request) => new URL(request.url).pathname === "/v2/lists/mine" ? Response.json(answer) : null;
-    // the service says the account has no list: the device does not start another
+    // the service says the account has no list: that is no hint and no alarm, and the device starts no other
     phone.wire.answer = mineIs({ list: null, now: 1 });
     now += 30_000;
     const none = await phone.list.sync();
     expect(members(none)).toEqual(members(view));
-    expect(following(none)).toMatchObject({ list: mine, trouble: "other_list" });
+    expect(following(none)).toMatchObject({ list: mine, standing: "in", trouble: null });
     expect(asked(phone, "POST /v2/lists")).toBe(1);
+    expect(asked(phone, `GET /v2/lists/${mine}/log`)).toBeGreaterThan(0);
     // the service names a list a stranger started for the account
     const stranger = await device({ account: "acct_stranger", genesis: "always" });
     fake.listAccounts = "*";
@@ -914,7 +973,7 @@ describe("what a device keeps for an account", () => {
     await phone.list.sync();
     await phone.list.shadow(ACCOUNT, [], new Set());
     await phone.list.forget(ACCOUNT);
-    for (const record of ["copy", "wraps", "genesis", "shadow"] as const) expect(await phone.lists.get(record, ACCOUNT)).toBeUndefined();
+    for (const record of LIST_RECORDS) expect(await phone.lists.get(record, ACCOUNT)).toBeUndefined();
     expect(phone.list.view()).toEqual({ account: null, status: { at: "off" }, reached: true, devices: [], pcs: [] });
   });
 
