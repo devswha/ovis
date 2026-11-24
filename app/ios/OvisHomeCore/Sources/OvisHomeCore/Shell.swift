@@ -92,6 +92,27 @@ extension Home {
         return url.port.map { "\(scheme)://\(shownHost):\($0)" } ?? "\(scheme)://\(shownHost)"
     }
 
+    /// What a web view's check of what answers the app's scheme in it comes to (ShellHost.verify, before the web view
+    /// loads anything): whether it may `load`, and whether the shell is `failed` from then on. `serving`: the build
+    /// serves the shell itself; `failed`: an earlier web view failed this check; `capacitors`: the handler is
+    /// Capacitor's own class and no other; `wrapped`: that class's entry point is the one ShellHost put there.
+    /// A web view that fails loads nothing, and nothing is the shell after it. The ones that follow are not refused in
+    /// their turn: with no shell there is nothing a handler could answer without its policy, and they are what
+    /// stands in, the app's own page and a PC at its own address, as in a build that carries no shell. (Refusing
+    /// them too would build one web view after another and never reach that page.)
+    public static func handlerCheck(serving: Bool, failed: Bool, capacitors: Bool, wrapped: Bool) -> (load: Bool, failed: Bool) {
+        guard serving, !failed else { return (true, failed) }
+        return capacitors && wrapped ? (true, false) : (false, true)
+    }
+
+    /// Whether the app's own page says "Ovis's own screens did not open here" (getState `stuck`). `carries`: the build
+    /// is one that carries the shell; `serving`: it serves it now (its files and policies are there, and no web view
+    /// failed handlerCheck); `attempt`: home did not draw and the person asked for the app's own page instead, until
+    /// the shell draws again. A build that carries a shell it cannot serve says so from the start.
+    public static func shellStuck(carries: Bool, serving: Bool, attempt: Bool) -> Bool {
+        carries && (!serving || attempt)
+    }
+
     /// Whether the cover over home in a build that serves the shell itself offers the app's own page ("Open the
     /// connect page"): home has not drawn `elapsed` seconds in (time in front). Nothing is loaded from the network in
     /// its place, and no clock gives up on it by itself (timedOut), so a shell that never draws (a start-up error on
@@ -309,12 +330,21 @@ public enum ShellRoute: Equatable {
     /// The two policies the hosted app's host sends, as the build read them from the carried copy's own `_headers`
     /// and wrote them beside it (shell-policy.json, app/scripts/bundled-shell.ts: `page` for every answer, `render`
     /// for the render host alone), or nil when either is missing, empty, or could start another header, or the render
-    /// host's takes no origin away (`sandbox`): a shell without its policies is not served.
+    /// host's does not take a rendered page's origin away (`sandboxed`): a shell without its policies is not served.
     public static func policies(_ data: Data?) -> (shell: String, render: String)? {
         guard let data, let read = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let shell = read["page"] as? String, let render = read["render"] as? String,
-              headerValue(shell), headerValue(render), render.split(separator: ";").contains(where: { $0.trimmingCharacters(in: .whitespaces).split(separator: " ").first == "sandbox" }) else { return nil }
+              headerValue(shell), headerValue(render), sandboxed(render) else { return nil }
         return (shell, render)
+    }
+
+    /// Whether the policy `policy` takes its document's origin away: it has a `sandbox` directive, and none of them
+    /// holds `allow-same-origin`, which would hand the origin back. The render host's answer is the shell's origin by
+    /// its address, so a page drawn there under such a policy would read the shell's storage and call what the shell
+    /// may; the frame's own sandbox is a second lock, not this one.
+    public static func sandboxed(_ policy: String) -> Bool {
+        let sandboxes = policy.split(separator: ";").map { $0.split(whereSeparator: { $0 == " " || $0 == "\t" }).map { $0.lowercased() } }.filter { $0.first == "sandbox" }
+        return !sandboxes.isEmpty && !sandboxes.contains { $0.contains("allow-same-origin") }
     }
 
     private static func headerValue(_ text: String) -> Bool {

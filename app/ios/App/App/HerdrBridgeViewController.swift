@@ -167,10 +167,19 @@ enum PCStore {
     /// (hosted-origin.xcconfig), `bundled` in a build made with OVIS_APP_HOME=bundled, which keeps the app's own page.
     static var homeHosted: Bool { shellOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppHome") as? String) != "bundled" }
 
-    /// The shell inside the app did not open: home never drew and the person asked for the app's own page instead
-    /// (the cover's Open the connect page), or a web view was found that would have answered the shell without its
-    /// policy (ShellHost.verify). The app's own page says so in place of "no internet". In memory only.
+    /// The shell inside the app did not open this time: home never drew and the person asked for the app's own page
+    /// instead (the cover's Open the connect page). The app's own page says so in place of "no internet", until the
+    /// shell draws again (shellDrew) or is asked for again (goHome). In memory only. A shell the build cannot serve
+    /// at all is ShellHost.unavailable, which nothing clears.
     static var homeStuck = false
+
+    /// Whether the app's own page says the app's own screens did not open (HerdrShell getState `stuck`, Home.shellStuck).
+    static var shellStuck: Bool { Home.shellStuck(carries: shellBundled, serving: !ShellHost.unavailable, attempt: homeStuck) }
+
+    /// A page of the shell inside the app came up: what an earlier attempt left is over.
+    static func shellDrew() {
+        homeStuck = false
+    }
 
     /// The hosted Connect a PC screen did not load, so the app's own page stands in for it, until the person tries it
     /// again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started again
@@ -736,6 +745,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         switch action {
         case .liftCover:
             PCStore.homeRetried = false
+            PCStore.shellDrew()
             hideOpening()
         case .fallBack:
             // this view controller goes with its web view, so a load that still finishes cannot bring the hosted
@@ -824,9 +834,10 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     override func capacitorDidLoad() {
         // before the first page loads: what answers the app's scheme in this web view is what ShellHost put there
+        // (once: the web views after a refused one are not checked against a shell that is no longer served, so
+        // what comes in its place, the app's own page, loads)
         if !ShellHost.verify(webView) {
             refused = true
-            PCStore.homeStuck = true
             DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
         }
         bridge?.registerPluginInstance(HerdrShellPlugin())
@@ -1100,7 +1111,10 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         }
         guard phase == nil || phase == .pc else { return }
         webView.evaluateJavaScript(Self.clientUpScript) { [weak self] up, _ in
-            if (up as? Bool) == true { self?.hideOpening() }
+            guard (up as? Bool) == true else { return }
+            // a relay PC's page of the shell inside the app is the shell drawing too
+            if PCStore.inApp(self?.opened) { PCStore.shellDrew() }
+            self?.hideOpening()
         }
     }
 

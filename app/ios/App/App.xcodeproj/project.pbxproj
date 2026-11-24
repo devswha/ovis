@@ -342,7 +342,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$SRCROOT/../carry-shell.sh\" \"$OVIS_APP_SHELL\" \"$SRCROOT/../../bundled-shell\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\"\n";
+			shellScript = "/bin/sh \"$SRCROOT/../carry-shell.sh\" \"$OVIS_APP_SHELL\" \"$SRCROOT/../../bundled-shell\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\" \"$ACTION\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

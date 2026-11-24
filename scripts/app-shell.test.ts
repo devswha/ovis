@@ -543,8 +543,18 @@ describe("the hosted origin a build gives the native apps", () => {
         JSON.stringify({ page: "", render: policies.render }), JSON.stringify(policies, null, 2)]) {
         broken(() => writeFileSync(join(carried, "shell-policy.json"), text), "does not hold the shell's two policies, or its render policy has no sandbox");
       }
+      // a sandbox that hands the origin back takes nothing away: a rendered page would be the shell's origin
+      for (const render of ["sandbox allow-scripts allow-same-origin; default-src 'none'", "default-src 'none'; Sandbox Allow-Same-Origin", "sandbox allow-same-origin"]) {
+        broken(() => writeFileSync(join(carried, "shell-policy.json"), JSON.stringify({ page: policies.page, render })), "has allow-same-origin in its sandbox");
+      }
+      // the word outside the sandbox directive is not its token
+      rmSync(carried, { recursive: true, force: true });
+      carryShell(carried);
+      writeFileSync(join(carried, "shell-policy.json"), JSON.stringify({ page: policies.page, render: "sandbox allow-scripts; report-uri /allow-same-origin" }));
+      expect(check().status).toBe(0);
       // the policies as they are written today pass, the render host's first word being its sandbox
       expect(policies.render.startsWith("sandbox allow-scripts;")).toBe(true);
+      expect(policies.render).not.toContain("allow-same-origin");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -612,7 +622,7 @@ describe("the hosted origin a build gives the native apps", () => {
 
   it("puts the packed shell into a bundled iOS app, its two pages under names no host answers as a page, and takes a stale one out of a hosted one", () => {
     const dir = mkdtempSync(join(tmpdir(), "app-shell-carry-"));
-    const carry = (shell: string) => spawnSync("sh", [join(app, "ios/carry-shell.sh"), shell, join(dir, "bundled-shell"), join(dir, "App.app")], { encoding: "utf8" });
+    const carry = (shell: string, action = "build") => spawnSync("sh", [join(app, "ios/carry-shell.sh"), shell, join(dir, "bundled-shell"), join(dir, "App.app"), action], { encoding: "utf8" });
     const inApp = (file: string) => join(dir, "App.app/bundled-shell", file);
     try {
       carryShell(join(dir, "bundled-shell"));
@@ -634,6 +644,14 @@ describe("the hosted origin a build gives the native apps", () => {
       expect(carry("bundled").status).toBe(0);
       expect(existsSync(inApp("shell/assets/index-abcdefghij.css"))).toBe(false);
       expect(existsSync(inApp("bundled-shell"))).toBe(false);
+      // while Xcode indexes it runs this phase too, beside a build of the same products folder: nothing is touched then
+      writeFileSync(inApp("left-by-the-build"), "");
+      expect(carry("bundled", "indexbuild").status).toBe(0);
+      expect(existsSync(inApp("left-by-the-build"))).toBe(true);
+      expect(carry("hosted", "indexbuild").status).toBe(0);
+      expect(existsSync(inApp("shell/index.shellpage"))).toBe(true);
+      const project = readFileSync(join(app, "ios/App/App.xcodeproj/project.pbxproj"), "utf8");
+      expect(project).toContain('\\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\\" \\"$ACTION\\"');
       // a page the app has no route for fails the build, where it would otherwise sit under the app's own host as a page
       writeFileSync(join(dir, "bundled-shell/shell/other.html"), "<!doctype html>");
       const other = carry("bundled");
@@ -653,13 +671,49 @@ describe("the hosted origin a build gives the native apps", () => {
     }
   });
 
+  it("ends the iOS checks script with a failure when a test, a compile or a check fails, and says passed only when all did", () => {
+    // stand-ins for swift and swiftc, each failing when told to: the script itself is what is under test
+    const dir = mkdtempSync(join(tmpdir(), "ios-checks-"));
+    try {
+      writeFileSync(join(dir, "swift"), '#!/bin/sh\ncase "$*" in *"$FAIL_PACKAGE"*) [ -n "$FAIL_PACKAGE" ] && { echo "XCTAssertEqual failed"; exit 1; };; esac\necho "\t Executed 3 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds"\n', { mode: 0o755 });
+      writeFileSync(join(dir, "swiftc"), `#!/bin/sh
+for last; do :; done
+case "$last" in */"$FAIL_COMPILE") echo "error: cannot find 'x' in scope"; exit 1;; esac
+if [ "$(basename "$last")" = "$FAIL_RUN" ]; then printf '#!/bin/sh\\necho "FAIL one check"\\nexit 1\\n' > "$last"; else printf '#!/bin/sh\\necho "all passed"\\n' > "$last"; fi
+chmod +x "$last"
+`, { mode: 0o755 });
+      const run = (env: Record<string, string> = {}) => spawnSync("sh", [join(app, "ios/check.sh")], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env["PATH"] ?? ""}`, FAIL_PACKAGE: "", FAIL_COMPILE: "", FAIL_RUN: "", ...env } });
+      const passed = run();
+      expect(passed.stdout).toContain("the iOS app's checks passed");
+      expect(passed.stdout.split("Executed 3 tests").length - 1).toBe(3);
+      expect(passed.status).toBe(0);
+      for (const [env, says] of [
+        [{ FAIL_PACKAGE: "OvisHomeCore" }, "error: OvisHomeCore's tests failed"],
+        [{ FAIL_PACKAGE: "OvisPushCore" }, "error: OvisPushCore's tests failed"],
+        // a compile that fails: in front of `&&` it would be passed over, and the script would go on to say passed
+        [{ FAIL_COMPILE: "scope" }, "error: compiling the ScopePath check failed"],
+        [{ FAIL_COMPILE: "watch" }, "error: compiling the OpeningWatch check failed"],
+        // a check that runs and fails: in front of a pipe its failure would be the pipe's last command's success
+        [{ FAIL_RUN: "scope" }, "error: the ScopePath check failed"],
+        [{ FAIL_RUN: "watch" }, "error: the OpeningWatch check failed"],
+      ] as const) {
+        const failed = run(env);
+        expect(failed.stdout).toContain(says);
+        expect(failed.stdout).not.toContain("the iOS app's checks passed");
+        expect(failed.status).toBe(1);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("says on the app's own page that the app's own screens did not open, where that and not the internet is why", () => {
     const script = readFileSync(join(app, "web/connect.js"), "utf8");
     expect(script).toContain('const stuck = state.stuck === true;');
     expect(script).toContain('t("Ovis\'s own screens did not open here", "Ovis 화면이 열리지 않았어요")');
     // and offers no Try again for a copy the app will not serve
     expect(script).toContain('document.getElementById("try-home").hidden = stuck && !fallback;');
-    expect(readFileSync(join(app, "ios/App/App/HerdrShellPlugin.swift"), "utf8")).toContain('"stuck": PCStore.homeStuck');
+    expect(readFileSync(join(app, "ios/App/App/HerdrShellPlugin.swift"), "utf8")).toContain('"stuck": PCStore.shellStuck');
   });
 
   it("writes it where the Android and iOS builds read it, and removes it for a build without one", () => {

@@ -51,21 +51,25 @@ enum ShellHost {
         return origin
     }()
 
-    /// Whether `webView`, before it loads anything, has this in front of what answers the app's scheme: its handler is
-    /// Capacitor's own class and no other (a subclass would bring its own entry point), and that class's entry point
-    /// is the one put there above. True too in a build with no shell inside the app, which has nothing to stand in
-    /// front of. False marks the shell as not served for the rest of this process (`failed`): a Capacitor that
-    /// answers the scheme another way would hand out the shell's files with no policy.
+    /// Whether this build carries the shell (OvisAppShell `bundled`) and is not serving it: its files or policies
+    /// are missing from the app, the exchange could not be made, or a web view failed `verify`. The app's own page
+    /// then says the app's own screens did not open, from the first start on (Home.shellStuck).
+    static var unavailable: Bool { PCStore.shellBundled && (origin == nil || failed) }
+
+    /// Whether `webView`, before it loads anything, may load (Home.handlerCheck): in a build that serves the shell,
+    /// what answers the app's scheme in it is Capacitor's own class and no other (a subclass would bring its own
+    /// entry point), and that class's entry point is the one put there above. A web view that is not so loads
+    /// nothing and marks the shell as not served for the rest of this process (`failed`): a Capacitor that answers
+    /// the scheme another way would hand out the shell's files with no policy. The web views after it load, as there
+    /// is no shell left for them to answer: the app's own page, which says what happened, or a PC's own.
     static func verify(_ webView: WKWebView?) -> Bool {
-        guard origin != nil, !failed else { return !failed }
         let selector = #selector(WebViewAssetHandler.webView(_:start:))
-        guard let handler = webView?.configuration.urlSchemeHandler(forURLScheme: Home.appScheme) as? NSObject, let wrapper,
-              object_getClass(handler) === WebViewAssetHandler.self,
-              class_getMethodImplementation(WebViewAssetHandler.self, selector) == wrapper else {
-            failed = true
-            return false
-        }
-        return true
+        let handler = origin == nil || failed ? nil : webView?.configuration.urlSchemeHandler(forURLScheme: Home.appScheme) as? NSObject
+        let check = Home.handlerCheck(serving: origin != nil, failed: failed,
+                                      capacitors: handler.map { object_getClass($0) === WebViewAssetHandler.self } ?? false,
+                                      wrapped: wrapper != nil && class_getMethodImplementation(WebViewAssetHandler.self, selector) == wrapper)
+        failed = check.failed
+        return check.load
     }
 
     /// Whether `url` is the shell's to answer: its host as written, with no port.
@@ -84,8 +88,17 @@ enum ShellHost {
         let answer = ShellAnswer.make(path: URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? "", method: task.request.httpMethod,
                                       // the page the web view shows itself, not a frame's or a file a page asked for
                                       mainDocument: task.request.mainDocumentURL == url, folder: folder, policies: policies)
-        let head = task.request.httpMethod?.uppercased() == "HEAD"
-        let body = head ? Data() : answer.file.flatMap { try? Data(contentsOf: $0, options: .mappedIfSafe) } ?? Data(answer.text.utf8)
+        // a file that is there and cannot be read fails the request: an answer of its length with nothing in it would
+        // be taken for the file
+        var body = Data(answer.text.utf8)
+        if task.request.httpMethod?.uppercased() == "HEAD" {
+            body = Data()
+        } else if let file = answer.file {
+            do { body = try Data(contentsOf: file, options: .mappedIfSafe) } catch {
+                task.didFailWithError(error)
+                return
+            }
+        }
         send(task, url, status: answer.status, headers: answer.headers, body: body)
     }
 

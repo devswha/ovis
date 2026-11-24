@@ -548,7 +548,9 @@ that origin as every build did before.
   view has no service worker; the last two would read the app's files and fetch any address for a page). Every answer
   carries the shell's policy as a `Content-Security-Policy` header, the render host's answer its own instead
   (`sandbox allow-scripts; default-src 'none'; …`): a `<meta>` cannot carry `sandbox` or `frame-ancestors`, so it is a
-  header or nothing. A shell whose policies are missing is not served.
+  header or nothing. A shell whose policies are missing is not served, nor one whose render policy does not take a
+  page's origin away: it must hold `sandbox`, and no `allow-same-origin` in it (`ShellRoute.sandboxed`). A file that
+  is there and cannot be read fails the request.
 - **The app's own host answers only its own pages.** Capacitor answers `capacitor://localhost` with the file at its
   pages' folder plus the request's path once decoded, typed by its extension and with no policy, and with any file of
   the phone under `/_capacitor_file_`. So `capacitor://localhost/..%2Fbundled-shell%2Fshell%2Frender.html` would be the
@@ -565,9 +567,11 @@ that origin as every build did before.
   `webView(_:start:)` for one that answers the shell's host itself and passes the app's own host on to Capacitor; any
   other host on the scheme gets nothing. Each web view is checked before it loads anything (`ShellHost.verify`, from
   `capacitorDidLoad`): what answers the app's scheme in it must be Capacitor's own class and no subclass, and that
-  class's entry point the one put there. If not, or the exchange cannot be made, or the build's shell or policies are
-  missing, nothing is the shell from then on: that web view loads nothing, no page gets what a shell page may ask, and
-  the app opens on its own page, which says "Ovis's own screens did not open here". The alternative, should the
+  class's entry point the one put there (`Home.handlerCheck`). If not, nothing is the shell from then on: that web
+  view loads nothing, no page gets what a shell page may ask, and the app opens on its own page. The web views after
+  it are not refused in their turn, as there is no shell left for them to answer. The same holds from the first start
+  when the exchange cannot be made or the build's shell or policies are missing (`ShellHost.unavailable`). In each
+  case the app's own page says "Ovis's own screens did not open here" (`Home.shellStuck`). The alternative, should the
   exchange ever break: give Capacitor another scheme for the app's own pages (`descriptor.urlScheme`) and register a
   handler of the app's own for `capacitor`, which needs no exchange but moves the app's own pages to another origin.
 - **What the client is told.** At the start of every main-frame document of the shell, before its first script,
@@ -592,7 +596,8 @@ that origin as every build did before.
   clock gives up on it and nothing is loaded in its place (`Home.timedOut` with `inApp`). A cover that stays offers
   Try again (5 seconds in once the page answered, 20 when it has not) and, once home has not drawn for 8 seconds in
   front (`Home.ownPageOffer`), "Open the connect page": the app's own page, from the app's files, so a shell that
-  never draws (a start-up error on an old iOS, files missing from the app) still leaves a way to a PC.
+  never draws (a start-up error on an old iOS, files missing from the app) still leaves a way to a PC. That page
+  says the app's own screens did not open until the shell draws again or is asked for again.
 - **What a page may ask** (`BridgeGate.decide` in `OvisHomeCore`, which `DirectCallGate` carries out in front of
   Capacitor's handler; tested for both kinds of build) is what it could ask in a hosted build, page kind by page kind:
 
@@ -637,14 +642,16 @@ that origin as every build did before.
 - **Building.** `OVIS_APP_SHELL` reaches the app as `OvisAppShell` in Info.plist (`hosted-origin.xcconfig`, `bundled`
   unless the run wrote `hosted`). The App target's "Check the hosted origin" phase (`check-hosted-origin.sh`) fails a
   bundled build whose `app/bundled-shell` is not a whole shell (the shell's own page with every `/assets/` file it
-  starts with, the render host's file, both policies in the form `packShell` writes them, the render host's with its
-  `sandbox`), a hosted one where that folder is still there, a bundled one whose hosted origin is `localhost` (the
+  starts with, the render host's file, both policies in the form `packShell` writes them, the render host's with a
+  `sandbox` that holds no `allow-same-origin`), a hosted one where that folder is still there, a bundled one whose hosted origin is `localhost` (the
   app's own pages' host), and an archive (Product > Archive, what an App Store upload is made from) of `sh.ovis.app`
   that would load the shell from the network or whose shell is not a release's (`shell-provenance.json`: `release`, a
   tag and a SHA-256, as Gradle asks of the Android store app). A test build with another bundle ID may stay hosted
-  and carry any shell.
+  and carry any shell. The "Carry the shell" phase does nothing while Xcode indexes (`ACTION` `indexbuild`), which
+  runs it beside a build of the same products folder.
 - **Checks.** No CI job builds the iOS app or runs its Swift tests. `sh app/ios/check.sh` on a Mac runs them (the
-  three packages' `swift test`, and the `ScopePath` and `OpeningWatch` checks) and is a step of an upload
+  three packages' `swift test`, and the `ScopePath` and `OpeningWatch` checks; any of them failing ends it with an
+  error, which `scripts/app-shell.test.ts` holds it to with stand-ins for `swift` and `swiftc`) and is a step of an upload
   (`app/store/ios.md`). What the tests cannot see, that a real web view's answers carry the policies and that the
   handler is the one checked, is a simulator run by hand for now; a job that builds the app and asks each route for
   its headers is owed.

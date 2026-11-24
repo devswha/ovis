@@ -68,7 +68,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
             // the app's own page was asked for to manage an SSH PC (Change PC where one did not open): it opens on SSH
             "manage": shown?.manages ?? false,
             // the shell inside the app did not open: the app's own page says so instead of "no internet"
-            "stuck": PCStore.homeStuck,
+            "stuck": PCStore.shellStuck,
             "name": PCStore.last.flatMap { PCStore.names[$0] } ?? "",
             "failure": PCStore.failure ?? "",
             "kind": PCStore.failureKind ?? "",

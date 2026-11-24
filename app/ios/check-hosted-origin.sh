@@ -6,7 +6,7 @@
 # It also fails a build whose shell is not where OVIS_APP_SHELL (OvisAppShell) says: `bundled` needs the shell that run
 # packed into app/bundled-shell (which the "Carry the shell" phase copies into the app, carry-shell.sh), whole: the
 # shell's own page with every file it starts with, the render host's file, and both policies, the render host's with
-# its `sandbox`; `hosted` none there. And an archive of the store app (Product > Archive, what an App Store upload is
+# a `sandbox` that does not hand the origin back; `hosted` none there. And an archive of the store app (Product > Archive, what an App Store upload is
 # made from) that would load the shell from the network, which only a test build does, or whose shell is not a
 # release's verified one (shell-provenance.json, as Gradle asks of the Android store app).
 # Usage: check-hosted-origin.sh <the copied shell.js> <OVIS_APP_ORIGIN> <OVIS_APP_HOME> <OVIS_APP_SHELL>
@@ -43,12 +43,19 @@ case "$4" in
     # both policies, as packShell writes them (one line, `page` then `render`), and the render host's takes a page's
     # origin away: the app sends them as they are, and serves no shell without them (ShellRoute.policies)
     policy=$(sed -n 's/^{"page":"\([^"\\]\{1,\}\)","render":"\([^"\\]\{1,\}\)"}$/\2/p' "$5/shell-policy.json")
-    case "; $policy;" in
+    lower=$(printf '%s' "$policy" | tr 'A-Z' 'a-z')
+    case "; $lower;" in
       *"; sandbox;"*|*"; sandbox "*) ;;
       *)
         echo "error: $5/shell-policy.json does not hold the shell's two policies, or its render policy has no sandbox: run bun run build:web"
         exit 1;;
     esac
+    # a sandbox that gives the origin back takes nothing away: a page drawn by the render host would be the shell's
+    # origin (ShellRoute.sandboxed refuses it when the app starts, too)
+    if printf '%s' "$lower" | tr ';' '\n' | grep -E '^[[:space:]]*sandbox([[:space:]]|$)' | grep -q 'allow-same-origin'; then
+      echo "error: $5/shell-policy.json's render policy has allow-same-origin in its sandbox, which leaves a rendered page the shell's origin: carry a shell whose _headers gives the render host \`sandbox allow-scripts\`"
+      exit 1
+    fi
     # the store app carries a release's verified shell (the tag's dist-shell.tar.gz, its SHA-256 checked before it was unpacked)
     if [ "$6" = "install" ] && [ "$7" = "sh.ovis.app" ]; then
       proof="$5/shell-provenance.json"

@@ -8,7 +8,10 @@
 # ShellRoute.pageFile and renderFile): Capacitor answers the app's own host with any file its folder reaches, typed by
 # its extension, and render.html under that host would be the render host with no policy.
 # check-hosted-origin.sh has already failed a build whose folder is not what OVIS_APP_SHELL says.
-# Usage: carry-shell.sh <OVIS_APP_SHELL> <app/bundled-shell> <the built app's resources folder>
+# Xcode runs this phase while it indexes too (ACTION `indexbuild`), beside a build that uses the same products folder:
+# an index needs no shell, and taking the folder out under a build would fail it now and then, so it does nothing then.
+# Usage: carry-shell.sh <OVIS_APP_SHELL> <app/bundled-shell> <the built app's resources folder> <ACTION>
+if [ "$4" = "indexbuild" ]; then exit 0; fi
 rm -rf "$3/bundled-shell"
 if [ "$1" = "bundled" ]; then
   cp -R "$2" "$3/bundled-shell" || { echo "error: could not copy $2 into the app"; exit 1; }
