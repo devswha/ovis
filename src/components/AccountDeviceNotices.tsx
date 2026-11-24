@@ -427,9 +427,11 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   }
   // this device's own admission, told to another row it holds on that PC: the notice is for the account's other devices
   const ownSpki = own?.key?.public_spki;
+  // a notice a person acted on keeps its outcome (a retry, a refusal to acknowledge), also once the list tells of admissions
+  const acted = new Set([...results.values()].filter((result) => result.pc === pc.id && result.signer === ownSpki).map((result) => result.notice.id));
   for (const [id, notice] of notices) {
     if (hidden.has(noticeKey(pc.id, id)) || (ownSpki !== undefined && notice.key === ownSpki)) notices.delete(id);
-    else if (notice.kind === "admit" && listed !== null && notice.account !== null && inList(listed, notice.account)) notices.delete(id);
+    else if (notice.kind === "admit" && !acted.has(id) && listed !== null && notice.account !== null && inList(listed, notice.account)) notices.delete(id);
   }
   const renderOutcomes = (id: string, result: BlockResult, dismissed = false) => {
     const { retryService, ...delivered } = result.fleet;

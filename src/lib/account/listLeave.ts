@@ -123,7 +123,7 @@ export async function forgetMembership(accountStore: AccountStore, list: Account
   } else {
     await accountStore.clear((current) => !sameSignIn(current, session), {
       unsent: () => true,
-      only: (stored, key) => (mine = (stored === undefined || sameSignIn(stored, session)) && (member === null || key === undefined || key.public_spki === member)),
+      only: (stored, key) => (mine = (stored === undefined || sameSignIn(stored, session)) && (key === undefined || key.public_spki === departing)),
     });
   }
   if (mine) await list.forget(session.account, departing);

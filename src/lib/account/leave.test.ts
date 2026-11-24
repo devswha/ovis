@@ -2,9 +2,10 @@ import { expect, it } from "bun:test";
 
 import type { RelayDevice } from "../relay/device.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
+import { deleteAccount } from "./deleteAccount.ts";
 import { leaveAccount } from "./leave.ts";
 import type { AccountService } from "./service.ts";
-import { memoryAccountStore, type AccountSession } from "./store.ts";
+import { memoryAccountStore, newKey, type AccountSession } from "./store.ts";
 
 const ACCOUNT = "acct_owner";
 const PC = "12".repeat(16);
@@ -69,3 +70,30 @@ it("keeps the account key where another account's saved list still holds it, and
   expect((await accountStore.key()).public_spki).toBe(key.public_spki);
   expect(await accountStore.get("session")).toBeUndefined();
 });
+
+it("CodeRabbit #4637: leaving clears nothing of a sign-in another tab made meanwhile with the same key: its records stay whole", async () => {
+  const accountStore = memoryAccountStore();
+  const key = await accountStore.key();
+  const from = session("a");
+  await accountStore.set("session", from);
+  // while the sign-in ends, another tab signs in again; one account key serves it, and it registered its sign-in key
+  const service = serviceListing([], async () => {
+    await accountStore.set("session", session("b"));
+    await accountStore.set("signin_key", { account: ACCOUNT, sign_in_id: "sign-in-b", key: await newKey(), no: 2 });
+  });
+  await leaveAccount({ service, accountStore, relayStore: new MemoryDeviceStore(), session: from });
+  expect(await accountStore.get("session")).toMatchObject({ sign_in_id: "sign-in-b" });
+  expect(await accountStore.get("signin_key")).toMatchObject({ sign_in_id: "sign-in-b" });
+  expect((await accountStore.key()).public_spki).toBe(key.public_spki);
+});
+
+it("CodeRabbit #4637: a deletion the service confirmed finishes here when the key cannot be read: the keys stay, the sign-in goes", async () => {
+  const store = memoryAccountStore();
+  const from = session("a");
+  await store.set("session", from);
+  const accountStore = { ...store, key: async () => { throw new DOMException("The store did not open", "UnknownError"); } };
+  const service = { forSignIn: () => ({ deleteAccount: async () => {} }) } as unknown as AccountService;
+  await deleteAccount({ service, accountStore, session: from, keeps: async () => false });
+  expect(await store.get("session")).toBeUndefined();
+});
+

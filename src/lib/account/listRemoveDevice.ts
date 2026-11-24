@@ -38,18 +38,21 @@ export function cameInThrough(state: ListState, key: string, self: string | null
   // keys with no name, in or out: listView names only those in
   const nameless = Object.entries(state.signers).filter(([, row]) => row.as === null).map(([signer, row]) => ({ key: signer, seq: row.seq, by: row.by, out: row.ended !== null }));
   const found: Arrival[] = [];
-  // the keys this device held before it handed its place on, to `key` at the end of the chain (standsFor)
-  const before = Object.keys(state.signers).filter((other) => other !== key && state.signers[other]?.ended !== null && standsFor(state, other) === key);
+  // the keys a device held before it handed its place on, to `of` at the end of the chain (standsFor)
+  const heldBefore = (of: string): string[] => Object.keys(state.signers).filter((other) => other !== of && state.signers[other]?.ended !== null && standsFor(state, other) === of);
+  const before = heldBefore(key);
+  // this device, by every key it held: what came in through it is never offered
+  const mine = new Set(self === null ? [] : [self, ...heldBefore(self)]);
   const seen = new Set<string>([key, ...before]);
   const from = [key, ...before];
   for (let via = from.shift(); via !== undefined; via = from.shift()) {
     // `live`: offered to the person; whether in or out, what it let in is followed
     const take = (arrival: Arrival, signs: string | null, live: boolean): void => {
       const id = arrival.kind === "pc" ? `pc:${arrival.endpoint}` : arrival.key;
-      if (seen.has(id) || (arrival.kind !== "pc" && arrival.key === self)) return;
+      if (seen.has(id) || (arrival.kind !== "pc" && mine.has(arrival.key))) return;
       seen.add(id);
       if (live) found.push(arrival);
-      if (signs !== null && signs !== self) from.push(signs);
+      if (signs !== null && !mine.has(signs)) from.push(signs);
     };
     for (const row of view.devices) if (!row.carried && row.by === via) take({ kind: "device", key: row.key, seq: row.seq, via }, row.key, row.ended === null);
     for (const row of nameless) if (row.by === via) take({ kind: "signer", key: row.key, seq: row.seq, via }, row.key, !row.out);
@@ -239,7 +242,9 @@ export async function removeFromList(list: AccountList, removal: Removal, option
 export async function removeOtherDevices(list: AccountList, scope: WriteScope, confirmed: readonly string[], options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
   const others = (writer: ListWriter): string[] => listView(writer.state).devices.filter((row) => row.ended === null && row.key !== writer.keys.key).map((row) => row.key);
   let unconfirmed: string[] = [];
-  const outcome = await placeParts(list, scope, (writer) => removalRequest(writer, { keys: others(writer), pcs: [] }, { epoch: true }), { ...options, operation: "sign-out-all" }, (writer) => {
+  // named by the devices its question confirmed: a request kept for another confirmation is never sent for this one
+  const operation = `sign-out-all:${await removalDigest({ keys: confirmed, pcs: [] })}`;
+  const outcome = await placeParts(list, scope, (writer) => removalRequest(writer, { keys: others(writer), pcs: [] }, { epoch: true }), { ...options, operation }, (writer) => {
     unconfirmed = others(writer).filter((key) => !confirmed.includes(key));
     return unconfirmed.length > 0 ? "unconfirmed" : null;
   });

@@ -355,6 +355,8 @@ export function createAccountController(mount: RelayShellMount, view: {
     // the copy that shows this device out goes, and only while it is pinned to the key it was put out with
     if (session === undefined || session.account !== gone) { await (departing === null ? lists.forget(gone) : lists.forget(gone, departing)); return; }
     invalidate();
+    // this clean-up's own view: a sign-in made while it waits is drawn, and its words are not put over it
+    const epoch = generation;
     await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
     // one account key serves every account of this browser: where another account's list still holds it, the key
     // stays, and this account's list, which put it out for good, never lets it in again (a follow-up gives each account
@@ -362,6 +364,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     const elsewhere = departing === null ? null : await lists.pinnedElsewhere(gone, departing).catch(() => null);
     await forgetMembership(accountStore, lists, session, departing);
     followed?.poke();
+    if (epoch !== generation) return;
     accountView = { kind: "signed-out", error: null, notice: elsewhere !== null
       ? t("This browser was removed from this account and cannot be added again while it is signed in to {account} here. Sign out of that account in this browser first, or use another browser.", { account: elsewhere.slice(0, 12) })
       : t("This device was removed from your account. To use it again, sign in and allow it from another device.") };
@@ -593,6 +596,8 @@ export function createAccountController(mount: RelayShellMount, view: {
       const named = asked?.confirmed ?? (lists === null ? [] : otherDevices(lists.view(), from.account));
       const scope = asked?.shown.scope ?? null;
       const refusedOthers = await everyOtherOut(from.account, named, scope);
+      // a sign-out or another sign-in since took this action's place: it sends nothing, and says nothing
+      if (!current()) return null;
       if (refusedOthers !== null) return refusedOthers;
       try { await signedOutEverywhere(from); }
       catch (error) {
@@ -601,6 +606,7 @@ export function createAccountController(mount: RelayShellMount, view: {
           const fresh = await signInAgainInPlace(from, accountService, current, error);
           // the list is read again after the sign-in again: a device let in meanwhile is asked about first
           const refusedAgain = await everyOtherOut(fresh.account, named, scope);
+          if (!current()) return null;
           if (refusedAgain !== null) return refusedAgain;
           await signedOutEverywhere(fresh);
         }

@@ -581,7 +581,7 @@ describe("each write of this lane names its change (after the writer's C1)", () 
     expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `not-me:${other}` }))).toStartWith(`not-me:${other}:`);
     await first.list.cancel((await first.list.waiting())!);
     const scope = scopeOf(first.list.view())!;
-    expect(await keptFor(w, first, () => removeOtherDevices(first.list, scope, [other], noWait))).toBe("sign-out-all");
+    expect(await keptFor(w, first, () => removeOtherDevices(first.list, scope, [other], noWait))).toStartWith("sign-out-all:");
     await first.list.cancel((await first.list.waiting())!);
     expect(await keptFor(w, second, () => removeSelf(second.list, scopeOf(second.list.view())!, noWait))).toBe("leave");
     await second.list.cancel((await second.list.waiting())!);
@@ -640,6 +640,43 @@ describe("a clean-up that waits is nobody's own change (the lead's ruling, round
     expect(await leaveList(second.list, w.account, noWait)).toEqual(REMOVED);
     expect(w.held().entries.slice(-3, -1)).toEqual(tidy);
     expect(ends(w.held().entries.at(-1)!)).toBe((await second.keys()).key);
+  });
+});
+
+describe("what CodeRabbit read in #4637", () => {
+  it("Sign out every device is named by the devices its question confirmed: another confirmation never sends its kept request", async () => {
+    const { w, first, second } = await twoDevices();
+    const third = await letIn(w, first, "Laptop");
+    const scope = scopeOf((await first.list.sync()))!;
+    const [b, c] = [(await second.keys()).key, (await third.keys()).key];
+    // one question confirmed both; its request stays kept
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await removeOtherDevices(first.list, scope, [b, c], noWait);
+    w.fake.untamperList(w.held().id);
+    const before = w.held().entries.length;
+    // another question, which confirmed only one of them, sends nothing of it
+    expect(await removeOtherDevices(first.list, scope, [b], noWait)).toMatchObject({ removed: false });
+    expect(w.held().entries).toHaveLength(before);
+  });
+
+  it("what came in through another device leaves out what this device let in under a key it handed on", async () => {
+    const w = listWorld();
+    const tablet = await w.device({ label: "Dana's tablet" });
+    await tablet.list.sync();
+    // the tablet let this phone in; the phone let a laptop in, then handed its place to a new key of its own
+    const phone = await letIn(w, tablet, "Dana's phone");
+    const laptop = await letIn(w, phone, "Laptop");
+    const heir = await w.device({ label: "Dana's phone" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await phone.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await phone.keys();
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await phone.service.placeEntries(w.held().id, [rotation.text], []);
+    // the phone, by its new key, asks what came in through the tablet: not what it let in itself under its first key
+    const arrivals = cameInThrough(w.held().state, (await tablet.keys()).key, next).map((arrival) => arrival.kind === "pc" ? arrival.endpoint : arrival.key);
+    expect(arrivals).not.toContain((await laptop.keys()).key);
   });
 });
 

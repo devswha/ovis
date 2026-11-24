@@ -235,4 +235,19 @@ describe("what the second Codex read of P13 found about leaving", () => {
     expect(await leaveList(second.list, w.account, noWait)).toMatchObject({ removed: false, why: "unknown" });
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove"]);
   });
+
+  it("CodeRabbit #4637: a forget begun with no member key named clears only the key it began with: a replacement made meanwhile stays", async () => {
+    const { second } = await twoDevices();
+    await second.store.set("session", undefined);
+    let replacement: string | undefined;
+    // while it looks at the other accounts' copies, another tab clears the store and makes a key of its own
+    const page = { ...second.list, pinnedElsewhere: async () => {
+      await second.store.clear();
+      replacement = (await second.store.key()).public_spki;
+      return null;
+    } };
+    await forgetMembership(second.store, page, second.session, null);
+    expect((await second.store.key()).public_spki).toBe(replacement!);
+  });
 });
+

@@ -81,7 +81,11 @@ export async function leaveAccount(options: {
   // Where another account's list still holds the key (one key serves every account of this device), it stays too
   if (await (options.keeps?.(key.public_spki) ?? Promise.resolve(false)).catch(() => true)) {
     await options.accountStore.update("session", (current) => current !== undefined && sameSignIn(current, session) ? undefined : current);
-  } else await options.accountStore.clear((current) => !sameSignIn(current, session), { unsent: () => true, only: (_stored, held) => held === undefined || held.public_spki === key.public_spki });
+  } else await options.accountStore.clear((current) => !sameSignIn(current, session), {
+    unsent: () => true,
+    // one key may serve a sign-in another tab made since: its records stay whole, with the key
+    only: (stored, held) => (stored === undefined || sameSignIn(stored, session)) && (held === undefined || held.public_spki === key.public_spki),
+  });
   return { remove, unconfirmed };
 }
 

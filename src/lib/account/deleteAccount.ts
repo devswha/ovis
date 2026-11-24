@@ -20,9 +20,10 @@ export async function deleteAccount(options: {
   keeps?: (key: string) => Promise<boolean>;
 }): Promise<void> {
   await options.service.forSignIn(options.session).deleteAccount();
-  // a look that fails keeps the key: a key another account's list may hold is never cleared on a guess
-  const key = (await options.accountStore.key()).public_spki;
-  if (await (options.keeps?.(key) ?? Promise.resolve(false)).catch(() => true)) {
+  // a look that fails keeps the key: a key another account's list may hold is never cleared on a guess, and the
+  // deletion the service confirmed is finished here all the same (only this sign-in and its unsent blocks go)
+  const key = await options.accountStore.key().then((held) => held.public_spki, () => null);
+  if (key === null || await (options.keeps?.(key) ?? Promise.resolve(false)).catch(() => true)) {
     await options.accountStore.update("session", (current) => current !== undefined && sameSignIn(current, options.session) ? undefined : current);
     await options.accountStore.update("unsent_blocks", (current) => {
       if (current === undefined) return undefined;
