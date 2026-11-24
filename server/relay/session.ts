@@ -154,7 +154,7 @@ export class RelaySession {
   private welcomed = false;
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; approvedOwn?: boolean; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; approvedOwn?: boolean; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; confirmed?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   private closingReason: SessionError | undefined;
@@ -455,11 +455,21 @@ export class RelaySession {
         if (frame.type === FrameType.PAIR && this.pcCodeAdd && this.options.services.devices.accountPolicyActive()) { this.close("unsupported_version"); return; }
         if (frame.type === FrameType.PAIR && keyProofPairings !== undefined) { this.pairByProof(keyProofPairings, frame.payload); return; }
         this.keyProven = frame.type === FrameType.AUTH;
-        const device = frame.type === FrameType.AUTH
+        let device = frame.type === FrameType.AUTH
           ? await devices.matchRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId)
           : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
         // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
         if (this.refused) return;
+        // On a pinned PC a session opened through the account (the id is the account's own for the key) is the list's
+        // to answer for, and nothing else's: a row of this PC's own devices under that id gives it no role, no time
+        // and no way in. It is let in as the list says, and ends when the list lets the key in no more (enter)
+        const governed = frame.type === FrameType.AUTH && device ? devices.listGoverned(device.id, this.options.serverId) : null;
+        if (device && governed !== null) {
+          const role = devices.listRoleOf(governed);
+          if (role === null) { this.close("auth_failed"); return; }
+          this.listKey = governed;
+          device = { ...device, role };
+        }
         if (frame.type === FrameType.AUTH && device && devices.catchingUp(device.id)) {
           // Step 2 (S2-27): a row not paired at this PC waits for the first whole read after a start (T41)
           if (!await this.readComing(device.id) || !this.mux.active) return;
@@ -603,6 +613,7 @@ export class RelaySession {
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;
+        sas.confirmed = asked.confirm;
         void asked.decision.then((decision) => {
           if (this.sas !== sas || this.state !== "pair-wait") return;
           if (!decision.approved) { this.close("auth_failed"); return; }
@@ -619,6 +630,8 @@ export class RelaySession {
       case FrameType.PAIR_CONFIRM: {
         if (this.state !== "pair-wait" || !this.sas || this.sas.phoneConfirmed) { this.close("protocol_error"); return; }
         this.sas.phoneConfirmed = true;
+        // whoever may approve the join is told: for a join into the list, its approver signs the entry only now
+        this.sas.confirmed?.();
         this.finishPairing();
         return;
       }

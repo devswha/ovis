@@ -459,6 +459,26 @@ describe("the joins into the account's list, as a device of that list sees them"
     plain.withdraw();
   });
 
+  it("say once the new device confirmed its digits, and tell whoever may approve", () => {
+    const f = fixture();
+    const approvals = f.open();
+    const asked = approvals.ask("Later", "222222", f.clock.at + 90_000, { intent: "account", key: "k2", deviceId: "d2", membersOnly: true, list: true })!;
+    const told: (boolean | undefined)[] = [];
+    const stop = approvals.subscribeList((joins) => told.push(joins[0]?.confirmed));
+    expect(approvals.listJoins()[0]!.confirmed).toBeUndefined();
+    asked.confirm();
+    asked.confirm();
+    expect(approvals.listJoins()[0]!.confirmed).toBe(true);
+    expect(approvals.remoteList()[0]!.confirmed).toBe(true);
+    // told once at the confirm, and not again for a second one
+    expect(told).toEqual([undefined, true]);
+    stop();
+    // a join that was decided is confirmed by nothing
+    asked.withdraw();
+    asked.confirm();
+    expect(approvals.listJoins()).toEqual([]);
+  });
+
   it("are told to it as they come and go", () => {
     const f = fixture();
     const approvals = f.open();
