@@ -611,12 +611,24 @@ export function accountList(options: AccountListOptions): AccountList {
    * The time of its last full read and the floor of its clock move with every round that reached the account
    * service. They go into a small record of their own, so that such a round does not write a long copy again.
    */
+  /**
+   * A small record kept beside the copy (the round's times, the epoch keys it opened, when it first saw a PC): where
+   * the store does not take it (a full disk), the round goes on with what it holds in memory. None of them is what
+   * the device goes by: without them it asks again, or counts a PC as new for longer. The copy itself is never
+   * written this way.
+   */
+  const beside = async (what: string, write: () => Promise<unknown>): Promise<void> => {
+    try { await write(); } catch (error) {
+      console.warn(`Ovis: ${what} could not be saved beside the account's list; the round goes on without`, error instanceof Error ? error.name : error);
+    }
+  };
+
   const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null }, copy: FollowerCopy): Promise<string> => {
     if (before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) {
       if (before.copy.read_at !== copy.read_at || before.copy.seen_at !== copy.seen_at) {
         // never back: another page may have read later
         const kept = readTimes(await store.get("times", copy.account), copy.list);
-        await store.set("times", copy.account, { v: RECORD_VERSION, list: copy.list, read_at: later(kept?.read_at ?? null, copy.read_at), seen_at: later(kept?.seen_at ?? null, copy.seen_at) });
+        await beside("its times", () => store.set("times", copy.account, { v: RECORD_VERSION, list: copy.list, read_at: later(kept?.read_at ?? null, copy.read_at), seen_at: later(kept?.seen_at ?? null, copy.seen_at) }));
       }
       return before.saved;
     }
@@ -711,7 +723,7 @@ export function accountList(options: AccountListOptions): AccountList {
     const again = await openEpochs(state, { ...kept, wraps: tried }, keys.enc);
     wrongKey = again.wrong.length > 0 ? copy.account : wrongKey === copy.account ? null : wrongKey;
     if (again.good.length !== kept.wraps.size || again.good.some((epoch) => kept.wraps.get(epoch) !== tried.get(epoch))) {
-      await store.set("wraps", copy.account, wrapsRecord({ ...kept, wraps: new Map(again.good.map((epoch) => [epoch, tried.get(epoch) ?? ""])) }));
+      await beside("the epoch keys it opened", () => store.set("wraps", copy.account, wrapsRecord({ ...kept, wraps: new Map(again.good.map((epoch) => [epoch, tried.get(epoch) ?? ""])) })));
     }
     return again;
   };
@@ -753,7 +765,7 @@ export function accountList(options: AccountListOptions): AccountList {
         pcs.push({ endpoint: row.endpoint, server_id: deriveServerId(hexToBytes(row.endpoint)), how: row.how, allows: row.allows, name: await nameAt(row.seq), seq: row.seq, by, new_at });
       }
       const picture = (pcs: SeenPcs): string => JSON.stringify(Object.entries(pcs).sort(([a], [b]) => a.localeCompare(b)));
-      if (picture(news) !== picture(seen)) await store.set("seen", account, Object.keys(news).length === 0 ? undefined : { v: RECORD_VERSION, list: copy.list, pcs: news });
+      if (picture(news) !== picture(seen)) await beside("when it first saw a PC", () => store.set("seen", account, Object.keys(news).length === 0 ? undefined : { v: RECORD_VERSION, list: copy.list, pcs: news }));
       named = { history, complete: opened.keys.has(state.epoch), devices, pcs, keys: opened.keys };
     }
     return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs };
@@ -1011,19 +1023,33 @@ export function accountList(options: AccountListOptions): AccountList {
       let next = loaded;
       // for a device that follows a list, an account off the service's switch is the service being away, never "the list is gone"
       let reached = hint !== undefined && hint !== "off";
-      if (hint !== undefined && hint !== "off") {
-        try {
-          next = await follow(bound, session, keys, loaded, hint, signal, stopped);
-          if (next.unread === true) reached = false;
-        } catch (error) {
-          if (stopped.aborted || !unreached(error)) throw error;
-          // what this device saved stands as it is
-          reached = false;
+      let view: AccountListView;
+      try {
+        if (hint !== undefined && hint !== "off") {
+          try {
+            next = await follow(bound, session, keys, loaded, hint, signal, stopped);
+            if (next.unread === true) reached = false;
+          } catch (error) {
+            if (stopped.aborted || !unreached(error)) throw error;
+            // what this device saved stands as it is
+            reached = false;
+          }
         }
+        stopped.throwIfAborted();
+        // the wraps are asked for with a time of their own: the pages before them may have used up the round's
+        view = await viewOf(next, keys, reached ? { bound, signal: AbortSignal.any([stopped, AbortSignal.timeout(ROUND_MS)]) } : null);
+      } catch (error) {
+        if (stopped.aborted || error instanceof StaleCopyError || loaded.copy === null) throw error;
+        // The round failed past the copy this device saved (a store that takes no write, a fault of the reading). The
+        // device still goes by that copy: it is shown as it was saved, as a list the account service was not reached
+        // for, so a page never draws or opens by the account service's word alone while it holds a copy. The fault
+        // goes up, and the next round tries again.
+        try {
+          const kept = await viewOf(loaded, keys, null);
+          if (!stopped.aborted) { misses += 1; held = loaded; publish({ ...kept, reached: false }); }
+        } catch (again) { console.warn("Ovis: the saved copy of the account's list could not be drawn either", again instanceof Error ? again.name : again); }
+        throw error;
       }
-      stopped.throwIfAborted();
-      // the wraps are asked for with a time of their own: the pages before them may have used up the round's
-      const view = await viewOf(next, keys, reached ? { bound, signal: AbortSignal.any([stopped, AbortSignal.timeout(ROUND_MS)]) } : null);
       stopped.throwIfAborted();
       // another page stored another sign-in, or none, while this round ran: nothing of the account it began with is shown
       const still = await service.session();

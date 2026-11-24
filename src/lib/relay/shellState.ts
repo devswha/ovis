@@ -87,7 +87,7 @@ export type AccountView =
   | {
     kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; deleteError?: string; known?: readonly KnownPc[];
     /** this device cannot read its list of the account: only a newer app reads it (`newer`), or what it saved does not read (`damaged`). Its PCs are then the directory's, each marked, and none opens by itself */
-    list?: "newer" | "damaged";
+    list?: "newer" | "damaged" | "unread";
   };
 
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }

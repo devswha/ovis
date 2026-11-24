@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
-import { pagePcs } from "../lib/account/listPcs.ts";
+import { pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
@@ -147,7 +147,8 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
-  const read = useCallback(() => service.listPcs().then((listed) => setPcs(pagePcs(account, listed)), () => setPcs("failed")), [service, account]);
+  // (a page that has not read its copy of the list yet reads it first: until a read ends, every row is marked)
+  const read = useCallback(() => service.listPcs().then(async (listed) => { await readPageList(account); setPcs(pagePcs(account, listed)); }).catch(() => setPcs("failed")), [service, account]);
   useEffect(() => {
     void read();
     const changed = () => { void read(); };

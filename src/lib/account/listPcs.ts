@@ -16,7 +16,7 @@
  * A device that cannot read its list (its copy is damaged, a later build saved it, or it stopped at an entry this
  * build cannot place) lists the directory's PCs, every one marked, and says so (listReading).
  */
-import type { AccountListView } from "./accountList.ts";
+import type { AccountList, AccountListView } from "./accountList.ts";
 import { pageAccountList } from "./pageList.ts";
 import type { DirectoryPc } from "./service.ts";
 
@@ -30,6 +30,40 @@ export const NEW_LIST_PC_MS = 24 * 60 * 60_000;
  */
 export type ListReading = "in" | "newer" | "damaged";
 
+/**
+ * Whether this device holds a copy of `account`'s list that `list`, this page's, has not read: no read ended yet, or
+ * the read failed. It is a state of its own and never "no list": until a read ends, every row is the directory's and
+ * marked, nothing opens or asks by itself, and nothing leaves the account by the account service's directory. A
+ * store that cannot even be asked counts as holding a copy.
+ */
+export async function unreadCopy(list: AccountList, account: string): Promise<boolean> {
+  if (list.view().account === account) return false;
+  try { return await list.follows(account); } catch { return true; }
+}
+
+/** The account whose saved copy this page found unread (readPageList), until a view of that account is there. */
+let unreadFor: string | null = null;
+
+/**
+ * Has this page read its list for `account`, where the device holds a copy: waits for a round, the first or one
+ * more, and remembers where none ended. After it, the page's rows and acts go by the list or by "not read"
+ * (pageListUnread), never by the directory alone for a device that holds a copy.
+ */
+export async function readPageList(account: string): Promise<void> {
+  const list = pageAccountList();
+  if (list === null || !await unreadCopy(list, account)) { if (unreadFor === account) unreadFor = null; return; }
+  unreadFor = account;
+  await list.sync().catch((error: unknown) => { console.warn("Ovis: the account's list could not be read on this page", error instanceof Error ? error.name : error); });
+  if (list.view().account === account) unreadFor = null;
+}
+
+/** Whether this page holds a copy of `account`'s list that it has not read (readPageList found so, and no view of the account came since). */
+export function pageListUnread(account: string): boolean {
+  if (unreadFor !== account) return false;
+  if (pageAccountList()?.view().account === account) { unreadFor = null; return false; }
+  return pageAccountList() !== null;
+}
+
 export function listReading(view: AccountListView | null | undefined, account: string): ListReading | null {
   if (view == null || view.account !== account) return null;
   const { status } = view;
@@ -38,6 +72,9 @@ export function listReading(view: AccountListView | null | undefined, account: s
   if (status.at !== "following") return null;
   return status.standing === "in" ? "in" : status.standing === "stopped" ? "newer" : null;
 }
+
+/** The directory's rows, every one marked: what a device draws that cannot read its list, or has not read it yet. */
+export const allOutside = (directory: readonly DirectoryPc[]): DirectoryPc[] => directory.map((pc) => ({ ...pc, not_in_list: true as const }));
 
 /** The account's PCs as `view` gives them, or null where the directory stands as it is: this device is in no list of `account`. */
 export function pcsByList(view: AccountListView | null | undefined, account: string, directory: readonly DirectoryPc[], now: number): DirectoryPc[] | null {
@@ -69,6 +106,7 @@ export function pageListReading(account: string): ListReading | null {
 
 /** The account's PCs as this page lists them: by its list where this device is in one, by the account service's directory otherwise. */
 export function pagePcs(account: string, directory: readonly DirectoryPc[], now = Date.now()): readonly DirectoryPc[] {
+  if (pageListUnread(account)) return allOutside(directory);
   return pcsByList(pageAccountList()?.view(), account, directory, now) ?? directory;
 }
 
