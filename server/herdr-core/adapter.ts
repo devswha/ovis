@@ -88,6 +88,7 @@ export type SeenObserver = (address: string, turn: number, labels: Record<string
  * and a Windows PC, which reads what runs in a pane off its own processes, starts no agent there.
  */
 export interface AdapterOptions {
+  acp?: import("../acp/children.ts").AcpChildren | null;
   otherMachine?: boolean;
   /** the OpenCode sessions whose terminal title this is (opencode.ts `opencodeSessionsTitled`); unset, no OpenCode pane shows a session */
   opencodeTitled?: (terminalTitle: string) => readonly string[];
@@ -203,7 +204,7 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
             first = false;
             const request = parseRequest(line);
             if (!request) { send(socket, `${JSON.stringify({ id: "", error: { code: "bad_frame", message: "not a herdr request" } })}\n`, true); return; }
-            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, coreHost(options.otherMachine, options.platform), layoutWatchers, observeSeen, noteSession); return; }
+            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, coreHost(options.otherMachine, options.platform), layoutWatchers, observeSeen, noteSession, options.acp); return; }
             void answers(request).then((reply) => send(socket, `${JSON.stringify({ id: request.id, ...reply })}\n`, true));
           }, () => socket.end()),
         };
@@ -468,6 +469,12 @@ const CHECKOUT_FACTS_MS = 5_000;
 /** How long a snapshot waits on git for one folder's facts before drawing it without them. */
 const CHECKOUT_FACTS_WAIT_MS = 2_000;
 
+function acpChildOf(terminal: HcTerminal, registry: AdapterOptions["acp"]) {
+  if (!terminal.labels?.["ovis.acp"]) return undefined;
+  const child = registry?.forPane(terminal.address);
+  return child && child.id === terminal.labels?.["ovis.acp"] ? child : undefined;
+}
+
 function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, layoutChanged: () => void, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
   const platform = options.platform ?? process.platform;
   const processTable = options.processTable ?? windowsProcessTable;
@@ -551,7 +558,10 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       firstTurn, sessionOf, host: coreHost(options.otherMachine, platform),
       shown: (terminals) => {
         forgetTurns(new Set(terminals.map((terminal) => terminal.address)));
-        return terminals;
+        return terminals.map(terminal => {
+          const child = acpChildOf(terminal, options.acp);
+          return child ? { ...terminal, acp: { agent: child.client.agentGone ? null : child.harness, status: child.client.status, plan: child.client.history.plan } } : terminal;
+        });
       },
     });
     const gitIds = new Map<string, string | null>();
@@ -1213,7 +1223,7 @@ const LIFECYCLE = {
  * subscriber that fell behind on hc (`missed`), or a line to hc that ended, ends this connection:
  * the status collector reopens it and reads what it missed from a fresh snapshot.
  */
-async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, host: CoreHost, layoutWatchers: Set<() => void>, observeSeen?: SeenObserver, noteSession?: SessionNote): Promise<void> {
+async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, host: CoreHost, layoutWatchers: Set<() => void>, observeSeen?: SeenObserver, noteSession?: SessionNote, acp?: AdapterOptions["acp"]): Promise<void> {
   const subscriptions = Array.isArray(request.params["subscriptions"]) ? request.params["subscriptions"].filter(isRecord) : [];
   const statusPanes = new Set(subscriptions.flatMap((entry) => entry["type"] === STATUS_EVENT && typeof entry["pane_id"] === "string" ? [entry["pane_id"]] : []));
   const structure = subscriptions.some((entry) => typeof entry["type"] === "string" && !NOT_STRUCTURE.has(entry["type"]));
@@ -1247,7 +1257,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     if (structure) emit(event, { type, ...("terminal" in change && change.terminal ? { pane_id: change.terminal } : {}) });
   };
   const tell = (change: Extract<CoreChange, { type: "status" }>) => {
-    if (statusPanes.has(change.terminal)) emit(STATUS_EVENT, { pane_id: change.terminal, agent_status: change.shown, agent: change.agent });
+    if (!acp?.forPane(change.terminal) && statusPanes.has(change.terminal)) emit(STATUS_EVENT, { pane_id: change.terminal, agent_status: change.shown, agent: change.agent });
   };
   const deliver = (changes: readonly CoreChange[]) => {
     for (const change of changes) {
@@ -1275,8 +1285,13 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     }
     // a change hc has no event for (a late git answer): the rows refresh as for a label
     const layoutChanged = () => lifecycle({ type: "layout" });
+    const offAcp = acp?.onStatus(child => {
+      if (statusPanes.has(child.terminal)) emit(STATUS_EVENT, { pane_id: child.terminal, agent_status: child.client.status, agent: child.client.agentGone ? null : child.harness });
+      layoutChanged();
+    });
     if (structure) layoutWatchers.add(layoutChanged);
     socket.data.unsubscribe = () => {
+      offAcp?.();
       layoutWatchers.delete(layoutChanged);
       void channel.close();
     };
