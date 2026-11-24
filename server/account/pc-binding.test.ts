@@ -481,24 +481,105 @@ describe("a binding pinned to the account's signed list", () => {
     expect(stale.binding()).toBeNull();
   });
 
-  test("the other folder learns a clear it does not hold, and keeps the pin it holds", async () => {
+  test("the other folder learns a clear it does not hold, written onto what its file holds at that moment", async () => {
     const [dir, sibling] = [stateDir(), stateDir()];
     const devices = store(dir);
     const first = (await linked(devices), PcAccountState.open(dir).binding()!);
-    // the other folder: another binding of the same account, pinned there
+    // the other folder: another binding of the same account
     await linked(store(sibling));
-    const theirs = PcAccountState.open(sibling);
-    const other = theirs.binding()!;
-    expect(theirs.pinToList(other.bind_id, LIST)).toBe(true);
+    const other = PcAccountState.open(sibling).binding()!;
     // this folder cleared its own binding: a clear the other folder has to learn
     expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
     const mine = PcAccountState.open(dir);
-    mine.takeSibling(sibling);
-    const after = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { v: number; binding: { bind_id: string; list?: string }; clears: { bind_id: string }[] };
+    // between this folder's read of that file and its write, a server in the other folder records its listing
+    const real = bindingFs.openSync;
+    let raced = false;
+    const racing = spyOn(bindingFs, "openSync").mockImplementation(((...args: Parameters<typeof real>) => {
+      if (!raced && String(args[0]) === `${join(sibling, ADMISSION_FILE)}.lock`) {
+        raced = true;
+        const held = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: object };
+        writeFileSync(join(sibling, ADMISSION_FILE), JSON.stringify({ ...held, binding: { ...held.binding, listing_id: "2".repeat(32) } }));
+      }
+      return real(...args);
+    }) as typeof real);
+    try { mine.takeSibling(sibling); } finally { racing.mockRestore(); }
+    expect(raced).toBe(true);
+    const after = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { bind_id: string; listing_id?: string }; clears: { bind_id: string }[] };
     expect(after.clears.map((clear) => clear.bind_id)).toContain(first.bind_id);
-    expect(after).toMatchObject({ v: 2, binding: { bind_id: other.bind_id, list: LIST } });
-    // and this folder, which does not hold that pin, is closed
+    expect(after.binding).toMatchObject({ bind_id: other.bind_id, listing_id: "2".repeat(32) });
+  });
+
+  test("a folder closed for the other's pin writes nothing to the other folder either, a clear it would have taught it included", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    const devices = store(dir);
+    await linked(devices);
+    await linked(store(sibling));
+    const theirs = PcAccountState.open(sibling);
+    expect(theirs.pinToList(theirs.binding()!.bind_id, LIST)).toBe(true);
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    const [mineBefore, theirsBefore] = [readFileSync(join(dir, ADMISSION_FILE), "utf8"), readFileSync(join(sibling, ADMISSION_FILE), "utf8")];
+    const mine = PcAccountState.open(dir);
+    mine.takeSibling(sibling);
     expect(mine.strict).toContain(sibling);
+    expect(readFileSync(join(dir, ADMISSION_FILE), "utf8")).toBe(mineBefore);
+    expect(readFileSync(join(sibling, ADMISSION_FILE), "utf8")).toBe(theirsBefore);
+  });
+
+  test("a file that is there and cannot be read under the lock aborts the write: the pin another server wrote is not written over", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const stale = PcAccountState.open(dir);
+    const path = join(dir, ADMISSION_FILE);
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; binding: object };
+    const pinned = JSON.stringify({ ...disk, v: 2, gen: disk.gen + 1, binding: { ...disk.binding, list: LIST } });
+    writeFileSync(path, pinned);
+    // the disk gives an error for one read
+    const failing = spyOn(bindingFs, "readFileSync").mockImplementation(() => { throw Object.assign(new Error("i/o error"), { code: "EIO" }); });
+    try { expect(() => stale.admit("pc", "code", null, Date.now())).toThrow(); } finally { failing.mockRestore(); }
+    expect(readFileSync(path, "utf8")).toBe(pinned);
+    // and a file that does not parse is no missing file either
+    writeFileSync(path, "{");
+    expect(() => stale.admit("pc", "code", null, Date.now())).toThrow();
+    expect(readFileSync(path, "utf8")).toBe("{");
+    // the write goes through once the file reads again, and keeps the pin
+    writeFileSync(path, pinned);
+    stale.admit("pc", "code", null, Date.now());
+    expect(PcAccountState.open(dir).binding()).toMatchObject({ list: LIST });
+  });
+
+  test("a lock that cannot be made ends the write with an error: nothing is written without the lock", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const pc = PcAccountState.open(dir);
+    const before = readFileSync(join(dir, ADMISSION_FILE), "utf8");
+    const refused = spyOn(bindingFs, "openSync").mockImplementation(() => { throw Object.assign(new Error("no access"), { code: "EACCES" }); });
+    try { expect(() => pc.admit("pc", "code", null, Date.now())).toThrow("cannot be locked"); } finally { refused.mockRestore(); }
+    expect(readFileSync(join(dir, ADMISSION_FILE), "utf8")).toBe(before);
+  });
+
+  test("looking at the file again costs no read while it has not changed, and tells nobody of a change that is neither the binding nor the pin", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const mine = PcAccountState.open(dir);
+    let told = 0;
+    mine.onBindingChange(() => { told++; });
+    const reads = spyOn(bindingFs, "readFileSync");
+    try {
+      mine.refresh();
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(0);
+      // another server on this folder records the listing its binding stands on: a pending approval here must stand
+      const path = join(dir, ADMISSION_FILE);
+      const disk = JSON.parse(readFileSync(path, "utf8")) as { binding: object };
+      reads.mockClear();
+      writeFileSync(path, JSON.stringify({ ...disk, binding: { ...disk.binding, listing_id: "1".repeat(32) } }));
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(mine.binding()).toMatchObject({ listing_id: "1".repeat(32) });
+      expect(told).toBe(0);
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally { reads.mockRestore(); }
   });
 
   test("a stale lock that cannot be deleted ends the write with an error after its wait, and hangs nothing", async () => {
