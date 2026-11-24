@@ -228,6 +228,8 @@ export interface ListAuthority {
   role(key: string): ListRole | null | undefined;
   /** Whether the list holds `key` to drive with full power now: null on a PC that is not pinned and for a key it does not let in. */
   allowsJoins(key: string): boolean | null;
+  /** Whether this PC acted on a removal of `key` by its list that it has not on disk yet: every row of that key stays out meanwhile, a pairing of this PC's own too. */
+  owesRemoval(key: string): boolean;
   /** Whether this relay identity was removed from `account` by that account's list. */
   removedFrom(account: string): boolean;
 }
@@ -279,6 +281,8 @@ export interface ListFollowDeps {
   busy?(): boolean;
   /** How long a join a member allowed waits for the member's entry (LIST_MEMBER_WAIT_MS): shorter in a test. */
   readonly memberWaitMs?: number;
+  /** The list put `key` out and the PC has that only in its mark so far: the sessions of every row of the key end. */
+  denied?(key: string): void;
   /** Called at each look at the clock, before anything else: takes in what another server of this folder wrote to the PC's place in its account. */
   retry?(): void;
 }
@@ -345,6 +349,8 @@ export class ListFollow implements ListAuthority {
   private untilTimer: ReturnType<typeof setTimeout> | undefined;
   /** The removals of the list that this PC has kept as its own since this start, by the entry that made each. */
   private readonly applied = new Set<string>();
+  /** The keys whose removal's record this run wrote (deps.removed answered): what a mark for a removal waits for. */
+  private readonly kept = new Set<string>();
   /** When a person last named a list here, in milliseconds: for a while after it the PC reads often, as someone waits beside it. */
   private wantedAt: number | null = null;
   private readonly differences = new Set<string>();
@@ -366,6 +372,8 @@ export class ListFollow implements ListAuthority {
       // a pinned PC signs with its keys: they are read at the start, not at the first thing that needs them
       if (this.isPinned) await this.keysOf(scope);
       this.settle();
+      // after the rows and the removals' records were written: what the mark still owes is asked then
+      this.settleOwed();
     });
     this.timer = setInterval(() => this.tick(), LIST_TICK_MS);
     this.timer.unref?.();
@@ -375,6 +383,7 @@ export class ListFollow implements ListAuthority {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.deps.keys.close();
     if (this.untilTimer) clearTimeout(this.untilTimer);
     this.untilTimer = undefined;
   }
@@ -464,6 +473,18 @@ export class ListFollow implements ListAuthority {
 
   private get owedPath(): string { return join(this.deps.stateDir, ACCOUNT_LIST_OWED_FILE); }
 
+  owesRemoval(key: string): boolean {
+    return this.owed !== null && this.isPinned && this.owed.removed.some((row) => row.key === key);
+  }
+
+  /**
+   * The removal's own record could not be written: the sessions of every row of the keys the mark names end all the
+   * same, one of a pairing this PC made itself too, and their next sign-in finds the mark.
+   */
+  private denyOwed(): void {
+    for (const row of this.owed?.removed ?? []) { try { this.deps.denied?.(row.key); } catch { /* its sign-in is refused all the same */ } }
+  }
+
   private owedKey(key: string): boolean {
     const owed = this.owed;
     return owed !== null && (owed.removed.some((row) => row.key === key) || owed.expired.some((row) => row.key === key));
@@ -474,7 +495,10 @@ export class ListFollow implements ListAuthority {
     const now = Math.max(this.seconds(), this.copy?.seen_at ?? 0);
     const owed: OwedMark = this.owed ?? { at: now, floor: now, removed: [], expired: [] };
     owed.floor = Math.max(owed.floor, now);
-    for (const row of what.removed ?? []) if (!owed.removed.some((held) => held.key === row.key && held.seq === row.seq)) owed.removed.push(row);
+    for (const row of what.removed ?? []) {
+      if (owed.removed.some((held) => held.key === row.key && held.seq === row.seq)) continue;
+      owed.removed.push(row);
+    }
     for (const row of what.expired ?? []) if (!owed.expired.some((held) => held.key === row.key && held.until === row.until)) owed.expired.push(row);
     this.owed = owed;
     this.writeOwed(scope);
@@ -497,7 +521,9 @@ export class ListFollow implements ListAuthority {
     if (owed === null || scope === null || this.stopped) return;
     const state = this.copy?.state ?? null;
     const saved = !this.unsaved && !this.dirty;
-    const removed = owed.removed.filter((row) => !(saved && this.savedSeq !== null && this.savedSeq >= row.seq && state !== null && Object.hasOwn(state.signers, row.key) && state.signers[row.key]!.ended !== null));
+    // a removal: the saved copy reaches its place and shows the key out, and the removal's own record was written in
+    // this run (keepRemovals), which is what keeps the key out once the mark is gone
+    const removed = owed.removed.filter((row) => !(saved && this.kept.has(row.key) && this.savedSeq !== null && this.savedSeq >= row.seq && state !== null && Object.hasOwn(state.signers, row.key) && state.signers[row.key]!.ended !== null));
     const expired = owed.expired.filter((row) => !(this.savedAt !== null && this.savedAt >= row.until));
     if (removed.length === owed.removed.length && expired.length === owed.expired.length) return;
     if (removed.length === 0 && expired.length === 0) {
@@ -933,7 +959,7 @@ export class ListFollow implements ListAuthority {
     // a copy the disk did not take is offered to it again
     if (this.unsaved) void this.enqueue(() => { const bound = this.bound(); if (this.stopped) return; if (bound !== null && this.unsaved && this.copy !== null) this.unsaved = !this.persist(bound); this.settleOwed(); });
     else this.settleOwed();
-    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); });
+    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); this.settleOwed(); });
     // any PC that holds a list reads it by its own clock, one that only shadows too: a mailbox that names no list, or
     // does not answer, hides no entry. A PC whose account never had a list holds no copy and asks nothing
     const copy = this.copy;
@@ -1531,6 +1557,8 @@ export class ListFollow implements ListAuthority {
   }
 
   private async keysOf(scope: Scope): Promise<PcListKeys | null> {
+    // work that waited when the follower stopped makes no keys
+    if (this.stopped) return null;
     try {
       const keys = await this.deps.keys.keysFor(scope.serverId);
       this.keysState = "ready";
@@ -1635,8 +1663,9 @@ export class ListFollow implements ListAuthority {
       this.error = this.words(error);
       return;
     }
-    // the service answered every request of this read to its end, whatever it showed: one whole read
-    if (this.live(scope)) this.readWhole();
+    // one whole read: the service answered to the end, and the PC stands at the head the service shows. A page the PC
+    // refused, a tail the service withholds and a read that ran out of its requests are none
+    if (this.live(scope) && this.lastVerdict === "caught_up") this.readWhole();
   }
 
   /**
@@ -1761,6 +1790,7 @@ export class ListFollow implements ListAuthority {
       // and a device the list removed must not stay in by one of them
       try { this.keepRemovals(copy); } catch (error) {
         this.dirty = true;
+        this.denyOwed();
         this.error = `The list's removals could not be kept (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
@@ -1778,6 +1808,7 @@ export class ListFollow implements ListAuthority {
       this.freshPin = false;
     } catch (error) {
       this.dirty = true;
+      this.denyOwed();
       this.error = `The list's devices could not be written (${error instanceof Error ? error.message : String(error)})`;
     }
     this.untilAt = nextUntil(copy, now);
@@ -1817,6 +1848,7 @@ export class ListFollow implements ListAuthority {
       if (this.applied.has(id + key)) continue;
       this.deps.removed(key, { id, at: readBody(entry.body).issued_at });
       this.applied.add(id + key);
+      this.kept.add(key);
     }
   }
 

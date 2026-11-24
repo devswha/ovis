@@ -17,7 +17,7 @@ import { loadRelayIdentity } from "../relay/identity.ts";
 import { privateStateFs } from "../private-state.ts";
 import type { ListCommit } from "./account-device-state.ts";
 import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, ListFollow, type ListFollowDeps } from "./list-follow.ts";
-import { ListKeyStore } from "./list-keys.ts";
+import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
 import { listMember, TestList } from "./list.test-helpers.ts";
 import { AccountServiceRefusal } from "./mailbox.ts";
 
@@ -583,6 +583,72 @@ describe("what the PC acted on and could not save", () => {
     expect(third.list.role(guest.key)).toBeNull();
     expect(third.world.commits.at(-1)!.devices.find((row) => row.key === guest.key)?.eligible).toBe(false);
     expect(third.list.role(pc.account.first.key)).toBe("drive");
+  });
+
+  test("the mark for a removal goes only once the removal's own record is written: a saved copy that shows the key out is not enough, also over a restart", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    await pc.account.remove(phone.key);
+    // the copy is saved; the record of the removal is not
+    pc.world.forgets = true;
+    await pc.pull();
+    expect(pc.list.role(phone.key)).toBeNull();
+    const mark = join(pc.stateDir, ACCOUNT_LIST_OWED_FILE);
+    expect(existsSync(mark)).toBe(true);
+    pc.list.stop();
+    // the restart finds a copy that shows the phone out: the mark stays while the record still cannot be written
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    again.world.forgets = true;
+    again.world.log = () => { throw new Error("away"); };
+    again.list.start();
+    await again.list.settled();
+    again.list.tick();
+    await again.list.settled();
+    expect(existsSync(mark)).toBe(true);
+    expect(again.list.role(phone.key)).toBeNull();
+    // the record is written: the mark goes
+    again.world.forgets = false;
+    again.list.tick();
+    await again.list.settled();
+    expect(again.world.removed).toContain(phone.key);
+    expect(existsSync(mark)).toBe(false);
+  });
+
+  test("a page the PC refuses, and a read the service does not answer to its end, are no whole read: the list stays closed to everybody", async () => {
+    const pc = await following();
+    const phone = await listMember();
+    await pc.account.addDevice(phone);
+    await pc.pin();
+    await pc.account.remove(phone.key);
+    pc.world.forgets = true;
+    const failing = copyUnwritable();
+    try { await pc.pull(); pc.list.stop(); } finally { failing.mockRestore(); }
+    const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
+    // the service answers the log with a page out of form
+    again.world.log = () => ({ list: pc.account.id, entries: "none", head: null });
+    again.list.start();
+    await again.pull();
+    expect(again.list.status().last_verdict).toContain("refused");
+    expect(again.list.role(pc.account.first.key)).toBeNull();
+    // a read that reaches the service's head lets the others in again
+    again.world.log = null;
+    await again.pull();
+    again.world.seconds += PC_READ_SECONDS;
+    again.list.tick();
+    await again.list.settled();
+    expect(again.list.role(pc.account.first.key)).toBe("drive");
+    expect(again.list.role(phone.key)).toBeNull();
+  });
+
+  test("a naming that waited when the follower stopped makes no keys", async () => {
+    const pc = await following();
+    const naming = pc.list.wantList(pc.account.id);
+    pc.list.stop();
+    await naming;
+    await pc.list.settled();
+    expect(existsSync(join(pc.stateDir, ACCOUNT_LIST_KEYS_FILE))).toBe(false);
   });
 
   test("a restart with nothing owed lets the list's devices in with the service away, and leaves no mark behind a saved change", async () => {

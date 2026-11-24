@@ -187,6 +187,50 @@ describe("a session open under the account's id for a key, at the moment the PC 
   });
 });
 
+describe("a second Ovis server on the state folder, when the first one pins", () => {
+  /** A PC that is not pinned yet, with a row under the account's id for a key the list will not hold, and a second server on its folder. */
+  async function twoServers(step2: boolean) {
+    const pc = await listedPc();
+    const outside = await listMember();
+    expect((await v1Add(pc, outside, "Outside"))[0]).toMatchObject({ outcome: "applied" });
+    const second = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: step2, accountService: pc.accountService });
+    closes.push(() => second.app.stop());
+    const link = await relayConnection(second, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(outside))).toMatchObject({ role: "drive" });
+    // the first server pins
+    await pc.list.wantList(pc.account.id);
+    await pc.account.addPostedPc(pc.endpoint);
+    await pc.pull();
+    expect(pc.list.status().pinned).toBe(true);
+    const signsIn = async (device: Signer) => await (await relayConnection(second, { serverId: pc.serverId })).auth(device).then((ok) => ok.role, () => null);
+    return { pc, second, outside, link, signsIn };
+  }
+
+  test("one that follows the list too closes its sessions under an account's id and decides by the list from then on", async () => {
+    const { pc, second, outside, link, signsIn } = await twoServers(true);
+    second.app.context.services.accountList!.tick();
+    expect(await bounded(link.serverError.then(String), 2000).catch(() => "still open")).toBe("auth_changed");
+    expect(second.app.context.services.devices.listFollowed()).toBe(true);
+    expect(await signsIn(pc.idOf(outside))).toBeNull();
+  });
+
+  test("one that was started with Step 2 off, and so follows no list, closes its account part: no session under an account's id, no account record, and it says why", async () => {
+    const { pc, second, outside, link, signsIn } = await twoServers(false);
+    const { devices } = second.app.context.services;
+    expect(second.app.context.services.accountList).toBeNull();
+    second.app.context.services.pinWatch!();
+    expect(await bounded(link.serverError.then(String), 2000).catch(() => "still open")).toBe("auth_changed");
+    expect(await signsIn(pc.idOf(outside))).toBeNull();
+    expect(devices.accountError).toContain("pinned to its account's signed list");
+    // a member's signed add adds nobody there
+    const stranger = await listMember();
+    const add = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: stranger.key, label: "Stranger", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: pc.member.publicKey }, pc.member.keys.privateKey);
+    expect((await applyAccountRecords(devices, [add], pc.serverId))[0]).toMatchObject({ outcome: "refused" });
+    // the pairing this PC made itself, under an id of its own, still opens it
+    expect(await signsIn({ keys: pc.member.keys, publicKey: pc.member.publicKey, id: pc.member.id })).toBe("drive");
+  });
+});
+
 describe("R2 (C/G): a read that the account service answers slowly holds back nothing the PC has verified", () => {
   test("a removal a member hands over is applied while a service read hangs", async () => {
     const pc = await pinnedPc();
@@ -360,6 +404,42 @@ describe("R6 (F): the other state folder of a pinned PC, which does not hold the
     pc.time.advance(JOIN_HOLD_MS + 1_000);
     expect(home.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
     expect(await signsIn(home)).toBe("drive");
+  });
+
+  test("that start writes nothing: every file both folders held keeps its bytes, and neither gains a file of this PC's devices or account", async () => {
+    const pc = await pinnedPc();
+    pc.fixture.app.stop();
+    const { cpSync, mkdtempSync, readdirSync, rmSync, statSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const b = mkdtempSync(join(tmpdir(), "ovis-rv-sib-"));
+    closes.push(() => rmSync(b, { recursive: true, force: true }));
+    cpSync(pc.fixture.stateDir, b, { recursive: true });
+    const doc = JSON.parse(readFileSync(join(b, "account-pc.json"), "utf8")) as { binding: Record<string, unknown> };
+    delete doc.binding.list;
+    writeFileSync(join(b, "account-pc.json"), JSON.stringify({ ...doc, v: 1 }));
+    // every file of a folder, by its path under it
+    const files = (dir: string): Map<string, string> => {
+      const found = new Map<string, string>();
+      const walk = (at: string) => {
+        for (const name of readdirSync(join(dir, at))) {
+          const path = join(at, name);
+          if (statSync(join(dir, path)).isDirectory()) walk(path); else found.set(path, readFileSync(join(dir, path)).toString("base64"));
+        }
+      };
+      walk("");
+      return found;
+    };
+    const before = { a: files(pc.fixture.stateDir), b: files(b) };
+    const again = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
+    again.app.stop();
+    const after = { a: files(pc.fixture.stateDir), b: files(b) };
+    for (const side of ["a", "b"] as const) {
+      for (const [path, bytes] of before[side]) expect([side, path, after[side].get(path) === bytes]).toEqual([side, path, true]);
+    }
+    // what a start makes anew is its own log and guards, never a record of devices, of the account or of a merge
+    const made = [...after.a.keys()].filter((path) => !before.a.has(path)).concat([...after.b.keys()].filter((path) => !before.b.has(path)));
+    expect(made.filter((path) => /devices|account|merge|tombstone|safety|journal|evidence/.test(path))).toEqual([]);
+    expect([...after.a.keys()].filter((path) => !before.a.has(path))).toEqual([]);
   });
 
   test("with Step 2 turned off in that folder it is closed all the same: a member's v1 add adds nobody", async () => {
