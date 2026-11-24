@@ -44,9 +44,10 @@ the user's and the project's own approvals in place. Only the versions those run
 
 - **agy 1.5.16**, also in its narrowest asking launch: `--settings` for the run (before `acp`) with
   `toolPermission` `strict`, an `ask` rule for every write, command, URL, file read and MCP call, no
-  allow rule and no trusted workspace, and `--include-default-customizations=false`. Its built-in web
-  search still runs unasked: no setting or session `_meta` tried brings it to a card. A workspace
-  `PreToolUse` hook answering `auto_approve` still answers for the person.
+  allow rule and no trusted workspace of its own, and `--include-default-customizations=false`. Its
+  built-in web search still runs unasked: no setting or session `_meta` tried brings it to a card. The
+  folder's own setup still loads: a workspace `PreToolUse` hook answering `auto_approve` answers for
+  the person, and an MCP server the folder configures starts (its tool calls still ask).
 
 Settings names agy, Codex and Copilot under
 **Agents they may call**: the allow rules a person set in them, a project folder's included,
