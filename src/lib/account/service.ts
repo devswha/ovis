@@ -11,7 +11,7 @@ import { newRecordId, pcAddSigningBytes, registerSigningBytes, type AccountRecor
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
-import { genesisBody, hintOf, pageOf, wrapsOf, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
+import { genesisBody, hintOf, nowOf, pageOf, wrapsOf, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
 import type { PcProofFields } from "./pcProof.ts";
 import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
@@ -760,9 +760,10 @@ export class AccountService {
    * The signed list the account service names for this account, with the head it says the list has (`GET
    * /v2/lists/mine`; docs/account-list.md, "On a device"): null for an account that may have a list and has none, and
    * "off" for one the service keeps no lists for (404: it is not on the service's switch, or the service has no such
-   * route). All of it is a hint: a device follows a list only by its own evidence.
+   * route). `now` is the service's clock in seconds, where it says it. All of it is a hint: a device follows a list
+   * only by its own evidence.
    */
-  async accountList(signal?: AbortSignal): Promise<ListHint | null | "off"> {
+  async accountList(signal?: AbortSignal): Promise<{ readonly hint: ListHint | null; readonly now: number | null } | "off"> {
     let body: unknown;
     try { body = await this.listCall("GET", "/v2/lists/mine", undefined, signal); }
     catch (error) {
@@ -771,7 +772,7 @@ export class AccountService {
     }
     const hint = hintOf(body);
     if (hint === undefined) throw new AccountServiceError(502, "invalid_answer", "The account service sent no list");
-    return hint;
+    return { hint, now: nowOf(body) };
   }
 
   /**

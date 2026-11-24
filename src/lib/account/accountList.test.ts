@@ -24,6 +24,8 @@ const ACCOUNT = "acct_owner";
 const MINUTE = 60_000;
 
 let now = 1_795_000_000_000;
+/** how far the account service's clock runs apart from the devices', in ms */
+let serviceOff = 0;
 let fake: FakeAccountService;
 /** every challenge the account service handed out for a key proof */
 let challenges: { challenge_id: string; challenge: string }[];
@@ -183,7 +185,8 @@ async function strangers(kind: (key: string, place: { list: string; seq: number 
 beforeEach(() => {
   now = 1_795_000_000_000;
   challenges = [];
-  fake = new FakeAccountService(() => now);
+  serviceOff = 0;
+  fake = new FakeAccountService(() => now + serviceOff);
   fake.opensAll = true;
   fake.listAccounts = ACCOUNT;
 });
@@ -387,6 +390,36 @@ describe("the first device of an account with nobody in it", () => {
     const key = await crypto.subtle.importKey("spki", new Uint8Array(fromBase64Url(registered)), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
     const bytes = pcAddSigningBytes("list-genesis", ACCOUNT, held().id, "", proof.challenge_id, issued.challenge);
     expect(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, new Uint8Array(fromBase64Url(proof.signature)), bytes)).toBe(true);
+  });
+
+  it("dates entry 0 by its own clock, and no later than the account service's where the device's runs ahead", async () => {
+    fake.listAccounts = "*";
+    const dated = async (off: number, account: string): Promise<number> => {
+      serviceOff = off;
+      const from = await device({ account });
+      expect(following(await from.list.sync()).standing).toBe("in");
+      return readBody(entryFromText(held(account).entries[0]!).body).issued_at;
+    };
+    const here = Math.floor(now / 1000);
+    expect(await dated(0, "acct_on_time")).toBe(here);
+    // the service's clock a day behind this device's: its time, which it will take
+    expect(await dated(-24 * 60 * MINUTE, "acct_ahead")).toBe(here - 24 * 60 * 60);
+    // and an hour ahead of it: the device's own
+    expect(await dated(60 * MINUTE, "acct_behind")).toBe(here);
+  });
+
+  it("signs another genesis after the account service refused the first as an entry, which it then never placed", async () => {
+    const phone = await device();
+    phone.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname === "/v2/lists"
+      ? Response.json({ error: { code: "entry_refused", message: "x", index: 0, outcome: "service", reason: "issued_at_ahead" }, now: 1 }, { status: 400 }) : null;
+    expect((await phone.list.sync()).status).toEqual({ at: "none", why: "refused" });
+    expect([await phone.lists.get("genesis", ACCOUNT), fake.accountList(ACCOUNT)]).toEqual([undefined, null]);
+    const first = phone.sent.find((each) => each.path === "/v2/lists")!.body!.entry;
+    phone.wire.answer = null;
+    now += NO_LIST_SECONDS * 1000;
+    expect(following(await phone.list.sync()).standing).toBe("in");
+    expect(held().entries).toHaveLength(1);
+    expect(held().entries[0]).not.toBe(first);
   });
 
   it("is told so, and starts nothing, when its sign-in is old and has no key to prove", async () => {

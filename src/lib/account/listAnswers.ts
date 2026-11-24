@@ -40,6 +40,14 @@ export function placeOf(value: unknown): ListPlace | null {
   return isRecord(value) && isCount(value.seq) && typeof value.hash === "string" && isListHash(value.hash) ? { seq: value.seq, hash: value.hash } : null;
 }
 
+/**
+ * The account service's clock as an answer carries it (`now`, seconds), or null. It is a hint like the rest: a device
+ * uses it only to date an entry no later than the service will take, never to judge anything.
+ */
+export function nowOf(body: unknown): number | null {
+  return isRecord(body) && isCount(body.now) ? body.now : null;
+}
+
 /** `{ list, head }`, or `{ list: null }` as null; undefined for anything else. */
 export function hintOf(body: unknown): ListHint | null | undefined {
   if (!isRecord(body)) return undefined;

@@ -928,6 +928,10 @@ not in the list), and `never` starts none; both are for testing.
   a list it reads entry 0 and sees whether it is its own. Two tabs take turns, so one of them signs
   it and the other finds it; in a browser without Web Locks both may sign one, and the account
   service takes one of the two.
+- **Entry 0 is dated by the device's clock, and no later than the account service's**, which the
+  answer to `GET /v2/lists/mine` carries: the service takes no entry dated more than ten minutes
+  ahead of its own clock. A genesis that the service refuses as an entry was not placed and never
+  will be as it is, so the device forgets it and signs another at its next read.
 - **One list per account.** Of two devices that start at once the account service takes one
   (`409 list_exists` for the other). The other device reads entry 0 of the list the service then
   names, sees that it is not signed with its own key, and follows none of it: it is in no list
@@ -950,10 +954,21 @@ that they are in one place when it is built:
 - **It never writes a member without a name because the list was left untidy.** `sealEpoch` says
   no after a removal, and also while an invite that a PC joins with by itself is past its `exp`
   unused, or a device that is in is past its `until`: whoever holds such a key still has the
-  current epoch's key. Before an entry that carries names the device then places, in the same
-  request, what tidies up (`remove` of that invite's or device's key, then `epoch`, with the next
-  key wrapped to whoever stays), and after them the entry with its names sealed under the new
-  epoch.
+  current epoch's key. Before an entry that carries names the device then places what tidies up,
+  as the removal the kinds build: the `remove` of that invite's or device's key, then one `epoch`,
+  with the next key wrapped to whoever stays. After it comes the entry, with its names sealed
+  under the new epoch.
+- **It opens an epoch only after a removal.** The account service takes an `epoch` entry only
+  while `sealEpoch` says no, and for an invite or a device whose time is over only directly after
+  its `remove`. A device never opens one for any other reason, and after a request that was not
+  placed it makes the next epoch's key anew: none of that request's wraps were kept.
+- **It dates an entry by its own clock, and no later than the account service's.** The service
+  takes no entry dated more than ten minutes ahead of its clock, and the list's own time never
+  goes back, so a device whose clock runs ahead uses the time the service's last answer carried.
+- **What the service answers a placement** besides taking it: `409 head_moved` (read, sign
+  again), `503 list_rebuilding` (the same request again, the same signatures), `503 list_stopped`
+  (told as "the list cannot be changed right now", never as a removal), `429 entry_budget` (wait
+  as long as it says).
 - **A device of power `full` that is in front does that tidying by itself** when it sees such an
   invite or device, at the list's own pace, without waiting for somebody's next act.
 - An invite past its `exp` is shown as expired, never as open.

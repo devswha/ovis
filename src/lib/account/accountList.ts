@@ -358,12 +358,15 @@ export function accountList(options: AccountListOptions): AccountList {
    * saved copy holds it or the account turns out to have another list: a lost answer or a closed page makes no
    * second one.
    */
-  const start = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, signal: AbortSignal): Promise<"placed" | "exists" | NoGenesis> => {
+  const start = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, serviceNow: number | null, signal: AbortSignal): Promise<"placed" | "exists" | NoGenesis> => {
     const refused = await mayStart(bound, session, signal);
     if (refused !== null) return refused;
     let pending = readPending(await store.get("genesis", session.account), keys);
     if (pending === null) {
-      pending = { key: keys.key, ...await makeGenesis({ account: session.account, keys, names: options.names?.() ?? null, now: now() }) };
+      // The account service takes no entry dated ahead of its own clock by more than ten minutes, and the list's own
+      // time never goes back: entry 0 is dated by this device's clock, and no later than the service's where it said it.
+      const dated = serviceNow === null ? now() : Math.min(now(), serviceNow * 1000);
+      pending = { key: keys.key, ...await makeGenesis({ account: session.account, keys, names: options.names?.() ?? null, now: dated }) };
       await store.set("genesis", session.account, { v: RECORD_VERSION, ...pending });
     }
     try {
@@ -372,7 +375,10 @@ export function accountList(options: AccountListOptions): AccountList {
       const said = refusalOf(error);
       if (said === null || said.status === 429 || said.status >= 500) throw error;
       if (said.status === 403 && said.code === "own_sign_in_required") return "not_own_sign_in";
-      return said.status === 403 && (said.code === "frozen" || said.code === "session_not_fresh") ? said.code : "refused";
+      if (said.status === 403 && (said.code === "frozen" || said.code === "session_not_fresh")) return said.code;
+      // the entry itself was refused, so it was not placed and never will be as it is: the next try signs another
+      if (said.status === 400) await store.set("genesis", session.account, undefined);
+      return "refused";
     }
   };
 
@@ -454,18 +460,19 @@ export function accountList(options: AccountListOptions): AccountList {
   };
 
   /** What a round does with the list the account service names (`named`: null for none); `loaded` is what this device saved. */
-  const follow = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, loaded: Held, told: ListHint | null, signal: AbortSignal): Promise<Held> => {
+  const follow = async (bound: AccountService, session: AccountSession, keys: DeviceListKeys, loaded: Held, told: ListHint | null, serviceNow: number | null, signal: AbortSignal): Promise<Held> => {
     const { account } = session;
     let hint = told;
     let copy = loaded.copy;
     const fresh = copy === null;
     if (copy === null) {
       if (hint === null) {
-        const started = await start(bound, session, keys, signal);
+        const started = await start(bound, session, keys, serviceNow, signal);
         if (started !== "placed" && started !== "exists") return { ...loaded, without: { at: "none", why: started } };
         const after = await bound.accountList(signal);
-        if (after === "off" || after === null) throw new AccountServiceError(502, "invalid_answer", "The account service took a list and names none");
-        hint = after;
+        const named = after === "off" ? null : after.hint;
+        if (named === null) throw new AccountServiceError(502, "invalid_answer", "The account service took a list and names none");
+        hint = named;
       }
       // a list that is not this device's own is not read again while the account service names it
       if (loaded.without.at === "not_in" && loaded.without.why === "not_mine" && loaded.without.list === hint.list) return loaded;
@@ -538,8 +545,11 @@ export function accountList(options: AccountListOptions): AccountList {
       if (told !== null && told <= at && at - told < OFF_SECONDS) return off(told);
       offAt = null;
       let hint: ListHint | null | "off" | undefined;
+      let serviceNow: number | null = null;
       try {
-        hint = await bound.accountList(signal);
+        const answer = await bound.accountList(signal);
+        if (answer === "off") hint = "off";
+        else ({ hint, now: serviceNow } = answer);
       } catch (error) {
         if (!unreached(error)) throw error;
       }
@@ -565,7 +575,7 @@ export function accountList(options: AccountListOptions): AccountList {
       let reached = hint !== undefined && hint !== "off";
       if (hint !== undefined && hint !== "off") {
         try {
-          next = await follow(bound, session, keys, loaded, hint, signal);
+          next = await follow(bound, session, keys, loaded, hint, serviceNow, signal);
         } catch (error) {
           if (!unreached(error)) throw error;
           // what this device saved stands as it is
