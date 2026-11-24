@@ -3676,6 +3676,16 @@ export class DeviceStore {
   /** Every key this PC keeps out, signed removal or not (a Revoke here, a record that no longer parses): /api/account/status `blocked`. */
   tombstoneKeys(): string[] { return [...new Set(this.tombstones.map((t) => t.key))]; }
 
+  /**
+   * Whether this PC holds a removal of its own against `key`: a person's Revoke here, a signed removal or block it
+   * applied, or a removal a member handed it with an enrollment. Nothing the account service says unsigned is one.
+   */
+  holdsRemoval(key: string): boolean {
+    const account = this.account() ?? undefined;
+    return this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0 || this.accountHeld?.(key) === true
+      || this.coveredByEvidence({ relay_public_key: key, account }) || (this.safety?.state().freezes.some(({ record }) => record.target === key) ?? false);
+  }
+
   /** The signed `add`s behind this PC's account rows, as received: what /api/account/status lists. One that no longer parses or names another key is left out. */
   accountAdds(): AddRecord[] {
     const account = this.account();

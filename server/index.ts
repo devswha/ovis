@@ -442,6 +442,8 @@ export function createServer(
       return { account: binding === null || binding.pending === true ? null : binding.account, serverId };
     },
     rows: () => accountRows.store()?.witnessed() ?? null,
+    // the clock a waiting row's time runs on: it only moves forward, as the record's running time must
+    mono: () => devices.waitClock().now(),
   });
   // the account's signed list, read beside the snapshot and compared with it: it lets nobody in yet (list-follow.ts)
   const accountList = pcAccount === null ? null : new ListFollow({
@@ -463,6 +465,7 @@ export function createServer(
       store.expire();
     },
     mayAdmit: (key) => { const account = devices.account(); return account !== null && devices.admitsFromList(key, account) && !accountMailbox.listHeld(key); },
+    holdsRemoval: (key) => devices.holdsRemoval(key),
     // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
     repinned: () => {
       for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);

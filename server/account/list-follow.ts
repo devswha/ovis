@@ -31,6 +31,7 @@ import {
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
 import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
+import { heirOf, heldOut, standsFor } from "../../shared/account-list-migrate.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -297,6 +298,11 @@ export interface ListFollowDeps {
   /** Whether this PC's own guards let the key in as a device of its list: a key it removed or holds back stays out. */
   mayAdmit?(key: string): boolean;
   /**
+   * Whether this PC holds a removal of its own against `key`: a person's Revoke here, a signed removal or block it
+   * applied. A pinned PC keeps the device of such a key out by whichever key the list holds it by (heldOut).
+   */
+  holdsRemoval?(key: string): boolean;
+  /**
    * The PC has just pinned its list: the sessions of the account rows it held until now end as rows that changed, not
    * as devices that were removed, so each app signs in again by itself, with the key the list holds for it.
    */
@@ -402,6 +408,11 @@ export class ListFollow implements ListAuthority {
   private readonly kept = new Set<string>();
   /** When a person last named a list here, in milliseconds: for a while after it the PC reads often, as someone waits beside it. */
   private wantedAt: number | null = null;
+  /**
+   * The keys the account service's last whole snapshot of this run let in, or null before one: a pinned PC lets a key
+   * that a `carried` entry named, and that never handed its place on, in only while the snapshot names it too.
+   */
+  private snapshotNames: ReadonlySet<string> | null = null;
   private readonly differences = new Set<string>();
   private readonly ids = new WeakMap<FollowerCopy, Map<string, string>>();
   private turn: Promise<unknown> = Promise.resolve();
@@ -469,7 +480,7 @@ export class ListFollow implements ListAuthority {
   role(key: string): ListRole | null | undefined {
     if (!this.pinned()) return undefined;
     const copy = this.clocked();
-    if (copy === null || this.alarmLost || this.mustRead || this.owedKey(key)) return null;
+    if (copy === null || this.alarmLost || this.mustRead || this.owedKey(key) || this.keptOut(copy)(key)) return null;
     const answer = admitsSession(copy, key, this.seconds());
     // refused for its time: the hour that says so is on disk before the answer is used, so no clock set back undoes it
     const until = copy.state?.devices[key]?.until ?? null;
@@ -488,6 +499,28 @@ export class ListFollow implements ListAuthority {
     if (role === undefined || role === null) return null;
     const state = this.copy?.state ?? null;
     return role === "drive" && state !== null && signerPower(state, key) === "full";
+  }
+
+  /**
+   * The devices of the copy a pinned PC keeps out by a rule of its own, which the list does not make: one it holds a
+   * removal against by any key the device has been in the list by, or by a sign-in key that vouched for it (heldOut);
+   * and a key a `carried` entry named that never handed its place on, while the account service's last whole snapshot
+   * of this run does not name it too. That one stays out until the snapshot names it again: local, and undone by the
+   * same word, as nobody signs a removal on the service's word.
+   */
+  private keptOut(copy: FollowerCopy): (key: string) => boolean {
+    const state = copy.state;
+    if (state === null || state.needs_replay !== undefined) return () => false;
+    const vouched = this.vouchedFor(copy.list);
+    const holds = this.deps.holdsRemoval;
+    const removed = holds === undefined ? [] : [...new Set([...Object.keys(state.signers), ...vouched.map((vouch) => vouch.device)])].filter((key) => holds(key));
+    const alone = new Set(carriedAlone(state));
+    return (key) => (alone.has(key) && this.snapshotNames?.has(key) !== true) || (removed.length > 0 && heldOut(state, { removed, vouched }, key));
+  }
+
+  /** The vouches this PC holds for the list `list` that hold: a sign-in key's word, with the member key's, that the two are one device's. */
+  private vouchedFor(_list: string): readonly { readonly key: string; readonly device: string }[] {
+    return [];
   }
 
   /**
@@ -1534,6 +1567,13 @@ export class ListFollow implements ListAuthority {
    * whatever read of the list the same pull began, and never awaited by the snapshot read.
    */
   shadowSnapshot(eligible: readonly string[]): void {
+    const was = this.snapshotNames;
+    this.snapshotNames = new Set(eligible);
+    // a pinned PC lets a carried key that never handed over in only while the snapshot names it: what this read changed of that is done now
+    const copy = this.copy;
+    if (this.isPinned && copy?.state != null && carriedAlone(copy.state).some((key) => (was?.has(key) ?? false) !== this.snapshotNames.has(key))) {
+      void this.enqueue(async () => { await this.ready; this.settle(); });
+    }
     void this.enqueue(() => {
       const copy = this.shadow();
       if (copy === null) return;
@@ -1670,6 +1710,7 @@ export class ListFollow implements ListAuthority {
     this.lineProof = null;
     this.ready = Promise.resolve();
     this.differences.clear();
+    this.snapshotNames = null;
     this.lastVerdict = this.error = null;
     this.keysState = null;
     // the keys go with the relay identity, not with the binding: a PC that joins an account by its list has read them
@@ -2002,7 +2043,8 @@ export class ListFollow implements ListAuthority {
       const rows = listCommit(copy, now);
       // nobody while the copy does not show whom the PC lets in (a lost alarm, a removal it has not read again), and never a key the mark names
       const closed = this.alarmLost || this.mustRead;
-      this.deps.commit?.({ ...rows, devices: rows.devices.map((row) => (closed || this.owedKey(row.key) ? { ...row, eligible: false } : row)) }, readmission, pinning || this.freshPin ? () => true : (key) => this.allowing.has(key));
+      const out = this.keptOut(copy);
+      this.deps.commit?.({ ...rows, devices: rows.devices.map((row) => (closed || this.owedKey(row.key) || out(row.key) ? { ...row, eligible: false } : row)) }, readmission, pinning || this.freshPin ? () => true : (key) => this.allowing.has(key));
       this.dirty = !alarmKept;
       this.freshPin = false;
     } catch (error) {
@@ -2040,7 +2082,8 @@ export class ListFollow implements ListAuthority {
     // From the entries the PC verified, not from the view of them: a PC that then stopped at an entry its Ovis is too
     // old to place shows nobody (listView), and what the list removed before that entry is removed all the same
     for (const [key, row] of Object.entries(copy.state.signers)) {
-      const text = row.as !== "device" || row.ended === null ? undefined : copy.entries[row.ended];
+      // a key that handed its place on to another key of its own was not put out: its device is in by that key
+      const text = row.as !== "device" || row.ended === null || heirOf(copy.state, key) !== null ? undefined : copy.entries[row.ended];
       if (text === undefined) continue;
       const entry = entryFromText(text);
       const id = entryHash(entry.body);
@@ -2109,7 +2152,12 @@ function newlyOut(before: FollowerCopy | null, after: FollowerCopy): { readonly 
   if (state === null) return [];
   const was = before?.state?.signers ?? {};
   return Object.entries(state.signers).flatMap(([key, row]) =>
-    row.as === "device" && row.ended !== null && !(Object.hasOwn(was, key) && was[key]!.ended !== null) ? [{ key, seq: row.ended }] : []);
+    row.as === "device" && row.ended !== null && heirOf(state, key) === null && !(Object.hasOwn(was, key) && was[key]!.ended !== null) ? [{ key, seq: row.ended }] : []);
+}
+
+/** The keys a `carried` entry named that are in by themselves: they never handed their place on. */
+function carriedAlone(state: ListState): string[] {
+  return Object.entries(state.devices).flatMap(([key, device]) => (device.carried && standsFor(state, key) === key ? [key] : []));
 }
 
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {
@@ -2130,7 +2178,12 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
     if (row.ended !== null) removed.push({ key: row.key, no });
     else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: LIST_DEVICE_LABEL });
   }
-  return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed };
+  // a device that handed its place on keeps its row under the key it is in by now
+  const moved = state === null ? [] : Object.keys(state.signers).flatMap((from) => {
+    const to = heirOf(state, from) === null ? null : standsFor(state, from);
+    return to === null ? [] : [{ from, to }];
+  });
+  return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed, moved };
 }
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
