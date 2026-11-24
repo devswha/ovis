@@ -5,7 +5,10 @@ import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
 import type { ListPost } from "./listAnswers.ts";
 import { lineChallenge } from "../../../shared/account-list-invite.ts";
-import { listView } from "../../../shared/account-list.ts";
+import { listView, signListEntry } from "../../../shared/account-list.ts";
+import { deviceListKeys } from "./listKeys.ts";
+import { memoryAccountStore } from "./store.ts";
+import type { AccountList } from "./accountList.ts";
 import { addPostedPc } from "./listAdd.ts";
 import { addInvitedPc, invitedPcs } from "./listInvited.ts";
 import { invitesOf, makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
@@ -119,6 +122,62 @@ describe("Add for a PC that joined with an invite", () => {
     const sent = first.sent.filter((each) => each.route.endsWith("/entries")).at(-1)!.body!.entries as string[];
     expect(sent.map((text) => readBody(entryFromText(text).body).kind)).toEqual(["remove"]);
     expect(listView(w.held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
+  });
+
+  it("reports nothing as its own where a Revoke took its place at the same head (C1)", async () => {
+    const { w, first, invite, pc } = await invited();
+    await listedAndPosted(w, first, pc);
+    const [found] = await invitedPcs(first.list, [await posted(w, first, invite, pc)], w.clock.now);
+    const entries = w.held().entries.length;
+    let raced = false;
+    // another page revokes the invite between this Add's look at the head and its own keep: the Revoke's request is
+    // kept for that head (the account service turns it away for now), and this Add's keep gets it back
+    const page: AccountList = { ...first.list, keep: async (writer, request) => {
+      if (!raced) {
+        raced = true;
+        w.fake.tamperList(w.held().id, { headMoved: true });
+        await revokeInvite(first.list, invite.key, noWait);
+        w.fake.untamperList(w.held().id);
+      }
+      return first.list.keep(writer, request);
+    } };
+    expect(await addInvitedPc(page, found!, null, { ...noWait, admit: async () => {} })).toMatchObject({ added: false, why: "waiting" });
+    expect(w.held().entries.length).toBe(entries);
+    expect((await first.list.sync()).pcs).toEqual([]);
+  });
+
+  it("places the invite's removal in the very request that opens an epoch for the PC's entry (C5)", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's Mac" });
+    await first.list.sync();
+    // an invite a PC joins with by itself holds the epoch's key, and runs out unused within a minute: the next name
+    // needs a new epoch
+    const keys = await first.keys();
+    const unusedKey = (await deviceListKeys(memoryAccountStore())).key;
+    const at = Math.floor(w.clock.now / 1000);
+    const unused = await signListEntry(w.held().state, { kind: "invite", key: unusedKey, exp: at + 60, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+    await first.service.placeEntries(w.held().id, [unused.text], []);
+    await first.list.sync();
+    w.clock.now += 2 * 60_000;
+    const made = await makeInvite(first.list, { auto: false, ...noWait });
+    if (!made.made) throw new Error(`${made.why} ${made.code}`);
+    const pc = await askingPc();
+    await listedAndPosted(w, first, pc);
+    const [found] = await invitedPcs(first.list, [await posted(w, first, made.invite, pc)], w.clock.now);
+    expect(await addInvitedPc(first.list, found!, { label: "Studio PC", os: "linux" }, { ...noWait, admit: async () => { await first.service.admitPc(pc.server_id); } })).toEqual({ added: true });
+    const sent = first.sent.filter((each) => each.route.endsWith("/entries")).at(-1)!.body!.entries as string[];
+    expect(sent.map((text) => readBody(entryFromText(text).body).kind)).toEqual(["remove", "epoch", "pc", "remove"]);
+    expect(invitesOf(first.list, w.clock.now).find((row) => row.key === made.invite.key)?.state).toBe("used");
+  });
+
+  it("signs nothing where the member key is not the one the press was made with (C2)", async () => {
+    const { w, first, invite, pc } = await invited();
+    await listedAndPosted(w, first, pc);
+    const [found] = await invitedPcs(first.list, [await posted(w, first, invite, pc)], w.clock.now);
+    const entries = w.held().entries.length;
+    let admitted = 0;
+    expect(await addInvitedPc(first.list, found!, null, { ...noWait, admit: async () => { admitted += 1; }, member: "a-key-another-tab-replaced", expect: { account: w.account, list: found!.list } })).toMatchObject({ added: false, why: "changed" });
+    expect([admitted, w.held().entries.length]).toEqual([0, entries]);
   });
 
   it("judges the invite again on the state it signs on: one that ran out while the admission was on its way signs nothing", async () => {
