@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { closeNotice, closeStoredNotice, readNoticesSeen, writeNoticesSeen, type ListNewcomer } from "./listNotices.ts";
+import { signListEntry } from "../../../shared/account-list.ts";
+import { listWorld } from "./accountList.test-helpers.ts";
+import { deviceListKeys } from "./listKeys.ts";
+import { closeNotice, closeStoredNotice, listNewcomers, readNoticesSeen, writeNoticesSeen, type ListNewcomer } from "./listNotices.ts";
+import { memoryAccountStore } from "./store.ts";
 
 describe("what the device notices have shown", () => {
   let descriptor: PropertyDescriptor | undefined;
@@ -48,5 +52,17 @@ describe("what the device notices have shown", () => {
   it("reads no record kept for another member of the same list: a device with a new key looks for the first time", () => {
     writeNoticesSeen("acct", { list: "l", member: "old key", floor: 9, closed: [] });
     expect(readNoticesSeen("acct", "l", "new key")).toBeNull();
+  });
+
+  it("N03: a device carried into the list from before it is no news, whatever the floor", async () => {
+    const w = listWorld();
+    const phone = await w.device({ label: "Dana's phone" });
+    await phone.list.sync();
+    const keys = await phone.keys();
+    const tablet = await deviceListKeys(memoryAccountStore());
+    // carried in right after entry 0, signed here and never placed: the kinds' state is all this reads
+    const carried = await signListEntry(w.held().state, { kind: "carried", key: tablet.key, role: "drive", sealed: null }, { key: keys.key, privateKey: keys.signs }, Math.floor(w.clock.now / 1000));
+    expect(carried.state.devices[tablet.key]?.carried).toBe(true);
+    expect(listNewcomers(carried.state, keys.key, { list: carried.state.list, member: keys.key, floor: 0, closed: [] })).toEqual([]);
   });
 });

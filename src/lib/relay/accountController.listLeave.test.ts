@@ -3,10 +3,11 @@ import { listView, signListEntry } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { addListPc, listWorld, type WorldDevice } from "../account/accountList.test-helpers.ts";
 import { allowDevice } from "../account/listAllow.ts";
-import { accountList } from "../account/accountList.ts";
+import { accountList, type AccountList, type AccountListView } from "../account/accountList.ts";
 import { removeFromList, scopeOf } from "../account/listRemoveDevice.ts";
 import { memoryListLock } from "../account/listStore.ts";
 import { newKey, type AccountSession } from "../account/store.ts";
+import { signInReturn } from "../account/signin.ts";
 import { createAccountController } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -337,6 +338,131 @@ describe("the hosted shell and a device's place in its account's signed list", (
     await until(() => shell.state?.kind === "signed-out" && shell.state.notice !== undefined);
     expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "This browser was removed from this account and cannot be added again while it is signed in to acct_other here. Sign out of that account in this browser first, or use another browser." });
     expect((await device.keys()).key).toBe(key);
+  });
+
+  it("C10: a removal read for one account while another account's sign-in is stored ends that other sign-in in no way", async () => {
+    const w = listWorld("acct_owner", Date.now());
+    const device = await w.device({ label: "Dana's laptop" });
+    await device.list.sync();
+    const key = (await device.keys()).key;
+    const owner = device.session;
+    const other: AccountSession = { ...owner, account: "acct_other", access_token: w.fake.issueToken("acct_other"), sign_in_id: "sign-in-other", signed_in_at: w.clock.now };
+    const signInKey = await newKey();
+    await device.store.set("session", other);
+    await device.store.set("signin_key", { account: "acct_other", sign_in_id: "sign-in-other", key: signInKey, no: w.fake.registerSessionKey(other.access_token, signInKey.public_spki, "Dana's laptop") });
+    await device.list.sync();
+    const theirs = w.fake.accountList("acct_other")!.entries.length;
+    await device.store.set("session", owner);
+    await device.list.sync();
+    const tablet = await w.device({ label: "Dana's tablet" });
+    await tablet.list.sync();
+    const offer = await allowDevice(device.list, { key: (await tablet.keys()).key, label: "Dana's tablet", os: "android" }, noWait);
+    if (!offer.allowed) throw new Error(offer.why);
+    await tablet.list.adopt(offer.offer);
+    // the tablet puts the laptop out of the first account, and the laptop's copy reads it
+    expect(await removeFromList(tablet.list, { keys: [key], pcs: [] }, noWait)).toEqual({ removed: true });
+    const out = await device.list.sync();
+    expect(out.status).toMatchObject({ at: "following", standing: "out" });
+    // the page hears that view while another tab has stored the other account's sign-in
+    await device.store.set("session", other);
+    const heard: ((view: AccountListView) => void)[] = [];
+    const page: AccountList = { ...device.list, subscribe: (listener) => { heard.push(listener); return () => {}; } };
+    shellOf(device, page);
+    asked = [];
+    for (const listener of heard) listener(out);
+    await until(async () => !(await device.list.follows(w.account)));
+    expect(await device.store.get("session")).toEqual(other);
+    expect(asked.filter((call) => call.startsWith("POST /v1/signout"))).toEqual([]);
+    expect(w.fake.accountList("acct_other")!.entries).toHaveLength(theirs);
+    expect(w.fake.accountList("acct_other")!.state.signers[key]?.ended).toBeNull();
+  });
+
+  /** `pc`, a PC of the list with power full, lets `newcomer` in by an entry of its own (as an Allow at the PC does). */
+  async function admitByPc(w: ReturnType<typeof listWorld>, pc: Awaited<ReturnType<typeof addListPc>>, newcomer: WorldDevice): Promise<void> {
+    const key = (await newcomer.keys()).key;
+    const claim = (await newcomer.service.listClaims(w.held().id)).find((each) => each.key === key)!;
+    const admitted = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: false },
+      { key: pc.key, privateKey: pc.signs }, Math.floor(w.clock.now / 1000));
+    await newcomer.service.placeEntries(w.held().id, [admitted.text], []);
+  }
+
+  /** A shell over `device` whose account service asks for a fresh sign-in at the first Sign out every device; everything else goes to the world's service. */
+  const freshAskingShell = (w: ReturnType<typeof listWorld>, device: WorldDevice, extra: { openSignIn?: (url: string) => void } = {}) => {
+    let asks = 0;
+    return createAccountController({
+      container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: device.store, accountService: device.session.service,
+      accountFetch: async (input, init) => {
+        const request = new Request(input, init);
+        const { pathname } = new URL(request.url);
+        asked.push(`${request.method} ${pathname}`);
+        if (pathname === "/v1/pcs") return Response.json({ pcs: [] });
+        if (pathname === "/v1/signout/all") return asks++ === 0 ? Response.json({ error: { code: "reauth_required", message: "Sign in again first" } }, { status: 403 }) : new Response(null, { status: 204 });
+        return w.fake.fetch(request);
+      },
+      renderApp: () => ({ render() {}, unmount() {} }),
+      accountList: device.list,
+      ...extra,
+    }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
+  };
+
+  describe("C07: in the phone app, sign out every device signs in again in place and reads the list again before it signs out", () => {
+    const savedFetch = globalThis.fetch;
+    afterEach(() => { Reflect.deleteProperty(globalThis, "Capacitor"); globalThis.fetch = savedFetch; });
+
+    it("a device let in while the sign-in again was out is asked about, and nobody is signed out", async () => {
+      const { w, first, second } = await twoDevices();
+      const pc = await addListPc(w, first, "Desk");
+      const kitchen = await w.device({ label: "Kitchen tablet" });
+      await kitchen.list.sync();
+      await first.store.set("session", { ...first.session, provider: "apple" });
+      const shell = freshAskingShell(w, first);
+      await shell.refresh(true);
+      await first.list.sync();
+      const named = [(await second.keys()).key];
+      // the app's own sign-in sheet; while it is up, the PC lets the kitchen tablet in
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: async () => ({ idToken: "apple-id-token" }) } });
+      globalThis.fetch = Object.assign(async () => {
+        await admitByPc(w, pc, kitchen);
+        return Response.json({ access_token: w.fake.issueToken(w.account), refresh_token: "refresh-again", expires_in: 3600, account: w.account, provider: "apple" });
+      }, { preconnect: savedFetch.preconnect });
+      asked = [];
+      const said = await shell.signOutEverywhere(undefined, { confirmed: named, shown: { account: w.account, scope: scopeOf(first.list.view()) } });
+      expect(said).toBe("Unnamed device came into your account since you asked. Nobody was signed out: ask again.");
+      expect(asked.filter((call) => call === "POST /v1/signout/all")).toHaveLength(1);
+    });
+  });
+
+  it("C08: back from a browser's sign-in again for sign out every device, a device let in meanwhile keeps everybody signed in", async () => {
+    const { w, first, second } = await twoDevices();
+    const pc = await addListPc(w, first, "Desk");
+    const kitchen = await w.device({ label: "Kitchen tablet" });
+    await kitchen.list.sync();
+    const redirected = Promise.withResolvers<string>();
+    const shell = freshAskingShell(w, first, { openSignIn: (url) => { redirected.resolve(url); } });
+    await shell.refresh(true);
+    await first.list.sync();
+    asked = [];
+    expect(await shell.signOutEverywhere(undefined, { confirmed: [(await second.keys()).key], shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+    const signInAt = await redirected.promise;
+    // while the browser is away, the PC lets the kitchen tablet in
+    await admitByPc(w, pc, kitchen);
+    w.fake.signInAs("github", w.account);
+    const back = (await w.fake.fetch(signInAt)).headers.get("location")!;
+    await shell.load(signInReturn(new URL(back).hash));
+    expect(asked.filter((call) => call === "POST /v1/signout/all")).toHaveLength(1);
+    const newcomer = (await kitchen.keys()).key;
+    expect(listView(w.held().state).devices.some((row) => row.key === newcomer && row.ended === null)).toBe(true);
+  });
+
+  it("C11: sign out every device asked for another account than the one the page shows signs nobody out", async () => {
+    const { w, first } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    asked = [];
+    expect(await shell.signOutEverywhere(undefined, { confirmed: [], shown: { account: "acct_other", scope: null } })).toBe("You signed in to another account. No device was signed out.");
+    expect(asked).not.toContain("POST /v1/signout/all");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
   });
 
   it("M2: sign out every device posts nothing where its own read after the removal shows a device the question did not name", async () => {
