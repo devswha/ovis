@@ -727,6 +727,7 @@ const BASE: Record<string, string> = {
   "Any turn finished": "毎ターンの完了",
   "Any turn finished takes in the long ones.": "毎ターンの完了をオンにすると、長いターンも含めて通知します。",
   "Stopped on an error": "エラーで停止",
+  "Stopped": "停止",
   "A turn that ended on an error, as OmO and GJC report it": "OmO と GJC が報告する、エラーで終わったターン",
   "Next": "次へ",
   "Setup: {count} left": "残りの設定 {count}",

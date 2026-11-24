@@ -732,6 +732,7 @@ const BASE: Record<string, string> = {
   "Any turn finished": "每回合完成",
   "Any turn finished takes in the long ones.": "开启每回合完成后，长回合也会一并提醒。",
   "Stopped on an error": "因错误停止",
+  "Stopped": "已停止",
   "A turn that ended on an error, as OmO and GJC report it": "OmO 和 GJC 报告的因错误结束的回合",
   "Next": "下一个",
   "Setup: {count} left": "剩余设置 {count} 项",
