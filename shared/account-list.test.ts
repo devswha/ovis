@@ -8,12 +8,12 @@ import {
 } from "./account-list-entry.ts";
 import {
   CARD_SIGNATURE_CHARS, EPOCH_LINK_BYTES, INVITE_SECONDS_MAX, INVITE_USES_MAX, LIST_CARD_PREFIX, LIST_LEVEL, LIST_LEVEL_TABLE, LIST_READ_PREFIX, ListKindError, ReadProofError,
-  SEALED_MIN_BYTES, admitsDevice, cardBytes, cardHolds, checkReadProof, firstListState, holdsPc, inviteRefusal, isListKey, isListLabel, kindBody, listView, namesFields, readKind,
+  SEALED_MIN_BYTES, admitsDevice, cardBinding, cardBytes, cardHolds, checkReadProof, firstListState, holdsPc, inviteRefusal, isListKey, isListLabel, kindBody, listView, namesFields, readKind,
   readListState, readNames, readProofRefusal, replayList, rowsNamed, sealEpoch, shownList, signCard, signReadProof, takeEntry, wrapKeys,
   type EntryPlace, type ListCard, type ListCopy, type ListKind, type ListOutcome, type ListRole, type ListState, type ReadProof, type Sealed,
 } from "./account-list.ts";
 import { judgeEntry, listHead, readSignersState, signerPower, signingPlace } from "./account-list-signers.ts";
-import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
+import { commitmentHolds, fromBase64Url, pairCommitment, pairDigits, toBase64Url } from "./relay-pair-sas.ts";
 
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
 const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
@@ -313,6 +313,22 @@ describe("a card: the newcomer's own word for its encryption key", () => {
       expect(await cardHolds({ ...good, ...bad }, signature)).toBe(false);
       expect(() => cardBytes({ ...good, ...bad })).toThrow(ListKindError);
     }
+  });
+
+  test("the numbers a person compares when adding a PC are bound to the card: another card, another binding, and digits that need both ends' nonces", () => {
+    const ofPc: ListCard = { ...good, key: desk.key, enc: desk.enc, endpoint: E(1) };
+    const binding = cardBinding(ofPc);
+    expect(binding.length).toBe(32);
+    expect(Buffer.from(binding).toString("hex")).toBe(new Bun.CryptoHasher("sha256").update(cardBytes(ofPc)).digest("hex"));
+    const others = [{ key: tower.key }, { enc: tower.enc }, { endpoint: E(2) }, { list: "0".repeat(64) }, { endpoint: null }, { invite: pool.key }].map((change) => Buffer.from(cardBinding({ ...ofPc, ...change })).toString("hex"));
+    expect([new Set(others).size, others.includes(Buffer.from(binding).toString("hex"))]).toEqual([6, false]);
+    // The flow of shared/relay-pair-sas.ts over it: the adder commits to its nonce, the PC answers with its own, the adder reveals.
+    const [np, nc] = [new Uint8Array(32).fill(7), new Uint8Array(32).fill(9)];
+    const commitment = pairCommitment(binding, owner.key, np);
+    expect([commitmentHolds(commitment, binding, owner.key, np), commitmentHolds(commitment, cardBinding({ ...ofPc, key: tower.key }), owner.key, np)]).toEqual([true, false]);
+    expect(pairDigits(binding, owner.key, np, nc)).toMatch(/^[0-9]{6}$/);
+    expect(pairDigits(binding, owner.key, np, nc)).not.toBe(pairDigits(cardBinding({ ...ofPc, key: tower.key }), owner.key, np, nc));
+    expect(() => cardBinding({ ...ofPc, enc: "x" })).toThrow(ListKindError);
   });
 
   test("an encryption key is a key whose point is on the curve", () => {
@@ -1498,10 +1514,10 @@ describe("the vectors of kinds/, card/ and names/", () => {
     });
   }
 
-  interface CardVector { readonly name: string; readonly card: ListCard; readonly bytes?: string; readonly signature: string; readonly expect: { readonly holds: boolean } }
+  interface CardVector { readonly name: string; readonly card: ListCard; readonly bytes?: string; readonly binding?: string; readonly signature: string; readonly expect: { readonly holds: boolean } }
   for (const vector of load<CardVector>("card")) {
     test(`card/${vector.name}`, async () => {
-      if (vector.bytes !== undefined) expect(toBase64Url(cardBytes(vector.card))).toBe(vector.bytes);
+      if (vector.bytes !== undefined) expect([toBase64Url(cardBytes(vector.card)), Buffer.from(cardBinding(vector.card)).toString("hex")]).toEqual([vector.bytes, vector.binding ?? ""]);
       expect(await cardHolds(vector.card, vector.signature)).toBe(vector.expect.holds);
     });
   }

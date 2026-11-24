@@ -14,6 +14,7 @@
  * entry it catches up on, and all come to the same answer. No I/O, no storage and no clock: the one time a
  * member judges is a device's `until`, and admitsDevice is handed the hour.
  */
+import { sha256 } from "@noble/hashes/sha2.js";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { ACCOUNT_OSES, type AccountOs } from "./account-asker.ts";
 import {
@@ -455,6 +456,16 @@ export function cardBytes(card: ListCard): Uint8Array {
   return writeFieldsUnder(LIST_CARD_PREFIX, [
     field("enc", enc), ...(endpoint === null ? [] : [field("endpoint", endpoint)]), ...(invite === null ? [] : [field("invite", invite)]), field("key", key), field("list", list),
   ]);
+}
+
+/**
+ * What a comparison of numbers on two screens is bound to when a person adds a PC (shared/relay-pair-sas.ts:
+ * its `binding`): SHA-256 over the card's bytes, 32 bytes. Both ends work it out from the card each holds, so the
+ * numbers agree only where the cards do. A number that is digits of this hash alone proves nothing: whoever
+ * carries the card between the two can try keys until one fits.
+ */
+export function cardBinding(card: ListCard): Uint8Array {
+  return sha256(cardBytes(card));
 }
 
 /**
