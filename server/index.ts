@@ -447,7 +447,7 @@ export function createServer(
   const accountList = pcAccount === null ? null : new ListFollow({
     stateDir, keys: new ListKeyStore(stateDir), identity: () => ovisRelay.currentIdentity(),
     binding: () => { const binding = pcAccount.binding(); return binding === null || binding.pending === true ? null : { account: binding.account, id: binding.bind_id, list: binding.list ?? null, alarmed: binding.list_alarm === true }; },
-    bind: (account, list) => devices.bindByList(account, list),
+    bind: (account, list, serverId) => devices.bindByList(account, list, serverId),
     joined: (account, bindId) => accountMailbox.listJoined(account, bindId),
     mono: () => devices.waitClock().now(),
     pin: (bindId, list) => pcAccount.pinToList(bindId, list),
