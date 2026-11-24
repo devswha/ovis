@@ -26,7 +26,7 @@ import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writ
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import {
-  admitsSession, admittedDevices, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
+  admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
 import { inviteRefusal, isListLabel, joinEntry, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
@@ -73,6 +73,12 @@ export const LIST_DEVICE_LABEL = "Device";
 const BIND_ID = /^[0-9a-f]{32}$/;
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const REFUSAL_CODE = /^[a-z][a-z0-9_]{0,39}$/;
+/** The most entries this PC serves a device in one page, and takes from one. */
+export const PEER_PAGE_MAX = 256;
+/** The calls of the two session routes one session may make in a minute. */
+export const PEER_CALLS_PER_MINUTE = 30;
+/** The sessions whose reads and calls are remembered. */
+const PEER_SESSIONS_MAX = 64;
 
 /**
  * `account-list.json`. `save` is the follower's own text (writeSave), which carries its sum; null while a list is
@@ -256,6 +262,10 @@ export class ListFollow implements ListAuthority {
   /** The PC has just joined by its list: the devices the list holds come in with no join hold, as at any pin. */
   private freshPin = false;
   /** The `join` of this PC whose body it built and handed to the holder of an invite's line to sign: only that one is placed. */
+  /** The reads this PC asked devices for over their sessions, by session: the page that answers one is its continuation. */
+  private readonly peerReads = new Map<string, FollowRead>();
+  /** When each session called the two session routes, in the last minute. */
+  private readonly peerCalls = new Map<string, number[]>();
   private pendingJoin: { readonly account: string; readonly list: string; readonly invite: string; readonly body: Uint8Array } | null = null;
   /** The device that is being let in through this PC right now: its row comes in with no join hold. */
   private allowing: string | null = null;
@@ -923,6 +933,17 @@ export class ListFollow implements ListAuthority {
    * themselves. So a removal the service withholds reaches this PC from any member that has it.
    */
   takeFromPeer(page: ListPage): Promise<FollowVerdict | "not_saved" | null> {
+    return this.takePeerPage(page).then((taken) => taken?.verdict ?? null);
+  }
+
+  /**
+   * A page a device hands this PC over its session (POST /api/account/list/page). `session` names that session: where
+   * the follower asked for an earlier place (to find where two histories part), the read is kept for it, and the
+   * page that answers it is taken as its continuation. Any other page is one nobody asked for, taken from the place
+   * it names. `asks`: the place the follower wants next from that device, or null. `not_saved`: the entries were
+   * verified and acted on, and the disk did not take the copy.
+   */
+  takePeerPage(page: ListPage, session?: string): Promise<{ readonly verdict: FollowVerdict | "not_saved"; readonly asks: PeerAsk | null } | null> {
     return this.enqueue(async () => {
       const scope = this.bound();
       if (scope === null) return null;
@@ -930,16 +951,60 @@ export class ListFollow implements ListAuthority {
       await this.ensureCopy(scope);
       const copy = this.copy;
       if (copy === null || this.problem !== null || (!this.isPinned && this.want === null)) return null;
-      // A member hands entries after the place this PC said it stands at (peerHead: its footing). Where the copy
-      // holds entries above that which no member signed, that is the read back to the footing, as the follower asks it
+      const kept = session === undefined ? undefined : this.peerReads.get(session);
       const start = startRead(copy, "peer");
-      const footing = copy.state?.footing.seq;
-      const read: FollowRead = page.after !== undefined && page.after === footing && start.after !== footing ? { ...start, after: footing, back: true } : start;
+      // the read this session was asked for, when the page answers it; else a read from the place the page names
+      const read: FollowRead = kept !== undefined && kept.list === copy.list && page.after === kept.after ? kept
+        : { ...start, after: page.after === undefined ? start.after : page.after };
       const result = await takePage(copy, read, page, this.seconds());
       if (!this.live(scope)) return null;
+      if (session !== undefined) {
+        this.peerReads.delete(session);
+        if (result.read !== null) {
+          this.peerReads.set(session, result.read);
+          while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
+        }
+      }
       // acted on at once; said as taken only once it is on disk
-      return this.keep(result.copy, scope, changed(copy, result.copy)) ? result.verdict : "not_saved";
+      const saved = this.keep(result.copy, scope, changed(copy, result.copy));
+      return { verdict: saved ? result.verdict : "not_saved", asks: result.read === null ? null : { list: result.read.list, after: result.read.after } };
     });
+  }
+
+  /**
+   * Where this PC stands against where a device says it stands (POST /api/account/list/head): the PC's own head; the
+   * entries after the device's place when the device stands at an earlier place of the PC's own history (`page`); and
+   * the place the PC asks the device for when the device stands further, or at another entry (`asks`). For another
+   * list than the PC's: its own head and nothing else. Null while it follows no list a person named.
+   */
+  peerHeads(theirs: ListHead, session?: string): { readonly list: string; readonly place: ListHead["place"]; readonly page?: ListPage; readonly asks?: PeerAsk } | null {
+    const own = this.peerHead();
+    const copy = this.copy;
+    if (own === null || copy === null) return null;
+    const compared = compareHeads(copy, theirs);
+    if (compared.verdict === "ahead") {
+      const page = servePage(copy, { list: copy.list, after: theirs.place?.seq ?? null }, PEER_PAGE_MAX);
+      return page === null ? own : { ...own, page };
+    }
+    if (compared.read === null) return own;
+    if (session !== undefined) {
+      this.peerReads.delete(session);
+      this.peerReads.set(session, compared.read);
+      while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
+    }
+    return { ...own, asks: { list: compared.read.list, after: compared.read.after } };
+  }
+
+  /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Counted by this PC's own clock. */
+  peerBudget(session: string): boolean {
+    const now = this.deps.now();
+    const calls = (this.peerCalls.get(session) ?? []).filter((at) => now - at >= 0 && now - at < 60_000);
+    if (calls.length >= PEER_CALLS_PER_MINUTE) { this.peerCalls.set(session, calls); return false; }
+    calls.push(now);
+    this.peerCalls.delete(session);
+    this.peerCalls.set(session, calls);
+    while (this.peerCalls.size > PEER_SESSIONS_MAX) this.peerCalls.delete(this.peerCalls.keys().next().value!);
+    return true;
   }
 
   /**

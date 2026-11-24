@@ -90,17 +90,35 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (body instanceof Response) return body;
     const own = list?.peerHead() ?? null;
     if (list === null || own === null) return fail("not_found", "This PC follows no list", 404);
-    if (pathname === "/api/account/list/head") return reply(own);
-    const { entries, head, after } = body as { entries?: unknown; head?: unknown; after?: unknown };
-    const place = head as { seq?: unknown; hash?: unknown } | null | undefined;
+    // each call may cost signature checks: 30 a minute for one session
+    const session = peer.kind === "relay" ? peer.sessionId ?? peer.device.id : "direct";
+    if (!list.peerBudget(session)) {
+      const limited = fail("rate_limited", "Too many calls; try again in a minute", 429);
+      limited.headers.set("retry-after", "60");
+      return limited;
+    }
+    const placeOf = (value: unknown): { seq: number; hash: string } | null => {
+      const { seq, hash } = (typeof value === "object" && value !== null ? value : {}) as { seq?: unknown; hash?: unknown };
+      return typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 && typeof hash === "string" && isListHash(hash) ? { seq, hash } : null;
+    };
+    if (pathname === "/api/account/list/head") {
+      // where the device stands: its list and the last entry a member signed in its copy, or null before it read any
+      const theirs = body.place === null ? null : placeOf(body.place);
+      if (typeof body.list !== "string" || !isListHash(body.list) || (body.place !== null && theirs === null)) return fail("invalid_head", "Send the list's id and the place the device stands at", 400);
+      return reply(list.peerHeads({ list: body.list, place: theirs }, session) ?? own);
+    }
+    const { entries, after } = body as { entries?: unknown; after?: unknown };
+    const head = placeOf(body.head);
     if (body.list !== own.list) return fail("not_my_list", "This PC follows another list", 409);
     if (!Array.isArray(entries) || entries.length > LIST_PEER_PAGE_MAX || !entries.every((entry) => typeof entry === "string" && entry.length <= LIST_PEER_ENTRY_CHARS)
-      || !(after === null || (typeof after === "number" && Number.isSafeInteger(after) && after >= 0))
-      || typeof place !== "object" || place === null || typeof place.seq !== "number" || !Number.isSafeInteger(place.seq) || place.seq < 0 || typeof place.hash !== "string" || !isListHash(place.hash)) {
+      || !(after === null || (typeof after === "number" && Number.isSafeInteger(after) && after >= 0)) || head === null) {
       return fail("invalid_page", "Send the entries after a place, and the head they lead to", 400);
     }
-    const verdict = await list.takeFromPeer({ list: own.list, after, entries: entries as string[], head: { seq: place.seq, hash: place.hash } });
-    return verdict === null ? fail("not_found", "This PC follows no list", 404) : reply({ verdict, ...list.peerHead() });
+    const taken = await list.takePeerPage({ list: own.list, after, entries: entries as string[], head }, session);
+    if (taken === null) return fail("not_found", "This PC follows no list", 404);
+    // Verified and acted on, and not on disk: the device is not told the page was taken, and hands it again later
+    if (taken.verdict === "not_saved") return fail("not_saved", "This PC could not save the entries it was handed; hand them again later.", 503);
+    return reply({ verdict: taken.verdict, ...(taken.asks ? { asks: taken.asks } : {}), ...list.peerHead() });
   }
   const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);

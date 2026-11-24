@@ -511,6 +511,11 @@ export class AccountMailbox {
     return answer;
   }
 
+  /** Drops what this PC remembers of whether `account` keeps a signed list (listNamed): the next ask goes to the account service. */
+  forgetListNamed(account: string): void {
+    for (const scope of [...this.listNames.keys()]) if (scope.endsWith(` ${account}`)) this.listNames.delete(scope);
+  }
+
   /**
    * This PC joined `account` by the account's signed list. The account's own page shows a PC as only listed until its
    * admission is taken and answered as complete, so that is done here, on the PC's own proof. It lets nobody in and

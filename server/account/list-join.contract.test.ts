@@ -16,6 +16,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { fromBase64Url } from "../../shared/relay-pair-sas.ts";
 import { listMember, TestList, type ListMember } from "./list.test-helpers.ts";
 import { ask, ended, pairingPc, signedInWith, vouchFor, type Body, type Pc } from "./pairing.test-helpers.ts";
+import { PcAccountState } from "./pc-binding.ts";
 
 const ACCOUNT = "acct_1";
 const OTHER = "acct_2";
@@ -535,6 +536,36 @@ describe("what stays as it was", () => {
       expect(answer.status).toBe(403);
       expect(JSON.stringify(await answer.json())).not.toMatch(/[0-9]{6}/);
     }
+  });
+
+  test("a Revoke all that ends while one press still asks whether the account keeps a list makes that press bind nothing", async () => {
+    const made = await listedPc();
+    await made.admit();
+    // the owner revokes every device while the PC's first question to the account service is out
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname === "/v2/pc/list") PcAccountState.open(made.pc.stateDir).raiseGen();
+      return await forward();
+    };
+    const pressed = await made.post("/api/account/one-press", { account: ACCOUNT });
+    expect([pressed.status, pressed.body.error?.code]).toEqual([409, "revoked"]);
+    expect(made.pc.devices.account()).toBeNull();
+  });
+
+  test("an account that made its list a moment ago takes no PC in one press: the service refuses the take, and the PC forgets that it had none", async () => {
+    const made = await listedPc();
+    // the PC heard that the account keeps no list
+    expect((await made.start()).body).toEqual({ state: "no_list", account: ACCOUNT });
+    await made.admit();
+    // the account makes its list, and the service refuses the take of an admission for it
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    made.hook.on = async (request, forward) => new URL(request.url).pathname === "/v1/pc/admission"
+      ? Response.json({ error: { code: "list_add", message: "This account keeps a signed list" } }, { status: 409 }) : await forward();
+    const pressed = await made.post("/api/account/one-press", { account: ACCOUNT });
+    expect([pressed.status, pressed.body.error?.code]).toEqual([409, "list_add"]);
+    expect(made.pc.devices.account()).toBeNull();
+    // and the next ask goes by the list, with no half minute of the old answer in between
+    made.hook.on = null;
+    expect((await made.start()).body).toMatchObject({ state: "waiting", list: account.id });
   });
 
   test("while the account service does not answer, one press binds nothing", async () => {
