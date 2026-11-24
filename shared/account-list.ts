@@ -83,10 +83,14 @@ export class ListKindError extends Error {
   }
 }
 
-/** An entry that a writer would have signed and that would not count on the writer's own state: it is not signed. `outcome` is what would have become of it, or null where no entry was built. */
+/**
+ * An entry that a writer would have signed and that is not signed: it would not count on the writer's own state
+ * (`outcome` is what would have become of it), or it is one that no writer writes (`reason`: `epoch_not_needed`
+ * for an `epoch` that nothing calls for).
+ */
 export class ListWriteError extends Error {
   readonly code = "not_written";
-  constructor(readonly outcome: ListOutcome | null, message: string) {
+  constructor(readonly outcome: ListOutcome | null, message: string, readonly reason: "epoch_not_needed" | null = null) {
     super(message);
     this.name = "ListWriteError";
   }
@@ -1075,9 +1079,16 @@ async function signedBy(body: EntryBody, signer: ListSigner, state: ListState): 
  * writer's footing counts for every member that takes it. So no member signs an entry that adds a key and has no
  * effect of its kind, which would leave a signer with no name. A member that is stopped for a replay writes
  * nothing. Entry 0 is signGenesis's, and a PC's own `join` is joinEntry's.
+ *
+ * Nobody opens an epoch at will: an `epoch` is written only where names can no longer be sealed under the
+ * current one (sealEpoch says null at `issued_at`: somebody who may hold its key is out, or over its time), which
+ * after a removal is the very next entry. Any other is refused (`epoch_not_needed`): the account service places
+ * none either. So after an entry that did not get its place, a writer signs it again on the new head and seals
+ * under the same epoch as before.
  */
 export async function signListEntry(state: ListState, kind: ListKind, signer: ListSigner, issued_at: number): Promise<WrittenEntry> {
   if (state.needs_replay !== undefined) throw new ListWriteError(null, "A member that is stopped for a replay writes nothing");
+  if (kind.kind === "epoch" && sealEpoch(state, issued_at) !== null) throw new ListWriteError(null, "Nothing calls for the next epoch: names are still sealed under this one", "epoch_not_needed");
   const body = kindBody({ issued_at, list: state.list, prev: state.footing.hash, seq: state.footing.seq + 1, signer: signer.key }, kind);
   return await signedBy(body, signer, (await counted(state, body)).state);
 }
