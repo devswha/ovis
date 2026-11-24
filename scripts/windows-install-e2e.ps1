@@ -47,6 +47,7 @@ function Assert-SignInStart([string]$After) {
 # signed in or not (S4U: no password kept), its output in a file. What it said, whether it threw, and the session it ran
 # in; nothing where this PC runs no such task.
 function Invoke-InSession0([string]$Arguments) {
+    $script = Join-Path (Find-Plugin).plugin_root 'scripts\plugin.ts'
     $dir = Join-Path ([IO.Path]::GetTempPath()) ('ovis-e2e-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $dir | Out-Null
     $log = Join-Path $dir 'out.log'; $done = Join-Path $dir 'exit.txt'; $runner = Join-Path $dir 'run.ps1'
@@ -57,6 +58,12 @@ function Invoke-InSession0([string]$Arguments) {
 "session `$([Diagnostics.Process]::GetCurrentProcess().SessionId)" | Out-File -LiteralPath '$log' -Encoding utf8
 try { & '$Installer' $Arguments *>&1 | Out-File -Append -LiteralPath '$log' -Encoding utf8 -Width 4096; `$code = 0 }
 catch { `$_ | Out-String -Width 4096 | Out-File -Append -LiteralPath '$log' -Encoding utf8; `$code = 1 }
+# what this session sees of the app, for a failure's message: the plugin's own status, and the app's port
+& {
+    "--- seen from this session (`$([Security.Principal.WindowsIdentity]::GetCurrent().AuthenticationType) logon)"
+    try { "status: `$(& bun '$($script -replace "'", "''")' status 2>&1 | Out-String)" } catch { "status threw: `$_" }
+    try { "health: `$((Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 http://127.0.0.1:7317/api/health).StatusCode)" } catch { "health failed: `$(`$_.Exception.Message)" }
+} *>&1 | Out-File -Append -LiteralPath '$log' -Encoding utf8 -Width 4096
 Set-Content -LiteralPath '$done' -Value `$code
 "@
     $task = 'Ovis e2e session 0 ' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
