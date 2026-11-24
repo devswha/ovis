@@ -387,6 +387,17 @@ export async function approveOwnJoin(id: string, digits: string): Promise<void> 
   await getJson<{ readonly ok: true }>("/api/relay/join", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, digits }) });
 }
 
+/**
+ * GET /api/account/status, for why this PC lets nobody of its account in by its signed list: the `reason` of the list it
+ * is pinned to, or what a PC that cannot read its own account state says (403 `strict`). Null for none.
+ */
+export async function fetchListReason(): Promise<string | null> {
+  const response = await apiFetch("/api/account/status", { cache: "no-store" });
+  const body = await response.json().catch(() => null) as { list?: { reason?: unknown } | null; error?: { code?: unknown; reason?: unknown } } | null;
+  const said = response.ok ? body?.list?.reason : body?.error?.code === "strict" ? body.error.reason : null;
+  return typeof said === "string" && said !== "" ? said : null;
+}
+
 /** GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). */
 export async function fetchListAdd(): Promise<ListAddState> {
   return await getJson<ListAddState>("/api/account/list/add", { cache: "no-store" });

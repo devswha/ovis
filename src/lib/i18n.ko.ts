@@ -531,6 +531,7 @@ const BASE: Record<string, string> = {
   "Decline": "거절",
   "Allow": "허용",
   "Allow only if your phone shows this number": "폰에 같은 숫자가 보일 때만 허용하세요",
+  "Your account's list on this PC": "이 PC의 계정 목록",
   "This PC is being added to your account. Does the device adding it show {digits}?": "이 PC를 계정에 추가하고 있어요. 추가하는 기기에도 {digits} 숫자가 보이나요?",
   "Confirm only if that device shows the same number": "그 기기에 같은 숫자가 보일 때만 확인하세요",
   "That is no longer the number this PC shows, so nothing was confirmed. Have the device ask again.": "이 PC에 보이는 숫자가 바뀌어 확인되지 않았어요. 기기에서 다시 요청하세요.",
