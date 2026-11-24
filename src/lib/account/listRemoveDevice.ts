@@ -8,11 +8,9 @@
  * A key that is ended never comes back: nothing here signs it in again. The account service's answer to the
  * placement is trusted for nothing: a member is out once this device's own copy shows its removal at its place.
  */
-import { lapsedRemovals, listClock, listView, pcRemoval, sealEpoch, signListEntry, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
-import { nextEpoch, wrapEpochKeyFor, wrapToText } from "../../../shared/account-list-seal.ts";
+import { listView, pcRemoval, sealEpoch, signListEntry, type ListKind, type ListState } from "../../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
-import type { PlacedWrap } from "./listAnswers.ts";
-import { placeOf, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
+import { placeOf, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
 
 /**
  * A member that came in through another key: a device it let in, a key with no name it added, or a PC it added or
@@ -59,9 +57,6 @@ export function cameInThrough(state: ListState, key: string, self: string | null
   return found.sort((a, b) => a.seq - b.seq);
 }
 
-/** The keys the kinds layer's lapsedRemovals puts out at `clock`, in its order. */
-const lapsedKeys = (state: ListState, clock: number): string[] => lapsedRemovals(state, clock).flatMap((kind) => (kind.kind === "remove" && "ends" in kind ? [kind.ends] : []));
-
 /** Who a removal puts out: keys (a device, a key with no name) and PCs by their relay key. */
 export interface Removal {
   readonly keys: readonly string[];
@@ -106,63 +101,40 @@ export interface Signed extends Written {
 }
 
 /**
- * The clock a writer signs by (the lead's X1, amended): which keys a clean-up puts out and whom the next epoch's key
- * is wrapped to are judged by this device's own clock as it is now, held against the list's own time only. Never the
- * floor it saved, which only lets in, refuses and shows, and never the account service's clock.
- */
-const signClock = (writer: ListWriter): number => listClock(writer.state, writer.issued_at, null);
-
-/**
  * The request that puts out what `removal` names and is still in, then opens the next epoch where the kinds call for
  * one and this device holds the current epoch's key (`epoch`: false for a device that puts itself out, which leaves
- * the next epoch to one that stays). With `tidy`, what is over its time goes too, in the room that is left: the
- * removal asked for and its epoch always fit (the lead's X4), and the rest is tidied later. Null when nothing is left
- * to put out. A removal too long for one request is placed in parts, the epoch with the last.
+ * the next epoch to one that stays). A request that opens an epoch carries, in the room that is left, the removals of
+ * whoever is over its time: the writer adds them itself (listWrite.ts, signedWithEpoch: by the clock it signs by, none
+ * from a device adrift from its floor), so the removal asked for and its epoch always fit (the lead's X4) and the rest
+ * is tidied later. Null when nothing is left to put out. A removal too long for one request is placed in parts, the
+ * epoch with the last.
  */
-export async function removalRequest(writer: ListWriter, removal: Removal, options: { readonly epoch: boolean; readonly tidy: boolean }): Promise<Signed | null> {
-  const { list, issued_at } = writer;
-  const clock = signClock(writer);
-  const signer = { key: writer.keys.key, privateKey: writer.keys.signs };
-  let after = writer.state;
-  const entries: string[] = [];
-  const sign = async (kind: ListKind): Promise<void> => {
-    const written = await signListEntry(after, kind, signer, issued_at);
-    entries.push(written.text);
-    after = written.state;
-  };
+export async function removalRequest(writer: ListWriter, removal: Removal, options: { readonly epoch: boolean }): Promise<Signed | null> {
   const current = writer.epochs.get(writer.state.epoch) ?? null;
+  const opens = options.epoch && current !== null;
   // room for the epoch at the end, where this device can open it
-  const room = BATCH_ENTRIES_MAX - (options.epoch && current !== null ? 1 : 0);
-  const steps: (() => ListKind[])[] = [
-    ...removal.keys.map((key) => () => (after.signers[key] !== undefined && after.signers[key].ended === null ? [{ kind: "remove", ends: key } as const] : [])),
-    ...removal.pcs.map((endpoint) => () => pcRemoval(after, endpoint)),
+  const room = BATCH_ENTRIES_MAX - (opens ? 1 : 0);
+  const signer = { key: writer.keys.key, privateKey: writer.keys.signs };
+  // each member's removal is made on the state the ones before it leave: a PC that went out with its key needs none
+  let after = writer.state;
+  const kinds: ListKind[] = [];
+  const steps: ((state: ListState) => ListKind[])[] = [
+    ...removal.keys.map((key) => (state: ListState): ListKind[] => (state.signers[key] !== undefined && state.signers[key].ended === null ? [{ kind: "remove", ends: key }] : [])),
+    ...removal.pcs.map((endpoint) => (state: ListState): ListKind[] => pcRemoval(state, endpoint)),
   ];
   let whole = true;
   let asked = 0;
   for (const step of steps) {
-    const kinds = step();
-    if (entries.length + kinds.length > room) { whole = false; break; }
-    for (const kind of kinds) await sign(kind);
-    if (kinds.length > 0) asked += 1;
+    const next = step(after);
+    if (kinds.length + next.length > room) { whole = false; break; }
+    for (const kind of next) after = (await signListEntry(after, kind, signer, writer.issued_at)).state;
+    kinds.push(...next);
+    if (next.length > 0) asked += 1;
   }
-  // a device whose clock reads far under its saved floor cannot tell which is wrong: it puts nobody out for a time
-  if (whole && options.tidy && !writer.adrift) {
-    for (const key of lapsedKeys(after, clock)) {
-      if (entries.length >= room) break;
-      await sign({ kind: "remove", ends: key });
-    }
-  }
-  let wraps: PlacedWrap[] = [];
+  if (kinds.length === 0) return null;
   // the epoch goes with the last part, and only where nobody who stays could seal under the current one
-  if (whole && options.epoch && current !== null && sealEpoch(after, issued_at) === null) {
-    // made anew for every request: a key whose wraps went out in a request that was not placed is never used
-    const next = await nextEpoch({ list, current, members: [] });
-    await sign({ kind: "epoch", epoch: after.epoch, opens: next.commitment, link: next.link });
-    const wrapped = await wrapEpochKeyFor({ list, epoch: next.epoch, members: wrapKeys(after, clock) });
-    wraps = wrapped.wraps.map(({ member, wrap }) => ({ epoch: next.epoch.epoch, member, wrap: wrapToText(wrap) }));
-  }
-  if (entries.length === 0) return null;
-  return { entries, wraps, place: placeOf(after), whole, asked };
+  const written = whole && opens && current !== null && sealEpoch(after, writer.clock) === null ? await signedWithEpoch(writer, current, kinds) : await signedOn(writer, kinds);
+  return { ...written, whole, asked };
 }
 
 /**
@@ -197,7 +169,7 @@ async function placeParts(list: AccountList, scope: WriteScope | null, build: (w
  * `scope`: what the write was begun for (scopeOf the view the person acted on); null takes the first read's.
  */
 export function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
-  return placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true, tidy: true }), options);
+  return placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true }), options);
 }
 
 /**
@@ -208,7 +180,7 @@ export function removeFromList(list: AccountList, removal: Removal, options: Pic
 export async function removeOtherDevices(list: AccountList, scope: WriteScope, confirmed: readonly string[], options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
   const others = (writer: ListWriter): string[] => listView(writer.state).devices.filter((row) => row.ended === null && row.key !== writer.keys.key).map((row) => row.key);
   let unconfirmed: string[] = [];
-  const outcome = await placeParts(list, scope, (writer) => removalRequest(writer, { keys: others(writer), pcs: [] }, { epoch: true, tidy: true }), options, (writer) => {
+  const outcome = await placeParts(list, scope, (writer) => removalRequest(writer, { keys: others(writer), pcs: [] }, { epoch: true }), options, (writer) => {
     unconfirmed = others(writer).filter((key) => !confirmed.includes(key));
     return unconfirmed.length > 0 ? "unconfirmed" : null;
   });
@@ -221,33 +193,29 @@ export async function removeOtherDevices(list: AccountList, scope: WriteScope, c
  * next epoch's key would be its own to know.
  */
 export function removeSelf(list: AccountList, scope: WriteScope, options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
-  return placeParts(list, scope, (signs) => removalRequest(signs, { keys: [signs.keys.key], pcs: [] }, { epoch: false, tidy: false }),
+  return placeParts(list, scope, (signs) => removalRequest(signs, { keys: [signs.keys.key], pcs: [] }, { epoch: false }),
     { ...options, writer: () => list.writer({ self: true }), trustPlaced: true });
 }
 
 /**
  * The tidying a device of power `full` does by itself while it is in front (docs/account-list.md, "What a device
- * writes after entry 0"): it ends each invite past its `exp` and each device past its `until`, by its own clock, then
- * opens the next epoch where nobody could seal under the current one (after another member put itself out, say). What
- * it ends is judged again on the state it signs on. Each key is tried once by this page (`tried`), whatever becomes
- * of it, so a service that refuses is not asked again and again; an epoch is tried once for each place of the list.
+ * writes after entry 0"): where nobody could seal under the current epoch (a key whose time is over is in, or another
+ * member put itself out), it opens the next one, and the writer puts out with it each invite past its `exp` and each
+ * device past its `until`, by the clock it signs by (listWrite.ts, signedWithEpoch), judged again on the state it
+ * signs on. A device adrift from its saved floor does none of it. Each place of the list is tried once by this page
+ * (`tried`), whatever becomes of it, so a service that refuses is not asked again and again.
  */
 export async function tidyList(list: AccountList, tried: Set<string>, options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome | null> {
   const writer = list.writer();
-  if (writer === null) return null;
-  const overdue = lapsedKeys(writer.state, signClock(writer));
-  // a device adrift from its floor signs no clean-up removal, and no epoch while what is over its time is in
-  const keys = writer.adrift ? [] : overdue.filter((key) => !tried.has(key));
-  const epochAt = `epoch@${writer.list}:${writer.state.footing.seq}`;
-  // an epoch alone only where nothing over its time is left in: the account service opens none while one is
-  const opens = overdue.length === 0 && writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.issued_at) === null && !tried.has(epochAt);
-  if (keys.length === 0 && !opens) return null;
-  for (const key of keys) tried.add(key);
-  if (keys.length === 0) tried.add(epochAt);
+  if (writer === null || writer.adrift) return null;
+  const at = `tidy@${writer.list}:${writer.state.footing.seq}`;
+  if (tried.has(at) || !writer.epochs.has(writer.state.epoch) || sealEpoch(writer.state, writer.clock) !== null) return null;
+  tried.add(at);
   const scope = { account: writer.account, list: writer.list, member: writer.keys.key };
-  return placeParts(list, scope, (signs) => {
-    // only what is still over its time on the state it is signed on
-    const still = new Set(signs.adrift ? [] : lapsedKeys(signs.state, signClock(signs)));
-    return removalRequest(signs, { keys: keys.filter((key) => still.has(key)), pcs: [] }, { epoch: true, tidy: false });
+  return placeParts(list, scope, async (signs) => {
+    const current = signs.epochs.get(signs.state.epoch) ?? null;
+    // only what still calls for the epoch on the state it is signed on
+    if (signs.adrift || current === null || sealEpoch(signs.state, signs.clock) !== null) return null;
+    return { ...(await signedWithEpoch(signs, current, [])), whole: true, asked: 0 };
   }, options);
 }

@@ -147,7 +147,7 @@ describe("a device whose copy is behind", () => {
     // what this device holds once a member of a later level wrote at the next place
     const behind: ListWriter = { ...writer, state: { ...writer.state, behind: writer.state.footing.seq + 1 } };
     const removing = [(await second.keys()).key, (await third.keys()).key];
-    const request = await removalRequest(behind, { keys: removing, pcs: [] }, { epoch: true, tidy: true });
+    const request = await removalRequest(behind, { keys: removing, pcs: [] }, { epoch: true });
     expect(kinds(request!.entries)).toEqual(["remove", "remove", "epoch"]);
     expect(request!.entries.slice(0, 2).map(ends)).toEqual(removing);
     // the next epoch's key goes to whoever stays: this device alone
@@ -208,7 +208,7 @@ describe("what came in through a key", () => {
     expect(listView(state).signers.map((row) => row.key)).toEqual([nameless.key]);
     expect(cameInThrough(state, keys.key, null)).toEqual([{ kind: "signer", key: nameless.key, seq: 1, via: keys.key }]);
     const writer = writerOn(state, keys, w.clock.now);
-    const request = await removalRequest(writer, { keys: [nameless.key], pcs: [] }, { epoch: false, tidy: false });
+    const request = await removalRequest(writer, { keys: [nameless.key], pcs: [] }, { epoch: false });
     expect(request!.entries.map(ends)).toEqual([nameless.key]);
   });
 });
@@ -216,7 +216,7 @@ describe("what came in through a key", () => {
 /** A writer over a state this test made, for what is signed and never placed. */
 function writerOn(state: ListState, keys: DeviceListKeys, now: number): ListWriter {
   const at = Math.floor(now / 1000);
-  return { account: state.account, list: state.list, state, keys, epochs: new Map(), clock: at, issued_at: at, adrift: false, service: null as never };
+  return { account: state.account, list: state.list, state, keys, epochs: new Map(), clock: at, shown: at, issued_at: at, adrift: false, service: null as never };
 }
 
 describe("a list that moves, or a service that is busy, under a removal", () => {
@@ -404,7 +404,9 @@ describe("what the Codex read of P13 found", () => {
     expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
     const first_request = placements(first)[from]!.body!.entries as string[];
     expect(first_request.length).toBeLessThanOrEqual(16);
-    expect([ends(first_request[0]!), kinds(first_request).at(-1)]).toEqual([(await second.keys()).key, "epoch"]);
+    // the writer puts out what is over its time first, in the room the asked removal and its epoch leave
+    expect(first_request.map(ends)).toContain((await second.keys()).key);
+    expect(kinds(first_request).at(-1)).toBe("epoch");
   });
 
   it("a removal in parts says how much of it was done when a later part is refused", async () => {
@@ -453,14 +455,14 @@ describe("X1 amended: the floor never signs", () => {
     expect(w.held().entries).toHaveLength(before);
   });
 
-  it("judges whose time is over by the device's own clock against the list's time, whatever clock the writer carries", async () => {
+  it("judges whose time is over by the clock it signs by, never the floor-aware clock of what is shown", async () => {
     const { w, first, second } = await twoDevices();
     const browser = await letInBorrowed(w, first, "Library browser", 300);
     await first.list.sync();
     const writer = first.list.writer()!;
-    // a writer whose judging clock took a floor 400 s ahead, past the browser's until
-    const ahead: ListWriter = { ...writer, clock: writer.issued_at + 400 };
-    const request = await removalRequest(ahead, { keys: [(await second.keys()).key], pcs: [] }, { epoch: true, tidy: true });
+    // a writer whose clock for what is shown took a floor 400 s ahead, past the browser's until
+    const ahead: ListWriter = { ...writer, shown: writer.issued_at + 400 };
+    const request = await removalRequest(ahead, { keys: [(await second.keys()).key], pcs: [] }, { epoch: true });
     expect(request!.entries.filter((text) => kinds([text])[0] === "remove").map(ends)).toEqual([(await second.keys()).key]);
     expect(request!.entries.map(ends)).not.toContain((await browser.keys()).key);
   });
