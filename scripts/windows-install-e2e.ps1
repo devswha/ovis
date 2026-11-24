@@ -1,5 +1,5 @@
-# It replaces an installed Ovis and leaves the one it installed. A herdr server it had to
-# start is stopped again; one that was already running is left alone.
+# It replaces an installed Ovis and leaves the one it installed. A herdr server it or the installer
+# had to start is stopped again; one that was already running is left alone.
 param(
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
     [string]$Ref = '',
@@ -82,7 +82,24 @@ try {
     }
 
     Write-Host "e2e: installing $expected with $Installer"
+    $herdrRan = Test-ServerRunning
     Invoke-Installer $Ref
+    if ($Installer -notmatch '^https://' -and -not $herdrRan) {
+        # this commit's installer leaves herdr running where it was not, set to start at sign-in (the Run value Ovis, its
+        # own launcher), and -NoService takes that start away again without stopping herdr
+        $startedServer = Test-ServerRunning
+        Assert $startedServer 'The installer must leave herdr running where it was not'
+        $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        $signIn = "$((Get-ItemProperty $runKey -Name Ovis -ErrorAction SilentlyContinue).Ovis)"
+        Assert ($signIn -like '*\ovis\start-herdr.ps1"') "The installer must set herdr to start at sign-in with its launcher, not: $signIn"
+        Assert (-not (Get-ScheduledTask -TaskName 'Ovis herdr start*' -ErrorAction SilentlyContinue)) 'The task that started herdr must be gone'
+        # the server: the herdr process that started first (a command's herdr comes and goes)
+        $herdrPid = (Get-Process herdr | Sort-Object StartTime | Select-Object -First 1).Id
+        Write-Host 'e2e: installing again with -NoService'
+        & $Installer -Ref $Ref -NoService
+        Assert ($null -eq (Get-ItemProperty $runKey -Name Ovis -ErrorAction SilentlyContinue)) '-NoService must remove the sign-in start an earlier run set up'
+        Assert ((Test-ServerRunning) -and (Get-Process -Id $herdrPid -ErrorAction SilentlyContinue)) "-NoService must leave the herdr that runs as it is (pid $herdrPid)"
+    }
     if (-not (Test-ServerRunning)) {
         Write-Host 'e2e: starting herdr'
         Start-Process -FilePath (Get-Command herdr).Source -ArgumentList 'server' -WindowStyle Hidden
