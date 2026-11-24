@@ -758,7 +758,7 @@ for it before they show or ask anything.
   command was not let in as the owner. `waiting_for_add` is true while a run of `add` or `join`
   (or the PC's own window) asked for its admission in the last 30 seconds and found none yet (null
   from an older Ovis). `list` is null unless the PC is pinned to its account's signed list; then it
-  is `{ "pinned", "standing", "reason" }`: the list's id, where the PC stands in it, and one
+  is `{ "pinned_list", "standing", "reason" }`: the list's id, where the PC stands in it, and one
   sentence saying why the PC lets no device of its account in (or nobody new) and what to do, null
   while it follows its list as usual. `problem` is null unless the PC answered that it cannot read
   its own account state and lets only itself in: then it is what the PC could not read (a file, a

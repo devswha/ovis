@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,9 +7,8 @@ import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/a
 import { DeviceStore, type StoredDevice } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
-import { ACCOUNT_LIST_FILE, bringSiblingList } from "./list-follow.ts";
 import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
-import { PcAccountState } from "./pc-binding.ts";
+import { bindingFs, PcAccountState } from "./pc-binding.ts";
 import { PendingRedemptions } from "./pending.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
 
@@ -338,101 +337,50 @@ describe("a binding pinned to the account's signed list", () => {
     }
   });
 
-  test("the other folder takes a pin only together with the list keys and the copy that go with it", async () => {
-    const [dir, sibling] = [stateDir(), stateDir()];
+  test("a folder whose other folder holds a pin it does not hold itself takes no pin: it is closed, says which folder holds it, and writes nothing", async () => {
+    const [dir, sibling, fresh] = [stateDir(), stateDir(), stateDir()];
     await linked(store(dir));
     const pinned = PcAccountState.open(dir);
     const binding = pinned.binding()!;
-    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
-    expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
-    // the pinned folder holds the keys the list knows this PC by, and its copy of the list
-    const keys = await new ListKeyStore(dir).keysFor(SERVER_ID);
-    writeFileSync(join(dir, ACCOUNT_LIST_FILE), JSON.stringify({ v: 1, server_id: SERVER_ID, bind_id: binding.bind_id, want: LIST, save: null }));
-    // the sibling made keys of its own meanwhile, which no list knows
-    const strangers = await new ListKeyStore(sibling).keysFor(SERVER_ID);
-    expect(strangers.key).not.toBe(keys.key);
-    const other = PcAccountState.open(sibling);
-    other.takeSibling(dir, (pin) => bringSiblingList(sibling, dir, pin));
-    expect(other.strict).toBeNull();
-    expect(PcAccountState.open(sibling).binding()).toMatchObject({ bind_id: binding.bind_id, list: LIST });
-    expect((await new ListKeyStore(sibling).keysFor(SERVER_ID)).key).toBe(keys.key);
-    expect(JSON.parse(readFileSync(join(sibling, ACCOUNT_LIST_FILE), "utf8"))).toMatchObject({ bind_id: binding.bind_id, want: LIST });
-  });
-
-  test("and takes none where the keys cannot be brought: the folder fails closed, with its binding as it was on disk", async () => {
-    const [dir, sibling] = [stateDir(), stateDir()];
-    await linked(store(dir));
-    const pinned = PcAccountState.open(dir);
-    const binding = pinned.binding()!;
-    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
-    expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
-    // the pinned folder has no keys file
-    const other = PcAccountState.open(sibling);
-    other.takeSibling(dir, (pin) => bringSiblingList(sibling, dir, pin));
-    expect(other.strict).toContain(ACCOUNT_LIST_KEYS_FILE);
-    expect((JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { list?: string } }).binding.list).toBeUndefined();
-  });
-
-  test("a folder with no account state of its own takes the other's pin only with the keys and the copy too", async () => {
-    const [dir, fresh, bare] = [stateDir(), stateDir(), stateDir()];
-    await linked(store(dir));
-    const pinned = PcAccountState.open(dir);
-    const binding = pinned.binding()!;
-    expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
-    const keys = await new ListKeyStore(dir).keysFor(SERVER_ID);
-    writeFileSync(join(dir, ACCOUNT_LIST_FILE), JSON.stringify({ v: 1, server_id: SERVER_ID, bind_id: binding.bind_id, want: LIST, save: null }));
-    const other = PcAccountState.open(fresh);
-    other.takeSibling(dir, (pin) => bringSiblingList(fresh, dir, pin));
-    other.migrate(null, false);
-    expect(other.strict).toBeNull();
-    expect(PcAccountState.open(fresh).binding()).toMatchObject({ bind_id: binding.bind_id, list: LIST });
-    expect((await new ListKeyStore(fresh).keysFor(SERVER_ID)).key).toBe(keys.key);
-    expect(JSON.parse(readFileSync(join(fresh, ACCOUNT_LIST_FILE), "utf8"))).toMatchObject({ bind_id: binding.bind_id });
-    // with nothing to bring, it takes no pin: it fails closed with nothing written
-    rmSync(join(dir, ACCOUNT_LIST_KEYS_FILE));
-    const none = PcAccountState.open(bare);
-    none.takeSibling(dir, (pin) => bringSiblingList(bare, dir, pin));
-    expect(none.strict).toContain(ACCOUNT_LIST_KEYS_FILE);
-    expect(existsSync(join(bare, ADMISSION_FILE))).toBe(false);
-  });
-
-  test("a folder whose own pin was cleared takes the other's new pin with the keys that go with it", async () => {
-    const [dir, sibling] = [stateDir(), stateDir()];
-    const devices = store(dir);
-    await linked(devices);
-    const first = PcAccountState.open(dir).binding()!;
-    expect(PcAccountState.open(dir).pinToList(first.bind_id, LIST)).toBe(true);
-    // the sibling holds the first pinned binding; this folder then leaves and joins again, pinned to another list
-    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
-    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
-    await linked(store(dir));
-    const next = PcAccountState.open(dir).binding()!;
-    expect(next.bind_id).not.toBe(first.bind_id);
-    expect(PcAccountState.open(dir).pinToList(next.bind_id, OTHER_LIST)).toBe(true);
-    const keys = await new ListKeyStore(dir).keysFor(SERVER_ID);
-    const brought: string[] = [];
-    const other = PcAccountState.open(sibling);
-    other.takeSibling(dir, (pin) => { brought.push(pin.list); return bringSiblingList(sibling, dir, pin); });
-    expect(other.strict).toBeNull();
-    expect(brought).toEqual([OTHER_LIST]);
-    expect(PcAccountState.open(sibling).binding()).toMatchObject({ bind_id: next.bind_id, list: OTHER_LIST });
-    expect((await new ListKeyStore(sibling).keysFor(SERVER_ID)).key).toBe(keys.key);
-  });
-
-  test("a copy of the list that does not read is not taken for no copy: the folder takes no pin", async () => {
-    const [dir, sibling] = [stateDir(), stateDir()];
-    await linked(store(dir));
-    const pinned = PcAccountState.open(dir);
-    const binding = pinned.binding()!;
+    // the other folder holds the same binding, as after a merge, with no pin
     writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
     expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
     await new ListKeyStore(dir).keysFor(SERVER_ID);
-    writeFileSync(join(dir, ACCOUNT_LIST_FILE), "{ not a copy");
+    const before = readFileSync(join(sibling, ADMISSION_FILE), "utf8");
     const other = PcAccountState.open(sibling);
-    other.takeSibling(dir, (pin) => bringSiblingList(sibling, dir, pin));
-    expect(other.strict).toContain(ACCOUNT_LIST_FILE);
+    other.takeSibling(dir);
+    expect(other.strict).toContain(dir);
+    expect(other.strict).toContain("pinned");
+    expect(readFileSync(join(sibling, ADMISSION_FILE), "utf8")).toBe(before);
     expect(existsSync(join(sibling, ACCOUNT_LIST_KEYS_FILE))).toBe(false);
+    // a folder with no account state of its own: the same, and it takes no binding at its migration
+    const none = PcAccountState.open(fresh);
+    none.takeSibling(dir);
+    expect(none.strict).toContain(dir);
+    none.migrate(null, false);
+    expect(existsSync(join(fresh, ADMISSION_FILE))).toBe(false);
+    // the folder that holds the pin is closed by nothing the other holds
+    const mine = PcAccountState.open(dir);
+    mine.takeSibling(sibling);
+    expect(mine.strict).toBeNull();
+    expect(mine.binding()).toMatchObject({ bind_id: binding.bind_id, list: LIST });
     expect((JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { list?: string } }).binding.list).toBeUndefined();
+  });
+
+  test("a pin the other folder holds for a binding that both cleared closes nothing", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    const devices = store(dir);
+    await linked(devices);
+    const pc = PcAccountState.open(dir);
+    expect(pc.pinToList(pc.binding()!.bind_id, LIST)).toBe(true);
+    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    // the other folder still shows the pinned binding; this folder's clear of it stands in both
+    const mine = PcAccountState.open(dir);
+    mine.takeSibling(sibling);
+    expect(mine.strict).toBeNull();
+    expect(mine.binding()).toBeNull();
+    expect(PcAccountState.open(sibling).binding()).toBeNull();
   });
 
   test("a list's removal of the PC outlives a merge with a folder that cleared the same binding another way, in either direction", async () => {
@@ -485,6 +433,170 @@ describe("a binding pinned to the account's signed list", () => {
     expect(PcAccountState.open(other).removedByList(ACCOUNT, SERVER_ID)).toBe(true);
   });
 
+  test("a removal of the PC by its list that another server wrote is never written away: the server that still held the binding drops it at its next write", async () => {
+    const dir = stateDir();
+    const devices = store(dir);
+    await linked(devices);
+    const stale = PcAccountState.open(dir);
+    const held = stale.binding()!;
+    const path = join(dir, ADMISSION_FILE);
+    // another server on this folder pinned the binding, and its list then removed the PC: the file holds no binding and the receipt
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; next_admit: number; clears: unknown[] };
+    writeFileSync(path, JSON.stringify({ ...disk, v: 2, gen: disk.gen + 2, next_admit: disk.next_admit + 3, binding: null,
+      clears: [...disk.clears, { bind_id: held.bind_id, reason: "unlisted", by: "list", admits: disk.next_admit, removed_as: { account: ACCOUNT, server_id: SERVER_ID } }] }));
+    expect(stale.binding()).toMatchObject({ bind_id: held.bind_id });
+    // an ordinary write of the server with the old document: a number for an admission
+    const origin = stale.admit("pc", "code", null, Date.now());
+    // it gives a number the other server did not give, keeps the receipt, and its cached binding does not come back
+    expect(origin.admit_no).toBe(disk.next_admit + 3);
+    const after = PcAccountState.open(dir);
+    expect(after.binding()).toBeNull();
+    expect(after.removedByList(ACCOUNT, SERVER_ID)).toBe(true);
+    expect(stale.binding()).toBeNull();
+    expect(stale.gen()).toBeGreaterThanOrEqual(disk.gen + 2);
+  });
+
+  test("a server that read the file before another server changed it learns of the pin, and of a clear, when it looks again", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const stale = PcAccountState.open(dir);
+    const held = stale.binding()!;
+    const path = join(dir, ADMISSION_FILE);
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; binding: object; clears: unknown[] };
+    writeFileSync(path, JSON.stringify({ ...disk, v: 2, gen: disk.gen + 1, binding: { ...disk.binding, list: LIST } }));
+    let told = 0;
+    stale.onBindingChange(() => { told++; });
+    stale.refresh();
+    expect(stale.binding()).toMatchObject({ list: LIST });
+    expect(told).toBe(1);
+    stale.refresh();
+    expect(told).toBe(1);
+    writeFileSync(path, JSON.stringify({ ...disk, v: 1, gen: disk.gen + 2, binding: null, clears: [...disk.clears, { bind_id: held.bind_id, reason: "revoke_all", by: "pc" }] }));
+    stale.refresh();
+    expect(stale.binding()).toBeNull();
+    expect(told).toBe(2);
+    // a file that does not read changes nothing in memory
+    writeFileSync(path, "{");
+    stale.refresh();
+    expect(stale.binding()).toBeNull();
+  });
+
+  test("the other folder learns a clear it does not hold, written onto what its file holds at that moment", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    const devices = store(dir);
+    const first = (await linked(devices), PcAccountState.open(dir).binding()!);
+    // the other folder: another binding of the same account
+    await linked(store(sibling));
+    const other = PcAccountState.open(sibling).binding()!;
+    // this folder cleared its own binding: a clear the other folder has to learn
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    const mine = PcAccountState.open(dir);
+    // between this folder's read of that file and its write, a server in the other folder records its listing
+    const real = bindingFs.openSync;
+    let raced = false;
+    const racing = spyOn(bindingFs, "openSync").mockImplementation(((...args: Parameters<typeof real>) => {
+      if (!raced && String(args[0]) === `${join(sibling, ADMISSION_FILE)}.lock`) {
+        raced = true;
+        const held = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: object };
+        writeFileSync(join(sibling, ADMISSION_FILE), JSON.stringify({ ...held, binding: { ...held.binding, listing_id: "2".repeat(32) } }));
+      }
+      return real(...args);
+    }) as typeof real);
+    try { mine.takeSibling(sibling); } finally { racing.mockRestore(); }
+    expect(raced).toBe(true);
+    const after = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { bind_id: string; listing_id?: string }; clears: { bind_id: string }[] };
+    expect(after.clears.map((clear) => clear.bind_id)).toContain(first.bind_id);
+    expect(after.binding).toMatchObject({ bind_id: other.bind_id, listing_id: "2".repeat(32) });
+  });
+
+  test("a folder closed for the other's pin writes nothing to the other folder either, a clear it would have taught it included", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    const devices = store(dir);
+    await linked(devices);
+    await linked(store(sibling));
+    const theirs = PcAccountState.open(sibling);
+    expect(theirs.pinToList(theirs.binding()!.bind_id, LIST)).toBe(true);
+    expect(devices.clearAccountBinding("revoke_all", "pc")).toBe(true);
+    const [mineBefore, theirsBefore] = [readFileSync(join(dir, ADMISSION_FILE), "utf8"), readFileSync(join(sibling, ADMISSION_FILE), "utf8")];
+    const mine = PcAccountState.open(dir);
+    mine.takeSibling(sibling);
+    expect(mine.strict).toContain(sibling);
+    expect(readFileSync(join(dir, ADMISSION_FILE), "utf8")).toBe(mineBefore);
+    expect(readFileSync(join(sibling, ADMISSION_FILE), "utf8")).toBe(theirsBefore);
+  });
+
+  test("a file that is there and cannot be read under the lock aborts the write: the pin another server wrote is not written over", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const stale = PcAccountState.open(dir);
+    const path = join(dir, ADMISSION_FILE);
+    const disk = JSON.parse(readFileSync(path, "utf8")) as { gen: number; binding: object };
+    const pinned = JSON.stringify({ ...disk, v: 2, gen: disk.gen + 1, binding: { ...disk.binding, list: LIST } });
+    writeFileSync(path, pinned);
+    // the disk gives an error for one read
+    const failing = spyOn(bindingFs, "readFileSync").mockImplementation(() => { throw Object.assign(new Error("i/o error"), { code: "EIO" }); });
+    try { expect(() => stale.admit("pc", "code", null, Date.now())).toThrow(); } finally { failing.mockRestore(); }
+    expect(readFileSync(path, "utf8")).toBe(pinned);
+    // and a file that does not parse is no missing file either
+    writeFileSync(path, "{");
+    expect(() => stale.admit("pc", "code", null, Date.now())).toThrow();
+    expect(readFileSync(path, "utf8")).toBe("{");
+    // the write goes through once the file reads again, and keeps the pin
+    writeFileSync(path, pinned);
+    stale.admit("pc", "code", null, Date.now());
+    expect(PcAccountState.open(dir).binding()).toMatchObject({ list: LIST });
+  });
+
+  test("a lock that cannot be made ends the write with an error: nothing is written without the lock", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const pc = PcAccountState.open(dir);
+    const before = readFileSync(join(dir, ADMISSION_FILE), "utf8");
+    const refused = spyOn(bindingFs, "openSync").mockImplementation(() => { throw Object.assign(new Error("no access"), { code: "EACCES" }); });
+    try { expect(() => pc.admit("pc", "code", null, Date.now())).toThrow("cannot be locked"); } finally { refused.mockRestore(); }
+    expect(readFileSync(join(dir, ADMISSION_FILE), "utf8")).toBe(before);
+  });
+
+  test("looking at the file again costs no read while it has not changed, and tells nobody of a change that is neither the binding nor the pin", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const mine = PcAccountState.open(dir);
+    let told = 0;
+    mine.onBindingChange(() => { told++; });
+    const reads = spyOn(bindingFs, "readFileSync");
+    try {
+      mine.refresh();
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(0);
+      // another server on this folder records the listing its binding stands on: a pending approval here must stand
+      const path = join(dir, ADMISSION_FILE);
+      const disk = JSON.parse(readFileSync(path, "utf8")) as { binding: object };
+      reads.mockClear();
+      writeFileSync(path, JSON.stringify({ ...disk, binding: { ...disk.binding, listing_id: "1".repeat(32) } }));
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(mine.binding()).toMatchObject({ listing_id: "1".repeat(32) });
+      expect(told).toBe(0);
+      mine.refresh();
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally { reads.mockRestore(); }
+  });
+
+  test("a stale lock that cannot be deleted ends the write with an error after its wait, and hangs nothing", async () => {
+    const dir = stateDir();
+    await linked(store(dir));
+    const pc = PcAccountState.open(dir);
+    const lock = `${join(dir, ADMISSION_FILE)}.lock`;
+    writeFileSync(lock, "");
+    utimesSync(lock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    const stuck = spyOn(bindingFs, "unlinkSync").mockImplementation(() => { throw Object.assign(new Error("read-only"), { code: "EROFS" }); });
+    const began = performance.now();
+    try { expect(() => pc.admit("pc", "code", null, Date.now())).toThrow("another Ovis"); } finally { stuck.mockRestore(); }
+    expect(performance.now() - began).toBeLessThan(5_000);
+    rmSync(lock);
+    expect(pc.admit("pc", "code", null, Date.now()).admit_no).toBeGreaterThan(0);
+  });
+
   test("two writers of the binding's file take turns: one that finds the other at it waits, and a lock nobody holds any more is taken over", async () => {
     const dir = stateDir();
     await linked(store(dir));
@@ -523,22 +635,14 @@ describe("a binding pinned to the account's signed list", () => {
     expect(PcAccountState.open(dir).strict).toBeNull();
   });
 
-  test("the other folder of the same PC takes the pin of the binding they share, and two different pins fail closed", async () => {
+  test("two folders pinned to two lists fail closed", async () => {
     const [dir, sibling] = [stateDir(), stateDir()];
     await linked(store(dir));
     const pinned = PcAccountState.open(dir);
     const binding = pinned.binding()!;
-    // the sibling holds the same binding, as after a merge, with no pin
     writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
     expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
-    const other = PcAccountState.open(sibling);
-    other.takeSibling(dir);
-    expect(other.strict).toBeNull();
-    expect(PcAccountState.open(sibling).binding()).toMatchObject({ bind_id: binding.bind_id, list: LIST });
-
-    const doc = JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { list: string } };
-    doc.binding.list = OTHER_LIST;
-    writeFileSync(join(sibling, ADMISSION_FILE), JSON.stringify(doc));
+    expect(PcAccountState.open(sibling).pinToList(binding.bind_id, OTHER_LIST)).toBe(true);
     const split = PcAccountState.open(dir);
     split.takeSibling(sibling);
     expect(split.strict).toContain("two lists");

@@ -169,6 +169,57 @@ test("a phone that offers the feature gets it, and pairs once its digits match a
   expect(f.app.context.services.relay.approvals.list()).toEqual([]);
 });
 
+test("on a pinned PC, a comparison approved for a key the list does not hold records the pairing and opens no session by it", async () => {
+  const f = fixture();
+  const { devices, relay } = f.app.context.services;
+  // the PC follows its account's list, and the list holds no device under this key
+  const followed = spyOn(devices, "listFollowed").mockReturnValue(true);
+  const role = spyOn(devices, "listRoleOf").mockReturnValue(null);
+  try {
+    const { p } = await direct(f);
+    await p.hello();
+    const waiting = prompts(f, (list) => list.length === 1);
+    const digits = await compare(p);
+    const [request] = await waiting;
+    expect(request?.digits).toBe(digits);
+    expect(relay.approvals.decide(request!.id, true)).toBe(true);
+    const before = devices.list(null).length;
+    await confirm(p);
+    // no AUTH_OK: the row is the account's id for the key, which the list alone answers for
+    expect(await sessionError(p)).toBe("auth_failed");
+    expect(devices.list(null).length).toBe(before + 1);
+  } finally { followed.mockRestore(); role.mockRestore(); }
+});
+
+test("on a pinned PC, a code used for a key that holds a row under the account's id makes a pairing under an id of its own, which is the PC's own business", async () => {
+  const f = fixture();
+  const { devices, relay } = f.app.context.services;
+  const followed = spyOn(devices, "listFollowed").mockReturnValue(true);
+  const role = spyOn(devices, "listRoleOf").mockReturnValue(null);
+  try {
+    // the row: a comparison approved at the PC for a key the list does not hold
+    const { p } = await direct(f);
+    await p.hello();
+    const waiting = prompts(f, (list) => list.length === 1);
+    await compare(p);
+    const [request] = await waiting;
+    expect(relay.approvals.decide(request!.id, true)).toBe(true);
+    await confirm(p);
+    expect(await sessionError(p)).toBe("auth_failed");
+    const row = devices.list(null).at(-1)!;
+    const rows = devices.list(null).length;
+    // the same key comes again with a code of this PC: the row it holds is reused, and the list still answers for it
+    const again = await direct(f);
+    await again.p.hello([]);
+    await again.p.send({ type: FrameType.PAIR, flags: 0, stream_id: 0, payload: { code: devices.startPairing().code, label: "New phone", public_key: p.publicKey } });
+    const answer = await again.p.inbox.next();
+    // a new row, under an id that is not the account's for the key: the person at the PC made that pairing
+    expect(answer.type).toBe(FrameType.AUTH_OK);
+    expect(devices.list(null).length).toBe(rows + 1);
+    expect(devices.list(null).at(-1)!.id).not.toBe(row.id);
+  } finally { followed.mockRestore(); role.mockRestore(); }
+});
+
 test("an approved comparison leaves a pairing code that is still showing usable", async () => {
   const f = fixture();
   const code = f.app.context.services.devices.startPairing();

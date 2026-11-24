@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { accountLabel } from "../../shared/account-asker.ts";
 import type { AccountList } from "../lib/account/accountList.ts";
-import { addPostedPc, numberWith, type AddNumber, type PostedPc } from "../lib/account/listAdd.ts";
+import { addPostedPc, NUMBER_TRIES, numberWith, type AddNumber, type PostedPc } from "../lib/account/listAdd.ts";
 import { listNames } from "../lib/account/listGenesis.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { noteAct } from "../lib/account/seenPcs.ts";
@@ -18,13 +18,15 @@ import "./RelayShell.css";
  * out one number from that card, the person confirms it at the PC and then presses Add here, and this device signs
  * the PC's entry with exactly the card the number came from. Nothing is admitted: the account lists the PC already.
  *
- * `waitMs`: how long it waits for the PC's answer before it says the PC did not answer; a test's own.
+ * `waitMs`: how long it waits for the PC's answer before it says the PC did not answer; a test's own. `now`: this
+ * device's clock, in ms; a test's own. It asks for NUMBER_TRIES numbers at most (Try again, and Add after one ran out).
  */
-export function AddPcByNumber({ list, account, post, name, waitMs, onClose, onAdded }: {
+export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.now, onClose, onAdded }: {
   readonly list: AccountList; readonly account: string; readonly post: PostedPc;
   /** The PC's name as the account has it. */
   readonly name: string;
   readonly waitMs?: number | undefined;
+  readonly now?: () => number;
   readonly onClose: () => void; readonly onAdded: () => void;
 }) {
   const t = useT();
@@ -37,7 +39,9 @@ export function AddPcByNumber({ list, account, post, name, waitMs, onClose, onAd
   const [busy, setBusy] = useState(false);
   // the PC takes a yes for a number only so long: after that a new one is asked for, by a press
   const [ranOut, setRanOut] = useState(false);
+  // the numbers asked for so far, less one: the first is asked for when the dialog opens
   const [asks, setAsks] = useState(0);
+  const lastTry = asks + 1 >= NUMBER_TRIES;
   const asking = useRef<AbortController | null>(null);
   // Back closes it, as Close does, unless the entry is being signed
   usePhoneSheetBack(() => { if (busy) return false; onClose(); });
@@ -48,30 +52,37 @@ export function AddPcByNumber({ list, account, post, name, waitMs, onClose, onAd
     setNumber(null);
     setProblem(null);
     setRanOut(false);
-    void numberWith(list, post, { signal: ask.signal, ...(waitMs === undefined ? {} : { waitMs }) }).then((outcome) => {
+    void numberWith(list, post, { signal: ask.signal, now, ...(waitMs === undefined ? {} : { waitMs }) }).then((outcome) => {
       if (ask.signal.aborted) return;
       if (outcome.shown) setNumber(outcome.number);
-      else setProblem(numberRefusal(words.current, outcome.why));
+      else setProblem(numberRefusal(words.current, asks + 1 >= NUMBER_TRIES ? "spent" : outcome.why));
     }, (error: unknown) => {
       if (ask.signal.aborted) return;
       console.warn("Ovis: no number came for the PC", error instanceof Error ? error.name : error);
       setProblem(words.current("The PC could not be added. Try again."));
     });
     return () => { ask.abort(new DOMException("The number is no longer asked for", "AbortError")); };
-  }, [list, post, waitMs, asks]);
+  }, [list, post, waitMs, asks, now]);
 
+  const ranOutNow = (): void => {
+    setNumber(null);
+    setRanOut(true);
+    setProblem(lastTry ? numberRefusal(words.current, "spent") : words.current("That number ran out. Press Add for a new one."));
+  };
   useEffect(() => {
     if (number === null || busy) return;
-    const timer = setTimeout(() => { setNumber(null); setRanOut(true); setProblem(words.current("That number ran out. Press Add for a new one.")); }, Math.max(0, number.until - Date.now()));
+    const timer = setTimeout(ranOutNow, Math.max(0, number.until - now()));
     return () => clearTimeout(timer);
-  }, [number, busy]);
+  });
 
   const add = async (shown: AddNumber): Promise<void> => {
     if (busy) return;
     setBusy(true);
     setProblem(null);
     try {
-      const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(name), null), { expect: { account, list: shown.post.list }, admit: async () => {} });
+      // the number lives so long: a press after it adds nothing, whatever the timer did not draw yet
+      if (now() >= shown.until) { ranOutNow(); return; }
+      const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(name), null), { expect: { account, list: shown.post.list }, member: shown.member, admit: async () => {} });
       if (!outcome.added) { setProblem(addRefusal(t, outcome).text); return; }
       // Add where a number was compared on both screens: kept in this device's own record of its PCs (seenPcs.ts)
       void noteAct(account, shown.post.endpoint, "added").catch(() => undefined);
@@ -111,7 +122,7 @@ export function AddPcByNumber({ list, account, post, name, waitMs, onClose, onAd
           ) : (
             <>
               <button type="button" className="btn" onClick={onClose}>{problem === null ? t("Cancel") : t("Close")}</button>
-              {problem !== null && !differed && <button type="button" className="btn btn-primary" onClick={() => setAsks((count) => count + 1)}>{ranOut ? t("Add|account pc") : t("Try again")}</button>}
+              {problem !== null && !differed && !lastTry && <button type="button" className="btn btn-primary" onClick={() => setAsks((count) => count + 1)}>{ranOut ? t("Add|account pc") : t("Try again")}</button>}
             </>
           )}
         </div>

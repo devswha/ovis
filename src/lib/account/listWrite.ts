@@ -134,6 +134,11 @@ export interface WriteOptions {
    * after every read, so a sign-in that another tab changed, or another list, ends the write with nothing signed.
    */
   readonly expect?: { readonly account: string; /** absent: whichever list of that account the device follows at the first read */ readonly list?: string | undefined };
+  /**
+   * The person's Cancel. Checked before anything is signed, before the signed request is kept, and before every send:
+   * once it is aborted the write throws its reason, and nothing more of it is signed or sent.
+   */
+  readonly signal?: AbortSignal;
   /** The writer to sign on, read after each read of the list: for a device's removal of its own key, `list.writer({ self: true })`. The list's own by default. */
   readonly writer?: () => ListWriter | null;
   /**
@@ -287,6 +292,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
     const resent = kept !== null;
     if (kept === null) {
       let signed: Written;
+      options.signal?.throwIfAborted();
       try {
         const next = await step(writer);
         if ("done" in next) return { written: true, list: writer.list, place: next.done };
@@ -301,6 +307,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         throw error;
       }
       // kept before it is sent; where another page kept one for this head first, that one goes and this is never sent
+      options.signal?.throwIfAborted();
       try { kept = await list.keep(writer, { ...signed, for: options.operation ?? null }); } catch (error) {
         console.warn("Ovis: the signed request could not be kept, and was not sent", error instanceof Error ? error.name : error);
         return refused("blocked");
@@ -321,6 +328,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
     for (let sends = 0; sends < WRITE_RESENDS && !moved; sends += 1) {
       // whether the answer proves that nothing was placed: only `409 head_moved` does, of those that lead on to a read
       let unplaced = false;
+      options.signal?.throwIfAborted();
       try {
         await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal, request.invite));
         if (options.trustPlaced === true) return { written: true, list: writer.list, place: request.place };
