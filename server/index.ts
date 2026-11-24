@@ -774,6 +774,9 @@ export function createServer(
     ? (readmission?: Readmission) => snapshotPorts({ devices, safetyLog, pc: pcAccount, journal, order: accountOrder, serverId: serverIdNow, requestRead: () => { void accountMailbox.pull(); },
       // the read's commit turn: the account rows take its list, idle rows expire (T54), and the wait after a start ends
       commitList: (snapshot) => {
+        // an admission by the account: what another Ovis server on this folder wrote to the PC's place in its account
+        // (a pin, a clear) is taken in first, so a snapshot adds nobody to a PC that server pinned a moment ago
+        pcAccount.refresh();
         accountCatchUp.commitList(snapshot, readmission);
         const removed = new Set(snapshot.removed.map((row) => row.key));
         accountList?.shadowSnapshot(snapshot.devices.flatMap((row) => row.eligible && !removed.has(row.key) ? [row.key] : []));
