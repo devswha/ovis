@@ -7,7 +7,7 @@ import { allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { WRITE_RESENDS } from "./listWrite.ts";
 import {
-  cameInThrough, carriedPcs, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
+  cameInThrough, carriedPcs, removalRequest, removeFromList, removeOtherDevices, removeSelf, scopeOf, tidyList,
   type RemoveOutcome,
 } from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
@@ -550,6 +550,45 @@ describe("what the second Codex read of P13 found about Remove", () => {
     const copy = { ...first.list, pageAfter: (after: number | null, limit: number) => ({ list: held.id, after, entries: texts.slice(after === null ? 0 : after + 1).slice(0, limit), head: { seq: state.footing.seq, hash: state.footing.hash } }) };
     expect(cameInThrough(state, tablet.key, phone.key)).toHaveLength(1);
     expect(cameInThrough(state, tablet.key, phone.key, carriedPcs(copy))).toEqual([]);
+  });
+});
+
+describe("each write of this lane names its change (after the writer's C1)", () => {
+  /** What the request kept for this device's head was signed for, once the service answered `409 head_moved` to every placement. */
+  async function keptFor(w: World, device: WorldDevice, write: () => Promise<unknown>): Promise<string | null | undefined> {
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await write();
+    w.fake.untamperList(w.held().id);
+    return (await device.list.waiting())?.for;
+  }
+
+  it("Remove, Not me, Sign out every device, leaving and the tidy-up each keep their request for a change of their own", async () => {
+    const { w, first, second } = await twoDevices();
+    const other = (await second.keys()).key;
+    expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `remove:${other}` }))).toBe(`remove:${other}`);
+    await first.list.cancel((await first.list.waiting())!);
+    expect(await keptFor(w, first, () => removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `not-me:${other}` }))).toBe(`not-me:${other}`);
+    await first.list.cancel((await first.list.waiting())!);
+    const scope = scopeOf(first.list.view())!;
+    expect(await keptFor(w, first, () => removeOtherDevices(first.list, scope, [other], noWait))).toBe("sign-out-all");
+    await first.list.cancel((await first.list.waiting())!);
+    expect(await keptFor(w, second, () => removeSelf(second.list, scopeOf(second.list.view())!, noWait))).toBe("leave");
+    await second.list.cancel((await second.list.waiting())!);
+    await placeInvite(w, first, { auto: true });
+    w.clock.now += 16 * 60_000;
+    await first.list.sync();
+    expect(await keptFor(w, first, () => tidyList(first.list, new Set(), noWait))).toBe("tidy");
+  });
+
+  it("a Remove is refused, and reports no success, while another change's request waits at this head", async () => {
+    const { w, first, second } = await twoDevices();
+    const other = (await second.keys()).key;
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `not-me:${other}` });
+    w.fake.untamperList(w.held().id);
+    const before = w.held().entries.length;
+    expect(await removeFromList(first.list, { keys: [other], pcs: [] }, { ...noWait, operation: `remove:${other}` })).toMatchObject({ removed: false, why: "waiting" });
+    expect(w.held().entries).toHaveLength(before);
   });
 });
 

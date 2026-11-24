@@ -10,6 +10,7 @@ import { listView } from "../../shared/account-list.ts";
 import type { AccountList, AccountListView, ListedDevice } from "../lib/account/accountList.ts";
 import { inList, type Shown } from "../lib/account/listLeave.ts";
 import { cameInThrough, carriedPcs, removeFromList, scopeOf, type Arrival, type RemoveOutcome } from "../lib/account/listRemoveDevice.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
@@ -144,11 +145,13 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
     const outcome = await removeFromList(list, {
       keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))].map(now),
       pcs: picked.flatMap((arrival) => (arrival.kind === "pc" ? [arrival.endpoint] : [])),
-    }, { scope }).catch((error: unknown): RemoveOutcome => {
+    }, { scope, operation: `${ticked ? "not-me" : "remove"}:${removing}` }).catch((error: unknown): RemoveOutcome => {
       console.warn("Ovis: the device was not removed from the account's list", error instanceof Error ? error.name : error);
       return { removed: false, why: "unreached", retryAfterMs: null, placed: 0 };
     });
     if (!outcome.removed && outcome.why === "handed") setHeirs((before) => ({ ...before, ...outcome.heirs }));
+    // the change that waits is shown with its own Try again and Cancel, wherever the page draws its card
+    if (!outcome.removed && outcome.why === "waiting") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
     if (!outcome.removed) throw new Error(failureOf(t, outcome, name, 1 + picked.length));
     onRemoved(name);
   };

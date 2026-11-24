@@ -8,6 +8,7 @@ import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { forgetMembership, inList, leaveList, otherDevices, removeOthers, tidyOnRead, watchRemoval, type EverywhereAsked, type Shown } from "../account/listLeave.ts";
 import { scopeOf, type RemoveOutcome, type WriteScope } from "../account/listRemoveDevice.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../account/listWrite.ts";
 import { listNames } from "../account/listGenesis.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";
@@ -528,6 +529,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       return { removed: false, why: "unread", retryAfterMs: null, placed: 0 };
     });
     if (outcome === null) return null;
+    // the change that waits is shown with its own Try again and Cancel, wherever the page draws its card
+    if (!outcome.removed && outcome.why === "waiting") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
     const refused = othersRefused(outcome, named.length);
     if (refused !== null) return refused;
     const read = await lists.sync({ read: true }).catch((): AccountListView | null => null);

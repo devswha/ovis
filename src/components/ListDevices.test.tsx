@@ -7,6 +7,7 @@ import { listView, signListEntry } from "../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "../lib/account/accountList.test-helpers.ts";
 import { allowDevice } from "../lib/account/listAllow.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
@@ -216,10 +217,14 @@ describe("Manage account's devices from the account's signed list", () => {
     w.fake.untamperList(w.held().id);
     const entries = w.held().entries.length;
     const root = await mount(first);
+    // the card of the change that waits is put up wherever the page draws it
+    let cards = 0;
+    window.addEventListener(LIST_WRITE_WAITING_EVENT, () => { cards += 1; });
     await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
     await confirm(root, "Remove");
     expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("An earlier change is still waiting: try it again or cancel it first.");
     expect(w.held().entries).toHaveLength(entries);
+    expect(cards).toBe(1);
   });
 
   it("asks again for the new key of a device that handed its place over while the question was open, and never says it was removed", async () => {

@@ -202,11 +202,13 @@ async function placeParts(list: AccountList, scope: WriteScope | null, build: (w
  * with them where there is room. A key that is out already is passed by; with nothing left the outcome is `removed`.
  * `scope`: what the write was begun for (scopeOf the view the person acted on); null takes the first read's.
  */
-export async function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
+export async function removeFromList(list: AccountList, removal: Removal, options: Pick<WriteOptions, "wait" | "operation"> & { readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome> {
   // A device asked for that handed its place to a new key since is not out: its heir is. Nothing is signed, and the
   // person is asked again for the heir (the key was asked for, not the device that holds it now).
   let heirs: Record<string, string> = {};
-  const outcome = await placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true }), options, (writer) => {
+  // a person's change of its own: a request kept for another change is never sent, nor reported, as this one's
+  const operation = options.operation ?? `remove:${removal.keys[0] ?? removal.pcs[0] ?? ""}`;
+  const outcome = await placeParts(list, options.scope ?? scopeOf(list.view()), (writer) => removalRequest(writer, removal, { epoch: true }), { ...options, operation }, (writer) => {
     heirs = {};
     for (const key of removal.keys) {
       const heir = standsFor(writer.state, key);
@@ -225,7 +227,7 @@ export async function removeFromList(list: AccountList, removal: Removal, option
 export async function removeOtherDevices(list: AccountList, scope: WriteScope, confirmed: readonly string[], options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
   const others = (writer: ListWriter): string[] => listView(writer.state).devices.filter((row) => row.ended === null && row.key !== writer.keys.key).map((row) => row.key);
   let unconfirmed: string[] = [];
-  const outcome = await placeParts(list, scope, (writer) => removalRequest(writer, { keys: others(writer), pcs: [] }, { epoch: true }), options, (writer) => {
+  const outcome = await placeParts(list, scope, (writer) => removalRequest(writer, { keys: others(writer), pcs: [] }, { epoch: true }), { ...options, operation: "sign-out-all" }, (writer) => {
     unconfirmed = others(writer).filter((key) => !confirmed.includes(key));
     return unconfirmed.length > 0 ? "unconfirmed" : null;
   });
@@ -244,7 +246,7 @@ export async function removeOtherDevices(list: AccountList, scope: WriteScope, c
  */
 export async function removeSelf(list: AccountList, scope: WriteScope, options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome> {
   const outcome = await placeParts(list, scope, (signs) => removalRequest(signs, { keys: [signs.keys.key], pcs: [] }, { epoch: false }),
-    { ...options, writer: () => list.writer({ self: true }), trustPlaced: true });
+    { ...options, operation: "leave", writer: () => list.writer({ self: true }), trustPlaced: true });
   if (!outcome.removed) return outcome;
   const unsure: RemoveOutcome = { removed: false, why: "unknown", retryAfterMs: null, placed: 0 };
   let read: AccountListView;
@@ -276,5 +278,5 @@ export async function tidyList(list: AccountList, tried: Set<string>, options: P
     // only what still calls for the epoch on the state it is signed on
     if (signs.adrift || current === null || sealEpoch(signs.state, signs.clock) !== null) return null;
     return { ...(await signedWithEpoch(signs, current, [])), whole: true, asked: 0 };
-  }, options);
+  }, { ...options, operation: "tidy" });
 }
