@@ -10,78 +10,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { processAlive } from "../process-start.ts";
+import { KeeperAnswers, type AnswerOutcome } from "./answers.ts";
 
-/** One option of a permission request, as the agent offered it. */
-export interface AcpOption {
-  optionId: string;
-  name: string;
-  kind: string;
-}
+import { KeeperDisconnected, KeeperRequestError, approval, parseLine, record, text, type AcpApproval, type AcpTurn, type Message, type Row } from "./messages.ts";
 
-/** A `session/request_permission` the agent asked and nobody answered yet. */
-export interface AcpApproval {
-  /** the keeper's id for it (`agent-N`), which an answer names */
-  keeperId: string;
-  seq: number;
-  /** the request as the keeper archived it */
-  raw: string;
-  sessionId: string | null;
-  toolCall: { title: string | null; kind: string | null; rawInput: unknown; content: unknown };
-  options: AcpOption[];
-}
-
-/** The last `session/prompt` any client sent: running until the agent answers it. */
-export interface AcpTurn {
-  running: boolean;
-  stopReason: string | null;
-  /** the turn's `agent_message_chunk` text */
-  text: string;
-  /** the agent's error, when it answered the prompt with one */
-  error: string | null;
-}
-
-/** won: this client's answer went to the agent; lost: another's did; gone: the agent can no longer take one. */
-export type AnswerOutcome = "won" | "lost" | "gone";
-
-export class KeeperRequestError extends Error {
-  constructor(readonly code: number, message: string) {
-    super(message);
-    this.name = "KeeperRequestError";
-  }
-}
-
-export class KeeperDisconnected extends Error {
-  constructor() {
-    super("the connection to the ACP keeper ended");
-    this.name = "KeeperDisconnected";
-  }
-}
+export { KeeperDisconnected, KeeperRequestError } from "./messages.ts";
+export type { AcpApproval, AcpOption, AcpTurn } from "./messages.ts";
+export type { AnswerOutcome } from "./answers.ts";
 
 export interface KeeperClientOptions {
   /** how the socket is opened (default node:net) */
   connect?: (path: string) => Socket;
 }
 
-type Row = { seq: number; dir: string; client?: number; raw: string };
-type Message = { id?: unknown; method?: unknown; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: { code?: unknown; message?: unknown } };
 interface InFlight { resolve: (result: unknown) => void; reject: (error: Error) => void }
-interface Answering { by: string; resolve: (outcome: AnswerOutcome) => void; timer: ReturnType<typeof setTimeout> }
-
-/** How long an answer waits for the keeper's note on it: past it the answer counts as gone. */
-const ANSWER_MS = 10_000;
 const BACKOFF_MS = [100, 250, 500, 1_000, 2_000, 5_000] as const;
-
-const record = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
-const text = (value: unknown): string | null => typeof value === "string" ? value : null;
-
-function parseOptions(value: unknown): AcpOption[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    const option = record(entry);
-    const [optionId, name, kind] = [text(option?.["optionId"]), text(option?.["name"]), text(option?.["kind"])];
-    return optionId !== null && name !== null && kind !== null ? [{ optionId, name, kind }] : [];
-  });
-}
 
 /** Whether the keeper `root`'s process.json names still runs. */
 export function keeperRunning(root: string): boolean {
@@ -109,9 +52,7 @@ export class KeeperClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private nextId = 1;
   private readonly approvals = new Map<string, AcpApproval>();
-  /** the client (`client-N`) whose answer went to the agent, by request */
-  private readonly resolvedBy = new Map<string, string>();
-  private readonly answering = new Map<string, Answering>();
+  private readonly answers = new KeeperAnswers();
   private readonly inFlight = new Map<number, InFlight>();
   /** the keeper's ids of the `session/prompt` requests the agent has not answered yet */
   private readonly prompts = new Set<string>();
@@ -174,20 +115,14 @@ export class KeeperClient {
    * Answers the permission request `keeperId` with `optionId`, one of its options. The keeper's note on it decides: this
    * client's answer went to the agent (won), another client's did (lost), or the agent can no longer take one (gone).
    */
-  async answer(keeperId: string, optionId: string): Promise<AnswerOutcome> {
-    const asked = this.approvals.get(keeperId);
-    if (asked === undefined || this.answering.has(keeperId)) return this.resolvedBy.has(keeperId) || this.answering.has(keeperId) ? "lost" : "gone";
-    if (!asked.options.some((option) => option.optionId === optionId)) return "gone";
-    try {
-      await this.ready();
-    } catch {
-      return "gone";
-    }
-    const { promise, resolve } = Promise.withResolvers<AnswerOutcome>();
-    const timer = setTimeout(() => this.settle(keeperId, "gone"), ANSWER_MS);
-    this.answering.set(keeperId, { by: `client-${this.client}`, resolve, timer });
-    this.write({ jsonrpc: "2.0", id: keeperId, result: { outcome: { outcome: "selected", optionId } } });
-    return promise;
+  answer(keeperId: string, optionId: string): Promise<AnswerOutcome> {
+    if (this.closed || this.keeperGone) return Promise.resolve("gone");
+    return this.answers.answer({ id: keeperId, optionId, asked: this.approvals.get(keeperId) }, (send) => this.onChange(send), (asked, reservation) => {
+      if (this.client === null) return;
+      if (this.approvals.get(keeperId) !== asked) return this.answers.settle(keeperId, "gone");
+      reservation.by = `client-${this.client}`;
+      this.write({ jsonrpc: "2.0", id: keeperId, result: { outcome: { outcome: "selected", optionId } } });
+    });
   }
 
   /** Ends the connection for good: requests in flight are refused, answers waiting count as gone. */
@@ -198,7 +133,7 @@ export class KeeperClient {
     // ended, not destroyed: a last notification (a stop's session/cancel) still goes out
     this.socket?.end();
     this.dropped();
-    for (const id of [...this.answering.keys()]) this.settle(id, "gone");
+    this.answers.close();
     this.changed();
   }
 
@@ -232,7 +167,7 @@ export class KeeperClient {
   private reconnect(): void {
     if (!existsSync(join(this.root, "acp.sock")) && !keeperRunning(this.root)) {
       this.keeperGone = true;
-      for (const id of [...this.answering.keys()]) this.settle(id, "gone");
+      this.answers.close();
       this.changed();
       return;
     }
@@ -262,23 +197,16 @@ export class KeeperClient {
 
   /** One line of the stream: a row, or the watermark. Whether it changed what this client keeps. */
   private line(line: string): boolean {
-    let parsed: unknown;
-    try { parsed = JSON.parse(line); } catch { return false; }
-    const object = record(parsed);
-    if (object === null) return false;
-    if (typeof object["through"] === "number" && typeof object["client"] === "number") {
-      this.client = object["client"];
+    const entry = parseLine(line);
+    if (!entry) return false;
+    if ("client" in entry) {
+      this.client = entry.client;
       this.attempt = 0;
       return true;
     }
-    const { seq, dir, raw } = object;
-    if (typeof seq !== "number" || typeof dir !== "string" || typeof raw !== "string") return false;
-    if (seq <= this.lastSeq) return false;
-    this.lastSeq = seq;
-    let message: Message;
-    try { message = JSON.parse(raw) as Message; } catch { return false; }
-    if (record(message) === null) return false;
-    return this.row({ seq, dir, raw, ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message);
+    if (entry.row.seq <= this.lastSeq) return false;
+    this.lastSeq = entry.row.seq;
+    return this.row(entry.row, entry.message);
   }
 
   private row(row: Row, message: Message): boolean {
@@ -316,15 +244,7 @@ export class KeeperClient {
 
   private fromAgent(row: Row, message: Message, method: string | null, params: Record<string, unknown>): boolean {
     if (method === "session/request_permission" && typeof message.id === "string") {
-      const toolCall = record(params["toolCall"]) ?? {};
-      this.approvals.set(message.id, {
-        keeperId: message.id,
-        seq: row.seq,
-        raw: row.raw,
-        sessionId: text(params["sessionId"]),
-        toolCall: { title: text(toolCall["title"]), kind: text(toolCall["kind"]), rawInput: toolCall["rawInput"] ?? null, content: toolCall["content"] ?? null },
-        options: parseOptions(params["options"]),
-      });
+      this.approvals.set(message.id, approval(row, message.id, params));
       return true;
     }
     if (method === "session/update") {
@@ -355,30 +275,21 @@ export class KeeperClient {
         return true;
       case "_keeper/resolved": {
         if (id === null) return false;
-        const by = text(params["by"]) ?? "";
-        this.resolvedBy.set(id, by);
         this.approvals.delete(id);
-        this.settle(id, by === this.answering.get(id)?.by ? "won" : "lost");
+        this.answers.acknowledge(id, text(params["by"]), text(params["optionId"]));
         return true;
       }
       case "_keeper/dropped":
-        if (id !== null && text(params["by"]) === this.answering.get(id)?.by) this.settle(id, this.resolvedBy.has(id) ? "lost" : "gone");
+        if (id !== null) this.answers.dropped(id, text(params["by"]));
         return false;
       case "_keeper/expired":
         if (id === null) return false;
         this.approvals.delete(id);
-        this.settle(id, "gone");
+        this.answers.settle(id, "gone");
         return true;
       default:
         return false;
     }
   }
 
-  private settle(id: string, outcome: AnswerOutcome): void {
-    const waiting = this.answering.get(id);
-    if (waiting === undefined) return;
-    this.answering.delete(id);
-    clearTimeout(waiting.timer);
-    waiting.resolve(outcome);
-  }
 }

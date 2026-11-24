@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createConnection, type Socket } from "node:net";
+import { createConnection, Socket } from "node:net";
 import { dirname } from "node:path";
 import { rmSync } from "node:fs";
 import { KeeperClient } from "./client.ts";
@@ -7,6 +7,23 @@ import { keeperBuilt, keeperRoot, startKeeper, until } from "./keeper.fake.ts";
 
 const prompt = (client: KeeperClient, text: string) =>
   client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text }] }) as Promise<{ stopReason: string }>;
+
+it("reserves an answer while replay is pending, without waiting for the watermark twice", async () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  const raw = JSON.stringify({ id: "example", method: "session/request_permission", params: {
+    options: [{ optionId: "dismiss", name: "Dismiss", kind: "reject_once" }],
+  } });
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "from-agent", raw })}\n`);
+  const first = client.answer("example", "dismiss");
+  try {
+    const duplicate = client.answer("example", "dismiss");
+    expect(await Promise.race([duplicate, new Promise((resolve) => setImmediate(() => resolve("waiting")))])).toBe("lost");
+  } finally {
+    client.close();
+    expect(await first).toBe("gone");
+  }
+});
 
 describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scripted agent", () => {
   const cleanups: (() => Promise<void> | void)[] = [];

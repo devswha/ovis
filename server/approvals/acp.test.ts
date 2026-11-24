@@ -88,7 +88,10 @@ describe.skipIf(!keeperBuilt)("the prompt routes for an ACP child", () => {
 
     expect(await answer(acp, { pane_id: "t7", prompt_id: `${card.id}x`, option_index: 1 })).toMatchObject({ status: 409, body: { error: { code: "prompt_changed" } } });
     expect(await answer(acp, { pane_id: "t7", prompt_id: card.id, option_index: 2 })).toMatchObject({ status: 400, body: { error: { code: "invalid_answer" } } });
-    expect(await answer(acp, { pane_id: "t7", prompt_id: card.id, option_index: 1 })).toMatchObject({ status: 200 });
+    const choice = { pane_id: "t7", prompt_id: card.id, option_index: 1 };
+    const responses = await Promise.all([answer(acp, choice), answer(acp, choice)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(responses.find((response) => response.status === 409)?.body.error?.code).toBe("prompt_changed");
     await turn;
     expect(client.turn?.text).toBe("answered reject");
     expect(await answer(acp, { pane_id: "t7", prompt_id: card.id, option_index: 0 })).toMatchObject({ status: 409, body: { error: { code: "prompt_changed" } } });
