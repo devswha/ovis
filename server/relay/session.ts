@@ -771,7 +771,18 @@ export class RelaySession {
     const role = list!.role(sas.publicKey);
     if (role == null) { this.close("auth_failed"); return; }
     this.listPlace = outcome.allowed;
-    this.enter({ id, label: this.options.services.accountRows?.row(id)?.label ?? sas.label, role });
+    const { devices, accountRows } = this.options.services;
+    // A key this PC holds by a pairing under an id of its own gets no account row. Its receipt goes over that
+    // pairing's row, as its sign-in by the list key will (matchListKey): the list answers for the key, and the answer
+    // names the account's id for it
+    const paired = accountRows?.row(id) == null ? devices.listPairing(sas.publicKey, this.options.serverId) : null;
+    if (paired !== null) {
+      this.listKey = sas.publicKey;
+      this.signedInAs = id;
+      this.enter({ id: paired.id, label: paired.label, role });
+      return;
+    }
+    this.enter({ id, label: accountRows?.row(id)?.label ?? sas.label, role });
   }
 
   /** Once per comparison: one that made no device counts against relay pairing (server/devices.ts), unless admitNewDevice refused it. */

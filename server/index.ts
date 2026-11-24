@@ -453,7 +453,7 @@ export function createServer(
     pin: (bindId, list) => pcAccount.pinToList(bindId, list),
     alarm: (bindId) => pcAccount.alarmList(bindId),
     removedFrom: (account, serverId) => pcAccount.removedByList(account, serverId),
-    call: (path, body) => accountMailbox.listRoute(path, body),
+    call: (path, body, ready) => accountMailbox.listRoute(path, body, ready),
     rowKey: (id) => accountRows?.row(id)?.key ?? null,
     now: () => Date.now(),
     commit: (list, readmission, unheld) => {

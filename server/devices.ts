@@ -2394,6 +2394,17 @@ export class DeviceStore {
   }
 
   /**
+   * On a PC that follows a list, the pairing of this PC's own that holds `key` under an id that is not the account's
+   * for it (what matchListKey signs such a key in over), or null. The list answers for the key; the row only carries
+   * its session, and a Revoke of the pairing ends that.
+   */
+  listPairing(key: string, serverId: string, now = Date.now()): { readonly id: string; readonly label: string } | null {
+    if (!this.listFollowed() || this.failsClosed) return null;
+    const row = this.devices.find((d) => d.relay_public_key === key && d.id !== accountDeviceId(serverId, key));
+    return row === undefined || this.stale(row) || !this.memberAdmitted(row, now) ? null : { id: row.id, label: row.label };
+  }
+
+  /**
    * On a PC pinned to its list, the key of row `id` when that id is the account's own for the key
    * (accountDeviceId): the id an app opens the PC through its account by. The list alone answers for such an id,
    * whoever wrote the row and whenever (a member's v1 add before the pin, a join approved by digits): the row gives

@@ -16,7 +16,8 @@ export const pairingWindowFs = { rmSync, truncateSync };
 export type PairingDecision = { approved: true; by?: DeviceMatch; pcLabel?: string; own?: true } | { approved: false };
 
 /** What a remote approval came to: done, nothing waiting under that id, or the wrong digits picked (which ends it). */
-export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" };
+/** `not_confirmed`: a join into the list whose new device has not said yet that the digits match; nothing was decided, and the request waits as it did. */
+export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" | "not_confirmed" };
 
 /** What the owner's typed digits came to on this PC's own window: approved, nothing such waiting, or wrong (which ends it). */
 export type TypedDecision = "decided" | "gone" | "wrong_digits";
@@ -277,7 +278,7 @@ export class RelayPairingApprovals {
       ...(vouched ? { vouched: true as const, ...(provenServerId ? { proven_server_id: provenServerId } : {}) } : {}),
       // the join brought the device's card for the account's list: it is let in by an entry of the list, which its approver signs
       ...(list ? { list: true as const } : {}),
-      ...(confirmed ? { confirmed: true as const } : {}),
+      ...(list && confirmed ? { confirmed: true as const } : {}),
     }));
   }
 
@@ -298,6 +299,8 @@ export class RelayPairingApprovals {
     const entry = this.waiting.get(id);
     if (!entry || !entry.listRemote) return { outcome: "gone" };
     if (!approved) { entry.finish({ approved: false }); return { outcome: "decided", device_id: entry.deviceId }; }
+    // the approver signs the device's entry, and signs it only for a device whose person said the digits match
+    if (!entry.confirmed) return { outcome: "not_confirmed" };
     if (digits !== entry.request.digits) { entry.finish({ approved: false }); return { outcome: "wrong_digits" }; }
     entry.finish({ approved: true, by });
     return { outcome: "decided", device_id: entry.deviceId };
@@ -370,15 +373,23 @@ export class RelayPairingApprovals {
     // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
     // a first join is this PC's own as well: no member that joins meanwhile may decide it
     const firstJoin = device.firstJoin ?? false;
-    const ownOnly = !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen());
+    const ownScreen = device.localOnly ?? this.localOnlyOpen();
+    const ownOnly = !(device.membersOnly ?? false) && ownScreen;
     const localOnly = firstJoin || ownOnly;
     this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
-      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listRemote: (device.list ?? false) && !ownOnly, confirmed: false, choices: decoys(digits), finish });
+      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listRemote: (device.list ?? false) && !ownScreen, confirmed: false, choices: decoys(digits), finish });
     this.changed();
     return {
       decision: decided.promise, withdraw: () => finish({ approved: false }),
-      // the new device's person said the digits match: told to whoever may approve the join, while it still waits
-      confirm: () => { const entry = this.waiting.get(id); if (entry !== undefined && !entry.confirmed) { entry.confirmed = true; this.changed(); } },
+      // The new device's person said the digits match. For a join into the list that is told to whoever may approve
+      // it, while it still waits: its approver signs the entry only then. For any other request it is kept and told
+      // to nobody: a PC that follows no list tells and answers what it always did
+      confirm: () => {
+        const entry = this.waiting.get(id);
+        if (entry === undefined || entry.confirmed) return;
+        entry.confirmed = true;
+        if (entry.list) this.changed();
+      },
     };
   }
 
@@ -403,6 +414,9 @@ export class RelayPairingApprovals {
     const entry = this.waiting.get(id);
     if (!entry || entry.localOnly) return { outcome: "gone" };
     if (!approved) { entry.finish({ approved: false }); return { outcome: "decided", device_id: entry.deviceId }; }
+    // a join into the list: the member signs the device's entry, and only once its person said the digits match. The
+    // request stays as it was, for the approval that comes after the confirmation
+    if (entry.list && !entry.confirmed) return { outcome: "not_confirmed" };
     if (entry.vouched ? !entry.provenServerId || pc?.id !== entry.provenServerId || digits !== "" : digits !== entry.request.digits || pc !== undefined) { entry.finish({ approved: false }); return { outcome: "wrong_digits" }; }
     entry.finish({ approved: true, by, ...(pc ? { pcLabel: pc.label } : {}) });
     return { outcome: "decided", device_id: entry.deviceId };

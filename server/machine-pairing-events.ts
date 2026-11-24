@@ -2,6 +2,7 @@ import type { Access } from "./access.ts";
 import { sameBrowser } from "./devices.ts";
 import type { ServerContext } from "./dispatch.ts";
 import type { MachineEventDocument } from "./machine-events.ts";
+import type { RemotePairingRequest } from "../shared/machines.ts";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
 import { shownTo, type JoinViewer } from "./join-notices.ts";
 
@@ -27,14 +28,35 @@ export function machinePairingEvents({ services, peer }: ServerContext, access: 
     const stopRemoved = driving ? devices.onRemoved(listener) : undefined;
     // Direct approvers see the digits; drive account members on the relay get three candidates instead.
     const approver = driving && access.via !== "relay" && access.via !== "portal";
-    const remoteApprover = peer.kind === "relay" && devices.isAccountApproverSession(peer.device.id, peer.key);
-    // a device of the account's list that may add devices to it is told the joins into the list, as its read of them
-    // is (relay/routes.ts): asked of the list at each telling, so a device that lost the right is told nothing more
-    const listKey = !remoteApprover && peer.kind === "relay" && peer.key !== "" && accountList?.allowsJoins(peer.key) === true ? peer.key : null;
+    // What a device on the relay is told of the waiting joins is asked for again at every telling, as its read of
+    // them is (relay/routes.ts), from what this PC holds at that moment: its devices' word for a member of the
+    // account, its copy of the list's for a device of the list that may add devices to it. The right it had when it
+    // subscribed (before this PC pinned its list, say) gives it nothing once it is gone: it is then told, once, that
+    // nothing waits
+    const remote = peer.kind === "relay" ? peer : null;
+    const member = () => remote !== null && devices.isAccountApproverSession(remote.device.id, remote.key);
+    const listed = () => remote !== null && remote.key !== "" && accountList?.allowsJoins(remote.key) === true;
+    let shown = false;
+    const tellRemote = (as: "member" | "listed") => (list: RemotePairingRequest[]) => {
+      const now = member() ? "member" : listed() ? "listed" : null;
+      if (now === null) {
+        if (shown) listener({ type: "remote-pairings", pairings: [] });
+        shown = false;
+        return;
+      }
+      shown = true;
+      listener({ type: "remote-pairings", pairings: now === as ? list : now === "member" ? relay.approvals.remoteList() : relay.approvals.listJoins() });
+    };
     const stopRelay = approver ? relay.approvals.subscribe((list) => listener({ type: "relay-pairings", pairings: list }))
-      : remoteApprover ? relay.approvals.subscribeRemote((list) => listener({ type: "remote-pairings", pairings: list }))
-      : listKey !== null ? relay.approvals.subscribeList((list) => { if (accountList?.allowsJoins(listKey) === true) listener({ type: "remote-pairings", pairings: list }); })
+      : member() ? relay.approvals.subscribeRemote(tellRemote("member"))
+      : listed() ? relay.approvals.subscribeList(tellRemote("listed"))
       : undefined;
+    // the list itself changed what it lets in: a device that lost the right is told so then, not at the next join
+    const stopRights = stopRelay === undefined || remote === null ? undefined : devices.onListedChange(() => {
+      if (!shown || member() || listed()) return;
+      shown = false;
+      listener({ type: "remote-pairings", pairings: [] });
+    });
     // A window that lost the right to approve needs to clear its prompts.
     if (!approver) listener({ type: "relay-pairings", pairings: [] });
     let stopPending: (() => void) | undefined;
@@ -44,6 +66,6 @@ export function machinePairingEvents({ services, peer }: ServerContext, access: 
       tellPending();
       stopPending = pendingRedemptions.onChange(tellPending);
     }
-    return () => { stopPaired(); stopListed?.(); stopSeen?.(); stopRemoved?.(); stopRelay?.(); stopPending?.(); };
+    return () => { stopPaired(); stopListed?.(); stopSeen?.(); stopRemoved?.(); stopRelay?.(); stopRights?.(); stopPending?.(); };
   } };
 }
