@@ -5,7 +5,7 @@ import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPai
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, ACCOUNT_OPENS_ALL_FEATURE, AUTH_RECEIPTS_MAX, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, KEY_PROOF_FEATURE, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_PC_PROOF, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, PairApprover, SessionError } from "../../shared/relay-mux.ts";
 import { PC_CODE_ACCOUNT_ONLY } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
@@ -14,6 +14,7 @@ import { accountDeviceId } from "../../shared/account-records.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { SIGN_IN_WAIT_MS, type ListingVerdict } from "../account/mailbox.ts";
+import { LIST_ALLOW_MS } from "../account/list-follow.ts";
 import { PENDING_MS } from "../account/pending.ts";
 import { pullForRefusedSignIn } from "./refused-signin.ts";
 import { accountSignInRefusal } from "../account/account-signin.ts";
@@ -152,6 +153,12 @@ export class RelaySession {
   private accountCodes = false;
   private directing = false;
   private tailnet = false;
+  /** ACCOUNT_LIST_ALLOW was selected: a join's PAIR_REQUEST may carry the device's card, and it is then let in by the list or not at all */
+  private listAllow = false;
+  /** the card of the device that asks to join, from its PAIR_REQUEST */
+  private listCard: { readonly enc: string; readonly card: string } | undefined;
+  /** where the list let the device of this session in, told in its AUTH_OK */
+  private listPlace: { readonly id: string; readonly seq: number; readonly hash: string } | undefined;
   /** the client offered ACCOUNT_LIST_FEATURE and this PC was pinned to its list then; and whether the client required it */
   private listOffered = false;
   private listRequired = false;
@@ -389,6 +396,11 @@ export class RelaySession {
         this.listOffered = frame.payload.features.includes(ACCOUNT_LIST_FEATURE) && this.options.services.accountList?.pinned() === true;
         this.listRequired = frame.payload.required_features.includes(ACCOUNT_LIST_FEATURE);
         if (this.listOffered) selected.push(ACCOUNT_LIST_FEATURE);
+        // and only a PC that can sign for its list right now takes a new device's card with a join (docs/account.md, "A
+        // PC allows a device into the list"): any other PC lets nobody into the list, and says so by not selecting this
+        this.listAllow = !!this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT && frame.payload.features.includes(ACCOUNT_LIST_ALLOW)
+          && !this.options.signInOnly && this.options.services.accountList?.canAllow() === true;
+        if (this.listAllow) selected.push(ACCOUNT_LIST_ALLOW);
         if (frame.payload.required_features.some((feature) => !selected.includes(feature) && !(feature === RELAY_HINTS && this.hinting) && !(feature === DIRECT_CARRIER && this.directing) && !(feature === DIRECT_TAILNET && this.tailnet) && !(feature === LARGE_WS_MESSAGES && large))) { this.close("unsupported_extension"); return; }
         this.state = "auth";
         if (this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT) this.intent = "account";
@@ -509,6 +521,10 @@ export class RelaySession {
         }
         this.options.services.devices.assertRelayPairing(this.path);
         this.state = "pair-commit";
+        // a card counts only where the PC said it takes one; anywhere else the join is today's, and the members are ignored
+        if (this.listAllow && this.intent === "account" && frame.payload.list_enc !== undefined && frame.payload.list_card !== undefined) {
+          this.listCard = { enc: frame.payload.list_enc, card: frame.payload.list_card };
+        }
         this.sas = {
           label: frame.payload.label, publicKey: frame.payload.public_key, commitment: fromBase64Url(frame.payload.commitment),
           pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, firstJoin, closes: this.options.services.relay.approvals.closes,
@@ -580,7 +596,8 @@ export class RelaySession {
     if (!sas || !sas.phoneConfirmed || !sas.approved || this.state !== "pair-wait") return;
     // a member's approval from afar lets a device in on the account's word: asked about first, as a sign-in's is, and
     // nothing is written until the account service confirms this PC's listing
-    const binding = sas.approvedBy === undefined ? null : this.options.services.devices.serviceBinding();
+    // a join that came with the device's card is let in by the list: the account service's listing of this PC decides nothing of it
+    const binding = sas.approvedBy === undefined || this.listCard !== undefined ? null : this.options.services.devices.serviceBinding();
     if (binding !== null && !this.options.services.accountMailbox.listingFresh(binding)) {
       this.state = "verifying";
       void this.listingVerdict(binding).then((verdict) => {
@@ -606,6 +623,8 @@ export class RelaySession {
     const id = accountDeviceId(this.options.serverId, sas.publicKey);
     const { devices, accountMailbox } = this.options.services;
     if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey))) { this.close("auth_failed"); return; }
+    // a join that came with the device's card for the list is let in by the list, or not at all
+    if (this.listCard !== undefined) { void this.allowIntoList(sas, id, this.listCard).catch(() => this.close("internal_error")); return; }
     if (sas.approvedBy !== undefined) {
       const gates = accountMailbox.gates();
       const approverKey = devices.relayKeyOf(sas.approvedBy);
@@ -624,6 +643,33 @@ export class RelaySession {
     this.endPairing(true);
     if (this.refused) return;
     this.enter(device);
+  }
+
+  /**
+   * The join of a device that sent its card: both people said the digits match. Approved on this PC itself (its own
+   * window, `ovis approve`), the PC signs the entry that lets the device into the list; approved by a member from afar,
+   * the PC only reads the list and lets the device in when an entry of it does. Its session is then the session of a
+   * device of the list, and its AUTH_OK names the list and the place of that entry. Anything else ends the join as one
+   * that was not let in: no pairing is written in its place.
+   */
+  private async allowIntoList(sas: NonNullable<RelaySession["sas"]>, id: string, card: { readonly enc: string; readonly card: string }): Promise<void> {
+    const list = this.options.services.accountList;
+    // while the relay refuses new sessions no join makes a device: nothing is signed, and nothing is answered from here on
+    if (!this.admitNewDevice()) { this.endPairing(true); return; }
+    this.mux.extendSetup(LIST_ALLOW_MS);
+    const outcome = list ? await list.allowDevice({ key: sas.publicKey, enc: card.enc, card: card.card, label: sas.label }, sas.approvedBy === undefined) : { refused: "not_pinned" as const, detail: null };
+    if (!this.mux.active || this.sas !== sas || sas.ended) return;
+    // the service's refusal, or its silence, is no failed pairing of this device's: it counts against nobody
+    this.endPairing(true);
+    if ("refused" in outcome) {
+      console.warn(`[account] a device was not let into the list: ${outcome.refused}${outcome.detail === null ? "" : ` (${outcome.detail})`}`);
+      this.close("auth_failed");
+      return;
+    }
+    const role = list!.role(sas.publicKey);
+    if (role == null) { this.close("auth_failed"); return; }
+    this.listPlace = outcome.allowed;
+    this.enter({ id, label: this.options.services.accountRows?.row(id)?.label ?? sas.label, role });
   }
 
   /** Once per comparison: one that made no device counts against relay pairing (server/devices.ts), unless admitNewDevice refused it. */
@@ -773,7 +819,7 @@ export class RelaySession {
     // Until then OPEN is still unauthenticated, even while AUTH_OK waits behind receipt credit.
     this.mux.enqueueControl({
       type: FrameType.AUTH_OK, flags: 0, stream_id: 0,
-      payload: { session_id: this.sessionId, device_id: device.id, role: device.role, ...this.hints(row.provisional) },
+      payload: { session_id: this.sessionId, device_id: device.id, role: device.role, ...this.hints(row.provisional), ...(this.listPlace ? { list: this.listPlace } : {}) },
     }, undefined, () => {
       if (!devices.sessionRow(device.id)) { this.close("auth_revoked"); return; }
       // the frame waited in the queue past the listing's answer: the device asks again rather than enter on an old one

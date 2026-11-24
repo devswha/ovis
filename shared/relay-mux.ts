@@ -14,6 +14,14 @@ export const ACCOUNT_LISTING_ERRORS = "account-listing-errors-1";
  * `account_list_required`; one without it takes that code as a protocol error.
  */
 export const ACCOUNT_LIST_FEATURE = "account-list-1";
+/**
+ * A PC selects it only while it can let a new device into its account's signed list by itself: it is pinned to the
+ * list, in it, its own key signs for the list, and a person at the PC decides (docs/account.md, "A PC allows a
+ * device into the list"). A device that asks to join then sends its card in PAIR_REQUEST (`list_enc`, `list_card`),
+ * and the AUTH_OK of a join the PC allowed names the list and the place of the entry that let the device in (`list`).
+ * Not selected: this PC lets nobody into the list, and a join it allows makes its own pairing as before.
+ */
+export const ACCOUNT_LIST_ALLOW = "account-list-allow-1";
 /** Eight numbered receipts fit the existing 1 KiB session error, even with safe-integer log numbers. */
 export const AUTH_RECEIPTS_MAX = 8;
 /** The address is a hint: Noise against the pinned PC key proves the PC. */
@@ -158,14 +166,18 @@ type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
   readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
-  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
+  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[];
+    /** ACCOUNT_LIST_ALLOW: the list the PC let the device into, and the place of the entry that did. */
+    readonly list?: { readonly id: string; readonly seq: number; readonly hash: string } };
   readonly 0x05: { readonly code: SessionError; readonly message: string; readonly hold?: HoldState; readonly receipts?: readonly BlockReceipt[] };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
   readonly 0x08: bigint;
   readonly 0x09: bigint;
   readonly 0x0a: { readonly code: string; readonly label: string; readonly public_key: string };
-  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string; readonly server_key?: string };
+  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string; readonly server_key?: string;
+    /** ACCOUNT_LIST_ALLOW: the device's encryption key and its card for the list, both or neither. */
+    readonly list_enc?: string; readonly list_card?: string };
   readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string };
   readonly 0x0d: { readonly nonce: string; readonly server_proof?: string };
   readonly 0x0e: { readonly confirmed: true };
@@ -259,6 +271,11 @@ function base64url(value: unknown, bytes: number): string {
 }
 
 /** DER SubjectPublicKeyInfo for id-ecPublicKey + prime256v1 + an uncompressed P-256 point. */
+/** AUTH_OK's `list`: a list id and a place in it. */
+function listPlace(value: unknown): { id: string; seq: number; hash: string } {
+  const v = object(value);
+  return { id: hex(v.id, 64), seq: integer(v.seq, 0, 999_999_999_999_999), hash: hex(v.hash, 64) };
+}
 function p256Spki(value: unknown): string {
   const public_key = base64url(value, 91);
   const der = atob(public_key.replace(/-/g, "+").replace(/_/g, "/"));
@@ -441,7 +458,9 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { code, label: pairLabel(v.label), public_key: p256Spki(v.public_key) } };
     }
     case FrameType.PAIR_REQUEST:
-      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32), ...(v.server_key === undefined ? {} : { server_key: hex(v.server_key, 64) }) } };
+      requireProtocol((v.list_enc === undefined) === (v.list_card === undefined), "A list card comes with its encryption key");
+      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32), ...(v.server_key === undefined ? {} : { server_key: hex(v.server_key, 64) }),
+        ...(v.list_enc === undefined ? {} : { list_enc: p256Spki(v.list_enc), list_card: base64url(v.list_card, 64) }) } };
     case FrameType.PAIR_CHALLENGE:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_challenge === undefined ? {} : { server_challenge: text(v.server_challenge, 512) }),
         ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }) } };
@@ -460,7 +479,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
     case FrameType.AUTH_OK:
       return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
         ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }),
-        ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }) } };
+        ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }),
+        ...(v.list === undefined ? {} : { list: listPlace(v.list) }) } };
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: sessionError(v) };
     case FrameType.GOAWAY:

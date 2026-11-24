@@ -496,6 +496,8 @@ A client offers features in `HELLO`; a PC that supports them selects them in `WE
 | `pair-intent-account` | this comparison adds the device to the account |
 | `pair-intent-pc-vouched` | another PC of the account pairs with this PC only, vouched for by an admission ([Adding a PC of your account](#adding-a-pc-of-your-account)) |
 | `pair-pc-proof` | required with the vouched intent for a member tap; B can journal the join and verify A’s server identity in this SAS session. B selects the vouched intent only when this is offered too, so an older A that offers the intent alone reads B as a PC to update, and its `PAIR_REQUEST` is still refused |
+| `account-list-1` | the PC lets its account's devices in by the account's signed list alone ([How an app signs in to a pinned PC](#how-an-app-signs-in-to-a-pinned-pc)) |
+| `account-list-allow-1` | with `pair-intent-account`: this PC can let the device into the account's signed list itself, and takes the device's card with its `PAIR_REQUEST` ([A PC allows a device into the list](#a-pc-allows-a-device-into-the-list)) |
 
 A client offering `pair-sas` offers at most one intent; a PC selects an intent only together with
 `pair-sas`, and only the one offered. A `HELLO` with more than one intent ends with `protocol_error`. A
@@ -1506,6 +1508,49 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   taken as one only when the list holds its relay key.
 - Devices paired with this PC itself keep their pairing and their role: that is this PC's own
   doing. Joining by comparing digits works as before, each join decided by a person.
+
+#### A PC allows a device into the list
+
+A device joins an account that has a list by an entry a member signed. A PC that a person added to
+the list is such a member, so a person at that PC can let a new device in: the PC signs the
+device's entry with its own list key. This is the join by comparing digits
+([Joining through the account](#who-may-admit-a-device)), decided as before in the PC's own window
+or by the digits typed at `ovis approve`; what changes is what the approval writes.
+
+- **The PC says whether it can.** It selects the feature `account-list-allow-1` for a join only
+  while it is pinned to its list, in it, its own key signs for the list with full power, no alarm
+  stands, and its keys are read. A PC that joined by an invite is in the list and signs for nothing:
+  it does not select the feature, and neither does a PC that follows no list. The device then knows
+  that this PC lets nobody into the list.
+- **The device sends its card.** With the feature selected, its `PAIR_REQUEST` carries `list_enc`,
+  its encryption key, and `list_card`, its [card](account-list.md#a-card) for the list: its own
+  signature over its key, that encryption key and the list id. `public_key` is the key the list
+  will hold for it. A PC that did not select the feature ignores both.
+- **The person decides as before**: the digits compared in the PC's own window, or typed at
+  `ovis approve`. Nothing is signed before both sides said the digits match.
+- **The PC signs and places the entry.** A `device` entry with full power and the role `drive`,
+  written through the list's own writer, which signs nothing that would not count: a card that is
+  not that key's for this list is never signed over. The device's name is sealed under the list's
+  key, and that key is wrapped to the device, when the PC holds it; without it the device is let in
+  all the same and reads no names yet. The PC sends the entry to the account service
+  (`POST /v2/pc/list/entries`, with its proof), which places it only while a sign-in of the account
+  has claimed that key: a PC alone, or whoever drives it, lets in no device the account's owner did
+  not sign in on.
+- **The device is in when the log shows the entry**, never on the service's answer. Its row on
+  this PC waits for no join hold. Its `AUTH_OK` names the list and the place of that entry (`list`:
+  `id`, `seq`, `hash`), over the session whose digits were compared: the device takes the list id
+  from there and reads the list up to that place. That session serves nothing else, since the key
+  was sent with the comparison and never signed with: the device signs in with its list key.
+- **When the entry does not go in**, the join ends as any join that was not let in (`auth_failed`),
+  and nothing is written in its place: no pairing of this PC's own stands in for the list. A head
+  that moved is read and the entry signed again on it; a service that is reading the list again
+  (`list_rebuilding`), or that asks to try again, is sent the same entry again; a lost answer is
+  settled by the log. Four tries in all. Any other refusal ends it at once: no claim of the key, a
+  budget, a service that changes the list for nobody (`list_stopped`), a key this PC itself keeps
+  out.
+- **A join a member allows from afar** on such a PC is let in only when an entry of the list lets
+  the device in: the PC signs nothing on a member's tap. No app writes that entry yet.
+- A join that brings no card is the PC's own pairing, as before, on any PC.
 
 #### How an app signs in to a pinned PC
 
