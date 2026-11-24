@@ -330,9 +330,11 @@ export async function readJoinLine(line: string, reader: JoinLineReader): Promis
       if (error instanceof ListEntryError) notSigned("That is no proof for reading");
       throw error;
     }
+    // A value is its bytes, one character for each, as the reader of proofs takes it: a decoder would drop a byte order mark and
+    // read bytes that are no text as some, and so pass a value that the reader refuses.
     const text = (name: string): string | null => {
       const field = fields.find((item) => item.name === name);
-      return field === undefined ? null : new TextDecoder().decode(field.value);
+      return field === undefined ? null : Array.from(field.value, (byte) => String.fromCharCode(byte)).join("");
     };
     if (list === "" || text("key") !== key || text("list") !== list) notSigned("An invite signs only the proof for reading its own list with its own key");
     // No proof that the reader of proofs calls malformed: the four fields and no other, the place and the time in their form.

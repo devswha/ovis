@@ -1120,7 +1120,7 @@ async function signedBy(bytes: Uint8Array, signer: ListSigner, state: ListState)
 }
 
 /** A writer that is stopped for a replay writes nothing; one that is behind writes nobody in: a removal, and the `epoch` after one. */
-function mayWrite(state: ListState, kind: ListKind["kind"]): void {
+function mayWrite(state: ListState, kind: string): void {
   if (state.needs_replay !== undefined) throw new ListWriteError(null, "A member that is stopped for a replay writes nothing");
   if (state.behind !== null && kind !== "remove" && kind !== "epoch") {
     throw new ListWriteError(null, "A member that is behind signs nobody in: it writes a removal and the epoch after it, and nothing else, until it is updated", "behind");
@@ -1151,14 +1151,15 @@ function mayWrite(state: ListState, kind: ListKind["kind"]): void {
  * that did not get its place, a writer signs it again on the new head and seals under the same epoch as before.
  */
 export async function signListEntry(state: ListState, kind: ListKind, signer: ListSigner, issued_at: number): Promise<WrittenEntry> {
-  mayWrite(state, kind.kind);
+  // The body first: the writer's rules judge the kind that is written, whatever the caller's object says when it is asked again.
+  const body = kindBody({ issued_at, list: state.list, prev: state.footing.hash, seq: state.footing.seq + 1, signer: signer.key }, kind);
+  mayWrite(state, body.kind);
   const current = state.epochs[state.epoch];
-  if (kind.kind === "epoch" && current !== undefined) {
+  if (body.kind === "epoch" && current !== undefined) {
     const holders = epochHolders(state, listClock(state, issued_at, null), current.seq);
     if (!holders.out && holders.lapsed.length > 0) throw new ListWriteError(null, "Whoever is over its time is put out first: the next epoch follows that remove", "epoch_no_use");
     if (!holders.out) throw new ListWriteError(null, "Nothing calls for the next epoch: names are still sealed under this one", "epoch_not_needed");
   }
-  const body = kindBody({ issued_at, list: state.list, prev: state.footing.hash, seq: state.footing.seq + 1, signer: signer.key }, kind);
   const made = await counted(state, body);
   return await signedBy(made.bytes, signer, made.state);
 }

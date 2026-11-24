@@ -1206,6 +1206,14 @@ describe("how a member writes: an entry is signed only when it counts on the wri
     const joining = { key: m3.key, privateKey: m3.pair.privateKey, enc: m3.enc, endpoint: E(3) };
     expect(await joinEntry(await lineOf(pool), joining, behind, T0 + 600, null).then(() => "signed", whyNot)).toBe("behind");
     expect(await joinEntry(await lineOf(pool), joining, reads, T0 + 600, null).then(() => "signed", whyNot)).toBe("signed");
+    // What is judged is what is written: an object that says `remove` for a while and `pc` afterwards gets no pc signed, whenever it turns.
+    const turned: string[] = [];
+    for (const turnsAfter of [0, 1, 2, 3]) {
+      let asked = 0;
+      const shifty = { ...reused, get kind() { asked++; return asked <= turnsAfter ? "remove" : "pc"; } } as unknown as ListKind;
+      turned.push(await signListEntry(behind, shifty, signer(owner), T0 + 600).then((entry) => `signed a ${readBody(entry.entry.body).kind}`, (error: unknown) => (error instanceof ListKindError ? error.code : whyNot(error))));
+    }
+    expect(turned).toEqual(["behind", "entry_invalid", "signed a remove", "signed a remove"]);
     // A member that is stopped for a replay is told that first: it writes nothing at all.
     const stopped = (await takeEntry(behind, (await next(at(played.links, 6), stranger, later())).held)).state;
     expect([stopped.needs_replay === undefined, await written(stopped, { kind: "remove", ends: phone.key })]).toEqual([false, "not written"]);
@@ -2158,13 +2166,21 @@ describe("a PC joins with the line it was given", () => {
       noAfter, noAt, { ...own, note: "x" },
       { ...own, at: "" }, { ...own, at: "01" }, { ...own, at: "x" }, { ...own, at: "-1" }, { ...own, at: "1".repeat(16) },
       { ...own, after: "x" }, { ...own, after: "01" }, { ...own, after: "-1" },
+      // A value is its bytes: a byte order mark before it is no part of a number, a key or a list id, for the line as for the checker.
+      { ...own, at: `\uFEFF${T0}` }, { ...own, after: "\uFEFF" }, { ...own, after: "\uFEFF7" }, { ...own, key: `\uFEFF${pool.key}` }, { ...own, list: `\uFEFF${LIST}` },
     ];
     for (const values of refused) {
       const bytes = proof(values);
       const signed = await line.signRead(bytes).then((signature) => entryToText({ body: bytes, signature }), (error: unknown) => error);
       expect({ values, refused: signed instanceof JoinLineSignError }).toEqual({ values, refused: true });
       expect({ values, code: (signed as JoinLineSignError).code }).toEqual({ values, code: "not_signed" });
+      // And the checker reads none of them, whoever signs.
+      const forged = entryToText({ body: bytes, signature: new Uint8Array(await crypto.subtle.sign(SIGN, pool.pair.privateKey, bytes as Uint8Array<ArrayBuffer>)) });
+      expect({ values, code: await checkReadProof(forged).then(() => null, (error: unknown) => (error instanceof ReadProofError ? error.code : String(error))) }).toEqual({ values, code: "proof_malformed" });
     }
+    // Bytes that are no text at all are no value either.
+    const raw = writeFieldsUnder(LIST_READ_PREFIX, [{ name: "after", value: Uint8Array.of(0xff) }, { name: "at", value: utf8ToBytes(String(T0)) }, { name: "key", value: utf8ToBytes(pool.key) }, { name: "list", value: utf8ToBytes(LIST) }]);
+    await expect(line.signRead(raw)).rejects.toThrow(JoinLineSignError);
     // Whatever the line signs, its checker reads.
     for (const values of [own, { ...own, after: "0" }, { ...own, after: "7" }, { ...own, at: "0" }, { ...own, at: "9".repeat(15) }]) {
       const bytes = proof(values);
