@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { kindBody, LIST_LEVEL, listView, replayList, signCard, signListEntry, type ListState } from "../../../shared/account-list.ts";
+import { kindBody, lapsedRemovals, LIST_LEVEL, listView, replayList, signCard, signListEntry, type ListState } from "../../../shared/account-list.ts";
 import { entryFromText, entryToText, readBody, signEntry } from "../../../shared/account-list-entry.ts";
 import type { AccountListView, ListWriter } from "./accountList.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
@@ -7,7 +7,7 @@ import { allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { WRITE_RESENDS } from "./listWrite.ts";
 import {
-  cameInThrough, overdueKeys, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
+  cameInThrough, removalRequest, removeFromList, removeSelf, scopeOf, tidyList,
   type RemoveOutcome,
 } from "./listRemoveDevice.ts";
 import { memoryAccountStore } from "./store.ts";
@@ -63,6 +63,20 @@ async function placeInvite(w: World, by: WorldDevice, given: { readonly auto: bo
   const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + (given.seconds ?? 900), uses: 1, auto: given.auto, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
   await by.service.placeEntries(w.held().id, [placed.text], []);
   return invite.key;
+}
+
+/** `by` lets a borrowed browser in: power bound, role drive, until `seconds` after `by`'s own clock. */
+async function letInBorrowed(w: World, by: WorldDevice, label: string, seconds: number): Promise<WorldDevice> {
+  const browser = await w.device({ label });
+  await browser.list.sync();
+  await by.list.sync();
+  const writer = by.list.writer()!;
+  const own = (await browser.keys()).key;
+  const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === own)!;
+  const placed = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "bound", role: "drive", until: writer.issued_at + seconds, enc: claim.enc, card: claim.card, sealed: null, rotates: false },
+    { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
+  await writer.service.placeEntries(writer.list, [placed.text], []);
+  return browser;
 }
 
 describe("a device that is in the list puts another out", () => {
@@ -121,6 +135,23 @@ describe("a device that is in the list puts another out", () => {
     await stranger.list.sync();
     expect(await removeFromList(stranger.list, { keys: [(await first.keys()).key], pcs: [] }, noWait)).toEqual({ removed: false, why: "no_list", retryAfterMs: null, placed: 0 });
     expect(placements(stranger)).toHaveLength(0);
+  });
+});
+
+describe("a device whose copy is behind", () => {
+  it("still signs Remove's (and Not me's) removal and the epoch after it: the kinds sign removals on a copy that is behind", async () => {
+    const { w, first, second } = await twoDevices();
+    const third = await letIn(w, second, "Laptop");
+    await first.list.sync();
+    const writer = first.list.writer()!;
+    // what this device holds once a member of a later level wrote at the next place
+    const behind: ListWriter = { ...writer, state: { ...writer.state, behind: writer.state.footing.seq + 1 } };
+    const removing = [(await second.keys()).key, (await third.keys()).key];
+    const request = await removalRequest(behind, { keys: removing, pcs: [] }, { epoch: true, tidy: true });
+    expect(kinds(request!.entries)).toEqual(["remove", "remove", "epoch"]);
+    expect(request!.entries.slice(0, 2).map(ends)).toEqual(removing);
+    // the next epoch's key goes to whoever stays: this device alone
+    expect(request!.wraps).toHaveLength(1);
   });
 });
 
@@ -320,7 +351,7 @@ describe("tidying up what is over its time", () => {
     const { w, first, second } = await twoDevices();
     const invite = await placeInvite(w, first, { auto: true });
     w.clock.now += 16 * 60_000;
-    expect(overdueKeys(w.held().state, Math.floor(w.clock.now / 1000))).toEqual([invite]);
+    expect(lapsedRemovals(w.held().state, Math.floor(w.clock.now / 1000))).toEqual([{ kind: "remove", ends: invite }]);
     expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
     expect(kinds(w.held().entries).slice(-3)).toEqual(["remove", "remove", "epoch"]);
   });
@@ -332,20 +363,6 @@ describe("tidying up what is over its time", () => {
 });
 
 describe("what the Codex read of P13 found", () => {
-  /** `by` lets a borrowed browser in: power bound, role drive, until `seconds` after `by`'s own clock. */
-  async function letInBorrowed(w: World, by: WorldDevice, label: string, seconds: number): Promise<WorldDevice> {
-    const browser = await w.device({ label });
-    await browser.list.sync();
-    await by.list.sync();
-    const writer = by.list.writer()!;
-    const own = (await browser.keys()).key;
-    const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === own)!;
-    const placed = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "bound", role: "drive", until: writer.issued_at + seconds, enc: claim.enc, card: claim.card, sealed: null, rotates: false },
-      { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
-    await writer.service.placeEntries(writer.list, [placed.text], []);
-    return browser;
-  }
-
   it("X1: a service clock that runs ahead makes no quiet clean-up put a borrowed browser out before its time", async () => {
     const w = listWorld();
     // this device's own clock runs two hours behind the account service's
@@ -413,5 +430,70 @@ describe("what the Codex read of P13 found", () => {
     };
     const outcome = await removeFromList(first.list, { keys: invites, pcs: [] }, noWait);
     expect(outcome).toMatchObject({ removed: false, why: "budget", placed: 15 });
+  });
+});
+
+describe("X1 amended: the floor never signs", () => {
+  /** The floor of `device`'s clock, saved beside its copy, set `seconds` ahead of its own clock now, as a read while its date was set forward leaves it. */
+  async function floorAhead(w: World, device: WorldDevice, seconds: number): Promise<void> {
+    const at = Math.floor(w.clock.now / 1000) + seconds;
+    await device.lists.set("times", w.account, { v: 1, list: w.held().id, read_at: at, seen_at: at });
+    await device.list.sync();
+  }
+
+  it("a saved floor pushed ahead past a borrowed browser's until makes no clean-up put it out", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    await letInBorrowed(w, first, "Library browser", 300);
+    // under ten minutes ahead: the device is not adrift, and its own clock says the browser's time is not over
+    await floorAhead(w, first, 400);
+    const before = w.held().entries.length;
+    expect(await tidyList(first.list, new Set(), noWait)).toBeNull();
+    expect(w.held().entries).toHaveLength(before);
+  });
+
+  it("judges whose time is over by the device's own clock against the list's time, whatever clock the writer carries", async () => {
+    const { w, first, second } = await twoDevices();
+    const browser = await letInBorrowed(w, first, "Library browser", 300);
+    await first.list.sync();
+    const writer = first.list.writer()!;
+    // a writer whose judging clock took a floor 400 s ahead, past the browser's until
+    const ahead: ListWriter = { ...writer, clock: writer.issued_at + 400 };
+    const request = await removalRequest(ahead, { keys: [(await second.keys()).key], pcs: [] }, { epoch: true, tidy: true });
+    expect(request!.entries.filter((text) => kinds([text])[0] === "remove").map(ends)).toEqual([(await second.keys()).key]);
+    expect(request!.entries.map(ends)).not.toContain((await browser.keys()).key);
+  });
+
+  it("a device whose clock reads more than ten minutes under its own floor signs no clean-up removal, and a removal asked for goes on alone", async () => {
+    const { w, first, second } = await twoDevices();
+    const browser = await letInBorrowed(w, first, "Library browser", 60);
+    w.clock.now += 5 * 60_000;
+    await first.list.sync();
+    // by its own clock the browser's time is over; its floor is an hour ahead of that clock
+    await floorAhead(w, first, 3600);
+    expect(first.list.writer()!.adrift).toBe(true);
+    const before = w.held().entries.length;
+    expect(await tidyList(first.list, new Set(), noWait)).toBeNull();
+    expect(w.held().entries).toHaveLength(before);
+    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
+    const placed = w.held().entries.slice(before);
+    expect(kinds(placed)).toEqual(["remove", "epoch"]);
+    expect(ends(placed[0]!)).toBe((await second.keys()).key);
+    const kept = (await browser.keys()).key;
+    expect(listView(w.held().state).devices.find((row) => row.key === kept)?.ended).toBeNull();
+  });
+});
+
+describe("the clean-up ends what the kinds layer's lapsedRemovals names", () => {
+  it("leaves alone an invite that went out with the device that placed it: it is void, and no removal of it is signed", async () => {
+    const { w, first, second } = await twoDevices();
+    await placeInvite(w, second, { auto: true });
+    expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
+    w.clock.now += 16 * 60_000;
+    await first.list.sync();
+    const before = w.held().entries.length;
+    expect(await tidyList(first.list, new Set(), noWait)).toBeNull();
+    expect(w.held().entries).toHaveLength(before);
   });
 });

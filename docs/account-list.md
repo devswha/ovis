@@ -1324,8 +1324,11 @@ other failure is "could not be removed. Try again.", with nothing shown as done.
 member key this device is in it with, as the page showed them; after every read of the list it
 holds the writer against them, and where another sign-in (another tab's), another list or another
 key stands there, it ends with nothing more signed. **Whose time is over is judged by this
-device's own clock**, never the account service's, held against the list's own time: a service
-whose clock runs ahead cannot make a member put a borrowed browser out before its hour.
+device's own clock as it is now**, held against the list's own time only: never the floor it
+saved, never the account service's. A service whose clock runs ahead, or a floor that a date set
+ahead once pushed forward, cannot make a member put a borrowed browser out before its hour. A
+device whose clock reads more than ten minutes under its own floor puts nobody out for a time that
+is over: the removal the person asked for goes alone with its epoch.
 
 **A key that is out never comes back.** Nothing signs it in again: an Allow of that key is
 refused (`removed`), and the device comes back only with a new key.
@@ -1380,9 +1383,9 @@ even where the directory no longer answers that sign-in.
 **Tidying by itself.** After each read that reached the account service, a device of power `full`
 that is in the list ends each device at or past its `until` and each invite that a PC joins with
 by itself, still has a use and is past its `exp` (the kinds layer's `lapsedRemovals`; a plain
-invite holds no key and lets nobody in, and is left alone), by its own clock and judged again on
-the state it signs on, then
-opens the next epoch where the kinds call for one; where nothing
+invite holds no key and lets nobody in, and is left alone), by its own clock as it is now and
+judged again on the state it signs on (a device more than ten minutes under its own floor ends
+nothing), then opens the next epoch where the kinds call for one; where nothing
 is over its time and nobody could seal under the current epoch (another member put itself out), it
 opens the epoch alone. It says nothing on screen, and tries each key once per page, whatever the
 service answers.

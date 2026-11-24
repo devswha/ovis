@@ -8,7 +8,7 @@
  * A key that is ended never comes back: nothing here signs it in again. The account service's answer to the
  * placement is trusted for nothing: a member is out once this device's own copy shows its removal at its place.
  */
-import { listView, pcRemoval, sealEpoch, signListEntry, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
+import { lapsedRemovals, listClock, listView, pcRemoval, sealEpoch, signListEntry, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
 import { nextEpoch, wrapEpochKeyFor, wrapToText } from "../../../shared/account-list-seal.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
@@ -59,20 +59,8 @@ export function cameInThrough(state: ListState, key: string, self: string | null
   return found.sort((a, b) => a.seq - b.seq);
 }
 
-/**
- * The keys whose time is over by `clock` and that still hold the current epoch's key, in the order to put them out:
- * every device that is in at or past its `until`, and every invite that a PC joins with by itself which is in, still
- * has a use and is past its `exp`. Exactly the set of the kinds layer's `lapsedRemovals` (shared/account-list.ts,
- * PR #4593), which this gives way to once that reaches this branch. A plain invite holds no key and lets nobody in by
- * itself, so it is left alone.
- */
-export function overdueKeys(state: ListState, clock: number): string[] {
-  const view = listView(state);
-  return [
-    ...view.devices.filter((row) => row.ended === null && row.until !== null && !(clock < row.until)).map((row) => row.key),
-    ...view.invites.filter((row) => row.auto && state.signers[row.key]?.ended === null && row.joins < row.uses && clock > row.exp).map((row) => row.key),
-  ];
-}
+/** The keys the kinds layer's lapsedRemovals puts out at `clock`, in its order. */
+const lapsedKeys = (state: ListState, clock: number): string[] => lapsedRemovals(state, clock).flatMap((kind) => (kind.kind === "remove" && "ends" in kind ? [kind.ends] : []));
 
 /** Who a removal puts out: keys (a device, a key with no name) and PCs by their relay key. */
 export interface Removal {
@@ -118,10 +106,11 @@ export interface Signed extends Written {
 }
 
 /**
- * The clock a writer judges whose time is over by (the lead's X1): this device's own, held against its saved floor
- * and the list's own time (the writer's `clock`, memberClock), never the account service's.
+ * The clock a writer signs by (the lead's X1, amended): which keys a clean-up puts out and whom the next epoch's key
+ * is wrapped to are judged by this device's own clock as it is now, held against the list's own time only. Never the
+ * floor it saved, which only lets in, refuses and shows, and never the account service's clock.
  */
-export const judgeClock = (writer: ListWriter): number => writer.clock;
+const signClock = (writer: ListWriter): number => listClock(writer.state, writer.issued_at, null);
 
 /**
  * The request that puts out what `removal` names and is still in, then opens the next epoch where the kinds call for
@@ -132,7 +121,7 @@ export const judgeClock = (writer: ListWriter): number => writer.clock;
  */
 export async function removalRequest(writer: ListWriter, removal: Removal, options: { readonly epoch: boolean; readonly tidy: boolean }): Promise<Signed | null> {
   const { list, issued_at } = writer;
-  const clock = judgeClock(writer);
+  const clock = signClock(writer);
   const signer = { key: writer.keys.key, privateKey: writer.keys.signs };
   let after = writer.state;
   const entries: string[] = [];
@@ -156,8 +145,9 @@ export async function removalRequest(writer: ListWriter, removal: Removal, optio
     for (const kind of kinds) await sign(kind);
     if (kinds.length > 0) asked += 1;
   }
-  if (whole && options.tidy) {
-    for (const key of overdueKeys(after, clock)) {
+  // a device whose clock reads far under its saved floor cannot tell which is wrong: it puts nobody out for a time
+  if (whole && options.tidy && !writer.adrift) {
+    for (const key of lapsedKeys(after, clock)) {
       if (entries.length >= room) break;
       await sign({ kind: "remove", ends: key });
     }
@@ -245,8 +235,9 @@ export function removeSelf(list: AccountList, scope: WriteScope, options: Pick<W
 export async function tidyList(list: AccountList, tried: Set<string>, options: Pick<WriteOptions, "wait"> = {}): Promise<RemoveOutcome | null> {
   const writer = list.writer();
   if (writer === null) return null;
-  const overdue = overdueKeys(writer.state, judgeClock(writer));
-  const keys = overdue.filter((key) => !tried.has(key));
+  const overdue = lapsedKeys(writer.state, signClock(writer));
+  // a device adrift from its floor signs no clean-up removal, and no epoch while what is over its time is in
+  const keys = writer.adrift ? [] : overdue.filter((key) => !tried.has(key));
   const epochAt = `epoch@${writer.list}:${writer.state.footing.seq}`;
   // an epoch alone only where nothing over its time is left in: the account service opens none while one is
   const opens = overdue.length === 0 && writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.issued_at) === null && !tried.has(epochAt);
@@ -256,7 +247,7 @@ export async function tidyList(list: AccountList, tried: Set<string>, options: P
   const scope = { account: writer.account, list: writer.list, member: writer.keys.key };
   return placeParts(list, scope, (signs) => {
     // only what is still over its time on the state it is signed on
-    const still = new Set(overdueKeys(signs.state, judgeClock(signs)));
+    const still = new Set(signs.adrift ? [] : lapsedKeys(signs.state, signClock(signs)));
     return removalRequest(signs, { keys: keys.filter((key) => still.has(key)), pcs: [] }, { epoch: true, tidy: false });
   }, options);
 }
