@@ -663,7 +663,7 @@ describe("what a pinned PC keeps beside its pin", () => {
     expect(pc.list.status().alarm).toBe("fork");
     // what a person is told: what happened, whom the PC still lets in, and what to do
     expect(pc.list.status().reason).toContain("two versions of your account's list");
-    expect(pc.list.summary()).toEqual({ pinned: pc.account.id, standing: "in", reason: pc.list.status().reason });
+    expect(pc.list.summary()).toEqual({ pinned_list: pc.account.id, standing: "in", reason: pc.list.status().reason });
     expect(pc.world.alarmed).toBe(true);
     pc.list.stop();
     rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
@@ -720,13 +720,16 @@ describe("what a pinned PC keeps beside its pin", () => {
     expect(pc.list.summary()).toBeNull();
     await pc.pin();
     expect(pc.list.status().reason).toBeNull();
-    expect(pc.list.summary()).toEqual({ pinned: pc.account.id, standing: "in", reason: null });
+    expect(pc.list.summary()).toEqual({ pinned_list: pc.account.id, standing: "in", reason: null });
     pc.list.stop();
     rmSync(join(pc.stateDir, ACCOUNT_LIST_FILE));
     const again = await following({ stateDir: pc.stateDir, account: pc.account, service: pc.service, pinned: pc.account.id });
     again.world.log = () => { throw new Error("away"); };
     await again.pull();
-    expect(again.list.summary()).toMatchObject({ pinned: pc.account.id, standing: "waiting", reason: expect.stringContaining("reading your account's list again") });
+    expect(again.list.summary()).toMatchObject({ pinned_list: pc.account.id, standing: "waiting", reason: expect.stringContaining("reading your account's list again") });
+    // one name for the list the PC is pinned to, in both answers
+    expect(again.list.status()).toMatchObject({ pinned: true, pinned_list: pc.account.id });
+    expect(pc.list.status().pinned_list).toBe(pc.account.id);
     expect(again.list.role(pc.account.first.key)).toBeNull();
   });
 

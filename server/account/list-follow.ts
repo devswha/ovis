@@ -113,6 +113,8 @@ export interface ListStatus {
   readonly list: string | null;
   /** Whether the PC lets its account's devices in by this list, and by nothing the account service says. */
   readonly pinned: boolean;
+  /** The list the PC is pinned to, also when it holds no copy of it it can read; null on a PC that is not pinned. The same name and form as in `GET /api/account/status`. */
+  readonly pinned_list: string | null;
   /** The list a person at this PC named for it, or null. */
   readonly want: string | null;
   /** Where the PC itself stands in the list: `waiting` until an entry adds it. */
@@ -143,7 +145,7 @@ export interface ListStatus {
 }
 
 /** What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the PC stands in it, and ListStatus.reason. */
-export interface ListSummary { readonly pinned: string; readonly standing: Standing | null; readonly reason: string | null }
+export interface ListSummary { readonly pinned_list: string; readonly standing: Standing | null; readonly reason: string | null }
 
 export type WantRefusal = "invalid_list" | "not_in_account" | "pinned" | "removed" | "unavailable";
 
@@ -466,6 +468,7 @@ export class ListFollow implements ListAuthority {
       account: scope?.account ?? null,
       list: copy?.list ?? null,
       pinned: this.pinned(),
+      pinned_list: scope !== null && this.pinned() ? scope.list : null,
       want: scope?.bindId == null ? null : scope.list ?? this.want,
       standing: copy === null ? null : standing(copy),
       head: copy?.state ? { seq: copy.state.footing.seq, hash: copy.state.footing.hash } : null,
@@ -486,7 +489,7 @@ export class ListFollow implements ListAuthority {
   summary(): ListSummary | null {
     const scope = this.sync();
     if (scope === null || scope.list === null || !this.isPinned) return null;
-    return { pinned: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
+    return { pinned_list: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
   }
 
   /** ListStatus.reason: each case in which a pinned PC is closed to its account's devices, or to new ones, with what ends it. */

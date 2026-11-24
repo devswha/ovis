@@ -939,10 +939,13 @@ describe("the devices status lists apart", () => {
 
   it("--json says of a PC pinned to its account's list which list it is, where the PC stands in it and why it lets nobody in; and of a PC that cannot read its account state, what it cannot read", async () => {
     const reason = "This PC cannot read its copy of your account's list (account-list.json), so it lets no device of your account in.";
-    const answers: { status: () => Response } = { status: () => Response.json({ account: "acct_1a2b3c4d5e6f", members: 1, waiting_for_add: false, list: { pinned: "ab".repeat(32), standing: null, reason } }) };
+    let strict = false;
+    const answers: { status: () => Response } = { status: () => Response.json({ account: "acct_1a2b3c4d5e6f", members: 1, waiting_for_add: false, list: { pinned_list: "ab".repeat(32), standing: null, reason } }) };
     const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
-      if (path === "/api/health") return Response.json({ ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] }, relay: { phase: "online" } });
+      // a PC that is closed tells this command, as any caller, no owner's fields: only that it is closed
+      if (path === "/api/health") return Response.json(strict ? { ...APP_HEALTH, auth: { required: true, authenticated: false, reason: "strict" }, relay: { phase: "online" } }
+        : { ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] }, relay: { phase: "online" } });
       if (path === "/api/account/status") return answers.status();
       return new Response(null, { status: 404 });
     } });
@@ -950,9 +953,10 @@ describe("the devices status lists apart", () => {
     const env = { HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" };
     try {
       const pinned = JSON.parse((await run("status", env, { args: ["--json"] })).out) as Record<string, unknown>;
-      expect(pinned).toMatchObject({ account: "acct_1a2b3c4d5e6f", account_known: true, list: { pinned: "ab".repeat(32), standing: null, reason }, problem: null });
+      expect(pinned).toMatchObject({ account: "acct_1a2b3c4d5e6f", account_known: true, list: { pinned_list: "ab".repeat(32), standing: null, reason }, problem: null });
       // closed altogether: the PC says what it cannot read, and nothing else of its account
       const why = "This PC is pinned to a signed list in /home/me/.herdr, and /home/me/.herdr/account-list-keys.json could not be brought beside it (ENOENT)";
+      strict = true;
       answers.status = () => Response.json({ error: { code: "strict", message: "This PC cannot read its safety log", reason: why } }, { status: 403 });
       const closed = JSON.parse((await run("status", env, { args: ["--json"] })).out) as Record<string, unknown>;
       expect(closed).toMatchObject({ account: null, account_known: false, list: null, problem: why });
