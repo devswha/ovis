@@ -117,19 +117,37 @@ describe("a member's approval, once the PC let the new device in", () => {
     expect(w.held().entries).toHaveLength(2);
   });
 
-  it("signs nothing where the approval was begun under another account than the list on this page", async () => {
+  it("signs nothing where the sign-in on this page changed since the approval began: neither into the other account's list, nor the old way", async () => {
     const w = listWorld();
     const member = await w.device({ label: "Phone" });
     await member.list.sync();
     const newcomer = await w.device({ label: "Tablet" });
     await newcomer.list.sync();
+    // the approval was begun under this device's account, whose list it follows; another tab then signed in to another account
+    const began = (await member.store.get("session"))!;
+    await member.store.set("session", { ...began, account: "acct_other", access_token: w.fake.issueToken("acct_other"), sign_in_id: "sign-in-other" });
     const pc = pcX();
     const refused = await admitWithList(member.list, {
-      fetch: pc.fetch, service: member.service, key: await member.store.key(), account: "acct_other", joining: { key: (await newcomer.keys()).key, label: "Tablet", os: "android" }, through: THROUGH, paired: [], directory: [], wait: noWait,
+      fetch: pc.fetch, service: member.service, key: await member.store.key(), account: w.account, joining: { key: (await newcomer.keys()).key, label: "Tablet", os: "android" }, through: THROUGH, paired: [], directory: [], wait: noWait,
     }).catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(ListAllowError);
     expect((refused as ListAllowError).why).toBe("changed");
     expect([pc.sent, w.held().entries.length]).toEqual([[], 1]);
+  });
+
+  it("goes the way from before lists, at once, for an account this device holds no list of, whatever the page's list is for", async () => {
+    const w = listWorld();
+    const member = await w.device({ label: "Phone" });
+    await member.list.sync();
+    const pc = pcX();
+    // an approval for another account, of which this device keeps no copy of a list: nothing of the list on this page is asked or written
+    const before = member.sent.length;
+    await admitWithList(member.list, {
+      fetch: pc.fetch, service: member.service, key: await member.store.key(), account: "acct_other", joining: { key: (await memoryAccountStore().key()).public_spki, label: "Tablet", os: null }, through: THROUGH, paired: [], directory: [], wait: noWait,
+    });
+    expect(pc.paths()).toEqual(["/api/account/introduce", "/api/account/records"]);
+    expect(member.sent.slice(before).filter((each) => each.route.includes("/v2/lists"))).toEqual([]);
+    expect(w.held().entries).toHaveLength(1);
   });
 
   it("takes no place from an introduction that is out of form, or from a PC that has none", async () => {
