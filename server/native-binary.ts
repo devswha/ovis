@@ -60,7 +60,7 @@ export function runBounded(argv: string[], env: Record<string, string | undefine
   try {
     const result = Bun.spawnSync(argv, { env: clean, stdin: "ignore", stdout: "ignore", stderr: "pipe", timeout: timeoutMs, killSignal: "SIGKILL" });
     if (result.exitedDueToTimeout) return { reason: `no answer in ${timeoutMs} ms` };
-    if (result.signalCode != null) return { reason: result.signalCode };
+    if (result.signalCode != null) return { reason: String(result.signalCode) };
     return { exitCode: result.exitCode ?? -1, first: result.stderr.toString().split("\n")[0] ?? "" };
   } catch (error) {
     return { reason: spawnErrorReason(error) };

@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { signHostAndRecordHash } from "./sign-mac.mjs";
+import { signHostAndRecordHash, signNativeBinaries } from "./sign-mac.mjs";
 
 const serverHost = join(import.meta.dir, "..", "..", "..", "server", "pty", "host.ts");
 const { installedHostVouched }: { installedHostVouched(installed: string): boolean } = await import(serverHost);
@@ -30,6 +30,22 @@ const codesign = async (_file: string, args: string[]) => {
 };
 
 describe("signHostAndRecordHash", () => {
+  it("re-signs the keeper before the app seal, refreshes its record and skips a second signing, even without the host", async () => {
+    const app = mkdtempSync(join(tmpdir(), "ovis-sign-keeper-"));
+    dirs.push(app);
+    const bin = join(app, "Contents/Resources/ovis/server/bin");
+    mkdirSync(bin, { recursive: true });
+    const keeper = join(bin, "ovis-acp-keeper");
+    writeFileSync(keeper, "unsigned keeper");
+    writeFileSync(`${keeper}.json`, JSON.stringify({ version: "1.2.3", sha256: "before" }));
+    const ignore = await signNativeBinaries({ app, identity: "HASH", ignore: (file) => file === "already ignored", optionsForFile: () => ({}) }, codesign);
+    expect(readFileSync(keeper, "utf8")).toBe("unsigned keeper + signature");
+    expect(JSON.parse(readFileSync(`${keeper}.json`, "utf8"))).toEqual({ version: "1.2.3", sha256: createHash("sha256").update("unsigned keeper + signature").digest("hex") });
+    expect(ignore(keeper)).toBe(true);
+    expect(ignore("already ignored")).toBe(true);
+    expect(ignore(join(app, "Contents/Resources/ovis/server/ovis-server"))).toBe(false);
+  });
+
   it("signs the host with the app's identity, and the server still runs it", async () => {
     const host = server(true);
     const calls: string[][] = [];

@@ -1,16 +1,14 @@
 /**
  * electron-builder's mac.sign (electron-builder.yml): signs the app as electron-builder does, after
- * signing the bundled Rust PTY host first. The server runs that host only while its record
- * (`ovis-pty-sidecar.json`, written by scripts/pty-sidecar.ts install) holds the binary's SHA-256
- * (server/pty/host.ts), and signing rewrites the binary: so the record takes the signed bytes' hash
- * before the app's seal covers both, and the host is left out of the signing that follows.
+ * signing the bundled PTY host and ACP keeper first. Their records take the signed bytes' hashes
+ * before the app's seal covers them; neither binary may be signed again after that.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "./notarize-dmg.mjs";
 
-export const HOST = "Contents/Resources/ovis/server/bin/ovis-pty-sidecar";
+const BIN = "Contents/Resources/ovis/server/bin";
 
 /**
  * @param {string} host
@@ -30,10 +28,15 @@ export async function signHostAndRecordHash(host, signing, exec = run) {
 }
 
 /** @param {{ app: string, identity: string, keychain?: string, ignore: (file: string) => boolean, optionsForFile: (file: string) => { entitlements?: string } }} opts */
+export async function signNativeBinaries(opts, exec = run) {
+  const signed = ["ovis-pty-sidecar", "ovis-acp-keeper"].map((name) => join(opts.app, BIN, name)).filter((file) => existsSync(file));
+  for (const file of signed) {
+    await signHostAndRecordHash(file, { identity: opts.identity, keychain: opts.keychain, entitlements: opts.optionsForFile(file).entitlements }, exec);
+  }
+  return (file) => signed.includes(file) || opts.ignore(file);
+}
+
 export default async function sign(opts) {
   const { sign: signApp } = await import("app-builder-lib/out/codeSign/macCodeSign.js");
-  const host = join(opts.app, HOST);
-  if (!existsSync(host)) return signApp(opts);
-  await signHostAndRecordHash(host, { identity: opts.identity, keychain: opts.keychain, entitlements: opts.optionsForFile(host).entitlements });
-  return signApp({ ...opts, ignore: (file) => file === host || opts.ignore(file) });
+  return signApp({ ...opts, ignore: await signNativeBinaries(opts) });
 }
