@@ -646,7 +646,7 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(made.pc.account.requests.some((line) => line.includes("/v2/pc/list/entries"))).toBe(false);
   });
 
-  test("on a pinned PC a join that brings no card is the PC's own pairing, as before", async () => {
+  test("on a pinned PC a join that brings no card records a pairing that opens nothing: the list holds no entry for it, and its session ends", async () => {
     const made = await allowingPc();
     const phone = await listMember();
     const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
@@ -655,9 +655,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     const waiting = await ownJoin(made);
     expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
     asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
-    const answer = await asked.next(FrameType.AUTH_OK);
-    if (answer.type !== FrameType.AUTH_OK) throw new Error("The device was not let in");
-    expect(answer.payload).not.toHaveProperty("list");
+    // the row has the account's id for the key, which the list alone answers for: no session by it
+    expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
     expect(made.pc.devices.hasKey(phone.key)).toBe(true);
     expect(entriesPlaced(made)).toBe(0);
     expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
