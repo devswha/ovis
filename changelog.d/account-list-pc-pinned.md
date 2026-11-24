@@ -9,3 +9,6 @@
 - `ovis status --json` says of a pinned PC which list it follows, where it stands in it and, when
   it lets no device of its account in, why and what to do (`list`); and of a PC that cannot read
   its own account state, what it could not read (`problem`).
+- Before a PC joins a signed list, stop every older Ovis that runs on it: one started later
+  refuses the PC's account file, but one that was already running can write its old copy of that
+  file over the PC's place in the list.

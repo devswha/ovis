@@ -327,11 +327,14 @@ export function createServer(
   // behind the rows it numbered, the start is blocked as a merge that could not be made blocks it, and writes nothing
   // to either folder (no merge, fold, repair or legacy pass) until the damage is repaired (S19, S29)
   const damage = (dir: string) => checkedOrder(dir).strict;
-  const blocked = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
+  const damaged = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
+  // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
+  if (pcAccount !== null && sibling && damaged === null) pcAccount.takeSibling(sibling);
+  // A folder whose other folder holds a pin it does not hold itself is closed by that look (takeSibling), before
+  // anything is merged: as with damage, this start then writes nothing to either folder
+  const blocked = damaged ?? pcAccount?.strict ?? null;
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
-  // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
   const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)

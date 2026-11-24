@@ -460,6 +460,13 @@ export class PcAccountState {
     const activeBinding = own ?? theirs;
     const activeStep2 = sharedStep2(activeBinding);
     if (activeStep2) doc.service_step2 = activeStep2;
+    // A pin the other folder holds and this one does not: this folder takes no part in the account. The list knows
+    // this PC by the keys of the folder that pinned, which also holds the copy and what it owes; a second copy of
+    // them here could disagree with it. It is decided here, before anything is written: a closed folder writes nothing, to itself or to the other
+    if (theirs !== null && theirs.list !== undefined && !(mine !== null && mine.bind_id === theirs.bind_id && mine.list === theirs.list)) {
+      this.problem = `This PC is pinned to its account's signed list in ${realFolder(siblingDir)}, and this copy of Ovis (${realFolder(join(this.path, ".."))}) does not hold that pin. Use Ovis from ${realFolder(siblingDir)}`;
+      return;
+    }
     // Both folders keep the clears and the service opt-out for the binding they hold.
     const siblingStep2 = sharedStep2(theirs);
     // the other folder learns a clear it does not hold, and a list's removal where it holds the same binding's clear without it
@@ -481,13 +488,6 @@ export class PcAccountState {
         this.problem = `${path} cannot learn this PC's account denials (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
-    }
-    // A pin the other folder holds and this one does not: this folder takes no part in the account. The list knows
-    // this PC by the keys of the folder that pinned, which also holds the copy and what it owes; a second copy of
-    // them here could disagree with it. The denials were told to the other folder above; nothing else is written
-    if (theirs !== null && theirs.list !== undefined && !(mine !== null && mine.bind_id === theirs.bind_id && mine.list === theirs.list)) {
-      this.problem = `This PC is pinned to its account's signed list in ${realFolder(siblingDir)}, and this copy of Ovis (${realFolder(join(this.path, ".."))}) does not hold that pin. Use Ovis from ${realFolder(siblingDir)}`;
-      return;
     }
     if (this.fresh) { this.doc = doc; return; }
     if (own === null && theirs !== null) { doc.binding = theirs; doc.first = this.doc.first ?? parsed.first; }

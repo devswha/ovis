@@ -1493,7 +1493,8 @@ back into that account under the relay identity it had. Where a PC has two state
 and the new name of one), **a pin is never taken from the other folder**: the list knows this PC by
 the keys in the folder that pinned, and that folder holds the copy and what it owes. A folder whose
 other folder holds a pin it does not hold itself is closed: it lets only this PC itself in, writes
-nothing of its own, and says which folder holds the pin (to this PC's own window, and in `ovis
+nothing on that start (no file of either folder changes, and nothing is merged between them), and
+says which folder holds the pin (to this PC's own window, and in `ovis
 status --json` as `problem`). Use Ovis from that folder. The folder that holds the pin goes on as it
 was. A folder of another PC (another relay identity) changes nothing here. A copy made for other
 keys than this folder holds is dropped, and the list is read again with the PC's own. A removal of the PC by its list that
@@ -1515,7 +1516,23 @@ admission is one the file had not given. A write waits half a second for the loc
 one that is ten seconds old; a lock that cannot be deleted ends the write with an error after that
 wait, and hangs nothing. A server also takes in what the file holds before it acts on an unlisting
 and every five seconds, so a second server decides as a pinned PC, or as one that left its account,
-within seconds of the first one's write.
+within seconds of the first one's write. Looking costs no read while the file is the one this
+server last read or wrote, and tells nobody of a change that is neither the binding nor the pin
+(a listing another server recorded cancels no approval that waits here). A file that is there and
+cannot be read, or does not read as this PC's account state, ends the write with an error: only a
+file that is not there counts as no document. Nothing is written without the lock.
+
+A server that learns of a pin this way does what the server that pinned does: it ends its sessions
+under an account's id with `auth_changed` and decides by the list. A server that follows no list
+(it was started with Step 2 turned off, before the pin) looks at the file every five seconds too,
+and then closes its account part: no session and no sign-in under an account's id, no account
+record, and its account status says why. Pairings this PC made itself under ids of their own go on
+there. Starting that Ovis again makes it follow the list.
+
+**An older Ovis that is already running.** A release from before the list that is started on a
+pinned PC's folder refuses the file. One that was already running when the PC pinned still holds
+the version-1 document in memory, and its next write puts that document over the pin. So stop every
+older Ovis on this PC before the PC joins a list.
 
 A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
 the start, and lets no device of its account in until that read shows the PC in the list. What it
@@ -1545,7 +1562,9 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   key back or the copy cannot be read. A row of this PC's own devices under that same id gives it
   nothing more and nothing else, whoever wrote it and whenever: a member's `add` from before the
   pin, a join a member or this PC allowed by digits. After the pin such a row counts only while the
-  list holds its key.
+  list holds its key. That is asked in one place, where a session takes its device, so it holds
+  for every way such a row comes to a session: a sign-in, a pairing confirmed on this PC's screen
+  that reuses the row, a comparison by digits. The list is asked only of a key the session proved.
 - **A pairing made at the PC is the PC's own business.** A pairing by code has an id of its own,
   and under that id the device signs in as it did, with the role the PC gave it: the list's `watch`
   and `until` do not reach it; removing the key from the list does. The same key also opens under
@@ -1588,13 +1607,16 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   denial itself: the key a removal put out and the place of that entry, or the key whose time
   passed, that time and the hour the PC's clock showed. The mark is removed only once the write
   that makes it unnecessary is on disk: the copy that reaches the removal and shows the key out,
-  with the removal's own record; the copy that holds an hour at or past the time. At a start the
+  and the removal's own record, written in that run; the copy that holds an hour at or past the time. At a start the
   mark is read first, and without the copy (also when the copy is gone). While it stands, the
   keys it names are refused, whatever the copy says. A PC that starts on a copy that does not
   reach a removal the mark names lets no device of its list in until a read has reached that
   place; a head the PC already held discharges nothing. It does not stay closed to everybody:
-  once the account service has answered one whole read, the others are let in again, and the keys
-  the mark names stay out. A denial that still stands after an hour is said in the status. An
+  once a read has reached the head the account service shows, the others are let in again, and
+  the keys the mark names stay out (a page the PC refused, a tail the service withholds and a read
+  that ran out of its requests are no such read). A removal the mark names keeps every row of that
+  key out, a pairing this PC made itself under an id of its own too, as the removal's record does
+  once it is written; a time that passed concerns the list's rows alone. A denial that still stands after an hour is said in the status. An
   ordinary restart, with the copy saved, lets the list's devices in with the service away as
   before. Left open: a disk that takes no write at all, the mark included, and a stop before it
   does.
