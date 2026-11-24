@@ -1,10 +1,9 @@
 /**
  * An account that was in use moving onto its signed list, for a PC under test (docs/account-list.md, "An account that
  * was in use"): devices that are signed in with a sign-in key and hold an account key, and the list the first of them
- * makes in one request. The account service fake of this build takes no `carried` yet, so the birth is placed as its
- * entry 0 and the rest is served after it (tamperList `inject`), as the service would serve a whole birth.
+ * makes in one request, placed whole at the account service fake (F10b), or made up by a service that lies.
  */
-import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, nextEpoch, readStoredEncryptionKey, sealFields, type EpochKey } from "../../shared/account-list-seal.ts";
+import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, nextEpoch, readStoredEncryptionKey, sealFields, wrapEpochKey, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import { cardBinding, namesFields, signCard, signListEntry, type ListKind, type ListSigner, type ListState } from "../../shared/account-list.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import { signMigration, signNaming, signRotation, signVouch, type MigratingDevice, type MigrationPlan, type MigrationSeals, type SignedNaming, type SignedVouch } from "../../shared/account-list-migrate.ts";
@@ -46,15 +45,17 @@ export function asSignIn(serverId: string, device: MigratingPhone, which: "signI
   return { keys: pair, publicKey: key, id: accountDeviceId(serverId, key) };
 }
 
-/** The first device's side of sealing, with real epoch keys. */
-function sealer(): MigrationSeals {
+/** The first device's side of sealing, with real epoch keys: the keys it made, and the wraps of the next epoch the birth carries. */
+function sealer(): MigrationSeals & { readonly keys: ReadonlyMap<number, EpochKey>; readonly wraps: { epoch: number; member: string; wrap: string }[] } {
   const keys = new Map<number, EpochKey>();
+  const wraps: { epoch: number; member: string; wrap: string }[] = [];
   const current = (epoch: number): EpochKey => {
     const key = keys.get(epoch);
     if (key === undefined) throw new Error(`no key of epoch ${epoch}`);
     return key;
   };
   return {
+    keys, wraps,
     async genesis(given) {
       const epoch = newEpochKey(0);
       keys.set(0, epoch);
@@ -67,6 +68,7 @@ function sealer(): MigrationSeals {
     async next(list, epoch, members) {
       const made = await nextEpoch({ list, current: current(epoch), members });
       keys.set(made.epoch.epoch, made.epoch);
+      wraps.push(...made.wraps.map(({ member, wrap }) => ({ epoch: made.epoch.epoch, member, wrap: wrapToText(wrap) })));
       return { opens: made.commitment, link: made.link };
     },
   };
@@ -77,17 +79,60 @@ export function birthPlan(devices: readonly MigratingPhone[], pcs: readonly stri
   return { devices: devices.map((one) => ({ key: one.signIn.key, names: one.names })), pcs: pcs.map((endpoint) => ({ endpoint, names: null })) };
 }
 
+/** The sign-ins of the account's devices at the fake account service, by each key of the device: what places an entry the device signed. */
+const signIns = new WeakMap<FakeAccountService, Map<string, string>>();
+
+/**
+ * The device signs in to the account at the account service and registers its sign-in key (POST /v1/devices): the key
+ * the account's PCs let it in by, and the one its entries are placed under. A device that signs in again is told so.
+ */
+export function signIn(service: FakeAccountService, account: string, device: MigratingPhone): string {
+  const token = service.issueToken(account, { twoStep: true });
+  service.registerSessionKey(token, device.signIn.key, device.label);
+  const tokens = signIns.get(service) ?? new Map<string, string>();
+  signIns.set(service, tokens);
+  tokens.set(device.signIn.key, token);
+  tokens.set(device.member.key, token);
+  return token;
+}
+
+function tokenOf(service: FakeAccountService, key: string): string {
+  const token = signIns.get(service)?.get(key);
+  if (token === undefined) throw new Error("That key is no signed-in device's");
+  return token;
+}
+
+/** Where an entry a member signs goes: placed at the account service, or only held by the test (a member hands it over itself, or the service shows it as a lie). */
+export type Placing = "place" | "hold";
+
 /** A list born by migration, as the account service shows it: every entry a member signed, and what a member holds after the last. */
 export class MigratedList {
-  private constructor(private readonly service: FakeAccountService, readonly account: string, readonly id: string, readonly texts: string[], private held: ListState, private readonly clock: () => number) {}
+  private constructor(private readonly service: FakeAccountService, readonly account: string, readonly id: string, readonly texts: string[], private held: ListState,
+    private readonly clock: () => number, private readonly epochs: ReadonlyMap<number, EpochKey>, private placed: number) {}
 
-  /** The first device's one request: entry 0 placed at the account service, the rest of the birth served after it. */
+  /** The first device's one request (F10b), placed whole at the account service by its own sign-in. */
   static async born(service: FakeAccountService, account: string, first: MigratingPhone, plan: Pick<MigrationPlan, "devices" | "pcs">, clock: () => number): Promise<MigratedList> {
-    const made = await signMigration(account, plan, first, clock(), sealer());
+    const seals = sealer();
+    const made = await signMigration(account, plan, first, clock(), seals);
+    const texts = made.entries.map((entry) => entry.text);
+    const link = await signVouch(made.state, first);
+    const answer = await service.fetch(new Request(`${SERVICE}/v2/lists`, { method: "POST", headers: { authorization: `Bearer ${tokenOf(service, first.signIn.key)}` },
+      body: JSON.stringify({ entry: texts[0], entries: texts.slice(1), wraps: seals.wraps, ...(link === null ? {} : { link: link.link }) }) }));
+    if (answer.status !== 201) throw new Error(`The birth was not taken: ${answer.status} ${await answer.text()}`);
+    return new MigratedList(service, account, made.list, texts, made.state, clock, seals.keys, texts.length);
+  }
+
+  /**
+   * A birth the account service made up and shows, which it would never take from a device: entry 0 placed as an
+   * ordinary genesis, the rest of the run served after it (tamperList `inject`), as a service that lies shows it.
+   */
+  static async forged(service: FakeAccountService, account: string, first: MigratingPhone, plan: Pick<MigrationPlan, "devices" | "pcs">, clock: () => number): Promise<MigratedList> {
+    const seals = sealer();
+    const made = await signMigration(account, plan, first, clock(), seals);
     const texts = made.entries.map((entry) => entry.text);
     const answer = await service.fetch(new Request(`${SERVICE}/v2/lists`, { method: "POST", headers: { authorization: `Bearer ${service.issueToken(account, { twoStep: true })}` }, body: JSON.stringify({ entry: texts[0] }) }));
-    if (answer.status !== 201) throw new Error(`The birth was not taken: ${answer.status} ${await answer.text()}`);
-    const list = new MigratedList(service, account, made.list, texts, made.state, clock);
+    if (answer.status !== 201) throw new Error(`The genesis was not taken: ${answer.status} ${await answer.text()}`);
+    const list = new MigratedList(service, account, made.list, texts, made.state, clock, seals.keys, 1);
     list.serve();
     return list;
   }
@@ -95,34 +140,60 @@ export class MigratedList {
   get state(): ListState { return this.held; }
   get head(): ListPlace { return { seq: this.held.footing.seq, hash: this.held.footing.hash }; }
 
-  /** An entry of `kind` signed by `signer` after the last one: served at once, unless `serve` is false (a member hands it over itself). */
-  async append(kind: ListKind, signer: ListSigner, serve = true): Promise<string> {
+  /**
+   * An entry of `kind` signed by `signer` after the last one: placed at the account service by the sign-in of the device
+   * that signer is, with a wrap of the names' key for each encryption key it adds; or only held (`hold`), for a member to
+   * hand over itself or the service to show as a lie (serve).
+   */
+  async append(kind: ListKind, signer: ListSigner, how: Placing = "place"): Promise<string> {
     const written = await signListEntry(this.held, kind, signer, this.clock());
     this.texts.push(written.text);
     this.held = written.state;
-    if (serve) this.serve();
+    if (how === "place") await this.place([written.text], kind.kind === "pc" || kind.kind === "device" ? [kind.enc] : [], tokenOf(this.service, signer.key));
     return written.text;
   }
 
-  /** A carried device hands its place to its account key, as it does once it follows the list. */
-  async handOver(device: MigratingPhone, serve = true): Promise<string> {
+  /** A carried device hands its place to its account key, as it does once it follows the list: placed by its own sign-in, claim-free (F10b). */
+  async handOver(device: MigratingPhone, how: Placing = "place"): Promise<string> {
     const written = await signRotation(this.held, device, this.clock(), null);
     this.texts.push(written.text);
     this.held = written.state;
-    if (serve) this.serve();
+    if (how === "place") await this.place([written.text], [device.enc], tokenOf(this.service, device.signIn.key));
     return written.text;
   }
 
   /** A member adds the PC at `endpoint` from the keys that PC posted (the second lock), with its card as posted. */
-  async addPostedPc(endpoint: string, by: ListSigner, serve = true): Promise<string> {
+  async addPostedPc(endpoint: string, by: ListSigner, how: Placing = "place"): Promise<string> {
     const answer = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/posts`, { headers: { authorization: `Bearer ${this.service.issueToken(this.account, { twoStep: true })}` } }));
     const post = (await answer.json() as { posts: { endpoint: string; key: string; enc: string; card: string }[] }).posts.find((one) => one.endpoint === endpoint);
     if (!post) throw new Error("The PC posted no keys");
-    return await this.append({ kind: "pc", key: post.key, endpoint, enc: post.enc, card: post.card, sealed: null }, by, serve);
+    return await this.append({ kind: "pc", key: post.key, endpoint, enc: post.enc, card: post.card, sealed: null }, by, how);
+  }
+
+  /** A new device claims its member key with a sign-in of its own (the second lock of the entry that lets it in): its card for this list. */
+  async claim(device: MigratingPhone): Promise<string> {
+    const card = await signCard({ key: device.member.key, enc: device.enc, list: this.id, endpoint: null, invite: null }, device.member.privateKey);
+    const claimed = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/claims`, { method: "POST",
+      headers: { authorization: `Bearer ${this.service.issueToken(this.account, { twoStep: true })}` }, body: JSON.stringify({ key: device.member.key, enc: device.enc, card }) }));
+    if (!claimed.ok) throw new Error(`The claim was not taken: ${claimed.status} ${await claimed.text()}`);
+    return card;
   }
 
   /** A member puts a key out. */
-  remove(key: string, by: ListSigner, serve = true): Promise<string> { return this.append({ kind: "remove", ends: key }, by, serve); }
+  remove(key: string, by: ListSigner, how: Placing = "place"): Promise<string> { return this.append({ kind: "remove", ends: key }, by, how); }
+
+  private async place(texts: readonly string[], encs: readonly string[], token: string): Promise<void> {
+    const epoch = this.epochs.get(this.held.epoch);
+    const wraps = [];
+    for (const member of encs) {
+      const wrap = epoch === undefined ? null : await wrapEpochKey({ list: this.id, epoch, member });
+      if (wrap !== null && epoch !== undefined) wraps.push({ epoch: epoch.epoch, member, wrap: wrapToText(wrap) });
+    }
+    const answer = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/entries`, { method: "POST", headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ entries: texts, ...(wraps.length > 0 ? { wraps } : {}) }) }));
+    if (!answer.ok) throw new Error(`The entries were not placed: ${answer.status} ${await answer.text()}`);
+    this.placed = this.texts.length;
+  }
 
   /** A device names this list to the PC at `endpoint`, in a session signed in with `session`, by the key the list holds it by. */
   async naming(device: MigratingPhone, session: string, endpoint: string, which: "signIn" | "member" = "member"): Promise<SignedNaming> {
@@ -136,11 +207,6 @@ export class MigratedList {
     const signed = await signVouch(this.held, device);
     if (signed === null) throw new Error("That device vouches for nothing");
     return signed;
-  }
-
-  /** A card some other key signs for this PC's relay key: what a member that did nothing for that PC must not sign into a `pc` entry. */
-  card(given: { key: string; enc: string; endpoint: string }, privateKey: CryptoKey): Promise<string> {
-    return signCard({ ...given, list: this.id, endpoint: given.endpoint, invite: null }, privateKey);
   }
 
   /**
@@ -172,9 +238,9 @@ export class MigratedList {
     };
   }
 
-  /** The account service shows every entry: entry 0 is placed, the rest is served after it. */
+  /** The account service shows every entry the test holds: what it placed, and after it, served as if placed, what it did not. */
   serve(): void {
     this.service.untamperList(this.id);
-    if (this.texts.length > 1) this.service.tamperList(this.id, { inject: this.texts.slice(1) });
+    if (this.texts.length > this.placed) this.service.tamperList(this.id, { inject: this.texts.slice(this.placed) });
   }
 }

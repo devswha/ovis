@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { signCard } from "../../shared/account-list.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { ACCOUNT_LIST_FEATURE, FrameType } from "../../shared/relay-mux.ts";
 import { bounded, relayAccountFixture, relayConnection, relayDevice, relayFixture, TestClock } from "../relay/test-helpers.ts";
@@ -18,7 +19,7 @@ import { ACCOUNT_LIST_VOUCHES_FILE } from "./list-vouches.ts";
 import { MIGRATE_TIME_SCALE_ENV } from "./migrate-time.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
-import { asSignIn, birthPlan, migratingDevice, MigratedList, signedInAgain, type MigratingPhone } from "./migrate.test-helpers.ts";
+import { asSignIn, birthPlan, migratingDevice, MigratedList, signedInAgain, signIn, type MigratingPhone } from "./migrate.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -49,6 +50,7 @@ async function accountInUse() {
   const service = new FakeAccountService();
   service.opensAll = true;
   service.listAccounts = "*";
+  service.listMigrateAccounts = "*";
   const accountService = { url: "https://account.test", fetch: service.fetch };
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 });
   closes.push(() => fixture.close());
@@ -58,7 +60,7 @@ async function accountInUse() {
   const endpoint = bytesToHex(importPublicKey(services.relay.currentIdentity()!.public_key));
   const phone = await migratingDevice("Phone");
   const tablet = await migratingDevice("Tablet");
-  for (const device of [phone, tablet]) service.registerDevice(ACCOUNT, device.signIn.key, device.label);
+  for (const device of [phone, tablet]) signIn(service, ACCOUNT, device);
   expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
   time.advance(JOIN_HOLD_MS + 1_000);
   for (const device of [phone, tablet]) expect(services.accountRows!.access(accountDeviceId(serverId, device.signIn.key))).toEqual({ ok: true });
@@ -120,7 +122,7 @@ describe("what a PC tells a device of its account before the account moves", () 
   test("a key let in a moment ago is told with what it has; a row that waits for the account service is told as none", async () => {
     const pc = await accountInUse();
     const laptop = await migratingDevice("Laptop");
-    pc.service.registerDevice(ACCOUNT, laptop.signIn.key, "Laptop");
+    signIn(pc.service, ACCOUNT, laptop);
     expect(await pc.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     pc.time.advance(JOIN_HOLD_MS + 1_000);
     expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, laptop.signIn.key))).toEqual({ ok: true });
@@ -228,7 +230,7 @@ describe("a PC that follows no list, and a device of its account names one in it
   test("a session this PC let in an hour ago names nothing yet, and says how long it waits; after a day it does", async () => {
     const pc = await accountInUse();
     const laptop = await migratingDevice("Laptop");
-    pc.service.registerDevice(ACCOUNT, laptop.signIn.key, "Laptop");
+    signIn(pc.service, ACCOUNT, laptop);
     await pc.run(60_000);
     pc.time.advance(JOIN_HOLD_MS);
     expect(pc.services.accountRows!.access(accountDeviceId(pc.serverId, laptop.signIn.key))).toEqual({ ok: true });
@@ -250,7 +252,8 @@ describe("a PC that follows no list, and a device of its account names one in it
   test("a list started by a key this PC never let in is followed on nobody's word: not on a carried device's, and not in a pairing's session", async () => {
     const pc = await accountInUse();
     const stranger = await migratingDevice("Stranger");
-    const born = await MigratedList.born(pc.service, ACCOUNT, stranger, birthPlan([pc.phone, pc.tablet]), pc.time.seconds);
+    // the account service's own birth, with a key of its own as the first signer: no device sends it, so it is made up
+    const born = await MigratedList.forged(pc.service, ACCOUNT, stranger, birthPlan([pc.phone, pc.tablet]), pc.time.seconds);
     await pc.pull();
     // the phone was carried in and named it, fooled: the PC does not know who started it
     const phone = await sessionOf(pc, pc.phone);
@@ -274,7 +277,7 @@ describe("a PC that follows no list, and a device of its account names one in it
     await pc.pull();
     // the phone signs in again: its old sign-in ends, and the PC lets the new key in from now on
     const again = await signedInAgain(pc.phone);
-    pc.service.registerDevice(ACCOUNT, again.signIn.key, "Phone");
+    signIn(pc.service, ACCOUNT, again);
     pc.service.removeDevice(ACCOUNT, pc.phone.signIn.key);
     await pc.run(60_000);
     pc.time.advance(JOIN_HOLD_MS);
@@ -350,7 +353,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect([card.endpoint, card.list]).toEqual([pc.endpoint, pc.born.id]);
     // its keys are posted at the account service, the second lock of the entry that adds them
     expect(pc.service.accountList(ACCOUNT)!.posts.find((post) => post.endpoint === pc.endpoint)).toMatchObject({ key: card.key, enc: card.enc, card: card.card });
-    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.phone.member, false);
+    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.phone.member);
     const handed = await pc.hand(phone, [entry]);
     expect([handed.status, (handed.body as { verdict: string }).verdict]).toEqual([200, "caught_up"]);
     expect(pc.list.allowRefusal()).toBeNull();
@@ -365,7 +368,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     const card = (await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).body as Card;
     // the tablet, which did nothing for this PC, signs the entry the phone asked for
     const tablet = await sessionOf(pc, pc.tablet);
-    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.tablet.signIn, false);
+    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.tablet.signIn, "hold");
     expect((await pc.hand(tablet, [entry])).status).toBe(200);
     expect(pc.list.status().pcs).toBe(1);
     expect(pc.list.allowRefusal()).toBe("not_signer");
@@ -377,9 +380,9 @@ describe("keys for a PC the list carried in as an endpoint", () => {
   test("the list holds another key at this PC's relay key: the PC follows its list, signs nothing, and says so", async () => {
     const pc = await followsByMove();
     const other = await migratingDevice("Other");
-    const card = await pc.born.card({ key: other.member.key, enc: other.enc, endpoint: pc.endpoint }, other.memberPair.privateKey);
+    const card = await signCard({ key: other.member.key, enc: other.enc, list: pc.born.id, endpoint: pc.endpoint, invite: null }, other.memberPair.privateKey);
     const phone = await sessionOf(pc, pc.phone, "member");
-    const entry = await pc.born.append({ kind: "pc", key: other.member.key, endpoint: pc.endpoint, enc: other.enc, card, sealed: null }, pc.phone.member, false);
+    const entry = await pc.born.append({ kind: "pc", key: other.member.key, endpoint: pc.endpoint, enc: other.enc, card, sealed: null }, pc.phone.member, "hold");
     expect((await pc.hand(phone, [entry])).status).toBe(200);
     expect(pc.list.allowRefusal()).toBe("not_signer");
     expect(pc.list.status().reason).toContain("another key");
@@ -389,7 +392,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
   test("who may ask for the card: a device the list holds with full power, to drive, over its own session", async () => {
     const pc = await followsByMove();
     const bound = await migratingDevice("Watch");
-    const boundCard = await pc.born.card({ key: bound.member.key, enc: bound.enc, endpoint: null as unknown as string }, bound.memberPair.privateKey);
+    const boundCard = await pc.born.claim(bound);
     await pc.born.append({ kind: "device", key: bound.member.key, power: "bound", role: "drive", until: null, enc: bound.enc, card: boundCard, sealed: null, rotates: false }, pc.phone.member);
     await pc.pull();
     pc.time.advance(JOIN_HOLD_MS + 1_000);
