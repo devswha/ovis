@@ -14,18 +14,17 @@ use serde_json::{json, Value};
 pub const WAIT: Duration = Duration::from_secs(30);
 
 pub fn fake_agent() -> PathBuf {
+    // the profile dir is the test binary's grandparent, or further up where cargo keeps its
+    // intermediate files apart (`build.build-dir`); the examples are always in the profile dir
     let exe = std::env::current_exe().expect("test binary path");
-    let path = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("target profile dir")
-        .join("examples")
-        .join(format!("fake_agent{}", std::env::consts::EXE_SUFFIX));
-    assert!(
-        path.exists(),
-        "{} is missing: plain `cargo test` builds it (`--test keeper` alone does not; `cargo build --examples` first)",
-        path.display()
-    );
+    let name = format!("fake_agent{}", std::env::consts::EXE_SUFFIX);
+    let found = exe.ancestors().skip(2).map(|dir| dir.join("examples").join(&name)).find(|path| path.exists());
+    let Some(path) = found else {
+        panic!(
+            "examples/{name} is missing above {}: plain `cargo test` builds it (`--test keeper` alone does not; `cargo build --examples` first)",
+            exe.display()
+        );
+    };
     path
 }
 
