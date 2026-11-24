@@ -630,8 +630,9 @@ describe("PIN guards", () => {
     const title = (): string => textOf(renderer!.root.find((node) => node.props["data-unconfirmed-pc"] !== undefined).findAll((node) => node.type === "span")[1]!);
     expect(title()).toBe("Add this PC to your account? (joined with your invite)");
     now = (made.invite.exp + 5) * 1000;
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_300)); });
-    await settle();
+    // the card's own timer, armed for the invite's end and a second after it: waited for by the title, within a deadline
+    const deadline = Date.now() + 5_000;
+    while (title() !== "Add this PC to your account?" && Date.now() < deadline) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
     expect(title()).toBe("Add this PC to your account?");
   });
 
