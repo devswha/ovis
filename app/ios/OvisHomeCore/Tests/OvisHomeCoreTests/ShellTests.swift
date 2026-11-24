@@ -20,7 +20,6 @@ final class ShellTests: XCTestCase {
 
     func testTheAppsOwnPagesAreToldFromTheShellByTheirHost() {
         XCTAssertTrue(Home.bundledPage(URL(string: "capacitor://localhost/index.html")))
-        XCTAssertTrue(Home.bundledPage(URL(string: "capacitor://LOCALHOST/error.html")))
         XCTAssertTrue(Home.bundledPage(URL(string: "capacitor://localhost/demo/index.html")))
         for page in ["capacitor://app.ovis.sh/", "capacitor://app.ovis.sh/index.html", "capacitor://app.ovis.sh/s/\(id)/", "capacitor://localhost.evil.example/",
                      "capacitor://localhost:1/", "https://localhost/", "http://localhost/index.html", "https://app.ovis.sh/"] {
@@ -31,7 +30,6 @@ final class ShellTests: XCTestCase {
 
     func testOnlyAFrameOfTheShellsOriginIsTheShells() {
         XCTAssertTrue(Home.shellFrame(scheme: "capacitor", host: "app.ovis.sh", port: 0, shell: shell))
-        XCTAssertTrue(Home.shellFrame(scheme: "capacitor", host: "APP.ovis.sh", port: 0, shell: shell))
         // in a build that serves the shell itself, the hosted app from the network is a page like any other
         XCTAssertFalse(Home.shellFrame(scheme: "https", host: "app.ovis.sh", port: 0, shell: shell))
         XCTAssertFalse(Home.shellFrame(scheme: "capacitor", host: "localhost", port: 0, shell: shell))

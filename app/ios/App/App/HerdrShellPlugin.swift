@@ -2,6 +2,7 @@ import Foundation
 import Capacitor
 import OvisHomeCore
 import OvisSshCore
+import WebKit
 
 @objc(HerdrShellPlugin)
 public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -40,7 +41,9 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func answerState(_ call: CAPPluginCall) {
-        let page = bridge?.webView?.url
+        // the page that asked, as the gate in front of the bridge saw it (DirectCallGate.sender): during a load the
+        // web view's own address is already the next page's
+        let page = DirectCallGate.sender(call.callbackId)
         // the relay ID each saved PC's own page said it has, for My PCs to list a PC saved by several ways once: only to
         // the app's own pages, never to a PC's page, which has this bridge too
         let ids = Home.shownIds(page, appOrigin: PCStore.shellOrigin, ids: PCStore.ids) ?? [:]
@@ -64,6 +67,8 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
             "back": shown?.backWay ?? "",
             // the app's own page was asked for to manage an SSH PC (Change PC where one did not open): it opens on SSH
             "manage": shown?.manages ?? false,
+            // the shell inside the app did not open: the app's own page says so instead of "no internet"
+            "stuck": PCStore.homeStuck,
             "name": PCStore.last.flatMap { PCStore.names[$0] } ?? "",
             "failure": PCStore.failure ?? "",
             "kind": PCStore.failureKind ?? "",
@@ -121,10 +126,10 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that
     /// PC once with the relay row of the same ID.
     @objc func identify(_ call: CAPPluginCall) {
-        let serverId = call.getString("server_id"), name = call.getString("name")
+        let serverId = call.getString("server_id"), name = call.getString("name"), page = DirectCallGate.sender(call.callbackId)
         // on the main thread, as open and keepHosted write the names there: no write between this read and this one
         DispatchQueue.main.async {
-            guard let key = Home.identifiedKey(self.bridge?.webView?.url, current: PCStore.current, appOrigin: PCStore.shellOrigin) else {
+            guard let key = Home.identifiedKey(page, current: PCStore.current, appOrigin: PCStore.shellOrigin) else {
                 call.reject("Only a saved PC's own page says which PC it is.")
                 return
             }
@@ -139,7 +144,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
         // an SSH PC forgotten takes its sealed key and host key with it (OvisSshPlugin): only the app's own pages may,
         // which the shell a build serves on the same scheme is not (Home.bundledPage)
         let key = call.getString("url").map(PCStore.shellForm)
-        if let key, OvisSsh.pc(key) != nil, !Home.bundledPage(bridge?.webView?.url) {
+        if let key, OvisSsh.pc(key) != nil, !Home.bundledPage(DirectCallGate.sender(call.callbackId)) {
             call.reject("Only the app's own pages manage SSH PCs.")
             return
         }
@@ -153,8 +158,8 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func openSshSetup(_ call: CAPPluginCall) {
         // only the connect screen and the hosted app (Add a PC's SSH): a PC's own page may not drop the person off it
         // to stage a login of its choosing
-        // the page loaded now, not the one the app last chose: the web view may have gone elsewhere since
-        guard SshPcs.setupOpener(bridge?.webView?.url, appOrigin: PCStore.shellOrigin) else {
+        // the page that asked (DirectCallGate.sender), not the one the app last chose nor the one the web view is on its way to
+        guard SshPcs.setupOpener(DirectCallGate.sender(call.callbackId), appOrigin: PCStore.shellOrigin) else {
             call.reject("Only the app's own pages open the SSH setup.")
             return
         }
@@ -174,7 +179,7 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     /// Change PC. In the demo the app opened (openDemo) it leaves the demo alone, and the PC it was opened over stays
     /// current. From the error page of an SSH PC that did not open, the app's own page comes, whose Manage mends it.
     @objc func disconnect(_ call: CAPPluginCall) {
-        let unopened = Home.bundledPage(bridge?.webView?.url) && shown?.showsPc == true
+        let unopened = Home.bundledPage(DirectCallGate.sender(call.callbackId)) && shown?.showsPc == true
         call.resolve()
         Self.go {
             if PCStore.demo { PCStore.demo = false } else { PCStore.leave(unopened: unopened) }
@@ -211,6 +216,15 @@ public class HerdrShellPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func openDemo(_ call: CAPPluginCall) {
         call.resolve()
         Self.go { PCStore.demo = true }
+    }
+
+    /// Where the shell is inside the app, no web address at the hosted origin's host loads in the main frame of any
+    /// of the app's web views, the ones no PC opened included (the app's own page, the demo): Capacitor asks each
+    /// plugin before it lets a page go anywhere. Behind such an address is the network's copy of the shell.
+    @objc override public func shouldOverrideLoad(_ navigationAction: WKNavigationAction) -> NSNumber? {
+        guard PCStore.shellBundled, navigationAction.targetFrame?.isMainFrame == true,
+              Home.hostedHost(navigationAction.request.url, hosted: PCStore.appOrigin) else { return nil }
+        return true
     }
 
     @objc func retry(_ call: CAPPluginCall) {

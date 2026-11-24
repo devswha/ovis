@@ -230,12 +230,16 @@ public enum Home {
     }
 
     /// Whether `url` and `appOrigin` are one origin, http, https or the app's own scheme (`capacitor`, where a build
-    /// serves the shell from inside the app, Shell.swift): scheme, host and port, the scheme's own port the same as
-    /// none. The app's scheme has no port of its own, so a port there is another origin.
+    /// serves the shell from inside the app, Shell.swift): scheme, host and port. A web origin's host is one whatever
+    /// its case, and its scheme's own port the same as none, as a browser reads them. On the app's scheme a host is
+    /// compared as it is written and has no port: WebKit keeps `capacitor://APP.ovis.sh` another origin than
+    /// `capacitor://app.ovis.sh`, with storage of its own.
     public static func sameOrigin(_ url: URL?, _ appOrigin: URL?) -> Bool {
-        guard let url, let appOrigin, let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" || scheme == appScheme,
-              scheme == appOrigin.scheme?.lowercased(), let host = url.host?.lowercased(), !host.isEmpty, host == appOrigin.host?.lowercased() else { return false }
-        let standard = scheme == "https" ? 443 : scheme == "http" ? 80 : -1
+        guard let url, let appOrigin, let scheme = url.scheme?.lowercased(), scheme == appOrigin.scheme?.lowercased(),
+              let host = url.host, !host.isEmpty, let appHost = appOrigin.host else { return false }
+        if scheme == appScheme { return host == appHost && url.port == nil && appOrigin.port == nil }
+        guard scheme == "https" || scheme == "http", host.lowercased() == appHost.lowercased() else { return false }
+        let standard = scheme == "https" ? 443 : 80
         return (url.port ?? standard) == (appOrigin.port ?? standard)
     }
 
@@ -247,7 +251,8 @@ public enum Home {
 
     /// The scope of the relay PC whose page `url` is (`<appOrigin>/s/<server_id>/`, the key such a PC is saved by), or nil.
     public static func relayScope(_ url: URL?, appOrigin: URL?) -> String? {
-        guard let url, let appOrigin, sameOrigin(url, appOrigin), let scheme = appOrigin.scheme?.lowercased(), let host = appOrigin.host?.lowercased(),
+        guard let url, let appOrigin, sameOrigin(url, appOrigin), let scheme = appOrigin.scheme?.lowercased(),
+              let host = scheme == appScheme ? appOrigin.host : appOrigin.host?.lowercased(),
               let path = URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath else { return nil }
         let lower = path.lowercased()
         if path.contains("\\") || lower.contains("%2e") || lower.contains("%2f") || lower.contains("%5c") || lower.contains("%25") { return nil }

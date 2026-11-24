@@ -10,7 +10,7 @@ final class BundledShellGateTests: XCTestCase {
 
     func testARelayPcsPageOnTheBundledShellIsSavedByItsScopeThere() {
         XCTAssertEqual(Home.relayScope(URL(string: "capacitor://app.ovis.sh/s/\(id)/"), appOrigin: shell), "capacitor://app.ovis.sh/s/\(id)/")
-        XCTAssertEqual(Home.relayScope(URL(string: "capacitor://APP.ovis.sh/s/\(id)/x?pane=w1#y"), appOrigin: shell), "capacitor://app.ovis.sh/s/\(id)/")
+        XCTAssertEqual(Home.relayScope(URL(string: "capacitor://app.ovis.sh/s/\(id)/x?pane=w1#y"), appOrigin: shell), "capacitor://app.ovis.sh/s/\(id)/")
         XCTAssertTrue(Home.relayPc(URL(string: "capacitor://app.ovis.sh/s/\(id)/"), appOrigin: shell))
         // the render host is within its PC's scope, as on the hosted app
         XCTAssertTrue(Home.relayPc(URL(string: "capacitor://app.ovis.sh/s/\(id)/~render"), appOrigin: shell))

@@ -19,8 +19,9 @@ enum PCStore {
 
     /// Where the shell's pages are, which every gate that asks "is this page the shell's" compares with: `appOrigin`
     /// in a build that loads the shell from there, and in one that serves it itself that origin's host on the app's
-    /// own scheme (`capacitor://app.ovis.sh`), once it is served (ShellHost.origin): never the network's copy.
-    static let shellOrigin = shellBundled ? ShellHost.origin : appOrigin
+    /// own scheme (`capacitor://app.ovis.sh`), while it is served (ShellHost.origin, and no web view found without
+    /// ShellHost in front of its handler): never the network's copy.
+    static var shellOrigin: URL? { shellBundled ? (ShellHost.failed ? nil : ShellHost.origin) : appOrigin }
 
     /// `text` as this build opens it (Home.shellForm): an address on the hosted origin is that page of the shell
     /// inside the app, where the build serves it; anything else as it is.
@@ -36,35 +37,74 @@ enum PCStore {
     }
 
     /// The update to a build with the shell inside the app found a sign-in or a PC of the hosted origin on this
-    /// phone (setAsideHosted), and the screen that says so (ShellMovedViewController) has not been answered yet.
+    /// phone (settleShell), and the screen that says so (ShellMovedViewController) has not been answered yet.
     static var moveNotice: Bool {
         get { shellBundled && defaults.bool(forKey: "herdr.shell.notice") }
         set { defaults.set(newValue, forKey: "herdr.shell.notice") }
     }
 
-    /// In a build that serves the shell from inside the app, at each start: what the app saved on the hosted origin
-    /// (the hosted app as the PC a sign-in opened, every relay PC's scope there) no longer opens, as the sign-in and
-    /// the pairing keys behind it are the hosted origin's own storage, which the shell's new origin cannot read. Those
+    /// One of the PCs that update set aside sends this phone alerts, which that screen says in one more line: they are
+    /// encrypted for the phone's one key whichever pairing they are for, and the app cannot hold back an alert that
+    /// has arrived, so they stop only where the PC forgets the phone's old entry.
+    static var moveAlerts: Bool {
+        get { defaults.bool(forKey: "herdr.shell.notice.alerts") }
+        set { defaults.set(newValue, forKey: "herdr.shell.notice.alerts") }
+    }
+
+    /// At each start, the saved PCs as this build can open them.
+    ///
+    /// In a build that serves the shell from inside the app: what the app saved at the hosted origin's host (the
+    /// hosted app as the PC a sign-in opened, every relay PC's scope there) no longer opens, as the sign-in and the
+    /// pairing keys behind it are the hosted origin's own storage, which the shell's new origin cannot read. Those
     /// entries leave the list, and the person is told once (moveNotice). A PC opened at its own address (Tailscale, a
     /// home network, any other, an SSH PC's on this phone) keeps its entry, its name and its place as the current PC:
     /// its page and its cookie are its own origin's. Nothing is deleted: the entries are kept aside (`herdr.hosted.*`),
     /// their push endpoints stay under their keys, and the hosted origin's storage in the web view is not touched.
-    static func setAsideHosted() {
-        guard shellBundled, shellOrigin != nil else { return }
-        let kept = Home.withoutHosted(saved: saved, names: names, ids: ids, current: current, last: last, hosted: appOrigin)
-        guard !kept.dead.isEmpty else { return }
-        let aside = defaults.stringArray(forKey: "herdr.hosted.saved") ?? []
-        defaults.set(aside + kept.dead.filter { !aside.contains($0) }, forKey: "herdr.hosted.saved")
-        let asideNames = defaults.dictionary(forKey: "herdr.hosted.names") as? [String: String] ?? [:]
-        defaults.set(asideNames.merging(names.filter { kept.dead.contains($0.key) }) { _, new in new }, forKey: "herdr.hosted.names")
-        let asideIds = defaults.dictionary(forKey: "herdr.hosted.ids") as? [String: String] ?? [:]
-        defaults.set(asideIds.merging(ids.filter { kept.dead.contains($0.key) }) { _, new in new }, forKey: "herdr.hosted.ids")
-        saved = kept.saved
-        names = kept.names
-        ids = kept.ids
-        current = kept.current
-        last = kept.last
-        moveNotice = true
+    ///
+    /// In a build that loads the shell from the network, installed over one that served it (a test build that
+    /// switches): the other way round. What that build set aside is back in the list, as it opens again, and what it
+    /// saved on the app's own scheme, whose pages this build does not have, is kept aside in its turn (`herdr.inapp.*`)
+    /// for the next build that serves the shell.
+    static func settleShell() {
+        if shellBundled {
+            guard shellOrigin != nil else { return }
+            putBack("herdr.inapp")
+            let kept = Home.withoutHosted(saved: saved, names: names, ids: ids, current: current, last: last, hosted: appOrigin)
+            guard !kept.dead.isEmpty else { return }
+            setAside(kept.dead, as: "herdr.hosted")
+            moveAlerts = kept.dead.contains { defaults.object(forKey: "ovis.push.endpoint." + $0) != nil }
+            (saved, names, ids, current, last) = (kept.saved, kept.names, kept.ids, kept.current, kept.last)
+            moveNotice = true
+        } else {
+            putBack("herdr.hosted")
+            defaults.removeObject(forKey: "herdr.shell.notice")
+            defaults.removeObject(forKey: "herdr.shell.notice.alerts")
+            let kept = Home.withoutInApp(saved: saved, names: names, ids: ids, current: current, last: last)
+            guard !kept.dead.isEmpty else { return }
+            setAside(kept.dead, as: "herdr.inapp")
+            (saved, names, ids, current, last) = (kept.saved, kept.names, kept.ids, kept.current, kept.last)
+        }
+    }
+
+    /// Keeps the entries `keys` with their names and relay IDs under `prefix`, added to what is there.
+    private static func setAside(_ keys: [String], as prefix: String) {
+        let aside = defaults.stringArray(forKey: prefix + ".saved") ?? []
+        defaults.set(aside + keys.filter { !aside.contains($0) }, forKey: prefix + ".saved")
+        let asideNames = defaults.dictionary(forKey: prefix + ".names") as? [String: String] ?? [:]
+        defaults.set(asideNames.merging(names.filter { keys.contains($0.key) }) { _, new in new }, forKey: prefix + ".names")
+        let asideIds = defaults.dictionary(forKey: prefix + ".ids") as? [String: String] ?? [:]
+        defaults.set(asideIds.merging(ids.filter { keys.contains($0.key) }) { _, new in new }, forKey: prefix + ".ids")
+    }
+
+    /// Puts what is kept under `prefix` back among the saved PCs (Home.restored) and empties it.
+    private static func putBack(_ prefix: String) {
+        let aside = defaults.stringArray(forKey: prefix + ".saved") ?? []
+        guard !aside.isEmpty else { return }
+        let back = Home.restored(saved: saved, names: names, ids: ids, aside: aside,
+                                 asideNames: defaults.dictionary(forKey: prefix + ".names") as? [String: String] ?? [:],
+                                 asideIds: defaults.dictionary(forKey: prefix + ".ids") as? [String: String] ?? [:])
+        (saved, names, ids) = (back.saved, back.names, back.ids)
+        for key in [".saved", ".names", ".ids"] { defaults.removeObject(forKey: prefix + key) }
     }
 
     /// PCs opened before, the latest first, each by its key: the origin of a PC opened at its own
@@ -125,7 +165,12 @@ enum PCStore {
 
     /// Whether the app's first screen is the hosted Connect a PC screen (Home): OvisAppHome in Info.plist, the build's
     /// (hosted-origin.xcconfig), `bundled` in a build made with OVIS_APP_HOME=bundled, which keeps the app's own page.
-    static let homeHosted = shellOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppHome") as? String) != "bundled"
+    static var homeHosted: Bool { shellOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppHome") as? String) != "bundled" }
+
+    /// The shell inside the app did not open: home never drew and the person asked for the app's own page instead
+    /// (the cover's Open the connect page), or a web view was found that would have answered the shell without its
+    /// policy (ShellHost.verify). The app's own page says so in place of "no internet". In memory only.
+    static var homeStuck = false
 
     /// The hosted Connect a PC screen did not load, so the app's own page stands in for it, until the person tries it
     /// again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started again
@@ -158,6 +203,7 @@ enum PCStore {
     /// nothing is left that would keep the app's own page up.
     static func goHome() {
         homeFailed = false
+        homeStuck = false
         homeRetried = false
         ownPageTries = 0
         demo = false
@@ -316,20 +362,12 @@ enum PCStore {
         return ScopePath.within(path, scope: scope)
     }
 
-    /// `scheme://host[:port]` of an http or https URL, the host in lowercase as WebKit reports it, or nil. In a build
-    /// that serves the shell itself, also the shell's origin for a page of it (`capacitor://app.ovis.sh`), and of no
-    /// other host on the app's scheme: the app's own pages are never a PC. There the hosted origin is no PC either,
-    /// so nothing opens the network's copy of the shell: an address on it is turned to the shell's first (shellForm).
+    /// The key of the origin a page at `url` belongs to, or nil for an address that is no PC's (Home.pcOrigin):
+    /// `scheme://host[:port]` of an http or https URL, the host in lowercase as WebKit reports it. In a build that
+    /// serves the shell itself, also the shell's origin for a page of it (`capacitor://app.ovis.sh`), and there no web
+    /// address at the hosted origin's host is a PC, on any port, so nothing opens the network's copy of the shell.
     static func origin(of url: URL) -> String? {
-        if shellBundled, url.scheme?.lowercased() == Home.appScheme {
-            guard let shell = shellOrigin, let host = shell.host, url.host?.lowercased() == host, url.port == nil else { return nil }
-            return "\(Home.appScheme)://\(host)"
-        }
-        if shellBundled, Home.sameOrigin(url, appOrigin) { return nil }
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              let host = url.host?.lowercased(), !host.isEmpty else { return nil }
-        let shownHost = host.contains(":") ? "[\(host)]" : host
-        return url.port.map { "\(scheme)://\(shownHost):\($0)" } ?? "\(scheme)://\(shownHost)"
+        Home.pcOrigin(url, hosted: appOrigin, shell: shellOrigin, bundled: shellBundled)
     }
 
     /// The origin of the Ovis server that `target` leads to, or nil. Asks `/api/health?scope=bridge`,
@@ -614,6 +652,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     private var ownPageWatch: Timer?
     private var ownPageUp = false
     private var openingChange: UIButton?
+    /// On the cover over home in a build that serves the shell itself, once home has not drawn for a while
+    /// (Home.ownPageOffer): the app's own page instead.
+    private var openingOwnPage: UIButton?
 
     /// Asked of the hosted screen's page while its cover is up: what the page is, as facts for Home.drawn to judge,
     /// so an empty answer or another page of the hosted origin never counts as the hosted screen.
@@ -777,7 +818,17 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         WebViewWithoutFormBar(frame: frame, configuration: configuration)
     }
 
+    /// This web view would answer the shell without ShellHost in front (ShellHost.verify): it loads nothing, and the
+    /// app's own page comes in its place.
+    private var refused = false
+
     override func capacitorDidLoad() {
+        // before the first page loads: what answers the app's scheme in this web view is what ShellHost put there
+        if !ShellHost.verify(webView) {
+            refused = true
+            PCStore.homeStuck = true
+            DispatchQueue.main.async { HerdrBridgeViewController.reopen() }
+        }
         bridge?.registerPluginInstance(HerdrShellPlugin())
         bridge?.registerPluginInstance(OvisPushPlugin())
         bridge?.registerPluginInstance(OvisAuthPlugin())
@@ -879,6 +930,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 
     override func viewDidLoad() {
+        // nothing loads in a web view that would answer the shell without its policy: super is what starts the load
+        if refused { return }
         // before super, which starts the first load
         if let webView = webView, opened != nil {
             let proxy = NavigationFailureProxy(inner: webView.navigationDelegate) { [weak self] webView, reason, kind in
@@ -1012,10 +1065,13 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         if phase == .loading {
             // only time in front counts (Home.Clock): a page that came up while the app was away is asked (askPage)
             // before the time it was away could count against it
-            if Home.timedOut(elapsed: homeClock.tick(now: now), answered: watch.answered, inApp: inApp) {
+            let waited = homeClock.tick(now: now)
+            if Home.timedOut(elapsed: waited, answered: watch.answered, inApp: inApp) {
                 home(.timedOut)
                 return
             }
+            // home inside the app that has not drawn: no clock gives up on it, the person may
+            if inApp, Home.ownPageOffer(elapsed: waited) { openingOwnPage?.isHidden = false }
         } else if stage == .noAnswer, !inApp {
             // said on the cover itself: while the PC's connection hangs, WebKit did not show the
             // error page either (it stayed unpainted), in this web view or a new one
@@ -1109,13 +1165,22 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         retry.tintColor = Self.accentColor
         retry.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         retry.isHidden = true
+        let ownPage = UIButton(type: .system, primaryAction: UIAction(title: Self.korean ? "연결 화면 열기" : "Open the connect page") { _ in
+            // the shell's own screen did not come up: the app's own page, from the app's files, never the network's copy
+            PCStore.homeFailed = true
+            PCStore.homeStuck = true
+            HerdrBridgeViewController.reopen()
+        })
+        ownPage.tintColor = Self.strongColor
+        ownPage.titleLabel?.font = .preferredFont(forTextStyle: .body)
+        ownPage.isHidden = true
         let bar = UIProgressView(progressViewStyle: .default)
         bar.progressTintColor = retry.tintColor
         bar.trackTintColor = Self.borderColor
         bar.isHidden = true
         bar.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = UIStackView(arrangedSubviews: [spinner, bar, label, retry, change])
+        let stack = UIStackView(arrangedSubviews: [spinner, bar, label, retry, ownPage, change])
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 16
@@ -1149,6 +1214,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         openingLabel = label
         openingRetry = retry
         openingChange = change
+        openingOwnPage = ownPage
         openingBar = bar
         openingName = host
         applyBars()
@@ -1372,9 +1438,27 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
             decisionHandler(.cancel)
             return
         }
-        // where the shell is inside the app, a shell page's link to the hosted origin (a pairing link written for
-        // https://app.ovis.sh) is that page inside the app, and a PC's scope without its slash gets it: the app allows
-        // the shell's host as it allows any PC's, and would otherwise load the network's copy of the shell here
+        // where the shell is inside the app, no web address at the hosted origin's host loads in the main frame, a
+        // redirect to one included: behind it is the network's copy of the shell, with the keys the update set aside.
+        // A shell page's own link to the hosted origin (a pairing link written for https://app.ovis.sh) is that page
+        // inside the app instead; from any other page it goes nowhere
+        if PCStore.shellBundled, navigationAction.targetFrame?.isMainFrame == true, let url = navigationAction.request.url,
+           Home.hostedHost(url, hosted: PCStore.appOrigin) {
+            decisionHandler(.cancel)
+            if PCStore.inApp(opened), let inApp = Home.shellNavigation(url, hosted: PCStore.appOrigin, shell: PCStore.shellOrigin) {
+                webView.load(URLRequest(url: inApp))
+            } else if !pageShown, provisional {
+                // the address being opened led there: it is no PC
+                onFailure(webView, "It redirected to \(url.host ?? "the hosted app"), which this app opens from inside itself, not as a PC.", nil)
+            }
+            return
+        }
+        // a render host is a frame of a shell page and nothing else: the web view does not go there itself
+        if navigationAction.targetFrame?.isMainFrame == true, Home.renderHostAddress(navigationAction.request.url, shell: PCStore.shellBundled ? PCStore.shellOrigin : nil) {
+            decisionHandler(.cancel)
+            return
+        }
+        // a PC's scope there named without its slash gets it, as the hosted app's host redirects it
         if navigationAction.targetFrame?.isMainFrame == true, PCStore.inApp(opened), let url = navigationAction.request.url,
            let inApp = Home.shellNavigation(url, hosted: PCStore.appOrigin, shell: PCStore.shellOrigin) {
             decisionHandler(.cancel)

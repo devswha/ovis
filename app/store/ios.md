@@ -44,9 +44,16 @@ account sign-in, #4256, with the privacy manifest of #4273), approved and on the
 since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
 build number in Debug and Release.
 
+The store app carries a release's shell (docs/native-app.md, The shell inside the app): download the tag's
+`dist-shell.tar.gz` and `dist-shell.tar.gz.sha256` from its GitHub release, and name them to the build. Xcode refuses
+to archive `sh.ovis.app` with any other shell, or with none.
+
 ```bash
 git switch main && git pull
-bun install && cd app && bun install && bun run sync   # build:web, then cap sync ios
+sh app/ios/check.sh                                     # the app's Swift tests, which no CI job runs
+bun install && cd app && bun install
+OVIS_APP_SHELL_ARCHIVE=<path>/dist-shell.tar.gz OVIS_APP_SHELL_SHA256=<the 64 hex digits of its .sha256> \
+  OVIS_APP_SHELL_TAG=<the tag, v0.5.10> bun run sync    # build:web, then cap sync ios
 bun run open                                            # Xcode
 ```
 
