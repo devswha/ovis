@@ -268,8 +268,18 @@ What stays true all the same, and what to do about it:
 
 A member that reads an entry whose `v` is above its level applies `adds` and `ends` and nothing of
 the kind, and from an entry of a `full` signer that it cannot read it is behind: it lets nobody new
-in, and still applies every removal. A carried PC that is in still gets its keys from a person's
-`pc`: nobody new comes in by that, and the member then knows which PC goes when that key is ended.
+in, and still applies every removal. Besides removals, the one thing it takes in is the keys that
+a person's `pc` gives a carried PC that is in, and only where that `pc` passes every check it
+passes for a member that reads everything. The reason is a sequence: a carried PC is in; the member
+falls behind; a `pc` gives that PC its keys; the key is ended. Without the keys the member could
+not tell which PC that end means, and would hold a PC that every other member had put out. Nobody
+new comes in by this, and no PC moves to another relay key.
+
+One thing a member that is behind cannot follow: which keys PCs that joined after it fell behind
+have. A `pc` that names such a key for a carried PC has no effect for a member that reads
+everything (`key_reused`), and the member that is behind takes it. No member that signs only what
+counts writes such an entry; one that does can leave a member that is behind holding that carried
+PC after the others put it out by its relay key, until that member is updated and replays.
 
 ### A card
 
