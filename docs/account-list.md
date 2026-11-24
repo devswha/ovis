@@ -1087,15 +1087,14 @@ power `full` offers **Remove** on every row but its own; this device's own row k
 **Disconnect**, which is a leave (below). An account with no list, and a device that is in none,
 see the rows they always did.
 
-**Remove** asks once, and by default puts out that device alone, as Doriterm's plain revoke does.
-Where something came in through it, the question has one switch, off at first: **If {name} was
-stolen, also remove what it added (n)**. On, it lists what came in through the device: every
-device, key with no name and PC that it let in, added, or whose invite it placed, and whatever
-those let in in turn, in the order they came in, each ticked, and each can be left out. This
-device and what came in through it are never among them, and neither is what was in the account
-before the list. Where a PC is among the ticked, a line says **These PCs will need to be added
-again.**: a PC put out comes back only as a new PC. The invites the device placed are not named:
-they are void once its key is ended.
+**Remove** asks once. The question names what came in through that device: every device, key with
+no name and PC that it let in, added, or whose invite it placed, and whatever those let in in turn,
+in the order they came in. This device and what came in through it are never among them, and
+neither is what was in the account before the list. Each is a box to tick, and none is ticked at
+first, with one line: **If {name} was stolen, tick what you did not add yourself.** A lost phone
+often let in the person's own PCs, while a stolen one may have let in the thief's devices. Where a
+PC is ticked, a line says **These PCs will need to be added again.**: a PC put out comes back only
+as a new PC. The invites the device placed are not named: they are void once its key is ended.
 
 **The request**, one for all of it, through the kinds' writer on the device's own state: a
 `remove` that ends each key (for a PC, what `pcRemoval` gives: its key or its relay key, and the
@@ -1117,8 +1116,8 @@ refused (`removed`), and the device comes back only with a new key.
 copy: **{device} was allowed into your account by {approver}.**, for every device another member
 let in since this device last looked (on its first look nothing is told: whoever was in before is no
 news), with the device's role where it has one. The approver is the device or PC whose key signed
-the entry. **Not me** asks Remove's question with its switch on at first, every item ticked, since the
-person does not know the device and what it added is suspect; each can be left out. **Dismiss** closes the notice for
+the entry. **Not me** asks Remove's question with every item ticked, since the person does not know
+the device and what it added is suspect; each can be left out. **Dismiss** closes the notice for
 good. What the device has seen is kept per account in the page's storage
 (`ovis-list-device-notices`). Only a device that may remove anybody is told. On such an account the
 PCs' notices of an admission are not shown; an account with no list keeps them, with their blocks.
