@@ -8,7 +8,9 @@ only `waiting_human`: ask the person to open Ovis.
 
 When a TUI parent cannot prove its permission ceiling, a child starts only in a launch that was
 seen to ask a person before every write, side-effecting command, web request and MCP call, with
-the user's and the project's own approvals in place. Only the versions those runs used start:
+the user's and the project's own approvals in place, or, for Codex, Copilot and agy, in that harness's
+narrowest asking launch, where only those approvals (and agy's built-in web search) go unasked.
+Only the versions those runs used start:
 
 - **OpenCode 2.2.2.** Before starting it Ovis supplies a private, per-run primary agent named
   `ovis-ask-…`, with an `ask` rule for every action and resource. Project config is disabled for
