@@ -299,20 +299,41 @@ describe("the hosted shell and the account's signed list", () => {
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4`]);
   });
 
-  it("hands a place to the list whatever this page drew of it so far, and takes none where the pairing was made with a code", async () => {
+  it("hands a place to the list whatever this page drew of it so far, and after a pairing made with a code reads the introduction once, with no wait", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();
     // the page has not read its list yet (a reload): the place is the list's to judge, and a list that is followed takes none
     const first = await approvedPairing([{ pcs: [], list: place }]);
     await controller(list, first.store, () => {}, async () => first.session).enroll(first.session, first.serverId, true, true);
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4`]);
-    // a pairing that is not one a member's approval made: the introduction is read once, as before, and no place taken
+    // a pairing that is not one a member's approval made: the introduction is read once, as before, with no waiting
+    // for another; a device that still waits to be let into the list takes the place that one read brings
     calls.length = 0;
     list.view = waitingView;
-    const second = await approvedPairing([{ pcs: [], list: place }]);
+    const second = await approvedPairing([{ pcs: [] }, { pcs: [], list: place }]);
     await controller(list, second.store, () => {}, async () => second.session).enroll(second.session, second.serverId, true, false);
     expect(second.introductions().length).toBe(1);
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
+  });
+
+  it("asks a PC it is paired with for its place again at a later open, while it still waits to be let into the list", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    // the member's Allow went through only after this device stopped asking: the PC carries the place now, and this
+    // device opens the PC from its saved pairing
+    list.view = waitingView;
+    list.follows = async () => false;
+    const later = await approvedPairing([{ pcs: [], list: place }]);
+    await controller(list, later.store, () => {}, async () => later.session).enroll(later.session, later.serverId, false);
+    expect(later.introductions().length).toBe(1);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4`]);
+    // a device that follows its list asks no PC for a place at an open
+    calls.length = 0;
+    list.view = () => ({ account: "acct-one", reached: true, status: { at: "following", list: place.id, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const settledIn = await approvedPairing([{ pcs: [], list: place }]);
+    await controller(list, settledIn.store, () => {}, async () => settledIn.session).enroll(settledIn.session, settledIn.serverId, false);
+    // the introduction is read once, as at any open, and no place is taken from it
+    expect([settledIn.introductions().length, calls.filter((call) => call.startsWith("adopt"))]).toEqual([1, []]);
   });
 
   it("takes no place for a pairing that was forgotten while the PC's answer was on its way", async () => {
