@@ -45,4 +45,4 @@ it("a verified agent run token is not an HTTP credential", async () => {
     const reply = await fetch(`http://127.0.0.1:${app.port}/api/session`, { headers: { authorization: `Bearer ${token}` } });
     expect(reply.status).toBe(401);
   } finally { app.stop(); registry.mockRestore(); hc.close(); rmSync(stateDir, { recursive: true, force: true }); }
-}, 30_000);
+});
