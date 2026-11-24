@@ -169,6 +169,16 @@ describe("the account's PCs in the sidebar", () => {
     expect(requests.filter(({ path }) => path === "/api/machines/relay/account/start")).toEqual([]);
   });
 
+  it("adds by itself no PC of the list that is still new to this device: it waits for a person, as it does on My PCs", async () => {
+    const soon = new Date(Date.now() + 3_600_000).toISOString();
+    source.list = async () => ({ account: "acct", pcs: [{ ...DESK, byList: true as const, new_until: soon }] });
+    await act(async () => { renderer = create(tree(() => {}, [local])); });
+    await settle();
+    expect(groups().map(([label, state]) => [label, state])).toEqual([["PC Desk", "ready"]]);
+    expect(admitted).toEqual([]);
+    expect(requests.filter(({ path }) => path === "/api/machines/relay/account/start")).toEqual([]);
+  });
+
   it("A3: marks only the sidebar PC whose admission has not expired", async () => {
     jest.useFakeTimers();
     const now = Date.now();

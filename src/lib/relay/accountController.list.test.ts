@@ -168,6 +168,23 @@ describe("the hosted shell and the account's signed list", () => {
     expect((account.state as { list?: string }).list).toBeUndefined();
   });
 
+  it("gives the list key only while the sign-in it belongs to is the one in view: none from the moment a sign-out begins", async () => {
+    await signIn("acct-one");
+    const { list } = recordingList();
+    const mine = (await accountStore.key()).public_spki;
+    const held: AccountListView = { ...inList("acct-one"), devices: [{ key: mine, self: true, power: "full", role: "drive", until: null, carried: false, name: null }] };
+    list.view = () => held;
+    list.sync = async () => held;
+    list.follows = async () => true;
+    const account = controller(list);
+    await account.refresh(true);
+    await settle();
+    expect(account.listKey?.public_spki).toBe(mine);
+    // the person signs out: the list's own view goes only once the account service answered, the key at once
+    account.signOut();
+    expect([account.listKey, list.view().account]).toEqual([null, "acct-one"]);
+  });
+
   it("stops following the list once it is disposed: no later round reads it", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();

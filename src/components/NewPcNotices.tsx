@@ -8,7 +8,7 @@ import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutErr
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { deviceOs } from "../lib/phone.ts";
-import { pcRemovalFailure, usePcRemoval } from "./usePcRemoval.tsx";
+import { pcRemovalFailure, usePcRemoval, heldRemoval, type HeldRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
@@ -23,7 +23,7 @@ const READ_TIMEOUT_MS = 10_000;
  */
 type NewPc = DirectoryPc;
 
-type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[] };
+type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[]; /** for each PC told of, the row of this device's list it was drawn from */ readonly held?: ReadonlyMap<string, HeldRemoval | null> };
 
 /** When this device first signed in to `account` (ms), kept in this browser and moved only earlier; null when nothing says. */
 function firstJoin(account: string, signedInAt: number | null): number | null {
@@ -91,7 +91,10 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now && addedSinceJoin(pc)));
         // a notice this device already closed is nothing left to tell
         telling = told.some((pc) => pc.server_id !== ownWindowOf && !newPcNoticeClosed(newPcNoticeKey(session.account, pc)));
-        setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told } : null);
+        // each notice keeps the row of the list it was drawn from (heldRemoval): its "I didn't add this" is for that
+        // row, in that list, and for no other the page may hold by the time it is pressed
+        const held = new Map(told.map((pc) => [pc.server_id, heldRemoval(session.account, pc.server_id)]));
+        setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told, held } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setListing(null);
@@ -126,15 +129,17 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
   if (listing === null) return null;
   return listing.pcs.filter((pc) => pc.server_id !== ownWindowOf).map((pc) => {
     const dismissalKey = newPcNoticeKey(listing.session.account, pc);
-    return <NewPcNotice key={`${listing.session.sign_in_id}:${dismissalKey}`} pc={pc} session={listing.session} dismissalKey={dismissalKey} onRemoved={onRemoved} />;
+    return <NewPcNotice key={`${listing.session.sign_in_id}:${dismissalKey}`} pc={pc} session={listing.session} dismissalKey={dismissalKey} onRemoved={onRemoved} held={listing.held?.get(pc.server_id) ?? null} />;
   });
 }
 
-export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
+export function NewPcNotice({ pc, session, dismissalKey, onRemoved, held }: {
   readonly pc: NewPc;
   readonly session: AccountSession;
   readonly dismissalKey: string;
   readonly onRemoved?: (() => void) | undefined;
+  /** the row of this device's list the notice was drawn from; null or absent for a PC that no list of it held then */
+  readonly held?: HeldRemoval | null;
 }) {
   const t = useT();
   const expiresAt = pc.admitted_before_you ? Number.POSITIVE_INFINITY : Date.parse(pc.new_until ?? "");
@@ -161,7 +166,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
     setSending(true);
     setFailed(null);
     try {
-      await removal.remove(session, pc.server_id);
+      await removal.remove(session, pc.server_id, undefined, held ?? undefined);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       setFailed(pcRemovalFailure(error, t, t("The PC could not be removed. Try again.")));
