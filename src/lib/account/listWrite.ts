@@ -6,8 +6,8 @@
  * The account service's answer to the placement is trusted for nothing: the entries are placed once this device's own
  * copy shows the last of them at its place.
  */
-import { ListWriteError, signListEntries, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
-import { nextEpoch, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
+import { lapsedRemovals, ListWriteError, namesFields, sealEpoch, signListEntries, wrapKeys, type ListKind, type ListNames, type ListState, type Sealed } from "../../../shared/account-list.ts";
+import { nextEpoch, sealFields, wrapEpochKey, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, AccountListView, ListWriter } from "./accountList.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
@@ -120,6 +120,66 @@ const refusalOf = (error: unknown): AccountServiceError | null => (error instanc
 
 const unanswered = (error: unknown): boolean => error instanceof AccountServiceUnreachableError || error instanceof AccountRefreshError
   || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
+
+/**
+ * The request that brings a member in under a name (a device, a PC), signed on the writer's state. Where the kinds
+ * say names may be sealed, it is the one entry, its names under the current epoch and that epoch's key wrapped to
+ * `enc`, the newcomer's encryption key. Where they say no, the request first tidies up: a `remove` for every key
+ * whose time is over (the kinds' lapsedRemovals), one `epoch`, then the entry with its names under the epoch that
+ * request opens, and the new key wrapped to everybody who is in after the whole of it. A device that holds no key
+ * of the current epoch seals nothing and wraps nothing: the newcomer comes in all the same. A caller that may meet
+ * more keys over their time than one request holds goes through writeNamed.
+ */
+export async function signedNamed(writer: ListWriter, names: ListNames | null, enc: string, kind: (sealed: Sealed | null) => ListKind): Promise<Written> {
+  const { list, state, clock } = writer;
+  const seal = async (on: ListState, key: EpochKey, opens: string): Promise<Sealed | null> => names === null ? null
+    : { epoch: key.epoch, bytes: await sealFields({ place: { list, seq: on.footing.seq + 1 }, epoch: key, commitment: opens, fields: namesFields(names) }) };
+  const current = writer.epochs.get(state.epoch) ?? null;
+  if (current === null) return signedOn(writer, [kind(null)]);
+  const where = sealEpoch(state, clock);
+  if (where !== null) {
+    const wrap = await wrapEpochKey({ list, epoch: current, member: enc });
+    return signedOn(writer, [kind(await seal(state, current, where.opens))], wrap === null ? [] : [{ epoch: current.epoch, member: enc, wrap: wrapToText(wrap) }]);
+  }
+  return signedWithEpoch(writer, current, lapsedRemovals(state, clock), (next) => [async (after) => kind(await seal(after, next.epoch, next.commitment))]);
+}
+
+/** How many requests of removals alone go before a named entry's own: 64 keys over their time. */
+const TIDY_ROUNDS = 4;
+
+/**
+ * writeToList for a request that brings a member in under a name (signedNamed). No request is built that the
+ * account service must refuse for its size: that request holds the removal of every key over its time, the epoch
+ * and the entry, and nothing may be sealed while one of those keys is still in. So where they are more than fit,
+ * they go out first, a request of removals at a time, TIDY_ROUNDS at most, and the entry's request follows on the
+ * head they leave.
+ *
+ * `prepare` runs on the writer of each try, before anything is signed: a refusal or a `done` of its own ends the
+ * write, and `go` carries what `sign` needs.
+ */
+export async function writeNamed<With, Why extends string = never>(
+  list: AccountList,
+  prepare: (writer: ListWriter) => Promise<{ readonly refused: WriteRefusal | Why } | { readonly done: ListPlace } | { readonly go: With }>,
+  sign: (writer: ListWriter, go: With) => Promise<Written>,
+  options: WriteOptions = {},
+): Promise<WriteOutcome<Why>> {
+  for (let rounds = 0; rounds <= TIDY_ROUNDS; rounds += 1) {
+    let tidied = false;
+    const outcome = await writeToList<Why>(list, async (writer) => {
+      tidied = false;
+      const ready = await prepare(writer);
+      if (!("go" in ready)) return ready;
+      const lapsed = writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.clock) === null ? lapsedRemovals(writer.state, writer.clock) : [];
+      if (lapsed.length > WRITE_ENTRIES_MAX - 2) {
+        tidied = true;
+        return { request: await signedOn(writer, lapsed.slice(0, WRITE_ENTRIES_MAX)) };
+      }
+      return { request: await sign(writer, ready.go) };
+    }, options);
+    if (!outcome.written || !tidied) return outcome;
+  }
+  return { written: false, why: "busy", retryAfterMs: null };
+}
 
 /** Whether this device holds a list of its account: it then goes by it, also where it cannot write to it. */
 export function holdsList(view: AccountListView): boolean {
