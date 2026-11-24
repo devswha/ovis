@@ -1938,6 +1938,55 @@ neither a hand-over nor the pin undoes a removal.
   that never handed over is let in by a PC that follows the list only while the snapshot also
   names it, which is local and undone when the snapshot names it again.
 
+### In the app
+
+The app does all of this by itself, behind the account service's migrate switch, and asks the
+person to press nothing ([`src/lib/account/listMigrate.ts`](../src/lib/account/listMigrate.ts),
+[`accountList.ts`](../src/lib/account/accountList.ts)). An account the switch does not name, and an
+account with no list, is asked and told exactly what it was before; a list that was not born by a
+move is never named to any PC.
+
+- **What a device knows.** Its PCs are its own record of them (`seenPcs.ts`: since when it held
+  sessions with each relay key, and what it did itself for it); `invited` counts as `added`. Each
+  PC's answer (`GET /api/account/list/witness` on a session) is kept in memory for this run of the
+  app only. While the device waits on its PCs, every session the app opens to one asks it, and the
+  PCs its record knows that have not answered are asked over a session of their own (a saved
+  pairing, or through the account with this sign-in's key), each at most once in ten minutes. A
+  PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
+- **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, the device
+  plans from `GET /v1/devices`, the directory's PCs that are listed as let in (a PC outside it is
+  left out, as the service would refuse it), its record and this run's answers. It notes its first
+  try (`tried`) and waits while the plan says so. It signs the birth once, keeps it in its own
+  store and sends it (`POST /v2/lists` with `entries`, the wraps of epoch 1 to itself, and the link
+  of its account key to its sign-in key) as it is until a 201 or its own list back in a `409
+  list_exists`, or until the account service names that list. A refusal that is final drops the
+  birth; the next plan comes an hour later at the soonest and leaves out the key or the PC a `403
+  not_carried` named (its `index`: entry 0 is 0, then the devices, then the PCs, in the plan's
+  order). It follows the list pinned under the sign-in key that signed entry 0.
+- **A carried device.** A list whose entry 1 is `carried` is read whole without being kept. Where
+  the device's sign-in key was carried in, it asks `joinVerdict` with its record and this run's
+  answers; on a yes it pins as `carried`, saves the copy and hands its place to its account key
+  (`signRotation`, with the D11.2 link, one kept request per head). On a no that does not wait it
+  says why, names the PCs, and asks to be let in as any new device does; it asks again at every
+  round, so the refusal clears when its cause does.
+- **A saved copy** is the device's own when it was pinned under its account key, or under a
+  sign-in key of its own that the list shows handed over to it, or under its sign-in key of now
+  while the list still holds that key.
+- **Sessions.** A device that follows its moved list names it (`POST /api/account/list/name`, the
+  naming by its account key with the vouch of the sign-in key the session signed in with) to every
+  PC that takes no `account-list-1`. On a PC that does, a PC the move left with no keys gets them
+  from a member that did something itself for that PC: it takes the PC's card over the session
+  (`GET /api/account/list/card`), checks it for this list and that relay key, signs the `pc` entry
+  and hands the PC the page. Any other member leaves it to the number at the PC.
+- **What the person sees.** Once, after the pin, who made the list and every device and PC it
+  brought in that is still in, each PC with Not me, which removes it from the list after a
+  question; a device's Not me is the devices list's Remove. A carried device that refused the list
+  says why. Nothing else.
+- **The QA twin** (`sh.ovis.app.previewqa`, which says so through `HerdrShell.appId`) multiplies
+  the durations the device hands over (`known`, `tried`) by `localStorage["ovis-migrate-qa-scale"]`
+  (1 to 86400). No other build reads it, and the pure constants never change; a PC scales its own
+  two counters itself.
+
 ## The vectors
 
 Each file of [`shared/account-list-vectors/envelope/`](../shared/account-list-vectors/envelope) is

@@ -20,7 +20,8 @@ import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS,
 import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
-import { askWitness, onPcSession, pageAnswers, pageScale, pcsToAsk, waitsOnPcs } from "../account/listMigrate.ts";
+import { askWitness, onPcSession, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
+import { callNative, hasNativeMethod } from "../nativeApp.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import type { LeaveOutcome } from "../account/hostedSignIn.ts";
@@ -130,6 +131,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       migration: { scale: pageScale },
     });
   const followed = lists === null ? null : followAccountList(lists);
+  // which build of the phone app this page runs in: only the QA twin may turn the waits of a move down
+  if (lists !== null && mount.accountList === undefined) void readAppId({ has: hasNativeMethod, call: (plugin, method) => callNative(plugin, method) });
   // the page's own list is the one a card that lets a device in signs with (account/pageList.ts)
   if (mount.accountList === undefined && lists !== null) setPageAccountList(lists);
   const forgotten = new Map<string, number>();

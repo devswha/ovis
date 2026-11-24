@@ -70,6 +70,17 @@ public class HerdrShellPlugin extends Plugin {
      * (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that PC
      * once with the relay row of the same ID.
      */
+    /**
+     * The application id this build was made as. The client turns the waits of a move onto the account's signed list
+     * down only in the QA twin (sh.ovis.app.previewqa; src/lib/account/listMigrate.ts migrationScale), never elsewhere.
+     */
+    @PluginMethod
+    public void appId(PluginCall call) {
+        JSObject answer = new JSObject();
+        answer.put("id", getContext().getPackageName());
+        call.resolve(answer);
+    }
+
     @PluginMethod
     public void identify(PluginCall call) {
         String key = Home.identifiedKey(loadedUrl(), PCStore.current(getContext()), BuildConfig.APP_ORIGIN);

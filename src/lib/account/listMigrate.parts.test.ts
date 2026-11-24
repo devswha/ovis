@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { MIGRATION_KNOWN_SECONDS } from "../../../shared/account-list-migrate.ts";
 import {
-  birthRecord, handOverRecord, knownPcs, MIGRATION_QA_SCALE_MAX, migrationScale, noticeRecord, notCarriedAt, pcAnswerOf, pcAnswers, pcHowOf, QA_TWIN_APP, readBirth, readHandOver,
+  birthRecord, handOverRecord, knownPcs, MIGRATION_QA_SCALE_MAX, migrationScale, noticeRecord, notCarriedAt, pageScale, pcAnswerOf, pcAnswers, pcHowOf, QA_TWIN_APP, readAppId, readBirth, readHandOver,
   readNotice, readRefusal, refusalRecord, scaled, type KeptBirth,
 } from "./listMigrate.ts";
 
@@ -113,5 +113,26 @@ describe("what a move keeps, read back strictly", () => {
     expect(readRefusal({ v: 1, at: -1, keys: [], endpoints: [] })).toBeNull();
     expect(readNotice({ v: 1, list: "x", first: KEY, devices: [], pcs: [], seen: false })).toBeNull();
     expect(readHandOver({ v: 1, list: LIST, signIn: KEY, on: { seq: 1 }, entry: "e", link: { member: "m", device: "d" }, refused_at: null })).toBeNull();
+  });
+});
+
+describe("which app this page runs in, for the QA twin's factor", () => {
+  test("the app's own word on its application id sets the page's factor; a browser and an app that says nothing stay at 1", async () => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const items = new Map<string, string>([["ovis-migrate-qa-scale", "3600"]]);
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => items.get(key) ?? null } });
+    try {
+      await readAppId({ has: () => false, call: async () => ({ id: QA_TWIN_APP }) });
+      expect(pageScale()).toBe(1);
+      await readAppId({ has: () => true, call: async () => ({ id: "sh.ovis.app" }) });
+      expect(pageScale()).toBe(1);
+      await readAppId({ has: () => true, call: async () => ({ id: QA_TWIN_APP }) });
+      expect(pageScale()).toBe(3600);
+      await readAppId({ has: () => true, call: async () => { throw new Error("refused"); } });
+      expect(pageScale()).toBe(1);
+    } finally {
+      if (saved === undefined) delete (globalThis as Record<string, unknown>).localStorage;
+      else Object.defineProperty(globalThis, "localStorage", saved);
+    }
   });
 });

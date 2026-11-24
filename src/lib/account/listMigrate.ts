@@ -40,9 +40,23 @@ export function migrationScale(app: string | null, set: string | null): number {
   return Math.min(MIGRATION_QA_SCALE_MAX, Number(set));
 }
 
-/** The application id the phone app says it is, once it said (nativeAppId), for migrationScale; null in a browser and until then. */
+/** The application id the phone app says it is (readAppId), for migrationScale; null in a browser, and until the app said. */
 let appId: string | null = null;
-export function setAppId(id: string | null): void { appId = id; }
+
+/**
+ * Asks the phone app which build it is (`HerdrShell.appId`): only the QA twin turns its waits down, and only the app
+ * itself can say that it is that build. A browser, and an app that does not answer, stay at the full waits.
+ */
+export async function readAppId(native: { readonly has: (plugin: string, method: string) => boolean; readonly call: (plugin: string, method: string) => Promise<unknown> }): Promise<void> {
+  appId = null;
+  if (!native.has("HerdrShell", "appId")) return;
+  try {
+    const said = await native.call("HerdrShell", "appId");
+    appId = isRecord(said) && typeof said.id === "string" ? said.id : null;
+  } catch {
+    appId = null;
+  }
+}
 
 /** This page's factor (migrationScale): the QA twin's setting, read each time it is asked. */
 export function pageScale(): number {
