@@ -566,6 +566,32 @@ describe("a removal the PC has seen is final", () => {
   });
 });
 
+describe("a pin outlives this PC's own settings", () => {
+  test("started with Step 2 turned off here, a pinned PC still follows its list: a member's signed add adds nobody", async () => {
+    const pc = await pinnedPc();
+    const stranger = await listMember();
+    pc.fixture.app.stop();
+    // OVIS_ACCOUNT_OPENS_ALL=0 on this PC, the documented way to turn Step 2 off here
+    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: false, accountService: pc.accountService });
+    closes.push(() => again.app.stop());
+    const { devices, accountList } = again.app.context.services;
+    // the clock the rows' join holds ended by
+    devices.useClock(pc.time.waits);
+    await accountList?.settled();
+    expect(accountList?.pinned()).toBe(true);
+    expect(devices.listFollowed()).toBe(true);
+    const add = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: stranger.key, label: "Stranger", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: pc.member.publicKey }, pc.member.keys.privateKey);
+    expect(await applyAccountRecords(devices, [add], pc.serverId)).toEqual([{ id: add.id, outcome: "refused", code: "list_followed" }]);
+    // and the list's own devices still open it
+    await again.app.context.services.accountMailbox.pull();
+    await accountList!.settled();
+    // a row that was in its join hold at the stop begins it again at a start
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    const link = await relayConnection(again, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(pc.laptop))).toMatchObject({ role: "drive" });
+  });
+});
+
 describe("two histories, and another account's list", () => {
   test("a second history a member signed raises the alarm: the PC adds nobody, and keeps whom it held", async () => {
     const pc = await pinnedPc();

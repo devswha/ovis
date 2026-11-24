@@ -408,6 +408,20 @@ describe("a device the list lets in until a time", () => {
   });
 });
 
+describe("the wait of one sign-in", () => {
+  test("a sign-in whose few seconds were spent on the pull before waits no second time for the same read", async () => {
+    const pc = await following();
+    await pc.pin();
+    // the copy is stale, and the account service does not answer
+    pc.world.seconds += 120;
+    pc.world.gate = new Promise(() => {});
+    const began = Date.now();
+    await pc.list.beforeSession(0);
+    expect(Date.now() - began).toBeLessThan(2_000);
+    expect(pc.reads()).toBeGreaterThan(0);
+  });
+});
+
 describe("what a pinned PC keeps beside its pin", () => {
   test("an alarm outlives the loss of the copy: the PC then lets nobody of its list in until a person unpins it", async () => {
     const pc = await following();

@@ -402,12 +402,14 @@ export class RelaySession {
         this.state = "verifying";
         const devices = this.options.services.devices;
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        // the few seconds a sign-in may wait for the account service are counted once, from here
+        const signInBegan = Date.now();
         if (frame.type === FrameType.AUTH && !await this.pullForRefusedSignIn(frame.payload.device_id, frame.payload.signature)) return;
         if (frame.type === FrameType.AUTH && this.options.services.accountList?.pinned()) {
           // a PC pinned to its signed list judges a sign-in on a copy that is fresh, or as fresh as a few seconds get it: a
           // removal that waits at the account service is read before any session opens, whichever row the device has here
           this.mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
-          await this.options.services.accountList.beforeSession();
+          await this.options.services.accountList.beforeSession(Math.max(0, SIGN_IN_WAIT_MS - (Date.now() - signInBegan)));
           if (!this.mux.active) return;
         }
         // a PC with screen proof admits a code's redeemer only once its screen approves the key it proved
@@ -488,7 +490,8 @@ export class RelaySession {
           const key = proofKey(frame.payload.server_key);
           if (!this.proofNegotiated || !key) { this.close("auth_failed"); return; }
           // on a PC pinned to its signed list, another PC is of the account only when the list holds its relay key
-          if (this.options.services.devices.listFollowed() && this.options.services.accountList?.holdsPc(bytesToHex(key)) !== true) { this.close("auth_failed"); return; }
+          this.vouchedEndpoint = bytesToHex(key);
+          if (!this.vouchedInList()) { this.close("auth_failed"); return; }
           const id = deriveServerId(key);
           this.proofChallenge = { id, ...serverChallenge(key, { server_id: id, role: "vouched-pc", connection_id: toBase64Url(this.sasBinding) }) };
         }
@@ -595,6 +598,15 @@ export class RelaySession {
     this.admitCompared(sas);
   }
 
+  /** The relay key a PC that is vouched for proved, kept for as long as its comparison lasts. */
+  private vouchedEndpoint: string | null = null;
+
+  /** On a PC pinned to its signed list, another PC is of the account only while the list holds the relay key it proved. Any PC, where no list is followed. */
+  private vouchedInList(): boolean {
+    const { devices, accountList } = this.options.services;
+    return !devices.listFollowed() || (this.vouchedEndpoint !== null && accountList?.holdsPc(this.vouchedEndpoint) === true);
+  }
+
   private admitCompared(sas: NonNullable<RelaySession["sas"]>): void {
     // an answer that lands after the deadline, before its timer ran, makes no device either
     if (Date.now() > sas.expiresAt) { this.close("timeout"); return; }
@@ -605,7 +617,9 @@ export class RelaySession {
     // only a pairing approved on this PC itself does
     const id = accountDeviceId(this.options.serverId, sas.publicKey);
     const { devices, accountMailbox } = this.options.services;
-    if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey))) { this.close("auth_failed"); return; }
+    // the relay key it proved is asked about again in the turn that writes its row: the list may have removed that PC
+    // while the comparison waited for a member
+    if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey) || !this.vouchedInList())) { this.close("auth_failed"); return; }
     if (sas.approvedBy !== undefined) {
       const gates = accountMailbox.gates();
       const approverKey = devices.relayKeyOf(sas.approvedBy);

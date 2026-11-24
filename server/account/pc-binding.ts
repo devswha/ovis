@@ -16,6 +16,20 @@ import { logAccess } from "../connection-diagnostics.ts";
 import { ADMISSION_FILE, type OriginFrom, type OriginHow, type RowOrigin } from "./admission-order.ts";
 import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
 
+/**
+ * Whether the account file of `stateDir` holds a binding that is pinned to a signed list. Read before anything else at
+ * a start, with no handle taken: a pin is one-way, so a PC that holds one follows its list whatever this start was
+ * told of Step 2. A file that is not there, or does not read, says no; what is wrong with it is said where it is opened.
+ */
+export function listPinOnDisk(stateDir: string): boolean {
+  try {
+    const doc = parseDoc(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
+    if (typeof doc === "string") return false;
+    const { binding } = doc;
+    return binding !== null && binding.pending !== true && binding.list !== undefined && !doc.clears.some((clear) => clear.bind_id === binding.bind_id);
+  } catch { return false; }
+}
+
 /** `unlisted`: a PC bound on the account service's word that the account stopped listing (one press, docs/account.md) */
 export type ClearReason = "revoke_all" | "identity_reset" | "unlisted";
 /** How long a PC a device's link just brought into an account waits for that device to list it, before a missing listing counts as a removal. */
@@ -248,8 +262,12 @@ export class PcAccountState {
    * The sibling folder's account file, read before this folder's binding is trusted (P12, T59): a bind_id either folder
    * lists among its clears never stands, and two standing bindings to different accounts fail closed. The clears of
    * both are kept here; the count stays this folder's own. A file that cannot be read fails closed (S19).
+   *
+   * `bringList`: called before this folder takes a pin it did not hold, with the pin. It brings what the pin is good for
+   * into this folder (the PC's list keys and its copy of the list) and answers null, or why it could not: a folder
+   * never holds a pin without them, and never drops a pin the PC has, so it then fails closed with nothing written.
    */
-  takeSibling(siblingDir: string): void {
+  takeSibling(siblingDir: string, bringList?: (pin: { readonly bind_id: string; readonly list: string }) => string | null): void {
     if (this.problem !== null) return;
     const path = join(realFolder(siblingDir), ADMISSION_FILE);
     let parsed: ReturnType<typeof parseDoc>;
@@ -293,8 +311,14 @@ export class PcAccountState {
         return;
       }
     }
-    if (this.fresh) { this.doc = doc; return; }
     // a folder in no account beside one that is: the PC is in that account (P12)
+    const taken = !this.fresh && own === null && theirs !== null ? theirs : own;
+    // a pin this folder did not hold comes with the keys and the copy, or not at all
+    if (taken !== null && taken.list !== undefined && this.doc.binding?.list === undefined) {
+      const problem = bringList?.({ bind_id: taken.bind_id, list: taken.list }) ?? null;
+      if (problem !== null) { this.problem = problem; return; }
+    }
+    if (this.fresh) { this.doc = doc; return; }
     if (own === null && theirs !== null) { doc.binding = theirs; doc.first = this.doc.first ?? parsed.first; }
     if (JSON.stringify(doc) !== JSON.stringify(this.doc)) this.write(doc);
   }

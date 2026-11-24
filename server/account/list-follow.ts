@@ -38,7 +38,7 @@ import { writePrivateState } from "../private-state.ts";
 import { verifyRelayProof } from "../relay/auth-proof.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { ListCommit } from "./account-device-state.ts";
-import { ListKeysError, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
+import { ListKeysError, listKeysPath, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
 import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
 import type { Readmission } from "./readmission.ts";
 
@@ -403,8 +403,9 @@ export class ListFollow implements ListAuthority {
    * Before a pinned PC lets a device open a session: when its last full read is too old, it reads now and the session
    * waits for that, a few seconds at most; then the PC decides on its copy as it is. A service that did not answer a
    * moment ago is not asked again for it.
+   * `budgetMs`: how much of the sign-in's few seconds is left.
    */
-  async beforeSession(): Promise<void> {
+  async beforeSession(budgetMs?: number): Promise<void> {
     if (!this.pinned()) return;
     await this.ready;
     const copy = this.copy;
@@ -413,7 +414,10 @@ export class ListFollow implements ListAuthority {
     const step = followStep(copy, now, { event: "session", since: null });
     if (step.do !== "read_and_wait") return;
     if (this.reading === null && this.askedRecently(now)) return;
-    await this.within(this.readNow(), (step.until - now) * 1000);
+    // one wait a sign-in: what it already waited for the account service (`budgetMs` is what is left of it) is not waited again
+    const read = this.readNow();
+    const wait = Math.min((step.until - now) * 1000, budgetMs ?? Number.POSITIVE_INFINITY);
+    if (wait > 0) await this.within(read, wait);
   }
 
   /**
@@ -905,6 +909,36 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
     else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: LIST_DEVICE_LABEL });
   }
   return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed };
+}
+
+/**
+ * One of this PC's two state folders takes a pin from the other (PcAccountState.takeSibling): what the pin is good for
+ * comes first. The list knows this PC by the keys in the pinned folder, so those replace whatever keys this folder
+ * made; the copy of the list comes too when there is one. Null when both are here, else why not: the folder then
+ * takes no pin and fails closed, since a PC pinned to a list by keys it does not hold would let none of its devices in.
+ */
+export function bringSiblingList(stateDir: string, siblingDir: string, pin: { readonly bind_id: string; readonly list: string }): string | null {
+  const from = listKeysPath(siblingDir);
+  const to = listKeysPath(stateDir);
+  const failed = (path: string, error: unknown) =>
+    `This PC is pinned to a signed list in ${siblingDir}, and ${path} could not be brought beside it (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : "unknown error")})`;
+  let keys: unknown;
+  try { keys = JSON.parse(readFileSync(from, "utf8")); } catch (error) { return failed(from, error); }
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return failed(from, new Error("it holds no keys"));
+  const copyFrom = join(siblingDir, ACCOUNT_LIST_FILE);
+  let copy: ListFile | null = null;
+  try {
+    copy = parseFile(readFileSync(copyFrom, "utf8"));
+    // a copy of another binding is not the pinned one's
+    if (copy !== null && copy.bind_id !== pin.bind_id) copy = null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return failed(copyFrom, error);
+  }
+  try {
+    writePrivateState(to, keys);
+    if (copy !== null) writePrivateState(join(stateDir, ACCOUNT_LIST_FILE), copy);
+  } catch (error) { return failed(to, error); }
+  return null;
 }
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
