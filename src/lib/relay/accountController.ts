@@ -680,13 +680,13 @@ export function createAccountController(mount: RelayShellMount, view: {
    * Whether the account lets its devices and PCs in by a signed list, as far as this device knows: it follows one, or
    * the account service named one it is not in. Before the first read of a sign-in has ended, that read is waited for.
    */
-  const keepsList = async (account: string): Promise<boolean> => {
+  const keepsList = async (account: string): Promise<boolean | "unanswered"> => {
     if (lists === null) return false;
     let view = lists.view();
     if (view.account !== account) view = await lists.sync().catch(() => lists.view());
     // Not answered (no word of the account service this round, and no copy here that says): the writes of the way from
     // before wait for a round that tells. The pairing opens all the same.
-    if (view.account !== account || (!view.reached && (view.status.at === "off" || view.status.at === "none"))) return true;
+    if (view.account !== account || (!view.reached && (view.status.at === "off" || view.status.at === "none"))) return "unanswered";
     return view.status.at !== "off" && view.status.at !== "none";
   };
   const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled, signal }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
@@ -762,7 +762,10 @@ export function createAccountController(mount: RelayShellMount, view: {
       // An account with a signed list takes a PC in by an entry of that list, and its account service lists none for a
       // pairing that was only opened: a saved pairing lists no PC there and starts no enrollment (docs/account-list.md,
       // "PCs of a list account")
-      const byList = !fresh && await keepsList(session.account);
+      const kept = fresh ? false : await keepsList(session.account);
+      // not answered counts as a list for what is sent (nothing of the way from before goes out), and as no word at
+      // all for what is kept: the row is left as it is
+      const byList = kept !== false;
       signal?.throwIfAborted();
       /** The pairing stays this device's own, with nothing said of an account at its row. */
       const keptOwn = async (): Promise<"local"> => {
@@ -776,6 +779,9 @@ export function createAccountController(mount: RelayShellMount, view: {
       // kept still opens it, as a device of its own: no link goes out and nothing is listed. A new pairing sends its
       // link as ever, since only the PC knows whether a code it issued itself was used. A PC in no account is not
       // brought into a list account by a link either
+      // (where the account service did not say whether the account keeps a list, the link only waits: nothing is taken
+      // from the row, and the next open that gets an answer decides)
+      if (!fresh && status.account === null && status.pcAddRequired !== true && kept === "unanswered") return "local";
       if (!fresh && status.account === null && (status.pcAddRequired === true || byList)) return await keptOwn();
       const linking = needsLink(status, device, session.account);
       // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),

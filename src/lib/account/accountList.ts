@@ -475,8 +475,12 @@ export interface AccountList {
   /**
    * Lets `request` go, at the person's word (Cancel on the card that was shown for it): another change may then be
    * signed on that head. A request that waits in its place by now, signed for another change, is left as it is.
+   *
+   * The log is read first, past this device's head: `placed`, the request's entry is in the list, and there was
+   * nothing to cancel; `unread`, the log could not be read, so whether it was placed is not known and nothing is let
+   * go; `gone`, it waits no more (let go now, or the head moved under it, or it was another's by now).
    */
-  cancel(request: WaitingRequest): Promise<void>;
+  cancel(request: WaitingRequest): Promise<"gone" | "placed" | "unread">;
   view(): AccountListView;
   /**
    * The time by which this device shows whose time is over and judges what a press admits, in seconds: its own clock,
@@ -1161,10 +1165,20 @@ export function accountList(options: AccountListOptions): AccountList {
       return writer === null || kept === null ? null : { account: writer.account, list: kept.list, key: kept.key, on: kept.on, place: kept.place, for: kept.for, at: kept.at };
     },
     async cancel(request) {
-      const writer = this.writer({ self: true });
-      const kept = writer === null ? null : await this.kept(writer);
-      if (writer === null || kept === null || !sameWaiting(request, { ...kept, account: writer.account })) return;
-      await this.unkeep(writer.account, kept);
+      const standing = async (): Promise<{ writer: ListWriter; kept: KeptRequest } | null> => {
+        const writer = this.writer({ self: true });
+        const kept = writer === null ? null : await this.kept(writer);
+        return writer === null || kept === null || !sameWaiting(request, { ...kept, account: writer.account }) ? null : { writer, kept };
+      };
+      if (await standing() === null) return this.holdsEntry(request.place) ? "placed" : "gone";
+      // an outcome that is not known is settled by the log before anything is said of it
+      const read = await sync({ read: true });
+      if (read.account === request.account && this.holdsEntry(request.place)) return "placed";
+      const now = await standing();
+      if (now === null) return "gone";
+      if (!read.reached) return "unread";
+      await this.unkeep(now.writer.account, now.kept);
+      return "gone";
     },
     async adopt(offer) {
       const session = await service.session();

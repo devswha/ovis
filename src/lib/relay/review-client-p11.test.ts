@@ -331,7 +331,7 @@ describe("P11 review: which key the shell signs in with, against a PC that lies 
       // the first read is the page's own round; a later one is the read a PC's `account_list_required` asks for
       sync: async () => { reads += 1; if (reads > 1) holds = heldAfterRead; return view(); }, follows: async () => true, view, subscribe: () => () => {}, holdsPc: () => holds, pcOfKey: () => null, due: () => null,
       shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => view(), writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
-      kept: async () => null, keep: async () => { throw new Error("nothing is signed here"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+      kept: async () => null, keep: async () => { throw new Error("nothing is signed here"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
       shown: () => Math.floor(Date.now() / 1000),
     } as unknown as AccountList;
     const tried: string[] = [];

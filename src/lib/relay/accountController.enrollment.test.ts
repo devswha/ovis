@@ -137,7 +137,7 @@ describe("account enrollment ownership", () => {
     let listRead = options.list !== "unread";
     const accountList: AccountList | undefined = options.list === undefined ? undefined : {
       sync: async () => { listRead = true; return options.list === "unanswered" ? unanswered : listView; }, follows: async () => true, view: () => options.list === "unanswered" ? unanswered : listRead ? listView : unread, subscribe: () => () => {}, holdsPc: () => false, pcOfKey: () => null, due: () => null,
-      shown: () => Math.floor(Date.now() / 1000), shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView, writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => {},
+      shown: () => Math.floor(Date.now() / 1000), shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView, writer: () => null, placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
     };
     const open = async (target: RelayOffer = offer) => { const transport = target.server_id === offer.server_id ? new Admitted(offer) : new Peer(target); transports.push(transport); return transport; };
     const controller = () => createAccountController({
@@ -223,6 +223,24 @@ describe("account enrollment ownership", () => {
         expect(await run.store.get(run.original.server_id)).toMatchObject({ device_id: run.original.device_id, public_spki: run.original.public_spki });
       });
     }
+
+    it("where the account service did not say whether the account keeps a list, a saved pairing of a PC in no account is only left as it is: what its row says of the account is not erased", async () => {
+      const run = await fixture("unused", { list: "unanswered", linking: true, planned: false });
+      const before = (await run.store.get(run.original.server_id))! as { account?: string; account_enrollment?: unknown };
+      expect(before.account).toBe("account");
+      expect(await run.controller.enroll(await run.open(), run.original.server_id, false)).toBe("local");
+      expect({ puts: run.putPcs, links: run.links() }).toEqual({ puts: [], links: 0 });
+      // nothing was sent, and nothing was taken from the row: the next open that gets an answer decides
+      expect(await run.store.get(run.original.server_id)).toMatchObject({ account: "account", device_id: run.original.device_id });
+    });
+
+    it("a saved pairing whose row is not linked yet, on a PC that is in the account and still enrolling, plans no enrollment of its own (M20)", async () => {
+      const run = await fixture("unused", { list: "following", inAccount: true, unlinkedRow: true });
+      await run.accountStore.set("enrolls", undefined);
+      await run.controller.enroll(await run.open(), run.original.server_id, false);
+      // the link goes, as for any row that is not linked; the enrollment that brings a PC into the account is the list's
+      expect({ links: run.links(), plan: (await run.accountStore.get("enrolls"))?.[run.original.server_id], puts: run.putPcs }).toEqual({ links: 1, plan: undefined, puts: [] });
+    });
 
     it("a saved pairing of a PC that is in no account sends it no link: a PC comes into such an account by the list", async () => {
       const run = await fixture("unused", { list: "following", linking: true, planned: false });
