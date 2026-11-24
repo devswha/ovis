@@ -168,7 +168,7 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     await until(client, "the permission request", () => client.pending().length === 1);
     const id = client.pending()[0]!.keeperId;
     client.close();
-    await first.stop();
+    await first.stop("SIGKILL");
 
     await keeper([], first.root);
     const again = attach(first.root);
@@ -176,6 +176,8 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     await until(again, "the loaded session", () => again.session !== null);
     expect(again.session).toBe(client.session);
     expect(again.pending()).toEqual([]);
+    expect(await prompt(again, "echo next")).toEqual({ stopReason: "end_turn" });
+    expect(again.turn?.running).toBe(false);
     expect(await again.answer(id, "allow")).toBe("gone");
   });
 });

@@ -40,7 +40,7 @@ export function until(client: KeeperClient, label: string, check: () => boolean,
 }
 
 /** A headless keeper started by the test itself in `root`, running the fake agent; stopped (SIGTERM, its own PID) by `stop`. */
-export async function startKeeper(root: string, agentArgs: readonly string[] = []): Promise<{ pid: number; stop: () => Promise<void> }> {
+export async function startKeeper(root: string, agentArgs: readonly string[] = []): Promise<{ pid: number; stop: (signal?: "SIGTERM" | "SIGKILL") => Promise<void> }> {
   const proc = Bun.spawn([KEEPER_BUILD, root, "--headless", "--cwd", root, "--", FAKE_AGENT, ...agentArgs], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
   // the keeper prints KEEPER_READY once acp.sock listens
   const reader = proc.stdout.getReader();
@@ -55,8 +55,8 @@ export async function startKeeper(root: string, agentArgs: readonly string[] = [
   reader.releaseLock();
   return {
     pid: proc.pid,
-    stop: async () => {
-      proc.kill("SIGTERM");
+    stop: async (signal = "SIGTERM") => {
+      proc.kill(signal);
       await proc.exited;
     },
   };

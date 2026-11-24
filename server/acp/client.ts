@@ -273,8 +273,9 @@ export class KeeperClient {
         this.session = text(params["sessionId"]) || null;
         this.agentGone = false;
         return true;
+      case "_keeper/ready":
       case "_keeper/agent_exit":
-        this.agentGone = true;
+        this.agentGone = method === "_keeper/agent_exit";
         this.prompts.clear();
         if (this.turn?.running) this.turn = { ...this.turn, running: false };
         return true;
