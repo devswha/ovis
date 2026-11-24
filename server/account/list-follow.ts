@@ -157,6 +157,8 @@ export interface ListAuthority {
   role(key: string): ListRole | null | undefined;
   /** Whether the list holds `key` to drive with full power now: null on a PC that is not pinned and for a key it does not let in. */
   allowsJoins(key: string): boolean | null;
+  /** Whether this PC acted on a removal of `key` by its list that it has not on disk yet: every row of that key stays out meanwhile, a pairing of this PC's own too. */
+  owesRemoval(key: string): boolean;
   /** Whether this relay identity was removed from `account` by that account's list. */
   removedFrom(account: string): boolean;
 }
@@ -201,6 +203,8 @@ export interface ListFollowDeps {
   recheck?(): void;
   /** Whether a session is open on this PC: it then reads more often. */
   busy?(): boolean;
+  /** The list put `key` out and the PC has that only in its mark so far: the sessions of every row of the key end. */
+  denied?(key: string): void;
   /** Called at each look at the clock, before anything else: takes in what another server of this folder wrote to the PC's place in its account. */
   retry?(): void;
 }
@@ -368,6 +372,18 @@ export class ListFollow implements ListAuthority {
 
   private get owedPath(): string { return join(this.deps.stateDir, ACCOUNT_LIST_OWED_FILE); }
 
+  owesRemoval(key: string): boolean {
+    return this.owed !== null && this.isPinned && this.owed.removed.some((row) => row.key === key);
+  }
+
+  /**
+   * The removal's own record could not be written: the sessions of every row of the keys the mark names end all the
+   * same, one of a pairing this PC made itself too, and their next sign-in finds the mark.
+   */
+  private denyOwed(): void {
+    for (const row of this.owed?.removed ?? []) { try { this.deps.denied?.(row.key); } catch { /* its sign-in is refused all the same */ } }
+  }
+
   private owedKey(key: string): boolean {
     const owed = this.owed;
     return owed !== null && (owed.removed.some((row) => row.key === key) || owed.expired.some((row) => row.key === key));
@@ -378,7 +394,10 @@ export class ListFollow implements ListAuthority {
     const now = Math.max(this.seconds(), this.copy?.seen_at ?? 0);
     const owed: OwedMark = this.owed ?? { at: now, floor: now, removed: [], expired: [] };
     owed.floor = Math.max(owed.floor, now);
-    for (const row of what.removed ?? []) if (!owed.removed.some((held) => held.key === row.key && held.seq === row.seq)) owed.removed.push(row);
+    for (const row of what.removed ?? []) {
+      if (owed.removed.some((held) => held.key === row.key && held.seq === row.seq)) continue;
+      owed.removed.push(row);
+    }
     for (const row of what.expired ?? []) if (!owed.expired.some((held) => held.key === row.key && held.until === row.until)) owed.expired.push(row);
     this.owed = owed;
     this.writeOwed(scope);
@@ -1116,6 +1135,7 @@ export class ListFollow implements ListAuthority {
       // and a device the list removed must not stay in by one of them
       try { this.keepRemovals(copy); } catch (error) {
         this.dirty = true;
+        this.denyOwed();
         this.error = `The list's removals could not be kept (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
@@ -1132,6 +1152,7 @@ export class ListFollow implements ListAuthority {
       this.dirty = !alarmKept;
     } catch (error) {
       this.dirty = true;
+      this.denyOwed();
       this.error = `The list's devices could not be written (${error instanceof Error ? error.message : String(error)})`;
     }
     this.untilAt = nextUntil(copy, now);

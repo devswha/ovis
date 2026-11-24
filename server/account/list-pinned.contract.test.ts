@@ -22,7 +22,7 @@ import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ask, phone, SERVER_ID } from "./pairing.test-helpers.ts";
 import { keyProofPc, provingDevice } from "./key-proof.test-helpers.ts";
 import { FrameType } from "../../shared/relay-mux.ts";
-import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
+import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE } from "./list-follow.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
@@ -868,6 +868,38 @@ describe("every way a row under the account's id for a key comes to a session, o
       // the row is the one it was: no second row was made for the key
       expect(devices.list(null).filter((row) => row.id === id)).toHaveLength(1);
     } finally { followed.mockRestore(); role.mockRestore(); }
+  });
+});
+
+describe("a removal this PC acted on and could not save", () => {
+  test("keeps every row of that key out after a restart, a pairing this PC made itself under an id of its own too", async () => {
+    const pc = await pinnedPc();
+    // the account phone: paired at this PC under an id of its own, and a device of the list by the same key
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone);
+    await pc.pull();
+    const paired = { keys: pc.member.keys, publicKey: pc.member.publicKey, id: pc.member.id };
+    expect(await pc.signsIn(paired)).toBe("drive");
+    pc.fixture.app.stop();
+    // the last run verified the phone's removal and wrote the mark; neither the copy nor the removal's record reached the disk
+    const binding = JSON.parse(readFileSync(join(pc.fixture.stateDir, "account-pc.json"), "utf8")) as { binding: { bind_id: string } };
+    const mark = join(pc.fixture.stateDir, ACCOUNT_LIST_OWED_FILE);
+    const now = Math.floor(Date.now() / 1000);
+    writeFileSync(mark, JSON.stringify({ v: 1, server_id: pc.serverId, bind_id: binding.binding.bind_id, at: now, floor: now, removed: [{ key: phone.key, seq: pc.account.place.seq + 1 }], expired: [] }));
+    pc.reach.away = true;
+    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
+    closes.push(() => again.app.stop());
+    await again.app.context.services.accountList!.settled();
+    const signsIn = async (device: typeof paired) => await (await relayConnection(again, { serverId: pc.serverId })).auth(device).then((ok) => ok.role, () => null);
+    expect(await signsIn(paired)).toBeNull();
+    expect(await signsIn(pc.idOf(phone))).toBeNull();
+    // without the mark the same pairing opens the PC: it was the mark that kept it out
+    again.app.stop();
+    rmSync(mark);
+    const clean = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
+    closes.push(() => clean.app.stop());
+    await clean.app.context.services.accountList!.settled();
+    expect(await (await relayConnection(clean, { serverId: pc.serverId })).auth(paired).then((ok) => ok.role, () => null)).toBe("drive");
   });
 });
 

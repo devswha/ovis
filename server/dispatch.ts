@@ -127,6 +127,8 @@ export interface RequestServices {
   readonly accountList: ListFollow | null;
   /** For how long this PC has let each key of its account in (server/account/witness.ts); null with the release flag off. */
   readonly accountWitness: AccountWitness | null;
+  /** On a server that follows no list (Step 2 off): looks whether another Ovis on this folder pinned the PC, and then closes this server's account part. Null on a server that follows its list itself. */
+  readonly pinWatch: (() => void) | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */

@@ -69,6 +69,7 @@ import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
 import { ListFollow } from "./account/list-follow.ts";
 import { LIST_REMOVED } from "./account/pc-binding.ts";
+import { ADMISSION_FILE } from "./account/admission-order.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
 import { AccountWitness } from "./account/witness.ts";
 import type { Readmission } from "./account/readmission.ts";
@@ -461,6 +462,7 @@ export function createServer(
     leave: (serverId) => devices.clearAccountBinding("unlisted", LIST_REMOVED, serverId),
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
+    denied: (key) => { devices.closeKeySessions(key); },
     // what another Ovis server on this folder wrote to the PC's place in its account since this one read it (a pin, a
     // clear) is taken in at each look at the clock, so this server decides by it within seconds
     retry: () => { pcAccount.refresh(); },
@@ -723,6 +725,33 @@ export function createServer(
     ? new KeyProofPairings({ pending: pendingRedemptions, seams: devices }) : undefined;
   devices.onKeyRemoved((key, cause) => pendingRedemptions?.dropKey(key, cause));
   const askScreen = localConfirms && keyProofPairings ? (entry: PendingRedemption) => askScreenForKey(localConfirms, keyProofPairings, entry) : undefined;
+  // A pin this server learns of, whoever wrote it (this server, or another Ovis on this folder whose write it read):
+  // every session open under an account's id ends as one whose row changed, and its next sign-in gets the list's answer
+  let pinSeen = pcAccount?.binding()?.list;
+  const stopPinWatch = pcAccount?.onBindingChange(() => {
+    const pin = pcAccount.binding()?.list;
+    if (pin !== undefined && pin !== pinSeen) {
+      for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id);
+      const serverId = serverIdNow();
+      if (serverId !== null) devices.closeListGovernedSessions(serverId);
+    }
+    pinSeen = pin;
+  });
+  // A server started with Step 2 off follows no list. Another Ovis on this folder may pin the PC meanwhile: this one
+  // looks at the file every few seconds (it reads it only when it changed) and then closes its account part
+  let pinFile: string | null = null;
+  const pinWatch = pcAccount !== null ? null : () => {
+    let stamp: string | null = null;
+    try { const { mtimeMs, size } = statSync(join(stateDir, ADMISSION_FILE)); stamp = `${mtimeMs} ${size}`; } catch { return; }
+    if (stamp === pinFile) return;
+    pinFile = stamp;
+    const serverId = serverIdNow();
+    if (serverId !== null && listPinOnDisk(stateDir)) {
+      devices.closeAccountPart("This PC is pinned to its account's signed list, and this Ovis was started with Step 2 turned off, so it follows no list: it lets no device in through the account. Start Ovis on this PC again.", serverId);
+    }
+  };
+  const pinTimer = pinWatch === null ? null : setInterval(pinWatch, 5_000);
+  pinTimer?.unref?.();
   const stopBindingWatch = pcAccount?.onBindingChange(() => {
     for (const entry of localConfirms?.pending() ?? []) {
       if (entry.action.kind !== "unlock") localConfirms?.withdraw(entry.id);
@@ -798,7 +827,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, pinWatch, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
@@ -918,6 +947,8 @@ export function createServer(
       ipv6?.stop(true);
       ownerListener?.stop(true);
       stopBindingWatch?.();
+      stopPinWatch?.();
+      if (pinTimer !== null) clearInterval(pinTimer);
       confirmListener?.stop();
       recoverySocket?.stop();
       desktopOwner?.stop();
