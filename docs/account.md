@@ -30,7 +30,9 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
 2. **One account key per client.** A client (phone app, browser, the desktop app's view of other
    PCs) holds one ECDSA P-256 key for the account, made by WebCrypto as non-extractable and kept in
    its own IndexedDB database (`ovis-account`). On every PC of the account that key is the device's
-   `relay_public_key`, and `AUTH` signs with it as with any device key.
+   `relay_public_key`, and `AUTH` signs with it as with any device key. Where the account service
+   keeps a [signed list](account-list.md#on-a-device) for the account, the same key signs the
+   device's entries in it; nothing on this page decides by that list yet.
 3. **A PC holds no account key and signs nothing.** Only clients sign records. A coding agent that
    runs as the user on a PC therefore cannot add a device to the account's other PCs. The desktop
    app is both a PC and a client, so an agent on that machine could drive the app's key: that risk is
@@ -575,7 +577,8 @@ members signed. `last_read_at` is when its copy last held everything the service
 `last_verdict` what came of the service's last word (`caught_up`, `same` for a head it already
 holds, `none` when the service named no list, or why nothing was taken: `withheld`, `older`,
 `stuck`, `fork`, `not_my_list`, `needs_newer_client`, `refused` with the entry's refusal).
-`differences` counts what the list would have decided otherwise since this start. `keys` is `ready`,
+`differences` counts what the list would have decided otherwise since this start, credentials and
+devices alike (see `account.list.differs` below). `keys` is `ready`,
 or `unreadable` for a keys file that will not read. `posted_until` is until when the account
 service holds this PC's keys for a member to add it. No answer holds a key.
 
@@ -1422,22 +1425,40 @@ still do is said under [what the service still can](#what-the-account-service-st
   the head is not the one it holds, it reads the log (`POST /v2/pc/list/log`) with a proof of its
   relay key, as for its mailbox, and checks every entry: the chain, each signature, and who may sign.
   What does not hold is not taken.
+- A PC that holds a list also reads its log by its own clock, every five minutes, whatever the
+  mailbox says: a mailbox that names no list, or does not answer, hides no entry. A PC whose account
+  never had a list asks for no log.
+- The list id is the account service's word. One of which the PC has verified no entry gives way to
+  the id the service names next; one of which it has verified an entry stays, and another id is
+  reported (`not_my_list`).
 - The copy is saved in `account-list.json` in the state folder (readable by your user only). It holds
   the entries and what they add up to, and nothing secret. It belongs to one relay identity and one
-  joining of the account. A restart goes on from the saved copy.
+  joining of the account. A restart goes on from the saved copy, which the PC holds before the
+  service has answered anything. A read that was on its way when the PC left its account writes
+  nothing and posts nothing.
+- The copy keeps the latest hour the PC's clock showed. A decision that turned on the hour (a device
+  past its time) is saved before it is acted on, so a clock set back after a restart counts for no
+  less.
 - The PC has two keys of its own for the list, in `account-list-keys.json` (readable by your user
   only): one that signs and one that the names of the list are encrypted to. They are made for the
   PC's relay identity and go with it: **Reset relay identity** removes them, and the PC it becomes
-  makes new ones. They are never logged and never sent. A keys file that will not read is not
+  makes new ones. They are never logged and never sent. One Ovis at a time makes them (a lock file
+  beside the keys file), and every Ovis uses the pair it then reads from disk: several servers on
+  one state folder end with one pair. Keys whose making began before a reset are not written after
+  it. A keys file that will not read is not
   replaced by itself; the PC says so in `GET /api/account/list` and reads no list until the file is
   restored or the relay identity is reset.
 - While the list does not hold the PC, the PC posts its two public keys and its
   [card](account-list.md#a-card) to the account service (`POST /v2/pc/list/keys`, with the same
-  proof), so that a member can add it. A post lasts ten minutes and is renewed.
+  proof), so that a member can add it. A post lasts ten minutes and is renewed, with each mailbox
+  pull and by the PC's own clock.
 - A PC that is not pinned writes one line to its log, `account.list.differs`, where the list would
   decide otherwise than the snapshot (a device only one of them lets in, a device the list lets in
   only to watch or only until a time that has passed, a PC the list does not hold), with what each
-  decided and no key or name. Each difference is written once per start.
+  decided and no key or name. Each difference is written once per start. `of` says what differs. `credential`: a
+  key only one of the two holds, which may be one phone under two keys (the snapshot names a phone
+  by the key of its sign-in, the list by its member key, and the PC knows no link between the two).
+  `device`: a key both hold that the list would let in otherwise, or the PC's own place in the list.
 
 #### How a PC pins a list
 
@@ -1459,6 +1480,12 @@ never pins: the list it would follow would be the one the service names.
 The pin is one-way. It ends only by an act at the PC that ends its place in the account (**Revoke
 all**, **Reset relay identity**), or by an entry of the list that removes this PC. Nothing the
 account service says ends it.
+
+A pin outlives the PC's own settings: started with Step 2 turned off here
+([Turning Step 2 off](#turning-step-2-off)), a pinned PC still follows its list, and says so in its
+log. Where a PC has two state folders (the old and the new name of one), the other folder takes
+the pin only together with the list keys and the copy; when those cannot be brought, it starts
+closed rather than unpinned or pinned with keys the list does not know.
 
 The pin is kept with the PC's place in its account (`account-pc.json`), not with its copy of the
 list. A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
@@ -1482,6 +1509,11 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   the devices it already let in: no hold, no notice and no closed session for a key it held. Today
   a pin makes every list device a new row, which is right only for a PC whose account devices all
   came by the list.
+- **A key the list holds, which this PC also holds by a pairing of its own,** opens under the key's
+  account id too (`accountDeviceId(server_id, key)`), which is the only id an app that opens the PC
+  through its account knows. There the list's role decides, whatever role the pairing has; under
+  the pairing's own id the device signs in as it did. That session ends when the list lets the key
+  in no more, and when the pairing is revoked.
 - **A device the list put out is out for good.** Its sessions close, and the PC keeps the removal
   as it keeps a member's signed `remove`: every row of that key goes, a pairing this PC made itself
   included, and nothing brings that key back, a pairing at this PC included: a list's removal is
@@ -1489,8 +1521,8 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   key: it signs in again, which makes a new key, and is allowed into the list again, or is paired
   by a person at this PC.
 - **Before a session opens, the PC reads the list** when its last full read is older than 30
-  seconds, and the sign-in waits for that for 5 seconds at most; then the PC decides on its copy as
-  it is. That holds for every sign-in, a device this PC paired itself included. With a session open
+  seconds, and the sign-in waits for that for 5 seconds at most, counted once from its start; then
+  the PC decides on its copy as it is. That holds for every sign-in, a device this PC paired itself included. With a session open
   the PC reads every 30 seconds, otherwise every 5 minutes.
 - **When the account service is away, the PC lets in the devices its copy holds**, for as long as
   that lasts and after a restart too. The wait for a whole read of the account service (after a
@@ -1498,14 +1530,26 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   PC had taken in on a member's word before it pinned.
 - **Two histories that members signed raise an alarm** (`alarm: "fork"` in `GET /api/account/list`).
   From then on the PC lets in only the devices it held when the alarm rose, and still takes every
-  removal. Nothing clears the alarm but an act at the PC that unpins it.
+  removal. Nothing clears the alarm but an act at the PC that unpins it. The alarm is kept with the
+  pin (`account-pc.json`): a PC whose copy of the list is lost reads one history again, which says
+  nothing of whom the alarm held back, so it then lets no device of its list in until it is
+  unpinned.
+- **A device's time (`until`) has a timer of its own.** Its session closes at that second, not at
+  the next tick and not behind a read of the account service. The hour that showed it is saved
+  before the PC acts on it, so a restart with the clock set back does not let the device in again.
+- **A removal is enforced whether or not the disk takes it.** When the copy cannot be saved, the
+  PC still puts out what the entry removed, says so (`error` in `GET /api/account/list`), and
+  offers the copy to the disk again every few seconds. A page a device handed over is answered as
+  not saved until then.
 - **A PC the list removed leaves its account**, as one its account stopped listing did before: its
-  account devices go, and the pairings it made itself stay. It keeps that it was removed
+  account devices go, and the pairings it made itself stay. What the list removed before it removed
+  the PC is put out first, in the same read: a removed device keeps no pairing of this PC's own. It keeps that it was removed
   (`account-pc.json`), and joins that account again on no path (a press, an add over SSH and a
   device's link are refused `list_removed`) until **Reset relay identity** makes it a new PC, which
   is added as one.
 - **Another PC of the account** ([Adding a PC of your account](#adding-a-pc-of-your-account)) is
-  taken as one only when the list holds its relay key.
+  taken as one only when the list holds its relay key, asked when its comparison begins and again
+  in the turn that writes its row.
 - Devices paired with this PC itself keep their pairing and their role: that is this PC's own
   doing. Joining by comparing digits works as before, each join decided by a person.
 
@@ -2057,6 +2101,8 @@ Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "
 
 - [`shared/account-records.ts`](../shared/account-records.ts): record types, parsing, signing bytes,
   signing and verification.
+- [`src/lib/account/accountList.ts`](../src/lib/account/accountList.ts): a device's own copy of the
+  account's signed list ([account-list.md](account-list.md#on-a-device)).
 - [`shared/account-service-fake.ts`](../shared/account-service-fake.ts): the account service API in
   memory, for tests, the signed list's routes included
   ([account-list.md](account-list.md#the-list-routes-in-tests)).

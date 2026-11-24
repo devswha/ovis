@@ -414,12 +414,14 @@ export class RelaySession {
         this.state = "verifying";
         const devices = this.options.services.devices;
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        // the few seconds a sign-in may wait for the account service are counted once, from here
+        const signInBegan = Date.now();
         if (frame.type === FrameType.AUTH && !await this.pullForRefusedSignIn(frame.payload.device_id, frame.payload.signature)) return;
         if (frame.type === FrameType.AUTH && this.options.services.accountList?.pinned()) {
           // a PC pinned to its signed list judges a sign-in on a copy that is fresh, or as fresh as a few seconds get it: a
           // removal that waits at the account service is read before any session opens, whichever row the device has here
           this.mux.extendSetup(SIGN_IN_WAIT_MS + 10_000);
-          await this.options.services.accountList.beforeSession();
+          await this.options.services.accountList.beforeSession(Math.max(0, SIGN_IN_WAIT_MS - (Date.now() - signInBegan)));
           if (!this.mux.active) return;
         }
         // a PC with screen proof admits a code's redeemer only once its screen approves the key it proved
@@ -452,6 +454,16 @@ export class RelaySession {
             return;
           }
           if (joined !== null) { await this.enterProved(joined.match); return; }
+          // a key the list lets in, which this PC holds only by a pairing of its own: asked for under the key's account
+          // id, it is let in as the list says, over that pairing's row
+          const byList = await devices.matchListKey(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId);
+          if (!this.mux.active) return;
+          if (byList !== null) {
+            this.listKey = byList.key;
+            this.signedInAs = frame.payload.device_id;
+            await this.enterProved(byList.match);
+            return;
+          }
         }
         // read now, not at HELLO: the sign-in itself may have been what made this PC ask and leave
         if (!device && this.listingErrors && frame.type === FrameType.AUTH && devices.readdRequired()
@@ -500,7 +512,8 @@ export class RelaySession {
           const key = proofKey(frame.payload.server_key);
           if (!this.proofNegotiated || !key) { this.close("auth_failed"); return; }
           // on a PC pinned to its signed list, another PC is of the account only when the list holds its relay key
-          if (this.options.services.devices.listFollowed() && this.options.services.accountList?.holdsPc(bytesToHex(key)) !== true) { this.close("auth_failed"); return; }
+          this.vouchedEndpoint = bytesToHex(key);
+          if (!this.vouchedInList()) { this.close("auth_failed"); return; }
           const id = deriveServerId(key);
           this.proofChallenge = { id, ...serverChallenge(key, { server_id: id, role: "vouched-pc", connection_id: toBase64Url(this.sasBinding) }) };
         }
@@ -612,6 +625,32 @@ export class RelaySession {
     this.admitCompared(sas);
   }
 
+  /** The key of a session let in by the list over a pairing of this PC's own (DeviceStore.matchListKey): the list's role for it is the session's. */
+  private listKey: string | null = null;
+  /** The id such a session signed in under, which its AUTH_OK names: the account id of its key, not the pairing row's. */
+  private signedInAs: string | null = null;
+
+  /**
+   * The row of the session's device as it stands now (DeviceStore.sessionRow). For a session the list let in, the role
+   * is the list's for its key, read now; null once the list lets that key in no more, or the row holds another key.
+   */
+  private rowNow(id: string): ReturnType<RequestServices["devices"]["sessionRow"]> {
+    const devices = this.options.services.devices;
+    const row = devices.sessionRow(id);
+    if (row === null || this.listKey === null) return row;
+    const role = devices.listRoleOf(this.listKey);
+    return role === null || row.key !== this.listKey ? null : { ...row, role };
+  }
+
+  /** The relay key a PC that is vouched for proved, kept for as long as its comparison lasts. */
+  private vouchedEndpoint: string | null = null;
+
+  /** On a PC pinned to its signed list, another PC is of the account only while the list holds the relay key it proved. Any PC, where no list is followed. */
+  private vouchedInList(): boolean {
+    const { devices, accountList } = this.options.services;
+    return !devices.listFollowed() || (this.vouchedEndpoint !== null && accountList?.holdsPc(this.vouchedEndpoint) === true);
+  }
+
   private admitCompared(sas: NonNullable<RelaySession["sas"]>): void {
     // an answer that lands after the deadline, before its timer ran, makes no device either
     if (Date.now() > sas.expiresAt) { this.close("timeout"); return; }
@@ -622,7 +661,9 @@ export class RelaySession {
     // only a pairing approved on this PC itself does
     const id = accountDeviceId(this.options.serverId, sas.publicKey);
     const { devices, accountMailbox } = this.options.services;
-    if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey))) { this.close("auth_failed"); return; }
+    // the relay key it proved is asked about again in the turn that writes its row: the list may have removed that PC
+    // while the comparison waited for a member
+    if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey) || !this.vouchedInList())) { this.close("auth_failed"); return; }
     // a join that came with the device's card for the list is let in by the list, or not at all
     if (this.listCard !== undefined) { void this.allowIntoList(sas, id, this.listCard).catch(() => this.close("internal_error")); return; }
     if (sas.approvedBy !== undefined) {
@@ -795,10 +836,16 @@ export class RelaySession {
     });
     // a link moves the row to another key: a session signed in with the one it had ends, all but the linking one
     const unlinked = devices.onLinked(device.id, (sessionId) => { if (sessionId !== this.sessionId) this.close("auth_changed"); });
-    this.unwatch = () => { unrevoke(); unlinked(); };
+    // a session the list let in ends when the list lets its key in no more, and changes with the role the list gives it
+    const unlisted = this.listKey === null ? () => {} : devices.onListedChange(() => {
+      const role = this.listKey === null ? null : devices.listRoleOf(this.listKey);
+      if (role === null) this.close("auth_revoked");
+      else if (this.device && role !== this.device.role) this.close("auth_changed");
+    });
+    this.unwatch = () => { unrevoke(); unlinked(); unlisted(); };
     // the row as its own session sees it: a device, or one that waits to link. What a waiting row may do is decided
     // anew for every stream (principal), never from the answer below
-    const row = devices.sessionRow(device.id);
+    const row = this.rowNow(device.id);
     if (!row || !this.mux.active) {
       // a row that began to wait for a read meanwhile (the hour ended, or it was made after it) keeps its key
       if (!row && this.mux.active && devices.opensAll() && devices.waitsForRead(device.id)) { this.unwatch(); this.refuseWaiting(); return; }
@@ -819,9 +866,9 @@ export class RelaySession {
     // Until then OPEN is still unauthenticated, even while AUTH_OK waits behind receipt credit.
     this.mux.enqueueControl({
       type: FrameType.AUTH_OK, flags: 0, stream_id: 0,
-      payload: { session_id: this.sessionId, device_id: device.id, role: device.role, ...this.hints(row.provisional), ...(this.listPlace ? { list: this.listPlace } : {}) },
+      payload: { session_id: this.sessionId, device_id: this.signedInAs ?? device.id, role: device.role, ...this.hints(row.provisional), ...(this.listPlace ? { list: this.listPlace } : {}) },
     }, undefined, () => {
-      if (!devices.sessionRow(device.id)) { this.close("auth_revoked"); return; }
+      if (!this.rowNow(device.id)) { this.close("auth_revoked"); return; }
       // the frame waited in the queue past the listing's answer: the device asks again rather than enter on an old one
       if (this.listedFor !== undefined && !this.options.services.accountMailbox.listingFresh(this.listedFor)) { this.close("timeout"); return; }
       this.mux.authenticate(device.id);
@@ -858,7 +905,7 @@ export class RelaySession {
   private principal(): DeviceMatch | undefined {
     if (this.state === "closed") return;
     if (this.state !== "ready" || !this.device) { this.close("protocol_error"); return; }
-    const row = this.options.services.devices.sessionRow(this.device.id);
+    const row = this.rowNow(this.device.id);
     // while the last answers of a row that went are on their way, a new stream is refused and they still go out
     if (!row) { if (!this.leaving) this.close("auth_revoked"); return; }
     if (row.provisional) return { ...this.device, provisional: true };
