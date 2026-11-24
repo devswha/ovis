@@ -297,7 +297,8 @@ impl Archive {
         }
         drop(reader);
         if file.metadata()?.len() != end {
-            file.set_len(end)?;
+            // Append-only handles cannot truncate on Windows.
+            OpenOptions::new().write(true).open(&path)?.set_len(end)?;
         }
         previous.pending = unanswered.into_values().collect();
         previous.pending.sort_by_key(|(_, seq)| *seq);
