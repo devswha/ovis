@@ -59,7 +59,10 @@ try {
         opening.onsuccess = () => {
           const write = opening.result.transaction("keys", "readwrite");
           write.oncomplete = () => { opening.result.close(); resolve("stored"); };
-          write.onerror = () => reject(write.error);
+          // A write can be taken and its transaction still not kept: then `abort` comes, with or without an `error` before it.
+          const failed = () => { opening.result.close(); reject(write.error ?? new Error("The transaction that stores the key was aborted")); };
+          write.onerror = failed;
+          write.onabort = failed;
           try {
             write.objectStore("keys").put(made, "device");
           } catch (error) {
@@ -108,9 +111,12 @@ try {
         const opening = indexedDB.open("seal-test", 1);
         opening.onerror = () => reject(opening.error);
         opening.onsuccess = () => {
-          const read = opening.result.transaction("keys").objectStore("keys").get("device");
+          const reading = opening.result.transaction("keys");
+          const read = reading.objectStore("keys").get("device");
           read.onsuccess = () => { opening.result.close(); resolve(read.result); };
-          read.onerror = () => reject(read.error);
+          const failed = () => { opening.result.close(); reject(read.error ?? reading.error ?? new Error("The transaction that reads the key was aborted")); };
+          read.onerror = failed;
+          reading.onabort = failed;
         };
       });
       const [commitment0 = "", commitment1 = ""] = given.commitments;
