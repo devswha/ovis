@@ -14,7 +14,7 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import type { ListNames, ListRole, ListState } from "../../../shared/account-list.ts";
 import { entryFromText, entryHash, isListHash, ListEntryError, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
-  followStep, heardHead, pcOfKey, pinList, readSave, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
+  followStep, heardHead, pcOfKey, pinList, READ_PAGES_MAX, readSave, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
   type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type SaveRefusal, type Standing,
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH } from "../../../shared/account-list-seal.ts";
@@ -151,8 +151,6 @@ export const OFF_SECONDS = 24 * 60 * 60;
  * service: a service that is away or has no such routes is not asked every five minutes for good.
  */
 export const UNREACHED_SECONDS: readonly number[] = [300, 900, 3600, 6 * 3600];
-/** The most pages one round reads: what is left waits for the next. */
-const ROUND_PAGES_MAX = 128;
 /** A round's requests end after this long: it holds the lock that another tab's round waits for. */
 const ROUND_MS = 30_000;
 
@@ -445,12 +443,12 @@ export function accountList(options: AccountListOptions): AccountList {
     return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs };
   };
 
-  /** Reads the log after the copy's own head until the read is over, at most ROUND_PAGES_MAX pages. */
+  /** Reads the log after the copy's own head until the read is over: the follower ends a read after READ_PAGES_MAX pages, and what is left waits for the next round. */
   const read = async (bound: AccountService, from: FollowerCopy, signal: AbortSignal): Promise<{ copy: FollowerCopy; verdict: FollowVerdict }> => {
     let copy = from;
     let verdict: FollowVerdict = "withheld";
     let next: FollowRead | null = startRead(copy, "service");
-    for (let pages = 0; next !== null && pages < ROUND_PAGES_MAX; pages += 1) {
+    for (let pages = 0; next !== null && pages < READ_PAGES_MAX; pages += 1) {
       const page = await bound.listLog(copy.list, next.after, signal);
       const took = await takePage(copy, next, { list: page.list, after: page.after, entries: page.entries, head: page.head }, seconds());
       ({ copy, verdict } = took);
