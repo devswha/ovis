@@ -9,10 +9,10 @@ import { parseLine, record, type Message, type Row } from "./messages.ts";
 import { digestOf, projectUpdates, type Picture, type UpdateEvent } from "./updates.ts";
 
 interface Span { start: number; end: number }
-interface Prompt extends Span { tail: number; prior: readonly Span[]; replay: boolean; session: string }
+interface Prompt extends Span { tail: number; prior: readonly Span[]; replay: boolean; session: string; final?: boolean }
 const byteCount = (p: Prompt) => p.prior.reduce((n, span) => n + span.end - span.start, p.end - p.tail);
-interface History { generation: number; prompts: Prompt[]; plan: PlanStep[] | null; user: boolean; session: string | null }
-const empty = (generation: number, session: string | null = null): History => ({ generation, prompts: [], plan: null, user: false, session });
+interface History { generation: number; prompts: Prompt[]; pending: Map<string, Prompt>; finished: number; plan: PlanStep[] | null; user: boolean; session: string | null }
+const empty = (generation: number, session: string | null = null): History => ({ generation, prompts: [], pending: new Map(), finished: 0, plan: null, user: false, session });
 const MAX_BYTES = 64 * 1024 * 1024;
 type Entry = { row: Row; message: Message | null };
 
@@ -37,7 +37,7 @@ export class AcpHistory {
 
   constructor(root: string) { this.path = join(root, "archive.jsonl"); }
 
-  get signature(): string { return `${this.active.generation}:${this.active.prompts.at(-1)?.end ?? 0}`; }
+  get signature(): string { return `${this.active.generation}:${this.active.prompts.at(-1)?.end ?? 0}:${this.active.finished}`; }
 
   get plan(): PlanStep[] | null { return this.active.plan; }
   get session(): string | null { return (this.loading ?? this.active).session; }
@@ -68,6 +68,16 @@ export class AcpHistory {
       return;
     }
     const state = this.loading ?? this.active;
+    if (row.dir === "from-agent" && message.method === undefined && typeof message.id === "string") {
+      const answered = state.pending.get(message.id);
+      state.pending.delete(message.id);
+      if (answered && message.result?.stopReason === "end_turn" && !message.error) {
+        answered.final = true;
+        state.finished = row.seq;
+      }
+      return;
+    }
+    if (row.dir === "keeper" && (message.method === "_keeper/agent_exit" || message.method === "_keeper/ready")) state.pending.clear();
     if ((row.dir === "keeper" && message.method === "_keeper/session")
       || (row.dir === "to-agent" && message.method === "session/load" && typeof message.id === "string" && message.id.startsWith("keeper-"))) {
       const session = typeof params?.sessionId === "string" ? params.sessionId : null;
@@ -87,6 +97,7 @@ export class AcpHistory {
     if (prompt || (user && !state.user) || !state.prompts.length) state.prompts.push({ start, end: this.position, tail: start, prior: [], replay: this.loading !== null, session: state.session });
     const last = state.prompts.at(-1);
     if (last) {
+      if (prompt && typeof message.id === "string") state.pending.set(message.id, last);
       if (!this.loading && this.resumeSpan && last.start !== start) {
         last.prior = [...last.prior, { start: last.tail, end: last.end }];
         last.tail = start;
@@ -134,7 +145,7 @@ export class AcpHistory {
         }
       }
     }
-    return projectUpdates(updates(), {
+    const turns = projectUpdates(updates(), {
       keeper: true,
       imageRef: (picture) => {
         const ref = `acp-image:${start}:${digestOf(picture.data)}`;
@@ -147,6 +158,16 @@ export class AcpHistory {
         return ref;
       },
     });
+    if (prompt.final) {
+      const last = turns.at(-1);
+      if (last?.role === "assistant") {
+        for (let i = last.parts.length - 1; i >= 0; i--) {
+          const part = last.parts[i];
+          if (part?.kind === "text") { part.phase = "final_answer"; break; }
+        }
+      }
+    }
+    return turns;
   }
 
   async page(page: ConversationPage): Promise<RecognizedConversation> {
@@ -175,7 +196,7 @@ export class AcpHistory {
     for (const prompt of selection) turns.push(...await this.read(prompt));
     if (this.active !== state) throw new HistoryChanged();
     return { source: "acp", turns, cursor: start ? cursor(start) : null, history_id, metadata: { model: null, reasoning_effort: null },
-      version: answerVersion(history_id, `${start}:${end}:${selection.at(-1)?.end ?? 0}`) };
+      version: answerVersion(history_id, `${start}:${end}:${selection.at(-1)?.end ?? 0}:${selection.map(p => p.final ? 1 : 0).join("")}`) };
   }
 
   async asset(ref: string) {

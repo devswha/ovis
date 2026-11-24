@@ -17,11 +17,30 @@ function archive() {
   };
   const update = (value: unknown) => row("from-agent", { method: "session/update", params: { sessionId: "child", update: value } });
   const chunk = (sessionUpdate: string, text: string) => update({ sessionUpdate, content: { type: "text", text } });
-  const prompt = (text: string) => row("to-agent", { id: "p" + seq, method: "session/prompt", params: { sessionId: "child", prompt: [{ type: "text", text }] } });
+  const prompt = (text: string) => {
+    const id = "p" + seq;
+    row("to-agent", { id, method: "session/prompt", params: { sessionId: "child", prompt: [{ type: "text", text }] } });
+    return id;
+  };
   const mode = (phase: string) => row("keeper", { method: "_keeper/mode", params: { mode: "acp", phase } });
   row("keeper", { method: "_keeper/session", params: { sessionId: "child" } });
   return { client, root, row, update, chunk, prompt, mode, close: () => { client.close(); rmSync(root, { recursive: true, force: true }); } };
 }
+
+it("marks the last agent text final only after the matching end_turn", async () => {
+  const { client, row, prompt, chunk, close } = archive();
+  try {
+    const id = prompt("Hello"); chunk("agent_message_chunk", "Answer");
+    const end = (request: string) => row("from-agent", { id: request, result: { stopReason: "end_turn" } });
+    end("unrelated");
+    const running = await client.history.page({});
+    expect(running.turns.at(-1)?.parts).toEqual([{ kind: "text", text: "Answer" }]);
+    end(id);
+    const done = await client.history.page({});
+    expect(done.turns.at(-1)?.parts).toEqual([{ kind: "text", text: "Answer", phase: "final_answer" }]);
+    expect(done.version).not.toBe(running.version);
+  } finally { close(); }
+});
 
 it("only shows messages, plans and approvals for the keeper session", async () => {
   const { client, row, prompt, chunk, mode, close } = archive();
