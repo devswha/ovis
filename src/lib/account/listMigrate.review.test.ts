@@ -314,6 +314,26 @@ describe("M3: a refusal of the caller is no answer about the birth, and gives no
   });
 });
 
+describe("LOW-2: a device not in a list reads its first two entries, in one request (ruled: keep limit=2)", () => {
+  test("L2: off the migrate switch, a device that is not in the account's list asks its log once, for entries 0 and 1", async () => {
+    const world = listWorld();
+    world.fake.listMigrateAccounts = "";
+    const phone = await world.device({ label: "Phone" });
+    expect((await phone.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    world.clock.now += 11 * 60_000;
+    const laptop = await world.device({ label: "Laptop", genesis: "never" });
+    const limits: (string | null)[] = [];
+    laptop.wire.answer = (request) => {
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname.endsWith("/log")) limits.push(url.searchParams.get("limit"));
+      return null;
+    };
+    expect((await laptop.list.sync()).status).toMatchObject({ at: "not_in", why: "not_mine" });
+    // entry 1's kind is the only word on whether a move carried this device in: one read of two entries, then no more
+    expect(limits).toEqual(["2"]);
+  });
+});
+
 describe("LOW-3: a PC silent at the join agrees only once it has let the starter in for a day", () => {
   async function joinedOnOnePc() {
     const moving = movingWorld();

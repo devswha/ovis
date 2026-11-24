@@ -2026,7 +2026,10 @@ move is never named to any PC.
   `409 list_exists` naming another list gives its list up for good, and a birth kept for another
   list than the one the device follows is let go. It follows the list pinned under the sign-in key
   that signed entry 0.
-- **A carried device.** A list whose entry 1 is `carried` is read whole without being kept. Where
+- **A carried device.** A device that is not in the list the account service names reads its
+  first two entries, in one request (`limit=2`), on every account: entry 1's kind is the only word
+  on whether a move carried it in. A list whose entry 1 is `carried` is read whole without being
+  kept. Where
   the device's sign-in key was carried in, it asks `joinVerdict` with its record and this run's
   answers; on a yes it pins as `carried`, saves the copy and, while no PC it knows says against
   the list, hands its place to its account key (`signRotation`, with the D11.2 link, one kept
