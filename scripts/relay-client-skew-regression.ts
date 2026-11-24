@@ -7,7 +7,9 @@
  * attaches a terminal, types, and reads the output back in the page and in herdr's own pane.
  *
  * The tag is by default the oldest client a store build carries (server/relay/store-app-versions.json) at or above the
- * floor; while no store build carries one, the latest release, which the first store build to carry the client will hold.
+ * floor; while no store build carries one, the latest release at or below this checkout's version, which the first store
+ * build to carry the client will hold. A checkout without the tag (CI's shallow one) fetches it from the public repository.
+ * The browser lane runs it (scripts/ci-browser.sh).
  *
  *   bun scripts/relay-client-skew-regression.ts [<tag>]
  *   RELAY_CLIENT_SHELL_DIR=<dist-shell> bun scripts/relay-client-skew-regression.ts    a shell built already
@@ -45,12 +47,34 @@ async function defaultTag(): Promise<{ tag: string; why: string }> {
   const supported = Object.values(stores).flat().flatMap((build) => build.client === null || compareVersions(parseVersion(build.client)!, floor) < 0 ? [] : [build.client]);
   const oldest = [...supported].sort((a, b) => compareVersions(parseVersion(a)!, parseVersion(b)!))[0];
   if (oldest !== undefined) return { tag: `v${oldest}`, why: "the oldest client a store build carries that the floor still supports" };
-  const latest = (await $`git describe --tags --abbrev=0 --match ${"v[0-9]*"} --exclude ${"v*-*"} HEAD`.cwd(repo).text()).trim();
-  return { tag: latest, why: "no store build carries a client the floor supports: the latest release" };
+  const own = parseVersion((JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string }).version)!;
+  const latest = (await releaseTags()).flatMap((tag) => {
+    const version = parseVersion(tag.slice(1));
+    return version !== null && compareVersions(version, own) <= 0 ? [{ tag, version }] : [];
+  }).sort((a, b) => compareVersions(b.version, a.version))[0];
+  if (latest === undefined) throw new Error(`no release tag at or below ${own.join(".")} here or at ${PUBLIC_REPO}`);
+  return { tag: latest.tag, why: "no store build carries a client the floor supports: the latest release at or below this checkout's version" };
+}
+
+/** A shallow checkout (CI's, a merge gate's clone) holds no tags: the public repository lists and gives them. */
+const PUBLIC_REPO = "https://github.com/devswha/ovis.git";
+const RELEASE_TAG = /^v\d+\.\d+\.\d+$/;
+
+async function releaseTags(): Promise<string[]> {
+  const local = (await $`git tag -l ${"v*"}`.cwd(repo).quiet().text()).split("\n").filter((tag) => RELEASE_TAG.test(tag));
+  if (local.length > 0) return local;
+  const listed = await $`git ls-remote --tags --refs ${PUBLIC_REPO} ${"refs/tags/v*"}`.cwd(repo).quiet().text();
+  return listed.split("\n").map((line) => line.split("\t")[1]?.replace("refs/tags/", "") ?? "").filter((tag) => RELEASE_TAG.test(tag));
+}
+
+async function haveTag(tag: string): Promise<void> {
+  if ((await $`git rev-parse -q --verify ${`refs/tags/${tag}^{commit}`}`.cwd(repo).quiet().nothrow()).exitCode === 0) return;
+  await $`git fetch --no-tags --depth=1 ${PUBLIC_REPO} ${`+refs/tags/${tag}:refs/tags/${tag}`}`.cwd(repo).quiet();
 }
 
 async function shellOf(tag: string, root: string): Promise<{ dir: string; done: () => Promise<void> }> {
   const tree = join(root, "tree");
+  await haveTag(tag);
   await $`git worktree add --detach ${tree} ${tag}`.cwd(repo).quiet();
   const done = async (): Promise<void> => { await $`git worktree remove --force ${tree}`.cwd(repo).quiet().nothrow(); };
   try {

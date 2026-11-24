@@ -9,4 +9,4 @@
 ### Maintenance
 - The oldest client a PC supports is one constant, `MIN_SUPPORTED_CLIENT_VERSION`, and a test keeps it
   at or below a client both app stores have carried for 14 days (`server/relay/store-app-versions.json`).
-  `scripts/relay-client-skew-regression.ts` runs an older client against this server.
+  `scripts/relay-client-skew-regression.ts`, in the browser lane, runs an older release's client against this server.

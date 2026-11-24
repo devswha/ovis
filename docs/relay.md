@@ -1043,7 +1043,8 @@ can be apart.
   now 0.4.20, on the relay and the direct carrier alike. The phone app's own copy below it stops at
   **Update the app**, with its store's page; a hosted page reloads as for a newer PC. What it may be
   raised to: [The phone app's client](development.md#the-phone-apps-client).
-  `bun scripts/relay-client-skew-regression.ts [<tag>]` runs an older client against this server by hand.
+  `bun scripts/relay-client-skew-regression.ts [<tag>]` runs an older client against this server (the browser lane
+  runs it too).
 
 ## Relay pass
 

@@ -202,7 +202,6 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/keyboard-viewport-demo-regression.ts",
   "scripts/machines-browser-qa.ts",
   "scripts/output-browser-qa.ts",
-  "scripts/relay-client-skew-regression.ts", // builds a release tag's shell in a worktree (docs/development.md, "The phone app's client")
   "scripts/skill-activity-browser-qa.ts",
   "scripts/terminal-arrows-core-regression.ts", // a real hc (OVIS_TEST_HC_BIN), which no browser lane installs
   "scripts/terminal-file-links-regression.ts",
