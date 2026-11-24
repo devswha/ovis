@@ -175,6 +175,32 @@ describe("a PC that a person added lets a new device into the list from its own 
     expect((await ask(again, "/api/preferences")).status).toBe(200);
   });
 
+  test("the session of the join serves nothing also where this PC already holds that key by a pairing of its own", async () => {
+    const bound = await boundPc();
+    const phone = await listMember();
+    // the phone paired here by digits before the PC followed a list: a row of this PC's own, under the key's account id
+    const before = await join(bound, phone);
+    const first = await ownJoin(bound);
+    expect(await decide(bound, { id: first.id, decision: "approve" })).toBe(200);
+    before.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect((await before.next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
+    expect(bound.pc.devices.has(accountDeviceId(bound.serverId, phone.key))).toBe(true);
+    // then the PC is pinned, and the phone is let into the list from this PC's own window
+    const account = await TestList.start(bound.pc.account, ACCOUNT);
+    await bound.pull();
+    await bound.list.wantList(account.id);
+    await account.addPostedPc(bound.endpoint);
+    await bound.pull();
+    expect(bound.list.status()).toMatchObject({ pinned: true, standing: "in" });
+    const made = { ...bound, account, ownKey: bound.pc.account.accountList(ACCOUNT)!.state.pcs[bound.endpoint]!.key! };
+    const card = await claimKey(made.pc.account, ACCOUNT, account.id, phone);
+    const { answer, link } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer.type).toBe(FrameType.AUTH_OK);
+    // the comparison's session only told the device its place: the key was never signed with on it
+    expect((await ask(link, "/api/preferences")).status).toBe(403);
+    expect((await ask(link, "/api/devices")).status).toBe(403);
+  });
+
   test("the device's name is sealed under the list's key, and the device is given that key", async () => {
     const made = await allowingPc();
     const phone = await listMember();

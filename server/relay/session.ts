@@ -73,6 +73,15 @@ function linkRequired(): Response {
   return jsonResponse({ error: { code: "link_required", message: "This device paired with a code that adds this PC to an Ovis account. It gets nothing here until it has linked itself into an account: sign in on it, then scan the code again." } }, 403, { "cache-control": "no-store" });
 }
 
+/**
+ * What the session of a join that the list let in answers for every call: it told the device its place in the list
+ * (AUTH_OK `list`) and serves nothing else, whichever store holds a row for its id. The key came with the comparison
+ * and was never signed with here; the device signs in with it.
+ */
+function listSignInRequired(): Response {
+  return jsonResponse({ error: { code: "sign_in_required", message: "This device was let into its account's list. It signs in with its list key now." } }, 403, { "cache-control": "no-store" });
+}
+
 export interface RelaySessionOptions {
   readonly channel: SecureChannel;
   readonly services: RequestServices;
@@ -221,8 +230,8 @@ export class RelaySession {
         const device = this.principal();
         if (!device) { stream.reset("refused"); return; }
         // a device that waits to link opens no socket: refused here, where every stream of a device starts, on the relay and on a direct carrier alike
-        if (device.provisional) {
-          void this.refuseSocket(stream, linkRequired()).catch((error: unknown) => { if (stream.live) stream.reset(error instanceof MuxStreamError ? error.code : "internal_error"); });
+        if (device.provisional || this.listPlace !== undefined) {
+          void this.refuseSocket(stream, device.provisional ? linkRequired() : listSignInRequired()).catch((error: unknown) => { if (stream.live) stream.reset(error instanceof MuxStreamError ? error.code : "internal_error"); });
           return;
         }
         this.choose();
@@ -1006,7 +1015,8 @@ export class RelaySession {
       const context = this.context(device, timeout, () => false, budget);
       if (stream.request.body === "stream") stream.accept();
       // a device that waits to link gets its two calls and nothing else: refused here, before any route runs
-      const response = device.provisional && !linkStep(request) ? linkRequired() : await (this.options.dispatch ?? handleRequest)(request, context);
+      const response = this.listPlace !== undefined ? listSignInRequired()
+        : device.provisional && !linkStep(request) ? linkRequired() : await (this.options.dispatch ?? handleRequest)(request, context);
       if (!stream.live || stream.final) { await response?.body?.cancel(); return; }
       if (!response) { stream.reset("internal_error"); return; }
       reader = response.body?.getReader();
