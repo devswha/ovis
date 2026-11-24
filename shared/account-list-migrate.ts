@@ -216,7 +216,7 @@ export function migrationPlan(known: MigrationKnown, now: number, age: number = 
 }
 
 /** What is not written of a migration, and why. */
-export type MigrationRefusalCode = "stopped" | "not_first" | "not_in" | "run_open" | "has_member";
+export type MigrationRefusalCode = "stopped" | "key_invalid" | "not_first" | "not_in" | "run_open" | "has_member";
 
 export class MigrationError extends Error {
   constructor(readonly code: MigrationRefusalCode, message: string) {
@@ -250,6 +250,9 @@ export interface MigratingDevice {
   readonly names: ListNames | null;
 }
 
+/** Whether a device's own keys are keys of a list: each in its one spelling, with its point on the curve. */
+const ownKeys = (device: Pick<MigratingDevice, "signIn" | "member" | "enc">): boolean => isListKey(device.signIn.key) && isListKey(device.member.key) && isListKey(device.enc);
+
 const firstSigner = (state: ListState): string | null => Object.entries(state.signers).find(([, row]) => row.seq === 0)?.[0] ?? null;
 
 /** Whether the key is a device that is in. */
@@ -281,12 +284,19 @@ export async function signMigrationGenesis(account: string, device: MigratingDev
  * key, the `epoch` entry by the member key.
  *
  * Refuses (MigrationError) `stopped` for a member that is stopped for a replay, `not_first` when entry 0 is not
- * this sign-in key's, and `not_in` when neither of the device's keys is a device of the list any more.
+ * this sign-in key's, and `not_in` when neither of the device's keys is a device of the list any more. And
+ * `key_invalid`, before anything is signed or sealed, when a key the plan names is no key whose point is on the
+ * curve, or a relay key is out of form: the kinds read only the spelling of a carried key, so it is checked here.
+ * Nobody holds the private half of such a key, and a member that later saves it among its keys cannot read its
+ * own copy back.
  */
 export async function signMigrationRun(
   state: ListState, plan: Pick<MigrationPlan, "devices" | "pcs">, device: MigratingDevice, issued_at: number, seals: MigrationSeals,
 ): Promise<{ readonly entries: readonly WrittenEntry[]; readonly state: ListState }> {
   if (state.needs_replay !== undefined) throw new MigrationError("stopped", "A member that is stopped for a replay writes nothing");
+  if (plan.devices.some(({ key }) => !isListKey(key)) || plan.pcs.some(({ endpoint }) => !ENDPOINT.test(endpoint)) || !ownKeys(device)) {
+    throw new MigrationError("key_invalid", "A key of this run is no key whose point is on the curve, or a relay key is out of form");
+  }
   if (firstSigner(state) !== device.signIn.key) throw new MigrationError("not_first", "Entry 0 of this list is not signed by this device's sign-in key");
   const entries: WrittenEntry[] = [];
   let after = state;
@@ -332,11 +342,13 @@ export async function signMigrationRun(
  * run and leave the rest outside: refused `run_open`. The first device ends the run itself. Once the list's own
  * time lies MIGRATION_RUN_SECONDS behind `now` the run counts as given up, and the carried device ends it.
  *
- * Refuses `stopped`, `not_in` for a sign-in key that is no device of power `full` that is in, and `has_member`
- * for a member key the list has held before.
+ * Refuses `stopped`, `key_invalid` for a key of the device's own that is no key of a list, `not_in` for a
+ * sign-in key that is no device of power `full` that is in, and `has_member` for a member key the list has held
+ * before.
  */
 export async function signRotation(state: ListState, device: Pick<MigratingDevice, "signIn" | "member" | "enc">, issued_at: number, sealed: Sealed | null, now: number): Promise<WrittenEntry> {
   if (state.needs_replay !== undefined) throw new MigrationError("stopped", "A member that is stopped for a replay writes nothing");
+  if (!ownKeys(device)) throw new MigrationError("key_invalid", "A key of this device is no key whose point is on the curve");
   const row = rowOf(state.signers, device.signIn.key);
   if (row === null || !deviceIn(state, device.signIn.key) || row.power !== "full") throw new MigrationError("not_in", "This sign-in key is no device of this list that may hand its place on");
   if (rowOf(state.signers, device.member.key) !== null || rowOf(state.pc_keys, device.member.key) !== null) throw new MigrationError("has_member", "The list has held this member key before");
@@ -362,13 +374,14 @@ export function heirOf(state: ListState, key: string): string | null {
 /**
  * The key that stands now where `key` came in: `key` itself while it is a device that is in, otherwise the last
  * of the keys it handed its place on to, when that one is in. Null for a device that is out, and for a key that
- * was never a device here. A PC that follows a list asks this for each row it kept by a sign-in key.
+ * was never a device here, and for a key that is no point of the curve, whatever the list holds of it. A PC that
+ * follows a list asks this for each row it kept by a sign-in key.
  */
 export function standsFor(state: ListState, key: string): string | null {
   if (state.needs_replay !== undefined) return null;
   let at = key;
   for (let steps = 0; steps <= state.footing.seq; steps += 1) {
-    if (deviceIn(state, at)) return at;
+    if (deviceIn(state, at)) return isListKey(at) ? at : null;
     const heir = heirOf(state, at);
     if (heir === null) return null;
     at = heir;
@@ -454,6 +467,9 @@ export interface PcWitness {
  *
  * - `stopped`: the PC cannot place an entry of the list (it needs a newer Ovis).
  * - `other_account`: the list is of another account than the PC's.
+ * - `carried_off_curve`: the list carries in a key that is no point of the curve. The kinds read only the
+ *   spelling of a carried key, so such an entry counts; no honest device signs one (signMigrationRun), nobody can
+ *   hold its private half, and a member that saves it among its keys cannot read its own copy back.
  * - `first_signer_removed`, `carried_removed`: the PC holds a removal against the key that started the list, or
  *   against a key that was carried in. Following the list would bring back what was put out here.
  * - `first_signer_dropped`, `carried_dropped`: the PC let that key in once and has dropped it since, and the
@@ -465,7 +481,7 @@ export interface PcWitness {
  *   again at its next read.
  */
 export type MigrationRefusal =
-  | "stopped" | "other_account"
+  | "stopped" | "other_account" | "carried_off_curve"
   | "first_signer_removed" | "carried_removed"
   | "first_signer_dropped" | "carried_dropped"
   | "first_signer_unknown" | "carried_unknown"
@@ -500,6 +516,8 @@ export function migrationVerdict(state: ListState, witness: PcWitness, now: numb
   const first = firstSigner(state);
   if (first === null) return no("stopped", []);
   const carried = listView(state).devices.filter((row) => row.carried).map((row) => row.key);
+  const off = carried.filter((key) => !isListKey(key));
+  if (off.length > 0) return no("carried_off_curve", off);
   const since = new Map<string, number>();
   for (const row of witness.admits) if (isTime(row.since)) since.set(row.key, Math.min(row.since, since.get(row.key) ?? row.since));
   const removed = new Set(witness.removed);

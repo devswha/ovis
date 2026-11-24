@@ -714,7 +714,9 @@ not hold yet, the hand-over to the member key, and the `epoch` entry (the sign-i
 epoch's key and is out, so names are sealed under the next one, whose key is wrapped to the
 members that have named an encryption key). It is the same call for the first try and for every
 later one, so a request of which only the beginning was placed is taken up from what the log
-shows, and once all is placed it writes nothing.
+shows, and once all is placed it writes nothing. It refuses the whole run, before it signs or
+seals anything, when a key the plan names is no key whose point is on the curve (`key_invalid`):
+the kinds read only the spelling of a carried key, so that check is made here, and by every PC.
 
 `signRotation` is the hand-over by itself, for a device that was carried in. Such a device writes
 nothing while the run is open (`run_open`): an entry of its own would end the run and leave the
@@ -739,6 +741,7 @@ signer of power `full`, so one the PC never let in could have added whom it like
 |---|---|---|
 | `stopped` | it cannot place an entry of the list | says it needs a newer Ovis |
 | `other_account` | the list is of another account | follows nothing |
+| `carried_off_curve` | the list carries in a key that is no point of the curve | follows nothing of it, and says so |
 | `first_signer_removed`, `carried_removed` | it holds a removal against that key | says so; it is added again at the PC |
 | `first_signer_dropped`, `carried_dropped` | it let the key in once, dropped it since, and the list still holds it as in | says so |
 | `first_signer_unknown`, `carried_unknown` | it never let the key in | says so |

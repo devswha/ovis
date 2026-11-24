@@ -12,7 +12,7 @@ import {
   type KnownDevice, type KnownPc, type MigratingDevice, type MigrationKnown, type MigrationPlan, type MigrationRefusal, type MigrationSeals, type MigrationStart, type MigrationVerdict,
   type PcWitness,
 } from "./account-list-migrate.ts";
-import { toBase64Url } from "./relay-pair-sas.ts";
+import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
 const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
@@ -41,6 +41,12 @@ const stranger = await device("Stranger");
 /** A PC's relay key. */
 const E = (n: number) => n.toString(16).padStart(2, "0").repeat(32);
 const names = (label: string): ListNames => ({ label, os: "linux" });
+/** A key in its one spelling whose point is not on the curve: nobody holds its private half, and no entry it signed would hold. */
+const offCurve = (() => {
+  const bytes = fromBase64Url(tablet.signIn.key);
+  bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 1;
+  return toBase64Url(bytes);
+})();
 
 /** The caller's side of sealing, with the real keys: what a device does with shared/account-list-seal.ts. */
 function sealer(): { readonly seals: MigrationSeals; readonly keys: Map<number, EpochKey>; readonly wrapped: string[][] } {
@@ -253,6 +259,19 @@ describe("the entries of a list that carries an account in", () => {
     expect((await signMigrationRun(state, whole, phone, T0 + 120, sealed.seals)).entries).toEqual([]);
   });
 
+  test("a carried key that is no point of the curve is never signed: the whole run is refused before any entry of it", async () => {
+    const sealed = sealer();
+    const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
+    const bad = { devices: [{ key: tablet.signIn.key, names: tablet.names }, { key: offCurve, names: null }], pcs: [] };
+    await expect(signMigrationRun(genesis.state, bad, phone, T0, sealed.seals)).rejects.toMatchObject({ code: "key_invalid" });
+    await expect(signMigrationRun(genesis.state, { devices: [], pcs: [{ endpoint: "not-a-relay-key", names: null }] }, phone, T0, sealed.seals)).rejects.toMatchObject({ code: "key_invalid" });
+    // Nothing was sealed or opened for it either.
+    expect(sealed.wrapped).toEqual([]);
+    // The plan never names one: what the account service lists with such a key is left out.
+    const start = migrationPlan(known([listed(phone), { key: offCurve, eligible: true, names: null }], [{ ...pcSays(1, [phone]), says: { admits: [...witness([phone]).admits, { key: offCurve, since: LONG_AGO }], removed: [] } }]), T0);
+    expect([started(start).devices, started(start).left.devices]).toEqual([[], [{ key: offCurve, why: "form" }]]);
+  });
+
   test("only the device that signed entry 0 writes the run, and only while one of its keys is in", async () => {
     const made = await migrated(phone, plan([tablet]));
     const code = async (run: () => Promise<unknown>) => await run().then(() => null, (error: unknown) => (error instanceof MigrationError ? error.code : String(error)));
@@ -348,6 +367,22 @@ describe("what a PC checks before it follows a list that carries its account in"
     expect(refusal(migrationVerdict(forged.state, witness([phone, tablet, [stranger, T0 - DAY]]), T0))).toBe("pin");
   });
 
+  test("a list that carries in a key that is no point of the curve is followed by no PC, whatever the PC holds of that key", async () => {
+    const sealed = sealer();
+    const genesis = await signMigrationGenesis(ACCOUNT, phone, T0, sealed.seals);
+    // The kinds read only the spelling of a carried key, so a first device that signs with the kinds' writer alone can carry one in.
+    const carried = await signListEntry(genesis.state, { kind: "carried", key: offCurve, role: "drive", sealed: null }, phone.signIn, T0);
+    const run = await signMigrationRun(carried.state, plan([tablet]), phone, T0, sealed.seals);
+    expect(listView(run.state).devices.some((row) => row.key === offCurve && row.carried)).toBe(true);
+    const holds: PcWitness = { account: ACCOUNT, admits: [...witness([phone, tablet]).admits, { key: offCurve, since: LONG_AGO }], removed: [], once: [] };
+    expect(migrationVerdict(run.state, holds, T0)).toEqual({ pin: false, why: "carried_off_curve", keys: [offCurve], waits: false, until: null });
+    // Before any question of who is let in, and also while the run is open.
+    expect(refusal(migrationVerdict(run.state, { ...holds, removed: [tablet.signIn.key] }, T0))).toBe("carried_off_curve");
+    expect(refusal(migrationVerdict(carried.state, holds, T0))).toBe("carried_off_curve");
+    // Nor is such a key ever what a row moves to, or what the pin names.
+    expect(standsFor(run.state, offCurve)).toBeNull();
+  });
+
   test("a removal this PC holds wins over the list: a device removed the day before, which the service lists again", async () => {
     const made = await migrated(phone, plan([tablet, laptop]));
     expect(migrationVerdict(made.state, witness([phone, tablet], { removed: [laptop.signIn.key] }), T0)).toEqual({ pin: false, why: "carried_removed", keys: [laptop.signIn.key], waits: false, until: null });
@@ -429,7 +464,7 @@ describe("the vectors of migrate/", () => {
   test("there is a vector for a PC that follows, for each of its refusals, for a start and for each reason to start none", () => {
     const pcs = new Set(vectors.flatMap((vector) => (vector.pc === undefined ? [] : [refusal(vector.pc.expect)])));
     const refusals: (MigrationRefusal | "pin")[] = [
-      "pin", "other_account", "first_signer_removed", "carried_removed", "first_signer_dropped", "carried_dropped", "first_signer_unknown", "carried_unknown", "first_signer_new", "carried_new", "run_open",
+      "pin", "other_account", "carried_off_curve", "first_signer_removed", "carried_removed", "first_signer_dropped", "carried_dropped", "first_signer_unknown", "carried_unknown", "first_signer_new", "carried_new", "run_open",
     ];
     expect(refusals.filter((word) => !pcs.has(word))).toEqual([]);
     const starts = new Set(vectors.flatMap((vector) => (vector.device === undefined ? [] : [vector.device.expect.start ? "start" : vector.device.expect.why])));
