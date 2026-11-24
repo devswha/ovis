@@ -215,9 +215,14 @@ export function commandListed(command: SlashCommand): boolean {
   return command.visibility !== "agent-hidden";
 }
 
+function paletteCommandListed(command: SlashCommand): boolean {
+  return commandListed(command) && (!command.chatPaletteHidden || terminalCommand(command)
+    || (command.forms ?? []).some((form) => form.match === "bare" && form.interaction === "dialog" && form.dialog !== undefined));
+}
+
 export function namesHiddenCommand(commands: readonly SlashCommand[], query: string, prefix?: string): boolean {
   const word = query.toLowerCase();
-  return word !== "" && commands.some((command) => !commandListed(command)
+  return word !== "" && commands.some((command) => !paletteCommandListed(command)
     && (prefix === undefined || (command.trigger ?? "/") === prefix)
     && command.name.toLowerCase().startsWith(word));
 }
@@ -376,7 +381,7 @@ export function commandsForTrigger(commands: readonly SlashCommand[], agent: str
   const syntax = skillSyntax(agent);
   const prefix = trigger.prefix ?? "/";
   return commands.filter((command) => {
-    if (!commandListed(command)) return false;
+    if (!paletteCommandListed(command)) return false;
     if (trigger.start === 0) {
       return syntax.skillTriggers.length > 1
         ? prefix === "/" || command.source === "skill"

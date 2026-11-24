@@ -594,13 +594,16 @@ describe("the menu over a catalog the server built", () => {
   }
   const slash: ActiveTrigger = { kind: "slash", query: "", start: 0, end: 1 };
 
-  it("lists the terminal screens in the terminal group and never lists the agent-hidden rows", () => {
+  it("keeps terminal handoffs and drawable controls but hides unsupported ordinary live controls", () => {
     const rows = codexRows();
     const listed = commandsForTrigger(rows, "codex", slash);
     const names = new Set(listed.map((row) => row.name));
     const terminal = new Set(listed.filter((row) => commandGroup(row) === "terminal").map((row) => row.name));
-    for (const name of ["config", "resume", "permissions", "mcp", "status", "review"]) expect(terminal.has(name)).toBeTrue();
+    for (const name of ["config", "resume", "permissions", "setup-default-sandbox", "mcp", "status", "review"]) expect(terminal.has(name)).toBeTrue();
     for (const name of ["model", "compact", "init"]) expect(names.has(name) && !terminal.has(name)).toBeTrue();
+    expect(names.has("plan")).toBeFalse();
+    expect(typedTerminalCommand(rows, "/plan")).toBeNull();
+    expect(typedTerminalCommand(rows, "/permissions")?.name).toBe("permissions");
     for (const name of ["apps", "debug-config", "debug-m-drop", "debug-m-update"]) {
       expect(rows.some((row) => row.name === name && row.visibility === "agent-hidden")).toBeTrue();
       expect(names.has(name)).toBeFalse();
