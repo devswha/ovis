@@ -15,17 +15,20 @@ it("signs every keeper and checks its size and digest, without accepting an unsi
   writeManifest(dir, { version: "1.2.3", sources });
   signManifest(dir, privateKeyPem);
   expect(verifyRelease(dir, publicKey).ok).toBe(true);
+  const original = ["ovis-server.json", "ovis-server.json.sig", SUMS].map((file) => readFileSync(join(dir, file)));
+  expect(Object.keys(JSON.parse(readFileSync(join(dir, "ovis-server.json"), "utf8")))).toEqual(["schema", "version", "sources", "assets", "dist", "pty"]);
   const name = (build: string) => `ovis-acp-keeper-${build}`;
   for (const build of PTY_ASSETS) writeFileSync(join(dir, name(build)), `keeper for ${build}`);
   expect(verifyRelease(dir, publicKey).ok).toBe(false);
-  const manifest = writeManifest(dir, { version: "1.2.3", sources });
+  writeManifest(dir, { version: "1.2.3", sources });
+  signManifest(dir, privateKeyPem);
+  expect(["ovis-server.json", "ovis-server.json.sig", SUMS].map((file) => readFileSync(join(dir, file)))).toEqual(original);
+  const manifest = JSON.parse(readFileSync(join(dir, "ovis-acp-keeper-server.json"), "utf8"));
   for (const build of PTY_ASSETS) {
     const file = name(build);
     const digest = createHash("sha256").update(readFileSync(join(dir, file))).digest("hex");
-    expect(manifest.acpKeeper?.[build]).toEqual({ file, sha256: digest, size: statSync(join(dir, file)).size });
-    expect(readFileSync(join(dir, SUMS), "utf8")).toContain(`${digest}  ${file}\n`);
+    expect(manifest.assets[build]).toEqual({ file, sha256: digest, size: statSync(join(dir, file)).size });
   }
-  signManifest(dir, privateKeyPem);
   expect(verifyRelease(dir, publicKey)).toEqual({ ok: true, problems: [] });
   writeFileSync(join(dir, name("linux-x64")), "changed keeper");
   expect(verifyRelease(dir, publicKey).problems).toEqual([expect.stringContaining(`${name("linux-x64")} does not match`)]);

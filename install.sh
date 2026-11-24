@@ -867,7 +867,7 @@ manifest_entry() {
   # by section: the PTY hosts' keys repeat platform names
   case "$2" in
     dist) entry=$(sed -n '/^  "dist": {$/,/^  }/p' "$1") ;;
-    pty-*|acpKeeper-*) entry=$(sed -n "/^  \"${2%%-*}\": {\$/,/^  }/p" "$1" | sed -n "/^    \"${2#*-}\": {\$/,/^    }/p") ;;
+    pty-*) entry=$(sed -n '/^  "pty": {$/,/^  }/p' "$1" | sed -n "/^    \"${2#pty-}\": {\$/,/^    }/p") ;;
     *) entry=$(sed -n '/^  "assets": {$/,/^  }/p' "$1" | sed -n "/^    \"$2\": {\$/,/^    }/p") ;;
   esac
   entry_file=$(printf '%s\n' "$entry" | sed -n 's/^ *"file": "\([^"]*\)",$/\1/p')
@@ -896,6 +896,31 @@ take() {
   [ "$got_sha" = "$entry_sha" ] || refuse "$1 does not match its SHA-256 in ovis-server.json (got $got_sha)"
 }
 
+# Reconstruct the exact signed format using only fixed file names, decimal sizes and lowercase digests.
+# A byte comparison rejects duplicates, extra fields, noncanonical JSON and a different server release.
+canonical_keeper() {
+  server_sha=$(sha256 "$stage/ovis-server.json") || return 1
+  printf '{\n  "schema": 1,\n  "version": "%s",\n  "serverSha256": "%s",\n  "assets": {\n' "$version" "$server_sha"
+  for asset_key in linux-x64 linux-arm64 darwin-universal; do
+    manifest_entry "$1" "$asset_key"
+    [ "$entry_file" = "ovis-acp-keeper-$asset_key" ] && [ -n "$entry_sha" ] || return 1
+    case "$entry_size" in ''|0[0-9]*) return 1 ;; esac
+    comma=,
+    [ "$asset_key" != darwin-universal ] || comma=
+    printf '    "%s": {\n      "file": "%s",\n      "sha256": "%s",\n      "size": %s\n    }%s\n' "$asset_key" "$entry_file" "$entry_sha" "$entry_size" "$comma"
+  done
+  printf '  }\n}\n'
+}
+
+checked_keeper_manifest() {
+  doc="$verify_dir/ovis-acp-keeper-server.json"
+  fetch "$at/ovis-acp-keeper-server.json" "$doc" 65536 && [ "$(wc -c <"$doc")" -le 65536 ] &&
+    fetch "$at/ovis-acp-keeper-server.json.sig" "$doc.sig" 1024 &&
+    [ "$(wc -c <"$doc.sig")" -eq 89 ] && [ "$(wc -l <"$doc.sig")" -eq 1 ] && LC_ALL=C grep -Eqx '[A-Za-z0-9+/]{85}[AQgw]==' "$doc.sig" &&
+    "$checker" "$RELEASE_PUBLIC_KEY" "$doc" "$doc.sig" &&
+    canonical_keeper "$doc" >"$verify_dir/expected-keeper.json" && cmp -s "$doc" "$verify_dir/expected-keeper.json"
+}
+
 # Each optional native binary gets its own probe and record. Never remove its sibling on failure.
 binary_helper() {
   case "$1" in
@@ -908,16 +933,26 @@ binary_helper() {
     darwin-*) build=darwin-universal ;;
     *) return 0 ;;
   esac
-  manifest_entry "$stage/ovis-server.json" "$1-$build"
+  if [ "$1" = pty ]; then
+    native_manifest=ovis-server.json
+    manifest_entry "$stage/$native_manifest" "pty-$build"
+  else
+    native_manifest=ovis-acp-keeper-server.json
+    if ! checked_keeper_manifest; then
+      say "no verified $native_manifest for this release, so $without"
+      return 0
+    fi
+    manifest_entry "$verify_dir/$native_manifest" "$build"
+  fi
   target="$stage/bin/$helper_name"
   if [ "$entry_file" != "$helper_name-$build" ] || [ -z "$entry_sha" ] || [ -z "$entry_size" ]; then
-    say "the signed ovis-server.json names no $helper_label for $platform, so $without"
+    say "the signed $native_manifest names no $helper_label for $platform, so $without"
     return 0
   fi
   if ! mkdir -p "$stage/bin" || ! fetch "$at/$entry_file" "$target" "$entry_size" || [ "$(wc -c <"$target" | tr -d ' ')" != "$entry_size" ] ||
     [ "$(sha256 "$target")" != "$entry_sha" ]; then
     rm -f "$target"
-    say "the $helper_label did not download or does not match its SHA-256 and size in ovis-server.json, so it is not run and $without"
+    say "the $helper_label did not download or does not match its SHA-256 and size in $native_manifest, so it is not run and $without"
     return 0
   fi
   if ! chmod 755 "$target" || ! "$helper_probe" "$target"; then

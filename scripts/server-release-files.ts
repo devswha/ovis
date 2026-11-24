@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DIST_ARCHIVE, MANIFEST, type ReleaseAsset } from "./server-manifest.ts";
+import { DIST_ARCHIVE, type ReleaseAsset } from "./server-manifest.ts";
 
 /**
  * The bytes at `url`, refused once they pass `limit` (a file larger than its manifest says is never read whole), or
@@ -10,7 +10,7 @@ import { DIST_ARCHIVE, MANIFEST, type ReleaseAsset } from "./server-manifest.ts"
  * before a request is made to it.
  */
 export async function download(url: string, limit: number, name: string, fetchFile: typeof fetch = fetch): Promise<Uint8Array | null> {
-  const tooLarge = () => new Error(`${name} is larger than the ${limit} bytes ${MANIFEST} names; nothing was changed`);
+  const tooLarge = () => new Error(`${name} is larger than the ${limit} byte limit; nothing was changed`);
   if (url.startsWith("file://")) {
     const path = fileURLToPath(url);
     if (!existsSync(path)) return null;
@@ -43,9 +43,9 @@ export async function download(url: string, limit: number, name: string, fetchFi
 export async function checked(at: string, asset: ReleaseAsset, fetchFile?: typeof fetch): Promise<Uint8Array> {
   const bytes = await download(`${at}/${asset.file}`, asset.size, asset.file, fetchFile);
   if (!bytes) throw new Error(`${at}/${asset.file} does not exist; nothing was changed`);
-  if (bytes.length !== asset.size) throw new Error(`${asset.file} is ${bytes.length} bytes, not the ${asset.size} ${MANIFEST} names; nothing was changed`);
+  if (bytes.length !== asset.size) throw new Error(`${asset.file} is ${bytes.length} bytes, not the ${asset.size} its signed manifest names; nothing was changed`);
   const digest = createHash("sha256").update(bytes).digest("hex");
-  if (digest !== asset.sha256) throw new Error(`${asset.file} does not match its SHA-256 in ${MANIFEST} (got ${digest}); nothing was changed`);
+  if (digest !== asset.sha256) throw new Error(`${asset.file} does not match its SHA-256 in its signed manifest (got ${digest}); nothing was changed`);
   return bytes;
 }
 

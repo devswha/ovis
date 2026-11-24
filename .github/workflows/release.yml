@@ -87,7 +87,7 @@ jobs:
         with:
           name: ovis-pty-sidecar
           path: ${{ runner.temp }}/pty-sidecar
-      - name: Build the five binaries, the client and their manifest with the PTY hosts and ACP keepers
+      - name: Build the server manifest and the separate ACP keeper manifest
         run: |
           bun run build
           bun scripts/build-server.ts release "$RUNNER_TEMP/server-binary"
@@ -172,6 +172,7 @@ jobs:
             server-binary/ovis-server-*
             server-binary/ovis-dist.tar.gz
             server-binary/ovis-server.json
+            server-binary/ovis-acp-keeper-server.json
             server-binary/ovis-server.SHA256SUMS
   publish:
     needs: [validate, pty-sidecar, server-binary-sign, server-binary-attest]
@@ -223,8 +224,9 @@ jobs:
           test "$(bun -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$RUNNER_TEMP/pty-sidecar/ovis-pty-sidecar.json")" = "$RELEASE_VERSION"
           # the server's files by name, and only once they verify for this version against the committed key (not one the
           # sign job reports about itself): a file anything else left in the folder is refused, never attached
-          server_files=(ovis-server-linux-x64 ovis-server-linux-arm64 ovis-server-darwin-arm64 ovis-server-darwin-x64 ovis-server-windows-x64.exe ovis-dist.tar.gz ovis-server.json ovis-server.json.sig ovis-server.SHA256SUMS)
+          server_files=(ovis-server-linux-x64 ovis-server-linux-arm64 ovis-server-darwin-arm64 ovis-server-darwin-x64 ovis-server-windows-x64.exe ovis-dist.tar.gz ovis-server.json ovis-server.json.sig ovis-server.SHA256SUMS ovis-acp-keeper-server.json ovis-acp-keeper-server.json.sig)
           bun scripts/build-server.ts verify "$RUNNER_TEMP/server-binary" --expect-version "$RELEASE_VERSION"
+          bun scripts/build-server.ts keeper-manifest "$RUNNER_TEMP/pty-sidecar" "$RUNNER_TEMP/server-binary/ovis-server.json" "$RELEASE_VERSION" | cmp - "$RUNNER_TEMP/server-binary/ovis-acp-keeper-server.json"
           # attach only the native binaries whose exact bytes the signed manifest covers
           for file in ovis-{pty-sidecar,acp-keeper}-{linux-x64,linux-arm64,darwin-universal}; do
             cmp "$RUNNER_TEMP/pty-sidecar/$file" "$RUNNER_TEMP/server-binary/$file"
