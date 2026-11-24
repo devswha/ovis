@@ -205,6 +205,17 @@ test.each([
   expect(parseFallbackPrompt(agent, after.replace(from, to)).id).not.toBe(parseFallbackPrompt(agent, before).id);
 });
 
+// Grok 1.0.92 redraws the tool call its permission panel asks about every tenth of a second (server/fixtures/record-cards)
+test.each(["long-a1", "phone-a1"])("keeps Grok's permission card (%s) while its tool call's timers tick, and not once its words change", (name) => {
+  const turns = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/grok.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns;
+  const screen = turns.find((turn) => turn.turn === name)!.screen;
+  const row = screen.split("\n").find((line) => line.includes("[↓][stop]"))!;
+  const ticked = row.replace(/(\d+)s ⇣([\d.]+)k/u, (_all, seconds: string, tokens: string) => `${Number(seconds) + 3}s ⇣${(Number(tokens) + 0.4).toFixed(1)}k`).replace("0.0s", "0.3s");
+  expect(ticked).not.toBe(row);
+  expect(parseFallbackPrompt("grok", screen.replace(row, ticked)).id).toBe(parseFallbackPrompt("grok", screen).id);
+  expect(parseFallbackPrompt("grok", screen.replace(row, row.replace("◆ Run", "◆ Remove"))).id).not.toBe(parseFallbackPrompt("grok", screen).id);
+});
+
 test("keeps Hermes's card in its first ten seconds, where the timer is padded with two spaces", () => {
   const screen = recorded("lab-hermes-waiting-a");
   expect(screen.split("( 57.9s").length).toBe(2);

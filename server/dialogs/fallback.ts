@@ -99,7 +99,12 @@ const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
   // "○ Asking user Waiting for response      36s"
   copilot: [{ pattern: /^(○ \S(?:.*\S)?) {2,}(?:\d+h )?(?:\d+m )?\d+s$/u, steady: "$1 <time>" }],
   // "◆ Waiting on answers for Option A or option B?      7.4s ⇣21.5k [stop]"
-  grok: [{ pattern: /^(◆ Waiting on answers for \S(?:.*\S)?) {2,}(?:\d+m )?\d+(?:\.\d+)?s [⇣↓][\d.]+[kKmM]? \[stop\]$/u, steady: "$1 <time> <tokens> [stop]" }],
+  grok: [
+    { pattern: /^(◆ Waiting on answers for \S(?:.*\S)?) {2,}(?:\d+m )?\d+(?:\.\d+)?s [⇣↓][\d.]+[kKmM]? \[stop\]$/u, steady: "$1 <time> <tokens> [stop]" },
+    // the tool call its permission panel asks about, with the call's time and the turn's (one only on a narrow pane):
+    // "◆ Run the file's contents as one shell cal… 0.0s      15s ⇣12.1k [↓][stop]" (Grok 1.0.92)
+    { pattern: /^(◆ \S.*?)(?: \d+(?:\.\d+)?s)? {2,}(?:\d+m )?\d+(?:\.\d+)?s [⇣↓][\d.]+[kKmM]? \[↓\]\[stop\]$/u, steady: "$1 <time> <tokens> [↓][stop]" },
+  ],
   hermes: [
     // the question with its timer, padded to six characters: "❓ Which color?  ( 57.9s · ↓ 34 tok)", "(01m05s · ↓ 34 tok)",
     // and so "(  5.2s · ↓ 34 tok)" in its first ten seconds
