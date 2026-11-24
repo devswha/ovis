@@ -343,7 +343,9 @@ holds after a read does not depend on where the pages were cut.
 - A read ends by itself: each next request follows a page that showed something new, and a read
   goes back to its footing once.
 - A head the service names beside something else (a PC's mailbox answer) is only a hint to read.
-  One that equals the member's own head counts as a full read; one behind its copy changes nothing.
+  One that equals the member's own head counts as a full read; one behind its copy changes nothing,
+  and neither does a service that names no list: that is no hint, never the word that the list is
+  gone.
 
 ### Two histories
 

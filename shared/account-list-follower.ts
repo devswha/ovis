@@ -582,11 +582,14 @@ export async function takePage(copy: FollowerCopy, read: FollowRead, page: ListP
  * times. `same`: the head is the member's own, which counts as a full read, so a quiet list costs no request
  * for the log. `read`: begin a read (startRead). `older`: an earlier place of the
  * member's own history; a late or lying service, and nothing changes. `not_my_list`: another list id than the
- * member follows; nothing changes, and the member does not take it for its list being gone.
+ * member follows; nothing changes, and the member does not take it for its list being gone. `none`: the
+ * service named no list (null: an account it serves no list for, or a service that knows of none); that is no
+ * hint, never the word that the list is gone, and the member reads at its own pace.
  */
-export function heardHead(copy: FollowerCopy, hint: ListHead, now: number): { readonly copy: FollowerCopy; readonly verdict: "same" | "read" | "older" | "not_my_list" } {
+export function heardHead(copy: FollowerCopy, hint: ListHead | null, now: number): { readonly copy: FollowerCopy; readonly verdict: "same" | "read" | "older" | "not_my_list" | "none" } {
   if (!isCount(now)) throw new RangeError("The hour is seconds since 1970, a whole number");
   const held = seenAt(copy, now);
+  if (hint === null || hint === undefined) return { copy: held, verdict: "none" };
   if (!isRecord(hint) || hint.list !== copy.list) return { copy: held, verdict: "not_my_list" };
   const { place } = hint;
   const { state } = copy;

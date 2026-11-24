@@ -804,7 +804,9 @@ describe("when a member reads", () => {
       expect({ hint, heard: heard(hint) }).toEqual({ hint, heard: { copy: seen, verdict: "read" } });
     }
     expect(heard({ list: BASE.list, place: { seq: 2, hash: at(BASE.hashes, 2) } })).toEqual({ copy: seen, verdict: "older" });
-    for (const hint of [null, { list: OTHER.list, place: headOf(BASE) }, { list: null }]) expect({ hint, heard: heard(hint) }).toEqual({ hint, heard: { copy: seen, verdict: "not_my_list" } });
+    for (const hint of ["x", { list: OTHER.list, place: headOf(BASE) }, { list: null }]) expect({ hint, heard: heard(hint) }).toEqual({ hint, heard: { copy: seen, verdict: "not_my_list" } });
+    // A service that names no list gives no hint: it is not the word that the list is gone, and not another list.
+    for (const hint of [null, undefined]) expect({ hint, heard: heard(hint) }).toEqual({ hint, heard: { copy: seen, verdict: "none" } });
     expect(heard({ list: BASE.list, place: headOf(BASE) }, pinned(BASE, PC(desk, 1), { how: "added" })).verdict).toBe("read");
     // A device that was allowed is not told it is caught up by a head before the one it was handed.
     const waiting = (await reads(pinned(log, DEVICE(tablet), allowedAt(log)), serves(BASE))).copy;
