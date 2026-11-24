@@ -432,6 +432,19 @@ describe("the admission before a first link", () => {
     });
   }
 
+  // a PC the account's signed list removed takes no link into that account: it comes back only as a new PC
+  it("says that the account's list removed the PC, in words of its own, with nothing to try again", async () => {
+    const run = await pairing({ mark: true, listed: true, links: [() => Response.json({ error: { code: "list_removed", message: "private refusal" } }, { status: 409 })] });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect(run.failure()).toBe("list-removed");
+    expect(run.apps()).toBe(0);
+    const said = relayFailureText(t, "list-removed", "Desk");
+    expect([said.title, said.retry]).toEqual(["Desk was removed from your account", false]);
+    expect(said.copy).toContain("only as a new PC");
+    expect(JSON.stringify(said)).not.toContain("private refusal");
+  });
+
   // a PC already in an account keeps a row whose link names another account, and the device drives it as before
   for (const mark of [false, true]) {
     it(`opens the PC as before when a PC already in an account answers the link account_mismatch (${mark ? "marked" : "plain"} code)`, async () => {
