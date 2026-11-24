@@ -44,6 +44,8 @@ interface Waiting {
   firstJoin: boolean;
   /** the join brought the device's card for the account's signed list (session.ts listCard) */
   list: boolean;
+  /** such a join that a device of the list may decide from afar (listJoins): not one asked under this PC's own add-me screen */
+  listRemote: boolean;
   choices: [string, string, string];
   finish: (decision: PairingDecision) => void;
 }
@@ -268,11 +270,43 @@ export class RelayPairingApprovals {
   }
 
   remoteList(): RemotePairingRequest[] {
-    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched, provenServerId }) => ({
+    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched, provenServerId, list }) => ({
       id: request.id, label: request.label, intent: request.intent, choices: vouched ? [] : choices, expires_at: request.expires_at, key,
       ...(vouched ? { vouched: true as const, ...(provenServerId ? { proven_server_id: provenServerId } : {}) } : {}),
+      // the join brought the device's card for the account's list: it is let in by an entry of the list, which its approver signs
+      ...(list ? { list: true as const } : {}),
     }));
   }
+
+  /**
+   * The joins into the account's list, for a device of that list which may add devices to it: also a first join,
+   * since that device's right is the list's own word and no membership that could begin meanwhile. Never one asked
+   * under this PC's own add-me screen, and never a pairing of this PC's own.
+   */
+  listJoins(): RemotePairingRequest[] {
+    return [...this.waiting.values()].filter(({ listRemote }) => listRemote).map(({ request, choices, key }) => ({
+      id: request.id, label: request.label, intent: request.intent, choices, expires_at: request.expires_at, key, list: true as const,
+    }));
+  }
+
+  /** A device of the list decides a join into the list (listJoins): as decideRemote, for those joins alone. */
+  decideForList(id: string, approved: boolean, digits: string, by: DeviceMatch): RemoteDecision {
+    const entry = this.waiting.get(id);
+    if (!entry || !entry.listRemote) return { outcome: "gone" };
+    if (!approved) { entry.finish({ approved: false }); return { outcome: "decided", device_id: entry.deviceId }; }
+    if (digits !== entry.request.digits) { entry.finish({ approved: false }); return { outcome: "wrong_digits" }; }
+    entry.finish({ approved: true, by });
+    return { outcome: "decided", device_id: entry.deviceId };
+  }
+
+  /** As subscribeRemote, of the joins into the list. */
+  subscribeList(listener: (pairings: RemotePairingRequest[]) => void): () => void {
+    const told = () => listener(this.listJoins());
+    this.listListeners.add(told);
+    told();
+    return () => { this.listListeners.delete(told); };
+  }
+  private readonly listListeners = new Set<() => void>();
 
   /**
    * The account joins taken outside the pairing window, for this PC's own window alone (dispatch.ts, ownWindow): listed
@@ -332,9 +366,10 @@ export class RelayPairingApprovals {
     // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
     // a first join is this PC's own as well: no member that joins meanwhile may decide it
     const firstJoin = device.firstJoin ?? false;
-    const localOnly = firstJoin || (!(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen()));
+    const ownOnly = !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen());
+    const localOnly = firstJoin || ownOnly;
     this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
-      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, choices: decoys(digits), finish });
+      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listRemote: (device.list ?? false) && !ownOnly, choices: decoys(digits), finish });
     this.changed();
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };
   }
@@ -370,5 +405,6 @@ export class RelayPairingApprovals {
     for (const listener of this.listeners) listener(pairings);
     const remote = this.remoteList();
     for (const listener of this.remoteListeners) listener(remote);
+    for (const listener of this.listListeners) listener();
   }
 }

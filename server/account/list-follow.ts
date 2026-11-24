@@ -357,6 +357,19 @@ export class ListFollow implements ListAuthority {
   }
 
   /**
+   * Whether the device of the list that signed in with `key` may decide a join into the list from afar, read from this
+   * PC's copy as it is at the call: the list holds it as in, to drive, with full power (what may add a device to the
+   * list may approve its join). False for any other device the list lets in (to watch, or with bound power); null on
+   * a PC that is not pinned and for a key the list does not let in now.
+   */
+  allowsJoins(key: string): boolean | null {
+    const role = this.role(key);
+    if (role === undefined || role === null) return null;
+    const state = this.copy?.state ?? null;
+    return role === "drive" && state !== null && signerPower(state, key) === "full";
+  }
+
+  /**
    * The binding keeps that its list raised an alarm, and the copy the PC holds now shows none: the copy was lost and
    * read again, and one history tells nothing of whom the alarm held back. The PC then lets nobody of its list in,
    * until a person unpins it at the PC.

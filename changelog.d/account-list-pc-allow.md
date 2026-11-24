@@ -6,5 +6,7 @@
   that brings no card, work as before. A PC whose Ovis is older than what a device wrote into
   the list lets nobody new in itself and says that it needs an update; a device of the account
   can still allow the newcomer.
+- On a PC pinned to its account's list, a device of the list that may add devices to it (it
+  drives, with full power) sees the joins that wait at that PC and allows one from its own app.
 - A device a member allowed on a PC that follows no list is told its place in the account's signed
   list through that PC's introduction.
