@@ -1,7 +1,8 @@
 # It replaces an installed Ovis and leaves the one it installed (with herdr's sign-in start, where this commit's installer
 # sets one). A herdr server it or the installer had to start is stopped again; one that was already running is left
-# alone, unless -StopHerdr: then it is stopped first, so this commit's installer has to start it (CI's Native Windows
-# install, whose runner's earlier steps may leave one).
+# alone, unless -StopHerdr: then it, a process an earlier step left on Ovis's port and a sign-in start named Ovis go
+# first, so this commit's installer has to start and set them (CI's Native Windows install only: its runner is reset
+# after the job).
 param(
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
     [string]$Ref = '',
@@ -132,9 +133,25 @@ function Assert-App([string]$Expected) {
     Write-Host "PASS Ovis $($updates.current_version) ($($health.web_ui.revision)) runs with herdr $($session.snapshot.version)"
 }
 
-if ($StopHerdr -and (Test-ServerRunning)) {
-    Write-Host 'e2e: stopping the herdr that runs, so the installer has to start it'
-    Stop-OvisAndHerdr
+if ($StopHerdr) {
+    if (Test-ServerRunning) {
+        Write-Host 'e2e: stopping the herdr that runs, so the installer has to start it'
+        if (Find-Plugin) { herdr plugin action invoke "$pluginId.stop-windows" | Out-Null }
+        herdr server stop | Out-Null
+        Wait-Until { -not (Test-ServerRunning) } 30 'herdr to stop' | Out-Null
+    }
+    # an Ovis an earlier step of the runner's job left on the app's port, which the installed one could not take; by id
+    foreach ($id in @(Get-NetTCPConnection -LocalPort 7317 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.OwningProcess } | Sort-Object -Unique)) {
+        Write-Host "e2e: stopping process $id ($((Get-Process -Id $id -ErrorAction SilentlyContinue).ProcessName)), which holds port 7317"
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    }
+    Wait-Until { -not (Get-NetTCPConnection -LocalPort 7317 -State Listen -ErrorAction SilentlyContinue) } 30 'port 7317 to close' | Out-Null
+    # and a sign-in start the runner's image carries (the Ovis app's, say), which the installer would rightly leave as it is
+    $carried = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Ovis -ErrorAction SilentlyContinue).Ovis
+    if ($null -ne $carried) {
+        Write-Host "e2e: removing the sign-in start this runner had: $carried"
+        Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Ovis
+    }
 }
 if ($Fresh) {
     Assert (-not (Test-Herdr)) '-Fresh: herdr is already installed'
