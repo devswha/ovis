@@ -1404,8 +1404,10 @@ function Read-Answer {
 # The add, with the account named (-Account): run with no terminal and an empty input, as install.sh runs it, only where
 # the add of the release that runs checks that account (an older one would not); at a terminal without it, `ovis add`
 # itself, whose answers are read only once its question shows (scripts/plugin-link.ts, askLine); anywhere else, the
-# command to run. $addResult: done, failed, old (a release whose add does not do it), waits (Ovis is not running) or the
-# terminal it lacks (terminal).
+# command to run. $addResult: done, failed, old (a release whose add does not do it), waits (Ovis is not running), the
+# terminal it lacks (terminal), or other: the add said done, yet the PC is in another account than -Account names (the
+# add refuses that itself since `ovis join`'s release; `ovis status --json` is asked once more where it answers, and a
+# release without it, answering plain lines, is taken at the add's word).
 $addResult = 'none'
 if ($wantAdd) {
     if (-not $ovisRunning) { $addResult = 'waits' }
@@ -1416,6 +1418,13 @@ if ($wantAdd) {
             Write-Host "Ovis: on a PC other people sign in to, set OVIS_TOKEN first, where Ovis reads it at every start: without it any local user counts as this PC (https://github.com/devswha/ovis/blob/main/docs/relay.md#a-pc-with-no-screen); $tokenWhere"
             @() | & $ovisCli[0] $ovisCli[1] add --account $addAccount
             $addResult = if ($LASTEXITCODE -eq 0) { 'done' } else { 'failed' }
+            $inAccount = if ($addResult -eq 'done') { try { @(& $ovisCli[0] $ovisCli[1] status --json 2>$null) | Select-Object -Last 1 | ConvertFrom-Json } catch { $null } }
+            # an id as `ovis add --account` takes it (scripts/plugin-link.ts, pins): the whole id, or its start of 12 or more
+            if ($inAccount.account_known -eq $true -and $inAccount.account -is [string] -and -not ($inAccount.account -ceq $addAccount -or
+                ($addAccount.Length -ge 12 -and $inAccount.account.StartsWith($addAccount, [StringComparison]::Ordinal)))) {
+                $addResult = 'other'
+                $otherAccount = $inAccount.account.Substring(0, [Math]::Min(12, $inAccount.account.Length))
+            }
         }
     }
     elseif (-not (Test-Terminal) -or $env:OVIS_NO_OPEN -or $env:HERDR_WEB_NO_OPEN) { $addResult = 'terminal' }
@@ -1435,6 +1444,7 @@ if ($wantAdd) {
             else { Write-Host "Ovis: this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings -> Updates, then run in a terminal on this PC: $retry" }
         }
         'failed' { Write-Host "Ovis: this PC was not added to your Ovis account; what the add said is above. To try again, run on this PC: $retry" }
+        'other' { Write-Host "Ovis: this PC is in another Ovis account ($otherAccount...) than -Account names, so it was not added to that one. To move it, take it out of that account first (ovis logout), then run on this PC: $retry" }
         'terminal' { Write-Host "Ovis: to add this PC to your Ovis account, run in a terminal on this PC: $retry. Where nobody can answer, as in a script or for a coding agent, name the account: -Account <id> (OVIS_ADD_ACCOUNT)" }
     }
 }

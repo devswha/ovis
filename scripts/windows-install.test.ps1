@@ -76,8 +76,11 @@ function bun {
     # --account) or the terminal's (the add a person answers)
     elseif ($args[1] -eq 'add') {
         $state.adds += "$($args[1..($args.Count - 1)] -join ' ') <$(if ($MyInvocation.ExpectingInput) { "piped $(@($input).Count)" } else { 'terminal' })>"
-        if ($state.addFails) { $global:LASTEXITCODE = 1; 'Could not link this PC: the sign-in ended' } else { 'Added. Open (this PC) from My PCs.' }
+        if ($state.addFails) { $global:LASTEXITCODE = 1; $state.addSays } else { 'Added. Open (this PC) from My PCs.' }
     }
+    # `status --json` as the release that runs answers it ($state.statusJson): one line of JSON, or a release from before it
+    # that takes the flag for plain `status`
+    elseif ($args[-1] -eq '--json' -and $args[-2] -eq 'status') { $state.statusJson }
     elseif ($args[-1] -eq 'status') { 'running http://127.0.0.1:7317 (pid 1234)'; 'config: none' }
     elseif ($args[-1] -eq 'stop' -and $args[0] -like '*legacy root*') {
         $state.stopStateDirs += "$env:HERDR_PLUGIN_STATE_DIR"
@@ -173,7 +176,7 @@ function herdr {
 # Scheduler, WMI or registry. The processes of desktop sessions (explorer, this account's or another's, and a service's)
 # answer a run in session 0.
 $state.herdrStarts = @(); $state.tasks = @(); $state.taskCalls = @(); $state.runValue = $null; $state.taskRefused = $false; $state.herdrDies = $false
-$state.adds = @(); $state.addFails = $false; $state.explorerOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$state.adds = @(); $state.addFails = $false; $state.addSays = 'Could not link this PC: the sign-in ended'; $state.statusJson = 'running http://127.0.0.1:7317 (pid 1234)'; $state.explorerOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 function New-ScheduledTaskAction { [CmdletBinding()] param($Execute, $Argument) @{ Execute = $Execute; Argument = $Argument } }
 function New-ScheduledTaskPrincipal { [CmdletBinding()] param($UserId, $LogonType, $RunLevel) @{ UserId = $UserId; LogonType = "$LogonType"; RunLevel = "$RunLevel" } }
@@ -882,6 +885,31 @@ exit /b 1
     $state.addFails = $true
     try { $out = & $run @{ Account = 'acct_1' } } finally { $state.addFails = $false }
     Assert ($out.Message -match 'was not added to your Ovis account' -and ($state.adds -join '|') -eq 'add --account acct_1 <piped 0>') "An add with -Account that fails must fail the install: $($out.Message)"
+    # a PC in another account: the add refuses it itself (since `ovis join`'s release), and where an add said done anyway,
+    # `ovis status --json` naming another account fails the install; the account named, or a release whose status answers
+    # no JSON or does not tell the account, passes on the add's word. What is said is read even when the install throws.
+    $runSaying = {
+        param([hashtable]$Options)
+        $state.adds = @(); $lines = New-Object Collections.Generic.List[string]; $message = ''
+        try { & ([scriptblock]::Create($source)) -Ref 'test' @Options 6>&1 | ForEach-Object { $lines.Add("$_") } } catch { $message = $_.Exception.Message }
+        @{ Said = $lines -join "`n"; Message = $message }
+    }
+    $state.addFails = $true; $state.addSays = 'This PC is in another Ovis account (acctB_012345...), not the one --account names.'
+    try { $out = & $runSaying @{ Account = 'acct_1' } } finally { $state.addFails = $false; $state.addSays = 'Could not link this PC: the sign-in ended' }
+    Assert ($out.Message -match 'was not added to your Ovis account' -and $out.Said.Contains('This PC is in another Ovis account (acctB_012345...)') -and $out.Said.Contains('what the add said is above')) "An add that refuses another account must fail the install with its words: $($out.Message) $($out.Said)"
+    foreach ($case in @(
+        @{ json = '{"version":"0.5.10","running":true,"account":"acctB_0123456789","account_known":true}'; account = 'acct_1'; other = $true },
+        @{ json = '{"version":"0.5.10","running":true,"account":"acct_1-A_0123456789","account_known":true}'; account = 'acct_1-A_0123456789' },
+        @{ json = '{"version":"0.5.10","running":true,"account":"acct_1-A_0123456789","account_known":true}'; account = 'acct_1-A_012' },
+        @{ json = '{"version":"0.5.10","running":true,"account":"acct_1-A_0123456789","account_known":true}'; account = 'acct_1-A_01'; other = $true },
+        @{ json = '{"version":"0.5.10","running":true,"account":null,"account_known":false}'; account = 'acct_1' },
+        @{ json = 'running http://127.0.0.1:7317 (pid 1234)'; account = 'acct_1' }
+    )) {
+        $state.statusJson = $case.json
+        try { $out = & $runSaying @{ Account = $case.account } } finally { $state.statusJson = 'running http://127.0.0.1:7317 (pid 1234)' }
+        if ($case.other) { Assert ($out.Message -match 'was not added' -and $out.Said -match 'this PC is in another Ovis account \([^)]*\.\.\.\) than -Account names') "An add that said done in another account ($($case.json), -Account $($case.account)) must fail the install: $($out.Message) $($out.Said)" }
+        else { Assert (-not $out.Message -and $out.Said -notmatch 'another Ovis account') "An add in the account named, or with no account to compare ($($case.json), -Account $($case.account)), must pass: $($out.Message) $($out.Said)" }
+    }
     Set-Content -LiteralPath $linkScript -Value $bothReads[1]
     $out = & $run @{ Account = 'acct_1' }
     Assert ($out.Message -match 'was not added' -and $state.adds.Count -eq 0) "An add that does not check --account must not be run with it, and the install fail: $($state.adds -join '|') $($out.Message)"
@@ -973,6 +1001,15 @@ exit /b 0
         Assert ($lines.Count -and "$($lines[-1])".Trim() -eq $case.ends -and (-not $case.said -or ($lines -join "`n").Contains($case.said))) "INSTALL.md's recipe must end its log with $($case.ends): $($lines -join ' / ') / err: $(Get-Content -Raw -LiteralPath "$log.err" -ErrorAction SilentlyContinue)"
     }
     Write-Host 'PASS the agent recipe in INSTALL.md ends its log with install-exit=0 or install-exit=1'
+
+    # The e2e's -StopHerdr stops what runs (herdr, Ovis's port, the sign-in start): off a CI runner it refuses, at once
+    $givenCi = $env:CI; $givenActions = $env:GITHUB_ACTIONS
+    Remove-Item Env:\CI, Env:\GITHUB_ACTIONS -ErrorAction SilentlyContinue
+    # its error stream read as text: under Stop, Windows PowerShell would end this test at the child's first stderr line
+    try { $refusal = & { $ErrorActionPreference = 'Continue'; @(& $powershellExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'windows-install-e2e.ps1') -StopHerdr 2>&1 | ForEach-Object { "$_" }) -join "`n" }; $code = $LASTEXITCODE }
+    finally { if ($null -ne $givenCi) { $env:CI = $givenCi }; if ($null -ne $givenActions) { $env:GITHUB_ACTIONS = $givenActions } }
+    Assert ($code -ne 0 -and $refusal.Contains('-StopHerdr stops the herdr that runs') -and $refusal.Contains('on a CI runner only') -and $refusal -notmatch 'e2e:') "The e2e's -StopHerdr must refuse off a CI runner before doing anything: exit $code, $refusal"
+    Write-Host 'PASS the e2e refuses -StopHerdr off a CI runner'
 
     # The star: mentioned once on a first install, asked only at a terminal, given only on "y".
     $mention = 'a GitHub star helps other herdr users find it'

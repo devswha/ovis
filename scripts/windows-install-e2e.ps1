@@ -2,7 +2,8 @@
 # sets one). A herdr server it or the installer had to start is stopped again; one that was already running is left
 # alone, unless -StopHerdr: then it, a process an earlier step left on Ovis's port and a sign-in start named Ovis go
 # first, so this commit's installer has to start and set them (CI's Native Windows install only: its runner is reset
-# after the job).
+# after the job). On a person's PC those are their live sessions, so -StopHerdr refuses to run anywhere but on a CI
+# runner (GITHUB_ACTIONS=true or CI set), before it does anything.
 param(
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
     [string]$Ref = '',
@@ -11,6 +12,9 @@ param(
     [switch]$StopHerdr
 )
 $ErrorActionPreference = 'Stop'
+if ($StopHerdr -and $env:GITHUB_ACTIONS -ne 'true' -and -not $env:CI) {
+    throw '-StopHerdr stops the herdr that runs, what holds port 7317 and a sign-in start named Ovis: on a CI runner only (GITHUB_ACTIONS=true or CI set), never on a PC whose herdr holds someone''s sessions. Nothing was stopped.'
+}
 $ProgressPreference = 'SilentlyContinue'
 $env:OVIS_NO_OPEN = '1'
 $origin = 'http://127.0.0.1:7317'
