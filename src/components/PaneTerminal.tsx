@@ -2,7 +2,7 @@ import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, us
 import { fontSettled } from "../lib/fontFamily.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Pause, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import "./PaneTerminal.css";
 
@@ -46,7 +46,8 @@ import { RenderBoundary } from "./RenderBoundary.tsx";
 import { Composer } from "./Composer.tsx";
 import { ComposerNotices, type ComposerNoticeRow } from "./ComposerNotices.tsx";
 import { PendingMessages } from "./PendingMessages.tsx";
-import type { AgentStatus, ClientRole, PlanSummary, ServerMessage } from "../../shared/protocol.ts";
+import type { AcpHold, AgentStatus, ClientRole, PlanSummary, ServerMessage } from "../../shared/protocol.ts";
+import { holdAcpChild, releaseAcpChild } from "../lib/api.ts";
 import type { PaneControls, PaneView } from "../lib/actions.ts";
 import { usePaneLane } from "../lib/chatLane.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -99,6 +100,8 @@ export interface PaneTerminalProps {
   agentStatus?: AgentStatus;
   agentSession?: string | null;
   acpChild?: boolean;
+  /** a person stopped this ACP child (HerdrPane `acp_hold`) */
+  acpHold?: AcpHold;
   backgroundTasks?: number;
   plan?: PlanSummary | null;
   backgroundWait?: boolean;
@@ -159,6 +162,7 @@ export function PaneTerminal({
   agentStatus,
   agentSession = null,
   acpChild = false,
+  acpHold,
   backgroundTasks = 0,
   plan = null,
   backgroundWait = false,
@@ -669,7 +673,11 @@ export function PaneTerminal({
 
   const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, consumeModifiers, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
 
-  const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, acpChild, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
+  const { pressKey, toggleModifier, abortTurn: abortTyped } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
+  // an ACP child's Stop is a person's hold (server/dispatch.ts): its turn is cancelled and the agent that called it gets no new turn
+  const abortTurn = acpChild && paneId !== null
+    ? () => { void holdAcpChild(paneId, machineId).catch(() => setInputError(t("Not stopped: Ovis could not reach this agent. Try again."))); }
+    : abortTyped;
 
   // what a paste into the line is for: this PC's pane on this connection, while it can type there.
   // Read at the tap and once the clipboard answers (TerminalInput.tsx): any difference drops the paste
@@ -827,6 +835,11 @@ export function PaneTerminal({
   if (paneId !== null) {
     const owner = paneStorageId(machineId, paneId);
     const takeOver = !observing && socketRef.current?.canTakeOver() === true;
+    if (acpHold) noticeItems.push({
+      id: `${owner}:acp-hold`, priority: "activity", revision: `${acpHold.child_id}:${acpHold.generation}`, warning: false, mark: <Pause />,
+      text: t("Stopped by you. The agent that called it cannot give it new work."),
+      actions: <button type="button" className="composer-notice-action" disabled={viewOnly} onClick={() => { void releaseAcpChild(paneId, acpHold, machineId).catch(() => setInputError(t("Not handed back: Ovis could not reach this agent. Try again."))); }}>{t("Hand back")}</button>,
+    });
     if (held) noticeItems.push({
       id: `${owner}:held`, priority: "urgent", revision: takeOver ? "open-here" : "", warning: true, mark: <Unplug />,
       text: t("Another app has this pane open. It connects here as soon as that app lets go."),
