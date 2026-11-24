@@ -9,6 +9,7 @@ import { relayFailureText } from "../../components/relayFailureText.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { translate, type Vars } from "../i18n.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
+import type { AccountList, AccountListView, ListWriter } from "../account/accountList.ts";
 import type { RelayDevice, ShellDeviceStore, SavedDevice } from "./device.ts";
 import { ADMISSION_WAIT_MS, LINK_RETRY_MAX_MS } from "./accountController.ts";
 import { ACCOUNT_STEPS_WAIT_MS, mountRelayShell } from "./shell.tsx";
@@ -101,6 +102,11 @@ describe("the admission before a first link", () => {
     readonly holdMarkedRead?: boolean;
     /** the first link waits until the test releases it */
     readonly holdFirstLink?: boolean;
+    /**
+     * This device follows its account's signed list and may write it, and the PC takes the list named over the session
+     * of the pairing: it says it read its entry at the first ask, as a PC the list holds already does.
+     */
+    readonly namedList?: boolean;
   }
 
   async function pairing(options: Options = {}) {
@@ -158,6 +164,22 @@ describe("the admission before a first link", () => {
     let listed = options.listed === true;
     let postSignal: AbortSignal | undefined;
     let apps = 0, opens = 0, linked = false, directoryReads = 0;
+    // the list named to the PC over a pairing's session, and each session opened: with the key the list holds, or not
+    const namings: unknown[] = [];
+    const byListKey: boolean[] = [];
+    const LIST = "5c".repeat(32);
+    const endpoint = Buffer.from(identity.publicKey).toString("hex");
+    const listView = (): AccountListView => ({
+      account: "acct-test", reached: true, status: { at: "following", list: LIST, standing: "in", head: namings.length === 0 ? 1 : 2, read_at: 1, trouble: null },
+      devices: [{ key: key.public_spki, self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
+      pcs: namings.length === 0 ? [] : [{ endpoint, server_id: offer.server_id, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 2, by: key.public_spki, new_at: null }],
+    });
+    const accountList: AccountList | undefined = !options.namedList ? undefined : {
+      sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null,
+      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
+      // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
+      writer: () => ({ account: "acct-test", list: LIST }) as ListWriter,
+    };
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;
     const fatal: ((error: Error) => void)[] = [];
@@ -194,6 +216,12 @@ describe("the admission before a first link", () => {
           }
           case "/api/account/enroll": return Response.json({ results: [] });
           case "/api/account/introduction": return Response.json({ pcs: [] });
+          case "/api/account/list/named": {
+            if (!options.namedList) return Response.json({ error: { code: "not_found" } }, { status: 404 });
+            events.push("named");
+            namings.push(JSON.parse(String(init?.body)));
+            return Response.json({ state: "added", account: "acct-test" });
+          }
           default: throw new TypeError(`Unexpected PC request: ${path}`);
         }
       }
@@ -213,6 +241,7 @@ describe("the admission before a first link", () => {
     if (options.pcVersion !== undefined) (window as unknown as { sessionStorage: Storage }).sessionStorage = sessionStorage;
     await mountRelayShell({
       container: Object.create(null), entryUrl: options.reopen ? `https://app.ovis.sh/s/${offer.server_id}/` : encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", store, accountStore,
+      ...(accountList === undefined ? {} : { accountList }),
       accountService: "https://account.ovis.sh",
       accountFetch: async (input, init) => {
         const path = new URL(String(input instanceof Request ? input.url : input)).pathname;
@@ -259,7 +288,10 @@ describe("the admission before a first link", () => {
         opens++;
         // as a transport does, an attempt that ended opens nothing
         transportOptions.signal?.throwIfAborted();
+        byListKey.push(transportOptions.accountListKey === true);
         if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); }
+        // a session by the key the list holds for this device rests on no pairing: the PC knows the key from its list
+        else if (transportOptions.accountListKey === true) events.push("list key");
         else if (ended !== undefined && devices.get(offer.server_id)?.device_id === ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
         else devices.set(offer.server_id, devices.get(offer.server_id) ?? older);
         if (transportOptions.onFatal) fatal.push(transportOptions.onFatal);
@@ -283,7 +315,7 @@ describe("the admission before a first link", () => {
     /** every session the attempt opened is closed: it is over, and nothing more of it reaches the PC */
     const over = (): Promise<void> => until(() => opened.length > 0 && opened.every((transport) => transport.closed));
     const enrollment = async (): Promise<string | undefined> => ((await store.get(offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
-    return { current, drawn: () => drawn, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, reloads: () => reloads,
+    return { current, drawn: () => drawn, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, reloads: () => reloads, namings, byListKey, devices, serverId: offer.server_id,
       markedReadHeld: markedReadHeld.promise, releaseMarkedRead: () => markedReadRelease.resolve(), linkHeld: linkHeld.promise, releaseLink: () => linkRelease.resolve(), readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
@@ -306,6 +338,23 @@ describe("the admission before a first link", () => {
       expect(run.quiet).toEqual([true]);
     });
   }
+
+  it("a scanned PC that takes the account's list named is opened anew with the key the list holds: no link is sent, and the pairing that named it is gone", async () => {
+    const run = await pairing({ mark: true, listed: true, namedList: true });
+    run.admissionGate.resolve();
+    await until(() => run.byListKey.at(-1) === true);
+    // the pairing's own session named the list and nothing else, then the PC is opened as a PC of the list
+    expect(run.events.filter((event) => event === "pair" || event === "named" || event === "link" || event === "list key")).toEqual(["pair", "named", "list key"]);
+    expect(run.namings).toEqual([{ account: "acct-test", list: "5c".repeat(32) }]);
+    // the pairing, its own sign-in as before, then the list's key
+    expect(run.byListKey).toEqual([false, false, true]);
+    expect(run.sent).toEqual([]);
+    expect(run.devices.has(run.serverId)).toBe(false);
+    await until(() => run.apps() >= 1);
+    // the app opens once, on the list's session: the pairing's screen stayed until then, and no screen said it failed
+    expect(run.apps()).toBe(1);
+    expect(run.drawn().some((state) => state.kind === "failed")).toBe(false);
+  });
 
   it("with the mark, ends the post itself when the person cancels while it waits, and pairs nothing", async () => {
     const run = await pairing({ mark: true, listed: true });
