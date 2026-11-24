@@ -181,7 +181,7 @@ const footingOf = (copy: FollowerCopy): ListPlace => stateOf(copy).footing;
 async function saved(copy: FollowerCopy): Promise<FollowerCopy> {
   const read = await readSave(writeSave(copy));
   if (!read.read) throw new Error(`the save does not read: ${read.why}`);
-  expect(read.copy).toEqual(copy);
+  expect([read.copy, read.rebuilt]).toEqual([copy, false]);
   return read.copy;
 }
 const opens = (copy: FollowerCopy, key: Key, now = NOW): string => {
@@ -1001,7 +1001,7 @@ describe("over generated histories, with a service that lies", () => {
 
 describe("the save", () => {
   const sum = (body: string) => bytesToHex(sha256(utf8ToBytes(`${LIST_SAVE_PREFIX}${body}`)));
-  /** A save's text with one member changed and the sum made again: what a careful hand at the member's store would write. */
+  /** A save's text with one member changed and the sum made again: what a careful hand at the member's store, or another build, would write. */
   const rewritten = (text: string, change: (save: Record<string, unknown>) => void): string => {
     const save = JSON.parse(text) as Record<string, unknown>;
     change(save);
@@ -1015,20 +1015,22 @@ describe("the save", () => {
     if (typeof value === "object" && value !== null) return `{${Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, member]) => `${JSON.stringify(name)}:${canonicalOf(member)}`).join(",")}}`;
     return JSON.stringify(value);
   };
+  type SavedState = { signers: Record<string, { ended: number | null }>; devices: Record<string, unknown>; footing: ListPlace } & Record<string, unknown>;
+  const stateIn = (save: Record<string, unknown>) => save["state"] as SavedState;
 
   test("is one text in one form, with a sum over the rest of it, and reads back to the very copy", async () => {
     const copy = await followed(BASE, PC(desk, 1), { how: "added" });
     const text = writeSave(copy);
     const save = JSON.parse(text) as Record<string, unknown>;
-    expect(Object.keys(save)).toEqual(["account", "alarm", "entries", "list", "me", "pin", "read_at", "seen_at", "state", "stop", "sum", "v"]);
-    expect([save["v"], save["list"], save["entries"], save["read_at"], text === canonicalOf(save)]).toEqual([1, BASE.list, [...BASE.texts], NOW, true]);
+    expect(Object.keys(save)).toEqual(["account", "alarm", "entries", "footing", "level", "list", "me", "pin", "read_at", "seen_at", "state", "stop", "sum", "v"]);
+    expect([save["v"], save["level"], save["list"], save["entries"], save["footing"], save["read_at"], text === canonicalOf(save)]).toEqual([1, 1, BASE.list, [...BASE.texts], { hash: headOf(BASE).hash, seq: 4 }, NOW, true]);
     const { sum: written, ...rest } = save;
     expect(written).toBe(sum(canonicalOf(rest)));
-    expect(await readSave(text)).toEqual({ read: true, copy });
+    expect(await readSave(text)).toEqual({ read: true, copy, rebuilt: false });
     // A member that has read nothing saves its pin alone.
     const empty = pinned(BASE, DEVICE(tablet), allowedAt(BASE));
-    expect(await readSave(writeSave(empty))).toEqual({ read: true, copy: empty });
-    expect(writeSave(empty)).toContain(`"entries":[],"list":"${BASE.list}"`);
+    expect(await readSave(writeSave(empty))).toEqual({ read: true, copy: empty, rebuilt: false });
+    expect(writeSave(empty)).toContain(`"entries":[],"footing":null,"level":1,"list":"${BASE.list}"`);
   });
 
   test("a save that is not the text that was written does not read: no part of it is taken", async () => {
@@ -1040,7 +1042,8 @@ describe("the save", () => {
     };
     expect([await why(""), await why("{"), await why("null"), await why("[]"), await why(text.slice(0, -1)), await why(` ${text}`), await why(text.replace(`"v":1`, `"v":1,"w":1`)), await why(text.replace(`"account"`, `"Account"`))])
       .toEqual(["form", "form", "form", "form", "form", "form", "form", "form"]);
-    expect(await why(text.replace(`"v":1`, `"v":2`))).toBe("version");
+    // A later build's save is not read, and is not taken for a damaged one.
+    expect([await why(text.replace(`"v":1`, `"v":2`)), await why(rewritten(text, (save) => { save["v"] = 2; save["later"] = true; })), await why(text.replace(`"v":1`, `"v":0`))]).toEqual(["version", "version", "form"]);
     // One character changed, anywhere: it reads as nothing, whatever the character was part of.
     const whys = new Set<string>();
     for (let index = 0; index < text.length; index += Math.max(1, Math.floor(text.length / 400))) {
@@ -1055,45 +1058,93 @@ describe("the save", () => {
     expect(await why(JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(text) as object).reverse())))).toBe("form");
   });
 
-  test("a save whose sum was made again reads only when its parts agree: the entries give the state, and the list is the pinned one", async () => {
+  test("the entries are what a save holds as true: a state that is not the one they give is rebuilt from them, and nobody needs a reset for it", async () => {
     const log = await grow(BASE, [[owner, deviceOf(tablet)], [owner, removeOf(phone)]]);
     const copy = await followed(log, PC(desk, 1), { how: "added" });
     const text = writeSave(copy);
-    const state = (save: Record<string, unknown>) => save["state"] as { signers: Record<string, { ended: number | null }>; devices: Record<string, unknown>; footing: ListPlace };
+    const changes: readonly (readonly [string, (save: Record<string, unknown>) => void])[] = [
+      // What a hand at the store may try: the state says more than the entries do.
+      ["a removed device made a member again", (save) => { at(Object.values(stateIn(save).signers).filter((row) => row.ended !== null), 0).ended = null; }],
+      ["a device put into the state that no entry adds", (save) => { stateIn(save).devices[mallory.key] = { role: "drive", until: null, enc: mallory.enc, carried: false }; }],
+      ["a stranger made the first signer's equal", (save) => { (stateIn(save).signers as Record<string, unknown>)[mallory.key] = { power: "full", seq: 1, by: owner.key, ended: null, as: "device" }; }],
+      // What another build may have saved: a state with a member less, one more, another form of one, another level, or none.
+      ["a state without a member this build holds", (save) => { delete stateIn(save)["full_at"]; }],
+      ["a state with a member this build does not know", (save) => { stateIn(save)["later"] = { 1: "x" }; }],
+      ["a state whose rows have another form", (save) => { stateIn(save)["pcs"] = []; }],
+      ["a state of no form at all", (save) => { save["state"] = { v: 7 }; }],
+      ["no state", (save) => { save["state"] = null; }],
+    ];
+    for (const [name, change] of changes) {
+      const read = await readSave(rewritten(text, change));
+      expect({ name, read }).toEqual({ name, read: { read: true, copy, rebuilt: true } });
+      if (read.read) expect({ name, opens: [opens(read.copy, phone), opens(read.copy, tablet), opens(read.copy, mallory)] }).toEqual({ name, opens: ["removed", "drive", "never_added"] });
+    }
+    // What was rebuilt is saved as this build saves it, and reads as it is from then on.
+    const rebuilt = await readSave(rewritten(text, (save) => { save["state"] = { v: 7 }; }));
+    expect(rebuilt.read && writeSave(rebuilt.copy)).toBe(text);
+    // The same hand changing nothing: nothing is rebuilt.
+    expect(await readSave(rewritten(text, () => undefined))).toEqual({ read: true, copy, rebuilt: false });
+    // A save of a later level whose entries this build can place reads too, as this build's own.
+    expect(await readSave(rewritten(text, (save) => { save["level"] = 3; stateIn(save)["level"] = 3; }))).toEqual({ read: true, copy, rebuilt: true });
+  });
+
+  test("a save whose entries do not hold is broken: nothing is rebuilt from entries that are not what was saved", async () => {
+    const log = await grow(BASE, [[owner, deviceOf(tablet)], [owner, removeOf(phone)]]);
+    const copy = await followed(log, PC(desk, 1), { how: "added" });
+    const text = writeSave(copy);
     const changes: readonly (readonly [string, string, (save: Record<string, unknown>) => void])[] = [
-      ["a removed device made a member again", "broken", (save) => { at(Object.values(state(save).signers).filter((row) => row.ended !== null), 0).ended = null; }],
-      ["a device put into the state that no entry adds", "broken", (save) => { state(save).devices[mallory.key] = { role: "drive", until: null, enc: mallory.enc, carried: false }; }],
-      ["the last entry left out", "broken", (save) => { (save["entries"] as string[]).pop(); }],
-      ["the last entry left out and the footing moved back", "broken", (save) => { (save["entries"] as string[]).pop(); state(save).footing = { seq: 5, hash: at(log.hashes, 5) }; }],
+      ["the last entry left out: the entries end before the saved footing", "broken", (save) => { (save["entries"] as string[]).pop(); }],
+      ["every entry from the removal on left out", "broken", (save) => { (save["entries"] as string[]).length = 6; }],
+      ["another entry at the saved footing", "broken", (save) => { save["footing"] = { hash: "ab".repeat(32), seq: 6 }; }],
+      ["a footing past the entries", "broken", (save) => { save["footing"] = { hash: at(log.hashes, 6), seq: 7 }; }],
+      ["no footing for a member that holds entries", "broken", (save) => { save["footing"] = null; }],
       ["an entry of another list among them", "broken", (save) => { (save["entries"] as string[])[3] = at(OTHER.texts, 1); }],
       ["an entry changed", "broken", (save) => { (save["entries"] as string[])[2] = flipped(at(log.texts, 2), 40); }],
-      ["a stranger's entry on top", "broken", (save) => { (save["entries"] as string[]).push("junk"); }],
+      ["an entry's signature changed", "broken", (save) => { (save["entries"] as string[])[2] = flipped(at(log.texts, 2), at(log.texts, 2).length - 40); }],
+      ["two entries in each other's place", "broken", (save) => { const entries = save["entries"] as string[]; [entries[3], entries[4]] = [at(entries, 4), at(entries, 3)]; }],
+      ["no text on top", "broken", (save) => { (save["entries"] as string[]).push("junk"); }],
       ["another list id", "broken", (save) => { save["list"] = OTHER.list; }],
       ["another account", "broken", (save) => { save["account"] = "TEST-ONLY-other"; }],
-      ["an alarm at a place past the footing", "broken", (save) => { save["alarm"] = { at: NOW, by: owner.key, code: "fork", devices: [], pcs: [], seq: 9, source: "peer" }; }],
-      ["an alarm that names a device the list never held", "broken", (save) => { save["alarm"] = { at: NOW, by: owner.key, code: "fork", devices: [mallory.key], pcs: [], seq: 3, source: "peer" }; }],
-      ["an alarm by a key the list never made a signer", "broken", (save) => { save["alarm"] = { at: NOW, by: mallory.key, code: "fork", devices: [], pcs: [], seq: 3, source: "peer" }; }],
-      ["an alarm by a key that came in after the place it names", "broken", (save) => { save["alarm"] = { at: NOW, by: tablet.key, code: "fork", devices: [], pcs: [], seq: 3, source: "peer" }; }],
       ["a stopped entry for a member that did not stop", "broken", (save) => { save["stop"] = at(log.texts, 1); }],
+      ["a footing with nothing read", "broken", (save) => { save["entries"] = []; }],
       ["a pin of a device for a PC", "form", (save) => { save["pin"] = { how: "genesis" }; }],
       ["a pin with a member too many", "form", (save) => { save["pin"] = { how: "added", seq: 1 }; }],
       ["a read time that is no number", "form", (save) => { save["read_at"] = "now"; }],
       ["a member that names no key", "form", (save) => { save["me"] = { endpoint: E(1), key: "x" }; }],
-      ["no state for a member that holds entries", "broken", (save) => { save["state"] = null; }],
+      ["a footing with a member too many", "form", (save) => { save["footing"] = { hash: at(log.hashes, 6), seq: 6, v: 1 }; }],
+      ["a level that is none", "form", (save) => { save["level"] = 0; }],
+      ["an alarm out of form", "form", (save) => { save["alarm"] = { at: NOW, code: "fork", devices: [], pcs: [], seq: 3, source: "peer" }; }],
+      ["an alarm whose devices are in no order", "form", (save) => { save["alarm"] = { at: NOW, by: owner.key, code: "fork", devices: [owner.key, owner.key], pcs: [], seq: 3, source: "peer" }; }],
     ];
     for (const [name, expected, change] of changes) {
       const read = await readSave(rewritten(text, change));
       expect({ name, why: read.read ? "read" : read.why }).toEqual({ name, why: expected });
     }
-    // The same hand changing nothing: it reads. So each refusal above is of the change. And an alarm in its form reads.
-    expect(await readSave(rewritten(text, () => undefined))).toEqual({ read: true, copy });
-    const alarm = { at: NOW, by: owner.key, code: "fork", devices: [owner.key], pcs: [], seq: 3, source: "peer" };
-    expect(await readSave(rewritten(text, (save) => { save["alarm"] = alarm; }))).toMatchObject({ read: true, copy: { alarm } });
+    // An alarm in its form is kept, whatever it names: nothing about it makes a save unreadable.
+    const alarm = { at: NOW, by: mallory.key, code: "fork", devices: [mallory.key], pcs: [E(9)], seq: 30, source: "peer" };
+    expect(await readSave(rewritten(text, (save) => { save["alarm"] = alarm; }))).toEqual({ read: true, copy: { ...copy, alarm } as FollowerCopy, rebuilt: false });
     // A genesis pin whose entry 0 another key signed, and a migrated PC whose first signer it never let in.
     const asOwner = writeSave(await followed(log, DEVICE(owner), { how: "genesis" }));
     expect(await readSave(rewritten(asOwner, (save) => { save["me"] = { endpoint: null, key: phone.key }; }))).toEqual({ read: false, why: "broken" });
     const migrated = writeSave(await followed(log, PC(desk, 1), { how: "migrated", admitted: [owner.key] }));
     expect(await readSave(rewritten(migrated, (save) => { save["pin"] = { admitted: [phone.key], how: "migrated" }; }))).toEqual({ read: false, why: "broken" });
+  });
+
+  test("a member that stopped keeps its stop over a restart, goes on when its build can place the entry, and a later build's entries are a later build's save", async () => {
+    const behind = await addRaw(BASE, owner, { kind: "later_kind", v: 2 });
+    const stopping = await addRaw(behind, mallory, { kind: "later_kind", v: 2 });
+    const stopped = (await reads(await followed(behind, PC(desk, 1), { how: "added" }), serves(stopping))).copy;
+    const text = writeSave(stopped);
+    expect(await readSave(text)).toEqual({ read: true, copy: stopped, rebuilt: false });
+    // Its state lost: it is rebuilt stopped at the same entry, and answers for nobody as before.
+    const again = await readSave(rewritten(text, (save) => { save["state"] = null; }));
+    expect(again).toEqual({ read: true, copy: stopped, rebuilt: true });
+    expect(again.read && [standing(again.copy), opens(again.copy, owner)]).toEqual(["stopped", "stopped"]);
+    // Another entry than the next one as the stopped entry, and none where the entries cannot be placed without it.
+    expect(await readSave(rewritten(text, (save) => { save["stop"] = at(BASE.texts, 2); }))).toEqual({ read: false, why: "broken" });
+    // The stopped entry among the entries: this build cannot place it there. From a later level's save that is a later build's; from this level's, not what was saved.
+    const among = (level: number) => rewritten(text, (save) => { (save["entries"] as string[]).push(save["stop"] as string); save["stop"] = null; save["level"] = level; });
+    expect([await readSave(among(2)), await readSave(among(1))]).toEqual([{ read: false, why: "version" }, { read: false, why: "broken" }]);
   });
 
   test("a restart at any place of a read holds what a member that never restarted holds", async () => {
@@ -1122,16 +1173,17 @@ describe("the vectors of save/", () => {
     readonly save: string;
     readonly now: number;
     readonly expect:
-      | { readonly reads: { readonly account: string; readonly list: string; readonly me: FollowerSelf; readonly pin: ListPin; readonly head: ListPlace | null; readonly footing: ListPlace | null; readonly standing: string; readonly stop: boolean; readonly alarm: { readonly seq: number; readonly by: string } | null; readonly read_at: number | null; readonly seen_at: number | null; readonly opens: Readonly<Record<string, string>> } }
+      | { readonly reads: { readonly rebuilt: boolean; readonly account: string; readonly list: string; readonly me: FollowerSelf; readonly pin: ListPin; readonly head: ListPlace | null; readonly footing: ListPlace | null; readonly standing: string; readonly stop: boolean; readonly alarm: { readonly seq: number; readonly by: string } | null; readonly read_at: number | null; readonly seen_at: number | null; readonly opens: Readonly<Record<string, string>> } }
       | { readonly refused: string };
   }
   const vectors = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(joinPath(DIR, file), "utf8")) as SaveVector);
 
-  test("there is a vector for each pin, each standing and each refusal", () => {
+  test("there is a vector for each pin, each standing, each refusal and a save that is rebuilt", () => {
     const pins = new Set(vectors.flatMap((vector) => ("reads" in vector.expect ? [vector.expect.reads.pin.how] : [])));
     const standings = new Set(vectors.flatMap((vector) => ("reads" in vector.expect ? [vector.expect.reads.standing] : [])));
     const refusals = new Set(vectors.flatMap((vector) => ("refused" in vector.expect ? [vector.expect.refused] : [])));
     expect([[...pins].sort(), [...standings].sort(), [...refusals].sort()]).toEqual([["added", "allowed", "carried", "genesis", "migrated"], ["in", "out", "stopped", "waiting"], ["broken", "form", "sum", "version"]]);
+    expect(vectors.filter((vector) => "reads" in vector.expect && vector.expect.reads.rebuilt).length).toBeGreaterThanOrEqual(2);
     for (const vector of vectors) expect(Object.keys(vector.keys).every((name) => name.startsWith("TEST-ONLY-"))).toBe(true);
   });
 
@@ -1147,14 +1199,16 @@ describe("the vectors of save/", () => {
       const expected = vector.expect.reads;
       const last = copy.entries.at(-1);
       const head = last === undefined ? null : { seq: copy.entries.length - 1, hash: entryHash(entryFromText(last).body) };
-      expect<unknown>({ account: copy.account, list: copy.list, me: copy.me, pin: copy.pin, head, footing: copy.state?.footing ?? null, standing: standing(copy), stop: copy.stop !== null, alarm: copy.alarm === null ? null : { seq: copy.alarm.seq, by: copy.alarm.by }, read_at: copy.read_at, seen_at: copy.seen_at })
-        .toEqual({ account: expected.account, list: expected.list, me: expected.me, pin: expected.pin, head: expected.head, footing: expected.footing, standing: expected.standing, stop: expected.stop, alarm: expected.alarm, read_at: expected.read_at, seen_at: expected.seen_at });
+      expect<unknown>({ rebuilt: read.rebuilt, account: copy.account, list: copy.list, me: copy.me, pin: copy.pin, head, footing: copy.state?.footing ?? null, standing: standing(copy), stop: copy.stop !== null, alarm: copy.alarm === null ? null : { seq: copy.alarm.seq, by: copy.alarm.by }, read_at: copy.read_at, seen_at: copy.seen_at })
+        .toEqual({ rebuilt: expected.rebuilt, account: expected.account, list: expected.list, me: expected.me, pin: expected.pin, head: expected.head, footing: expected.footing, standing: expected.standing, stop: expected.stop, alarm: expected.alarm, read_at: expected.read_at, seen_at: expected.seen_at });
       for (const [name, word] of Object.entries(expected.opens)) {
         const said = admitsSession(copy, at(Object.entries(vector.keys).filter(([key]) => key === name), 0)[1].spki, vector.now);
         expect<unknown>({ name, opens: said.role ?? said.why }).toEqual({ name, opens: word });
       }
-      // Written again it is the same text: a save has one form.
-      expect(writeSave(copy)).toBe(vector.save);
+      // Written again it is the same text: a save has one form. One that was rebuilt is written as this build writes it, and reads as it is from then on.
+      const again = writeSave(copy);
+      expect(again === vector.save).toBe(!read.rebuilt);
+      expect(await readSave(again)).toEqual({ read: true, copy, rebuilt: false });
     });
   }
 });
