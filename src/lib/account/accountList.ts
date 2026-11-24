@@ -20,6 +20,7 @@ import {
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import { standsFor } from "../../../shared/account-list-migrate.ts";
 import { makeGenesis, type Genesis } from "./listGenesis.ts";
 import { deviceCard, deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { namesAt, openEpochs, readWraps, wrapsRecord, type OpenedEpochs } from "./listNames.ts";
@@ -104,6 +105,11 @@ export interface ListedDevice {
   readonly until: number | null;
   readonly carried: boolean;
   readonly name: ListNames | null;
+  /**
+   * For a device that is in by a key it handed its place on to (a `device` entry that ended the key that signed it):
+   * when, in seconds, by that entry's own time. The same device, which a screen shows as moved to a new key.
+   */
+  readonly moved?: number;
 }
 
 /** A PC of the account, as the verified list says, by its relay key; `server_id` is the id that key gives. */
@@ -136,6 +142,11 @@ export interface AccountListView {
   readonly reached: boolean;
   readonly devices: readonly ListedDevice[];
   readonly pcs: readonly ListedPc[];
+  /**
+   * This device's own key was handed on to another key by an entry this device did not make (its key signed it
+   * elsewhere): the list goes by `to` now, and this device signs nothing by its own key any more.
+   */
+  readonly handedAway?: { readonly to: string };
 }
 
 export type GenesisMode = "first-device" | "always" | "never";
@@ -761,7 +772,10 @@ export function accountList(options: AccountListOptions): AccountList {
       const nameAt = (seq: number): Promise<ListNames | null> => namesAt(copy.list, copy.entries, seq, opened.keys);
       const devices: ListedDevice[] = [];
       for (const row of shownDevices(copy)) {
-        devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq) });
+        // in by a key the same device handed its place on to: the entry that let the key in ended the key that signed it
+        const handed = row.by !== null && state.signers[row.by]?.ended === row.seq && copy.entries[row.seq] !== undefined;
+        const moved = handed ? readBody(entryFromText(copy.entries[row.seq]!).body).issued_at : undefined;
+        devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq), ...(moved === undefined ? {} : { moved }) });
       }
       const pcs: ListedPc[] = [];
       // a PC that came in after this device did, by another's signature, is new to it from when it first held the entry
@@ -782,7 +796,10 @@ export function accountList(options: AccountListOptions): AccountList {
       if (picture(news) !== picture(seen)) await beside("when it first saw a PC", () => store.set("seen", account, Object.keys(news).length === 0 ? undefined : { v: RECORD_VERSION, list: copy.list, pcs: news }));
       named = { history, complete: opened.keys.has(state.epoch), devices, pcs, keys: opened.keys };
     }
-    return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs };
+    // this device's own key went on to another by an entry it did not make: it is no longer the key the list goes by
+    const standsNow = standsFor(state, keys.key);
+    const handedAway = state.signers[keys.key]?.ended != null && standsNow !== null && standsNow !== keys.key ? { handedAway: { to: standsNow } } : {};
+    return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs, ...handedAway };
   };
 
   /**

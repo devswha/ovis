@@ -277,6 +277,27 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(out).toEqual(expect.arrayContaining([(await second.keys()).key, (await third.keys()).key]));
   });
 
+  it("shows a device that handed its place to a new key as moved, with the day, and Remove still puts it out", async () => {
+    const w = listWorld();
+    const first = await w.device({ label: "Dana's phone" });
+    await first.list.sync();
+    const tablet = await letIn(w, first, "Dana's tablet");
+    const heir = await w.device({ label: "Dana's tablet" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await tablet.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await tablet.keys();
+    const at = Math.floor(w.clock.now / 1000);
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true }, { key: old.key, privateKey: old.signs }, at);
+    await tablet.service.placeEntries(w.held().id, [rotation.text], []);
+    const root = await mount(first);
+    const day = new Date(at * 1000).toLocaleDateString("en", { month: "short", day: "numeric" });
+    expect(rows(root)).toEqual(["Dana's phoneThis device", `Unnamed deviceMoved to a new key on ${day}Remove`]);
+    await act(async () => { root.find((node) => node.type === "button" && node.props["data-action"] === "remove-device").props.onClick(); });
+    await confirm(root, "Remove");
+    expect(listView(w.held().state).devices.find((row) => row.key === next)?.ended).not.toBeNull();
+  });
+
   it("offers no Remove to a device that may not remove anybody", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });

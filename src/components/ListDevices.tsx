@@ -88,11 +88,15 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
         {rows.map((row) => {
           const self = row.kind === "device" && row.device.self;
           const role = row.kind === "device" ? roleOf(t, row.device) : null;
+          // the same device, in by a key it handed its place on to: said quietly, with the day
+          const moved = row.kind === "device" && row.device.moved !== undefined
+            ? t("Moved to a new key on {day}", { day: new Date(row.device.moved * 1000).toLocaleDateString(currentLocale(), { month: "short", day: "numeric" }) }) : null;
           return (
             <li key={keyOf(row)} className="account-manage-row" data-list-device={row.kind}>
               <span className="account-manage-name account-manage-named">
                 <span className="account-manage-line">{nameOf(row)}</span>
                 {role !== null && <span className="account-manage-dim account-manage-tag">{role}</span>}
+                {moved !== null && <span className="account-manage-dim account-manage-tag" data-testid="list-device-moved">{moved}</span>}
               </span>
               {self && onLeave && view.account !== null && <button type="button" className="btn account-head-btn" data-action="leave-account" onClick={() => { setLeaving({ account: view.account!, scope: scopeOf(view) }); setAsked("self"); }}>{t("Disconnect")}</button>}
               {!self && writer !== null && <button type="button" className="btn account-head-btn" data-action="remove-device" onClick={() => { setNote(null); setAsked(row); }}>{t("Remove")}</button>}

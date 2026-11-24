@@ -198,6 +198,24 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(notices(root)).toEqual([]);
   });
 
+  it("tells a device whose place was handed to a new key it did not make so, and what to do", async () => {
+    const { w, tablet } = await looked();
+    // somebody holding the tablet's key hands its place to a key of theirs: the tablet itself made no hand-over
+    const heir = await w.device({ label: "Thief's laptop" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await tablet.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await tablet.keys();
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await tablet.service.placeEntries(w.held().id, [rotation.text], []);
+    await act(async () => { renderer?.unmount(); });
+    const root = await mount(tablet);
+    expect(root.findAll((node) => node.props["data-testid"] === "list-device-handed-away").map((node) => textOf(node))).toEqual([
+      "This device's place in your account was handed to a new key (Unnamed device). If you did not do this, remove that device from another of your devices.",
+    ]);
+  });
+
   it("tells a device that may not remove anybody nothing", async () => {
     const { w, phone, tablet } = await looked();
     await letIn(w, tablet, "Laptop");

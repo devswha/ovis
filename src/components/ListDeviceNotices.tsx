@@ -52,7 +52,15 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
       </div>
     </div>
   ));
-  if (active === null) return <>{removedLines}</>;
+  // this device's own key went on to another by a hand-over it did not make: say so, and what to do
+  const handedTo = view?.handedAway?.to ?? null;
+  const handedLine = handedTo === null ? null : (
+    <div key="handed-away" className="update-notice is-paired device-notice" role="status" data-testid="list-device-handed-away">
+      <Smartphone aria-hidden="true" />
+      <span className="device-notice-text"><span>{t("This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.", { name: view?.devices.find((row) => row.key === handedTo)?.name?.label ?? t("Unnamed device") })}</span></span>
+    </div>
+  );
+  if (active === null) return <>{handedLine}{removedLines}</>;
   const shown = listNewcomers(active.writer.state, active.writer.keys.key, seen);
   const nameOf = (key: string | null): string => {
     if (key === null) return t("Unknown key");
@@ -63,6 +71,7 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
     return t("Unknown key");
   };
   return <>
+    {handedLine}
     {removedLines}
     {shown.map((newcomer) => {
       const device = active.view.devices.find((row) => row.key === newcomer.key);
