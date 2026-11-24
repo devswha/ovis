@@ -15,6 +15,7 @@ import type { AccountOs } from "../../shared/account-asker.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, newKey, type AccountProvider, type AccountStore } from "../lib/account/store.ts";
 import { accountOpenablePcs } from "../lib/relay/pcPick.ts";
+import { readSeenPcs } from "../lib/account/seenPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
@@ -375,6 +376,10 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     expect(text()).toContain(`New PC added to your account: ${LABEL}`);
     expect(buttons()).toContain("I didn't add this");
     expect(buttons()).not.toContain("Add");
+    // One press, with no number compared and no QR code scanned, proves nothing about whose PC it is: the account
+    // service could have listed a PC of its own at that moment. This device's record of its PCs keeps nothing of it.
+    await settle();
+    expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
   });
 
   it("keeps the new-PC card closed under the service's admission time, not this device's clock", async () => {
@@ -636,6 +641,9 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await press("Add");
       expect([pcAdmits(), held().entries.length]).toEqual([1, 2]);
       expect(list.view().pcs.map((row) => [row.endpoint, row.name?.label])).toEqual([[pc.endpoint, "PC"]]);
+      // a number was compared on both screens: this device's own record of its PCs says that it added this one
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
       // the card is gone
       expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
     } finally { setPageAccountList(null); }
@@ -649,6 +657,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await press("Not the same");
       expect(text()).toContain("The numbers did not match. This PC was not added.");
       expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+      expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
       expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
     } finally { setPageAccountList(null); }
   });

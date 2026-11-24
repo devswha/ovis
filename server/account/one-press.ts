@@ -43,6 +43,8 @@ export async function pressOnce(services: PressServices, account: string): Promi
   let admitted: Awaited<ReturnType<AccountMailbox["admission"]>>;
   try { admitted = await accountMailbox.admission(account); }
   catch (error) {
+    // the account keeps a signed list and takes a PC by it alone: said as that, not as a service that is away
+    if (error instanceof AccountServiceRefusal && error.status === 409 && error.code === "list_add") return refuse("list_add", "This account keeps a signed list of its devices, and takes a PC only by that list.", 409);
     // a listing an invite made is offered Add for ten minutes: asking again past them waits for nothing
     if (error instanceof AccountServiceRefusal && error.code === "listing_expired") return refuse("listing_expired", "Your devices no longer offer Add for this PC: its card ran out 10 minutes after it was listed", 409);
     return refuse("account_unavailable", error instanceof Error ? error.message : String(error), 503);

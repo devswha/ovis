@@ -5,6 +5,7 @@ import { pageListPc } from "../lib/account/listPcs.ts";
 import { removeListPc } from "../lib/account/listRemove.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
+import { forgetSeenPc } from "../lib/account/seenPcs.ts";
 import { AccountServiceError, listingChanged, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
@@ -85,6 +86,8 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
       setAsked({ session, serverId, listingId, refusal, step: "offered", link: null });
       return false;
     }
+    // the person took the PC out of the account here: this device's own record of it goes too
+    void forgetSeenPc(session.account, serverId).catch(() => undefined);
     await removed(serverId, "directory");
     return true;
   };

@@ -56,6 +56,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     holdsEntry: () => false,
     gossip: () => null,
     pageAfter: () => null,
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {},
   };
   return { list, calls, heard };
 }
@@ -71,10 +72,11 @@ describe("the hosted shell and the account's signed list", () => {
     directory = [row("a1".repeat(16))];
     asked = [];
   });
-  afterEach(() => browser.dispose());
+  const made: { dispose(): void }[] = [];
+  afterEach(() => { for (const each of made.splice(0)) each.dispose(); browser.dispose(); });
 
   const settle = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
-  const controller = (accountList?: AccountList | null, store: ShellDeviceStore = empty, changed: () => void = () => {}, open?: () => Promise<RelayTransport>) => createAccountController({
+  const controller = (accountList?: AccountList | null, store: ShellDeviceStore = empty, changed: () => void = () => {}, open?: () => Promise<RelayTransport>) => kept(createAccountController({
     container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE, ...(open === undefined ? {} : { open }),
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
@@ -83,7 +85,9 @@ describe("the hosted shell and the account's signed list", () => {
     },
     renderApp: () => ({ render() {}, unmount() {} }),
     ...(accountList === undefined ? {} : { accountList }),
-  }, { active: () => true, changed: async () => { changed(); }, outdated: () => new Set() });
+  }, { active: () => true, changed: async () => { changed(); }, outdated: () => new Set() }));
+  /** every controller a test makes ends what it armed (its timer, its listeners) when the test does */
+  const kept = <T extends { dispose(): void }>(account: T): T => { made.push(account); return account; };
   const signIn = async (account: string, no: number | null = 1): Promise<void> => {
     const signedIn = session(account);
     await accountStore.set("session", signedIn);
@@ -265,7 +269,9 @@ describe("the hosted shell and the account's signed list", () => {
     const { list, calls } = recordingList();
     let view = waitingView();
     list.view = () => view;
-    list.adopt = async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq} ${offer.hash}`); view = OFF; return OFF; };
+    // the list reads the log up to that place itself, and finds this device in
+    const inView: AccountListView = { account: "acct-one", reached: true, status: { at: "following", list: place.id, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] };
+    list.adopt = async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq} ${offer.hash}`); view = inView; return inView; };
     const pairing = await approvedPairing([{ pcs: [] }, { pcs: [], list: place }, { pcs: [], list: { ...place, seq: 9 } }]);
     const account = controller(list, pairing.store, () => {}, async () => pairing.session);
     const timers = useFakeWaits();
@@ -281,27 +287,48 @@ describe("the hosted shell and the account's signed list", () => {
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4 ${place.hash}`]);
   });
 
-  it("takes no place where the device does not wait to be let into a list, or the pairing was made with a code", async () => {
+  it("says nothing of the account while its own copy of the list does not show it in, though it was handed a place", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();
-    // it follows no list and waits for none: the place a PC carries is not its to take
-    const first = await approvedPairing([{ pcs: [], list: place }, { pcs: [], list: place }]);
-    const idle = controller(list, first.store, () => {}, async () => first.session);
-    const timers = useFakeWaits();
-    try {
-      const done = idle.enroll(first.session, first.serverId, true, true).catch(() => undefined);
-      await settle();
-      await timers.next();
-      await settle();
-      expect(first.introductions().length).toBe(2);
-      idle.cancelEnrollment(first.serverId);
-      await done;
-      // it waits, and the pairing is not one a member's approval made: the introduction is read once, as before, and no place taken
-      list.view = waitingView;
-      const second = await approvedPairing([{ pcs: [], list: place }]);
-      await controller(list, second.store, () => {}, async () => second.session).enroll(second.session, second.serverId, true, false);
-      expect(second.introductions().length).toBe(1);
-    } finally { timers.restore(); }
+    // the log ends one entry short of the place: the list keeps the place for its next read, and the device still waits
+    list.view = waitingView;
+    list.adopt = async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq}`); return waitingView(); };
+    const pairing = await approvedPairing([{ pcs: [], list: place }]);
+    const account = controller(list, pairing.store, () => {}, async () => pairing.session);
+    expect(await account.enroll(pairing.session, pairing.serverId, true, true)).toBe("local");
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4`]);
+  });
+
+  it("hands a place to the list whatever this page drew of it so far, and takes none where the pairing was made with a code", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    // the page has not read its list yet (a reload): the place is the list's to judge, and a list that is followed takes none
+    const first = await approvedPairing([{ pcs: [], list: place }]);
+    await controller(list, first.store, () => {}, async () => first.session).enroll(first.session, first.serverId, true, true);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${place.id} 4`]);
+    // a pairing that is not one a member's approval made: the introduction is read once, as before, and no place taken
+    calls.length = 0;
+    list.view = waitingView;
+    const second = await approvedPairing([{ pcs: [], list: place }]);
+    await controller(list, second.store, () => {}, async () => second.session).enroll(second.session, second.serverId, true, false);
+    expect(second.introductions().length).toBe(1);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
+  });
+
+  it("takes no place for a pairing that was forgotten while the PC's answer was on its way", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    list.view = waitingView;
+    const pairing = await approvedPairing([{ pcs: [], list: place }]);
+    // Forget, in another tab, between the request for the introduction and its answer
+    const asks = pairing.session.fetch.bind(pairing.session);
+    (pairing.session as { fetch: typeof asks }).fetch = async (path, init) => {
+      const answer = await asks(path, init);
+      if (path === "/api/account/introduction") await pairing.store.remove(pairing.serverId);
+      return answer;
+    };
+    const ended = await controller(list, pairing.store, () => {}, async () => pairing.session).enroll(pairing.session, pairing.serverId, true, true).then(() => "enrolled", (error: unknown) => (error as Error).name);
+    expect(ended).not.toBe("enrolled");
     expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
   });
 
@@ -322,6 +349,17 @@ describe("the hosted shell and the account's signed list", () => {
       await settle();
       expect([pairing.introductions().length, calls.filter((call) => call.startsWith("adopt"))]).toEqual([asked, []]);
     } finally { timers.restore(); }
+  });
+
+  it("says which account is signed in before it read the account's PCs, and writes nothing to the stored sign-in for it", async () => {
+    // a sign-in stored by an older build, with no id of its own: reading whose it is must not name it
+    const { sign_in_id: _unnamed, ...legacy } = session("acct-one");
+    await accountStore.set("session", legacy);
+    const account = controller(null);
+    expect(account.signedInAs).toBeUndefined();
+    expect(await account.storedAccount()).toBe("acct-one");
+    expect(await accountStore.get("session")).toEqual(legacy);
+    expect(asked).toEqual([]);
   });
 
   it("follows no list where a test gives its own account store or fetch and no list", async () => {

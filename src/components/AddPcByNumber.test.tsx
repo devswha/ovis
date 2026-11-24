@@ -7,6 +7,7 @@ import { askingPc, pcComparing, postPcKeys, type AskingPc } from "../lib/account
 import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
 import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { readSeenPcs } from "../lib/account/seenPcs.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, newKey, type AccountStore } from "../lib/account/store.ts";
@@ -43,6 +44,7 @@ beforeEach(() => {
     document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
     navigator: { languages: ["en"] },
+    localStorage: (() => { const kept = new Map<string, string>(); return { getItem: (name: string) => kept.get(name) ?? null, setItem: (name: string, value: string) => { kept.set(name, value); }, removeItem: (name: string) => { kept.delete(name); } }; })(),
   })) {
     globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { value, configurable: true });
@@ -119,6 +121,9 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     await press("Add");
     expect([admits(), held().entries.length, told.added(), changes]).toEqual([0, 2, 1, 1]);
     expect(list.view().pcs.map((row) => [row.endpoint, row.name?.label])).toEqual([[pc.endpoint, "Desk"]]);
+    // a number was compared on both screens: this device's own record of its PCs says that it added this one
+    await settle();
+    expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
   });
 
   it("adds nothing where the person says the numbers are not the same, and offers no other try", async () => {
@@ -130,6 +135,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
     await press("Close");
     expect([held().entries.length, told.added(), told.closed()]).toEqual([1, 0, 1]);
+    expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
   });
 
   it("says so where the PC does not answer, shows no number, and asks again at Try again", async () => {

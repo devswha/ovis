@@ -314,14 +314,19 @@ describe("an account service that answers the list's questions as it does not fo
     expect(asked(tablet, "POST /v1/token")).toBe(0);
   });
 
-  it("holds its clock to the floor another page saved, though the list itself did not move", async () => {
+  it("signs by its own clock and never by the floor it saved, and knows when the two are far apart, also where another page saved the floor", async () => {
     const phone = await device();
     await phone.list.sync();
-    const floor = Math.floor(now / 1000) + 3600;
-    // another page of this device saw a later time, and kept it beside the copy
-    await phone.lists.set("times", ACCOUNT, { v: 1, list: held().id, read_at: floor, seen_at: floor });
+    const own = Math.floor(now / 1000);
+    expect([phone.list.writer()!.clock, phone.list.writer()!.issued_at, phone.list.writer()!.adrift]).toEqual([own, own, false]);
+    // another page of this device saw a time an hour later (a date set ahead, since put right), and kept it beside the copy
+    await phone.lists.set("times", ACCOUNT, { v: 1, list: held().id, read_at: own + 3600, seen_at: own + 3600 });
     await phone.list.sync();
-    expect(phone.list.writer()!.clock).toBeGreaterThanOrEqual(floor);
+    // what is signed still goes by this device's clock as it is: the floor would put out a key whose time is not over
+    const writer = phone.list.writer()!;
+    expect([writer.clock, writer.issued_at]).toEqual([own, own]);
+    // and a clock more than ten minutes under the floor is known to be adrift: nobody is put out for a time that is over
+    expect(writer.adrift).toBe(true);
   });
 
   it("signs nobody out where it refuses the log or the wraps of a list the device follows: the copy stands", async () => {

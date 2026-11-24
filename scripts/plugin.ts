@@ -1354,16 +1354,36 @@ const deviceLine = (title: string, devices: readonly ShownDevice[]): string => {
   return `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${plain(device.label)} (${plain(device.id)})`).join(", ")}\n`;
 };
 
-/** This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. */
-async function accountOf(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null } | null> {
+/** What a PC pinned to its account's signed list says of it (GET /api/account/status `list`): the list, where the PC stands in it, and why it lets nobody in when it does not. */
+interface ListSummary { readonly pinned: string; readonly standing: string | null; readonly reason: string | null }
+
+const listSummaryOf = (value: unknown): ListSummary | null => {
+  const { pinned, standing, reason } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  return typeof pinned === "string" && (standing === null || typeof standing === "string") && (reason === null || typeof reason === "string") ? { pinned, standing, reason } : null;
+};
+
+/**
+ * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
+ * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
+ */
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null } | { readonly problem: string } | null> {
   try {
     const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return null;
-    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown };
+    if (!response.ok) {
+      const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
+      return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
+    }
+    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown };
     if (!(typeof body.account === "string" || body.account === null) || !Number.isSafeInteger(body.members)) return null;
     // null from a server from before the field
-    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null };
+    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list) };
   } catch { return null; }
+}
+
+/** This PC's account as its owner is told it; null where that does not answer, or the PC cannot read its account state. */
+async function accountOf() {
+  const told = await accountTold();
+  return told !== null && "problem" in told ? null : told;
 }
 
 /**
@@ -1373,7 +1393,8 @@ async function accountOf(): Promise<{ readonly account: string | null; readonly 
  */
 async function statusJson(): Promise<number> {
   const answer = await appHealth();
-  const account = answer?.devices == null ? null : await accountOf();
+  const told = answer?.devices == null ? null : await accountTold();
+  const account = told !== null && "problem" in told ? null : told;
   let serverId: string | null = null;
   if (answer !== null) {
     try {
@@ -1391,6 +1412,10 @@ async function statusJson(): Promise<number> {
     account: account?.account ?? null,
     account_known: account !== null,
     waiting_for_add: account?.waiting ?? null,
+    // a PC pinned to its account's signed list: the list, where the PC stands in it, and why it lets nobody in when it does not
+    list: account?.list ?? null,
+    // the PC cannot read its own account state, and lets only itself in: what it cannot read
+    problem: told !== null && "problem" in told ? told.problem : null,
   })}\n`);
   return 0;
 }
