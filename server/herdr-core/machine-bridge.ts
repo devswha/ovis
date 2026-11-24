@@ -27,7 +27,7 @@ export async function listHcMachines(hc: Pick<HcConnection, "call">): Promise<Hc
 export interface MachineBridge {
   endpoint: { url: string; token: string };
   exited: Promise<unknown>;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 const CORE_ENV = /^(?:HC_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_RUNTIME_DIR|XDG_CONFIG_HOME|XDG_STATE_HOME)$/;
@@ -66,7 +66,7 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
   });
   const stop = () => {
     try { child.stdin.end(); } catch {}
-    child.kill();
+    return child.exited.then(() => undefined);
   };
   void child.exited.then((code) => ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`)));
   const timer = setTimeout(() => ready.reject(new Error(`The server for ${machine.name} did not start within ${READY_MS / 1000}s`)), READY_MS);
@@ -74,7 +74,7 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
     const { port, token } = await ready.promise;
     return { endpoint: { url: `http://127.0.0.1:${port}`, token }, exited: child.exited, stop };
   } catch (error) {
-    stop();
+    void stop();
     throw error;
   } finally {
     clearTimeout(timer);

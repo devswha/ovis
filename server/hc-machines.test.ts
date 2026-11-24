@@ -20,7 +20,7 @@ async function fixture() {
   const events: string[] = [];
   const start = async (machine: Pick<HcMachine, "id" | "name">): Promise<MachineBridge> => {
     events.push(`start ${machine.name}`);
-    return { endpoint: { url: "http://127.0.0.1:1", token: "t" }, exited: new Promise(() => {}), stop: () => events.push(`stop ${machine.name}`) };
+    return { endpoint: { url: "http://127.0.0.1:1", token: "t" }, exited: new Promise(() => {}), stop: async () => { events.push(`stop ${machine.name}`) } };
   };
   manager.watchHcMachines(async () => [], start, 3_600_000);
   await settled();

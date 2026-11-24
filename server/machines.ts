@@ -2210,7 +2210,7 @@ export class MachineManager {
       try {
         delete runtime.machine.herdr;
         const bridge = await this.hcStart!(hc);
-        if (generation !== runtime.generation || this.stopped || runtime.hc !== hc) { bridge.stop(); return; }
+        if (generation !== runtime.generation || this.stopped || runtime.hc !== hc) { await bridge.stop(); return; }
         hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
         void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
         await this.observe(runtime); this.emit();
@@ -2277,7 +2277,7 @@ export class MachineManager {
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
     runtime.forward?.close(); runtime.forward = undefined;
-    if (runtime.hc?.bridge) { runtime.hc.bridge.stop(); runtime.hc.bridge = undefined; }
+    if (runtime.hc?.bridge) { void runtime.hc.bridge.stop(); runtime.hc.bridge = undefined; }
     runtime.verification?.abort.abort(); runtime.verification = undefined;
     runtime.acceptedEpoch = undefined; runtime.candidate = undefined; runtime.candidateRun = undefined; delete runtime.machine.source_boot_id;
     runtime.move = undefined;
@@ -2666,11 +2666,12 @@ export class MachineManager {
     try { await this.observe(runtime); this.emit(); } catch (e) { this.lost(runtime, generation, e); }
     return runtime.machine;
   }
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }
+    await Promise.all([...this.machines.values()].flatMap(({ hc }) => hc?.bridge ? [hc.bridge.stop()] : []));
     this.listeners.clear();
   }
 }

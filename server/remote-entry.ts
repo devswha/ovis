@@ -151,13 +151,17 @@ try {
   if (!registration.registered) {
     // the app finds a bridge only through its descriptor: an unregistered one serves nobody, and
     // the app would start one more on every retry, so this one stops
-    server.stop();
+    await server.stop();
     throw new Error(`This bridge stopped because it was not registered (descriptor ${descriptor})`);
   }
   server.warmAgentCatalog();
-  const close = () => { registration.close(); server.stop(); setTimeout(() => process.exit(0), 2000); };
-  process.on("SIGTERM", close);
-  process.on("SIGINT", close);
+  const close = async () => {
+    registration.close();
+    await server.stop();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => { void close(); });
+  process.on("SIGINT", () => { void close(); });
   }
 } finally { lock.release(); }
 }

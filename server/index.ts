@@ -806,13 +806,14 @@ export function createServer(
         console.error(`agent catalog warm-up failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     },
-    stop: () => {
+    stop() {
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountRows?.stop();
       accountCatchUp.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
+      const stoppingMachines = machines?.stop();
       core.stop(() => {
         clearInterval(draftTimer);
         openCodeState.clear();
@@ -842,7 +843,7 @@ export function createServer(
       releaseFilePool();
       releaseCommandHistory();
       requestLog.close();
-      return seen.close();
+      return Promise.all([seen.close(), stoppingMachines]).then(() => undefined);
     },
   };
 }
