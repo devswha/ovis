@@ -1344,7 +1344,8 @@ in the order they came in, also through a member that is out already (whoever it
 be in); only what is still in is named. This device and what came in through it are never among them, and
 neither is what was in the account before the list: a PC carried in came in through nobody, also
 after a later `pc` entry gave it its keys (its first admission counts, read from the `carried`
-entries after entry 0). Each is a box to tick, and none is ticked at
+entries after entry 0). A device is followed through every key it held: what it let in under a key
+it later handed on counts. Each is a box to tick, and none is ticked at
 first, with one line: **If {name} was stolen, tick what you did not add yourself.** A lost phone
 often let in the person's own PCs, while a stolen one may have let in the thief's devices. Where a
 PC is ticked, a line says **These PCs will need to be added again.**: a PC put out comes back only
@@ -1373,12 +1374,15 @@ earlier change is still waiting: try it again or cancel it first", with nothing 
 change's card is put up; a device that handed its place to a new key while the question was open
 (a `device` entry that rotates) is not passed by as out: nothing is signed, and the dialog says
 "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.",
-a second press removing the key it holds now; any other failure is "could not be removed. Try
+a second press removing the key it holds now, followed through every hand-over since (where only
+something ticked moved, the words say so); any other failure is "could not be removed. Try
 again.", with nothing shown as done. A removal that stops after a part that put the device out
 keeps its question up (also Not me's, whose notice goes with the device) with how much went.
 
 **Each change has a name of its own.** A request a device signed and has not seen placed is kept
-for its change: `remove:<key>`, `not-me:<key>`, `sign-out-all`, `leave`, `tidy`. It goes again only
+for its change: `remove:<key>:<digest>` and `not-me:<key>:<digest>` (the digest of the sorted keys
+and PCs the request ends, so another choice of ticks is another change), `sign-out-all`, `leave`,
+`tidy`. It goes again only
 for that same change, and a person's act is never sent, nor reported done, on a request kept for
 another one. The clean-up is nobody's own change: a request kept for `tidy` never refuses a
 person's act. Whatever change comes next sends those very bytes again (never a new signature),
@@ -1397,11 +1401,18 @@ is over: the removal the person asked for goes alone with its epoch.
 **A key that is out never comes back.** Nothing signs it in again: an Allow of that key is
 refused (`removed`), and the device comes back only with a new key.
 
+**A device that hands its place to a new key** (a `device` entry that ends the key that signs it)
+is the same device: no new-device notice is raised for it, and the devices list shows it as "Moved
+to a new key on {day}", with its Remove as for any device. A device whose own key was handed on by
+an entry it did not make (its key signed it elsewhere) says "This device's place in your account was
+handed to a new key ({name}). If you did not do this, remove that device from another of your
+devices."
+
 **The new-device notice** of an account whose list this device is in comes from the device's own
 copy: **{device} was allowed into your account by {approver}.**, for every device another member
 let in since this device last looked (on its first look nothing is told: whoever was in before is no
 news), with the device's role where it has one. The approver is the device or PC whose key signed
-the entry. **Not me** asks Remove's question with every item ticked, since the person does not know
+the entry; one the list has put out since is "a device that is no longer in your account". **Not me** asks Remove's question with every item ticked, since the person does not know
 the device and what it added is suspect; each can be left out. **Dismiss** closes the notice for
 good. What the device has seen is kept per account in the page's storage
 (`ovis-list-device-notices`), for the member key that looked: a device that signs in again with a
@@ -1445,7 +1456,12 @@ copy is forgotten only while it is pinned to the key that left, compared with th
 A leave forgets its pairings by their row, so one another tab made with that PC meanwhile stays. A
 sign-out goes on where the list did not take the removal, and says so: "This device signed out, but
 your account still lists it. Remove it from another device." (or the words for `list_stopped`); the
-key is forgotten on this device all the same. A list store that does not answer is no word that the
+key is forgotten on this device all the same. Delete account follows the same rule: where another
+account's list still holds the key, the keys stay and only the deleted account's sign-in goes. A
+browser that reads itself out of an account while another account's list holds its key can never be
+let in there by that key (a key per account is a follow-up), and says so: "This browser was removed
+from this account and cannot be added again while it is signed in to {account} here. Sign out of
+that account in this browser first, or use another browser." A list store that does not answer is no word that the
 device keeps no list: the sign-out then forgets nothing it cannot see and says "This device signed
 out, but it could not read what it keeps of your account's list, so your account may still list it." A pairing this device made at a PC keeps its own copy of the key, as at every sign-out, so
 that PC may still open through it until the device is removed from another device. A leave stops
