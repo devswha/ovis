@@ -1,0 +1,34 @@
+{
+  "name": "pinned-nothing-read",
+  "about": "A member that is pinned and has read nothing: its pin alone.",
+  "keys": {
+    "TEST-ONLY-tablet": {
+      "pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgICxGfFVFHhDkRM6WuaUydYGL7rRT9ZINNONUl4PJOD6hRANCAASCQUK7zh7pDs8ieuSUwM8Y4Jy2UbjbaDtF8md9qpEYvbMYAJ-rIHD5IsrS49erzKIFMhP6prodqhMd6waP0Owa",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgkFCu84e6Q7PInrklMDPGOCctlG422g7RfJnfaqRGL2zGACfqyBw-SLK0uPXq8yiBTIT-qa6HaoTHesGj9DsGg"
+    }
+  },
+  "save": "{\"account\":\"TEST-ONLY-account\",\"alarm\":null,\"entries\":[],\"list\":\"0cd28b683cb653db67d94c5e6f72e83fb025a21b122ee93fd1b137be34870367\",\"me\":{\"endpoint\":null,\"key\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgkFCu84e6Q7PInrklMDPGOCctlG422g7RfJnfaqRGL2zGACfqyBw-SLK0uPXq8yiBTIT-qa6HaoTHesGj9DsGg\"},\"pin\":{\"hash\":\"b3d7961d060e44ce3f91f7804e174f5f245231ab6020884a2aec25c7072b799f\",\"how\":\"allowed\",\"seq\":5},\"read_at\":null,\"state\":null,\"stop\":null,\"sum\":\"7626566ddc54fe1f9c94356d14dc6c84ead8ace6834f94a580dd44524f1a8a77\",\"v\":1}",
+  "now": 1767312000,
+  "expect": {
+    "reads": {
+      "account": "TEST-ONLY-account",
+      "list": "0cd28b683cb653db67d94c5e6f72e83fb025a21b122ee93fd1b137be34870367",
+      "me": {
+        "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgkFCu84e6Q7PInrklMDPGOCctlG422g7RfJnfaqRGL2zGACfqyBw-SLK0uPXq8yiBTIT-qa6HaoTHesGj9DsGg",
+        "endpoint": null
+      },
+      "pin": {
+        "how": "allowed",
+        "seq": 5,
+        "hash": "b3d7961d060e44ce3f91f7804e174f5f245231ab6020884a2aec25c7072b799f"
+      },
+      "head": null,
+      "footing": null,
+      "standing": "waiting",
+      "stop": false,
+      "alarm": null,
+      "read_at": null,
+      "opens": {}
+    }
+  }
+}
