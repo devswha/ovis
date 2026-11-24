@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { listView } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { listWorld, type WorldDevice } from "../account/accountList.test-helpers.ts";
 import { allowDevice } from "../account/listAllow.ts";
@@ -122,6 +123,34 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch"]);
     expect(readBody(entryFromText(w.held().entries[2]!).body).ends).toBe(other);
     expect(asked).toContain("POST /v1/signout/all");
+  });
+
+  it("sign out every device keeps this device's key and its place in the list, opens nothing by the list while signed out, and needs no Allow after signing in again", async () => {
+    const { w, first } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    const key = (await first.keys()).key;
+    const enc = (await first.keys()).enc.key;
+    expect(shell.listKey?.public_spki).toBe(key);
+    await shell.signOutEverywhere();
+    // signed out, still the one member the person holds: its key, its encryption key and its copy of the list stay
+    expect(await first.store.get("session")).toBeUndefined();
+    expect([(await first.keys()).key, (await first.keys()).enc.key]).toEqual([key, enc]);
+    expect(await first.lists.get("copy", w.account)).toBeDefined();
+    expect(listView(w.held().state).devices.filter((row) => row.ended === null).map((row) => row.key)).toEqual([key]);
+    // while signed out the list opens no PC: there is no member key to open with
+    await first.list.sync().catch(() => undefined);
+    expect([shell.listKey, first.list.view().status]).toEqual([null, { at: "off" }]);
+    // a new sign-in on it: the same member, in the list at once, with no Allow and no claim
+    const again = { ...first.session, access_token: w.fake.issueToken(w.account), sign_in_id: "sign-in-again", signed_in_at: w.clock.now };
+    await first.store.set("session", again);
+    const view = await first.list.sync();
+    expect(view.status).toMatchObject({ at: "following", standing: "in" });
+    expect(view.devices.filter((row) => row.self).map((row) => row.key)).toEqual([key]);
+    expect(first.sent.filter((each) => each.route.startsWith("POST ") && each.route.endsWith("/claims"))).toEqual([]);
+    await shell.refresh(true);
+    expect(shell.listKey?.public_spki).toBe(key);
   });
 
   it("sign out every device signs nobody out where the list does not take the removal, and says so", async () => {
