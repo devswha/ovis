@@ -568,8 +568,10 @@ describe("a removal the PC has seen is final", () => {
       pc.list.tick();
       await pc.list.settled();
       expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
-      expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
     } finally { failing.mockRestore(); }
+    // the others are let in as before once the disk writes again
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+    expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
   });
 
   test("a device is let in only before its until, by the PC's clock, and a session open at that second closes", async () => {
