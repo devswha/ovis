@@ -2,11 +2,11 @@ import { expect, it } from "bun:test";
 import { dirname } from "node:path";
 import { rmSync } from "node:fs";
 import type { ServerMessage } from "../../shared/protocol.ts";
-import { connectionData, type Client } from "../core/connections.ts";
-import { createPendingDelivery } from "../core/pending.ts";
+import { connectionData, type Client } from "./connections.ts";
+import { createPendingDelivery } from "./pending.ts";
 import { buildSnapshot } from "../herdr-core/snapshot.ts";
-import { KeeperClient } from "./client.ts";
-import { keeperBuilt, keeperRoot, startKeeper, until } from "./keeper.fake.ts";
+import { KeeperClient } from "../acp/client.ts";
+import { keeperBuilt, keeperRoot, startKeeper, until } from "../acp/keeper.fake.ts";
 
 it.skipIf(!keeperBuilt)("delivers duplicate composer frames once, and keeps a queued message off the wire after its sender leaves", async () => {
   const root = keeperRoot();
