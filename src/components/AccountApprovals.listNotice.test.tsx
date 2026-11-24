@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { translate, type Language } from "../lib/i18n.ts";
+import { unconfirmedReason } from "./AccountApprovals.tsx";
 import { keepStalled, ListAllowNotice } from "./ListChangeNotice.tsx";
 
 /** `pairedAtPc`: the PC let the device in by a pairing of its own (one that does not follow the list), as every case here but the last */
@@ -104,5 +106,24 @@ describe("the devices the list did not take, kept until each is closed or let in
     kept = keepStalled(kept, "tablet", null);
     expect(kept.map((each) => each.key)).toEqual(["laptop"]);
     expect(keepStalled(kept, "phone", null)).toBe(kept);
+  });
+});
+
+describe("an approval a PC that lets devices in by the list has not seen confirmed", () => {
+  const join = { id: "r1", label: "Tablet", intent: "account" as const, choices: ["111111", "222222", "333333"] as [string, string, string], expires_at: "", key: "k" };
+  const said = (language: Language, request: Parameters<typeof unconfirmedReason>[1]) => unconfirmedReason((key, vars) => translate(language, key, vars), request, "Dana's tablet", "Desk");
+
+  it("asks the new device's person to press The numbers match where the join brought its card", () => {
+    expect(said("en", { ...join, list: true })).toBe("First press “The numbers match” on Dana's tablet");
+  });
+
+  it("says to approve a join that brought no card on that PC's own screen: no device is ever told it confirmed, in every language", () => {
+    expect(said("en", join)).toBe("Approve Dana's tablet on Desk's own screen");
+    for (const language of ["ko", "ja", "zh"] as const) {
+      const words = said(language, join);
+      expect(words).not.toBe("Approve Dana's tablet on Desk's own screen");
+      expect(words).toContain("Dana's tablet");
+      expect(words).toContain("Desk");
+    }
   });
 });
