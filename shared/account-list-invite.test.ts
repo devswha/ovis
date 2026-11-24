@@ -1,15 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { INVITE_REDEEM_PREFIX, INVITE_SIGNATURE_CHARS, InviteRedeemError, inviteRedeemBytes, newInvite, signInviteRedeem, verifyInviteRedeem, type InviteRedeem } from "./account-list-invite.ts";
-import { isListKeyEncoding, isListPoint } from "./account-list-entry.ts";
-import { JoinLineError, readJoinLine } from "./account-list-join.ts";
+import {
+  INVITE_MAKE_PREFIX, INVITE_REDEEM_PREFIX, INVITE_SIGNATURE_CHARS, InviteRedeemError, inviteMakeBytes, inviteRedeemBytes, isAccountId, signInviteRedeem, verifyInviteRedeem,
+  type InviteMake, type InviteRedeem,
+} from "./account-list-invite.ts";
+import { isListKeyEncoding, isListPoint, verifySignature } from "./account-list-entry.ts";
+import { newInvite, readJoinLine } from "./account-list-join.ts";
+import { pcAddSigningBytes, type PcAddPurpose } from "./account-records.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 const SERVICE = "https://accounts.ovis.test";
 const DIR = join(import.meta.dir, "account-list-vectors", "invite");
+const READER = { service: SERVICE, followsLists: true };
 
 interface KeyPair { readonly pkcs8: string; readonly spki: string }
 interface InviteVector {
@@ -23,8 +28,19 @@ interface InviteVector {
   readonly signature: string;
   readonly expect: { readonly verifies: boolean };
 }
-const vectors = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort()
-  .map((file) => JSON.parse(readFileSync(join(DIR, file), "utf8")) as InviteVector);
+interface MakeVector {
+  readonly name: string;
+  readonly keys: Readonly<Record<string, KeyPair>>;
+  readonly make: InviteMake;
+  readonly device_key: string;
+  readonly bytes: string;
+  readonly bytes_hex: string;
+  readonly signature: string;
+  readonly expect: { readonly verifies: boolean };
+}
+const files = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(join(DIR, file), "utf8")) as InviteVector | MakeVector);
+const vectors = files.filter((vector): vector is InviteVector => "redeem" in vector);
+const makes = files.filter((vector): vector is MakeVector => "make" in vector);
 const good = vectors.find((vector) => vector.name === "redeem");
 if (!good) throw new Error("invite/redeem.json is missing");
 const REDEEM = good.redeem;
@@ -52,9 +68,13 @@ const malformed = (run: () => unknown): string | null => {
 
 describe("the vectors of invite/", () => {
   test("names: one redeem proof that verifies, its high-s twin, and each way one does not, none missing", () => {
-    expect(vectors.map((vector) => vector.name)).toEqual(["redeem-high-s", "redeem-other-account", "redeem-other-challenge", "redeem-other-key",
-      "redeem-other-relay-key", "redeem-other-server", "redeem-r-zero", "redeem-server-id-uppercase", "redeem-signature-85", "redeem-signature-padded",
-      "redeem-signature-second-spelling", "redeem"]);
+    expect(vectors.map((vector) => vector.name)).toEqual(["redeem-high-s", "redeem-key-off-curve", "redeem-key-second-spelling", "redeem-other-account", "redeem-other-challenge",
+      "redeem-other-key", "redeem-other-relay-key", "redeem-other-server", "redeem-r-n", "redeem-r-zero", "redeem-s-n", "redeem-s-zero", "redeem-server-id-uppercase", "redeem-signature-85",
+      "redeem-signature-padded", "redeem-signature-second-spelling", "redeem"]);
+    expect(makes.map((vector) => vector.name)).toEqual(["make-proof-auto", "make-proof"]);
+    // Every vector whose values are in form carries the bytes they give, and the accounts among them are of more than one length.
+    expect(vectors.filter((vector) => vector.bytes === undefined).map((vector) => vector.name)).toEqual(["redeem-server-id-uppercase"]);
+    expect([...new Set(vectors.map((vector) => vector.redeem.account.length))].sort()).toEqual([17, 23]);
     expect(vectors.filter((vector) => vector.expect.verifies).map((vector) => vector.name)).toEqual(["redeem-high-s", "redeem"]);
     for (const vector of vectors) expect(Object.keys(vector.keys).every((name) => name.startsWith("TEST-ONLY-"))).toBe(true);
   });
@@ -62,7 +82,7 @@ describe("the vectors of invite/", () => {
   for (const vector of vectors) {
     test(vector.name, async () => {
       // The key is the one the line reads to: a machine sends what it derived, and the service looks the invite up by it.
-      expect((await readJoinLine(vector.line)).key).toBe(vector.key);
+      expect((await readJoinLine(vector.line, READER)).key).toBe((vector as { key_of_line?: string }).key_of_line ?? vector.key);
       if (vector.bytes !== undefined) {
         const bytes = inviteRedeemBytes(vector.redeem);
         expect(toBase64Url(bytes)).toBe(vector.bytes);
@@ -121,8 +141,9 @@ describe("the bytes a redeem signature is over", () => {
 describe("signing and checking a redeem", () => {
   test("the key a line carries signs, and only its public key verifies, for exactly the values it signed", async () => {
     const invite = await newInvite(SERVICE, REDEEM.account, null);
-    const line = await readJoinLine(invite.line);
-    const signature = await signInviteRedeem(REDEEM, line.privateKey);
+    const line = await readJoinLine(invite.line, READER);
+    const { account: _account, ...machine } = REDEEM;
+    const signature = await signInviteRedeem(line, machine);
     expect(signature.length).toBe(INVITE_SIGNATURE_CHARS);
     expect(await verifyInviteRedeem(REDEEM, signature, invite.key)).toBe(true);
     // Another invite's key, and each value changed by one character.
@@ -136,8 +157,9 @@ describe("signing and checking a redeem", () => {
   });
 
   test("a signature made over other bytes with the same key is no redeem signature", async () => {
-    const line = await readJoinLine(good.line);
-    const sign = async (bytes: Uint8Array) => toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, line.privateKey, new Uint8Array(bytes))));
+    // No line that was read signs what a caller composes: this is the fixture's private key, which only a test holds.
+    const privateKey = await crypto.subtle.importKey("pkcs8", fromBase64Url(good.keys["TEST-ONLY-invite"]?.pkcs8 ?? "") as Uint8Array<ArrayBuffer>, P256, false, ["sign"]);
+    const sign = async (bytes: Uint8Array) => toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, privateKey, new Uint8Array(bytes))));
     const bytes = inviteRedeemBytes(REDEEM);
     expect(await verifyInviteRedeem(REDEEM, await sign(bytes), good.key)).toBe(true);
     // The values with no tag, with another tag, and with a tag that only starts the same.
@@ -156,9 +178,10 @@ describe("signing and checking a redeem", () => {
     for (const key of [undefined, null, 1, "", good.key.slice(1), `${good.key}A`, good.keys["TEST-ONLY-invite"]?.pkcs8, [good.key]]) {
       expect({ key, verifies: await verifyInviteRedeem(REDEEM, signature, key) }).toEqual({ key, verifies: false });
     }
-    for (const redeem of [{ ...REDEEM, account: "" }, { ...REDEEM, server_id: "x" }, { ...REDEEM, public_key: REDEEM.server_id }, { ...REDEEM, challenge_id: undefined }]) {
+    for (const redeem of [{ ...REDEEM, account: "" }, { ...REDEEM, server_id: "x" }, { ...REDEEM, public_key: REDEEM.server_id }, { ...REDEEM, challenge_id: undefined }, null, undefined, 1, "x", []]) {
       expect(await verifyInviteRedeem(redeem as InviteRedeem, signature, good.key)).toBe(false);
     }
+    for (const redeem of [null, undefined, 1]) expect(malformed(() => inviteRedeemBytes(redeem as unknown as InviteRedeem))).toBe("redeem_malformed");
   });
 
   test("a key whose point is not on the curve verifies nothing, and is told apart from a key before any invite is stored", async () => {
@@ -173,46 +196,57 @@ describe("signing and checking a redeem", () => {
   });
 
   test("signing refuses values out of their form before it asks the key for anything", async () => {
-    const line = await readJoinLine(good.line);
-    const refused = await signInviteRedeem({ ...REDEEM, server_id: "nope" }, line.privateKey).then(() => null, (error: unknown) => error);
-    expect(refused).toBeInstanceOf(InviteRedeemError);
-  });
-});
-
-describe("making an invite", () => {
-  test("a new invite is a line and its public key: the line reads to that key, names what it was made for, and its secret signs for it", async () => {
-    const list = "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383";
-    for (const given of [null, list]) {
-      const invite = await newInvite(SERVICE, "TEST-ONLY-account", given);
-      expect(Object.keys(invite).sort()).toEqual(["key", "line"]);
-      expect(isListKeyEncoding(invite.key) && isListPoint(invite.key)).toBe(true);
-      const read = await readJoinLine(invite.line);
-      expect({ service: read.service, account: read.account, list: read.list, key: read.key })
-        .toEqual({ service: SERVICE, account: "TEST-ONLY-account", list: given, key: invite.key });
-      const publicKey = await crypto.subtle.importKey("spki", fromBase64Url(invite.key) as Uint8Array<ArrayBuffer>, P256, false, ["verify"]);
-      const signature = await crypto.subtle.sign(SIGN, read.privateKey, new Uint8Array([1, 2, 3]));
-      expect(await crypto.subtle.verify(SIGN, publicKey, signature, new Uint8Array([1, 2, 3]))).toBe(true);
+    const line = await readJoinLine(good.line, READER);
+    for (const bad of [{ server_id: "nope" }, { public_key: "nope" }, { challenge_id: "nope" }, { challenge_id: REDEEM.challenge_id.toUpperCase() }]) {
+      const refused = await signInviteRedeem(line, { ...REDEEM, ...bad }).then(() => null, (error: unknown) => error);
+      expect(refused).toBeInstanceOf(InviteRedeemError);
     }
   });
 
-  test("every invite is another key", async () => {
-    const keys = new Set<string>();
-    for (let index = 0; index < 20; index++) keys.add((await newInvite(SERVICE, "TEST-ONLY-account", null)).key);
-    expect(keys.size).toBe(20);
+  test("the account a redeem is signed for is the line's: a caller names only the machine and the challenge", async () => {
+    const line = await readJoinLine(good.line, READER);
+    const signature = await signInviteRedeem(line, { ...REDEEM, account: "TEST-ONLY-other-account" } as Omit<InviteRedeem, "account">);
+    expect([await verifyInviteRedeem(REDEEM, signature, good.key), await verifyInviteRedeem({ ...REDEEM, account: "TEST-ONLY-other-account" }, signature, good.key)]).toEqual([true, false]);
+  });
+});
+
+describe("what a device signs to make an invite", () => {
+  const MAKE = makes.find((vector) => vector.name === "make-proof")?.make;
+  if (!MAKE) throw new Error("invite/make-proof.json is missing");
+
+  for (const vector of makes) {
+    test(vector.name, async () => {
+      const bytes = inviteMakeBytes(vector.make);
+      expect([toBase64Url(bytes), hex(bytes)]).toEqual([vector.bytes, vector.bytes_hex]);
+      expect(await verifySignature(bytes, fromBase64Url(vector.signature), vector.device_key)).toBe(vector.expect.verifies);
+      // The invite's key in it is the key the vector's line reads to.
+      expect((await readJoinLine(good.line, READER)).key).toBe(vector.make.invite_key);
+    });
+  }
+
+  test("it is the key proof for adding a PC, with the invite's public key where a listing id stands otherwise", () => {
+    expect(INVITE_MAKE_PREFIX).toBe("ovis-pc-add/1");
+    for (const auto of [false, true]) {
+      const purpose = (auto ? "invite-auto" : "invite") as PcAddPurpose;
+      expect(hex(inviteMakeBytes({ ...MAKE, auto }))).toBe(hex(pcAddSigningBytes(purpose, MAKE.account, "", MAKE.invite_key, MAKE.challenge_id, MAKE.challenge)));
+    }
+    expect(hex(inviteMakeBytes({ ...MAKE, auto: true }))).not.toBe(hex(inviteMakeBytes(MAKE)));
   });
 
-  test("what no line may hold is refused as the line's writer refuses it", async () => {
-    const reason = async (service: string, account: string, list: string | null) => {
-      try {
-        await newInvite(service, account, list);
-      } catch (error) {
-        if (error instanceof JoinLineError) return error.reason;
-        throw error;
-      }
-      return "none";
-    };
-    expect(await reason("http://accounts.ovis.test", "TEST-ONLY-account", null)).toBe("service");
-    expect(await reason(SERVICE, "", null)).toBe("account");
-    expect(await reason(SERVICE, "TEST-ONLY-account", "")).toBe("list");
+  test("a proof made for one invite is none for another key, account or challenge", () => {
+    const other = good.keys["TEST-ONLY-invite"]?.spki === MAKE.invite_key ? (makes[0]?.device_key ?? "") : "";
+    const changed: Partial<InviteMake>[] = [{ invite_key: other }, { account: "TEST-ONLY-other-account" }, { challenge_id: "0".repeat(32) }, { challenge: `${MAKE.challenge}x` }, { auto: !MAKE.auto }];
+    const bytes = new Set(changed.map((change) => hex(inviteMakeBytes({ ...MAKE, ...change }))));
+    expect([bytes.size, bytes.has(hex(inviteMakeBytes(MAKE)))]).toEqual([5, false]);
+  });
+
+  test("a value out of its form is refused, an invite key off the curve among them", () => {
+    const bytes = fromBase64Url(MAKE.invite_key);
+    bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 1;
+    for (const bad of [{ account: "" }, { invite_key: "x" }, { invite_key: toBase64Url(bytes) }, { invite_key: REDEEM.public_key }, { auto: "true" }, { challenge_id: "x" }, { challenge: "" }, { challenge: "x".repeat(257) }, { challenge: 1 }]) {
+      expect({ bad, code: malformed(() => inviteMakeBytes({ ...MAKE, ...bad } as InviteMake)) }).toEqual({ bad, code: "redeem_malformed" });
+    }
+    expect(malformed(() => inviteMakeBytes(null as unknown as InviteMake))).toBe("redeem_malformed");
+    expect([isAccountId("a"), isAccountId("a".repeat(64)), isAccountId(""), isAccountId("a".repeat(65)), isAccountId("a.b")]).toEqual([true, true, false, false, false]);
   });
 });
