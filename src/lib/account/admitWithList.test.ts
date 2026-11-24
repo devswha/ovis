@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { readAccountRecord } from "../../../shared/account-records.ts";
 import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
-import { admitWithList, handListToPc, ListAllowError, takeIntroduction, type PcFetch } from "./join.ts";
+import { admitWithList, allowBeforeApproval, approveForAccount, handListToPc, ListAllowError, takeIntroduction, type PcFetch } from "./join.ts";
+import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { ListOffer } from "./accountList.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
 import { memoryAccountStore } from "./store.ts";
@@ -138,6 +140,102 @@ describe("a member's approval, once the PC let the new device in", () => {
     }
     expect(await listOffer(async () => Response.json({ pcs: [] }))).toBeNull();
     expect(await listOffer(async () => Response.json({ error: { code: "introduction_none" } }, { status: 404 }))).toBeNull();
+  });
+});
+
+describe("a member's approval on a PC that lets devices in by the list", () => {
+  it("signs the new device in and hands the PC the entry before anybody approves, with no question to the PC about the device's row", async () => {
+    const w = listWorld();
+    const member = await w.device({ label: "Phone" });
+    await member.list.sync();
+    const newcomer = await w.device({ label: "Tablet" });
+    await newcomer.list.sync();
+    const joining = { key: (await newcomer.keys()).key, label: "Tablet", os: "android" as const };
+    const list = w.held();
+    const pc = pcX({ head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }), page: () => Response.json({ verdict: "caught_up", list: list.id, place: w.held().head }) });
+    const offer = await allowBeforeApproval(member.list, { fetch: pc.fetch, account: w.account, joining, wait: noWait });
+    // the entry is in the list, and the PC holds it, before the approval goes out
+    expect(offer).toEqual({ list: list.id, seq: 1, hash: w.held().head.hash });
+    expect(pc.paths()).toEqual(["/api/account/list/head", "/api/account/list/page"]);
+    expect(w.held().entries).toHaveLength(2);
+  });
+
+  it("says why where the list does not take the device, and hands the PC nothing", async () => {
+    const w = listWorld();
+    const member = await w.device();
+    await member.list.sync();
+    const stranger = await listWorld("acct_other").device();
+    const pc = pcX();
+    const refused = await allowBeforeApproval(member.list, { fetch: pc.fetch, account: w.account, joining: { key: (await stranger.store.key()).public_spki, label: "Stranger", os: null }, wait: noWait }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ListAllowError);
+    expect((refused as ListAllowError).why).toBe("not_claimed");
+    expect(pc.sent).toEqual([]);
+    // a device that follows no list of that account cannot let anybody into such a PC
+    const outsider = await listWorld("acct_none").device();
+    const none = await allowBeforeApproval(outsider.list, { fetch: pc.fetch, account: w.account, joining: { key: "k", label: "x", os: null }, wait: noWait }).catch((error: unknown) => error);
+    expect((none as ListAllowError).why).toBe("changed");
+  });
+});
+
+describe("an approval on a card, from the press to what is left to say", () => {
+  /** A member in its account's list, a new device that rang at PC X with the key it claimed, and what the card holds of it. */
+  async function rang() {
+    const w = listWorld();
+    const member = await w.device({ label: "Phone" });
+    await member.list.sync();
+    const newcomer = await w.device({ label: "Tablet" });
+    await newcomer.list.sync();
+    const relay = generateKeyPair().publicKey;
+    const X = deriveServerId(relay);
+    await member.service.putPc(X, { label: "Desk", public_key: Array.from(relay, (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.test" });
+    const key = (await newcomer.keys()).key;
+    await newcomer.service.postAdmission(X, "Tablet", key, "android");
+    const request = { id: "r1", label: "Tablet", intent: "account" as const, choices: ["111111", "222222", "333333"] as [string, string, string], expires_at: "", key };
+    const said: (string | null)[] = [];
+    const order: string[] = [];
+    const approve = (pc: ReturnType<typeof pcX>, followsList: boolean) => approveForAccount({
+      request, digits: "222222", through: X, service: member.service, account: w.account, key: member.store.key(), list: member.list,
+      pc: { fetch: async (path, init) => { order.push(path); return pc.fetch(path, init); }, followsList },
+      decide: async (decision) => { order.push(decision); }, paired: async () => [], directory: async () => [X], wait: noWait, now: () => w.clock.now,
+      onStalled: (stalled) => { said.push(stalled === null ? null : stalled.why); },
+    });
+    return { w, member, X, key, order, said, approve };
+  }
+
+  it("on a PC that lets devices in by the list: the entry and its hand-over first, then the approval, then the add for the account's other PCs", async () => {
+    const { w, order, said, approve } = await rang();
+    const list = w.held();
+    const pc = pcX({
+      head: () => Response.json({ list: list.id, place: { seq: 0, hash: list.id } }), page: () => Response.json({ verdict: "caught_up", list: list.id, place: w.held().head }),
+      // such a PC keeps no row a member added for a device its list let in
+      introduce: () => Response.json({ error: { code: "introduction_unknown_key" } }, { status: 404 }),
+    });
+    await approve(pc, true);
+    expect(order).toEqual(["/api/account/list/head", "/api/account/list/page", "approve", "/api/account/introduce", "/api/account/records"]);
+    expect(w.held().entries).toHaveLength(2);
+    expect(said).toEqual([null]);
+  });
+
+  it("on such a PC, approves nothing where the list does not take the device, and leaves the request to be answered again", async () => {
+    const { w, member, order, approve } = await rang();
+    member.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "list_stopped", message: "x" } }, { status: 503 }) : null;
+    const refused = await approve(pcX(), true).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ListAllowError);
+    expect((refused as ListAllowError).why).toBe("stopped");
+    expect([order, w.held().entries.length]).toEqual([[], 1]);
+  });
+
+  it("on any other PC: the approval first, then the entry once the PC holds the device's row, and a card where the list did not take it", async () => {
+    const { w, member, order, said, approve } = await rang();
+    await approve(pcX(), false);
+    expect(order).toEqual(["approve", "/api/account/introduce", "/api/account/introduce", "/api/account/records", "/api/account/list/head"]);
+    expect([w.held().entries.length, said]).toEqual([2, [null]]);
+    // the list refuses a second device: the PC let it in already, and the card says so and can try again
+    const other = await rang();
+    other.member.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "list_stopped", message: "x" } }, { status: 503 }) : null;
+    await other.approve(pcX(), false);
+    expect([other.order[0], other.said]).toEqual(["approve", ["stopped"]]);
+    expect(member.sent.length).toBeGreaterThan(0);
   });
 });
 

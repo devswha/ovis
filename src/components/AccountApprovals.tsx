@@ -9,7 +9,7 @@ import { createPortal } from "react-dom";
 
 import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
-import { AdmissionChangedError, admitWithList, approveJoin, ListAllowError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
+import { AdmissionChangedError, approveForAccount, ListAllowError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
@@ -164,33 +164,21 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
     try {
       // what the card showed, or null when it showed no admission: approveJoin takes no other
       const shown = asker?.id === request.id ? asker.admission : null;
-      await approveJoin({
+      await approveForAccount({
         request, digits, through: serverId, service, shown,
         decide: (answer, picked) => decideRelayPairing(request.id, answer, picked),
-        admit: async (admission) => {
-          const admitted = async (): Promise<void> => {
-            await admitWithList(pageAccountList(), {
-              fetch: (path, init) => transport.fetch(path, init), service, key: await indexedAccountStore.key(), account: session!.account,
-              joining: { key: request.key, label: admission.label, os: admission.os }, through: serverId, paired: await indexedDeviceStore.list(),
-              directory: (await service.listPcs()).map((pc) => pc.server_id), store: indexedAccountStore,
-            });
-          };
-          // This PC let the device in already, and its request is gone from here: where the account's list did not take
-          // it, that is said on a card of its own, which can try again.
-          const attempt = async (): Promise<void> => {
-            try {
-              await admitted();
-              onStalled(request.key, null);
-            } catch (error) {
-              if (!(error instanceof ListAllowError)) throw error;
-              onStalled(request.key, { key: request.key, device: admission.label, pc: where.pcName, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
-            }
-          };
-          await attempt();
-        },
+        // a PC that selected the list for this session lets devices in by it alone: the entry is signed before the approval
+        pc: { fetch: (path, init) => transport.fetch(path, init), followsList: transport.followsList === true },
+        account: session!.account, key: indexedAccountStore.key(), list: pageAccountList(), store: indexedAccountStore,
+        paired: () => indexedDeviceStore.list(), directory: async () => (await service.listPcs()).map((pc) => pc.server_id),
+        // This PC let the device in already, and its request is gone from here: where the account's list did not take
+        // it, that is said on a card of its own, which can try again.
+        onStalled: (stalled) => onStalled(request.key, stalled === null ? null : { key: request.key, device: stalled.label, pc: where.pcName, why: stalled.why, retryAfterMs: stalled.retryAfterMs, retry: stalled.retry }),
       });
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));
+      // this PC lets devices in by the account's list alone, and the list did not take the device: nothing was approved
+      if (error instanceof ListAllowError) throw new Error(stalledReason(t, error.why, error.retryAfterMs));
       if (error instanceof AdmissionChangedError) {
         // Approve waits again until the new details are read (and the card's pick is cleared with them)
         setAsker(null);

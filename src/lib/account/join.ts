@@ -210,6 +210,12 @@ export async function approveJoin(options: {
   admit: (admission: Admission) => Promise<unknown>; now?: () => number;
   /** the admission the card showed, null when it showed none: approval goes ahead only for exactly that one */
   shown?: Admission | null;
+  /**
+   * For a join of the account through a PC that lets devices in by the account's signed list: runs once the
+   * admission was checked and before anything is approved. Such a PC lets the device in only by an entry of the list,
+   * so the member signs that entry first; a throw approves nothing, and the request stays to be answered again.
+   */
+  before?: (admission: Admission) => Promise<void>;
 }): Promise<void> {
   const { request } = options;
   if (request.vouched !== true && !options.digits) throw new UnverifiedJoinError();
@@ -230,6 +236,7 @@ export async function approveJoin(options: {
     await options.decide("approve");
     return;
   }
+  await options.before?.(vouched);
   await options.decide("approve", options.digits);
   // a PC vouched for joins X alone: no add, no introduction
   if (request.intent === "account") await options.admit(vouched);
@@ -270,6 +277,12 @@ export async function admitToAccount(options: {
    * who did not confirm at X is signed into the list; until then X is asked with nothing to introduce.
    */
   allow?: () => Promise<ListOffer | null>;
+  /**
+   * The account's signed list holds the new device already, by this device's own copy, and X lets devices in by that
+   * list: X keeps no row a member added for it, so the introduction is tried once, and its refusal for that does not
+   * hold the `add` for the account's other PCs back.
+   */
+  inList?: boolean;
 }): Promise<AddRecord> {
   const now = options.now ?? Date.now;
   // fixed wait: the pause between tries of a poll bounded by ADMITTED_MS
@@ -283,7 +296,9 @@ export async function admitToAccount(options: {
     try { await post(options.fetch, "/api/account/introduce", { key: options.joining.key, pcs: options.allow === undefined ? pcs : [] }); break; }
     catch (error) {
       // no row for that key on X yet: the new device has not confirmed its digits
-      if (!(error instanceof AccountPcError) || error.code !== "introduction_unknown_key" || now() > deadline) throw error;
+      if (!(error instanceof AccountPcError) || error.code !== "introduction_unknown_key") throw error;
+      if (options.inList === true) break;
+      if (now() > deadline) throw error;
       await wait(ADMITTED_POLL_MS);
     }
   }
@@ -362,6 +377,88 @@ export async function admitWithList(list: AccountList | null, options: Omit<Para
     if (!handed) console.info("Ovis: the PC was not handed the list's new entries over this session; it reads them from the account service");
   }, (error: unknown) => { console.warn("Ovis: the PC was not handed the list's new entries", error instanceof Error ? error.name : error); });
   return add;
+}
+
+/**
+ * What a member does BEFORE it approves a join on a PC that lets its account's devices in by the list alone
+ * (docs/account.md, "A PC allows a device into the list"): such a PC signs nothing on a member's approval and lets
+ * the device in only by an entry of the list, so the member signs that entry first and hands it to the PC over the
+ * session, then approves. The PC tells the device its place itself, in its AUTH_OK; nothing is introduced for it.
+ *
+ * The device that asks is not checked against a row of the PC's here, as an account with an unpinned PC is
+ * (admitToAccount): a pinned PC makes no row before the list holds the key. A device that then does not confirm its
+ * digits stays in the list, and Remove puts it out.
+ *
+ * Answers the place of the entry, or throws ListAllowError: nothing is approved then. A device that holds no list
+ * of the account cannot let anybody into such a PC (`changed`).
+ */
+export async function allowBeforeApproval(list: AccountList | null, options: {
+  fetch: PcFetch; account: string; joining: { key: string; label: string; os: Admission["os"] }; wait?: (ms: number) => Promise<void>;
+}): Promise<ListOffer> {
+  const view = list === null ? null : await list.sync();
+  if (list === null || view === null || view.account !== options.account || !holdsList(view)) throw new ListAllowError("changed", null);
+  const offer = await allowIntoList(list, options.joining, { account: options.account, ...(options.wait === undefined ? {} : { wait: options.wait }) });
+  if (offer === null) throw new ListAllowError("changed", null);
+  await handListToPc(options.fetch, list, { seq: offer.seq, hash: offer.hash }).then((handed) => {
+    if (!handed) console.info("Ovis: the PC was not handed the new device's entry over this session; it reads it from the account service");
+  }, (error: unknown) => { console.warn("Ovis: the PC was not handed the new device's entry", error instanceof Error ? error.name : error); });
+  return offer;
+}
+
+/**
+ * One press of Approve on the card of a device that asks through PC X, from the check of its admission to what is
+ * left to say afterwards (approveJoin, and what follows it for an account join).
+ *
+ * On a PC that lets its account's devices in by the list alone (`pc.followsList`), the member signs the device into
+ * the list and hands X the entry BEFORE it approves (allowBeforeApproval): where the list does not take the device,
+ * nothing is approved, the ListAllowError says why, and the request stays to be answered again. After the approval
+ * the `add` for the account's other PCs goes out as ever.
+ *
+ * On any other PC the approval comes first and the list after it, once X holds the device's row (admitWithList).
+ * Where the list then does not take the device, X let it in already and its request is gone: `onStalled` is told
+ * why, with a `retry` that tries the list again, and told null once the device is in.
+ */
+export async function approveForAccount(options: {
+  request: RemotePairingRequest; digits: string; through: string; service: AccountService;
+  /** the admission the card showed, null when it showed none (approveJoin) */
+  shown?: Admission | null;
+  decide: (decision: "approve" | "decline", digits?: string) => Promise<void>;
+  /** the session to X this approval runs on, and whether X selected the list for it */
+  pc: { fetch: PcFetch; followsList: boolean };
+  /** the account the card was drawn under, its key on this device, and the page's copy of its list */
+  account: string; key: Promise<AccountKey> | AccountKey; list: AccountList | null;
+  paired: () => Promise<readonly RelayDevice[]>; directory: () => Promise<readonly string[]>; store?: AccountStore;
+  onStalled: (stalled: { label: string; why: AllowRefusal; retryAfterMs: number | null; retry: () => Promise<void> } | null) => void;
+  wait?: (ms: number) => Promise<void>; now?: () => number;
+}): Promise<void> {
+  const { request, pc } = options;
+  const pinned = pc.followsList && request.intent === "account";
+  const joiningOf = (admission: Admission) => ({ key: request.key, label: admission.label, os: admission.os });
+  const more = { ...(options.wait === undefined ? {} : { wait: options.wait }), ...(options.now === undefined ? {} : { now: options.now }) };
+  await approveJoin({
+    request, digits: options.digits, through: options.through, service: options.service, decide: options.decide,
+    ...(options.shown === undefined ? {} : { shown: options.shown }), ...(options.now === undefined ? {} : { now: options.now }),
+    ...(pinned ? { before: async (admission: Admission) => {
+      await allowBeforeApproval(options.list, { fetch: pc.fetch, account: options.account, joining: joiningOf(admission), ...(options.wait === undefined ? {} : { wait: options.wait }) });
+    } } : {}),
+    admit: async (admission) => {
+      const base = async () => ({
+        fetch: pc.fetch, service: options.service, key: await options.key, account: options.account, joining: joiningOf(admission), through: options.through,
+        paired: await options.paired(), directory: await options.directory(), ...(options.store === undefined ? {} : { store: options.store }), ...more,
+      });
+      if (pinned) { await admitToAccount({ ...await base(), inList: true }); options.onStalled(null); return; }
+      const attempt = async (): Promise<void> => {
+        try {
+          await admitWithList(options.list, await base());
+          options.onStalled(null);
+        } catch (error) {
+          if (!(error instanceof ListAllowError)) throw error;
+          options.onStalled({ label: admission.label, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
+        }
+      };
+      await attempt();
+    },
+  });
 }
 
 /** The most entries one call hands a PC. */
