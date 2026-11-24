@@ -38,7 +38,7 @@ import { writePrivateState } from "../private-state.ts";
 import { verifyRelayProof } from "../relay/auth-proof.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { ListCommit } from "./account-device-state.ts";
-import { ListKeysError, listKeysPath, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
+import { ListKeysError, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
 import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
 import type { Readmission } from "./readmission.ts";
 
@@ -46,12 +46,26 @@ export const ACCOUNT_LIST_FILE = "account-list.json";
 /** A post the account service did not confirm is made again after this long. */
 const POST_RETRY_MS = 60_000;
 /**
- * Beside the copy: written before a pinned PC acts on a change of its list (a removal, a device's time that passed),
- * and removed once the copy that holds the change is on disk. A PC that starts and finds it stopped in between: the
- * copy on disk is older than what it acted on, so it lets nobody of its list in until it has read the list again.
- * It keeps the hour the PC's clock showed, so a time that had passed stays passed.
+ * Beside the copy: what a pinned PC denied and has not on disk yet. Written before the PC acts on a denial, with the
+ * denial itself: the key a removal put out and the place of that entry, or the key whose time passed, that time and
+ * the hour the PC's clock showed. Removed only once the write that makes it unnecessary is on disk (the copy that
+ * holds the removal, with the removal's record; the copy that holds the hour). It is read at a start before the copy
+ * and without it. While it stands the keys it names are refused, whatever the copy says; and a PC that starts on a
+ * copy that does not reach a removal it names lets nobody of its list in until a read has reached that place, or
+ * until the account service has answered one whole read.
  */
 export const ACCOUNT_LIST_OWED_FILE = "account-list-owed.json";
+/** After this long a denial that still stands in the mark is said in the status. */
+const OWED_SAID_SECONDS = 3_600;
+
+interface OwedMark {
+  /** When the mark was first written, by the PC's clock (seconds). */
+  readonly at: number;
+  /** The latest hour the PC's clock showed when it denied by a time. */
+  floor: number;
+  removed: { readonly key: string; readonly seq: number }[];
+  expired: { readonly key: string; readonly until: number }[];
+}
 /** How often a member's page is checked again because the copy was replaced while it was checked. */
 const PAGE_APPLY_TRIES = 3;
 /** How often one read of the account service begins again because a member's page moved the copy under it. */
@@ -99,6 +113,8 @@ export interface ListStatus {
   readonly list: string | null;
   /** Whether the PC lets its account's devices in by this list, and by nothing the account service says. */
   readonly pinned: boolean;
+  /** The list the PC is pinned to, also when it holds no copy of it it can read; null on a PC that is not pinned. The same name and form as in `GET /api/account/status`. */
+  readonly pinned_list: string | null;
   /** The list a person at this PC named for it, or null. */
   readonly want: string | null;
   /** Where the PC itself stands in the list: `waiting` until an entry adds it. */
@@ -129,7 +145,7 @@ export interface ListStatus {
 }
 
 /** What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the PC stands in it, and ListStatus.reason. */
-export interface ListSummary { readonly pinned: string; readonly standing: Standing | null; readonly reason: string | null }
+export interface ListSummary { readonly pinned_list: string; readonly standing: Standing | null; readonly reason: string | null }
 
 export type WantRefusal = "invalid_list" | "not_in_account" | "pinned" | "removed" | "unavailable";
 
@@ -141,6 +157,8 @@ export interface ListAuthority {
   role(key: string): ListRole | null | undefined;
   /** Whether the list holds `key` to drive with full power now: null on a PC that is not pinned and for a key it does not let in. */
   allowsJoins(key: string): boolean | null;
+  /** Whether this PC acted on a removal of `key` by its list that it has not on disk yet: every row of that key stays out meanwhile, a pairing of this PC's own too. */
+  owesRemoval(key: string): boolean;
   /** Whether this relay identity was removed from `account` by that account's list. */
   removedFrom(account: string): boolean;
 }
@@ -185,7 +203,9 @@ export interface ListFollowDeps {
   recheck?(): void;
   /** Whether a session is open on this PC: it then reads more often. */
   busy?(): boolean;
-  /** Called at each look at the clock, before anything else: what this PC tries again by itself (a pin its other folder holds). */
+  /** The list put `key` out and the PC has that only in its mark so far: the sessions of every row of the key end. */
+  denied?(key: string): void;
+  /** Called at each look at the clock, before anything else: takes in what another server of this folder wrote to the PC's place in its account. */
   retry?(): void;
 }
 
@@ -225,14 +245,18 @@ export class ListFollow implements ListAuthority {
   private savedAt: number | null = null;
   /** The copy in memory holds what the file does not: its last save failed. It is acted on all the same, and saved again at the next tick. */
   private unsaved = false;
-  /** The mark that something acted on may not be on disk is (or should be) beside the copy: removed once nothing is owed. */
-  private owing = false;
-  /** The last run stopped with that mark standing: nobody of the list is let in by the copy on disk until the list was read again. */
+  /** What this PC denied and has not on disk yet (ACCOUNT_LIST_OWED_FILE), as the file holds it; null for nothing. */
+  private owed: OwedMark | null = null;
+  /** This start found a removal in the mark that the copy does not reach: nobody of the list is let in until a read reached it, or the account service answered one whole read. */
   private mustRead = false;
+  /** The place the copy stood at when it was last saved. */
+  private savedSeq: number | null = null;
   /** Fires at `untilAt`, whatever else the PC is doing. */
   private untilTimer: ReturnType<typeof setTimeout> | undefined;
   /** The removals of the list that this PC has kept as its own since this start, by the entry that made each. */
   private readonly applied = new Set<string>();
+  /** The keys whose removal's record this run wrote (deps.removed answered): what a mark for a removal waits for. */
+  private readonly kept = new Set<string>();
   /** When a person last named a list here, in milliseconds: for a while after it the PC reads often, as someone waits beside it. */
   private wantedAt: number | null = null;
   private readonly differences = new Set<string>();
@@ -252,6 +276,8 @@ export class ListFollow implements ListAuthority {
       await this.ready;
       await this.ensureCopy(scope);
       this.settle();
+      // after the rows and the removals' records were written: what the mark still owes is asked then
+      this.settleOwed();
     });
     this.timer = setInterval(() => this.tick(), LIST_TICK_MS);
     this.timer.unref?.();
@@ -261,6 +287,7 @@ export class ListFollow implements ListAuthority {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.deps.keys.close();
     if (this.untilTimer) clearTimeout(this.untilTimer);
     this.untilTimer = undefined;
   }
@@ -297,10 +324,11 @@ export class ListFollow implements ListAuthority {
   role(key: string): ListRole | null | undefined {
     if (!this.pinned()) return undefined;
     const copy = this.clocked();
-    if (copy === null || this.alarmLost || this.mustRead) return null;
+    if (copy === null || this.alarmLost || this.mustRead || this.owedKey(key)) return null;
     const answer = admitsSession(copy, key, this.seconds());
     // refused for its time: the hour that says so is on disk before the answer is used, so no clock set back undoes it
-    if (answer.why === "expired") this.saveFloor(copy.state?.devices[key]?.until ?? null);
+    const until = copy.state?.devices[key]?.until ?? null;
+    if (answer.why === "expired" && until !== null) this.saveFloor([{ key, until }]);
     return answer.role;
   }
 
@@ -335,49 +363,114 @@ export class ListFollow implements ListAuthority {
     return now;
   }
 
-  /** Saves the copy's hour when what is on disk does not yet show that `until` has passed. Never throws. */
-  private saveFloor(until: number | null): void {
+  /** Saves the copy's hour when what is on disk does not yet show that these times have passed. Never throws. */
+  private saveFloor(passed: readonly { readonly key: string; readonly until: number }[]): void {
     const scope = this.bound();
-    if (scope === null || this.copy === null || this.copy.seen_at === null || until === null) return;
-    if (this.savedAt !== null && this.savedAt >= until && this.savedAt >= 0) return;
-    if (scope.bindId === null) return;
-    // the hour is in the mark first: a copy the disk does not take leaves the time passed all the same, and is offered again
-    if (this.isPinned) this.owe(scope as Bound);
+    if (scope === null || scope.bindId === null || this.copy === null || this.copy.seen_at === null) return;
+    const unsaved = passed.filter(({ until }) => this.savedAt === null || this.savedAt < until);
+    if (unsaved.length === 0) return;
+    // the denial is in the mark first: a copy the disk does not take leaves the time passed all the same, and is offered again
+    if (this.isPinned) this.owe(scope as Bound, { expired: unsaved });
     if (!this.persist(scope as Bound)) this.unsaved = true;
     this.settleOwed();
   }
 
   private get owedPath(): string { return join(this.deps.stateDir, ACCOUNT_LIST_OWED_FILE); }
 
-  /** Writes the mark with the hour the PC decides on. A disk that does not take it leaves the PC to what it acts on from memory. */
-  private owe(scope: Bound): void {
-    this.owing = true;
-    try { writePrivateState(this.owedPath, { v: 1, server_id: scope.serverId, bind_id: scope.bindId, floor: Math.max(this.seconds(), this.copy?.seen_at ?? 0) }); } catch { /* acted on from memory, and saved again at the next look */ }
+  owesRemoval(key: string): boolean {
+    return this.owed !== null && this.isPinned && this.owed.removed.some((row) => row.key === key);
   }
 
-  /** Removes the mark once what was acted on is on disk: the copy saved, the rows and removals written, and no read owed from a start. */
-  private settleOwed(): void {
-    if (!this.owing || this.unsaved || this.dirty || this.mustRead) return;
-    try { rmSync(this.owedPath, { force: true }); this.owing = false; } catch { /* tried again at the next look */ }
+  /**
+   * The removal's own record could not be written: the sessions of every row of the keys the mark names end all the
+   * same, one of a pairing this PC made itself too, and their next sign-in finds the mark.
+   */
+  private denyOwed(): void {
+    for (const row of this.owed?.removed ?? []) { try { this.deps.denied?.(row.key); } catch { /* its sign-in is refused all the same */ } }
   }
 
-  /** The mark the last run left for this binding, with the hour it kept, or null. */
-  private owedOnDisk(scope: Scope): { readonly floor: number } | null {
-    try {
-      const { v, server_id, bind_id, floor } = JSON.parse(readFileSync(this.owedPath, "utf8")) as Record<string, unknown>;
-      return v === 1 && server_id === scope.serverId && bind_id === scope.bindId && typeof floor === "number" && Number.isSafeInteger(floor) && floor >= 0 ? { floor } : null;
-    } catch (error) {
-      // a mark that is there and does not read is a mark: the cautious side
-      return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : { floor: 0 };
+  private owedKey(key: string): boolean {
+    const owed = this.owed;
+    return owed !== null && (owed.removed.some((row) => row.key === key) || owed.expired.some((row) => row.key === key));
+  }
+
+  /** Adds denials to the mark and writes it, before they are acted on. A disk that does not take it leaves the PC to what it acts on from memory. */
+  private owe(scope: Bound, what: { readonly removed?: OwedMark["removed"]; readonly expired?: OwedMark["expired"] }): void {
+    const now = Math.max(this.seconds(), this.copy?.seen_at ?? 0);
+    const owed: OwedMark = this.owed ?? { at: now, floor: now, removed: [], expired: [] };
+    owed.floor = Math.max(owed.floor, now);
+    for (const row of what.removed ?? []) {
+      if (owed.removed.some((held) => held.key === row.key && held.seq === row.seq)) continue;
+      owed.removed.push(row);
     }
+    for (const row of what.expired ?? []) if (!owed.expired.some((held) => held.key === row.key && held.until === row.until)) owed.expired.push(row);
+    this.owed = owed;
+    this.writeOwed(scope);
   }
 
-  /** The list was read to its end (the account service's log, or a member's page): the copy is as new as that, and decides again. */
-  private readAgain(): void {
+  private writeOwed(scope: Scope): void {
+    const owed = this.owed;
+    if (owed === null || scope.bindId === null || this.stopped) return;
+    try { writePrivateState(this.owedPath, { v: 1, server_id: scope.serverId, bind_id: scope.bindId, ...owed }); } catch { /* acted on from memory, and written again at the next look */ }
+  }
+
+  /**
+   * Takes out of the mark what is on disk by now, and removes the mark once nothing is left: a removal once the copy
+   * that reaches its place and shows the key out is saved and the removal's record is written; a time that passed
+   * once the saved copy holds an hour at or past it.
+   */
+  private settleOwed(): void {
+    const owed = this.owed;
+    const scope = this.bound();
+    if (owed === null || scope === null || this.stopped) return;
+    const state = this.copy?.state ?? null;
+    const saved = !this.unsaved && !this.dirty;
+    // a removal: the saved copy reaches its place and shows the key out, and the removal's own record was written in
+    // this run (keepRemovals), which is what keeps the key out once the mark is gone
+    const removed = owed.removed.filter((row) => !(saved && this.kept.has(row.key) && this.savedSeq !== null && this.savedSeq >= row.seq && state !== null && Object.hasOwn(state.signers, row.key) && state.signers[row.key]!.ended !== null));
+    const expired = owed.expired.filter((row) => !(this.savedAt !== null && this.savedAt >= row.until));
+    if (removed.length === owed.removed.length && expired.length === owed.expired.length) return;
+    if (removed.length === 0 && expired.length === 0) {
+      try { rmSync(this.owedPath, { force: true }); } catch { return; }
+      this.owed = null;
+      this.mustRead = false;
+      return;
+    }
+    owed.removed = removed;
+    owed.expired = expired;
+    this.writeOwed(scope);
+  }
+
+  /** The mark the last run left for this binding, or null. One that is there and does not read is a mark: it names nobody, and closes the list until it was read again. */
+  private owedOnDisk(scope: Scope): OwedMark | null {
+    const unread: OwedMark = { at: this.seconds(), floor: 0, removed: [{ key: "", seq: Number.MAX_SAFE_INTEGER }], expired: [] };
+    let value: Record<string, unknown>;
+    try { value = JSON.parse(readFileSync(this.owedPath, "utf8")) as Record<string, unknown>; } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : unread;
+    }
+    if (typeof value !== "object" || value === null) return unread;
+    const { v, server_id, bind_id, at, floor, removed, expired } = value;
+    // another relay identity's or binding's mark is not this PC's
+    if (server_id !== scope.serverId || bind_id !== scope.bindId) return null;
+    const count = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+    const rows = <Name extends "seq" | "until">(list: unknown, name: Name) => Array.isArray(list) && list.every((row: unknown) => typeof row === "object" && row !== null
+      && typeof (row as { key?: unknown }).key === "string" && count((row as Record<string, unknown>)[name]));
+    if (v !== 1 || !count(at) || !count(floor) || !rows(removed, "seq") || !rows(expired, "until")) return unread;
+    return { at, floor, removed: [...removed as OwedMark["removed"]], expired: [...expired as OwedMark["expired"]] };
+  }
+
+  /** A removal the mark names lies within what the copy holds by now: the copy decides for everybody again. */
+  private reachedOwed(): void {
+    const owed = this.owed;
+    const seq = this.copy?.state?.footing.seq ?? null;
+    if (this.mustRead && owed !== null && seq !== null && owed.removed.every((row) => row.seq <= seq)) this.mustRead = false;
+  }
+
+  /** The account service answered one whole read: the list is as new as the service shows it, and decides again for everybody but the keys the mark names. */
+  private readWhole(): void {
     if (!this.mustRead) return;
     this.mustRead = false;
     this.settle();
-    this.settleOwed();
   }
 
   removedFrom(account: string): boolean {
@@ -401,6 +494,7 @@ export class ListFollow implements ListAuthority {
       account: scope?.account ?? null,
       list: copy?.list ?? null,
       pinned: this.pinned(),
+      pinned_list: scope !== null && this.pinned() ? scope.list : null,
       want: scope?.bindId == null ? null : scope.list ?? this.want,
       standing: copy === null ? null : standing(copy),
       head: copy?.state ? { seq: copy.state.footing.seq, hash: copy.state.footing.hash } : null,
@@ -421,7 +515,7 @@ export class ListFollow implements ListAuthority {
   summary(): ListSummary | null {
     const scope = this.sync();
     if (scope === null || scope.list === null || !this.isPinned) return null;
-    return { pinned: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
+    return { pinned_list: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
   }
 
   /** ListStatus.reason: each case in which a pinned PC is closed to its account's devices, or to new ones, with what ends it. */
@@ -432,6 +526,7 @@ export class ListFollow implements ListAuthority {
     if (copy?.alarm != null) return "This PC was shown two versions of your account's list. It lets in the devices it held then and nobody new. Check your devices and PCs one at a time (docs/account-list.md, \"What a person does\"), then choose Revoke all on this PC and add it to your account again.";
     if (copy === null) return "This PC holds no copy of your account's list yet, so it lets no device of your account in until it has read the list.";
     if (this.mustRead) return "This PC stopped before it could save a change of your account's list that it had acted on, so it lets no device of your account in until it has read the list again. It does that by itself once it reaches the account service.";
+    if (this.owed !== null && this.seconds() - this.owed.at >= OWED_SAID_SECONDS) return "This PC keeps a device out by a change of your account's list that it acted on and, for an hour now, has not been shown again or could not save. It goes on reading the list; if this stays, check this PC's disk.";
     const stands = standing(copy);
     if (stands === "stopped") return "A device of your account wrote something into its list that this Ovis is too old to read, so this PC lets no device of your account in. Update Ovis on this PC.";
     if (stands === "waiting") return "This PC is reading your account's list again from its start, and lets no device of your account in until that read shows this PC in the list.";
@@ -509,9 +604,9 @@ export class ListFollow implements ListAuthority {
     if (this.problem !== null) return;
     const now = this.seconds();
     // a copy the disk did not take is offered to it again
-    if (this.unsaved) void this.enqueue(() => { const bound = this.bound(); if (bound !== null && this.unsaved && this.copy !== null) this.unsaved = !this.persist(bound); this.settleOwed(); });
+    if (this.unsaved) void this.enqueue(() => { const bound = this.bound(); if (this.stopped) return; if (bound !== null && this.unsaved && this.copy !== null) this.unsaved = !this.persist(bound); this.settleOwed(); });
     else this.settleOwed();
-    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); });
+    if (this.isPinned && (this.dirty || (this.untilAt !== null && now >= this.untilAt))) void this.enqueue(async () => { await this.ready; this.settle(); this.settleOwed(); });
     // any PC that holds a list reads it by its own clock, one that only shadows too: a mailbox that names no list, or
     // does not answer, hides no entry. A PC whose account never had a list holds no copy and asks nothing
     const copy = this.copy;
@@ -597,9 +692,7 @@ export class ListFollow implements ListAuthority {
         // what the PC holds was replaced while the page was checked (a list named here): the page is checked against that
         if (this.copy === null || changed(copy, this.copy)) continue;
         // acted on at once; said as taken only once it is on disk
-        if (!this.keep(result.copy, scope, changed(copy, result.copy))) return "not_saved";
-        if (result.verdict === "caught_up") this.readAgain();
-        return result.verdict;
+        return this.keep(result.copy, scope, changed(copy, result.copy)) ? result.verdict : "not_saved";
       }
       return null;
     });
@@ -666,7 +759,8 @@ export class ListFollow implements ListAuthority {
   /** The list's answer for `key` on the copy a shadow compares with; an answer that turned on the hour saves that hour first. */
   private shadowAnswer(copy: FollowerCopy, key: string): ReturnType<typeof admitsSession> {
     const answer = admitsSession(copy, key, this.seconds());
-    if (answer.why === "expired") this.saveFloor(copy.state?.devices[key]?.until ?? null);
+    const until = copy.state?.devices[key]?.until ?? null;
+    if (answer.why === "expired" && until !== null) this.saveFloor([{ key, until }]);
     return answer;
   }
 
@@ -766,14 +860,20 @@ export class ListFollow implements ListAuthority {
     this.lastVerdict = this.error = null;
     this.keysState = null;
     this.held = null;
-    this.postedAt = this.postedUntil = this.askedAt = this.untilAt = this.wantedAt = this.savedAt = null;
+    this.postedAt = this.postedUntil = this.askedAt = this.untilAt = this.wantedAt = this.savedAt = this.savedSeq = null;
     this.dirty = false;
+    // the mark was the old binding's: takeFile reads the one of the binding the PC has now
+    this.owed = null;
+    this.mustRead = false;
   }
 
   private endpointOf: { readonly key: string; readonly endpoint: string } | null = null;
 
   /** The file as it is on disk at the start. One that does not read is kept and said: what becomes of it depends on whether the PC is pinned. */
   private takeFile(scope: Scope): void {
+    // the mark first, and without the copy: what the last run denied stands whatever becomes of the copy
+    this.owed = scope.list === null ? null : this.owedOnDisk(scope);
+    this.mustRead = this.owed !== null && this.owed.removed.length > 0;
     let text: string;
     try { text = readFileSync(this.path, "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.broken = `${ACCOUNT_LIST_FILE} cannot be read`;
@@ -797,10 +897,16 @@ export class ListFollow implements ListAuthority {
       this.savedAt = saved.copy.seen_at;
       // The last run acted on something this copy does not hold: nobody is let in by it until the list was read
       // again, and the hour that run's clock showed counts, so a device's time that had passed stays passed
-      const owed = scope.list === null ? null : this.owedOnDisk(scope);
+      this.savedSeq = saved.copy.state?.footing.seq ?? null;
+      const owed = this.owed;
       if (owed !== null) {
-        this.mustRead = this.owing = true;
         this.copy = withClock(saved.copy, owed.floor);
+        // a removal the copy does not reach closes the list until a read reached it; one it reaches is refused by its key
+        const seq = saved.copy.state?.footing.seq ?? -1;
+        this.mustRead = owed.removed.some((row) => row.seq > seq);
+        // the hour goes into the copy on disk before anything is decided by it: only then is a time that passed discharged
+        if (scope.bindId !== null && scope.account !== null && owed.expired.length > 0) { if (!this.persist(scope as Bound)) this.unsaved = true; }
+        this.settleOwed();
       }
       // another build wrote it: its entries were replayed, never dropped, and the copy is written back as this build
       // writes it. An update costs a pinned PC nothing it held
@@ -825,10 +931,13 @@ export class ListFollow implements ListAuthority {
     if (keys === null || !this.live(scope)) return;
     if (this.copy?.list === scope.list && this.copy.me.key === keys.key && this.copy.me.endpoint === scope.endpoint) return;
     const first = pinList(null, { account: scope.account, list: scope.list, me: { key: keys.key, endpoint: scope.endpoint }, pin: { how: "added" } });
-    if (first.pinned) this.copy = first.copy;
+    // a copy read anew keeps the hour the mark holds: a time that had passed stays passed
+    if (first.pinned) this.copy = this.owed === null ? first.copy : withClock(first.copy, this.owed.floor);
   }
 
   private async keysOf(scope: Scope): Promise<PcListKeys | null> {
+    // work that waited when the follower stopped makes no keys
+    if (this.stopped) return null;
     try {
       const keys = await this.deps.keys.keysFor(scope.serverId);
       this.keysState = "ready";
@@ -877,8 +986,6 @@ export class ListFollow implements ListAuthority {
     const heard = heardHead(copy, { list: named.id, head: named.head }, this.seconds());
     this.lastVerdict = heard.verdict;
     this.keep(heard.copy, scope, false);
-    // the account service holds nothing the copy does not: that is a read of the list to its end
-    if (heard.verdict === "same") this.readAgain();
     // each pull, a pinned PC gives its rows another turn: one a full notice list or a hold kept out comes in then
     if (this.isPinned) this.settle();
     // a list a person named is read whatever list the service names
@@ -934,7 +1041,9 @@ export class ListFollow implements ListAuthority {
       this.error = this.words(error);
       return;
     }
-    if (this.live(scope) && this.lastVerdict === "caught_up") this.readAgain();
+    // one whole read: the service answered to the end, and the PC stands at the head the service shows. A page the PC
+    // refused, a tail the service withholds and a read that ran out of its requests are none
+    if (this.live(scope) && this.lastVerdict === "caught_up") this.readWhole();
   }
 
   /** The second lock for a `pc` entry: this PC's keys and its card for this list, at the account service, for ten minutes. */
@@ -961,14 +1070,17 @@ export class ListFollow implements ListAuthority {
 
   /** Takes a copy as this PC's own: on disk first when it changed, then in memory, then what follows from it. */
   private keep(copy: FollowerCopy, scope: Bound, save: boolean): boolean {
+    const was = this.copy?.list === copy.list ? this.copy : null;
     // the hour never goes back: a copy made from an older one keeps the latest hour this PC's clock showed
-    const seen = this.copy?.list === copy.list ? this.copy.seen_at : null;
+    const seen = was === null ? null : was.seen_at;
     this.copy = seen === null ? copy : withClock(copy, seen);
+    this.reachedOwed();
     if (save) {
       // What a member signed is acted on whether or not the disk takes it: a removal is enforced from memory, and the
-      // copy is offered to the disk again at the next tick. A restart before that reads the list again before a session
-      // the mark first, so a PC that stops before the copy is on disk does not start again on the older one
-      if (this.isPinned) this.owe(scope);
+      // copy is offered to the disk again at the next tick. Each device this copy puts out goes into the mark first,
+      // with the place of its removal: a PC that stops before the copy is on disk does not start again on the older one
+      const put = this.isPinned ? newlyOut(was, copy) : [];
+      if (put.length > 0) this.owe(scope, { removed: put });
       this.unsaved = !this.persist(scope);
       this.settle();
       this.settleOwed();
@@ -980,6 +1092,8 @@ export class ListFollow implements ListAuthority {
   }
 
   private persist(scope: Bound): boolean {
+    // work that waited when the follower stopped writes nothing: another server may hold the folder by now
+    if (this.stopped) return false;
     const file: ListFile = { v: 1, server_id: scope.serverId, bind_id: scope.bindId, want: this.want, save: this.copy === null ? null : writeSave(this.copy) };
     try { writePrivateState(this.path, file); } catch (error) {
       this.error = `${ACCOUNT_LIST_FILE} could not be written (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`;
@@ -987,6 +1101,7 @@ export class ListFollow implements ListAuthority {
     }
     this.broken = null;
     this.savedAt = this.copy?.seen_at ?? null;
+    this.savedSeq = this.copy?.state?.footing.seq ?? null;
     return true;
   }
 
@@ -1024,12 +1139,13 @@ export class ListFollow implements ListAuthority {
     // A device's time has passed: the hour that says so is on disk before anything is done by it. Also one that
     // passed while Ovis was stopped, so that a later start with the clock set back does not let the device in again
     const passed = passedUntil(copy, now);
-    if (passed !== null) { this.clocked(); this.saveFloor(passed); }
+    if (passed.length > 0) { this.clocked(); this.saveFloor(passed); }
     if (standing(copy) === "out") {
       // what the list put out before it put this PC out goes first: leaving keeps the pairings this PC made itself,
       // and a device the list removed must not stay in by one of them
       try { this.keepRemovals(copy); } catch (error) {
         this.dirty = true;
+        this.denyOwed();
         this.error = `The list's removals could not be kept (${error instanceof Error ? error.message : String(error)})`;
         return;
       }
@@ -1040,10 +1156,13 @@ export class ListFollow implements ListAuthority {
       // what the list put out first, so that nothing the commit lets in stands beside a key that is out
       this.keepRemovals(copy);
       const rows = listCommit(copy, now);
-      this.deps.commit?.(this.alarmLost || this.mustRead ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning);
+      // nobody while the copy does not show whom the PC lets in (a lost alarm, a removal it has not read again), and never a key the mark names
+      const closed = this.alarmLost || this.mustRead;
+      this.deps.commit?.({ ...rows, devices: rows.devices.map((row) => (closed || this.owedKey(row.key) ? { ...row, eligible: false } : row)) }, readmission, pinning);
       this.dirty = !alarmKept;
     } catch (error) {
       this.dirty = true;
+      this.denyOwed();
       this.error = `The list's devices could not be written (${error instanceof Error ? error.message : String(error)})`;
     }
     this.untilAt = nextUntil(copy, now);
@@ -1083,6 +1202,7 @@ export class ListFollow implements ListAuthority {
       if (this.applied.has(id + key)) continue;
       this.deps.removed(key, { id, at: readBody(entry.body).issued_at });
       this.applied.add(id + key);
+      this.kept.add(key);
     }
   }
 
@@ -1098,11 +1218,19 @@ export class ListFollow implements ListAuthority {
   }
 }
 
-/** The latest `until` of a device the list still holds whose time has passed at `now`, or null. */
-function passedUntil(copy: FollowerCopy, now: number): number | null {
-  if (copy.state === null) return null;
-  const passed = listView(copy.state).devices.flatMap((row) => (row.ended === null && row.until !== null && row.until <= now ? [row.until] : []));
-  return passed.length === 0 ? null : Math.max(...passed);
+/** The devices the list still holds whose time has passed at `now`, each with that time. */
+function passedUntil(copy: FollowerCopy, now: number): { readonly key: string; readonly until: number }[] {
+  if (copy.state === null) return [];
+  return listView(copy.state).devices.flatMap((row) => (row.ended === null && row.until !== null && row.until <= now ? [{ key: row.key, until: row.until }] : []));
+}
+
+/** The devices `after` shows out that `before` did not (all of them when there was no copy before), each with the place of the entry that put it out. */
+function newlyOut(before: FollowerCopy | null, after: FollowerCopy): { readonly key: string; readonly seq: number }[] {
+  const state = after.state;
+  if (state === null) return [];
+  const was = before?.state?.signers ?? {};
+  return Object.entries(state.signers).flatMap(([key, row]) =>
+    row.as === "device" && row.ended !== null && !(Object.hasOwn(was, key) && was[key]!.ended !== null) ? [{ key, seq: row.ended }] : []);
 }
 
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {
@@ -1124,42 +1252,6 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
     else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: LIST_DEVICE_LABEL });
   }
   return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed };
-}
-
-/**
- * One of this PC's two state folders takes a pin from the other (PcAccountState.takeSibling): what the pin is good for
- * comes first. The list knows this PC by the keys in the pinned folder, so those replace whatever keys this folder
- * made; the copy of the list comes too when there is one. Null when both are here, else why not: the folder then
- * takes no pin and fails closed, since a PC pinned to a list by keys it does not hold would let none of its devices in.
- */
-export function bringSiblingList(stateDir: string, siblingDir: string, pin: { readonly bind_id: string; readonly list: string }): string | null {
-  const from = listKeysPath(siblingDir);
-  const to = listKeysPath(stateDir);
-  const failed = (path: string, error: unknown) =>
-    `This PC is pinned to a signed list in ${siblingDir}, and ${path} could not be brought beside it (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : "unknown error")})`;
-  let keys: unknown;
-  try { keys = JSON.parse(readFileSync(from, "utf8")); } catch (error) { return failed(from, error); }
-  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return failed(from, new Error("it holds no keys"));
-  const copyFrom = join(siblingDir, ACCOUNT_LIST_FILE);
-  let copy: ListFile | null = null;
-  let text: string | null = null;
-  try { text = readFileSync(copyFrom, "utf8"); } catch (error) {
-    // no copy there: this folder reads the list from its start, as the pinned one would
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return failed(copyFrom, error);
-  }
-  if (text !== null) {
-    copy = parseFile(text);
-    // A copy that does not read is no missing copy: the pinned folder lets nobody in until a person restores or
-    // removes it, and this folder must not read the list anew from whatever the account service shows instead
-    if (copy === null) return failed(copyFrom, new Error("it does not read"));
-    // a copy of another binding is not the pinned one's
-    if (copy.bind_id !== pin.bind_id) copy = null;
-  }
-  try {
-    writePrivateState(to, keys);
-    if (copy !== null) writePrivateState(join(stateDir, ACCOUNT_LIST_FILE), copy);
-  } catch (error) { return failed(to, error); }
-  return null;
 }
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
