@@ -8,10 +8,11 @@ import {
 } from "./account-list-entry.ts";
 import {
   CARD_SIGNATURE_CHARS, EPOCH_LINK_BYTES, INVITE_SECONDS_MAX, INVITE_USES_MAX, LIST_CARD_PREFIX, LIST_LEVEL, LIST_LEVEL_TABLE, LIST_READ_PREFIX, ListKindError, ReadProofError,
-  SEALED_MIN_BYTES, admitsDevice, cardBinding, cardBytes, cardHolds, checkReadProof, firstListState, holdsPc, inviteRefusal, isListKey, isListLabel, kindBody, listView, namesFields, readKind,
+  SEALED_MIN_BYTES, admitsDevice, cardBinding, cardBytes, cardHolds, checkReadProof, firstListState, holdsPc, inviteRefusal, isListKey, isListLabel, joinEntry, kindBody, listView, namesFields, readKind,
   readListState, readNames, readProofRefusal, replayList, rowsNamed, sealEpoch, shownList, signCard, signReadProof, takeEntry, wrapKeys,
   type EntryPlace, type ListCard, type ListCopy, type ListKind, type ListOutcome, type ListRole, type ListState, type ReadProof, type Sealed,
 } from "./account-list.ts";
+import { JoinLineSignError, readJoinLine, writeJoinLine, type JoinLine } from "./account-list-join.ts";
 import { judgeEntry, listHead, readSignersState, signerPower, signingPlace } from "./account-list-signers.ts";
 import { commitmentHolds, fromBase64Url, pairCommitment, pairDigits, toBase64Url } from "./relay-pair-sas.ts";
 
@@ -140,6 +141,9 @@ function seen(state: ListState) {
   };
 }
 const OWNER = "full device @0 by owner";
+/** Whether an entry's signature is that of a key over its body. */
+const verifyBody = async (entry: { readonly body: Uint8Array; readonly signature: Uint8Array }, key: string) =>
+  await crypto.subtle.verify(SIGN, await crypto.subtle.importKey("spki", fromBase64Url(key) as Uint8Array<ArrayBuffer>, P256, false, ["verify"]), entry.signature as Uint8Array<ArrayBuffer>, entry.body as Uint8Array<ArrayBuffer>);
 
 function deepFreeze<Value>(value: Value): Value {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
@@ -1231,8 +1235,9 @@ describe("the invite's proof for reading", () => {
   const fields = { after: "", at: String(T0 + 600), key: pool.key, list: LIST };
 
   test("the holder of the line makes it with the invite's key: one text as an entry is, a body ovis-list-read/1 with the fields after, at, key and list", async () => {
+    const line = await lineOf(pool);
     for (const proof of [proofOf(), proofOf({ after: 7 }), proofOf({ after: 0 })]) {
-      const text = await signReadProof(proof, pool.pair.privateKey);
+      const text = await signReadProof(line, { after: proof.after, at: proof.at });
       expect(await checkReadProof(text)).toEqual(proof);
       expect(Buffer.from(entryFromText(text).body.subarray(0, 16)).toString()).toBe("ovis-list-read/1");
     }
@@ -1247,7 +1252,9 @@ describe("the invite's proof for reading", () => {
     }
     expect(await refusal(await signed(fields, other))).toBe("signature_invalid");
     expect(await refusal(await signed({ ...fields, at: "" }, other))).toBe("proof_malformed");
-    await expect(signReadProof(proofOf({ key: "x" }), pool.pair.privateKey)).rejects.toThrow(ReadProofError);
+    // The key and the list are the line's: a caller names only the place and the time, and a line with no list reads no log.
+    await expect(signReadProof(await lineOf(pool), { after: -1, at: T0 })).rejects.toThrow(ReadProofError);
+    await expect(signReadProof(await lineOf(pool, null), { after: null, at: T0 })).rejects.toThrow(ReadProofError);
   });
 
   test("what the list holds of its invite, after its form and its signature: the first of invite_unknown, invite_revoked, invite_void, invite_spent", async () => {
@@ -1261,6 +1268,94 @@ describe("the invite's proof for reading", () => {
     expect(readProofRefusal(voided, proofOf())).toBe("invite_void");
     const revoked = (await play([[owner, device(phone)], [phone, invite(pool, 1)], [pool, join(1)], [owner, remove(phone)], [pool, remove(pool)]])).state;
     expect(readProofRefusal(revoked, proofOf())).toBe("invite_revoked");
+  });
+});
+
+/** The line of an invite whose key a test holds, as a PC reads it: for the list of the test lists, or for an account with none. */
+const SERVICE = "https://accounts.ovis.test";
+const lineOf = async (invite: Key, list: string | null = LIST): Promise<JoinLine> =>
+  await readJoinLine(await writeJoinLine(SERVICE, "TEST-ONLY-account", list, invite.pair.privateKey), { service: SERVICE, followsLists: true });
+
+describe("a PC joins with the line it was given", () => {
+  const joining = async (n: number) => {
+    const key = await machine(n);
+    return { key: key.key, privateKey: key.pair.privateKey, enc: key.enc, endpoint: E(n) };
+  };
+
+  test("the PC hands over its own keys and where the entry stands: the join is built and signed here, and it counts", async () => {
+    const { links, state } = await play([[owner, invite(pool, 2)]]);
+    const head = at(links, 1).held;
+    const line = await lineOf(pool);
+    const pc1 = await joining(1);
+    const entry = await joinEntry(line, pc1, { issued_at: T0 + 120, prev: head.hash, seq: 2 }, SEAL);
+    const text = entryToText(entry);
+    const shown = await shownList({ entries: links.map((item) => item.text), state }, { after: 1, entries: [text], head: { seq: 2, hash: entryHash(entry.body) } });
+    expect([shown.took.map((item) => said(item.outcome)), seen(shown.member.state).pcs, shown.stopped]).toEqual([["counts"], { e1: "joined machine1 @2 with pool" }, null]);
+    const body = readBody(entry.body);
+    expect([body.kind, body.signer, body.list, body.adds, body.ends]).toEqual(["join", pool.key, LIST, undefined, undefined]);
+    expect(readKind(body)).toMatchObject({ kind: "join", endpoint: E(1), pc: pc1.key, enc: pc1.enc, sealed: SEAL });
+    // With no key to seal its names with, it joins with none.
+    const bare2 = await joinEntry(line, await joining(2), { issued_at: T0 + 180, prev: entryHash(entry.body), seq: 3 }, null);
+    expect(readKind(readBody(bare2.body))).toMatchObject({ kind: "join", sealed: null });
+  });
+
+  test("the card in it is the PC's own, for this list, this relay key and this invite: no card comes from outside", async () => {
+    const line = await lineOf(pool);
+    const pc1 = await joining(1);
+    const kind = readKind(readBody((await joinEntry(line, pc1, { issued_at: T0, prev: LIST, seq: 1 }, null)).body));
+    if (kind === null || kind.kind !== "join") throw new Error("no join");
+    expect(await cardHolds({ key: pc1.key, enc: pc1.enc, list: LIST, endpoint: E(1), invite: pool.key }, kind.card)).toBe(true);
+    // A private key that is not the PC's own gives a join whose card does not hold: it lets nobody in.
+    const mixed = await joinEntry(line, { ...pc1, privateKey: other.pair.privateKey }, { issued_at: T0 + 120, prev: LIST, seq: 1 }, null);
+    const { state } = await play([]);
+    const withInvite = (await takeEntry(state, (await next(await first(), owner, invite(pool))).held)).state;
+    const held = { entry: mixed, body: readBody(mixed.body), hash: entryHash(mixed.body), list: LIST };
+    expect(said((await takeEntry({ ...withInvite, footing: { seq: 0, hash: LIST } }, held)).outcome)).toBe("no_effect card_invalid");
+  });
+
+  test("a line that names no list joins by no entry, and values out of their form are refused", async () => {
+    const pc1 = await joining(1);
+    await expect(joinEntry(await lineOf(pool, null), pc1, { issued_at: T0, prev: LIST, seq: 1 }, null)).rejects.toThrow(ListKindError);
+    await expect(joinEntry(await lineOf(pool), { ...pc1, endpoint: "x" }, { issued_at: T0, prev: LIST, seq: 1 }, null)).rejects.toThrow(ListKindError);
+    await expect(joinEntry(await lineOf(pool), { ...pc1, enc: "x" }, { issued_at: T0, prev: LIST, seq: 1 }, null)).rejects.toThrow(ListKindError);
+  });
+
+  test("the line signs no body but the join of its own key on its own list, which adds no key and ends none", async () => {
+    const line = await lineOf(pool);
+    const good = bodyOf(await join(1), pool, { seq: 1, list: LIST, prev: LIST });
+    expect(await verifyBody(await line.signJoin(good), pool.key)).toBe(true);
+    const refused: EntryBody[] = [
+      { ...good, adds: { key: stranger.key, power: "full" } },
+      { ...good, adds: { key: stranger.key, power: "bound" } },
+      { ...good, ends: owner.key },
+      { ...good, signer: owner.key },
+      { ...good, list: "0".repeat(64) },
+      { ...good, list: "", prev: "", seq: 0 },
+      bodyOf(await device(stranger), pool, { seq: 1, list: LIST, prev: LIST }),
+      bodyOf(invite(stranger), pool, { seq: 1, list: LIST, prev: LIST }),
+      bodyOf(remove(owner), pool, { seq: 1, list: LIST, prev: LIST }),
+      bodyOf(opening(0), pool, { seq: 1, list: LIST, prev: LIST }),
+      bodyOf({ kind: "later_kind" }, pool, { seq: 1, list: LIST, prev: LIST }),
+      { ...good, kind: "JOIN" },
+    ];
+    for (const body of refused) await expect(line.signJoin(body)).rejects.toThrow(JoinLineSignError);
+    // What is judged is what is signed: an object that says `join` once and something else the next time gets no signature for the second.
+    let reads = 0;
+    const shifty = { ...good, get kind() { reads++; return reads === 1 ? "join" : "device"; } };
+    const entry = await line.signJoin(shifty).catch((error: unknown) => error);
+    if (!(entry instanceof Error)) expect(readBody((entry as { body: Uint8Array }).body).kind).toBe("join");
+    await expect((await lineOf(pool, null)).signJoin({ ...good, list: "" })).rejects.toThrow(JoinLineSignError);
+  });
+
+  test("the line signs no proof for reading but that of its own key and its own list", async () => {
+    const line = await lineOf(pool);
+    const proof = (values: Record<string, string>, prefix = LIST_READ_PREFIX) => writeFieldsUnder(prefix, Object.entries(values).map(([name, value]) => ({ name, value: utf8ToBytes(value) })));
+    const own = { after: "", at: String(T0), key: pool.key, list: LIST };
+    expect((await line.signRead(proof(own))).length).toBe(64);
+    for (const bytes of [proof({ ...own, key: owner.key }), proof({ ...own, list: "0".repeat(64) }), proof(own, "ovis-list/1"), proof(own, "ovis-invite-redeem/1"), utf8ToBytes("ovis-list-read/1x"), new Uint8Array()]) {
+      await expect(line.signRead(bytes)).rejects.toThrow(JoinLineSignError);
+    }
+    await expect((await lineOf(pool, null)).signRead(proof({ ...own, list: "" }))).rejects.toThrow(JoinLineSignError);
   });
 });
 

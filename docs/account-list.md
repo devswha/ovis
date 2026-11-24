@@ -333,11 +333,13 @@ json = {"v":1,"service":S,"account":A,"list":L,"secret":K}
   list id says the account has a signed list, and joining it on the service's word alone would undo
   what the list is for.
 - A line that reads gives the service, the account, the list id (or none) and the invite's public
-  key as [a key](#the-form). It gives no private key: it signs the one message a machine redeems
-  an invite with ([An invite is a key](#an-invite-is-a-key)), for the line's own account and
-  nothing a caller composes, and it holds the secret once more as a key that only agrees on a
-  shared secret (ECDH), which opens what was encrypted to the invite's key. Neither can be
-  exported.
+  key as [a key](#the-form). It gives no private key. It signs three things and nothing a caller
+  composes: the message a machine redeems an invite with ([An invite is a key](#an-invite-is-a-key)),
+  for the line's own account; a `join` entry of its own key on its own list that adds no key and
+  ends none, which a PC builds from its own keys and never from what it was sent; and the proof by
+  which its holder reads its own list ([Reading the log with an invite](#reading-the-log-with-an-invite)).
+  And it holds the secret once more as a key that only agrees on a shared secret (ECDH), which
+  opens what was encrypted to the invite's key. Neither can be exported.
 - No released build wrote a line before the account was in it, so there is one form and one
   version. A line without `account` is refused (`members`).
 

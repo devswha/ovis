@@ -19,8 +19,9 @@ import { utf8ToBytes } from "@noble/hashes/utils.js";
 import { ACCOUNT_OSES, type AccountOs } from "./account-asker.ts";
 import {
   ListEntryError, canonicalBase64Url, entryFromText, entryToText, isListHash, isListKeyEncoding, isListNumber, isListPoint, readFieldsUnder, verifySignature, writeFieldsUnder,
-  type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
+  type Entry, type EntryBody, type HeldEntry, type ListField, type ListRefusalCode, type SignerPower,
 } from "./account-list-entry.ts";
+import type { JoinLine } from "./account-list-join.ts";
 import { ACCOUNT_LABEL_MAX } from "./account-records.ts";
 import {
   firstSignersState, judgeEntry, readSignersState, replayEntries, shownEntries, signerPower,
@@ -1051,14 +1052,47 @@ function readProofBody(body: Uint8Array): ReadProof {
   return { key, list, after: after === "" ? null : Number(after), at: Number(at) };
 }
 
-/** The invite's proof for reading, made by the holder of the line with the invite's private key: one text, as an entry is. Refuses `proof_malformed` for what no reader would take. */
-export async function signReadProof(proof: ReadProof, privateKey: CryptoKey): Promise<string> {
+/**
+ * The invite's proof for reading, made by the holder of the line: one text, as an entry is. The key and the list
+ * are the line's, and it is the line that signs (readJoinLine): a caller names the place its page follows and
+ * the time. Refuses `proof_malformed` for what no reader would take, a line that names no list among it.
+ */
+export async function signReadProof(line: Pick<JoinLine, "key" | "list" | "signRead">, proof: Pick<ReadProof, "after" | "at">): Promise<string> {
+  const { key, list } = line;
+  if (list === null) throw new ReadProofError("proof_malformed", "This invite names no list to read");
   const body = asProof(() => writeFieldsUnder(LIST_READ_PREFIX, [
-    field("after", proof.after === null ? "" : String(proof.after)), field("at", String(proof.at)), field("key", proof.key), field("list", proof.list),
+    field("after", proof.after === null ? "" : String(proof.after)), field("at", String(proof.at)), field("key", key), field("list", list),
   ]));
   readProofBody(body);
-  const signature = new Uint8Array(await crypto.subtle.sign(SIGN, privateKey, new Uint8Array(body)));
-  return entryToText({ body, signature });
+  return entryToText({ body, signature: await line.signRead(body) });
+}
+
+/** A PC's own keys, as it joins: its signing key pair, its encryption key and its relay key. */
+export interface JoiningPc {
+  readonly key: string;
+  /** The private half of `key`: it signs the PC's card, here and nowhere else. */
+  readonly privateKey: CryptoKey;
+  readonly enc: string;
+  readonly endpoint: string;
+}
+
+/**
+ * The `join` of a PC that joins by itself with the invite of a line it was given: the entry, signed with the
+ * invite's key. The PC hands over its own keys and where the entry stands, and nothing that could have come from
+ * anybody else: the card is made here with the PC's own private key (for this list, this relay key and this
+ * invite), the body is built here, and the line signs only that. So a PC cannot be made to sign a `join` that
+ * somebody else composed, with a key of theirs in it. `sealed` is the PC's names under sealEpoch's epoch, or null.
+ * Refuses `entry_invalid` for a line that names no list and for values out of their form.
+ */
+export async function joinEntry(
+  line: Pick<JoinLine, "key" | "list" | "signJoin">, pc: JoiningPc, place: Pick<EntryPlace, "issued_at" | "prev" | "seq">, sealed: Sealed | null,
+): Promise<Entry> {
+  const { key: invite, list } = line;
+  if (list === null) throw new ListKindError("This invite names no list, so there is no list to join by an entry");
+  const { key, privateKey, enc, endpoint } = pc;
+  const card = await signCard({ key, enc, list, endpoint, invite }, privateKey);
+  const { issued_at, prev, seq } = place;
+  return await line.signJoin(kindBody({ issued_at, list, prev, seq, signer: invite }, { kind: "join", endpoint, pc: key, enc, card, sealed }));
 }
 
 /**
