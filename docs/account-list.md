@@ -1493,24 +1493,36 @@ this line in the next 15 minutes can add a PC to your account without asking you
    only copy of the private key: it is shown once, on the device that made it, and never stored.
 2. The account service gets the public key (`POST /v1/pc-invites` `{ invite_key, auto }`), which
    is what a PC redeems; the answer's `account` must be the device's own, or no line is shown.
-3. The device signs an `invite` entry for that key: `uses` 1, `exp` fourteen minutes from the time
-   the device judges by (its own clock, never the account service's), under the service's fifteen.
+3. The device signs an `invite` entry for that key: `uses` 1, `exp` fourteen minutes from its own
+   clock as it reads now (never the account service's, nor the list's time or a floor it saved),
+   under the service's fifteen.
    For an invite a PC joins with by itself the current epoch's key is wrapped to the invite's key,
    so the PC that joins reads the list's names.
 4. Only when the device's own copy shows the entry is the line shown, with the minutes left and
    the one line an agent runs on the PC (`--join-file ~/ovis-invite.txt --account <the account's
    id>`). Where the service or the list refuses, nothing is shown, the service's invite is ended
-   again, and the key pair is gone.
+   again, and the key pair is gone. Where the entry went out and whether it was placed is not
+   known (no answer and no read of the log since, or a request the service kept asking for
+   again), nothing is ended and the line is not dropped: the page keeps it in memory, says **It is
+   not known yet whether the invite was made**, and the next **Make an invite** settles the kept
+   request against the log first. The line is shown if the list holds the entry; otherwise the
+   service's invite is ended and a new invite is made.
 
 A sign-in older than ten minutes proves its registered key for that very invite, to the service's
 invite and to the entry alike (`ovis-pc-add/1`, purpose `invite` or `invite-auto`, the invite's
 key where a listing id stands otherwise).
 
 The list's invites are listed under it: **Expires in N min** while open, then **Expired**,
-**Used** or **Revoked**, for an hour after their end. **Revoke** signs a `remove` of the invite's
-key and ends the service's invite; for an invite a PC joins with by itself the same request opens
-the next epoch, since the holder of the line held the epoch's key. An invite past its `exp` by the
-device's clock is never shown as open.
+**Used**, **Revoked** or **Ended**, for an hour after their end. **Used** is an invite a PC joined
+with, or one whose removal the device's copy shows placed right after a `pc` entry (a person's
+Add of the PC that joined with it); **Revoked** only a removal on its own, before the invite's
+time was over; **Ended** any other end (its placer left, it went with a PC's removal). **Revoke**
+signs a `remove` of the invite's key and ends the service's invite; where the kinds call for the
+next epoch after it (an invite a PC joins with by itself held the epoch's key), the same request
+opens it. A device whose clock reads more than ten minutes under the time it saved signs the
+removal alone. An invite past its `exp` is never shown as open, by the device's clock held
+against the latest time it saved and the list's own time: setting the clock back opens nothing
+again.
 
 **The PC that joined with an invite that waits for Add** shows on the card of a PC that asks, as
 **Add this PC to your account? (joined with your invite)**, and its **Add** needs no number
@@ -1522,8 +1534,18 @@ card (see "What a line signs for a PC's card" above), checked with `verifyLinePr
 signature of the line is never taken for it: the account service chooses a redeem's challenge, so
 it could have the line sign the challenge of a card of its own. The device offers the one-press Add only where that proof holds, the card
 holds for this list and that relay key, and its own copy of the list holds the invite as open,
-placed by a member, waiting for Add. Add has the account admit the PC, signs its `pc` entry and
-ends the invite's key in the same request. Any other post is a PC that asks, and gets the number.
+placed by a member, waiting for Add, not past its `exp`. Add has the account admit the PC, signs
+its `pc` entry and ends the invite's key in the same request (in every branch of the write, an
+epoch opened for the entry included). The press is for the card that was shown: its very keys,
+card and invite, signed by the member key at the press; a post that changed since is drawn again
+for a press of its own. The invite is judged again on the state each signature is made on, so one
+that ran out, was revoked or lost its placer meanwhile signs nothing ("This request ran out"). The
+Add is done only once the device's own copy holds the PC by that card and the invite's end: where
+another Add placed the PC meanwhile, the invite's removal goes alone. The `invited` record is
+written before the card goes. The card is drawn again when the list, the posts or the account's
+PCs change, when the page comes back to the front, and at the invite's end, and it says nothing
+of a sign-in code. On an account with a list, a card never falls back to the directory's
+admission alone. Any other post is a PC that asks, and gets the number.
 
 What that proves and what it does not: whoever holds the line can put a PC of theirs on the card,
 under a name they choose, for the invite's fifteen minutes, and the press is the person's check
