@@ -1686,9 +1686,10 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
 - **A removal of this PC's own follows the device.** A device this PC holds a removal against (a
   Revoke here, a signed removal or block it applied) stays out by whichever key the list holds it
   by, and by the key a sign-in key it put out vouched for (`heldOut`). A device the list removes
-  is kept as removed here by every key it has been in the list by. Not covered: a device that
-  signed in again after the move, that this PC put out by its new sign-in key, and that never
-  handed this PC the link of that key to its account key.
+  is kept as removed here by every key it has been in the list by. A device this PC put out by a
+  sign-in key it took after the move stays out by its account key too: the PC reads the account's
+  links from the account service before it pins and while it holds a removal (each signed by both
+  keys). Not covered: a service that withholds that link.
 - **A carried key that never handed over** (an app from before the list, still on the sign-in it
   was carried in by) is let in only while the account service's last whole snapshot of this run
   names it too. It is local and undone by the same word: no device signs a removal because the

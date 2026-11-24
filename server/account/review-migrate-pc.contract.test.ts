@@ -7,8 +7,8 @@
  * and pin a guard the review checked. Written to live in server/account/ (as list-migrate.contract.test.ts does).
  *
  * Taken into the suite after the review, with the birth placed whole at the account service fake (its one-request
- * birth) and each device signed in there: the FINDING tests pass since the fixes of that round, and the one marked
- * OPEN pins what the PC does while the lead's ruling on it is awaited.
+ * birth) and each device signed in there: the FINDING tests pass since the fixes of that round (M2 by the account
+ * service's links, as the lead ruled), and the residual of M2 is pinned beside them.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -53,7 +53,7 @@ async function accountInUse() {
   service.opensAll = true;
   service.listAccounts = "*";
   service.listMigrateAccounts = "*";
-  const accountService = { url: "https://account.test", fetch: service.fetch };
+  const accountService = { url: "https://account.test", fetch: (request: Request) => service.fetch(request) };
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 });
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
@@ -174,14 +174,12 @@ async function followsByMove() {
   return { ...pc, born };
 }
 
-describe("FINDING LOW-2: a pinned PC answers any naming with pinned: true", () => {
-  test("FINDING LOW-2: a naming of another list, even one that holds for nobody, is told pinned: true", async () => {
+describe("LOW-2, ruled W2 as built: a pinned PC answers its own pin", () => {
+  test("a naming of another list, even one that holds for nobody, is told the list this PC follows, which the device compares with its own", async () => {
     const pc = await followsByMove();
     const link = await sessionOf(pc, pc.phone, "member");
     const other = "ab".repeat(32);
-    const answer = await names(link, { naming: await strangerNaming(other, pc.phone.member.key, pc.endpoint) });
-    // what should be: the PC does not follow the list that was named, and says so
-    expect(answer.pinned).toBe(false);
+    expect(await names(link, { naming: await strangerNaming(other, pc.phone.member.key, pc.endpoint) })).toEqual({ pinned: true, list: pc.born.id });
   }, SLOW);
 });
 
@@ -218,6 +216,8 @@ describe("FINDING MEDIUM-2: a removal this PC holds against a device's present s
     await pc.pull();
     const again = await signedInAgain(pc.tablet);
     signIn(pc.service, ACCOUNT, again);
+    // the app links its new sign-in to the key the list holds it by, at the account service (D11.2)
+    await born.link(again);
     pc.service.removeDevice(ACCOUNT, pc.tablet.signIn.key);
     await pc.run(60_000);
     pc.time.advance(JOIN_HOLD_MS);
@@ -234,15 +234,55 @@ describe("FINDING MEDIUM-2: a removal this PC holds against a device's present s
     return { ...pc, born, again, removeHere, phoneNames };
   }
 
-  // OPEN, waiting for the lead's ruling on MEDIUM-2 (the PC reading the list's links from the account service, or a stated
-  // residual): this pins what the PC does today. With the links read, the last line turns to `toBeNull()`
-  test("OPEN MEDIUM-2: the person removes the tablet here by its new sign-in key, whose link the tablet never handed this PC; after the phone's naming the tablet opens this PC by its account key", async () => {
+  test("FINDING MEDIUM-2: the person removes the tablet here by its new sign-in key, whose link the tablet never handed this PC; after the phone's naming the tablet opens this PC by its account key", async () => {
     const pc = await tabletSignedInAgain();
     pc.removeHere();
     expect(pc.services.devices.holdsRemoval(pc.again.signIn.key)).toBe(true);
     await pc.run(60_000);
     await pc.phoneNames();
+    // what should be (the lead's ruling M2, a): the PC read the link from the account service before it pinned
+    expect(await pc.signsIn(pc.again, "member")).toBeNull();
+  }, SLOW);
+
+  test("after the pin: the tablet signs in again, the person removes it here by that key, and the PC's next read of the list keeps it out by its account key", async () => {
+    const pc = await accountInUse();
+    const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet]), pc.time.seconds);
+    await pc.pull();
+    await born.handOver(pc.tablet);
+    await pc.pull();
+    expect(await names(await sessionOf(pc, pc.phone), { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) })).toEqual({ pinned: true, list: born.id });
+    await pc.settle();
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    expect(await pc.signsIn(pc.tablet, "member")).toBe("drive");
+    // the link is taken at the account service only now, after the pin: no naming ever handed it to this PC
+    const again = await signedInAgain(pc.tablet);
+    signIn(pc.service, ACCOUNT, again);
+    await born.link(again);
+    pc.services.devices.removeAccountKey(again.signIn.key, ACCOUNT, { id: "e".repeat(32), issuedAt: new Date().toISOString() });
+    // the PC reads its list at its own pace: the read after the removal takes the link with it
+    pc.time.advance(301_000);
+    pc.list.tick();
+    await pc.list.settled();
+    expect(await pc.signsIn(pc.tablet, "member")).toBeNull();
+  }, SLOW);
+
+  test("the residual of M2: a service that withholds the link lets that device in by its account key", async () => {
+    const pc = await tabletSignedInAgain();
+    pc.service.tamperList(pc.born.id, { reader: { server_id: pc.serverId }, withholdLinks: [pc.again.member.key] });
+    pc.removeHere();
+    await pc.run(60_000);
+    await pc.phoneNames();
     expect(await pc.signsIn(pc.again, "member")).toBe("drive");
+  }, SLOW);
+
+  test("no links read, no pin: a PC whose account service does not serve the list's links follows no naming yet", async () => {
+    const pc = await tabletSignedInAgain();
+    const served = pc.service.fetch;
+    pc.service.fetch = async (request: Request) => (new URL(request.url).pathname === "/v2/pc/list/links" ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : await served.call(pc.service, request));
+    expect(await names(await sessionOf(pc, pc.phone), { naming: await pc.born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) })).toEqual({ pinned: false, why: "not_read", wait: null });
+    pc.service.fetch = served;
+    pc.time.advance(31_000);
+    await pc.phoneNames();
   }, SLOW);
 
   test("GUARD: the same tablet named the list here once by its new key (its link kept): after the pin it stays out", async () => {

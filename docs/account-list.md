@@ -1816,7 +1816,13 @@ neither a hand-over nor the pin undoes a removal.
   the vouches it kept and was handed now. It answers `{ pinned: true, list }` or `{ pinned: false,
   why, wait }`, `why` one of the refusals above or `naming_invalid`, `named_here`, `not_read`,
   `lists_full`, `unavailable`, `wait` in seconds of its own clock. A PC that follows a list answers
-  `pinned: true` for that list alone, and `other_list` for any other. On a yes it saves its copy, pinned
+  `{ pinned: true, list }` with the list it follows, whatever was named: the device compares it.
+- **The account service's links.** Before it pins, the PC reads every link the account service
+  keeps for that list (`POST /v2/pc/list/links`, page after page), checks both signatures of each
+  itself, and keeps those that say something here, beside the vouches: no links read, no pin yet.
+  After the pin it reads them again at each read of the log while it holds a removal of its own,
+  so a device it put out by a sign-in key stays out by its member key whether or not it ever
+  handed that link. What is left: a service that withholds a link. On a yes it saves its copy, pinned
   as `migrated`, and pins once the answer is out: the pin ends every session of the account's rows
   with `auth_changed`, the naming one among them, and its final `WELCOME` then names the list.
 - **After the pin** a device that hands its place on keeps its row, a removal of the PC's own

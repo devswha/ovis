@@ -179,6 +179,15 @@ export class MigratedList {
     return card;
   }
 
+  /** The device links its present sign-in key to the key the list holds it by, at the account service (D11.2), as an app does after a new sign-in. */
+  async link(device: MigratingPhone): Promise<void> {
+    const vouch = await signVouch(this.held, device);
+    if (vouch === null) throw new Error("That device links nothing");
+    const answer = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/links`, { method: "POST", headers: { authorization: `Bearer ${tokenOf(this.service, device.signIn.key)}` },
+      body: JSON.stringify({ key: device.member.key, link: vouch.link }) }));
+    if (!answer.ok) throw new Error(`The link was not taken: ${answer.status} ${await answer.text()}`);
+  }
+
   /** A member puts a key out. */
   remove(key: string, by: ListSigner, how: Placing = "place"): Promise<string> { return this.append({ kind: "remove", ends: key }, by, how); }
 

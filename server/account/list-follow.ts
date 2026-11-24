@@ -27,7 +27,7 @@ import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writ
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import { signerPower, type ListPlace } from "../../shared/account-list-signers.ts";
 import {
-  admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
+  admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS, READ_PAGES_MAX,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
 import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
@@ -452,7 +452,7 @@ export class ListFollow implements ListAuthority {
   /** The vouches devices handed this PC with their namings, per list (list-vouches.ts). */
   private readonly vouches: ListVouches;
   /** The last read of each list a device named here, by the clock that only moves forward: one a NAMED_READ_MS. */
-  private readonly namedReads = new Map<string, { readonly at: number; readonly copy: FollowerCopy | null }>();
+  private readonly namedReads = new Map<string, { readonly at: number; readonly read: { readonly copy: FollowerCopy; readonly links: readonly HeldLink[] } | null }>();
   private readonly differences = new Set<string>();
   private readonly ids = new WeakMap<FollowerCopy, Map<string, string>>();
   private turn: Promise<unknown> = Promise.resolve();
@@ -962,27 +962,26 @@ export class ListFollow implements ListAuthority {
       const scope = this.bound();
       if (scope === null) return no("unavailable");
       await this.ready;
+      // a PC that follows a list says which (W2 as ruled): the device compares it with its own
+      if (this.isPinned && scope.list !== null) return { pinned: true, list: scope.list };
+      if (this.problem !== null || this.removedFrom(scope.account)) return no("unavailable");
       const naming = await heldNaming(scope.account, scope.endpoint, given.session, given.naming);
       if (naming === null) return no("naming_invalid");
-      // a PC that follows a list says so of that list alone: any other is one it does not follow
-      if (this.isPinned && scope.list !== null) return naming.list === scope.list ? { pinned: true, list: scope.list } : no("other_list");
-      if (this.problem !== null || this.removedFrom(scope.account)) return no("unavailable");
       if (this.want !== null && this.want !== naming.list) return no("named_here");
       const keys = await this.keysOf(scope);
       if (keys === null || !this.live(scope)) return no("unavailable");
-      const read = await this.namedRead(scope, keys, naming.list);
+      const named = await this.namedRead(scope, keys, naming.list);
       if (!this.live(scope)) return no("unavailable");
+      const read = named?.copy ?? null;
       const state = read?.state ?? null;
-      if (read === null || state === null) return no("not_read");
+      if (named === null || read === null || state === null) return no("not_read");
       const witness = this.deps.witness?.() ?? null;
       if (witness === null || witness.account !== scope.account) return no("unavailable");
       const holds = this.deps.holdsRemoval;
-      // A link says something here only between a device of this list and a key this PC lets in through its account or
-      // holds a removal against: one between keys made up a moment ago takes no place. Those of a list of this account are
-      // kept, whatever comes of this naming, since the next one may need them, and count in this one whether kept or not
-      const letIn = new Set(witness.rows.map((row) => row.key));
-      const handed = state.account !== scope.account ? [] : (await heldVouches(scope.account, naming.list, given.vouches)).filter((vouch) =>
-        Object.hasOwn(state.signers, vouch.key) && state.signers[vouch.key]!.as === "device" && (letIn.has(vouch.device) || witness.removed.includes(vouch.device) || holds?.(vouch.device) === true));
+      // The links this device hands, and every link the account service keeps for the list, that say something here: one
+      // between keys made up a moment ago takes no place. Those of a list of this account are kept, whatever comes of this
+      // naming, since the next one may need them, and count in this one whether kept or not
+      const handed = state.account !== scope.account ? [] : this.linksThatCount(state, [...await heldVouches(scope.account, naming.list, given.vouches), ...named.links], witness);
       if (state.account === scope.account) {
         let kept: "kept" | "full";
         try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, naming.list, handed); } catch { return no("unavailable"); }
@@ -1023,10 +1022,10 @@ export class ListFollow implements ListAuthority {
    * holds of that list read on, or a new one. At most one read a list each NAMED_READ_MS; null when no read reached the
    * head the account service shows.
    */
-  private async namedRead(scope: Bound, keys: PcListKeys, list: string): Promise<FollowerCopy | null> {
+  private async namedRead(scope: Bound, keys: PcListKeys, list: string): Promise<{ readonly copy: FollowerCopy; readonly links: readonly HeldLink[] } | null> {
     const now = this.deps.mono?.() ?? performance.now();
     const last = this.namedReads.get(list);
-    if (last !== undefined && now - last.at >= 0 && now - last.at < NAMED_READ_MS) return last.copy;
+    if (last !== undefined && now - last.at >= 0 && now - last.at < NAMED_READ_MS) return last.read;
     let base = !this.isPinned && this.copy?.list === list && this.copy.me.key === keys.key && this.copy.me.endpoint === scope.endpoint ? this.copy : null;
     if (base === null) {
       const first = pinList(null, { account: scope.account, list, me: { key: keys.key, endpoint: scope.endpoint }, pin: { how: "added" } });
@@ -1036,11 +1035,51 @@ export class ListFollow implements ListAuthority {
     // what the account service answers this read, and nothing older, says whether it reached the head
     this.lastVerdict = null;
     const copy = await this.readInto(base);
-    const whole = this.lastVerdict === "caught_up" ? copy : null;
+    // and every link the account service keeps for it: no pin without them (the lead's ruling M2)
+    const links = this.lastVerdict === "caught_up" ? await this.serviceLinks(scope.account, list) : null;
+    const whole = links === null ? null : { copy, links };
     this.namedReads.delete(list);
-    this.namedReads.set(list, { at: now, copy: whole });
+    this.namedReads.set(list, { at: now, read: whole });
     while (this.namedReads.size > VOUCH_READS_MAX) this.namedReads.delete(this.namedReads.keys().next().value!);
     return whole;
+  }
+
+  /**
+   * Every link of the list's members to the keys their sign-ins registered that the account service keeps (POST
+   * /v2/pc/list/links), page after page, each checked here by its two signatures (heldVouches): the service can withhold
+   * one, never forge one. Null when a page could not be read or does not read as one.
+   */
+  private async serviceLinks(account: string, list: string): Promise<HeldLink[] | null> {
+    const held: HeldLink[] = [];
+    let after: number | null = null;
+    for (let pages = 0; pages < READ_PAGES_MAX && !this.stopped; pages++) {
+      let answer: Record<string, unknown>;
+      try { answer = await this.deps.call("/v2/pc/list/links", { list, ...(after === null ? {} : { after }) }); } catch (error) { this.error = this.words(error); return null; }
+      const { links, more } = answer;
+      if (answer.list !== list || !Array.isArray(links) || typeof more !== "boolean") return null;
+      const signed = (links as unknown[]).flatMap((one) => {
+        const { seq, key, device, link } = (typeof one === "object" && one !== null ? one : {}) as { seq?: unknown; key?: unknown; device?: unknown; link?: unknown };
+        return Number.isSafeInteger(seq) && typeof key === "string" && typeof device === "string" && typeof link === "object" && link !== null ? [{ seq: seq as number, vouch: { key, device, link: link as SignedVouch["link"] } }] : [];
+      });
+      if (signed.length !== links.length) return null;
+      held.push(...await heldVouches(account, list, signed.map((one) => one.vouch)));
+      if (!more) return held;
+      const last = signed.at(-1)?.seq;
+      if (last === undefined || (after !== null && last <= after)) return null;
+      after = last;
+    }
+    return null;
+  }
+
+  /**
+   * The links that say something at this PC (the lead's ruling M1): between a device of the list and a key this PC lets
+   * in through its account or holds a removal against. Any other takes no place and counts for nothing.
+   */
+  private linksThatCount(state: ListState, links: readonly HeldLink[], witness: { readonly rows: readonly LetIn[]; readonly removed: readonly string[] }): HeldLink[] {
+    const letIn = new Set(witness.rows.map((row) => row.key));
+    const holds = this.deps.holdsRemoval;
+    return links.filter((link) => Object.hasOwn(state.signers, link.key) && state.signers[link.key]!.as === "device"
+      && (letIn.has(link.device) || witness.removed.includes(link.device) || holds?.(link.device) === true));
   }
 
   /**
@@ -2264,6 +2303,26 @@ export class ListFollow implements ListAuthority {
     // one whole read: the service answered to the end, and the PC stands at the head the service shows. A page the PC
     // refused, a tail the service withholds and a read that ran out of its requests are none
     if (this.live(scope) && this.lastVerdict === "caught_up") this.readWhole();
+    await this.keepServiceLinks(scope);
+  }
+
+  /**
+   * After the pin, at each read of the log: the links the account service keeps for the list, that say something here,
+   * go beside the vouches, so a removal this PC holds against a device's sign-in key keeps it out by its member key too,
+   * whether or not the device ever handed its link (heldOut). Asked only while this PC holds a removal at all; a read
+   * that fails changes nothing kept.
+   */
+  private async keepServiceLinks(scope: Bound): Promise<void> {
+    const copy = this.copy;
+    const witness = this.deps.witness?.() ?? null;
+    if (!this.isPinned || !this.live(scope) || copy?.state == null || witness === null || witness.removed.length === 0) return;
+    const links = await this.serviceLinks(scope.account, copy.list);
+    const state = this.copy?.state ?? null;
+    if (links === null || state === null || !this.live(scope) || this.copy?.list !== copy.list) return;
+    const counted = this.linksThatCount(state, links, witness);
+    if (counted.length === 0) return;
+    try { this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, copy.list, counted); } catch { return; }
+    this.settle();
   }
 
   /**
@@ -2545,6 +2604,9 @@ function newlyOut(before: FollowerCopy | null, after: FollowerCopy): { readonly 
   return Object.entries(state.signers).flatMap(([key, row]) =>
     row.as === "device" && row.ended !== null && heirOf(state, key) === null && !(Object.hasOwn(was, key) && was[key]!.ended !== null) ? [{ key, seq: row.ended }] : []);
 }
+
+/** A link a PC holds: a member key of the list and the registered sign-in key both signed for. */
+type HeldLink = { readonly key: string; readonly device: string };
 
 /** The most lists whose last read a PC keeps for namings. */
 const VOUCH_READS_MAX = 4;
