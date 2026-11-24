@@ -1,5 +1,7 @@
 import fs, { chmodSync, mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { sha256 } from "./release-assets.ts";
 import { ACP_KEEPER, runsHere } from "./pty-sidecar.ts";
 import { KEEPER_MANIFEST, type PtyAsset } from "./release-assets.ts";
 import { checkKeeperManifest } from "./server-manifest.ts";
@@ -26,6 +28,16 @@ export async function installKeeper(bin: string, build: PtyAsset, release: { rel
     if (typeof assets === "string") return "no ACP keeper: " + assets;
     const asset = assets[build];
     if (asset.size > MAX_KEEPER) return "ACP keeper exceeds the 32 MiB limit";
+    const installed = join(bin, ACP_KEEPER.name);
+    try {
+      const record = await download(pathToFileURL(installed + ".json").href, 65536, "keeper record", fetchFile, signal);
+      const saved = record && JSON.parse(Buffer.from(record).toString());
+      if (saved?.version === version && saved.sha256 === asset.sha256) {
+        fs.accessSync(installed, fs.constants.X_OK);
+        const current = await download(pathToFileURL(installed).href, asset.size, asset.file, fetchFile, signal);
+        if (current && sha256(current) === asset.sha256) return "verified ACP keeper already installed";
+      }
+    } catch { /* a missing or unusable local record is repaired only from the signed release */ }
     const bytes = await checked(at, asset, fetchFile, signal);
     remaining();
     work = mkdtempSync(join(release.releases, ".keeper-"));
@@ -36,7 +48,6 @@ export async function installKeeper(bin: string, build: PtyAsset, release: { rel
     remaining();
     writeFileSync(target + ".json", JSON.stringify({ sha256: asset.sha256, version }) + "\n");
     mkdirSync(bin, { recursive: true });
-    const installed = join(bin, ACP_KEEPER.name);
     renameSync(target + ".json", installed + ".json");
     renameSync(target, installed);
     return "the ACP keeper checked against " + KEEPER_MANIFEST;

@@ -963,6 +963,15 @@ binary_helper() {
     manifest_entry "$verify_dir/$native_manifest" "$build"
   fi
   target="$helper_dir/$helper_name"
+  if [ "$1" = acpKeeper ] && [ "$entry_size" -le 33554432 ]; then
+    present="$stage/bin/$helper_name"
+    if [ -f "$present" ] && [ ! -L "$present" ] && [ -x "$present" ] && [ -f "$present.json" ] && [ ! -L "$present.json" ] &&
+      [ "$(wc -c <"$present" | tr -d ' ')" = "$entry_size" ] && [ "$(sha256 "$present")" = "$entry_sha" ] &&
+      printf '{"sha256":"%s","version":"%s"}\n' "$entry_sha" "$version" | cmp -s - "$present.json"; then
+      say "verified ACP keeper already installed"
+      return 0
+    fi
+  fi
   if [ "$entry_file" != "$helper_name-$build" ] || [ -z "$entry_sha" ] || [ -z "$entry_size" ]; then
     say "the signed $native_manifest names no $helper_label for $platform, so $without"
     return 1
@@ -990,9 +999,17 @@ stage_keeper() (
   keeper_work=$(mktemp -d "$OVIS_HOME/releases/.keeper-XXXXXX") || { say "could not stage the optional keeper"; return 0; }
   verify_dir=$keeper_work
   keeper_end=$(($(date +%s) + 12))
-  if bounded 12 binary_helper acpKeeper; then
-    mkdir -p "$stage/bin" && mv -f "$keeper_work/ovis-acp-keeper.json" "$stage/bin/ovis-acp-keeper.json" &&
-      mv -f "$keeper_work/ovis-acp-keeper" "$stage/bin/ovis-acp-keeper" || say "could not install the optional keeper"
+  prepare_keeper() {
+    if [ "$1" = repair ]; then
+      pick_checker && "$checker" "$RELEASE_PUBLIC_KEY" "$stage/ovis-server.json" "$stage/ovis-server.json.sig" || return 1
+    fi
+    binary_helper acpKeeper
+  }
+  if bounded 12 prepare_keeper "${1:-install}"; then
+    if [ -f "$keeper_work/ovis-acp-keeper.json" ]; then
+      mkdir -p "$stage/bin" && mv -f "$keeper_work/ovis-acp-keeper.json" "$stage/bin/ovis-acp-keeper.json" &&
+        mv -f "$keeper_work/ovis-acp-keeper" "$stage/bin/ovis-acp-keeper" || say "could not install the optional keeper"
+    fi
   else
     say "no verified ACP keeper installed"
   fi
@@ -1073,12 +1090,9 @@ install_binary() {
   if [ -e "$OVIS_HOME/bin" ] && [ ! -L "$OVIS_HOME/bin" ]; then
     fail "$OVIS_HOME/bin is there and is not this installer's link; move it away and run this again. Nothing was changed"
   fi
-  if binary_current; then
-    say "Ovis $version is installed already in $OVIS_HOME; nothing to do"
-    return 0
-  fi
   install_lock
   if binary_current; then
+    (stage="$OVIS_HOME/bin"; stage_keeper repair)
     install_unlock
     say "Ovis $version is installed already in $OVIS_HOME; nothing to do"
     return 0

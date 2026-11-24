@@ -31,7 +31,7 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
     ["shell", installer, installServer, false], ["plugin", null, installServer, false],
     ...(old ? [["previous shell", old.shell, old.install, true], ["previous plugin", null, old.install, true]] as const : []),
   ] as const) {
-    it.each(legacy ? ["good"] : ["good", "cleanup failure", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
+    it.each(legacy ? ["good"] : ["good", "repair", "cleanup failure", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
       `${via}: %s keeper never takes down the server or PTY host`, async (state) => {
         const root = mkdtempSync(join(scratch, "pc-"));
         const probe = keeper.replace("echo", `: > "${join(root, "ran")}"; echo`);
@@ -65,33 +65,50 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
         const releases = pathToFileURL(root).href;
         const home = join(root, ".local/share/ovis");
         if (state === "cleanup failure" && shell) writeFileSync(join(root, "rm"), '#!/bin/sh\ncase "$*" in *"/.keeper-"*|*"/ovis-acp-keeper") echo "fixture cleanup denied" >&2; exit 1;; esac\nexec /bin/rm "$@"\n', { mode: 0o755 });
-        if (shell) {
-          if (!Bun.which("node")) symlinkSync(process.execPath, join(root, "node"));
-          const result = Bun.spawnSync(["sh", "-c", `${shell}\nos=linux; arch=x64; platform=linux-x64; install_binary ${version}`],
-            { env: { HOME: root, PATH: `${root}:${process.env["PATH"]}`, TMPDIR: tmpdir(), OVIS_RELEASES_URL: releases } });
-          expect(result.exitCode, result.stderr.toString()).toBe(0);
-        } else {
-          const remove = fs.rmSync;
-          const failure = state === "cleanup failure" ? spyOn(fs, "rmSync").mockImplementation((path, options) => {
-            if (String(path).includes("/.keeper-") || String(path).endsWith("/ovis-acp-keeper")) throw new Error("fixture cleanup denied");
-            remove(path, options);
-          }) : null;
-          try {
-            expect((await install({ home, releases, version, publicKey: key.publicKey, platform: "linux-x64" })).installed).toBe(true);
-            if (failure) expect(failure).toHaveBeenCalled();
-          } finally { failure?.mockRestore(); }
-        }
+        const perform = async (fresh: boolean) => {
+          if (shell) {
+            if (!Bun.which("node") && !existsSync(join(root,"node"))) symlinkSync(process.execPath, join(root, "node"));
+            const result = Bun.spawnSync(["sh", "-c", `${shell}\nos=linux; arch=x64; platform=linux-x64; install_binary ${version}`],
+              { env: { HOME: root, PATH: `${root}:${process.env["PATH"]}`, TMPDIR: tmpdir(), OVIS_RELEASES_URL: releases } });
+            expect(result.exitCode, result.stderr.toString()).toBe(0);
+          } else {
+            const remove = fs.rmSync;
+            const failure = state === "cleanup failure" ? spyOn(fs, "rmSync").mockImplementation((path, options) => {
+              if (String(path).includes("/.keeper-") || String(path).endsWith("/ovis-acp-keeper")) throw new Error("fixture cleanup denied");
+              remove(path, options);
+            }) : null;
+            try {
+              expect((await install({ home, releases, version, publicKey: key.publicKey, platform: "linux-x64" })).installed).toBe(fresh);
+              if (failure) expect(failure).toHaveBeenCalled();
+            } finally { failure?.mockRestore(); }
+          }
+        };
+        await perform(true);
         const bin = join(home, "bin");
         expect(Bun.spawnSync([join(bin, "ovis-server")]).stdout.toString()).toBe("running\n");
         expect(readFileSync(join(bin, "bin/ovis-pty-sidecar"), "utf8")).toBe(host);
         const installed = join(bin, "bin/ovis-acp-keeper");
-        expect(existsSync(join(root, "ran"))).toBe(!legacy && state === "good");
-        if (!legacy && state === "good") {
+        const wanted = !legacy && ["good", "repair"].includes(state);
+        expect(existsSync(join(root, "ran"))).toBe(wanted);
+        if (wanted) {
           expect(Bun.spawnSync([installed]).stderr.toString()).toContain("Usage: ovis-acp-keeper ");
           expect(JSON.parse(readFileSync(`${installed}.json`, "utf8"))).toEqual({ sha256: createHash("sha256").update(probe).digest("hex"), version });
         } else {
           expect(existsSync(installed)).toBe(false);
           expect(existsSync(`${installed}.json`)).toBe(false);
+        }
+        if (state === "repair") {
+          const serverInode = fs.statSync(join(bin, "ovis-server")).ino;
+          rmSync(join(dir, releaseFile("linux-x64"))); // a keeper repair cannot download the server again
+          for (const damage of ["missing", "bad bytes", "bad record"]) {
+            if (damage === "missing") rmSync(installed);
+            else if (damage === "bad bytes") writeFileSync(installed, "wrong");
+            else writeFileSync(installed + ".json", "{}");
+            await perform(false);
+            expect(readFileSync(installed, "utf8")).toBe(probe);
+            expect(JSON.parse(readFileSync(installed + ".json", "utf8")).sha256).toBe(createHash("sha256").update(probe).digest("hex"));
+            expect(fs.statSync(join(bin, "ovis-server")).ino).toBe(serverInode);
+          }
         }
         if (legacy && old) {
           const directory = realpathSync(bin);

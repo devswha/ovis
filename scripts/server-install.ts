@@ -194,6 +194,7 @@ export interface InstallServerOptions {
   releases?: string;
   /** a test's own key; the launcher passes none, so only RELEASE_PUBLIC_KEY is trusted */
   publicKey?: string;
+  repairKeeper?: boolean;
   ptyRuns?: (path: string) => boolean;
   inWindow?: () => Promise<void>;
   /** the git trees of the checkout that asks (scripts/plugin-launch.ts): its binary only when the manifest names them */
@@ -211,7 +212,7 @@ export async function installServer(options: InstallServerOptions): Promise<{ in
   const publicKey = options.publicKey ?? RELEASE_PUBLIC_KEY;
   const current = join(home, "bin");
   const binary = join(current, binaryName(platform));
-  if (verifiedInstall(home, version, platform, publicKey)) return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
+  if ((options.repairKeeper === false || (options.sources && "error" in options.sources)) && verifiedInstall(home, version, platform, publicKey)) return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
   return await withInstallLock(home, () => installLocked(options, platform, base, publicKey), options.lockWaitMs, options.onLockWait);
 }
 
@@ -223,7 +224,11 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   for (const leftover of readdirSync(releases).filter((name) => name.startsWith(".stage-"))) rmSync(join(releases, leftover), { recursive: true, force: true });
   const current = join(home, "bin");
   const binary = join(current, binaryName(platform));
-  if (verifiedInstall(home, version, platform, publicKey)) return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
+  if (verifiedInstall(home, version, platform, publicKey)) {
+    const build = ptyAssetFor(platform);
+    const note = build && options.repairKeeper !== false && !(options.sources && "error" in options.sources) ? await installKeeper(join(current, "bin"), build, { releases, at: base + "/v" + version, version, publicKey, serverBytes: readFileSync(join(current, MANIFEST)), fetchFile: options.fetchFile }) : "";
+    return { installed: false, message: "Ovis " + version + " is installed already; nothing to do for the server" + (note ? "; " + note : ""), binary };
+  }
   // sources nothing ties to a release (no git, no checkout, changes not committed) take no binary whatever the release
   // holds: it is not asked, so one out of reach does not stop them
   const sources = options.sources;
