@@ -403,6 +403,11 @@ export interface ListWriter {
    * is wrong, so it signs nobody out for a time that is over (no clean-up removal); what a person asked for goes on.
    */
   readonly adrift: boolean;
+  /**
+   * The latest time this device saved for its clock, in seconds, or null: what a screen shows as over, and what it lets
+   * in, goes by the own clock held against it and the list's time (`listClock(state, now, floor)`). Nothing signed does.
+   */
+  readonly floor: number | null;
   readonly service: AccountService;
 }
 
@@ -1153,6 +1158,7 @@ export function accountList(options: AccountListOptions): AccountList {
         clock: listClock(copy.state, at, null),
         issued_at: at,
         adrift: copy.seen_at !== null && at < copy.seen_at - ADRIFT_SECONDS,
+        floor: copy.seen_at,
       };
     },
     holdsEntry(place) {

@@ -6,6 +6,7 @@ import { JOIN_LINE_PREFIX, readJoinLine } from "../../../shared/account-list-joi
 import { fromBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { INVITE_S, invitesOf, makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
+import { allowDevice } from "./listAllow.ts";
 
 type World = ReturnType<typeof listWorld>;
 
@@ -120,6 +121,45 @@ describe("a device that is in the list makes an invite", () => {
     expect(invitesOf(first.list, w.clock.now)).toEqual([]);
   });
 
+  it("keeps the line of an invite whose placement is not known, ends nothing, and settles it first at the next call", async () => {
+    const { w, first } = await oneDevice();
+    const id = w.held().id;
+    // the account service takes the entry, and then no read of the list answers
+    let reads = true;
+    first.wire.answer = (request) => !reads && request.method === "GET" && new URL(request.url).pathname.startsWith(`/v2/lists/${id}`) ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : null;
+    const placed = first.wire.answer;
+    first.wire.answer = async (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) { const answer = await w.fake.fetch(request); reads = false; return answer; }
+      return placed(request);
+    };
+    const outcome = await makeInvite(first.list, { auto: false, ...noWait });
+    expect(outcome).toMatchObject({ made: false, why: "unknown" });
+    const pending = (outcome as { pending?: { key: string; line: string } }).pending;
+    expect(pending?.line.startsWith(JOIN_LINE_PREFIX)).toBe(true);
+    // the entry is in the list, and nothing ended the service's invite
+    expect(listView(w.held().state).invites.map((row) => row.key)).toEqual([pending!.key]);
+    expect(routes(first).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toEqual([]);
+    // the next call settles it before anything else: the very line, and no second invite
+    reads = true;
+    const settled = made(await makeInvite(first.list, { auto: false, pending: pending as never, ...noWait }));
+    expect([settled.key, settled.line]).toEqual([pending!.key, pending!.line]);
+    expect(listView(w.held().state).invites).toHaveLength(1);
+    expect(routes(first).filter((route) => route === "POST /v1/pc-invites")).toHaveLength(1);
+  });
+
+  it("ends an invite fourteen minutes after this device's own clock as it reads now, whatever the list's time", async () => {
+    // the first device's clock runs two minutes ahead: the list's own time is ahead of the second device's clock
+    const { w, first } = await oneDevice(listWorld(), 2 * MINUTE);
+    const second = await w.device({ label: "Dana's Mac" });
+    await second.list.sync();
+    const allowed = await allowDevice(first.list, { key: (await second.keys()).key, label: "Dana's Mac", os: null }, noWait);
+    if (!allowed.allowed) throw new Error(allowed.why);
+    await second.list.adopt(allowed.offer);
+    expect(second.list.writer()!.state.full_at).toBeGreaterThan(Math.floor(w.clock.now / 1000));
+    const invite = made(await makeInvite(second.list, { auto: false, ...noWait }));
+    expect(invite.exp).toBe(Math.floor(w.clock.now / 1000) + INVITE_S);
+  });
+
   it("makes none on a device that may not write the list", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });
@@ -137,6 +177,32 @@ describe("the invites of a list, as a device shows them", () => {
     const invite = made(await makeInvite(first.list, { auto: false, ...noWait }));
     expect(invitesOf(first.list, (invite.exp - 1) * 1000).map((row) => row.state)).toEqual(["open"]);
     expect(invitesOf(first.list, (invite.exp + 1) * 1000).map((row) => row.state)).toEqual(["expired"]);
+  });
+
+  it("never shows an invite as open again once the clock was set back after it saved a time past the invite's end", async () => {
+    const { w, first } = await oneDevice();
+    const invite = made(await makeInvite(first.list, { auto: false, ...noWait }));
+    w.clock.now = (invite.exp + 60) * 1000;
+    await first.list.sync();
+    // set back to a minute before the end, with nothing signed since
+    w.clock.now = (invite.exp - 60) * 1000;
+    expect(invitesOf(first.list, w.clock.now).map((row) => row.state)).toEqual(["expired"]);
+  });
+
+  it("signs no clean-up beside a Revoke from a device whose clock reads far under the time it saved", async () => {
+    const { w, first } = await oneDevice();
+    const start = w.clock.now;
+    made(await makeInvite(first.list, { auto: true, ...noWait }));
+    w.clock.now = start + MINUTE;
+    const plain = made(await makeInvite(first.list, { auto: false, ...noWait }));
+    w.clock.now = start + 30 * MINUTE;
+    await first.list.sync();
+    // past the first invite's end, and more than ten minutes under the time this device saved
+    w.clock.now = start + 14.5 * MINUTE;
+    expect(first.list.writer()!.adrift).toBe(true);
+    expect(await revokeInvite(first.list, plain.key, noWait)).toEqual({ revoked: true });
+    // the removal alone: no removal of the first invite, and no epoch while that key is still in
+    expect(kinds(placements(first).at(-1)!.body!.entries as string[])).toEqual(["remove"]);
   });
 
   it("revokes an invite by a `remove` of its key, and an invite a machine joins with by itself with the next epoch after it", async () => {

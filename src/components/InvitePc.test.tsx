@@ -139,6 +139,26 @@ describe("invites for a PC, on a device that may write its account's list", () =
     expect(shown("data-invite-line")).toBeUndefined();
   });
 
+  it("says that it is not known yet where the entry went out and the list could not be read, and shows the very line once Make an invite settles it", async () => {
+    const { w, first } = await mounted();
+    const id = w.held().id;
+    let reads = true;
+    first.wire.answer = async (request) => {
+      const path = new URL(request.url).pathname;
+      if (request.method === "POST" && path.endsWith("/entries")) { const answer = await w.fake.fetch(request); reads = false; return answer; }
+      return !reads && request.method === "GET" && path.startsWith(`/v2/lists/${id}`) ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : null;
+    };
+    await press(action("make-invite"));
+    expect(text()).toContain("It is not known yet whether the invite was made. Press Make an invite to check.");
+    expect(shown("data-invite-line")).toBeUndefined();
+    reads = true;
+    await press(action("make-invite"));
+    const line = shown("data-invite-line");
+    expect(line?.startsWith(JOIN_LINE_PREFIX)).toBe(true);
+    // the line of the invite the list holds, and no second invite
+    expect(listView(w.held().state).invites.map((row) => row.key)).toEqual([(await readJoinLine(line!, { service: w.origin, followsLists: true })).key]);
+  });
+
   it("says why no invite was made, and shows no line", async () => {
     const { first } = await mounted();
     first.wire.answer = (request) => new URL(request.url).pathname === "/v1/pc-invites" ? Response.json({ error: { code: "invites_full", message: "Revoke an open invite first" } }, { status: 409 }) : null;

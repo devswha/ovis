@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { AccountList } from "../lib/account/accountList.ts";
-import { INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, type ShownInvite } from "../lib/account/listInvite.ts";
+import { INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, type PendingInvite, type ShownInvite } from "../lib/account/listInvite.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { Toggle } from "./SettingsControls.tsx";
@@ -23,6 +23,7 @@ function refusal(t: Translate, outcome: Extract<InviteOutcome, { readonly made: 
     }
   }
   switch (outcome.why) {
+    case "unknown": return t("It is not known yet whether the invite was made. Press Make an invite to check.");
     case "stopped": return t("The account service cannot change the list right now.");
     case "clock": return t("This device's clock looks wrong. Check its date and time, then try again.");
     case "blocked": case "no_list": return t("This device cannot change your account's list right now.");
@@ -40,6 +41,9 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
   const t = useT();
   const [, redraw] = useState(0);
   const [made, setMade] = useState<MadeInvite | null>(null);
+  // an invite whose entry went out and whose placement is not known yet: its line, the only copy of its key, is kept
+  // here (never shown) until Make an invite settles it
+  const [pending, setPending] = useState<PendingInvite | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState<"line" | "command" | null>(null);
@@ -65,7 +69,7 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
   const line = made !== null && shown?.state === "open" ? made : null;
   const minutes = (row: ShownInvite): number => Math.min(Math.ceil(INVITE_S / 60), Math.max(1, Math.ceil((row.exp * 1000 - now()) / 60_000)));
   const stateWord = (row: ShownInvite): string => row.state === "open" ? t("Expires in {minutes} min", { minutes: minutes(row) })
-    : row.state === "expired" ? t("Expired") : row.state === "used" ? t("Used|invite") : t("Revoked");
+    : row.state === "expired" ? t("Expired") : row.state === "used" ? t("Used|invite") : row.state === "ended" ? t("Ended|invite") : t("Revoked");
 
   const make = async (): Promise<void> => {
     if (busy) return;
@@ -73,7 +77,8 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
     setProblem(null);
     setCopied(null);
     try {
-      const outcome = await makeInvite(list, { auto, expect: { account: writer.account, list: writer.list } });
+      const outcome = await makeInvite(list, { auto, expect: { account: writer.account, list: writer.list }, ...(pending === null ? {} : { pending }) });
+      setPending(outcome.made ? null : outcome.pending ?? null);
       if (outcome.made) setMade(outcome.invite);
       else setProblem(refusal(t, outcome));
     } catch (error) {
