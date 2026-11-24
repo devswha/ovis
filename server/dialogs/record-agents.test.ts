@@ -39,8 +39,8 @@ for (const { agent, record, whole } of AGENTS) {
       const card = parsedByPublicPrompt.get(parseFallbackPrompt(agent, turn.screen))!;
       const shown = withRecord(card, request, turn.screen, record);
       if (whole.includes(turn.turn)) {
-        expect(shown.body).toBe(turn.command);
-        expect(shown.optionSteps).toEqual(card.optionSteps);
+        expect([shown.record?.command, shown.optionSteps, shown.selectedIndex]).toEqual([turn.command, card.optionSteps, card.selectedIndex]);
+        expect(shown.body).toContain(turn.command);
       } else expect(shown).toBe(card);
       if (turn.decision === "allow" && request !== null) expect(record.pending(turn.after.join("\n"))?.id).not.toBe(request.id);
     });

@@ -13,40 +13,49 @@ describe("withRecord", () => {
   const menu = ["", "❯ 1. Yes", "  2. No", "Enter to select · Esc to cancel"];
   const drawn = screen("Run this command?", "echo hello", ...menu);
   const card = cardOf(drawn);
+  const bound = (screenText: string, command: string) => withRecord(cardOf(screenText), { id: "c", command }, screenText, record);
 
-  test("shows the record's command and binds the card to its request", () => {
+  test("puts the record's command in place of the rows that draw it and binds the card to its request", () => {
     const shown = withRecord(card, { id: "call-1", command: "echo hello" }, drawn, record);
-    expect(shown.body).toBe("echo hello");
+    expect(shown.body).toBe(card.body);
     expect(shown.record).toEqual({ id: "call-1", command: "echo hello" });
     expect(shown.id).not.toBe(card.id);
     expect(shown.optionSteps).toEqual(card.optionSteps);
     expect(withRecord(card, { id: "call-2", command: "echo hello" }, drawn, record).id).not.toBe(shown.id);
   });
 
-  test("a command the dialog wraps and boxes is shown whole", () => {
-    const boxed = screen("╭──────────────╮", "│ Run this command? │", "│ echo 'a b' && │", "│ printf 한글 │", "╰──────────────╯", ...menu);
-    expect(withRecord(cardOf(boxed), { id: "c", command: "echo 'a b' &&\n\tprintf 한글" }, boxed, record).body).toBe("echo 'a b' &&\n\tprintf 한글");
+  test("a command the dialog wraps and boxes is shown whole, the rest of the dialog kept", () => {
+    const boxed = screen("╭──────────────╮", "│ Run this command? │", "│ $ echo 'a b' && │", "│ printf 한글 │", "╰──────────────╯", "Stage 1/2", ...menu);
+    const shown = withRecord(cardOf(boxed), { id: "c", command: "echo 'a b' &&\n\tprintf 한글" }, boxed, record);
+    expect(shown.record?.command).toBe("echo 'a b' &&\n\tprintf 한글");
+    expect(shown.body).toContain("echo 'a b' &&\n\tprintf 한글\nStage 1/2");
   });
 
-  test("keeps the screen's card for a dialog that cuts the command, shows another, or is not there", () => {
-    const cut = screen("Run this command?", "echo first sec…", ...menu);
-    const cutCard = cardOf(cut);
-    expect(withRecord(cutCard, { id: "c", command: "echo first second" }, cut, record)).toBe(cutCard);
-    expect(withRecord(card, { id: "c", command: "echo bye" }, drawn, record)).toBe(card);
+  test("keeps the screen's card for a dialog that draws another command, or cuts it", () => {
+    for (const [rows, command] of [
+      [["ls -l ab"], "ls -l a b"],
+      [["git status --short"], "git status"],
+      [["git status", "--short"], "git status"],
+      [["Show the folder:", "  then run pwd"], "pwd"],
+      [["echo first sec…"], "echo first second"],
+      [["echo bye"], "echo hello"],
+    ] as const) {
+      const text = screen("Run this command?", ...rows, ...menu);
+      expect(bound(text, command).record).toBeUndefined();
+    }
     expect(withRecord(card, null, drawn, record)).toBe(card);
-    const none = screen("echo hello", ...menu);
-    expect(withRecord(cardOf(none), { id: "c", command: "echo hello" }, none, record).record).toBeUndefined();
+    expect(bound(screen("echo hello", ...menu), "echo hello").record).toBeUndefined();
   });
 
   test("only the last dialog counts, not an older one above it", () => {
     const twice = screen("Run this command?", "rm -rf ./old", "Run this command?", "ls", ...menu);
-    expect(withRecord(cardOf(twice), { id: "c", command: "rm -rf ./old" }, twice, record).record).toBeUndefined();
-    expect(withRecord(cardOf(twice), { id: "c", command: "ls" }, twice, record).body).toBe("ls");
+    expect(bound(twice, "rm -rf ./old").record).toBeUndefined();
+    expect(bound(twice, "ls").record?.command).toBe("ls");
   });
 
-  test("an agent with no dialog line of its own is read from the card's words", () => {
-    const shown = withRecord(card, { id: "c", command: "echo hello" }, "", {});
-    expect(shown.body).toBe("echo hello");
+  test("an agent with no dialog line of its own is read from the card's words, its own rows around the command", () => {
+    expect(withRecord(card, { id: "c", command: "echo hello" }, "", { before: /^previous output$/u }).record?.command).toBe("echo hello");
+    expect(withRecord(card, { id: "c", command: "echo hello" }, "", {}).record).toBeUndefined();
   });
 });
 

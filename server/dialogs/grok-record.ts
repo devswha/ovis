@@ -11,13 +11,14 @@ import { type AgentRecord, OpenRequests, jsonLines, object } from "./record.ts";
  *   ┃  ›  Run the file contents as one shell command
  *   ┃  │ : fixture;·
  *   ┃  ┆ touch am-short.flag
- *   ┃  ← widen scope · e edit pattern
+ *   ┃  ← widen scope · e edit pattern            (or → narrow scope)
  *   ┃
  *   ┃  3 (●) Yes, proceed
  */
 export const grokRecord: AgentRecord = {
   dialog: /^┃\s+›\s/u,
   wrapMark: /·$/u,
+  after: /^[←→] (?:widen|narrow) scope\b/u,
   pending(text) {
     const calls = new OpenRequests();
     for (const entry of jsonLines(text)) {

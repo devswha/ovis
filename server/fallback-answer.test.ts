@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { agentPickerOwnsScreen } from "./dialogs/fallback.ts";
 import { handlePromptRequest, parseFallbackPrompt } from "./prompt.ts";
+import * as recordCards from "./record-cards.ts";
 
 interface Pane { agent: string; screen: string; sent: string[]; onRead?: () => void }
 
@@ -79,6 +80,26 @@ test.each([
     expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") })).toEqual({ status: 200, code: undefined });
     expect(pane.sent).toEqual(["enter"]);
   });
+});
+
+// A card showing its record's command (record-cards.ts) answers that request only: the record is read again right
+// before the key, and a request no longer open there (answered in the terminal meanwhile) takes no key
+test.each([[200, true], [409, false]] as const)("a card read from Copilot's record answers with %i when its request is still open: %p", async (status, open) => {
+  const turn = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/copilot.json"), "utf8")) as { turns: { turn: string; screen: string; command: string }[] }).turns
+    .find((recorded) => recorded.turn === "short-a1")!;
+  const request = { id: "events.jsonl\0request-1", command: turn.command };
+  let reads = 0;
+  const records = spyOn(recordCards, "recordRequest").mockImplementation(async () => (reads++ < 2 || open ? request : null));
+  try {
+    await withPane("copilot", "blocked", turn.screen, async (pane) => {
+      const prompt = (await card())!;
+      expect(prompt.body).toContain(turn.command);
+      const result = await answer(prompt.id, { option_index: labels(prompt).indexOf("Yes") });
+      expect(result.status).toBe(status);
+      expect(pane.sent.length > 0).toBe(open);
+      expect(reads).toBeGreaterThanOrEqual(3);
+    });
+  } finally { records.mockRestore(); }
 });
 
 test("answers agy's question through its reader, as a card of its options", async () => {

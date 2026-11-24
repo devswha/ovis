@@ -41,7 +41,7 @@ import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { withRecord } from "./dialogs/record.ts";
 import { titleStatus } from "./agent-identity.ts";
-import { recordFor, withAgentRecord } from "./record-cards.ts";
+import { recordFor, recordRequest, withAgentRecord } from "./record-cards.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
@@ -869,6 +869,9 @@ async function dshAsks(paneId: string, signal: AbortSignal): Promise<boolean> {
 
 class OmpCallChanged extends KeyRefused {}
 
+/** The request a card read from its agent's record is no longer the one the record holds open (record-cards.ts). */
+class RecordChanged extends KeyRefused {}
+
 async function ompCallStillOpen(paneId: string, cwd: string, call: string, deadline: AbortSignal): Promise<boolean> {
   if (!cwd) return false;
   const open = await untilAborted((async () => {
@@ -1606,6 +1609,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // keeps main's keys)
         if (parsedPrompt?.responder === "dsh-question" && !(await dshAsks(paneId, signal))) throw new DshNotAsking();
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
+        // a card showing its record's command goes to that request only: the record must still hold it open
+        if (parsedPrompt?.record !== undefined && (await recordRequest(paneId, keyAgent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
       };
       const verifyThenSend = async <T>(look: AbortSignal, guardUntil: number | null, readUntil: number,
         same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly: boolean | "editor" = false): Promise<T> => {

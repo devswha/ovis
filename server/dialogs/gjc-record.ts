@@ -15,5 +15,7 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash"]);
  *     Deny
  */
 export const gjcRecord: AgentRecord = {
+  // the title the user's hook gives its selector
+  before: /\S/u,
   pending: (text) => pendingToolCall(text, SHELL_TOOLS),
 };
