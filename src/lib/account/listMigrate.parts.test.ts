@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { MIGRATION_KNOWN_SECONDS } from "../../../shared/account-list-migrate.ts";
 import {
-  birthRecord, handOverRecord, knownPcs, MIGRATION_QA_SCALE_MAX, migrationScale, noticeRecord, notCarriedAt, pageScale, pcAnswerOf, pcAnswers, pcHowOf, QA_TWIN_APP, readAppId, readBirth, readHandOver,
-  readNotice, readRefusal, refusalRecord, scaled, ownRemovals, type KeptBirth,
+  birthText, handOverRecord, knownPcs, MIGRATION_QA_SCALE_MAX, migrationScale, noticeRecord, notCarriedAt, pageScale, pcAnswerOf, pcAnswers, pcHowOf, QA_TWIN_APP, readAppId, readBirth, readHandOver,
+  readNotice, readRetired, retiredText, scaled, ownRemovals, type KeptBirth,
 } from "./listMigrate.ts";
 import { memoryAccountStore } from "./store.ts";
 
@@ -97,21 +97,26 @@ describe("what a move keeps, read back strictly", () => {
   const wrap = "A".repeat(151);
   const birth: KeptBirth = {
     list: LIST, signIn: KEY, member: KEY, entry: "e0", entries: ["e1", "e2"], wraps: [{ epoch: 1, member: KEY, wrap }],
-    link: { member: "m", device: "d" }, carried: { devices: [KEY], pcs: [E(1)] }, enc: KEY, at: 5,
+    link: { member: "m", device: "d" }, carried: { devices: [KEY], pcs: [E(1)] }, skip: { keys: [], endpoints: [E(2)] }, enc: KEY, at: 5,
   };
 
   test("a birth, a refusal, a notice and a hand-over each read back as written", () => {
-    expect(readBirth(birthRecord(birth))).toEqual(birth);
-    expect(readRefusal(refusalRecord({ at: 9, keys: [KEY], endpoints: [E(1)] }))).toEqual({ at: 9, keys: [KEY], endpoints: [E(1)] });
+    expect(readBirth(birthText(birth))).toEqual(birth);
+    expect(readRetired(retiredText(LIST, { at: 9, keys: [KEY], endpoints: [E(1)] }))).toEqual({ list: LIST, refusal: { at: 9, keys: [KEY], endpoints: [E(1)] } });
+    expect(readRetired(retiredText(LIST, null))).toEqual({ list: LIST, refusal: null });
+    // a birth let go is no birth to send, and a kept one no birth let go
+    expect(readBirth(retiredText(LIST, null))).toBeNull();
+    expect(readRetired(birthText(birth))).toBeNull();
     expect(readNotice(noticeRecord({ list: LIST, first: KEY, devices: [KEY], pcs: [E(1)], seen: false }))).toEqual({ list: LIST, first: KEY, devices: [KEY], pcs: [E(1)], seen: false });
-    const handOver = { list: LIST, signIn: KEY, on: { seq: 4, hash: LIST }, entry: "e", link: { member: "m", device: "d" }, refused_at: null };
+    const handOver = { list: LIST, signIn: KEY, member: KEY, enc: KEY, on: { seq: 4, hash: LIST }, entry: "e", link: { member: "m", device: "d" }, refused_at: null };
     expect(readHandOver(handOverRecord(handOver))).toEqual(handOver);
   });
 
   test("one out of form is none", () => {
-    expect(readBirth({ ...birthRecord(birth) as object, entries: ["only one"] })).toBeNull();
-    expect(readBirth({ ...birthRecord(birth) as object, v: 2 })).toBeNull();
-    expect(readRefusal({ v: 1, at: -1, keys: [], endpoints: [] })).toBeNull();
+    expect(readBirth(JSON.stringify({ ...JSON.parse(birthText(birth)) as object, entries: ["only one"] }))).toBeNull();
+    expect(readBirth(JSON.stringify({ ...JSON.parse(birthText(birth)) as object, v: 2 }))).toBeNull();
+    expect(readRetired(JSON.stringify({ v: 1, retired: LIST, refusal: { at: -1, keys: [], endpoints: [] } }))).toBeNull();
+    expect(readBirth("not json")).toBeNull();
     expect(readNotice({ v: 1, list: "x", first: KEY, devices: [], pcs: [], seen: false })).toBeNull();
     expect(readHandOver({ v: 1, list: LIST, signIn: KEY, on: { seq: 1 }, entry: "e", link: { member: "m", device: "d" }, refused_at: null })).toBeNull();
   });

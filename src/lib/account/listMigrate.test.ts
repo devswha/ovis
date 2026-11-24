@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, MIGRATION_KNOWN_SECONDS, type PcAnswer } from "../../../shared/account-list-migrate.ts";
 import { listView } from "../../../shared/account-list.ts";
 import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
+import { accountList } from "./accountList.ts";
 import { keysForCarriedPc } from "./listCarriedPc.ts";
+import { memoryListLock, type ListStore } from "./listStore.ts";
+import { newKey } from "./store.ts";
 import { MOVE_AGAIN_SECONDS, pcAnswers, readBirth, readNotice, type PcAnswers } from "./listMigrate.ts";
 import type { SeenPcs } from "./seenPcs.ts";
 
@@ -37,7 +40,13 @@ function movingWorld() {
     const member = (await device.store.key()).public_spki;
     const record = (pcs: SeenPcs["pcs"], tried?: number) => storage.setItem(`ovis:seen-pcs:${world.account}`, JSON.stringify({ v: 1, account: world.account, pcs, ...(tried === undefined ? {} : { tried }) }));
     const kept = () => JSON.parse(storage.getItem(`ovis:seen-pcs:${world.account}`) ?? "null") as SeenPcs | null;
-    return { device, storage, answers, signIn, member, record, kept, label };
+    /** Another tab of this very device: the same stores and the same record, its own lock, as where the browser has no Web Locks. */
+    const tab = (lists: ListStore = device.lists) => accountList({
+      service: device.service, accountStore: device.store, listStore: lists, lock: memoryListLock(), now: () => world.clock.now,
+      names: () => ({ label, os: "ios" }), linkedPcs: async () => 0, genesis: () => "first-device", durable: async () => true,
+      migration: { answers, storage, scale: () => scale, removed: async () => removed() },
+    });
+    return { device, storage, answers, signIn, member, record, kept, label, tab };
   };
   /** A PC the account lists as let in (listed by an own sign-in). */
   const pcOf = async (by: WorldDevice): Promise<AskingPc> => {
@@ -422,5 +431,175 @@ describe("a device that followed a list its PCs turn out not to know (V4-6)", ()
     const view = await phone.device.list.sync();
     expect(view.status).not.toHaveProperty("asks");
     expect(view.status).not.toHaveProperty("doubt");
+  });
+});
+
+/** The Codex read of the app's part (astra-migapp.md) and the lead's rulings on it: each a failing test first. */
+describe("one birth per account on a device, whatever happens to its answer (astra-migapp 1, 3, 4, 6, 7)", () => {
+  test("1: two tabs with no Web Locks sign one birth between them; the one that lost sends the winner's bytes, and both follow the list", async () => {
+    const { phone, world, birthsSent } = await inUse();
+    const other = phone.tab();
+    const [one, two] = await Promise.all([phone.device.list.sync(), other.sync()]);
+    const bodies = birthsSent(phone.device).map((sent) => JSON.stringify(sent.body));
+    expect(new Set(bodies).size).toBe(1);
+    const list = world.held().id;
+    const settled = [await phone.device.list.sync(), await other.sync()];
+    for (const view of [one, two, ...settled].slice(2)) expect(view.status).toMatchObject({ at: "following", standing: "in", list });
+  });
+
+  test("3: an answer that is not the exact success keeps the birth and drops nothing: the device follows the list it made", async () => {
+    const { phone, world, birthsSent } = await inUse();
+    phone.device.wire.answer = async (request) => {
+      if (request.method !== "POST" || new URL(request.url).pathname !== "/v2/lists") return null;
+      const placed = await world.fake.fetch(request);
+      return new Response(await placed.text(), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+    expect(readBirth(await phone.device.lists.get("birth", world.account))).not.toBeNull();
+    expect(await phone.device.lists.get("dropped", world.account)).toBeUndefined();
+    phone.device.wire.answer = null;
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in", list: world.held().id });
+    expect(birthsSent(phone.device)).toHaveLength(1);
+  });
+
+  test("3: a list_exists that names no list is no answer either", async () => {
+    const { phone, world } = await inUse();
+    phone.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname === "/v2/lists"
+      ? Response.json({ error: { code: "list_exists", message: "x" } }, { status: 409 }) : null;
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+    expect(readBirth(await phone.device.lists.get("birth", world.account))).not.toBeNull();
+    expect(await phone.device.lists.get("dropped", world.account)).toBeUndefined();
+  });
+
+  test("4: with the migrate switch withdrawn, a kept birth is kept as it is and not sent", async () => {
+    const { phone, world, birthsSent } = await inUse();
+    let dropped = false;
+    phone.device.wire.answer = (request) => {
+      if (dropped || request.method !== "POST" || new URL(request.url).pathname !== "/v2/lists") return null;
+      dropped = true;
+      throw new TypeError("the request never arrived");
+    };
+    await phone.device.list.sync();
+    const kept = readBirth(await phone.device.lists.get("birth", world.account));
+    expect(kept).not.toBeNull();
+    world.fake.listMigrateAccounts = "";
+    phone.device.wire.answer = null;
+    const view = await phone.device.list.sync();
+    expect(birthsSent(phone.device)).toHaveLength(1);
+    expect(view.status).toMatchObject({ at: "none", why: "moving", move: { why: "paused" } });
+    expect(readBirth(await phone.device.lists.get("birth", world.account))).toEqual(kept);
+    // the switch back on: those very bytes go
+    world.fake.listMigrateAccounts = world.account;
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    expect(JSON.stringify(birthsSent(phone.device)[1]!.body)).toBe(JSON.stringify(birthsSent(phone.device)[0]!.body));
+  });
+
+  test("6: a log read that fails after the 201 decides nothing: the birth stays until the copy holds it whole, and the notice names everybody", async () => {
+    const { phone, laptop, pc, world } = await inUse();
+    let failed = false;
+    phone.device.wire.answer = (request) => {
+      const url = new URL(request.url);
+      if (failed || request.method !== "GET" || !url.pathname.endsWith("/log") || url.searchParams.get("after") === null) return null;
+      failed = true;
+      return Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 });
+    };
+    const first = await phone.device.list.sync();
+    expect(first.status).not.toMatchObject({ at: "following" });
+    expect(readBirth(await phone.device.lists.get("birth", world.account))).not.toBeNull();
+    expect(await phone.device.lists.get("notice", world.account)).toBeUndefined();
+    phone.device.wire.answer = null;
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    expect(readNotice(await phone.device.lists.get("notice", world.account))).toMatchObject({ devices: [laptop.signIn], pcs: [pc.endpoint] });
+  });
+
+  test("6: a carried device whose read of the list fails is not refused: it reads again at the next round", async () => {
+    const { laptop } = await moved();
+    let failed = false;
+    laptop.device.wire.answer = (request) => {
+      const url = new URL(request.url);
+      if (failed || request.method !== "GET" || !url.pathname.endsWith("/log") || url.searchParams.get("limit") === "2") return null;
+      failed = true;
+      return Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 });
+    };
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "not_in", why: "unread" });
+    laptop.device.wire.answer = null;
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+  });
+
+  test("7: a storage fault right after a final refusal is written never sends the refused bytes again", async () => {
+    const { phone, laptop, world, birthsSent } = await inUse();
+    world.fake.removeDevice(world.account, laptop.signIn);
+    world.fake.tamperAccount(world.account, { eligibleAgain: [laptop.signIn] });
+    // every write after the refusal's first one fails, as when the page is closed in the middle
+    const lists = phone.device.lists;
+    let refusedAt: number | null = null;
+    const faulty: ListStore = {
+      get: (record, account) => lists.get(record, account),
+      drop: (account, copy) => lists.drop(account, copy),
+      async set(record, account, value) {
+        if (refusedAt !== null) throw new Error("the page went");
+        await lists.set(record, account, value);
+        // a refusal kept in a record of its own, before the birth is let go
+        if ((record as string) === "move" && value !== undefined) refusedAt = Date.now();
+      },
+      async swap(record, account, expected, value) {
+        if (refusedAt !== null) throw new Error("the page went");
+        const done = await lists.swap(record, account, expected, value);
+        if (done && record === "birth" && value.includes("refused_at")) refusedAt = Date.now();
+        return done;
+      },
+    };
+    const tab = phone.tab(faulty);
+    await tab.sync().catch(() => undefined);
+    expect(birthsSent(phone.device)).toHaveLength(1);
+    await phone.device.list.sync();
+    expect(birthsSent(phone.device)).toHaveLength(1);
+  });
+
+  test("7: a clock that moved back counts as no time passed: the hour after a final refusal is waited out", async () => {
+    const { phone, laptop, world, birthsSent } = await inUse();
+    world.fake.removeDevice(world.account, laptop.signIn);
+    world.fake.tamperAccount(world.account, { eligibleAgain: [laptop.signIn] });
+    await phone.device.list.sync();
+    expect(birthsSent(phone.device)).toHaveLength(1);
+    world.clock.now -= 1000;
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "refused", wait: MOVE_AGAIN_SECONDS } });
+    expect(birthsSent(phone.device)).toHaveLength(1);
+  });
+});
+
+describe("a carried device's hand-over across a sign-in or a key that changed (astra-migapp 2)", () => {
+  const busy = (request: Request): Response | null => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+    ? Response.json({ error: { code: "list_rebuilding", message: "x" } }, { status: 503, headers: { "retry-after": "1" } }) : null;
+
+  test("a sign-in that changes after the hand-over was placed and before it was read keeps the copy: the next read shows the device in by its account key", async () => {
+    const { laptop, world } = await moved();
+    await laptop.device.list.sync();
+    // signed in again: another key registered for the same account, before this device read its own hand-over
+    const session = (await laptop.device.store.get("session"))!;
+    await laptop.device.store.set("signin_key", { account: world.account, sign_in_id: session.sign_in_id!, key: await newKey(), no: 9 });
+    const view = await laptop.device.list.sync({ read: true });
+    expect(view.status).toMatchObject({ at: "following", standing: "in" });
+    expect(view.devices.filter((row) => row.self).map((row) => row.key)).toEqual([laptop.member]);
+  });
+
+  test("a hand-over kept for one account key is not sent for another: it ends, and the key the device holds now is the one handed to", async () => {
+    const { laptop, world } = await moved();
+    laptop.device.wire.answer = busy;
+    await laptop.device.list.sync();
+    // the device's account key changes while that hand-over waits (its sign-in key stays)
+    const kept = (await laptop.device.store.get("signin_key"))!;
+    const session = (await laptop.device.store.get("session"))!;
+    await laptop.device.store.clear(() => true);
+    await laptop.device.store.set("session", session);
+    await laptop.device.store.set("signin_key", kept);
+    const renewed = (await laptop.device.store.key()).public_spki;
+    expect(renewed).not.toBe(laptop.member);
+    laptop.device.wire.answer = null;
+    await laptop.device.list.sync();
+    await laptop.device.list.sync({ read: true });
+    const held = listView(world.held().state).devices.filter((row) => row.ended === null).map((row) => row.key);
+    expect(held).not.toContain(laptop.member);
+    expect(held).toContain(renewed);
   });
 });

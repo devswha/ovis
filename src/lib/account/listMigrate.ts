@@ -195,7 +195,7 @@ const RECORD_VERSION = 1;
  * A birth this device signed and has not seen placed (Part F, F2): the one request, kept before it is sent and sent as
  * it is until the account service took it (201, or `409 list_exists` naming this very list) or refused it for good.
  * `signIn` is the key that signed entry 0, the key this device's sign-in registered; `carried` names whom the run
- * carries in, for the notice after the pin; `wrap` is epoch 1's key wrapped to this device's own encryption key.
+ * carries in, for the notice after the pin; `skip` the keys and PCs earlier final refusals named, which it leaves out.
  */
 export interface KeptBirth {
   readonly list: string;
@@ -206,37 +206,15 @@ export interface KeptBirth {
   readonly wraps: readonly PlacedWrap[];
   readonly link: { readonly member: string; readonly device: string } | null;
   readonly carried: { readonly devices: readonly string[]; readonly pcs: readonly string[] };
+  readonly skip: { readonly keys: readonly string[]; readonly endpoints: readonly string[] };
   readonly enc: string;
   /** When it was signed, in seconds by this device's clock. */
   readonly at: number;
 }
 
-export function birthRecord(birth: KeptBirth): unknown {
-  return { v: RECORD_VERSION, ...birth };
-}
-
-const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((text) => typeof text === "string");
-
-/** A kept birth as its record holds it; null for none or one out of form. */
-export function readBirth(value: unknown): KeptBirth | null {
-  if (!isRecord(value) || value.v !== RECORD_VERSION) return null;
-  const { list, signIn, member, entry, entries, wraps, link, carried, enc, at } = value;
-  if (typeof list !== "string" || !isListHash(list) || typeof signIn !== "string" || typeof member !== "string" || typeof entry !== "string" || typeof enc !== "string" || !isSpan(at)) return null;
-  if (!texts(entries) || entries.length < 2 || !Array.isArray(wraps) || !wraps.every((wrap) => isRecord(wrap) && isSpan(wrap.epoch) && typeof wrap.member === "string" && typeof wrap.wrap === "string" && wrap.wrap.length === LIST_WRAP_TEXT_LENGTH)) return null;
-  if (!(link === null || (isRecord(link) && typeof link.member === "string" && typeof link.device === "string"))) return null;
-  if (!isRecord(carried) || !texts(carried.devices) || !texts(carried.pcs)) return null;
-  return {
-    list, signIn, member, entry, entries, wraps: wraps as PlacedWrap[], link: link === null ? null : { member: (link as { member: string }).member, device: (link as { device: string }).device },
-    carried: { devices: carried.devices, pcs: carried.pcs }, enc, at,
-  };
-}
-
-/** The most a device asks the account service for a birth while it waits on a final refusal: once an hour. */
-export const MOVE_AGAIN_SECONDS = 3600;
-
 /**
  * What a final refusal of a birth left: when it came (seconds, this device's clock), and the keys and PCs a `403
- * not_carried` named, which the next plan leaves out. Kept per account.
+ * not_carried` named, this one's and every earlier one's, which the next plan leaves out.
  */
 export interface MoveRefusal {
   readonly at: number;
@@ -244,14 +222,55 @@ export interface MoveRefusal {
   readonly endpoints: readonly string[];
 }
 
-export function refusalRecord(refusal: MoveRefusal): unknown {
-  return { v: RECORD_VERSION, ...refusal };
+/**
+ * The account's one place for a birth on this device (the `birth` record), as its one text, so a tab writes it only
+ * over what it read (ListStore.swap): a birth kept to send, or one let go, with the refusal that let it go, if any. A
+ * refusal and the end of the birth it refused are so one write.
+ */
+export function birthText(birth: KeptBirth): string {
+  return JSON.stringify({ v: RECORD_VERSION, ...birth });
 }
 
-export function readRefusal(value: unknown): MoveRefusal | null {
-  if (!isRecord(value) || value.v !== RECORD_VERSION || !isSpan(value.at) || !texts(value.keys) || !texts(value.endpoints)) return null;
-  return { at: value.at, keys: value.keys, endpoints: value.endpoints };
+export function retiredText(list: string, refusal: MoveRefusal | null): string {
+  return JSON.stringify({ v: RECORD_VERSION, retired: list, refusal });
 }
+
+const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((text) => typeof text === "string");
+const parsed = (value: unknown): unknown => {
+  if (typeof value !== "string") return value;
+  try { return JSON.parse(value) as unknown; } catch { return null; }
+};
+
+/** A kept birth as its record holds it; null for none, one let go, or one out of form. */
+export function readBirth(value: unknown): KeptBirth | null {
+  const read = parsed(value);
+  if (!isRecord(read) || read.v !== RECORD_VERSION || "retired" in read) return null;
+  const { list, signIn, member, entry, entries, wraps, link, carried, skip, enc, at } = read;
+  if (typeof list !== "string" || !isListHash(list) || typeof signIn !== "string" || typeof member !== "string" || typeof entry !== "string" || typeof enc !== "string" || !isSpan(at)) return null;
+  if (!texts(entries) || entries.length < 2 || !Array.isArray(wraps) || !wraps.every((wrap) => isRecord(wrap) && isSpan(wrap.epoch) && typeof wrap.member === "string" && typeof wrap.wrap === "string" && wrap.wrap.length === LIST_WRAP_TEXT_LENGTH)) return null;
+  if (!(link === null || (isRecord(link) && typeof link.member === "string" && typeof link.device === "string"))) return null;
+  if (!isRecord(carried) || !texts(carried.devices) || !texts(carried.pcs) || !isRecord(skip) || !texts(skip.keys) || !texts(skip.endpoints)) return null;
+  return {
+    list, signIn, member, entry, entries, wraps: wraps as PlacedWrap[], link: link === null ? null : { member: (link as { member: string }).member, device: (link as { device: string }).device },
+    carried: { devices: carried.devices, pcs: carried.pcs }, skip: { keys: skip.keys, endpoints: skip.endpoints }, enc, at,
+  };
+}
+
+/** A birth let go, as its record holds it: its list id and the final refusal that let it go, null where none did; null for no such record. */
+export function readRetired(value: unknown): { readonly list: string; readonly refusal: MoveRefusal | null } | null {
+  const read = parsed(value);
+  if (!isRecord(read) || read.v !== RECORD_VERSION || typeof read.retired !== "string" || !isListHash(read.retired)) return null;
+  const refusal = read.refusal;
+  if (refusal === null) return { list: read.retired, refusal: null };
+  if (!isRecord(refusal) || !isSpan(refusal.at) || !texts(refusal.keys) || !texts(refusal.endpoints)) return null;
+  return { list: read.retired, refusal: { at: refusal.at, keys: refusal.keys, endpoints: refusal.endpoints } };
+}
+
+/** The most a device asks the account service for a birth while it waits on a final refusal: once an hour. */
+export const MOVE_AGAIN_SECONDS = 3600;
+
+/** The seconds from `from` to `to` by this device's clock; none at all where the clock moved back. */
+export const elapsed = (from: number, to: number): number => Math.max(0, to - from);
 
 /**
  * What a `403 not_carried` at `index` is about, in the birth it refused: entry 0's signer (index 0), or the key or the PC
@@ -311,6 +330,9 @@ export function readNotice(value: unknown): MoveNotice | null {
 export interface KeptHandOver {
   readonly list: string;
   readonly signIn: string;
+  /** The account key it hands the place to, and that key's encryption key: a hand-over kept for others is never sent (C2). */
+  readonly member: string;
+  readonly enc: string;
   readonly on: { readonly seq: number; readonly hash: string };
   readonly entry: string;
   readonly link: { readonly member: string; readonly device: string };
@@ -323,10 +345,11 @@ export function handOverRecord(kept: KeptHandOver): unknown {
 
 export function readHandOver(value: unknown): KeptHandOver | null {
   if (!isRecord(value) || value.v !== RECORD_VERSION) return null;
-  const { list, signIn, on, entry, link, refused_at } = value;
-  if (typeof list !== "string" || !isListHash(list) || typeof signIn !== "string" || typeof entry !== "string" || !isRecord(on) || !isSpan(on.seq) || typeof on.hash !== "string" || !isListHash(on.hash)) return null;
+  const { list, signIn, member, enc, on, entry, link, refused_at } = value;
+  if (typeof list !== "string" || !isListHash(list) || typeof signIn !== "string" || typeof member !== "string" || typeof enc !== "string" || typeof entry !== "string") return null;
+  if (!isRecord(on) || !isSpan(on.seq) || typeof on.hash !== "string" || !isListHash(on.hash)) return null;
   if (!isRecord(link) || typeof link.member !== "string" || typeof link.device !== "string" || !(refused_at === null || isSpan(refused_at))) return null;
-  return { list, signIn, on: { seq: on.seq, hash: on.hash }, entry, link: { member: link.member, device: link.device }, refused_at };
+  return { list, signIn, member, enc, on: { seq: on.seq, hash: on.hash }, entry, link: { member: link.member, device: link.device }, refused_at };
 }
 
 /** A request on a session with a PC, as the app's channel makes it. */
