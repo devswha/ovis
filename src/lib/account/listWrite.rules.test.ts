@@ -152,7 +152,7 @@ describe("a device whose clock reads far under the time it saved (C3)", () => {
   it("removes a PC and puts nobody else out for a time that is over", async () => {
     const { w, first, pc, borrowed } = await adrift();
     expect(await removeListPc(first.list, pc.endpoint, noWait)).toEqual({ removed: true });
-    expect(w.held().state.signers[borrowed]?.ended ?? null).toBeNull();
+    expect(w.held().state.signers[borrowed]).toMatchObject({ ended: null });
     expect((await first.list.sync()).pcs).toEqual([]);
   });
 
@@ -167,7 +167,7 @@ describe("a device whose clock reads far under the time it saved (C3)", () => {
       (sealed): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false }), [{ kind: "remove", ends: plain } as ListKind]);
     expect(kindsOf(signed.entries)).toEqual(["device", "remove"]);
     expect(readBody(entryFromText(signed.entries[1]!).body).ends).toBe(plain);
-    expect(w.held().state.signers[borrowed]?.ended ?? null).toBeNull();
+    expect(w.held().state.signers[borrowed]).toMatchObject({ ended: null });
   });
 
   it("is the writer's own rule: nothing outside the write loop asks the kinds whose time is over", () => {
@@ -294,5 +294,97 @@ describe("a write that is called off (C6)", () => {
     first.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "list_rebuilding", message: "x" } }, { status: 503, headers: { "retry-after": "1" } }) : null;
     expect(await writeToList(first.list, sign, { wait: async () => { late.abort(reason); }, signal: late.signal }).catch((error: unknown) => error)).toBe(reason);
     expect(placements(first).length).toBe(before + 1);
+  });
+});
+
+describe("Cancel on a card whose request may have been placed", () => {
+  /** An Allow whose request the account service placed while its answer, and the read after it, were lost: not known yet. */
+  async function unknown() {
+    const made = await world();
+    const { w, first, newcomer } = made;
+    let lost: "not yet" | "now" | "over" = "not yet";
+    first.wire.answer = async (request) => {
+      const path = new URL(request.url).pathname;
+      if (lost === "over") return null;
+      // the placement reaches the account service, and its answer does not come back; nor does any read after it
+      if (request.method === "POST" && path.endsWith("/entries")) { lost = "now"; await w.fake.fetch(request); return new Response("bad gateway", { status: 502 }); }
+      if (lost === "now" && request.method === "GET" && path.includes("/v2/lists/")) return new Response("bad gateway", { status: 502 });
+      return null;
+    };
+    expect(await allowDevice(first.list, newcomer, { ...noWait, placeMs: 200 })).toMatchObject({ allowed: false, why: "unknown" });
+    return { ...made, back: () => { lost = "over"; } };
+  }
+
+  it("reads the log first: a request that was placed is not called cancelled, and one whose outcome cannot be read stays", async () => {
+    const { w, first, newcomer, back } = await unknown();
+    const shown = (await first.list.waiting())!;
+    expect(shown.for).toBe(`allow:${newcomer.key}`);
+    // the log still cannot be read: nothing is let go, and the card stays
+    expect(await first.list.cancel(shown)).toBe("unread");
+    expect(await first.list.waiting()).toEqual(shown);
+    // it reads again: the entry is there, so there was nothing to cancel
+    back();
+    expect(await first.list.cancel(shown)).toBe("placed");
+    expect(w.held().state.signers[newcomer.key]).toMatchObject({ ended: null });
+    expect(await first.list.waiting()).toBeNull();
+  });
+
+  it("lets go of a request that the log shows unplaced at an unmoved head", async () => {
+    const { w, first, newcomer } = await world();
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await allowDevice(first.list, newcomer, noWait);
+    w.fake.untamperList(w.held().id);
+    const shown = (await first.list.waiting())!;
+    expect(await first.list.cancel(shown)).toBe("gone");
+    expect([await first.list.waiting(), w.held().state.signers[newcomer.key]]).toEqual([null, undefined]);
+  });
+});
+
+describe("how long a request that waits holds another change back", () => {
+  it("not at all once this device's clock reads before the time it was kept: its age cannot be told, and the log showed it unplaced", async () => {
+    const { w, first, pc, newcomer } = await world();
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await allowDevice(first.list, newcomer, noWait);
+    w.fake.untamperList(w.held().id);
+    // the clock is set back an hour: by it the kept request is from the future
+    w.clock.now -= 3_600_000;
+    expect(await removeListPc(first.list, pc.endpoint, noWait)).toEqual({ removed: true });
+    expect(w.held().state.signers[newcomer.key]).toBeUndefined();
+  });
+
+  it("is over when the log moved, also where the account service still names the old head (M41)", async () => {
+    const { w, first, second, pc, newcomer } = await world();
+    w.fake.tamperList(w.held().id, { headMoved: true });
+    await allowDevice(first.list, newcomer, noWait);
+    w.fake.untamperList(w.held().id);
+    // what the account service says of the list's head now, kept: it will go on saying it
+    let stale = "";
+    first.wire.answer = async (request) => {
+      if (request.method !== "GET" || !new URL(request.url).pathname.endsWith("/v2/lists/mine")) return null;
+      const answered = await w.fake.fetch(request);
+      stale = await answered.clone().text();
+      return answered;
+    };
+    await first.list.sync();
+    expect(stale).not.toBe("");
+    // another page of this device places an entry: the log moves, and the service's word on the head does not
+    await placeInvite(w, first, false);
+    void second;
+    first.wire.answer = (request) => request.method === "GET" && new URL(request.url).pathname.endsWith("/v2/lists/mine") ? new Response(stale, { headers: { "content-type": "application/json" } }) : null;
+    // the Remove reads the log itself, finds the head moved, and is signed on it: it is not told that the Allow waits
+    expect(await removeListPc(first.list, pc.endpoint, noWait)).toEqual({ removed: true });
+    expect(await first.list.waiting()).toBeNull();
+  });
+});
+
+describe("a Remove by a device that holds no key of the current epoch (M62)", () => {
+  it("signs the PC's removal alone: no clean-up and no epoch", async () => {
+    const { w, first, pc } = await world();
+    await placeInvite(w, first, true, 600);
+    w.clock.now += 11 * 60_000;
+    await first.list.sync();
+    const before = placements(first).length;
+    expect(await removeListPc(first.list, pc.endpoint, { ...noWait, writer: () => { const own = first.list.writer(); return own === null ? null : { ...own, epochs: new Map() }; } })).toEqual({ removed: true });
+    expect(entriesSent(first).slice(before).map(kindsOf)).toEqual([["remove"]]);
   });
 });

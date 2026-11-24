@@ -24,10 +24,12 @@ afterEach(() => {
   setTransport(nativeTransport);
 });
 
-async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, features, listPlace }: {
+async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, features, listPlace, listKey = false }: {
   relay?: string; unreachable?: number;
   /** what the PC selected in its answer to HELLO, and the place in its account's list it handed a device it let in */
   features?: readonly string[]; listPlace?: { readonly id: string; readonly seq: number; readonly hash: string };
+  /** the device signs in with the key its account's list holds for it */
+  listKey?: boolean;
 } = {}) {
   const app = relayFixture();
   cleanups.push(() => app.close());
@@ -47,6 +49,8 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
     server_public_key: "", relay };
   const transport = await openRelayTransport(offer, {
     clock,
+    // a session opened with the key the account's signed list holds for this device
+    ...(listKey ? { accountListKey: true } : {}),
     onFatal: (error) => fatal.push(error),
     onPcAway: () => { attempts.away++; },
     openChannel: async (channelOffer, config = {}) => {
@@ -635,6 +639,25 @@ it("stops reconnecting once the PC refuses the device for good, and tells the sh
   await expect(f.transport.fetch("/api/after")).rejects.toBeInstanceOf(TypeError);
   f.clock.advance(60_000);
   expect(f.attempts.count).toBe(2);
+});
+
+it("a session opened with the list key stops reconnecting when the PC refuses the account's way in, as one opened with the sign-in's key does (M60)", async () => {
+  for (const code of ["not_listed", "admission"]) {
+    const refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { listKey: true });
+    f.attempts.refusal = refusal;
+    await f.drop();
+    f.clock.advance(1000);
+    await expect(f.transport.connect()).rejects.toBe(refusal);
+    expect([f.fatal, f.clock.tasks.size]).toEqual([[refusal], 0]);
+    // a pairing's own session reads the same answer as a carrier that may come back, and tries again
+    const own = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+    own.attempts.refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    await own.drop();
+    own.clock.advance(1000);
+    await own.transport.connect().catch(() => undefined);
+    expect(own.fatal).toEqual([]);
+  }
 });
 
 it("tells a refusal that cannot change from a carrier that may come back", () => {

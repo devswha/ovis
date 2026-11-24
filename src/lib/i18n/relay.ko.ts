@@ -184,6 +184,7 @@ export const RELAY_KO: Record<string, string> = {
   "Open {host}": "{host} 열기",
   "More ways to open {name}": "{name} 다른 방법으로 열기",
   "This device cannot read your account's list. Update the app.": "이 기기에서 계정 명단을 읽을 수 없어요. 앱을 업데이트하세요.",
+  "This device has not read your account's list yet. It keeps trying.": "이 기기가 아직 계정 명단을 읽지 못했어요. 계속 시도합니다.",
   "This device cannot read your account's list. Sign out and in again on this device, then allow it from another device.": "이 기기에서 계정 명단을 읽을 수 없어요. 이 기기에서 로그아웃했다가 다시 로그인한 뒤, 다른 기기에서 허용하세요.",
   "Sign in again on this device": "이 기기에서 다시 로그인하세요",
   "{name} lets a device in only after it signed in to your account in the last ten minutes. Sign out and in again on this device, then ask to join again.": "{name} PC는 최근 10분 안에 계정에 로그인한 기기만 받아요. 이 기기에서 로그아웃했다가 다시 로그인한 뒤 다시 참여를 요청하세요.",
