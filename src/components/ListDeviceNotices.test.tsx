@@ -230,6 +230,22 @@ describe("the new-device notice of an account with a signed list", () => {
     expect(translate("ko", "{device} was allowed into your account by {approver}.", { device: translate("ko", "Unnamed device"), approver: "Dana's phone" })).not.toContain("기기 기기");
   });
 
+  it("names an approver that handed its place to a new key by the device that holds it now, not as gone", async () => {
+    const { w, phone, tablet, root } = await looked();
+    await letIn(w, tablet, "Laptop");
+    // the tablet hands its place to a new key of its own (its name is not sealed again here)
+    const heir = await w.device({ label: "Dana's tablet" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await tablet.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await tablet.keys();
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await tablet.service.placeEntries(w.held().id, [rotation.text], []);
+    await read(phone);
+    expect(notices(root)).toEqual(["Laptop was allowed into your account by Unnamed device."]);
+  });
+
   it("tells a device that may not remove anybody nothing", async () => {
     const { w, phone, tablet } = await looked();
     await letIn(w, tablet, "Laptop");

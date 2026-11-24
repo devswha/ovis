@@ -7,6 +7,7 @@
 import { useEffect, useState } from "react";
 import { Smartphone, X } from "lucide-react";
 
+import { standsFor } from "../../shared/account-list-migrate.ts";
 import type { AccountList } from "../lib/account/accountList.ts";
 import { inList } from "../lib/account/listLeave.ts";
 import { closeStoredNotice, listNewcomers, readNoticesSeen, writeNoticesSeen } from "../lib/account/listNotices.ts";
@@ -62,8 +63,10 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
   );
   if (active === null) return <>{handedLine}{removedLines}</>;
   const shown = listNewcomers(active.writer.state, active.writer.keys.key, seen);
-  const nameOf = (key: string | null): string => {
-    if (key === null) return t("Unknown key");
+  const nameOf = (signer: string | null): string => {
+    if (signer === null) return t("Unknown key");
+    // an approver that handed its place to a new key of its own is the device that holds that key now
+    const key = active.writer.state.signers[signer]?.ended != null ? standsFor(active.writer.state, signer) ?? signer : signer;
     const device = active.view.devices.find((row) => row.key === key);
     if (device !== undefined) return device.name?.label ?? t("Unnamed device");
     const endpoint = active.list.pcOfKey(key);
