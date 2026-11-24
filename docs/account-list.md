@@ -1302,7 +1302,7 @@ as any PC of the list, with the key the list holds for the device. A PC with no 
 follows no list, or is from before lists) gets the link, as before.
 
 **A PC the account names that the list does not hold yet.** Such a PC keeps its row, marked **Not
-in your account's list yet** (see [PCs of a list account](#pcs-of-a-list-account)). In Settings, on a
+in your account's list yet** ([PCs of a list account](#pcs-of-a-list-account)). In Settings, on a
 device that may write the list, the row offers **Add** when the PC posted its keys for the list,
 which a PC that runs a build with lists does by itself: the same number, confirmed at the PC, then
 **Add**, with no admission asked for, since the account lists the PC already. A PC that posted
