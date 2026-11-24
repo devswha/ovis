@@ -37,15 +37,20 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
 }
 
 /** A device this PC let in that the account's signed list did not take: who it is, why, and what trying again does. */
-interface Stalled { readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retry: () => Promise<void> }
+interface Stalled { readonly device: string; readonly pc: string; readonly why: AllowRefusal; readonly retryAfterMs?: number | null; readonly retry: () => Promise<void> }
 
 /** What the person is told, by why the list did not take the device. */
-function stalledReason(t: ReturnType<typeof useT>, why: AllowRefusal): string {
+function stalledReason(t: ReturnType<typeof useT>, why: AllowRefusal, retryAfterMs: number | null = null): string {
   switch (why) {
+    // the request went out and no answer came: whether the list took the device is read from the list, by Try again
+    case "unknown": return t("The account service did not answer. Try again to check.");
+    case "clock": return t("This device's clock looks wrong. Check its date and time, then try again.");
+    case "blocked": return t("This device cannot change your account's list right now.");
     case "not_claimed": return t("Update Ovis on that device and sign in there, then try again.");
     case "removed": return t("That device was removed from your account. Sign in again on it first.");
     case "stopped": return t("The account service cannot change the list right now.");
-    case "budget": return t("Too many devices were added just now. Try again in a few minutes.");
+    // the wait the account service named: a budget that opens again within the hour, or one that takes longer
+    case "budget": return retryAfterMs !== null && retryAfterMs > 60 * 60_000 ? t("Too many devices were added. Try again tomorrow.") : t("Too many devices were added just now. Try again in a few minutes.");
     default: return t("It could not be added to your account. Try again.");
   }
 }
@@ -63,11 +68,13 @@ export function ListAllowNotice({ stalled, onClose }: { stalled: Stalled; onClos
     catch (error) { console.warn("Ovis: the device was not added to the account", error instanceof Error ? error.name : error); }
     finally { setBusy(false); }
   };
+  // "added to this PC only" is said only when it is known: after an answer that never came, it is not
+  const title = stalled.why === "unknown" ? t("Not known yet: is {device} in your account?", { device: stalled.device }) : t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc });
   return (
     <div className="modal-scrim">
-      <div className="modal account-approval" role="alertdialog" aria-modal="true" aria-label={t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc })} data-testid="list-allow-notice" data-why={stalled.why}>
-        <h2 className="account-approval-title">{t("{device} was added to {pc} only", { device: stalled.device, pc: stalled.pc })}</h2>
-        <p className="account-approval-error" role="alert">{stalledReason(t, stalled.why)}</p>
+      <div className="modal account-approval" role="alertdialog" aria-modal="true" aria-label={title} data-testid="list-allow-notice" data-why={stalled.why}>
+        <h2 className="account-approval-title">{title}</h2>
+        <p className="account-approval-error" role="alert">{stalledReason(t, stalled.why, stalled.retryAfterMs ?? null)}</p>
         <div className="account-approval-actions">
           <button type="button" className="btn" disabled={busy} onClick={onClose}>{t("Close")}</button>
           {stalled.why !== "removed" && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void retry()}>{t("Try again")}</button>}
@@ -162,7 +169,7 @@ function DeviceApprovals({ pairings }: { pairings: readonly RemotePairingRequest
               setStalled(null);
             } catch (error) {
               if (!(error instanceof ListAllowError)) throw error;
-              setStalled({ device: admission.label, pc: where.pcName, why: error.why, retry: attempt });
+              setStalled({ device: admission.label, pc: where.pcName, why: error.why, retryAfterMs: error.retryAfterMs, retry: attempt });
             }
           };
           await attempt();

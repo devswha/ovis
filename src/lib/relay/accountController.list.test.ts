@@ -29,6 +29,9 @@ const empty: ShellDeviceStore = {
   update: async () => { throw new Error("No pairing is made here"); },
 };
 
+/** what a device that follows the list of `account` and is in it shows */
+const inList = (account: string): AccountListView => ({ account, reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 0, read_at: 1, trouble: null }, devices: [], pcs: [] });
+
 /** a list that only records what the shell asks of it */
 function recordingList(): { list: AccountList; calls: string[]; heard: (() => void)[] } {
   const calls: string[] = [];
@@ -45,6 +48,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     forget: async (account) => { calls.push(`forget ${account}`); },
     adopt: async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq}`); return OFF; },
     writer: () => null,
+    placeAt: () => null,
     holdsEntry: () => false,
     gossip: () => null,
     pageAfter: () => null,
@@ -66,8 +70,8 @@ describe("the hosted shell and the account's signed list", () => {
   afterEach(() => browser.dispose());
 
   const settle = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
-  const controller = (accountList?: AccountList | null) => createAccountController({
-    container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore, accountService: SERVICE,
+  const controller = (accountList?: AccountList | null, store: ShellDeviceStore = empty) => createAccountController({
+    container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE,
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
       asked.push(pathname);
@@ -85,6 +89,8 @@ describe("the hosted shell and the account's signed list", () => {
   it("reads the list once per sign-in, after the directory, and holds each directory read against it", async () => {
     await signIn("acct-one");
     const { list, calls, heard } = recordingList();
+    let viewed = "acct-one";
+    list.view = () => inList(viewed);
     const account = controller(list);
     await account.refresh(true);
     await settle();
@@ -99,10 +105,52 @@ describe("the hosted shell and the account's signed list", () => {
     await settle();
     expect(calls.slice(3)).toEqual([`shadow acct-one ${"a1".repeat(16)},${"b2".repeat(16)} opens:`]);
     // another sign-in: its list is read at once
+    viewed = "acct-two";
     await signIn("acct-two");
     await account.refresh(false, true);
     await settle();
     expect(calls.slice(4)).toEqual(["sync", `shadow acct-two ${"a1".repeat(16)},${"b2".repeat(16)} opens:`]);
+  });
+
+  it("compares nothing for a sign-in that ended while it read this device's pairings", async () => {
+    await signIn("acct-one");
+    const { list, calls, heard } = recordingList();
+    // the read of the pairings that a comparison waits for, held by the test
+    const reads: (() => void)[] = [];
+    let holding = false;
+    list.view = () => inList("acct-one");
+    const account = controller(list, { ...empty, list: () => holding ? new Promise((resolve) => { reads.push(() => resolve([])); }) : Promise.resolve([]) });
+    await account.refresh(true);
+    await settle();
+    const unhandled: unknown[] = [];
+    const note = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", note);
+    try {
+      holding = true;
+      for (const tell of heard) tell();
+      await settle();
+      expect(reads.length).toBe(1);
+      holding = false;
+      account.signOut();
+      await settle();
+      calls.length = 0;
+      for (const release of reads) release();
+      await settle();
+    } finally { process.off("unhandledRejection", note); }
+    expect([unhandled, calls.filter((call) => call.startsWith("shadow"))]).toEqual([[], []]);
+  });
+
+  it("reads no pairing and compares nothing where the device is in no list of the account", async () => {
+    await signIn("acct-one");
+    const { list, calls, heard } = recordingList();
+    let read = 0;
+    const account = controller(list, { ...empty, list: async () => { read += 1; return []; } });
+    await account.refresh(true);
+    await settle();
+    const before = read;
+    for (const tell of heard) tell();
+    await settle();
+    expect([read - before, calls.filter((call) => call.startsWith("shadow"))]).toEqual([0, []]);
   });
 
   it("reads the list again after a sign-out, so that nothing of the ended sign-in stays in view, and forgets what opens its names", async () => {

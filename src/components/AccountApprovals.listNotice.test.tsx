@@ -6,11 +6,11 @@ import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { ListAllowNotice } from "./AccountApprovals.tsx";
 
-function render(why: AllowRefusal): string {
+function render(why: AllowRefusal, retryAfterMs: number | null = null): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
-    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { device: "Dana's tablet", pc: "Desk", why, retry: async () => {} }, onClose: () => {} })));
+    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { device: "Dana's tablet", pc: "Desk", why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
     else Reflect.deleteProperty(navigator, "languages");
@@ -34,5 +34,20 @@ describe("a device a PC let in that the account's list did not take", () => {
     const removed = render("removed");
     expect(removed).toContain("That device was removed from your account. Sign in again on it first.");
     expect(removed).not.toContain(">Try again<");
+  });
+
+  it("never says the device was added to this PC only while that is not known: after an answer that never came, it says so and offers to check", () => {
+    const html = render("unknown");
+    expect(html).not.toContain("was added to Desk only");
+    expect(html).toContain("Not known yet: is Dana&#x27;s tablet in your account?");
+    expect(html).toContain("The account service did not answer. Try again to check.");
+    expect(html).toContain(">Try again<");
+  });
+
+  it("says that the clock looks wrong, that this device cannot change the list, and how long a budget lasts", () => {
+    expect(render("clock")).toContain("This device&#x27;s clock looks wrong. Check its date and time, then try again.");
+    expect(render("blocked")).toContain("This device cannot change your account&#x27;s list right now.");
+    expect(render("budget", 20 * 3600_000)).toContain("Too many devices were added. Try again tomorrow.");
+    expect(render("budget", 5 * 60_000)).toContain("Too many devices were added just now. Try again in a few minutes.");
   });
 });
