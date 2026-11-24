@@ -185,6 +185,38 @@ describe("the hosted shell and the account's signed list", () => {
     expect([account.listKey, list.view().account]).toEqual([null, "acct-one"]);
   });
 
+  it("draws nothing again when the list moves on an account that has none: only a list that is drawn from, or was, redraws the rows", async () => {
+    await signIn("acct-one");
+    directory = [row("a1".repeat(16))];
+    const { list, heard } = recordingList();
+    // the account service keeps no list for this account, and says so at the end of the page's first round
+    const off: AccountListView = { account: "acct-one", reached: true, status: { at: "off" }, devices: [], pcs: [] };
+    list.view = () => off;
+    let draws = 0;
+    const account = controller(list, empty, () => { draws += 1; });
+    await account.refresh(true);
+    await settle();
+    const before = draws;
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBe(before);
+    // the device comes into a list: now its rows are the list's, and they are drawn
+    list.view = () => inList("acct-one");
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBeGreaterThan(before);
+    // and when that list is gone again, once more, to take its rows back
+    const after = draws;
+    list.view = () => off;
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBeGreaterThan(after);
+    const last = draws;
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBe(last);
+  });
+
   it("stops following the list once it is disposed: no later round reads it", async () => {
     await signIn("acct-one");
     const { list, calls } = recordingList();
