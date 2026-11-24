@@ -1637,8 +1637,8 @@ hands the other what it lacks (`listGossip.ts`, over `POST /api/account/list/hea
   the head call (`asks`), and judges what comes back. Two histories that members signed raise the
   alarm on both sides; one that holds only what its writer left behind raises it on the side that
   is shown the other;
-- at most 24 of the two calls a minute for one session (the PC takes 30), a `429` waits its
-  `retry-after`, and what a minute's calls did not finish (the device's read, or the PC's next
+- at most 24 of the two calls a minute of one PC (the PC takes 30, counted by the key it let the
+  device in by, so a new carrier is no new minute), a `429` waits its `retry-after`, and what a minute's calls did not finish (the device's read, or the PC's next
   asked place) goes on at the next exchange of the same session from where it got to, while the
   device stands where it stood;
 - a page whose save fails is acted on from memory all the same (a removal stands at once), is not

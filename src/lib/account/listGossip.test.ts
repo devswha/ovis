@@ -323,6 +323,31 @@ describe("a session keeps the list compared", () => {
     expect(GOSSIP_CALLS_PER_MINUTE).toBeLessThan(30);
   });
 
+  it("gives a new carrier no new minute of calls: the PC counts them by the device's key, whatever its sessions", async () => {
+    const { w, first } = await account();
+    const pc = await memoryPc(w, w.held().entries);
+    let clock = 0;
+    const timers: { run: () => void; at: number }[] = [];
+    const session = sessionOf(pc);
+    const stop = keepListGossip(session, {
+      list: () => first.list, mono: () => clock, callsPerMinute: 1,
+      setTimer: (run: () => void, ms: number) => { const timer = { run, at: clock + ms }; timers.push(timer); return timer; },
+      clearTimer: (timer: unknown) => { timers.splice(timers.indexOf(timer as never), 1); },
+    });
+    try {
+      await until(() => pc.calls.length === 1 && timers.length === 1);
+      // the carrier drops and comes back within the minute: nothing is asked until that minute is over
+      clock = 10_000;
+      session.up(false);
+      session.up(true);
+      await until(() => timers.length === 1 && timers[0]!.at === 60_000);
+      expect(pc.calls.length).toBe(1);
+      clock = 60_000;
+      timers.shift()!.run();
+      await until(() => pc.calls.length === 2);
+    } finally { stop(); }
+  });
+
   it("goes on with a read the minute's calls cut, from where it got to, while the device stands where it stood", async () => {
     const { w, first } = await account();
     const fork = await otherHistory(w, first);

@@ -17,7 +17,10 @@ import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList } from "./accountList.ts";
 import { AccountPcError, post, type PcFetch } from "./join.ts";
 
-/** How many of the two calls (POST /api/account/list/head, /page) one session makes in a minute: under the PC's 30. */
+/**
+ * How many of the two calls (POST /api/account/list/head, /page) this device makes of one PC in a minute: under the 30
+ * the PC takes, which it counts by the key it let the device in by, whatever sessions the device opens.
+ */
 export const GOSSIP_CALLS_PER_MINUTE = 24;
 /** How often, in seconds, a device says where it stands while a session is up and nothing else moved. */
 export const GOSSIP_SECONDS = 300;
@@ -192,6 +195,8 @@ export interface KeepGossipOptions {
   readonly live?: () => boolean;
   /** A clock that only moves forward, in ms. */
   readonly mono?: () => number;
+  /** The calls of a minute: GOSSIP_CALLS_PER_MINUTE. */
+  readonly callsPerMinute?: number;
   readonly setTimer?: (run: () => void, ms: number) => unknown;
   readonly clearTimer?: (timer: unknown) => void;
 }
@@ -223,7 +228,7 @@ export function keepListGossip(session: GossipSession, options: KeepGossipOption
   const spend = (): boolean => {
     const at = mono();
     calls = calls.filter((made) => at - made < 60_000);
-    if (calls.length >= GOSSIP_CALLS_PER_MINUTE) return false;
+    if (calls.length >= (options.callsPerMinute ?? GOSSIP_CALLS_PER_MINUTE)) return false;
     calls.push(at);
     return true;
   };
@@ -277,10 +282,11 @@ export function keepListGossip(session: GossipSession, options: KeepGossipOption
       arm(pausedUntil > mono() ? pausedUntil - mono() : GOSSIP_SECONDS * 1000);
     });
   };
-  // a carrier that comes up again is a new session at the PC: what was asked over the last one starts afresh
+  // a carrier that comes up again is a new session at the PC: what was asked over the last one starts afresh. Its
+  // calls do not: the PC counts them by this device's key, so a new carrier is no new minute
   const offRoute = session.onRouteChange?.(() => {
     const now = session.route !== undefined;
-    if (now && !up) { carry = null; otherList = false; calls = []; up = now; turn(); return; }
+    if (now && !up) { carry = null; otherList = false; up = now; turn(); return; }
     up = now;
   });
   turn();
