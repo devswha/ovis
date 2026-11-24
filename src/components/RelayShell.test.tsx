@@ -147,7 +147,7 @@ describe("the front page's account part", () => {
     expect(rowsOf(html)).toEqual([[`/s/${"c".repeat(32)}/`, "desk Relay On"], [`/s/${"d".repeat(32)}/`, "old-box Relay Not in your account&#x27;s list yet On"]]);
     expect(html).not.toContain("data-list-unread");
     // a copy only a newer app reads, and one that does not read: one line each, and every row marked
-    const marked = pcs.map(({ byList: _held, ...row }) => ({ ...row, notInList: true as const }));
+    const marked = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, notInList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
     const newer = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "newer" } }), scoped: false, onSignIn: none });
     expect(newer).toContain("This device cannot read your account&#x27;s list. Update the app.");
     expect(rowsOf(newer).map(([, text]) => text)).toEqual(["desk Relay Not in your account&#x27;s list yet On", "old-box Relay Not in your account&#x27;s list yet On"]);
