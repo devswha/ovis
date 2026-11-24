@@ -144,7 +144,7 @@ writer holds no key to seal its names with carries neither, and counts all the s
 | `epoch` | a number: the epoch whose key sealed this entry's names; in an `epoch` entry, the epoch that is current where it stands |
 | `epoch_link` | 61 bytes: the key of the current epoch, under the key of the epoch the entry opens |
 | `epoch_opens` | a hash: the commitment to the key of the epoch the entry opens (epoch 0 in a `genesis`) |
-| `exp` | a number, at most `issued_at` and 604800 (7 days): the invite lets no PC in once a `full` signer has signed an entry at a later time. The account service also judges it against its own clock |
+| `exp` | a number, at most `issued_at` + 604800 (7 days after the entry was signed): the invite lets no PC in once a `full` signer has signed an entry at a later time. The account service also judges it against its own clock |
 | `pc` | a PC's signing key: a key whose point is on the curve |
 | `role` | `drive` (types into terminals) or `watch` (only reads them) |
 | `sealed` | the entry's [names](#what-is-sealed), sealed: at least 47 bytes |
@@ -184,8 +184,10 @@ What the kinds add to the signers' rule:
   holder of the line still reads the names sealed before.
 - **A relay key comes in once** (`endpoint_reused`), also after its PC was put out. One row waits
   for more: a carried PC that is still in gets its keys from a person's `pc` at its relay key, and
-  never from an invite's `join`. **A PC's key comes in once**, at one relay key, and a key that is
-  or was a signer is no PC's (`key_reused`).
+  never from an invite's `join`. **A PC's key comes in once**, at one relay key: a key that any PC
+  ever had here names no other PC, device or invite (`key_reused`). A person's `pc` makes its
+  fresh key a `full` signer in that same entry; the `pc` key of an invite's `join` is never one,
+  and a key that is or was a signer cannot stand there (`key_reused`).
 - **`remove` with `endpoint`** puts out a PC whose key is no signer (one that joined or was
   carried), and only a `full` signer's does (`signer_not_allowed`, then `already_out`). Where the
   key of a PC that joined was made a signer afterwards, the PC goes with its key like one a person
@@ -266,7 +268,8 @@ What stays true all the same, and what to do about it:
 
 A member that reads an entry whose `v` is above its level applies `adds` and `ends` and nothing of
 the kind, and from an entry of a `full` signer that it cannot read it is behind: it lets nobody new
-in, and still applies every removal.
+in, and still applies every removal. A carried PC that is in still gets its keys from a person's
+`pc`: nobody new comes in by that, and the member then knows which PC goes when that key is ended.
 
 ### A card
 
@@ -507,7 +510,9 @@ Each file of [`shared/account-list-vectors/kinds/`](../shared/account-list-vecto
 from entry 0: `name`, `level` (the member's), `keys`, `entries` as above (`sealed` is shown as
 base64url), and `expect`: either `outcomes` (what became of each entry after entry 0, as
 `counts`, `cannot_read`, or the outcome and its name) with the whole `state` after the last entry,
-or `stops`. [`card/`](../shared/account-list-vectors/card) holds cards (`card`, its `bytes` where
+or `stops`. A list that no member follows has `stops` alone; a member that stopped after entries
+it took (at one that does not hold, or at one it cannot place) has `stops` with the `outcomes` and
+the `state` of what it kept. [`card/`](../shared/account-list-vectors/card) holds cards (`card`, its `bytes` where
 it is in form, a `signature`, `expect.holds`) and [`names/`](../shared/account-list-vectors/names)
 holds names (`fields`, each a name and its value as base64url, and `expect.names`, which is `null`
 for fields that give none; `written` says that a writer writes exactly those fields for those
