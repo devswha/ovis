@@ -1713,8 +1713,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   names the list and the place of that entry (`list`: `id`, `seq`, `hash`), over the session whose
   digits were compared: the device takes the list id from there and reads the list up to that
   place. That session serves nothing else (403 `sign_in_required` for every call), whichever row
-  this PC holds for that id: the key was sent with the comparison and never signed with, and the
-  device signs in with it. A key this PC already holds by a pairing under an id of its own gets
+  this PC holds for that id and whatever role that row carries (the list answered for the key; a
+  row of this PC's own under the account's id gives it nothing, here as at a sign-in): the key was
+  sent with the comparison and never signed with, and the device signs in with it. A key this PC already holds by a pairing under an id of its own gets
   its receipt the same way, over that pairing's row, and then signs in with its list key over that
   row; the answer names the account's id for the key.
 - **When the entry does not go in**, the join ends as any join that was not let in (`auth_failed`),
@@ -1750,11 +1751,14 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   read and no page.
 - **Which device may allow.** A device signed in to this PC with the key the list holds for it
   sees the joins into the list that wait here (`GET /api/relay/pairings`, each marked `list`, and
-  the `remote-pairings` event) and decides one (`POST /api/relay/pairing`, with the digits the new
+  the `remote-pairings` event, which its own socket carries beside this PC's roster once it turned
+  machine events on) and decides one (`POST /api/relay/pairing`, with the digits the new
   device shows) only when the list holds it **to drive, with full power**: what may add a device
   to the list may approve its join. A device the list holds to watch, or with bound power, gets 403
   `list_cannot_allow` from both. The right is read from this PC's copy of the list at each call, so
-  a device the list removed a moment ago has none. The event stream asks again at every telling,
+  a device the list removed a moment ago has none. On a PC that follows no list a device the
+  account let in reads no waiting joins and hears none, as before (403 `account_route_denied`).
+  The event stream asks again at every telling, and when the list changes what it lets in,
   for a member of this PC's own devices too: a device that subscribed while it had the right
   (before this PC pinned its list, say) and has it no more is told once that nothing waits, and
   nothing after. Such a device sees and decides a first join
