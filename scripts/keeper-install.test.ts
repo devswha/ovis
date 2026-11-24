@@ -4,6 +4,7 @@ import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { previousInstallers } from "./keeper-compat.test-helpers.ts";
 import { installServer } from "./server-install.ts";
 import { DIST_ARCHIVE, generateKeyPair, PTY_ASSETS, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
 
@@ -17,21 +18,17 @@ const shellFrom = (checkout: string) => readFileSync(join(checkout, "install.sh"
   .replace(`RELEASE_PUBLIC_KEY="${RELEASE_PUBLIC_KEY}"`, `RELEASE_PUBLIC_KEY="${key.publicKey}"`)
   .replace(/\nmain "\$@"\n$/, '\n');
 const installer = shellFrom(join(import.meta.dir, ".."));
-// Also run the actual previous readers and writer when a release checkout is supplied. No network or git history in CI tests.
-const previous = process.env["OVIS_TEST_PREVIOUS_RELEASE"];
-const old = previous ? {
-  shell: shellFrom(previous),
-  install: (await import(join(previous, "scripts/server-install.ts")) as typeof import("./server-install.ts")).installServer,
-  manifests: await import(join(previous, "scripts/server-manifest.ts")) as typeof import("./server-manifest.ts"),
-  updater: await import(join(previous, "server/updater.ts")) as typeof import("../server/updater.ts"),
-} : null;
+const pinned = await previousInstallers(scratch);
 
 describe.skipIf(process.platform === "win32")("optional keeper in a signed server installation", () => {
-  for (const [via, shell, install, legacy] of [
-    ["shell", installer, installServer, false], ["plugin", null, installServer, false],
-    ...(old ? [["previous shell", old.shell, old.install, true], ["previous plugin", null, old.install, true]] as const : []),
+  for (const [via, shell, install, legacy, old] of [
+    ["shell", installer, installServer, false, null], ["plugin", null, installServer, false, null],
+    ...pinned.flatMap(release => [
+      [release.tag + " shell", shellFrom(release.dir), release.install, true, release], [release.tag + " plugin", null, release.install, true, release],
+      ["shell reading " + release.tag, installer, installServer, false, release], ["plugin reading " + release.tag, null, installServer, false, release],
+    ] as const),
   ] as const) {
-    it.each(legacy ? ["good"] : ["good", "repair", "cleanup failure", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
+    it.each(legacy ? ["good"] : old ? ["old manifest"] : ["good", "repair", "cleanup failure", "linked asset", "missing", "wrong hash", "wrong program", "old manifest", "edited manifest", "bad signature", "missing signature", "wrong version", "wrong server", "noncanonical", "wrong platform file"])(
       `${via}: %s keeper never takes down the server or PTY host`, async (state) => {
         const root = mkdtempSync(join(scratch, "pc-"));
         const probe = keeper.replace("echo", `: > "${join(root, "ran")}"; echo`);
@@ -115,7 +112,7 @@ describe.skipIf(process.platform === "win32")("optional keeper in a signed serve
           const updater = new old.updater.Updater({ root: directory, stateDir: join(root, "state"), autoUpdate: false,
             installedBinary: old.updater.installedBinaryAt(directory, true), publish() {}, activate: async () => {} });
           await updater.initialize();
-          expect(updater.status).toMatchObject({ current_version: version, managed: false, blocked_reason: old.updater.INSTALLED_BINARY_REASON });
+          expect(updater.status).toMatchObject({ current_version: old.tag === "v0.5.4" ? null : version, managed: false, blocked_reason: old.updater.INSTALLED_BINARY_REASON });
         }
       },
     );
