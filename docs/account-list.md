@@ -217,8 +217,8 @@ bytes = "ovis-list-card/1" and the fields enc, key and list, for a PC endpoint, 
   key, says the same.
 - When a person adds a PC by comparing a number on two screens, the number is bound to the card:
   its binding is SHA-256 over the card's bytes, and the digits come from that binding and a nonce
-  from each end, each fixed before it sees the other's (as pairing by digits does,
-  [Pairing by comparing digits](relay.md#pairing-by-comparing-digits)). Digits of the hash alone
+  from each end, each fixed before it sees the other's, as pairing by comparing digits does
+  ([Relay](relay.md)). Digits of the hash alone
   would prove nothing: whoever carries the card between the two could try keys until one fits.
 
 ### What is sealed
