@@ -566,6 +566,63 @@ describe("a removal the PC has seen is final", () => {
   });
 });
 
+describe("a key the list holds, which this PC also holds by a pairing of its own", () => {
+  test("opens under its account id too, as the role the list gives it, and the pairing keeps its own role", async () => {
+    const pc = await pinnedPc();
+    // the account phone: a row this PC paired itself, with an id of its own, and a device of the list by the same key
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone, { role: "watch", power: "bound" });
+    await pc.pull();
+    const paired = { keys: pc.member.keys, publicKey: pc.member.publicKey, id: pc.member.id };
+    expect(pc.idOf(phone).id).not.toBe(paired.id);
+    expect(await pc.signsIn(pc.idOf(phone))).toBe("watch");
+    expect(await pc.signsIn(paired)).toBe("drive");
+    // the answer names the device as the app named it
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(phone))).toMatchObject({ device_id: pc.idOf(phone).id, role: "watch" });
+    // a key that is not the row's proves nothing under that id
+    const stranger = await listMember();
+    expect(await pc.signsIn({ keys: stranger.keys, publicKey: stranger.key, id: pc.idOf(phone).id })).toBeNull();
+  });
+
+  test("its session under the account id ends when the list puts the key out", async () => {
+    const pc = await pinnedPc();
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone);
+    await pc.pull();
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(phone))).toMatchObject({ role: "drive" });
+    await pc.account.remove(phone.key);
+    await pc.pull();
+    expect(await bounded(link.serverError, 2000)).toBe("auth_revoked");
+    expect(await pc.signsIn(pc.idOf(phone))).toBeNull();
+  });
+
+  test("its session under the account id ends when the list lets it in no more, though the pairing stands", async () => {
+    const pc = await pinnedPc();
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone, { role: "watch", power: "bound", until: pc.time.seconds() + 60 });
+    await pc.pull();
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(phone))).toMatchObject({ role: "watch" });
+    pc.time.advance(61_000);
+    pc.list.tick();
+    await pc.list.settled();
+    expect(await bounded(link.serverError, 2000)).toBe("auth_revoked");
+    expect(await pc.signsIn(pc.idOf(phone))).toBeNull();
+    // the pairing this PC made itself is its own doing, and stays
+    expect(await pc.signsIn({ keys: pc.member.keys, publicKey: pc.member.publicKey, id: pc.member.id })).toBe("drive");
+  });
+
+  test("a PC that is not pinned knows no such id", async () => {
+    const pc = await listedPc();
+    const phone = await listMember(pc.member.keys);
+    await pc.account.addDevice(phone);
+    await pc.pull();
+    expect(await pc.signsIn(pc.idOf(phone))).toBeNull();
+  });
+});
+
 describe("a pin outlives this PC's own settings", () => {
   test("started with Step 2 turned off here, a pinned PC still follows its list: a member's signed add adds nobody", async () => {
     const pc = await pinnedPc();

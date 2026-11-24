@@ -1475,6 +1475,12 @@ The pin is one-way. It ends only by an act at the PC that ends its place in the 
 all**, **Reset relay identity**), or by an entry of the list that removes this PC. Nothing the
 account service says ends it.
 
+A pin outlives the PC's own settings: started with Step 2 turned off here
+([Turning Step 2 off](#turning-step-2-off)), a pinned PC still follows its list, and says so in its
+log. Where a PC has two state folders (the old and the new name of one), the other folder takes
+the pin only together with the list keys and the copy; when those cannot be brought, it starts
+closed rather than unpinned or pinned with keys the list does not know.
+
 The pin is kept with the PC's place in its account (`account-pc.json`), not with its copy of the
 list. A pinned PC whose `account-list.json` is gone is still pinned: it reads its list again from
 the start, and lets no device of its account in until that read shows the PC in the list. What it
@@ -1497,6 +1503,11 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   the devices it already let in: no hold, no notice and no closed session for a key it held. Today
   a pin makes every list device a new row, which is right only for a PC whose account devices all
   came by the list.
+- **A key the list holds, which this PC also holds by a pairing of its own,** opens under the key's
+  account id too (`accountDeviceId(server_id, key)`), which is the only id an app that opens the PC
+  through its account knows. There the list's role decides, whatever role the pairing has; under
+  the pairing's own id the device signs in as it did. That session ends when the list lets the key
+  in no more, and when the pairing is revoked.
 - **A device the list put out is out for good.** Its sessions close, and the PC keeps the removal
   as it keeps a member's signed `remove`: every row of that key goes, a pairing this PC made itself
   included, and nothing brings that key back, a pairing at this PC included: a list's removal is
@@ -1504,8 +1515,8 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   key: it signs in again, which makes a new key, and is allowed into the list again, or is paired
   by a person at this PC.
 - **Before a session opens, the PC reads the list** when its last full read is older than 30
-  seconds, and the sign-in waits for that for 5 seconds at most; then the PC decides on its copy as
-  it is. That holds for every sign-in, a device this PC paired itself included. With a session open
+  seconds, and the sign-in waits for that for 5 seconds at most, counted once from its start; then
+  the PC decides on its copy as it is. That holds for every sign-in, a device this PC paired itself included. With a session open
   the PC reads every 30 seconds, otherwise every 5 minutes.
 - **When the account service is away, the PC lets in the devices its copy holds**, for as long as
   that lasts and after a restart too. The wait for a whole read of the account service (after a
@@ -1513,14 +1524,26 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
   PC had taken in on a member's word before it pinned.
 - **Two histories that members signed raise an alarm** (`alarm: "fork"` in `GET /api/account/list`).
   From then on the PC lets in only the devices it held when the alarm rose, and still takes every
-  removal. Nothing clears the alarm but an act at the PC that unpins it.
+  removal. Nothing clears the alarm but an act at the PC that unpins it. The alarm is kept with the
+  pin (`account-pc.json`): a PC whose copy of the list is lost reads one history again, which says
+  nothing of whom the alarm held back, so it then lets no device of its list in until it is
+  unpinned.
+- **A device's time (`until`) has a timer of its own.** Its session closes at that second, not at
+  the next tick and not behind a read of the account service. The hour that showed it is saved
+  before the PC acts on it, so a restart with the clock set back does not let the device in again.
+- **A removal is enforced whether or not the disk takes it.** When the copy cannot be saved, the
+  PC still puts out what the entry removed, says so (`error` in `GET /api/account/list`), and
+  offers the copy to the disk again every few seconds. A page a device handed over is answered as
+  not saved until then.
 - **A PC the list removed leaves its account**, as one its account stopped listing did before: its
-  account devices go, and the pairings it made itself stay. It keeps that it was removed
+  account devices go, and the pairings it made itself stay. What the list removed before it removed
+  the PC is put out first, in the same read: a removed device keeps no pairing of this PC's own. It keeps that it was removed
   (`account-pc.json`), and joins that account again on no path (a press, an add over SSH and a
   device's link are refused `list_removed`) until **Reset relay identity** makes it a new PC, which
   is added as one.
 - **Another PC of the account** ([Adding a PC of your account](#adding-a-pc-of-your-account)) is
-  taken as one only when the list holds its relay key.
+  taken as one only when the list holds its relay key, asked when its comparison begins and again
+  in the turn that writes its row.
 - Devices paired with this PC itself keep their pairing and their role: that is this PC's own
   doing. Joining by comparing digits works as before, each join decided by a person.
 
