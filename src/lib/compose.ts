@@ -386,7 +386,7 @@ function slashMatchTier(command: SlashCommand, needle: string, prefixOnly: boole
 export function commandsForTrigger(commands: readonly SlashCommand[], agent: string | null, trigger: ActiveTrigger): SlashCommand[] {
   const syntax = skillSyntax(agent);
   const prefix = trigger.prefix ?? "/";
-  if (namesPaletteHidden(commands, trigger.query.toLowerCase(), prefix)) return [];
+  if (trigger.start === 0 && namesPaletteHidden(commands, trigger.query.toLowerCase(), prefix)) return [];
   return commands.filter((command) => {
     if (!paletteCommandListed(command)) return false;
     if (trigger.start === 0) {

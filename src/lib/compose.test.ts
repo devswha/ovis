@@ -617,6 +617,9 @@ describe("the menu over a catalog the server built", () => {
     expect(namesHiddenCommand(rows, "plan", "/")).toBeTrue();
     expect(commandsForTrigger(rows, "codex", { ...slash, query: "pla", end: 4 }).some((row) => row.name === "plan")).toBeFalse();
     expect(namesHiddenCommand(rows, "pla", "/")).toBeFalse();
+    const skill: SlashCommand = { name: "plan-review", description: "", source: "skill", trigger: "$" };
+    // inline, `use /plan` still offers the skill: only a leading command typed whole is sent as typed
+    expect(commandsForTrigger([...rows, skill], "codex", { kind: "slash", query: "plan", start: 4, end: 9 }).some((row) => row.name === "plan-review")).toBeTrue();
   });
 
   it("lists Claude's terminal screens apart and leaves out what Claude's own menu hides", () => {
