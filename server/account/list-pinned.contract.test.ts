@@ -10,6 +10,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { readSave, writeSave } from "../../shared/account-list-follower.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
 import { bounded, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
@@ -724,6 +725,31 @@ describe("what unpins", () => {
     expect(await signsIn(pc.laptop)).toBe("drive");
     expect(await signsIn(borrowed)).toBeNull();
     expect(await signsIn(planted)).toBeNull();
+  });
+
+  test("not an update: a copy whose saved state another build wrote is read again from its entries, and the PC holds whom it held", async () => {
+    const pc = await pinnedPc();
+    pc.fixture.app.stop();
+    const path = join(pc.fixture.stateDir, ACCOUNT_LIST_FILE);
+    const file = JSON.parse(readFileSync(path, "utf8")) as { save: string };
+    const saved = await readSave(file.save);
+    if (!saved.read || saved.copy.state === null) throw new Error("The saved copy does not read");
+    // the same entries under a state no build of today writes
+    const other = writeSave({ ...saved.copy, state: { ...saved.copy.state, epoch: saved.copy.state.epoch + 7 } });
+    writeFileSync(path, JSON.stringify({ ...file, save: other }));
+    expect(await readSave(other)).toMatchObject({ read: true, rebuilt: true });
+
+    pc.reach.away = true;
+    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
+    closes.push(() => again.app.stop());
+    await again.app.context.services.accountMailbox.pull();
+    await again.app.context.services.accountList!.settled();
+    expect(again.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in", devices: 2, error: null });
+    const link = await relayConnection(again, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(pc.first))).toMatchObject({ role: "drive" });
+    // and it is written back as this build writes it
+    const now = JSON.parse(readFileSync(path, "utf8")) as { save: string };
+    expect(await readSave(now.save)).toMatchObject({ read: true, rebuilt: false });
   });
 
   test("nothing else: an account-list.json that will not read is a pin the PC cannot read, and lets nobody of the account in", async () => {

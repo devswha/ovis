@@ -1475,6 +1475,11 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
 - **A device the list lets in after the pin still waits its ten seconds** and is announced on every
   older device, as a device the snapshot let in was. The devices the list held at the pin wait for
   none: a person at this PC has just taken that list as the account's.
+- **Not built yet, and a rule for when it is:** an account that was in use before it had a list
+  brings its devices into the list as carried ones, and a PC that pins such a list keeps the rows of
+  the devices it already let in: no hold, no notice and no closed session for a key it held. Today
+  a pin makes every list device a new row, which is right only for a PC whose account devices all
+  came by the list.
 - **A device the list put out is out for good.** Its sessions close, and the PC keeps the removal
   as it keeps a member's signed `remove`: every row of that key goes, a pairing this PC made itself
   included, and nothing brings that key back, a pairing at this PC included. The device comes back
