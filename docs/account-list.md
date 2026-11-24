@@ -1084,13 +1084,15 @@ power `full` offers **Remove** on every row but its own; this device's own row k
 **Disconnect**, which is a leave (below). An account with no list, and a device that is in none,
 see the rows they always did.
 
-**Remove** asks once. The question names what came in through that device: every device, key with
-no name and PC that it let in, added, or whose invite it placed, and whatever those let in in turn,
-in the order they came in. This device and what came in through it are never among them, and
-neither is what was in the account before the list. Each is a box to tick, and none is ticked at
-first: a lost phone often let in the person's own PCs, which come back only as new PCs, while a
-stolen one may have let in the thief's devices. The invites the device placed need no box: they
-are void once its key is ended.
+**Remove** asks once, and by default puts out that device alone, as Doriterm's plain revoke does.
+Where something came in through it, the question has one switch, off at first: **If {name} was
+stolen, also remove what it added (n)**. On, it lists what came in through the device: every
+device, key with no name and PC that it let in, added, or whose invite it placed, and whatever
+those let in in turn, in the order they came in, each ticked, and each can be left out. This
+device and what came in through it are never among them, and neither is what was in the account
+before the list. Where a PC is among the ticked, a line says **These PCs will need to be added
+again.**: a PC put out comes back only as a new PC. The invites the device placed are not named:
+they are void once its key is ended.
 
 **The request**, one for all of it, through the kinds' writer on the device's own state: a
 `remove` that ends each key (for a PC, what `pcRemoval` gives: its key or its relay key, and the
@@ -1108,8 +1110,9 @@ shown as done.
 **A key that is out never comes back.** Nothing signs it in again: an Allow of that key is
 refused (`removed`), and the device comes back only with a new key.
 
-**Not me** on a PC's notice of a new device places the same request for that device's key, where
-the list holds it as a device other than this one and this device may remove it. Any other
+**Not me** on a PC's notice of a new device asks the same question for that device's key, with the
+switch on at first: the person does not know the device, so what it added is suspect. It does so
+where the list holds the key as a device other than this one and this device may remove it. Any other
 notice keeps the blocks of [Who may admit a device](account.md#who-may-admit-a-device).
 
 **Signing out and leaving.** A device that is in its account's list signs a `remove` of its own

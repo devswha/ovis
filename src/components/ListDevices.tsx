@@ -14,6 +14,7 @@ import { cameInThrough, removeFromList, type Arrival, type RemoveOutcome } from 
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { NotMeButton } from "./BlockOutcomes.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { Toggle } from "./SettingsControls.tsx";
 
 /** The page's list as it shows now, kept current. */
 export function useListView(list: AccountList | null): AccountListView | null {
@@ -50,6 +51,13 @@ function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true
   return t("{name} could not be removed. Try again.|device", { name });
 }
 
+/** The name a removal's question gives what came in through a key: by the view's names. */
+function arrivalNameOf(t: Translate, view: AccountListView, arrival: Arrival): string {
+  if (arrival.kind === "pc") return view.pcs.find((pc) => pc.endpoint === arrival.endpoint)?.name?.label ?? t("Unnamed PC");
+  if (arrival.kind === "signer") return t("Unknown key");
+  return view.devices.find((device) => device.key === arrival.key)?.name?.label ?? t("Unnamed device");
+}
+
 export function ListDevices({ list, view, onLeave }: { readonly list: AccountList; readonly view: AccountListView; readonly onLeave?: () => Promise<void> }) {
   const t = useT();
   const [asked, setAsked] = useState<Row | "self" | null>(null);
@@ -59,11 +67,6 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
   const nameless = writer === null ? [] : listView(writer.state).signers.map((row) => row.key);
   const rows: Row[] = [...view.devices.map((device): Row => ({ kind: "device", device })), ...nameless.map((key): Row => ({ kind: "signer", key }))];
   const nameOf = (row: Row): string => (row.kind === "signer" ? t("Unknown key") : row.device.name?.label ?? t("Unnamed device"));
-  const arrivalName = (arrival: Arrival): string => {
-    if (arrival.kind === "pc") return view.pcs.find((pc) => pc.endpoint === arrival.endpoint)?.name?.label ?? t("Unnamed PC");
-    if (arrival.kind === "signer") return t("Unknown key");
-    return view.devices.find((device) => device.key === arrival.key)?.name?.label ?? t("Unnamed device");
-  };
 
   return (
     <section className="account-manage-part" aria-label={t("Devices")}>
@@ -90,7 +93,7 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
           confirmLabel={t("Disconnect")} onClose={() => setAsked(null)} onConfirm={async () => { await onLeave(); setAsked(null); }} />
       )}
       {asked !== null && asked !== "self" && (
-        <RemoveDialog list={list} target={asked} name={nameOf(asked)} arrivalName={arrivalName}
+        <RemoveDialog list={list} view={view} removing={keyOf(asked)} name={nameOf(asked)} also={false}
           onClose={() => setAsked(null)} onRemoved={(name) => { setAsked(null); setNote(t("{name} was removed from your account.", { name })); }} />
       )}
     </section>
@@ -98,29 +101,33 @@ export function ListDevices({ list, view, onLeave }: { readonly list: AccountLis
 }
 
 /**
- * Remove's question: the device goes for good, and what came in through it is listed by name below, each to tick:
- * a lost phone may have let in the person's own PCs, a stolen one the thief's devices. Nothing is ticked at first.
+ * Remove's question (Doriterm's rule: a plain removal by default, a compromised one on request). The key goes for
+ * good; one switch also removes what came in through it, each listed by name, ticked, and each can be left out. With
+ * nothing that came in through it, there is no switch. `also`: whether the switch is on at first, as for Not me on
+ * a device the person does not know, whose additions are suspect. Invites it placed go void by themselves and are
+ * not named.
  */
-function RemoveDialog({ list, target, name, arrivalName, onClose, onRemoved }: {
+function RemoveDialog({ list, view, removing, name, also, onClose, onRemoved }: {
   readonly list: AccountList;
-  readonly target: Row;
+  readonly view: AccountListView;
+  readonly removing: string;
   readonly name: string;
-  readonly arrivalName: (arrival: Arrival) => string;
+  readonly also: boolean;
   readonly onClose: () => void;
   readonly onRemoved: (name: string) => void;
 }) {
   const t = useT();
-  const key = keyOf(target);
   // read when the question opens: what came in through the key, by the list this device holds now
   const [arrivals] = useState<readonly Arrival[]>(() => {
     const writer = list.writer();
-    return writer === null ? [] : cameInThrough(writer.state, key, writer.keys.key);
+    return writer === null ? [] : cameInThrough(writer.state, removing, writer.keys.key);
   });
-  const [chosen, setChosen] = useState<ReadonlySet<number>>(new Set());
+  const [withThem, setWithThem] = useState(also && arrivals.length > 0);
+  const [left, setLeft] = useState<ReadonlySet<number>>(new Set());
+  const picked = withThem ? arrivals.filter((_, index) => !left.has(index)) : [];
   const remove = async (): Promise<void> => {
-    const picked = arrivals.filter((_, index) => chosen.has(index));
     const outcome = await removeFromList(list, {
-      keys: [key, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))],
+      keys: [removing, ...picked.flatMap((arrival) => (arrival.kind === "pc" ? [] : [arrival.key]))],
       pcs: picked.flatMap((arrival) => (arrival.kind === "pc" ? [arrival.endpoint] : [])),
     }).catch((error: unknown): RemoveOutcome => {
       console.warn("Ovis: the device was not removed from the account's list", error instanceof Error ? error.name : error);
@@ -129,22 +136,26 @@ function RemoveDialog({ list, target, name, arrivalName, onClose, onRemoved }: {
     if (!outcome.removed) throw new Error(failureOf(t, outcome, name));
     onRemoved(name);
   };
+  const switchLabel = t("If {name} was stolen, also remove what it added ({n})", { name, n: String(arrivals.length) });
   return (
     <ConfirmDialog title={t("Remove {name} from your account?|device", { name })}
       body={t("{name} loses access to every PC of your account for good. To use it again, sign in on it and allow it from another device.", { name })}
       confirmLabel={t("Remove")} onClose={onClose} onConfirm={remove}>
       {arrivals.length > 0 && (
-        <fieldset className="account-manage-through" data-testid="came-in-through">
-          <legend className="settings-description">{t("Came in through {name}:", { name })}</legend>
-          {arrivals.map((arrival, index) => (
+        <div className="account-manage-through" data-testid="came-in-through">
+          <div className="account-manage-also">
+            <Toggle checked={withThem} label={switchLabel} onChange={setWithThem} />
+            <span className="settings-label" aria-hidden="true">{switchLabel}</span>
+          </div>
+          {withThem && arrivals.map((arrival, index) => (
             <label key={arrival.kind === "pc" ? arrival.endpoint : arrival.key} className="account-manage-through-row">
-              <input type="checkbox" checked={chosen.has(index)}
-                onChange={() => setChosen((now) => { const next = new Set(now); if (!next.delete(index)) next.add(index); return next; })} />
-              <span className="settings-label">{arrivalName(arrival)}</span>
+              <input type="checkbox" checked={!left.has(index)}
+                onChange={() => setLeft((now) => { const next = new Set(now); if (!next.delete(index)) next.add(index); return next; })} />
+              <span className="settings-label">{arrivalNameOf(t, view, arrival)}</span>
             </label>
           ))}
-          <p className="settings-hint">{t("If {name} was stolen, tick what you did not add yourself.", { name })}</p>
-        </fieldset>
+          {picked.some((arrival) => arrival.kind === "pc") && <p className="settings-hint" data-testid="pcs-added-again">{t("These PCs will need to be added again.")}</p>}
+        </div>
       )}
     </ConfirmDialog>
   );
@@ -159,25 +170,20 @@ export function listAnswersNotice(list: AccountList | null, view: AccountListVie
   return inList(view, view.account) && view.devices.some((device) => device.key === notice.key && !device.self) && list.writer() !== null;
 }
 
-/** "Not me" on a new device the list let in: one press puts it out of the list, and the notice says how that went. */
+/**
+ * "Not me" on a new device the list let in: Remove's question, with the switch for what the device added on at
+ * first, since the person does not know the device. The notice then says it is out.
+ */
 export function ListNotMeAction({ list, notice }: { readonly list: AccountList; readonly notice: DeviceNotice & { readonly key: string } }) {
   const t = useT();
-  const [sending, setSending] = useState(false);
-  const [said, setSaid] = useState<{ readonly text: string; readonly retry: boolean } | null>(null);
-  const press = async (): Promise<void> => {
-    setSending(true);
-    setSaid(null);
-    const outcome = await removeFromList(list, { keys: [notice.key], pcs: [] }).catch((error: unknown): RemoveOutcome => {
-      console.warn("Ovis: the device was not removed from the account's list", error instanceof Error ? error.name : error);
-      return { removed: false, why: "unreached", retryAfterMs: null };
-    });
-    setSending(false);
-    setSaid(outcome.removed ? { text: t("{name} was removed from your account.", { name: notice.label }), retry: false }
-      : { text: failureOf(t, outcome, notice.label), retry: outcome.why !== "stopped" });
-  };
-  if (said?.retry === false) return <p className="settings-hint" role="status" data-testid="list-not-me">{said.text}</p>;
+  const [asking, setAsking] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+  if (done !== null) return <p className="settings-hint" role="status" data-testid="list-not-me">{done}</p>;
+  const view = list.view();
+  const name = view.devices.find((device) => device.key === notice.key)?.name?.label ?? notice.label;
   return <>
-    <NotMeButton sending={sending} onPress={() => { void press(); }} />
-    {said !== null && <p className="settings-hint" role="alert" data-testid="list-not-me">{said.text}</p>}
+    <NotMeButton sending={asking} onPress={() => setAsking(true)} />
+    {asking && <RemoveDialog list={list} view={view} removing={notice.key} name={name} also
+      onClose={() => setAsking(false)} onRemoved={(gone) => { setAsking(false); setDone(t("{name} was removed from your account.", { name: gone })); }} />}
   </>;
 }
