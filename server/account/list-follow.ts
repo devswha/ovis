@@ -23,12 +23,14 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { entryFromText, entryHash, isListHash, readBody } from "../../shared/account-list-entry.ts";
+import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import {
   admitsSession, admittedDevices, followStep, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
-import { listView, signCard, type ListRole } from "../../shared/account-list.ts";
+import { isListLabel, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
+import { signerPower } from "../../shared/account-list-signers.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -57,6 +59,14 @@ export const LIST_WANT_BUSY_MS = 15 * 60_000;
 export const LIST_CLOCK_SAVE_SECONDS = 60;
 /** The most differences one start says: past it the list and the snapshot plainly are not of one account. */
 export const DIFFERENCES_MAX = 1000;
+/** How often a PC signs an Allow again on a new head, or sends it again to a service that asked it to, before it gives up. */
+export const LIST_ALLOW_TRIES = 4;
+/** The longest a device waits for the PC to place the entry that lets it in: the session's setup is kept open that long. */
+export const LIST_ALLOW_MS = 90_000;
+/** How long it waits before it sends the same Allow again to a service that is busy with the list. */
+export const LIST_ALLOW_RETRY_MS = 1_000;
+/** The longest one try waits because the account service asked it to (its `retry-after`). */
+const LIST_ALLOW_RETRY_MAX_MS = 10_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
 export const LIST_DEVICE_LABEL = "Device";
 
@@ -110,7 +120,28 @@ export interface ListStatus {
   readonly posted_until: string | null;
   /** Why the copy or the service could not be used, in words that name no key. */
   readonly error: string | null;
+  /**
+   * A member wrote an entry this Ovis is too old to read. The PC goes on letting in whoever the list holds and
+   * putting out whoever it removes, and signs nobody in until Ovis on it is updated.
+   */
+  readonly behind: boolean;
 }
+
+/**
+ * Why this PC did not let a device into its list. `not_pinned`, `not_signer` (it joined by an invite, or its key no
+ * longer signs), `alarm`, `stopped`, `unavailable` (its keys or its copy): the PC cannot allow anyone now.
+ * `held_here`: this PC itself keeps that key out. `not_written`: the entry would not count (a card that is not that
+ * key's for this list, a key that was a signer before). `refused`: the account service refused it (no claim of the
+ * key by a sign-in of the account, a budget). `list_stopped`: the service changes this list for nobody now.
+ * `service_away`, `head_lost`: it could not be placed in LIST_ALLOW_TRIES tries. `not_in_list`: nobody at this PC
+ * decided, and no entry lets the device in.
+ */
+export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "behind" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
+
+/** The device a PC is asked to let into its list: its member key, its encryption key, its card for the list, and the name it gave. */
+export interface AllowedDevice { readonly key: string; readonly enc: string; readonly card: string; readonly label: string }
+
+export type AllowOutcome = { readonly allowed: { readonly id: string; readonly seq: number; readonly hash: string } } | { readonly refused: AllowRefusal; readonly detail: string | null };
 
 export type WantRefusal = "invalid_list" | "not_in_account" | "pinned" | "removed" | "unavailable";
 
@@ -144,9 +175,12 @@ export interface ListFollowDeps {
   now(): number;
   /**
    * A pinned PC's account rows, from the list: the store drops what the list no longer lets in and admits what it newly
-   * does. `first`: the commit that follows the pin itself, whose devices come in with no join hold.
+   * does. `unheld`: the keys that come in with no join hold: every device at the commit that follows the pin itself,
+   * and a device a person at this PC has just let in.
    */
-  commit?(list: ListCommit, readmission: Readmission | undefined, first: boolean): void;
+  commit?(list: ListCommit, readmission: Readmission | undefined, unheld: (key: string) => boolean): void;
+  /** Whether this PC's own guards let the key in as a device of its list: a key it removed or holds back stays out. */
+  mayAdmit?(key: string): boolean;
   /**
    * The PC has just pinned its list: the sessions of the account rows it held until now end as rows that changed, not
    * as devices that were removed, so each app signs in again by itself, with the key the list holds for it.
@@ -196,6 +230,13 @@ export class ListFollow implements ListAuthority {
   private untilAt: number | null = null;
   /** The rows do not hold yet what the list says: the commit is tried again. */
   private dirty = false;
+  /** This PC's own keys, once read. */
+  private held: PcListKeys | null = null;
+  /** The keys to the list's names this PC opened, by list and epoch. */
+  private readonly epochKeys = new Map<string, EpochKey>();
+  /** The device that is being let in through this PC right now: its row comes in with no join hold. */
+  private allowing: string | null = null;
+  /** How far the account service's clock is ahead of this PC's, in seconds, by its last answer. */
   /** The clock (`seen_at`) of the copy as it was last saved. */
   private savedAt: number | null = null;
   /** The copy in memory holds what the file does not: its last save failed. It is acted on all the same, and saved again at the next tick. */
@@ -222,6 +263,8 @@ export class ListFollow implements ListAuthority {
       if (scope === null) return;
       await this.ready;
       await this.ensureCopy(scope);
+      // a pinned PC signs with its keys: they are read at the start, not at the first thing that needs them
+      if (this.isPinned) await this.keysOf(scope);
       this.settle();
     });
     this.timer = setInterval(() => this.tick(), LIST_TICK_MS);
@@ -329,6 +372,7 @@ export class ListFollow implements ListAuthority {
       keys: this.keysState,
       posted_until: posted === null ? null : new Date(posted * 1000).toISOString(),
       error: this.problem ?? this.error,
+      behind: copy?.state != null && copy.state.behind !== null,
     };
   }
 
@@ -455,6 +499,173 @@ export class ListFollow implements ListAuthority {
       return;
     }
     await this.within(this.readNow().then(() => this.enqueue(() => { if (readmission) this.settle(readmission); })), waitMs);
+  }
+
+  /**
+   * Why this PC lets no device into its list right now, or null when a person at it can: it is pinned and in, its own
+   * key signs for the list with full power (a PC a person added, not one that joined by an invite), no alarm stands,
+   * and its keys are read. From memory, with no wait.
+   */
+  allowRefusal(): AllowRefusal | null {
+    if (!this.pinned()) return "not_pinned";
+    const copy = this.copy;
+    if (copy === null || copy.state === null || this.problem !== null || this.held === null || this.held.key !== copy.me.key) return "unavailable";
+    return cannotAllow(copy);
+  }
+
+  canAllow(): boolean { return this.allowRefusal() === null; }
+
+  /**
+   * The list a join's card is taken for (ACCOUNT_LIST_ALLOW), or null: this PC is pinned to it, is in it, its copy is
+   * usable and no alarm stands (with one, it lets nobody new in). A PC that cannot sign itself (it joined by an
+   * invite) takes cards too: a member device may allow the newcomer, sign its entry and hand it over, and the PC then
+   * only reads.
+   */
+  takesCardsFor(): string | null {
+    if (!this.pinned() || this.problem !== null || this.alarmLost) return null;
+    const copy = this.copy;
+    return copy !== null && copy.state !== null && copy.alarm === null && standing(copy) === "in" ? copy.list : null;
+  }
+
+  /**
+   * Lets a device into the list, and so into every PC of the account. With `sign`, a person at this PC decided it (its
+   * own window, `ovis approve`): the PC signs a `device` entry with its own key and places it at the account service.
+   * Without, a member decided it elsewhere: the PC only reads, and lets the device in when an entry of the list does.
+   * The entry is written through the kinds' own writer, which signs nothing that would not count. Its name is sealed
+   * and the names' key wrapped to the device when this PC holds that key; a device is let in all the same without.
+   * A head that moved is read and signed on again, and a service that is busy is sent the same request again,
+   * LIST_ALLOW_TRIES times in all; any other refusal ends it. The device is in only once the log shows its entry.
+   */
+  allowDevice(device: AllowedDevice, sign: boolean): Promise<AllowOutcome> {
+    const no = (refused: AllowRefusal, detail: string | null = null): AllowOutcome => ({ refused, detail });
+    return this.enqueue(async () => {
+      this.allowing = device.key;
+      try {
+        const outcome = await this.allow(device, sign, no);
+        // let in by a person's decision: its row waits no join hold, also one a read made a moment before the decision
+        if ("allowed" in outcome) this.settle();
+        return outcome;
+      } finally { this.allowing = null; }
+    });
+  }
+
+  private async allow(device: AllowedDevice, sign: boolean, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+    {
+      const scope = this.bound();
+      if (scope === null || !this.isPinned) return no("not_pinned");
+      await this.ready;
+      await this.ensureCopy(scope);
+      const keys = await this.keysOf(scope);
+      if (keys === null || this.problem !== null) return no("unavailable");
+      if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+      await this.read(scope);
+      // One signature per place: the request as it was signed, and the head it was signed on. It is sent again as it
+      // is while this PC's own copy shows that head; another is signed only once the copy shows a new one
+      let request: { readonly onHead: string; readonly entries: readonly string[]; readonly wraps: readonly { epoch: number; member: string; wrap: string }[] } | null = null;
+      let last: AllowRefusal = sign ? "head_lost" : "not_in_list";
+      // how long the next try waits; nothing waits after the last one
+      let wait = 0;
+      for (let tries = 0; tries < LIST_ALLOW_TRIES; tries++) {
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        wait = 0;
+        if (!this.live(scope)) return no("unavailable");
+        const copy = this.copy;
+        if (copy === null || copy.state === null) return no("unavailable");
+        const { state } = copy;
+        // in already: this PC's own entry that the log now shows, or one a member placed
+        const place = placeOf(copy, device);
+        if (place !== null) return { allowed: place };
+        if (!sign) {
+          // a member allowed it and signs the entry itself: the PC waits a few seconds for that entry to reach its copy
+          // (the member hands it over, or the account service shows it), and signs nothing
+          wait = LIST_ALLOW_RETRY_MS;
+          await this.read(scope);
+          continue;
+        }
+        const cannot = keys.key !== copy.me.key ? "unavailable" : cannotAllow(copy);
+        if (cannot !== null) return no(cannot);
+        if (request === null || request.onHead !== state.footing.hash) {
+          try { request = { onHead: state.footing.hash, ...await this.writeAllow(copy, state, device, keys) }; } catch (error) {
+            if (error instanceof ListWriteError && error.reason === "behind") return no("behind");
+            if (error instanceof ListWriteError) return no("not_written", error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome);
+            if (error instanceof ListKindError) return no("not_written", "entry_invalid");
+            throw error;
+          }
+        }
+        // what this PC itself holds against the device, and its own place in the account, are read again right before
+        // each submission: a lock or a removal that came while the entry was prepared signs nobody in
+        if (!this.live(scope) || !this.isPinned) return no("unavailable");
+        if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
+        try {
+          await this.deps.call("/v2/pc/list/entries", { list: copy.list, entries: request.entries, ...(request.wraps.length > 0 ? { wraps: request.wraps } : {}) });
+        } catch (error) {
+          if (!(error instanceof AccountServiceRefusal)) {
+            // no answer: it may be placed all the same, which only the log says
+            last = "service_away";
+            await this.read(scope);
+            continue;
+          }
+          const asked = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_RETRY_MAX_MS);
+          if (error.status === 409 && error.code === "head_moved") { last = "head_lost"; await this.read(scope); continue; }
+          if (error.status === 409 && error.code === "try_again") { last = "head_lost"; wait = asked; continue; }
+          if (error.status === 503 && error.code === "list_rebuilding") { last = "service_away"; wait = asked; continue; }
+          if (error.status === 503 && error.code === "list_stopped") return no("list_stopped");
+          if (error.status === 403 && error.code === "not_claimed") return no("not_claimed");
+          return no("refused", `${error.status}${error.code !== null && REFUSAL_CODE.test(error.code) ? ` ${error.code}` : ""}`);
+        }
+        // placed: the device is in once this PC's own copy shows the entry, never on the answer
+        await this.read(scope);
+      }
+      const place = this.live(scope) && this.copy !== null ? placeOf(this.copy, device) : null;
+      return place === null ? no(last) : { allowed: place };
+    }
+  }
+
+  /** The `device` entry of an Allow on the copy's footing, with the wrap of the names' key for the newcomer when this PC holds that key. */
+  private async writeAllow(copy: FollowerCopy, state: ListState, device: AllowedDevice, keys: PcListKeys) {
+    // By this PC's own clock, never the account service's: the list's own time moves with what a member signs, so a
+    // service that says tomorrow must not make this PC sign tomorrow, which would end every borrowed device at once
+    // and could not be undone. Whether names may be sealed is judged on the clock held against its saved floor
+    const now = this.seconds();
+    const seal = sealEpoch(state, Math.max(now, copy.seen_at ?? 0));
+    const epochKey = seal === null ? null : await this.epochKey(copy, state, seal.epoch, keys);
+    let sealed: Sealed | null = null;
+    const wraps: { epoch: number; member: string; wrap: string }[] = [];
+    if (seal !== null && epochKey !== null) {
+      const label = isListLabel(device.label) ? device.label : LIST_DEVICE_LABEL;
+      sealed = { epoch: seal.epoch, bytes: await sealFields({ place: { list: copy.list, seq: state.footing.seq + 1 }, epoch: epochKey, commitment: seal.opens, fields: namesFields({ label, os: null }) }) };
+      const wrap = await wrapEpochKey({ list: copy.list, epoch: epochKey, member: device.enc });
+      if (wrap !== null) wraps.push({ epoch: seal.epoch, member: device.enc, wrap: wrapToText(wrap) });
+    }
+    const written = await signListEntry(state, { kind: "device", key: device.key, power: "full", role: "drive", until: null, enc: device.enc, card: device.card, sealed, rotates: false },
+      { key: keys.key, privateKey: keys.privateKey }, now);
+    return { entries: [written.text], wraps };
+  }
+
+  /**
+   * The key to the list's names of `epoch`, when the account service holds a wrap of it for this PC that gives the
+   * commitment the list holds; null otherwise. A key that does not give it is the service's doing, and is said.
+   */
+  private async epochKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | null> {
+    const id = `${copy.list} ${epoch}`;
+    const kept = this.epochKeys.get(id);
+    if (kept !== undefined) return kept;
+    const opens = state.epochs[epoch]?.opens;
+    if (opens === undefined) return null;
+    let wraps: unknown;
+    try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) {
+      this.error = this.words(error);
+      return null;
+    }
+    const mine = Array.isArray(wraps) ? wraps.find((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null && (wrap as { epoch?: unknown }).epoch === epoch && typeof (wrap as { wrap?: unknown }).wrap === "string") : undefined;
+    if (mine === undefined) return null;
+    const opened = await openWrap({ list: copy.list, epoch, commitment: opens, wrap: wrapFromText(mine.wrap), member: { key: keys.enc, privateKey: keys.encPrivateKey } });
+    if (!opened.open) {
+      if (opened.why === "other_key") this.error = "The account service gave this PC a wrong key to the list's names";
+      return null;
+    }
+    this.epochKeys.set(id, opened.value);
+    return opened.value;
   }
 
   /** What this PC asks another member for, so that member can hand it the entries it lacks; null while it follows no list a person named. */
@@ -685,6 +896,7 @@ export class ListFollow implements ListAuthority {
     try {
       const keys = await this.deps.keys.keysFor(scope.serverId);
       this.keysState = "ready";
+      this.held = keys;
       return keys;
     } catch (error) {
       if (!(error instanceof ListKeysError)) throw error;
@@ -726,7 +938,7 @@ export class ListFollow implements ListAuthority {
       if (!first.pinned) { this.lastVerdict = "not_my_list"; return; }
       copy = first.copy;
     }
-    const heard = heardHead(copy, { list: named.id, place: named.head }, this.seconds());
+    const heard = heardHead(copy, { list: named.id, head: named.head }, this.seconds());
     this.lastVerdict = heard.verdict;
     this.keep(heard.copy, scope, false);
     // each pull, a pinned PC gives its rows another turn: one a full notice list or a hold kept out comes in then
@@ -866,7 +1078,7 @@ export class ListFollow implements ListAuthority {
       // what the list put out first, so that nothing the commit lets in stands beside a key that is out
       this.keepRemovals(copy);
       const rows = listCommit(copy, now);
-      this.deps.commit?.(this.alarmLost ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning);
+      this.deps.commit?.(this.alarmLost ? { ...rows, devices: rows.devices.map((row) => ({ ...row, eligible: false })) } : rows, readmission, pinning ? () => true : (key) => key === this.allowing);
       this.dirty = false;
     } catch (error) {
       this.dirty = true;
@@ -920,6 +1132,31 @@ export class ListFollow implements ListAuthority {
       this.error = `This PC could not leave its account (${error instanceof Error ? error.message : String(error)})`;
     }
   }
+}
+
+/** Where the copy's list let this very device in, with that encryption key, when it is still in; null otherwise. */
+function placeOf(copy: FollowerCopy, device: AllowedDevice): { id: string; seq: number; hash: string } | null {
+  const { state } = copy;
+  if (state === null) return null;
+  const row = Object.hasOwn(state.signers, device.key) ? state.signers[device.key] : undefined;
+  const text = row === undefined ? undefined : copy.entries[row.seq];
+  if (row === undefined || text === undefined || row.as !== "device" || row.ended !== null || state.devices[device.key]?.enc !== device.enc) return null;
+  return { id: copy.list, seq: row.seq, hash: entryHash(entryFromText(text).body) };
+}
+
+/**
+ * Why the member this copy is of signs no Allow, or null: it is in, no alarm stands, its key signs with full power,
+ * and it has read everything the members wrote (`behind`: one of them wrote what this Ovis is too old to read, and a
+ * member that is behind signs nobody in).
+ */
+function cannotAllow(copy: FollowerCopy): AllowRefusal | null {
+  const { state } = copy;
+  if (state === null) return "unavailable";
+  if (state.needs_replay !== undefined || standing(copy) === "stopped") return "stopped";
+  if (standing(copy) !== "in") return "not_signer";
+  if (copy.alarm !== null) return "alarm";
+  if (signerPower(state, copy.me.key) !== "full") return "not_signer";
+  return state.behind === null ? null : "behind";
 }
 
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {

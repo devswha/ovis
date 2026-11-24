@@ -421,12 +421,13 @@ export function createServer(
     call: (path, body) => accountMailbox.listRoute(path, body),
     rowKey: (id) => accountRows?.row(id)?.key ?? null,
     now: () => Date.now(),
-    commit: (list, readmission, first) => {
+    commit: (list, readmission, unheld) => {
       const store = accountRows?.store();
       if (!store) return;
-      store.commitList(list, readmission, first);
+      store.commitList(list, readmission, unheld);
       store.expire();
     },
+    mayAdmit: (key) => { const account = devices.account(); return account !== null && devices.admitsFromList(key, account) && !accountMailbox.listHeld(key); },
     // while the rows still stand, so their sessions end as `auth_changed` and each app signs in again by itself
     repinned: () => { for (const row of accountRows?.rows() ?? []) devices.closeAccountSessions(row.id); },
     removed: (key, removal) => {

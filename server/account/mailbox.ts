@@ -25,7 +25,8 @@ import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcom
 
 /** The account service refused a PC route: its status and error code, when it named one. */
 export class AccountServiceRefusal extends Error {
-  constructor(readonly status: number, readonly code: string | null, readonly path: string) {
+  /** `retryAfter`: the seconds the service asks to wait (its `retry-after`), or null when it names none. */
+  constructor(readonly status: number, readonly code: string | null, readonly path: string, readonly retryAfter: number | null = null) {
     super(`The account service answered ${status} to ${path}`);
     this.name = "AccountServiceRefusal";
   }
@@ -1032,7 +1033,7 @@ export class AccountMailbox {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     }));
     if (gone && response.status === 410) return null;
-    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path);
+    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
     return await response.json() as Record<string, unknown>;
   }
 

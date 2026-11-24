@@ -33,7 +33,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   if (pathname === "/api/relay/joins" && request.method === "GET") {
     setRequestRoute("/api/relay/joins");
     if (!own) return fail("own_window_required", "Only this PC's own window lists account joins.", 403);
-    return reply({ joins: service.approvals.ownJoins() });
+    // a join into the list that this PC cannot sign because its Ovis is behind the list says so before anybody approves it
+    const behind = context.services.accountList?.allowRefusal() === "behind";
+    return reply({ joins: service.approvals.ownJoins().map((join) => behind && join.list === true ? { ...join, list_behind: true as const } : join) });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
   if (pathname === RELAY_CONTROLS.pairing && peer.kind === "relay") {
@@ -144,7 +146,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         if (typeof body.id !== "string" || (body.decision !== "approve" && body.decision !== "decline")) {
           return fail("invalid_relay_pairing", "Send the pairing's id and a decision of approve or decline.", 400);
         }
-        if (!service.approvals.decide(body.id, body.decision === "approve")) {
+        if (!service.approvals.decide(body.id, body.decision === "approve", own)) {
           return fail("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
         }
         return reply({ ok: true });

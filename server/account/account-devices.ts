@@ -245,10 +245,10 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /**
    * Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in.
-   * `settled`: the list is one a person at this PC has just taken as the account's (the PC pinned its signed list), so
-   * what it names is no news to them: its devices come in with no join hold.
+   * `settled`: the keys whose coming in is no news to a person at this PC, who has just taken the list as the
+   * account's (the PC pinned its signed list) or let that very device in here: they come in with no join hold.
    */
-  commitList(list: ListCommit, readmission?: Readmission, settled = false): { admitted: string[]; dropped: string[] } {
+  commitList(list: ListCommit, readmission?: Readmission, settled: (key: string) => boolean = () => false): { admitted: string[]; dropped: string[] } {
     this.admittedNow = [];
     try { return this.commit(list, readmission, settled); } finally {
       const rows = this.admittedNow;
@@ -257,7 +257,7 @@ export class AccountDeviceStore implements AccountRowSource {
     }
   }
 
-  private commit(list: ListCommit, readmission: Readmission | undefined, settled: boolean): { admitted: string[]; dropped: string[] } {
+  private commit(list: ListCommit, readmission: Readmission | undefined, settled: (key: string) => boolean): { admitted: string[]; dropped: string[] } {
     this.usable();
     const removed = new Set(list.removed.map((gone) => gone.key));
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
@@ -290,6 +290,8 @@ export class AccountDeviceStore implements AccountRowSource {
       const existing = this.file.devices.find((row) => row.key === entry.key);
       if (existing) {
         if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        // a person has just let this very key in: a row a read made for it a moment before waits no longer either
+        else if (existing.state === "hold" && settled(entry.key)) this.goLive(existing.id);
         continue;
       }
       // This new key needs a slot. A later proved replacement in the same list does not.
@@ -300,7 +302,7 @@ export class AccountDeviceStore implements AccountRowSource {
         key: entry.key, listKeys, removedKeys: [...removed], othersEver: first.othersEver(), firstListKey: first.listKey(),
         otherRows: first.otherRows() || this.file.devices.some((row) => row.key !== entry.key),
       });
-      if (this.admit(entry, bypass || settled)) admitted.push(entry.key);
+      if (this.admit(entry, bypass || settled(entry.key))) admitted.push(entry.key);
     }
     return { admitted, dropped };
   }
