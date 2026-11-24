@@ -10,7 +10,7 @@
  * its message or its fields. No I/O; WebCrypto only.
  */
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { ListEntryError, canonicalBase64Url, isListHash, readBody, readFieldsUnder, verifySignature, writeBody, type Entry, type EntryBody } from "./account-list-entry.ts";
+import { ListEntryError, canonicalBase64Url, isListHash, isListNumber, readBody, readFieldsUnder, verifySignature, writeBody, type Entry, type EntryBody } from "./account-list-entry.ts";
 import { inviteRedeemBytes, isAccountId, type InviteRedeem } from "./account-list-invite.ts";
 import { toBase64Url } from "./relay-pair-sas.ts";
 
@@ -102,8 +102,9 @@ export interface JoinLine {
    */
   readonly signJoin: (body: EntryBody) => Promise<Entry>;
   /**
-   * The signature over a proof for reading (`ovis-list-read/1`) that names this line's key and this line's list;
-   * refuses `not_signed` for any other bytes.
+   * The signature over a proof for reading (`ovis-list-read/1`): exactly the fields `after at key list`, the key
+   * and the list this line's own, `at` a number and `after` a number or empty, which is what a reader of proofs
+   * takes (shared/account-list.ts, checkReadProof). Refuses `not_signed` for any other bytes.
    */
   readonly signRead: (proof: Uint8Array) => Promise<Uint8Array>;
   /**
@@ -334,6 +335,11 @@ export async function readJoinLine(line: string, reader: JoinLineReader): Promis
       return field === undefined ? null : new TextDecoder().decode(field.value);
     };
     if (list === "" || text("key") !== key || text("list") !== list) notSigned("An invite signs only the proof for reading its own list with its own key");
+    // No proof that the reader of proofs calls malformed: the four fields and no other, the place and the time in their form.
+    const [after, at] = [text("after"), text("at")];
+    if (fields.map(({ name }) => name).join(" ") !== "after at key list" || at === null || !isListNumber(at) || after === null || !(after === "" || isListNumber(after))) {
+      notSigned("A proof for reading has the fields after, at, key and list, and no other: at is a number, after a number or empty");
+    }
     return await sign(bytes);
   };
   return Object.freeze({ service, account, list: list === "" ? null : list, key, signRedeem, signJoin, signRead, encryptionKey });
