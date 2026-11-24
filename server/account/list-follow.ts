@@ -161,9 +161,10 @@ export type JoinRefusal = WantRefusal | "other_account" | "other_adder" | "line_
  * Why a PC writes no `join` of its own. The invite's refusal as the list holds it (inviteRefusal); `invite_plain`: a
  * person adds a PC with that invite, the PC does not join by itself; `invite_uses`: it lets more than one PC in;
  * `not_read`: the list could not be read; `not_written`: the entry would not count, or is not the one this PC built;
+ * `behind`: a member wrote what this Ovis is too old to read, and a PC that is behind does not write itself in;
  * `refused`: the account service placed nothing.
  */
-export type JoinWriteRefusal = InviteCode | "invite_plain" | "invite_uses" | "not_read" | "not_written" | "refused";
+export type JoinWriteRefusal = InviteCode | "invite_plain" | "invite_uses" | "not_read" | "not_written" | "behind" | "refused";
 
 export type JoinPrepared =
   | { readonly joined: ListStatus }
@@ -667,6 +668,7 @@ export class ListFollow implements ListAuthority {
         await joinEntry({ key: invite, list, signJoin: async (built) => { body = writeBody(built); throw capture; } },
           { key: keys.key, privateKey: keys.privateKey, enc: keys.enc, endpoint: scope.endpoint }, state, this.joinClock(), sealed);
       } catch (error) {
+        if (error instanceof ListWriteError && error.reason === "behind") return { refused: "behind" as const };
         if (error instanceof ListWriteError) { this.error = `This PC's join would not count (${error.outcome === null ? error.reason : "code" in error.outcome ? error.outcome.code : error.outcome.outcome})`; return { refused: "not_written" as const }; }
         if (error instanceof ListKindError) return { refused: "not_written" as const };
         if (error !== capture) throw error;

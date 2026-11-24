@@ -47,6 +47,7 @@ const JOIN_REFUSALS: Readonly<Record<string, string>> = {
   invite_plain: "This invite adds a PC only once a device of the account chooses Add.",
   invite_uses: "This invite lets more than one PC in, so no PC joins with it by itself.",
   not_written: "This PC's join would not count on the account's list.",
+  behind: "Ovis on this PC is older than what a device wrote into the account's list, so this PC cannot join it by itself. Update Ovis on this PC (Settings → Updates), then run this again. Nothing was written to the list.",
 };
 
 /**

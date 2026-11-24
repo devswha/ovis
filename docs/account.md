@@ -667,7 +667,9 @@ PC built; `…/join/place` `{ …, "entry", "wraps"? }` places the entry of that
 `…/join`. `{ "state": "again" }` from any of them: the list moved, so prepare again. 409 with the
 refusal's name where the PC joins no list (`list_removed`, `other_account`, `pinned`, `line_unproven`,
 `invite_unknown`, `invite_revoked`, `invite_void`, `invite_spent`, `invite_expired`,
-`invite_plain`, `invite_uses`, `not_written`, `refused`); 503 `not_read` or `unavailable`.
+`invite_plain`, `invite_uses`, `not_written`, `refused`, or `behind`: Ovis on this PC is older
+than what a member wrote into the list, and a PC that is behind does not write itself in); 503
+`not_read` or `unavailable`.
 
 `POST /api/account/relay-account` `{ "account" }` (or `{ "account": null }`, over a direct connection
 only and only on a PC in no account (409 `in_account` otherwise), which forgets the one named: `ovis

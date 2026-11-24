@@ -376,6 +376,20 @@ describe("a PC joins a signed list with the line of an invite (ovis join)", () =
     expect(made.services.accountList!.allowRefusal()).toBe("not_signer");
   });
 
+  test("a PC whose Ovis is older than what a member wrote into the list does not write itself in, and says that it needs an update", async () => {
+    const made = await listedPc();
+    const account = await TestList.start(made.pc.account, ACCOUNT);
+    const line = await redeemed(made, await account.invite({ auto: true }));
+    const placed = made.pc.account.accountList(ACCOUNT)!.head.seq;
+    // a member with a newer Ovis wrote an entry this build cannot read: the PC is behind from it on
+    made.pc.account.tamperList(account.id, { inject: [await account.signLater()] });
+    const refused = await joinsByItself(made, account.id, line);
+    expect([refused.status, refused.body.error?.code]).toEqual([409, "behind"]);
+    expect(refused.body.error?.message).toContain("Update Ovis on this PC");
+    expect(made.pc.account.accountList(ACCOUNT)!.head.seq).toBe(placed);
+    expect(made.pc.devices.account()).toBeNull();
+  });
+
   test("the PC places only the join it built itself", async () => {
     const made = await listedPc();
     const account = await TestList.start(made.pc.account, ACCOUNT);
