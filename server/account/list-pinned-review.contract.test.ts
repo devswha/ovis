@@ -310,9 +310,9 @@ describe("R5 (A/F): copies the PC cannot use", () => {
   });
 });
 
-describe("R6 (F): a sibling folder whose pin cannot be taken with its keys", () => {
-  /** A pinned PC in folder A; folder B a copy of A without the pin; A's list keys gone. B starts with A as its sibling. */
-  async function siblingWithoutKeys() {
+describe("R6 (F): the other state folder of a pinned PC, which does not hold the pin (a pin is never taken from another folder)", () => {
+  /** A pinned PC in folder A; folder B a copy of A without the pin. B starts with A as its sibling. */
+  async function otherFolder(step2 = true) {
     const pc = await pinnedPc();
     pc.fixture.app.stop();
     const { cpSync, mkdtempSync, rmSync } = await import("node:fs");
@@ -323,35 +323,52 @@ describe("R6 (F): a sibling folder whose pin cannot be taken with its keys", () 
     const doc = JSON.parse(readFileSync(join(b, "account-pc.json"), "utf8")) as { binding: Record<string, unknown> };
     delete doc.binding.list;
     delete doc.binding.list_alarm;
-    writeFileSync(join(b, "account-pc.json"), JSON.stringify(doc));
-    const keysPath = join(pc.fixture.stateDir, "account-list-keys.json");
-    const keys = readFileSync(keysPath, "utf8");
-    rmSync(keysPath);
-    const again = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
+    writeFileSync(join(b, "account-pc.json"), JSON.stringify({ ...doc, v: 1 }));
+    const again = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: step2, accountService: pc.accountService });
     closes.push(() => again.app.stop());
-    return { pc, again, b, restoreKeys: () => writeFileSync(keysPath, keys, { mode: 0o600 }) };
+    return { pc, again, b };
   }
 
-  test("says why in what `ovis status --json` reads", async () => {
-    const { again } = await siblingWithoutKeys();
+  test("says which folder holds the pin in what `ovis status --json` reads", async () => {
+    const { pc, again } = await otherFolder();
     const base = `http://127.0.0.1:${again.app.port}`;
-    const status = await (await fetch(`${base}/api/account/status`, { headers: { origin: base, "x-herdr-machine": "1" } })).json() as Record<string, unknown>;
-    expect(JSON.stringify(status)).toContain("account-list-keys.json");
+    const status = await (await fetch(`${base}/api/account/status`, { headers: { origin: base, "x-herdr-machine": "1" } })).json() as { error?: { code?: string; reason?: string } };
+    expect(status.error?.code).toBe("strict");
+    expect(status.error?.reason).toContain("pinned to its account's signed list");
+    expect(status.error?.reason).toContain(pc.fixture.stateDir);
   });
 
-  test("opens by itself once the keys can be read beside the pin (the lead's ruling)", async () => {
-    const { pc, again, restoreKeys } = await siblingWithoutKeys();
-    const { services } = again.app.context;
-    const before = await (await relayConnection(again, { serverId: pc.serverId })).auth(pc.idOf(pc.laptop)).then((ok) => ok.role, () => null);
-    expect(before).toBeNull();
-    restoreKeys();
-    pc.time.advance(10_000);
-    services.accountList!.tick();
-    await services.accountMailbox.pull();
-    await services.accountList!.settled();
+  test("lets no device of the account in, takes no pin and writes nothing of its own, also after its next start", async () => {
+    const { pc, again, b } = await otherFolder();
+    const file = () => readFileSync(join(b, "account-pc.json"), "utf8");
+    const before = file();
+    const signsIn = async (app: typeof again) => await (await relayConnection(app, { serverId: pc.serverId })).auth(pc.idOf(pc.laptop)).then((ok) => ok.role, () => null);
+    expect(await signsIn(again)).toBeNull();
+    expect(again.app.context.services.devices.listFollowed()).toBe(false);
+    again.app.stop();
+    const next = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
+    closes.push(() => next.app.stop());
+    expect(await signsIn(next)).toBeNull();
+    expect(file()).toBe(before);
+    // the folder that holds the pin goes on as it was
+    next.app.stop();
+    const home = relayFixture(false, { stateDir: pc.fixture.stateDir, siblingStateDir: b, accountOpensAll: true, accountService: pc.accountService });
+    closes.push(() => home.app.stop());
+    home.app.context.services.devices.useClock(pc.time.waits);
+    await home.app.context.services.accountMailbox.pull();
+    await home.app.context.services.accountList!.settled();
     pc.time.advance(JOIN_HOLD_MS + 1_000);
-    const after = await (await relayConnection(again, { serverId: pc.serverId })).auth(pc.idOf(pc.laptop)).then((ok) => ok.role, () => null);
-    expect(after).toBe("drive");
+    expect(home.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
+    expect(await signsIn(home)).toBe("drive");
+  });
+
+  test("with Step 2 turned off in that folder it is closed all the same: a member's v1 add adds nobody", async () => {
+    const { pc, again } = await otherFolder(false);
+    const { devices } = again.app.context.services;
+    const stranger = await listMember();
+    const add = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: stranger.key, label: "Stranger", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: pc.member.publicKey }, pc.member.keys.privateKey);
+    expect((await applyAccountRecords(devices, [add], pc.serverId))[0]).toMatchObject({ outcome: "refused" });
+    expect(devices.hasKey(stranger.key)).toBe(false);
   });
 });
 
@@ -401,39 +418,6 @@ describe("R7 (F/A): a list key that a pre-pin v1 add row also holds, while the P
     await pc.pull();
     pc.time.advance(JOIN_HOLD_MS + 1_000);
     expect(await pc.signsIn(pc.idOf(tablet))).toBeNull();
-  });
-});
-
-describe("R6b (F): the same sibling folder after the keys are back", () => {
-  test("a restart takes the pin with the keys, and the list's devices open it again", async () => {
-    const pc = await pinnedPc();
-    pc.fixture.app.stop();
-    const { cpSync, mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const b = mkdtempSync(join(tmpdir(), "ovis-rv-sib-"));
-    closes.push(() => rmSync(b, { recursive: true, force: true }));
-    cpSync(pc.fixture.stateDir, b, { recursive: true });
-    const doc = JSON.parse(readFileSync(join(b, "account-pc.json"), "utf8")) as { binding: Record<string, unknown> };
-    delete doc.binding.list;
-    writeFileSync(join(b, "account-pc.json"), JSON.stringify(doc));
-    const keysPath = join(pc.fixture.stateDir, "account-list-keys.json");
-    const keys = readFileSync(keysPath, "utf8");
-    rmSync(keysPath);
-    const first = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
-    const base = `http://127.0.0.1:${first.app.port}`;
-    const own = await (await fetch(`${base}/api/account/list`, { headers: { origin: base, "x-herdr-machine": "1" } })).json() as Record<string, unknown>;
-    console.log("REVIEW own window GET /api/account/list while closed:", JSON.stringify(own));
-    first.app.stop();
-    writeFileSync(keysPath, keys, { mode: 0o600 });
-    const again = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: pc.accountService });
-    closes.push(() => again.app.stop());
-    const { services } = again.app.context;
-    services.devices.useClock(pc.time.waits);
-    await services.accountMailbox.pull();
-    await services.accountList!.settled();
-    pc.time.advance(JOIN_HOLD_MS + 1_000);
-    expect(services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
-    expect(await (await relayConnection(again, { serverId: pc.serverId })).auth(pc.idOf(pc.laptop)).then((ok) => ok.role, () => null)).toBe("drive");
   });
 });
 
@@ -570,30 +554,6 @@ describe("R14 (B): the account service that stopped listing a pinned PC, a while
     await pc.pull();
     expect(pc.services.devices.account()).toBe(ACCOUNT);
     expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
-  });
-});
-
-describe("R15 (A/B): Step 2 turned off in this folder, the pin in the other folder of the same PC", () => {
-  test("this folder takes the pin with the keys and refuses a member's v1 add", async () => {
-    const pc = await pinnedPc();
-    pc.fixture.app.stop();
-    const { cpSync, mkdtempSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const b = mkdtempSync(join(tmpdir(), "ovis-rv-sib-"));
-    closes.push(() => rmSync(b, { recursive: true, force: true }));
-    cpSync(pc.fixture.stateDir, b, { recursive: true });
-    const doc = JSON.parse(readFileSync(join(b, "account-pc.json"), "utf8")) as { binding: Record<string, unknown> };
-    delete doc.binding.list;
-    writeFileSync(join(b, "account-pc.json"), JSON.stringify(doc));
-    rmSync(join(b, ACCOUNT_LIST_FILE), { force: true });
-    const again = relayFixture(false, { stateDir: b, siblingStateDir: pc.fixture.stateDir, accountOpensAll: false, accountService: pc.accountService });
-    closes.push(() => again.app.stop());
-    const { devices, accountList } = again.app.context.services;
-    await accountList?.settled();
-    expect(devices.listFollowed()).toBe(true);
-    const stranger = await listMember();
-    const add = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: stranger.key, label: "Stranger", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: pc.member.publicKey }, pc.member.keys.privateKey);
-    expect(await applyAccountRecords(devices, [add], pc.serverId)).toEqual([{ id: add.id, outcome: "refused", code: "list_followed" }]);
   });
 });
 

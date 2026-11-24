@@ -1564,7 +1564,7 @@ export class DeviceStore {
     const pc = this.pc ?? (existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath) : null);
     // also where another Ovis server on this folder pinned the binding after this one read it: asked of the file,
     // before a row is ended for a clear that will not be written
-    pc?.adoptPin();
+    pc?.refresh();
     if (reason === "unlisted" && by !== LIST_REMOVED && pc?.binding()?.list !== undefined) return false;
     if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();

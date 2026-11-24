@@ -67,7 +67,7 @@ import { mergeSafetyLogs, SafetyLog } from "./account/safety-log.ts";
 import { listPinOnDisk, listRemovalOnDisk, PcAccountState } from "./account/pc-binding.ts";
 import { savedServerId } from "./relay/identity.ts";
 import { snapshotPorts } from "./account/snapshot-ports.ts";
-import { bringSiblingList, ListFollow } from "./account/list-follow.ts";
+import { ListFollow } from "./account/list-follow.ts";
 import { LIST_REMOVED } from "./account/pc-binding.ts";
 import { ListKeyStore } from "./account/list-keys.ts";
 import type { Readmission } from "./account/readmission.ts";
@@ -329,7 +329,7 @@ export function createServer(
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null;
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling, (pin) => bringSiblingList(stateDir, sibling, pin));
+  if (pcAccount !== null && sibling && !untouched) pcAccount.takeSibling(sibling);
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
   const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
@@ -447,8 +447,9 @@ export function createServer(
     leave: (serverId) => devices.clearAccountBinding("unlisted", LIST_REMOVED, serverId),
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
-    // a folder closed because its other folder's pin could not be taken with its keys and copy opens by itself once they can
-    retry: () => { if (pcAccount.retrySibling()) console.info("[account] this PC's list keys and its copy of the list could be read beside its pin: it follows its list again"); },
+    // what another Ovis server on this folder wrote to the PC's place in its account since this one read it (a pin, a
+    // clear) is taken in at each look at the clock, so this server decides by it within seconds
+    retry: () => { pcAccount.refresh(); },
   });
   devices.attachList(accountList);
   const accountHolds = new AccountHolds({ enrollingPath: join(stateDir, "account-enrolling.json"), heldPath: join(stateDir, "account-held.json") });

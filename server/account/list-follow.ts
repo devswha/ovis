@@ -38,7 +38,7 @@ import { writePrivateState } from "../private-state.ts";
 import { verifyRelayProof } from "../relay/auth-proof.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
 import type { ListCommit } from "./account-device-state.ts";
-import { ListKeysError, listKeysPath, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
+import { ListKeysError, type ListKeyStore, type PcListKeys } from "./list-keys.ts";
 import { AccountServiceRefusal, type NamedList } from "./mailbox.ts";
 import type { Readmission } from "./readmission.ts";
 
@@ -185,7 +185,7 @@ export interface ListFollowDeps {
   recheck?(): void;
   /** Whether a session is open on this PC: it then reads more often. */
   busy?(): boolean;
-  /** Called at each look at the clock, before anything else: what this PC tries again by itself (a pin its other folder holds). */
+  /** Called at each look at the clock, before anything else: takes in what another server of this folder wrote to the PC's place in its account. */
   retry?(): void;
 }
 
@@ -1124,42 +1124,6 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
     else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: LIST_DEVICE_LABEL });
   }
   return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed };
-}
-
-/**
- * One of this PC's two state folders takes a pin from the other (PcAccountState.takeSibling): what the pin is good for
- * comes first. The list knows this PC by the keys in the pinned folder, so those replace whatever keys this folder
- * made; the copy of the list comes too when there is one. Null when both are here, else why not: the folder then
- * takes no pin and fails closed, since a PC pinned to a list by keys it does not hold would let none of its devices in.
- */
-export function bringSiblingList(stateDir: string, siblingDir: string, pin: { readonly bind_id: string; readonly list: string }): string | null {
-  const from = listKeysPath(siblingDir);
-  const to = listKeysPath(stateDir);
-  const failed = (path: string, error: unknown) =>
-    `This PC is pinned to a signed list in ${siblingDir}, and ${path} could not be brought beside it (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : "unknown error")})`;
-  let keys: unknown;
-  try { keys = JSON.parse(readFileSync(from, "utf8")); } catch (error) { return failed(from, error); }
-  if (typeof keys !== "object" || keys === null || Array.isArray(keys)) return failed(from, new Error("it holds no keys"));
-  const copyFrom = join(siblingDir, ACCOUNT_LIST_FILE);
-  let copy: ListFile | null = null;
-  let text: string | null = null;
-  try { text = readFileSync(copyFrom, "utf8"); } catch (error) {
-    // no copy there: this folder reads the list from its start, as the pinned one would
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return failed(copyFrom, error);
-  }
-  if (text !== null) {
-    copy = parseFile(text);
-    // A copy that does not read is no missing copy: the pinned folder lets nobody in until a person restores or
-    // removes it, and this folder must not read the list anew from whatever the account service shows instead
-    if (copy === null) return failed(copyFrom, new Error("it does not read"));
-    // a copy of another binding is not the pinned one's
-    if (copy.bind_id !== pin.bind_id) copy = null;
-  }
-  try {
-    writePrivateState(to, keys);
-    if (copy !== null) writePrivateState(join(stateDir, ACCOUNT_LIST_FILE), copy);
-  } catch (error) { return failed(to, error); }
-  return null;
 }
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
