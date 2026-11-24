@@ -1561,8 +1561,12 @@ export class DeviceStore {
     // a PC pinned to its account's signed list leaves on that list's word (LIST_REMOVED) or by an act at the PC, never
     // because the account service stopped listing it: that only costs it the service
     if (reason === "unlisted" && by !== LIST_REMOVED && this.listFollowed()) return false;
-    if (reason !== "revoke_all") this.resumeRevokeAll();
     const pc = this.pc ?? (existsSync(join(this.stateDirPath, "account-pc.json")) ? PcAccountState.open(this.stateDirPath) : null);
+    // also where another Ovis server on this folder pinned the binding after this one read it: asked of the file,
+    // before a row is ended for a clear that will not be written
+    pc?.adoptPin();
+    if (reason === "unlisted" && by !== LIST_REMOVED && pc?.binding()?.list !== undefined) return false;
+    if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();
     if (!pc || !binding || pc.strict !== null) return false;
     try {

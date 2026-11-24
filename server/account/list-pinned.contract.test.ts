@@ -4,12 +4,14 @@
  * shows two histories can and cannot bring about, whatever way it goes about it.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
+import { loadRelayIdentity } from "../relay/identity.ts";
 import { readSave, writeSave } from "../../shared/account-list-follower.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
@@ -660,6 +662,19 @@ describe("a key the list holds, which this PC also holds by a pairing of its own
 });
 
 describe("a pin outlives this PC's own settings", () => {
+  test("the folder of another PC that is pinned to its list changes nothing for this PC: with Step 2 off here, it starts off", async () => {
+    const other = await pinnedPc();
+    other.fixture.app.stop();
+    // this PC has a relay identity of its own, and is told of the other's folder as its second folder
+    const dir = mkdtempSync(join(tmpdir(), "ovis-list-foreign-"));
+    closes.push(() => rmSync(dir, { recursive: true, force: true }));
+    expect(loadRelayIdentity(dir).server_id).not.toBe(other.serverId);
+    const mine = relayFixture(false, { stateDir: dir, siblingStateDir: other.fixture.stateDir, accountOpensAll: false });
+    closes.push(() => mine.app.stop());
+    expect(mine.app.context.services.devices.opensAll()).toBe(false);
+    expect(mine.app.context.services.accountList).toBeNull();
+  });
+
   test("started with Step 2 turned off here, a pinned PC still follows its list: a member's signed add adds nobody", async () => {
     const pc = await pinnedPc();
     const stranger = await listMember();
@@ -793,8 +808,13 @@ describe("a PC the list removed", () => {
     expect(await services.accountList!.wantList(pc.account.id)).toEqual({ refused: "not_in_account" });
     // another account is another matter, and so is this PC after a reset relay identity: a new PC
     expect(services.devices.listRemovedFrom("acct_other")).toBe(false);
-    await services.relay.resetIdentity();
-    expect(services.devices.listRemovedFrom(ACCOUNT)).toBe(false);
+    again.app.stop();
+    // with Step 2 turned off on this PC the removal stands all the same: nothing links the PC back under this identity
+    const off = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: false, accountService: pc.accountService });
+    closes.push(() => off.app.stop());
+    expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(true);
+    await off.app.context.services.relay.resetIdentity();
+    expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(false);
   });
 });
 
