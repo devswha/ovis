@@ -268,6 +268,10 @@ pub struct Archive {
     log: Mutex<Log>,
     pub end: watch::Sender<u64>,
     pub path: PathBuf,
+    /// set as the keeper ends: every replay stream sends what is left, then ends
+    closing: watch::Sender<bool>,
+    /// how many replay streams still run
+    streams: watch::Sender<usize>,
 }
 
 impl Archive {
@@ -303,6 +307,8 @@ impl Archive {
                 log: Mutex::new(Log { file, offsets }),
                 end: tx,
                 path,
+                closing: watch::Sender::new(false),
+                streams: watch::Sender::new(0),
             },
             previous,
         ))
@@ -355,10 +361,33 @@ fn read_at(file: &File, buf: &mut [u8], at: u64) -> std::io::Result<usize> {
     std::os::windows::fs::FileExt::seek_read(file, buf, at)
 }
 
-/// Sends rows from `cursor` up to `boundary`, the watermark, then every row appended later.
+/// Counts a replay stream while it runs, however it ends (an aborted task included).
+struct Stream<'a>(&'a Archive);
+
+impl Drop for Stream<'_> {
+    fn drop(&mut self) {
+        self.0.streams.send_modify(|n| *n -= 1);
+    }
+}
+
+impl Archive {
+    /// As the keeper ends: lets every replay stream send the rows it has not sent yet, so a client
+    /// gets the agent's last answer, and waits (bounded) for them to finish.
+    pub async fn close(&self, within: std::time::Duration) {
+        self.closing.send_replace(true);
+        let mut streams = self.streams.subscribe();
+        let _ = tokio::time::timeout(within, streams.wait_for(|n| *n == 0)).await;
+    }
+}
+
+/// Sends rows from `cursor` up to `boundary`, the watermark, then every row appended later, until
+/// the archive closes and the last row is sent.
 pub async fn pump<W: AsyncWrite + Unpin>(archive: &Archive, mut out: W, mut cursor: u64, boundary: u64, through: u64, pid: u32, client: u64) -> std::io::Result<()> {
+    archive.streams.send_modify(|n| *n += 1);
+    let _stream = Stream(archive);
     let reader = File::open(&archive.path)?;
     let mut end_rx = archive.end.subscribe();
+    let mut closing = archive.closing.subscribe();
     let mut marker = false;
     let mut bytes = vec![0u8; PUSH];
     loop {
@@ -374,8 +403,13 @@ pub async fn pump<W: AsyncWrite + Unpin>(archive: &Archive, mut out: W, mut curs
         } else if !marker {
             marker = true;
             out.write_all(format!("{{\"through\":{through},\"pid\":{pid},\"client\":{client}}}\n").as_bytes()).await?;
-        } else if end_rx.changed().await.is_err() {
+        } else if *closing.borrow_and_update() {
             return Ok(());
+        } else {
+            tokio::select! {
+                changed = end_rx.changed() => if changed.is_err() { return Ok(()) },
+                _ = closing.changed() => {}
+            }
         }
     }
 }

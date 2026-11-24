@@ -686,10 +686,13 @@ async fn run(mut opts: Opts) -> i32 {
         let _ = tokio::time::timeout(Duration::from_millis(500), task).await;
     }
     while let Ok(ev) = rx.try_recv() {
-        if matches!(ev, Ev::Agent(..) | Ev::Oversize { conn: None, .. }) {
+        // a client's number is noted even when it connected just before the end, so the next keeper
+        // in this ROOT numbers on past it
+        if matches!(ev, Ev::Agent(..) | Ev::Oversize { conn: None, .. } | Ev::Open(_)) {
             hub.handle(ev);
         }
     }
+    archive.close(Duration::from_millis(1000)).await;
     accepting.abort();
     #[cfg(unix)]
     let _ = std::fs::remove_file(root.join("acp.sock"));
