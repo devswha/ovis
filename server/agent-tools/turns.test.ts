@@ -103,6 +103,16 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     expect(await call("wait", { session })).toMatchObject({ state: { state: "done" } });
     expect(await call("result", { session })).toMatchObject({ final_message: { text: "answered reject", untrusted: true } });
   });
+  it("refuses an unrelated run as not_owner without changing the child or audit", async () => {
+    const session = await start();
+    const unrelated = hub.runs.reserve();
+    unrelated.bind({ self: "another-parent", root: unrelated.id, started_by: null, depth: 0, harness: "fixture", ceiling: "fixture/ask-v1" });
+    token = readFileSync(unrelated.tokenFile, "utf8");
+    const audit = join(dir, "tools/audit.jsonl"), before = readFileSync(audit, "utf8");
+    for (const verb of ["send","stop","result","wait"]) expect(await call(verb, { session, ...(verb === "send" ? { task: "unused" } : {}) })).toMatchObject({ error: { code: "not_owner" } });
+    expect(acp.forPane(session)?.client.turn).toBeNull();
+    expect(readFileSync(audit, "utf8")).toBe(before);
+  });
   it("wait already in flight wakes when the child asks a person, before the turn ends", async () => {
     const session = await start("hold");
     // The ninth refusal is the server's receipt that all eight other waits are held.
