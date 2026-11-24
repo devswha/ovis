@@ -750,10 +750,14 @@ every route in use.
 - **PCs** prove their relay key in the body of each call (a challenge of `POST /v1/pc/challenge`
   answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
   `/v2/pc/list/wraps`, `/v2/pc/list/entries`, `/v2/pc/list/keys` and `/v2/pc/list/attempt`. A
-  mailbox pull with `with_list: true` also gets the list's id and head.
+  mailbox pull with `with_list: true` also gets the list's id and head, and `list: null` unless the
+  account is on the switch, has a list, and lists that PC confirmed: so `null` tells a test no
+  more than that, never that the account has no list.
 - **The number a person compares** when adding a PC rides on the PC's post: the adder opens an
   attempt with its key and commitment, the PC answers it with its nonce once, the adder reveals.
-  The fake only carries them, as the service does; six openings per post in ten minutes.
+  The fake only carries them, as the service does. Openings are counted per PC endpoint and
+  account, six in ten minutes, whichever post or keys they were for; only a call that opens one
+  counts.
 - **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
   the first at the head (`409 head_moved` names the head; a batch already in the log text for text
   is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library
