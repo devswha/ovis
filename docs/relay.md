@@ -376,11 +376,14 @@ for it before they show or ask anything.
   only, `--account` or not. Then it lists this PC in the account ([Adding a PC](account.md#adding-a-pc))
   and waits: **Open Ovis on your phone or another PC and press Add for (this PC)**. Every device signed in
   to that account with a sign-in of its own shows this PC's card, **Add this PC to your account?**,
-  with the name the PC gave itself and when it was listed. **Add** there is the account's one-press
-  admission of this PC (`POST /v1/pcs/{server_id}/admit`, [In one press](account.md#adding-a-pc)): the
-  account service takes it from a sign-in made in that app within the last 10 minutes (an older one
-  gets **Sign in again**, and the add goes on after it), within the account's daily cap of such
-  adds, and tells the account's other devices. The command asks this PC every 6 seconds (every 15
+  with the name the PC gave itself, the system it runs (the command sends this PC's platform) and
+  roughly where it asked from, when it was listed and the minutes left. **Add** there is the
+  account's one-press admission of this PC (`POST /v1/pcs/{server_id}/admit`, [In one
+  press](account.md#adding-a-pc)): the account service takes it from a sign-in made in that app
+  within the last 10 minutes, or an older one that the phone app or app.ovis.sh proves by itself with
+  the key that sign-in registered (any other sign-in older than that gets **Sign in again**, and the
+  add goes on after it), within the account's daily cap of such adds, and tells the account's other
+  devices. The command asks this PC every 6 seconds (every 15
   after the account service did not answer it) to take that admission (`POST /api/account/one-press`
   with the account that signed in): the PC asks the account service itself, with its relay key's
   proof, so only an admission by that account, made for this PC's listing, binds it. Then the PC
@@ -390,8 +393,10 @@ for it before they show or ask anything.
   in, and the approve-here window that listing the PC opens is closed at once (`POST
   /api/relay/link/close`): no digits come through it. The wait lasts as long as the card offers
   **Add**: 10 minutes from when this PC was listed, so less for a listing an earlier run left, and
-  none for one listed more than 10 minutes ago, which the card offers to remove only (the command
-  says so). A PC the account lists as its own already (an **Add** pressed for an earlier run) shows
+  none for one listed more than 10 minutes ago, for which the card offers **No** or **Remove from my
+  account** only (the command says so). The account service counts its own 10 minutes from the
+  sign-in that listed the PC, a little before the listing, so an **Add** in the wait's last seconds may
+  be refused (`listing_expired`). A PC the account lists as its own already (an **Add** pressed for an earlier run) shows
   no card: the command takes that admission while it lasts, and after its 10 minutes says to run
   `add --approve` instead. When the run ends without the add (the 10 minutes, Ctrl+C, a SIGTERM, the terminal
   closing, a refusal at the PC), it first reads which account this PC is in (it may have taken the
@@ -1014,6 +1019,7 @@ What the app on the phone shows when a connection doesn't come up
 | This phone forgot … | **Forget this PC** on the new-identity screen removed the saved key; it pairs with nothing, so pairing again needs a new QR code from the PC itself. Forget never makes a forged link pairable: opened again, it is refused again |
 | Update needed | the PC speaks another relay protocol or mux version |
 | Update Ovis on … | the PC is older than the app supports ([Versions](#versions)) |
+| Update the app | the phone app's own copy of the client is older than the PC supports ([Versions](#versions)) |
 | This pairing link is damaged | the link's offer doesn't parse or names another PC than its path |
 
 ## Versions
@@ -1035,7 +1041,15 @@ can be apart.
   `server/relay/`; until then `bun scripts/relay-e2e-regression.ts --skew <tag>` runs that check
   by hand.
 - **Newer PC.** A PC newer than the app means the app's cached copy is out of date: the app checks
-  for a newer version of itself and reloads, once.
+  for a newer version of itself and reloads, once. The phone app's own copy of the client
+  ([native-app.md](native-app.md#the-app-carries-its-client)) never reloads: it opens the PC as it is.
+- **Oldest client.** `WELCOME`'s `min_supported_client` is the oldest client the PC supports,
+  `MIN_SUPPORTED_CLIENT_VERSION` in [`server/relay/client-floor.ts`](../server/relay/client-floor.ts),
+  now 0.4.20, on the relay and the direct carrier alike. The phone app's own copy below it stops at
+  **Update the app**, with its store's page; a hosted page reloads as for a newer PC. What it may be
+  raised to: [The phone app's client](development.md#the-phone-apps-client).
+  `bun scripts/relay-client-skew-regression.ts [<tag>]` runs an older client against this server (the browser lane
+  runs it too).
 
 ## Relay pass
 
@@ -1217,7 +1231,9 @@ encrypt end to end whichever relay passes the frames on, and each relay sees wha
 
 ## Direct on the same network
 
-While the relay is on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
+Off unless the PC's owner turns on **Direct connection** (below): until then a connection through the
+relay stays on the relay, and the PC listens on none of the addresses here. While the relay and the
+switch are both on, the PC also listens on its private IPv4 addresses (RFC 1918 and link-local,
 port 7319, or another one when that is taken): the one its default route leaves from first, then the
 others, leaving out container, VM and VPN adapters, at most four for the same channel without the relay
 ([`server/relay/direct.ts`](../server/relay/direct.ts)). It also listens on the PC's Tailscale IPv4
@@ -1283,9 +1299,11 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   Tailscale), then the relay, probing earlier routes after admission, every 5 minutes at most and
   when its own addresses change or it wakes. It opens the session on the proven carrier before it
   closes the relay one, so the PC never shows as lost.
-- **Said where it is.** While the relay is on, Settings → Devices and PCs → My devices shows "Same
-  Wi-Fi direct connection on" (who can sign in there, and that it is on Tailscale too when it is)
-  with its one switch, which turns both off. Each device paired with a relay key says there how it
+- **Said where it is.** While the relay is on, Settings → Devices and PCs → More settings → Devices and
+  access shows **Direct connection** with its one switch, which governs the home network and the Tailscale
+  listener together, and one line: off, "Relay connections stay on the relay."; on, that the Ovis
+  app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct
+  connection, faster, and that this PC listens for it on those addresses. Each device paired with a relay key says there how it
   reaches the PC right now (**Same Wi-Fi, direct**, **Tailscale, direct**, the relay it uses, or
   **Offline** with when it was last seen and why), with the round trip of its session's keepalive:
   `GET /api/devices` adds `connection` to a device with a session up, and `?check=1` (**Check now**)
@@ -1294,8 +1312,10 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   listener to a client that got in (`direct_exposure`, a field of its own: a 0.4.x app takes any
   `lan_exposure` for an open server), and the app's banner says it in paired-only words. The open-server warning (`lanExposed`) is about the main listener
   only; starting the relay closes the pairing gate, so it never applies while this listener runs.
-- **On unless turned off.** `POST /api/relay/direct` with `{ "on": false }` turns it off (kept in
-  `relay/direct.json`; a file that cannot be read counts as off); `GET /api/relay` says whether it is on and where it listens. Addresses are
+- **Off unless turned on.** `POST /api/relay/direct` with `{ "on": true }` turns it on and
+  `{ "on": false }` off, kept in `relay/direct.json`, which only that switch writes: no file is no
+  choice and counts as off, as does a file that cannot be read. So a PC that only ever had the
+  earlier default (on) has it off after the update, and one whose owner turned it on keeps it on. `GET /api/relay` says whether it is on and where it listens. Addresses are
   read again every 30 s, and the listener follows them on the same port. On Windows the first
   bind of a network address shows Windows' own firewall prompt; declining it leaves the relay as
   the only way in.
