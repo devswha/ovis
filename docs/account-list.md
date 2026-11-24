@@ -2013,15 +2013,16 @@ move is never named to any PC.
 - **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, the device
   plans from `GET /v1/devices`, the directory's PCs that are listed as let in (a PC outside it is
   left out, as the service would refuse it), its record, this run's answers, and the keys it holds
-  a block or a removal against itself (a Not me's blocks not yet confirmed, the removals it signed). It notes its first
-  try (`tried`) and waits while the plan says so. Each carried device's entry seals the name its
-  sign-in registered (`GET /v1/devices`' `label`, where it sent one). It signs the birth once, keeps it in its own
-  store and sends it (`POST /v2/lists` with `entries`, the wraps of epoch 1 to itself, and the link
-  of its account key to its sign-in key) as it is until a 201 or its own list back in a `409
-  list_exists`, or until the account service names that list. A refusal that is final drops the
-  birth; the next plan comes an hour later at the soonest and leaves out the key or the PC a `403
-  not_carried` named (its `index`: entry 0 is 0, then the devices, then the PCs, in the plan's
-  order). It follows the list pinned under the sign-in key that signed entry 0.
+  a block or a removal against itself (a Not me's blocks not yet confirmed, the removals it
+  signed). It notes its first try (`tried`) and waits while the plan says so. Each carried
+  device's entry seals the name its sign-in registered (`GET /v1/devices`' `label`, where it sent
+  one). It signs the birth once, keeps it in its own store and sends it (`POST /v2/lists` with
+  `entries`, the wraps of epoch 1 to itself, and the link of its account key to its sign-in key)
+  as it is until a 201 or its own list back in a `409 list_exists`, or until the account service
+  names that list. A refusal that is final drops the birth; the next plan comes an hour later at
+  the soonest and leaves out the key or the PC a `403 not_carried` named (its `index`: entry 0 is
+  0, then the devices, then the PCs, in the plan's order). It follows the list pinned under the
+  sign-in key that signed entry 0.
 - **A carried device.** A list whose entry 1 is `carried` is read whole without being kept. Where
   the device's sign-in key was carried in, it asks `joinVerdict` with its record and this run's
   answers; on a yes it pins as `carried`, saves the copy and hands its place to its account key
