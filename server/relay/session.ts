@@ -936,6 +936,10 @@ export class RelaySession {
       }
       this.listKey = governed;
       device = { ...device, role };
+    } else if (governed !== null) {
+      // the receipt of a join into the list: the list answered for the key (allowIntoList), and a row this PC holds
+      // under the account's id gives that session no role of its own, here as at a sign-in
+      this.listKey = governed;
     }
     const unrevoke = devices.onRevoke(device.id, (waiting) => {
       if (this.state === "ready") devices.noteRelayRevoked();
