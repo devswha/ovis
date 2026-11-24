@@ -161,6 +161,26 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(held().entries.length).toBe(1);
   });
 
+  it("writes the added record before the dialog says it is done: never while another tab holds the record", async () => {
+    const { pc, list, post } = await listedPc();
+    const locks = Promise.withResolvers<void>();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { value: { ...navigator, locks: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } } }, configurable: true });
+    try {
+      const told = await mount(list, post);
+      const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
+      await act(async () => { void add.props.onClick(); });
+      await settle();
+      expect([list.view().pcs.map((row) => row.endpoint), told.added()]).toEqual([[pc.endpoint], 0]);
+      locks.resolve();
+      await settle();
+      expect([told.added(), readSeenPcs(ACCOUNT).pcs[pc.endpoint]]).toEqual([1, { how: "added" }]);
+    } finally {
+      locks.resolve();
+      if (saved) Object.defineProperty(globalThis, "navigator", saved);
+    }
+  });
+
   it("asks for three numbers at most: after the third, no Try again", async () => {
     const { play, list, post, held, opened } = await listedPc();
     play.answer = async () => false;
