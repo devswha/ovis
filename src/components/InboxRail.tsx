@@ -4,7 +4,8 @@ import { Bell, BellOff, CircleHelp, Inbox, Monitor, Settings } from "lucide-reac
 import { connectionWord, type HeaderConnection } from "../lib/headerConnection.ts";
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
-import { ForkRailPlaces, ForkRailWorkspaces } from "../fork/inbox/Rail.tsx";
+import { ForkInboxBack } from "../fork/inbox/InboxBack.tsx";
+import { ForkRailPlaces } from "../fork/inbox/Rail.tsx";
 import "./InboxRail.css";
 
 export interface InboxRailProps {
@@ -30,7 +31,7 @@ export function InboxRail({ onExit, onInbox, waiting, alerts, onSettings, connec
   return (
     <nav className="inbox-rail" aria-label={t("Inbox mode")}>
       <div className="inbox-rail-group is-top">
-        <ForkRailWorkspaces onExit={onExit} />
+        <ForkInboxBack wide rail onBack={onExit} className="inbox-rail-item inbox-rail-exit" />
         <ForkRailPlaces><button type="button" className="icon-button inbox-rail-item inbox-rail-place" aria-label={t("Agent inbox")} title={t("Agent inbox")} aria-current="page" onClick={() => { tally(() => usageCounters.count("inbox_rail_inbox")); onInbox(); }}>
           <Inbox aria-hidden="true" />
         </button></ForkRailPlaces>

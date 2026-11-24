@@ -144,8 +144,9 @@ Hooks added/changed by this task (upstream files only):
   and `shared/preferences.ts` (`FORK_SHARED_SETTING_KEYS`, so the server reads the setting; unset counts as on).
 - `src/components/Markdown.tsx`: one `openPullLink` call in the link click handler (`src/fork/github/pullLinks.ts`): a
   plain click on a github.com pull request link opens its page in the Pull requests view (`GithubInbox.tsx`).
-- `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
-  upstream's exit button (its fallback). Fork diff **0 → +3/-0**. Upstream now hides App's header in
+- `src/components/InboxRail.tsx`: one import plus a one-line `ForkInboxBack` mount at the top
+  of the rail. Upstream's rail has no exit there now (its monitor button sits in the lower group), so with Agent friends on the
+  fork's Back arrow is drawn there, and Navigation → Rail draws its Workspaces place there. Upstream hides App's header in
   inbox mode, so this additional mount is needed for the requested desktop exit to actually appear.
 - `src/lib/agentRoster.ts`: export the already-generic `nestRows` helper (one changed line, no
   behavior change), avoiding a duplicate algorithm in the fork. Fork diff **0 → +1/-1**.
