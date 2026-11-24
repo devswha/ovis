@@ -3,7 +3,7 @@ import { createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
 import { AccountListUnsupportedError, AccountOpenUnsupportedError, RelayPcOfflineError } from "../../../shared/relay-channel.ts";
-import { MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { MuxProtocolError, type PairApprover } from "../../../shared/relay-mux.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import { nextOpenStep, openRefusalOf } from "../account/openPc.ts";
@@ -248,7 +248,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let last: Attempt | null = null, opening: AbortController | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let shown: RelayShellState | null = null, sheetJoin: SheetJoin | null = null, codeOffer: RelayOffer | null = null;
-  let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
+  /** `alone`, `approveOn`: what a join into the account's list keeps on screen around the press it waits for */
+  let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean; alone?: true; approveOn?: PairApprover } | null = null;
   let challenge = 0, checked = false;
   const enrolling = new Set<RelayTransport>();
   // a first link each PC refused, by its id, until a failure screen for that PC says it (linkRefused)
@@ -888,19 +889,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
           },
         } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
-        compare: (digits, approveOn) => new Promise<void>((resolve) => {
+        compare: (digits, approveOn, intoList) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;
           attempt.compared = true;
           // a join a PC's own page started for itself: the PC (or a device of the account) takes this number there, and that
           // is the comparison, so the join goes on at once and the screen only shows the number. So does a first join, typed
-          // or not: the PC shows this number beside its Allow, and nobody else can approve it
-          if ((sheetJoin?.alone && attempt.typed !== true) || approveOn !== undefined) {
+          // or not: the PC shows this number beside its Allow, and nobody else can approve it. Never a join into the
+          // account's list: a member signs the device in on its person's word, so the number waits for this press too
+          if (intoList !== true && ((sheetJoin?.alone && attempt.typed !== true) || approveOn !== undefined)) {
             show({ kind: "compare", name: attempt.offer.name ?? null, digits, confirmed: true, challenge: ++challenge, ...(sheetJoin?.alone ? { alone: true as const } : {}), ...(approveOn === undefined ? {} : { approveOn }) });
             resolve();
             return;
           }
-          comparison = { name: attempt.offer.name ?? null, digits, matched: resolve, typed: attempt.typed === true };
-          show({ kind: "compare", name: comparison.name, digits: comparison.typed ? "" : digits, confirmed: false, challenge: ++challenge, ...(comparison.typed ? { typed: true } : {}) });
+          // the sheet and the line that say where to approve stay on screen around the press
+          const around = intoList === true && attempt.typed !== true ? { ...(sheetJoin?.alone ? { alone: true as const } : {}), ...(approveOn === undefined ? {} : { approveOn }) } : {};
+          comparison = { name: attempt.offer.name ?? null, digits, matched: resolve, typed: attempt.typed === true, ...around };
+          show({ kind: "compare", name: comparison.name, digits: comparison.typed ? "" : digits, confirmed: false, challenge: ++challenge, ...(comparison.typed ? { typed: true } : {}), ...around });
         }),
         onPcAway: () => { void moveAway(opened); },
         // the PC turned this phone away after it was in: the app goes, and the reason takes its place
@@ -1211,7 +1215,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       return;
     }
     keepTypedJoin(null);
-    show({ kind: "compare", name: current.name, digits: current.typed ? "" : current.digits, confirmed: true, typed: current.typed, challenge });
+    show({ kind: "compare", name: current.name, digits: current.typed ? "" : current.digits, confirmed: true, typed: current.typed, challenge,
+      ...(current.alone ? { alone: true as const } : {}), ...(current.approveOn === undefined ? {} : { approveOn: current.approveOn }) });
     current.matched();
   };
   /**

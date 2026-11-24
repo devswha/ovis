@@ -898,11 +898,12 @@ it("a list key that the PC refuses after it was let in leads to the join, and no
   expect(removedPcs()[run.serverId]).toBeUndefined();
 });
 
-it("a join through a PC pinned to the list brings this device's card, takes the place it is handed, and opens the PC anew with the list key", async () => {
+it("a join through a PC pinned to the list brings this device's card, waits for its person's press of The numbers match, takes the place it is handed, and opens the PC anew with the list key", async () => {
   const LIST = "5c".repeat(32);
   const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
   const opens: { how: string; intent: unknown; list: unknown }[] = [];
   const adopted: unknown[] = [];
+  let matched = false;
   // this device signed in, claimed its key for the account's list and waits; the place it is handed lets it follow
   const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: (offer) => { adopted.push(offer); listed.in = true; listed.holds = true; } };
   class LetIn extends Admitted {
@@ -912,17 +913,24 @@ it("a join through a PC pinned to the list brings this device's card, takes the 
     const { how } = await cameBy(offer, options);
     opens.push({ how, intent: options?.intent, list: options?.listCard?.list });
     // the join: the PC took the card, compared the digits and let the device in by an entry
-    if (how !== "list") { await options?.compare?.("123456"); return new LetIn(offer); }
+    if (how !== "list") { await options?.compare?.("123456", "pc", true); matched = true; return new LetIn(offer); }
     return new Admitted(offer);
   } });
   await newPcSheet(run);
   run.current().onPair();
   await run.settled(() => run.current().state.kind === "compare");
+  // a member signs this device in on its person's word: even where the PC takes the number on its own screen, the
+  // numbers wait here for the press, and the screen keeps saying where to approve
+  expect(run.current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: false, alone: true, approveOn: "pc" });
+  await Promise.resolve();
+  expect(matched).toBe(false);
   run.current().onMatch?.();
+  expect(run.current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: true, alone: true, approveOn: "pc" });
   await run.settled(() => opens.length === 2);
   await run.appOpened;
   expect(opens).toEqual([{ how: "other", intent: "account", list: LIST }, { how: "list", intent: undefined, list: undefined }]);
   expect(adopted).toEqual([{ list: LIST, seq: 3, hash: place.hash }]);
+  expect(matched).toBe(true);
   expect(run.apps()).toBe(1);
 });
 

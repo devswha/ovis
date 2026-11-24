@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import { PENDING_MS } from "../../../server/account/pending.ts";
+import { LIST_ALLOW_MS } from "../../../server/account/list-follow.ts";
+import { PAIR_APPROVAL_MS } from "../../../shared/relay-pair-sas.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -717,8 +719,9 @@ it("tells the comparison which PC approves it on its own screen, any PC it canno
 /**
  * A PC endpoint scripted for a join by digits: it selects `features`, answers the request with a challenge (with
  * `list` where it names the list it follows), and lets the device in once it confirmed, naming `place` in AUTH_OK.
+ * `answers: false`: it never answers the confirmation, as a PC that waits for an entry of the list.
  */
-function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: { id: string; seq: number; hash: string } }) {
+function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: { id: string; seq: number; hash: string }; answers?: false }) {
   const keys = generateKeyPair();
   let socket: FakeSocket;
   const daemon: Transport = {
@@ -731,6 +734,7 @@ function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: 
   const send = (frame: MuxFrame) => ready.promise.then((channel) => channel.send(encodeFrame(frame).slice().buffer));
   const hello = Promise.withResolvers<readonly string[]>();
   const request = Promise.withResolvers<Record<string, unknown>>();
+  const confirmed = Promise.withResolvers<void>();
   void openDaemonSecureChannel(daemon, { daemonKeyPair: keys, events: { onmessage: (data) => {
     const frame = decodeFrame(new Uint8Array(data as ArrayBuffer));
     if (frame.type === FrameType.HELLO) {
@@ -742,7 +746,10 @@ function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: 
       request.resolve(frame.payload as unknown as Record<string, unknown>);
       void send({ type: FrameType.PAIR_CHALLENGE, flags: 0, stream_id: 0, payload: { nonce: base64url(new Uint8Array(32).fill(7)), ...(pc.list === undefined ? {} : { list: pc.list }) } });
     }
-    if (frame.type === FrameType.PAIR_CONFIRM) void send({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0, payload: { session_id: "ab".repeat(16), device_id: "cd".repeat(8), role: "drive", ...(pc.place === undefined ? {} : { list: pc.place }) } });
+    if (frame.type === FrameType.PAIR_CONFIRM) {
+      confirmed.resolve();
+      if (pc.answers !== false) void send({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0, payload: { session_id: "ab".repeat(16), device_id: "cd".repeat(8), role: "drive", ...(pc.place === undefined ? {} : { list: pc.place }) } });
+    }
   } } }).then((channel) => ready.resolve(channel), () => {});
   const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(keys.publicKey), relay: "wss://relay.example" };
   const store = new MemoryDeviceStore();
@@ -753,7 +760,7 @@ function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: 
     void opening.catch(() => {});
     return opening;
   };
-  return { offer, store, open, hello: bounded(hello.promise), request: bounded(request.promise) };
+  return { offer, store, open, hello: bounded(hello.promise), request: bounded(request.promise), confirmed: confirmed.promise };
 }
 
 describe("a new device that joins through a PC pinned to its account's list", () => {
@@ -818,6 +825,49 @@ describe("a new device that joins through a PC pinned to its account's list", ()
     const error = await bounded(lying.open({ accountKey: key, listCard }).then(() => null, (reason: unknown) => reason));
     expect(error).toBeInstanceOf(ListMismatchError);
     expect(await lying.store.get(lying.offer.server_id)).toBeUndefined();
+  });
+
+  it("tells the comparison that a join the PC took the card for is one into the list, which only the person's own press confirms; any other join is told nothing new", async () => {
+    const { key, listCard } = await card();
+    const told: unknown[][] = [];
+    const pinned = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, place: { id: LIST, seq: 4, hash: "ab".repeat(32) } });
+    const joined = await bounded(pinned.open({ accountKey: key, listCard, compare: async (...args) => { told.push(args); } }));
+    cleanups.push(() => joined.close());
+    const plain = scriptedJoin({ features: ["pair-sas"] });
+    const paired = await bounded(plain.open({ accountKey: key, listCard, compare: async (...args) => { told.push(args); } }));
+    cleanups.push(() => paired.close());
+    expect(told).toEqual([[expect.any(String), undefined, true], [expect.any(String), undefined, undefined]]);
+  });
+
+  it("is refused, with nothing saved, by a PC that took its card and lets it in naming no place in the list", async () => {
+    const { key, listCard } = await card();
+    const placeless = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST });
+    const error = await bounded(placeless.open({ accountKey: key, listCard }).then(() => null, (reason: unknown) => reason));
+    expect(error instanceof MuxProtocolError && [error.code, error.message]).toEqual(["auth_failed", "list_refused"]);
+    expect(failureOf(error, { code: false, paired: false, codeless: true, compared: true })).toBe("list-refused");
+    expect(await placeless.store.get(placeless.offer.server_id)).toBeUndefined();
+  });
+
+  it("waits for the PC's entry as long as the PC may take for it after the comparison, where a join without a card ends at the comparison's own time", async () => {
+    jest.useFakeTimers();
+    const { key, listCard } = await card();
+    const outcomes: { carded: boolean; error: unknown }[] = [];
+    const waits = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, answers: false });
+    void waits.open({ accountKey: key, listCard }).then(() => null, (error: unknown) => { outcomes.push({ carded: true, error }); });
+    const plain = scriptedJoin({ features: ["pair-sas"], answers: false });
+    void plain.open({ accountKey: key, listCard }).then(() => null, (error: unknown) => { outcomes.push({ carded: false, error }); });
+    await Promise.all([waits.confirmed, plain.confirmed]);
+    const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+    jest.advanceTimersByTime(PAIR_APPROVAL_MS + 5_000);
+    await settle();
+    expect(outcomes.map((each) => [each.carded, each.error instanceof RelayAdmissionTimeoutError])).toEqual([[false, true]]);
+    // the comparison's time, and the PC's own wait for the entry after both said yes
+    jest.advanceTimersByTime(LIST_ALLOW_MS - 1);
+    await settle();
+    expect(outcomes).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    await settle();
+    expect(outcomes.map((each) => [each.carded, each.error instanceof RelayAdmissionTimeoutError])).toEqual([[false, true], [true, true]]);
   });
 });
 

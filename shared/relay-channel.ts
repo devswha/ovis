@@ -113,6 +113,13 @@ export const ASSIGNMENT_MS = 10_000;
 export const PC_ANSWER_MS = 15_000;
 export const ADMISSION_MS = MUX_SETUP_MS;
 const PAIR_APPROVAL_GRACE_MS = 5_000;
+/**
+ * How long a PC that took a join's card keeps the join open after both sides said yes, for the entry of its account's
+ * list that lets the device in (server/account/list-follow.ts LIST_ALLOW_MS): the entry its own window signs, or the
+ * half minute it waits for a member's and its last read. A join that brought the card waits that long on top of the
+ * comparison's own time.
+ */
+export const LIST_JOIN_PLACING_MS = 90_000;
 
 export interface RelaySocket {
   binaryType: BinaryType;
@@ -139,9 +146,11 @@ export interface RelayChannelOptions {
    * A new device with no pairing code pairs by comparing digits (shared/relay-pair-sas.ts): this
    * shows them, and resolves once the person says the PC shows the same. Without it such a device
    * cannot pair. The PC's owner still has to approve it there. `approveOn`: the PC itself approves it on its own screen
-   * (a first join), named by its system; absent when a device of the account may.
+   * (a first join), named by its system; absent when a device of the account may. `intoList`: the PC took this device's
+   * card (listCard), so the join is one into the account's signed list, and only the person's own press here says the
+   * numbers match: a member signs the device in on that word.
    */
-  readonly compare?: (digits: string, approveOn?: PairApprover) => Promise<void>;
+  readonly compare?: (digits: string, approveOn?: PairApprover, intoList?: true) => Promise<void>;
   /**
    * A signed-in client's account key: a new pairing signs in with it instead of a key of its own
    * for this PC, so the row it gets is the account's to link (docs/account.md, rule 2).
@@ -383,9 +392,11 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           if (!binding) throw new MuxProtocolError("internal_error", "The relay channel has no binding");
           phoneNonce = randomPairNonce();
           phase = "pair";
-          expect(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
-          mux?.extendSetup(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS);
           carded = options.intent === "account" && frame.payload.features.includes(ACCOUNT_LIST_ALLOW) ? options.listCard : undefined;
+          // a join the PC takes the card for waits, after the comparison, for the entry that lets the device in
+          const pairing = PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS + (carded === undefined ? 0 : LIST_JOIN_PLACING_MS);
+          expect(pairing, () => new RelayAdmissionTimeoutError("auth"));
+          mux?.extendSetup(pairing);
           await send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
             payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)), ...(options.pcProof ? { server_key: options.pcProof.publicKey } : {}),
               ...(carded === undefined ? {} : { list_enc: carded.enc, list_card: carded.card }) } });
@@ -419,7 +430,7 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         const digits = pairDigits(binding, device.public_spki, phoneNonce, fromBase64Url(frame.payload.nonce));
         await send({ type: FrameType.PAIR_REVEAL, flags: 0, stream_id: 0, payload: { nonce: toBase64Url(phoneNonce) } });
         // never awaited here: the PC's refusal or timeout must still come through while the person looks
-        void options.compare?.(digits, frame.payload.approve_on).then(() => {
+        void options.compare?.(digits, frame.payload.approve_on, carded === undefined ? undefined : true).then(() => {
           if (phase !== "auth") return;
           confirmed = true;
           return send({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
@@ -465,6 +476,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       // a place is taken only from a PC that took the card, and only in the list the card names
       const listPlace = carded === undefined ? undefined : frame.payload.list;
       if (listPlace !== undefined && listPlace.id !== carded?.list) throw new ListMismatchError();
+      // A PC that took the card lets the device in by an entry of the list, or not at all: one that names no place made
+      // no entry the device can follow, and nothing of it is saved as a pairing in its stead
+      if (carded !== undefined && listPlace === undefined) throw new MuxProtocolError("auth_failed", "list_refused");
       // An entry of the list let this key in, and no row of the PC's own stands behind it: nothing is saved here as a
       // pairing. The device signs in with that key as any device of the list does.
       const admitted = listPlace !== undefined ? { ...device, device_id: frame.payload.device_id } : await store.update(offer.server_id, (current) => {
