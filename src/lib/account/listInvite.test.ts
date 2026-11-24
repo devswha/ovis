@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { listView } from "../../../shared/account-list.ts";
+import { listView, pcRemoval, signListEntries } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { inviteMakeBytes } from "../../../shared/account-list-invite.ts";
 import { JOIN_LINE_PREFIX, readJoinLine } from "../../../shared/account-list-join.ts";
 import { fromBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
+import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
 import { INVITE_S, invitesOf, makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
 import { allowDevice } from "./listAllow.ts";
 
@@ -203,6 +203,19 @@ describe("the invites of a list, as a device shows them", () => {
     expect(await revokeInvite(first.list, plain.key, noWait)).toEqual({ revoked: true });
     // the removal alone: no removal of the first invite, and no epoch while that key is still in
     expect(kinds(placements(first).at(-1)!.body!.entries as string[])).toEqual(["remove"]);
+  });
+
+  it("calls an invite that went with the removal of a PC ended, not revoked, whether the PC is removed by its key or by its relay key", async () => {
+    const { w, first } = await oneDevice();
+    const pc = await addListPc(w, first, "Desk");
+    const invite = made(await makeInvite(first.list, { auto: false, ...noWait }));
+    // one request: the PC's removal (by its key, as pcRemoval gives it), and the invite's end beside it
+    const keys = await first.keys();
+    const state = w.held().state;
+    const signed = await signListEntries(state, [...pcRemoval(state, pc.endpoint), { kind: "remove", ends: invite.key }], { key: keys.key, privateKey: keys.signs }, Math.floor(w.clock.now / 1000));
+    await first.service.placeEntries(w.held().id, signed.entries.map((entry) => entry.text), []);
+    await first.list.sync();
+    expect(invitesOf(first.list, w.clock.now).find((row) => row.key === invite.key)?.state).toBe("ended");
   });
 
   it("revokes an invite by a `remove` of its key, and an invite a machine joins with by itself with the next epoch after it", async () => {

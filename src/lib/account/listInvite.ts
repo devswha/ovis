@@ -8,7 +8,7 @@
  * that joins reads the list's names. Revoking an invite is a `remove` of its key, and for such an invite the next
  * epoch after it.
  */
-import { ListWriteError, listView, readKind, sealEpoch, signListEntries, type ListKind, type Sealed } from "../../../shared/account-list.ts";
+import { ListWriteError, listView, readKind, sealEpoch, signListEntries, type ListKind, type ListState, type Sealed } from "../../../shared/account-list.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { newInvite } from "../../../shared/account-list-join.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
@@ -194,7 +194,7 @@ export function invitesOf(list: AccountList, nowMs: number): ShownInvite[] {
   const clock = Math.max(writer.shown, Math.floor(nowMs / 1000));
   return listView(writer.state).invites.map((row): ShownInvite => ({
     key: row.key, auto: row.auto, exp: row.exp, seq: row.seq, mine: row.by === writer.keys.key,
-    state: row.refusal === "invite_spent" ? "used" : row.refusal === "invite_revoked" ? endOf(list, writer.state.signers[row.key]?.ended ?? null, row.exp)
+    state: row.refusal === "invite_spent" ? "used" : row.refusal === "invite_revoked" ? endOf(list, writer.state, writer.state.signers[row.key]?.ended ?? null, row.exp)
       : row.refusal === "invite_expired" || (row.refusal === null && clock > row.exp) ? "expired" : row.refusal === null ? "open" : "ended",
   })).sort((a, b) => b.seq - a.seq);
 }
@@ -204,7 +204,7 @@ export function invitesOf(list: AccountList, nowMs: number): ShownInvite[] {
  * after a `pc` entry, it is the Add of the PC that joined with it (`used`); dated past the invite's time, the clean-up
  * of an invite that was over (`expired`); beside the removal of a PC, that PC's end (`ended`); on its own, a Revoke.
  */
-function endOf(list: AccountList, ended: number | null, exp: number): InviteState {
+function endOf(list: AccountList, state: ListState, ended: number | null, exp: number): InviteState {
   if (ended === null) return "ended";
   const kindAt = (text: string | undefined): { readonly kind: ListKind | null; readonly at: number } | null => {
     if (text === undefined) return null;
@@ -219,7 +219,9 @@ function endOf(list: AccountList, ended: number | null, exp: number): InviteStat
   if (removal === null) return "ended";
   if (before?.kind?.kind === "pc") return "used";
   if (removal.at > exp) return "expired";
-  const pcEnds = (entry: typeof before): boolean => entry?.kind?.kind === "remove" && "endpoint" in entry.kind;
+  // a PC is removed by its relay key, or by its own key where it has one (pcRemoval)
+  const pcEnds = (entry: typeof before): boolean => entry?.kind?.kind === "remove"
+    && ("endpoint" in entry.kind || ("ends" in entry.kind && state.pc_keys[entry.kind.ends] !== undefined));
   return pcEnds(before) || pcEnds(after) ? "ended" : "revoked";
 }
 
