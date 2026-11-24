@@ -791,6 +791,21 @@ const BASE: Record<string, string> = {
   "Add a note": "メモを追加",
   "Note": "メモ",
   "Memory|notes": "メモリー",
+  "Your account now keeps its own list": "アカウントの名簿ができました",
+  "This device made your account's list.": "この端末がアカウントの名簿を作りました。",
+  "{device} made your account's list.": "{device} がアカウントの名簿を作りました。",
+  "It brought these in. Press Not me on one you do not know.": "次の端末と PC も一緒に入りました。知らないものがあれば「自分ではない」を押してください。",
+  "A device of yours": "あなたの端末",
+  "Remove {pc} from your account?": "{pc} をアカウントから外しますか？",
+  "{pc} was removed from your account.": "{pc} をアカウントから外しました。",
+  "{pc} could not be removed. Try again.": "{pc} を外せませんでした。もう一度お試しください。",
+  "{pc} follows another list of your account, so this device did not join yours. Remove {pc} from your account, or reset it there; this device then joins by itself.": "{pc} がアカウントの別の名簿に従っているため、この端末は名簿に入りませんでした。{pc} をアカウントから外すか、その PC でリセットすると、この端末は自動で入ります。",
+  "A PC of yours removed the device that made your account's list, so this device did not join it.": "あなたの PC の一台が、アカウントの名簿を作った端末を外していたため、この端末は名簿に入りませんでした。",
+  "Your PCs do not know the device that made your account's list, so this device did not join it.": "あなたの PC はアカウントの名簿を作った端末を知らないため、この端末は名簿に入りませんでした。",
+  "This device did not join your account's list.": "この端末はアカウントの名簿に入りませんでした。",
+  "This device is not in your account's list": "この端末はアカウントの名簿にありません",
+  "Allow this device from a device that is in the list.": "名簿にある端末から、この端末を許可してください。",
+  "One of your PCs": "あなたの PC の一台",
 };
 
 export const JA_PARTS: Record<string, Record<string, string>> = {

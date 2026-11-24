@@ -1,0 +1,102 @@
+import { afterEach, beforeEach, expect, it } from "bun:test";
+import { act } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import type { AccountList, AccountListView } from "../lib/account/accountList.ts";
+import type { MoveNoticeView } from "../lib/account/listMigrate.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+import { ListJoinRefusal, ListMoveNotice } from "./ListMoveNotice.tsx";
+
+const ACCOUNT = "acct_moved";
+const LIST = "5c".repeat(32);
+const E = (n: number) => n.toString(16).padStart(2, "0").repeat(32);
+const globals = new Map<string, PropertyDescriptor | undefined>();
+let renderer: ReactTestRenderer | undefined;
+
+beforeEach(() => {
+  for (const [key, value] of Object.entries({
+    IS_REACT_ACT_ENVIRONMENT: true, window: new EventTarget(), location: new URL("https://app.ovis.sh/"),
+    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
+    getComputedStyle: () => ({ getPropertyValue: () => "" }), navigator: { languages: ["en"] }, localStorage: { getItem: () => null, setItem: () => {} },
+  })) {
+    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { value, configurable: true });
+  }
+});
+afterEach(() => {
+  act(() => renderer?.unmount());
+  renderer = undefined;
+  for (const [key, descriptor] of globals) {
+    if (descriptor === undefined) delete (globalThis as Record<string, unknown>)[key];
+    else Object.defineProperty(globalThis, key, descriptor);
+  }
+  globals.clear();
+});
+
+const following: AccountListView = { account: ACCOUNT, reached: true, status: { at: "following", list: LIST, standing: "in", head: 5, read_at: 1, trouble: null }, devices: [], pcs: [] };
+
+function listWith(view: AccountListView, notice: MoveNoticeView | null) {
+  const seen: string[] = [];
+  const list = {
+    view: () => view, subscribe: () => () => {},
+    notice: async () => (seen.length > 0 ? null : notice),
+    noticeSeen: async (_account: string, list: string) => { seen.push(list); },
+  } as unknown as AccountList;
+  return { list, seen };
+}
+
+const text = (): string => JSON.stringify(renderer?.toJSON() ?? null);
+const settle = async (): Promise<void> => { await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); }); };
+
+it("says once who made the list and whom it brought in, with Not me on each PC, and is not shown again after OK", async () => {
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }], pcs: [{ endpoint: E(1), name: { label: "Desk", os: null } }] };
+  const { list, seen } = listWith(following, notice);
+  const removed: string[] = [];
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={list} removePc={async (endpoint) => { removed.push(endpoint); return true; }} /></SettingsProvider>); });
+  await settle();
+  expect(text()).toContain("This device made your account's list.");
+  expect(text()).toContain("Laptop");
+  expect(text()).toContain("Desk");
+  const notMe = renderer!.root.findAll((node) => node.type === "button" && node.props.children === "Not me");
+  expect(notMe).toHaveLength(1);
+  await act(async () => { notMe[0]!.props.onClick(); });
+  // asked first, as Remove asks
+  expect(text()).toContain("Remove Desk from your account?");
+  const yes = renderer!.root.findAll((node) => node.type === "button" && node.props.children === "Remove")[0]!;
+  await act(async () => { yes.props.onClick(); });
+  await settle();
+  expect(removed).toEqual([E(1)]);
+  expect(text()).toContain("Desk was removed from your account.");
+  const ok = renderer!.root.findAll((node) => node.type === "button" && node.props.children === "OK")[0]!;
+  await act(async () => { ok.props.onClick(); });
+  await settle();
+  expect(seen).toEqual([LIST]);
+  expect(renderer!.toJSON()).toBeNull();
+});
+
+it("names the device that made the list where this device did not", async () => {
+  const notice: MoveNoticeView = { list: LIST, first: { self: false, key: "G", name: { label: "Phone", os: null } }, devices: [], pcs: [] };
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} /></SettingsProvider>); });
+  await settle();
+  expect(text()).toContain("Phone made your account's list.");
+});
+
+it("shows nothing for an account that has not moved", async () => {
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, null).list} /></SettingsProvider>); });
+  await settle();
+  expect(renderer!.toJSON()).toBeNull();
+});
+
+it("tells a device the list carried in why it did not join, naming the PC and what to do", async () => {
+  const refused: AccountListView = { account: ACCOUNT, reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim: "claimed", refused: { why: "other_list", pcs: [E(1)] } }, devices: [], pcs: [] };
+  await act(async () => { renderer = create(<SettingsProvider><ListJoinRefusal list={listWith(refused, null).list} pcName={() => "Desk"} /></SettingsProvider>); });
+  expect(text()).toContain("Desk follows another list of your account");
+  for (const [why, line] of [["first_signer_unknown", "Your PCs do not know the device that made your account's list"], ["first_signer_removed", "A PC of yours removed the device that made your account's list"]] as const) {
+    const view: AccountListView = { ...refused, status: { at: "not_in", list: LIST, why: "not_mine", claim: "claimed", refused: { why, pcs: [E(1)] } } };
+    await act(async () => { renderer!.update(<SettingsProvider><ListJoinRefusal list={listWith(view, null).list} pcName={() => null} /></SettingsProvider>); });
+    expect(text()).toContain(line);
+  }
+  // a device that only waits on its PCs is told nothing: there is nothing to press
+  const waiting: AccountListView = { ...refused, status: { at: "not_in", list: LIST, why: "carried", claim: "unclaimed", join: { why: "pcs_silent", wait: 60, pcs: [E(1)] } } };
+  await act(async () => { renderer!.update(<SettingsProvider><ListJoinRefusal list={listWith(waiting, null).list} pcName={() => null} /></SettingsProvider>); });
+  expect(renderer!.toJSON()).toBeNull();
+});

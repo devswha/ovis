@@ -316,3 +316,22 @@ describe("a PC the move carried in with no key, met over a session while it foll
     expect(listView(world.held().state).pcs.find((one) => one.endpoint === pc.endpoint)?.key).toBeNull();
   });
 });
+
+describe("the one-time notice of the move", () => {
+  test("who made the list and whom it carried in, each by the key that stands for it now, until the person saw it", async () => {
+    const { phone, laptop, pc, world } = await moved();
+    const first = await phone.device.list.notice!(world.account);
+    expect(first).toMatchObject({ list: world.held().id, first: { self: true }, devices: [{ key: laptop.signIn }], pcs: [{ endpoint: pc.endpoint }] });
+    // the laptop follows and hands its place on: the phone's notice names it by its member key from then on
+    await laptop.device.list.sync();
+    await laptop.device.list.sync();
+    await phone.device.list.sync({ read: true });
+    // a carried device's name is sealed only where the account service names it (GET /v1/devices carries no label yet)
+    expect((await phone.device.list.notice!(world.account))?.devices).toEqual([{ key: laptop.member, name: null }]);
+    const theirs = await laptop.device.list.notice!(world.account);
+    expect(theirs).toMatchObject({ first: { self: false, key: phone.member }, devices: [], pcs: [{ endpoint: pc.endpoint }] });
+    await phone.device.list.noticeSeen!(world.account, world.held().id);
+    expect(await phone.device.list.notice!(world.account)).toBeNull();
+    expect(await laptop.device.list.notice!(world.account)).not.toBeNull();
+  });
+});

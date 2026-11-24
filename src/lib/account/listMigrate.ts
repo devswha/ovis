@@ -266,6 +266,18 @@ export interface MoveNotice {
   readonly seen: boolean;
 }
 
+/**
+ * The notice as a person reads it: who made the list (this device, or the device that stands in its place now) and
+ * every device and PC it carried in that is still in, each by the key that stands for it now (standsFor), with its
+ * name where this device can open it. This device itself is not among them.
+ */
+export interface MoveNoticeView {
+  readonly list: string;
+  readonly first: { readonly self: boolean; readonly key: string | null; readonly name: ListNames | null };
+  readonly devices: readonly { readonly key: string; readonly name: ListNames | null }[];
+  readonly pcs: readonly { readonly endpoint: string; readonly name: ListNames | null }[];
+}
+
 export function noticeRecord(notice: MoveNotice): unknown {
   return { v: RECORD_VERSION, ...notice };
 }

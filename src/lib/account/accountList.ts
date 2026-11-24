@@ -27,7 +27,7 @@ import {
 import { listNames, makeGenesis, type Genesis } from "./listGenesis.ts";
 import {
   birthRecord, birthSeals, handOverRecord, knownPcs, MOVE_AGAIN_SECONDS, noticeRecord, notCarriedAt, pageAnswers, readBirth, readHandOver, readNotice, readRefusal, refusalRecord,
-  scaled, signLink, type KeptBirth, type MoveNotice, type PcAnswers,
+  scaled, signLink, type KeptBirth, type MoveNoticeView, type PcAnswers,
 } from "./listMigrate.ts";
 import { clearTried, noteTried, readSeenPcs } from "./seenPcs.ts";
 import { deviceCard, deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
@@ -591,8 +591,8 @@ export interface AccountList {
    * `signIn`: this device's sign-in key, when that session signed in with it, which then vouches for the member key.
    */
   naming?(given: { readonly session: string; readonly endpoint: string; readonly signIn: string | null }): Promise<{ readonly naming: SignedNaming; readonly vouches: readonly SignedVouch[] } | null>;
-  /** The one-time notice of the move of this account onto its list, while the person has not seen it; null otherwise. */
-  notice?(account: string): Promise<MoveNotice | null>;
+  /** The one-time notice of the move of this account onto its list, while the person has not seen it and this device follows that list; null otherwise. */
+  notice?(account: string): Promise<MoveNoticeView | null>;
   /** The person saw the notice of the move onto `list`: it is not shown again. */
   noticeSeen?(account: string, list: string): Promise<void>;
 }
@@ -1540,7 +1540,15 @@ export function accountList(options: AccountListOptions): AccountList {
     },
     async notice(account) {
       const notice = readNotice(await store.get("notice", account));
-      return notice === null || notice.seen ? null : notice;
+      const copy = held?.account === account ? held.copy : null;
+      const self = ctx?.account === account ? ctx.keys.key : null;
+      if (notice === null || notice.seen || copy === null || copy.state === null || copy.list !== notice.list || self === null || shown.account !== account) return null;
+      const { state } = copy;
+      const nameOf = (key: string): ListNames | null => shown.devices.find((row) => row.key === key)?.name ?? null;
+      const first = standsFor(state, notice.first);
+      const devices = notice.devices.flatMap((key) => { const now = standsFor(state, key); return now === null || now === self ? [] : [{ key: now, name: nameOf(now) }]; });
+      const pcs = notice.pcs.flatMap((endpoint) => { const row = shown.pcs.find((pc) => pc.endpoint === endpoint); return row === undefined ? [] : [{ endpoint, name: row.name }]; });
+      return { list: notice.list, first: { self: first === self, key: first, name: first === null ? null : nameOf(first) }, devices, pcs };
     },
     async noticeSeen(account, list) {
       await lock(account, async () => {
