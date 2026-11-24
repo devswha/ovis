@@ -6,12 +6,17 @@
  * file is the two messages and their checks, which the account service reads too: it reads no line. No I/O;
  * WebCrypto only.
  */
-import { canonicalBase64Url, isListKeyEncoding, isListPoint, verifySignature } from "./account-list-entry.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { cardBinding } from "./account-list.ts";
+import { canonicalBase64Url, isListHash, isListKeyEncoding, isListPoint, verifySignature } from "./account-list-entry.ts";
 
 /** What a machine signs to redeem an invite starts with these bytes. */
 export const INVITE_REDEEM_PREFIX = "ovis-invite-redeem/1";
 /** What a device signs to add a PC starts with these bytes (shared/account-records.ts, PC_ADD_PREFIX): making an invite is one such act. */
 export const INVITE_MAKE_PREFIX = "ovis-pc-add/1";
+/** What the challenge an invite's line signs to name a list to a PC is made under (lineChallenge). */
+export const LINE_CHALLENGE_PREFIX = "ovis-list-join/1";
 /** A redeem signature as text: the base64url of `r || s`, 64 bytes, in its one spelling. */
 export const INVITE_SIGNATURE_CHARS = 86;
 
@@ -146,4 +151,32 @@ export function inviteMakeBytes(make: InviteMake): Uint8Array<ArrayBuffer> {
   // Half of a pair alone has no UTF-8 bytes of its own: it would be signed as U+FFFD, the bytes of another text.
   if (HALF_PAIR.test(challenge)) throw new InviteRedeemError("challenge is text in its one encoding: no half of a surrogate pair alone");
   return tagged(INVITE_MAKE_PREFIX, [auto ? "invite-auto" : "invite", account, "", invite_key, challenge_id, challenge]);
+}
+
+/**
+ * The challenge the holder of an invite's line signs to say that the PC with this card joins `list` with it: the
+ * first 32 hex digits of SHA-256 over LINE_CHALLENGE_PREFIX, the list's id (as its text) and the binding of the PC's
+ * card for that list (shared/account-list.ts: cardBinding), a card that names no invite.
+ *
+ * It is signed as the `challenge_id` of a redeem message (inviteRedeemBytes), which also names the account, the PC's
+ * id and its relay key. The account service issues no such challenge, so that signature redeems nothing there. The
+ * PC checks it before it takes the list an invite's line names; a PC that joined by a line that waits for a person
+ * posts it with its keys; and a device of the account checks it, with the card that was posted, before it offers to
+ * add that PC: the account service's word on who used an invite is no evidence, and this signature is one that only
+ * the holder of the line can make. All three build the challenge here, from the same bytes.
+ *
+ * `card`: the PC's own keys and its relay key. A card given whole must be for `list` and name no invite. Refuses
+ * `redeem_malformed` for anything else, and for a card that is no PC's.
+ */
+export function lineChallenge(list: string, card: { readonly key: string; readonly enc: string; readonly endpoint: string; readonly list?: string; readonly invite?: null }): string {
+  if (typeof list !== "string" || !isListHash(list)) throw new InviteRedeemError("list is a list's id: 64 of 0-9a-f");
+  if (!isRecord(card)) throw new InviteRedeemError("A line names a list to the PC of a card");
+  const { key, enc, endpoint } = card;
+  if (card.list !== undefined && card.list !== list) throw new InviteRedeemError("The card is for the list the line names");
+  if (card.invite !== undefined && card.invite !== null) throw new InviteRedeemError("The card of a PC that a person adds names no invite");
+  if (typeof endpoint !== "string" || !HEX_64.test(endpoint)) throw new InviteRedeemError("endpoint is the PC's relay key: 64 of 0-9a-f");
+  let binding: Uint8Array;
+  try { binding = cardBinding({ key, enc, list, endpoint, invite: null }); }
+  catch { throw new InviteRedeemError("key and enc are the PC's own keys, each a key whose point is on the curve"); }
+  return bytesToHex(sha256(concatBytes(utf8ToBytes(LINE_CHALLENGE_PREFIX), utf8ToBytes(list), binding))).slice(0, 32);
 }

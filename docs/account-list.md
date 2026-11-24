@@ -953,6 +953,21 @@ invite's public key as [a key](#the-form), where a listing id does. `challenge` 
 account service gave, as its UTF-8 bytes. Half of a surrogate pair alone has no such bytes (it
 would be written as U+FFFD, the bytes of another text), so a challenge that holds one is refused.
 
+**The challenge a line signs for a PC's card** (`lineChallenge`). A line can also say that one
+particular PC joins one particular list with it. It signs the redeem message above with a
+challenge that nobody issues:
+
+```
+challenge_id = the first 32 hex digits of
+               SHA-256( "ovis-list-join/1" || list id, as its text || the binding of the PC's card )
+```
+
+The card is the PC's own for that list, with its relay key and no invite named, and its binding is
+SHA-256 over the card's bytes ([A card](#a-card)). So the signature names the account, the PC's id
+and relay key, the list, and the very keys the PC asks to be added with. The account service
+issues no such challenge, so the signature redeems nothing there. Its vector is
+`invite/line-challenge.json`: every reader of it builds the challenge with this one function.
+
 ## On a device
 
 The hosted app, in a browser at app.ovis.sh and in the phone apps, keeps its own copy of its

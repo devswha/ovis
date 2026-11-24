@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  INVITE_MAKE_PREFIX, INVITE_REDEEM_PREFIX, INVITE_SIGNATURE_CHARS, InviteRedeemError, inviteMakeBytes, inviteRedeemBytes, isAccountId, signInviteRedeem, verifyInviteRedeem,
+  INVITE_MAKE_PREFIX, INVITE_REDEEM_PREFIX, INVITE_SIGNATURE_CHARS, InviteRedeemError, LINE_CHALLENGE_PREFIX, inviteMakeBytes, inviteRedeemBytes, isAccountId, lineChallenge, signInviteRedeem, verifyInviteRedeem,
   type InviteMake, type InviteRedeem,
 } from "./account-list-invite.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { cardBinding } from "./account-list.ts";
 import { isListKeyEncoding, isListPoint, verifySignature } from "./account-list-entry.ts";
 import { newInvite, readJoinLine } from "./account-list-join.ts";
 import { pcAddSigningBytes, type PcAddPurpose } from "./account-records.ts";
@@ -38,7 +41,15 @@ interface MakeVector {
   readonly signature: string;
   readonly expect: { readonly verifies: boolean };
 }
-const files = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(join(DIR, file), "utf8")) as InviteVector | MakeVector);
+interface LineChallengeVector {
+  readonly name: string;
+  readonly list: string;
+  readonly card: { readonly key: string; readonly enc: string; readonly endpoint: string };
+  readonly binding_hex: string;
+  readonly challenge: string;
+}
+const files = readdirSync(DIR).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(join(DIR, file), "utf8")) as InviteVector | MakeVector | LineChallengeVector);
+const challenges = files.filter((vector): vector is LineChallengeVector => "challenge" in vector && "card" in vector);
 const vectors = files.filter((vector): vector is InviteVector => "redeem" in vector);
 const makes = files.filter((vector): vector is MakeVector => "make" in vector);
 const good = vectors.find((vector) => vector.name === "redeem");
@@ -260,5 +271,56 @@ describe("what a device signs to make an invite", () => {
     expect(hex(inviteMakeBytes({ ...MAKE, challenge: "\uD83D\uDE00" })).endsWith("00000004f09f9880")).toBe(true);
     expect(hex(inviteMakeBytes({ ...MAKE, challenge: "\u00e9\u4e2d" })).endsWith("00000005c3a9e4b8ad")).toBe(true);
     expect([isAccountId("a"), isAccountId("a".repeat(64)), isAccountId(""), isAccountId("a".repeat(65)), isAccountId("a.b")]).toEqual([true, true, false, false, false]);
+  });
+});
+
+describe("the challenge an invite's line signs for a PC's card", () => {
+  const [vector] = challenges;
+  if (!vector) throw new Error("invite/line-challenge.json is missing");
+  const { list, card } = vector;
+
+  test("is the vector's: every reader of it (the PC, the app, the account service) is held to these bytes", () => {
+    expect(challenges.map((each) => each.name)).toEqual(["line-challenge"]);
+    expect(bytesToHex(cardBinding({ ...card, list, invite: null }))).toBe(vector.binding_hex);
+    expect(lineChallenge(list, card)).toBe(vector.challenge);
+  });
+
+  test("is the first 32 hex digits of SHA-256 over the prefix, the list's id and the binding of the PC's card for that list, with no invite named", () => {
+    expect(LINE_CHALLENGE_PREFIX).toBe("ovis-list-join/1");
+    const built = bytesToHex(sha256(concatBytes(utf8ToBytes("ovis-list-join/1"), utf8ToBytes(list), cardBinding({ ...card, list, invite: null })))).slice(0, 32);
+    expect(lineChallenge(list, card)).toBe(built);
+    expect(lineChallenge(list, card)).toMatch(/^[0-9a-f]{32}$/);
+    // a card given whole, as the kinds hold one, gives the same
+    expect(lineChallenge(list, { ...card, list, invite: null })).toBe(built);
+  });
+
+  test("is another for another list, another key of the PC's, or another relay key", () => {
+    const other = "2f".repeat(32);
+    const all = [
+      lineChallenge(list, card), lineChallenge(other, card), lineChallenge(list, { ...card, endpoint: "cd".repeat(32) }),
+      lineChallenge(list, { ...card, key: card.enc }), lineChallenge(list, { ...card, enc: card.key }),
+    ];
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  test("refuses a card that is for another list, that names an invite, or that is no PC's", () => {
+    const refused = (work: () => unknown): boolean => { try { work(); return false; } catch (error) { return error instanceof InviteRedeemError; } };
+    expect(refused(() => lineChallenge(list, { ...card, list: "2f".repeat(32), invite: null }))).toBe(true);
+    expect(refused(() => lineChallenge(list, { ...card, list, invite: card.enc } as never))).toBe(true);
+    expect(refused(() => lineChallenge(list, { ...card, endpoint: null } as never))).toBe(true);
+    expect(refused(() => lineChallenge("not a list", card))).toBe(true);
+    expect(refused(() => lineChallenge(list, { ...card, key: "not a key" }))).toBe(true);
+    expect(refused(() => lineChallenge(list, { ...card, endpoint: "AB".repeat(32) }))).toBe(true);
+  });
+
+  test("is what a line signs, as the challenge of its redeem message, and what a device then checks", async () => {
+    const invite = await newInvite(SERVICE, "TEST-ONLY-account", list);
+    const line = await readJoinLine(invite.line, READER);
+    const pc = { server_id: "0123456789abcdef0123456789abcdef", public_key: card.endpoint };
+    const proof = await line.signRedeem({ ...pc, challenge_id: lineChallenge(list, card) });
+    expect(await verifyInviteRedeem({ account: "TEST-ONLY-account", ...pc, challenge_id: lineChallenge(list, card) }, proof, invite.key)).toBe(true);
+    // a proof made for another card of that PC, or for another list, does not hold for this one
+    expect(await verifyInviteRedeem({ account: "TEST-ONLY-account", ...pc, challenge_id: lineChallenge(list, { ...card, enc: card.key }) }, proof, invite.key)).toBe(false);
+    expect(await verifyInviteRedeem({ account: "TEST-ONLY-account", ...pc, challenge_id: lineChallenge("2f".repeat(32), card) }, proof, invite.key)).toBe(false);
   });
 });
