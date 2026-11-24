@@ -15,8 +15,8 @@ import { listClock, type ListNames, type ListRole, type ListState } from "../../
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import { entryFromText, entryHash, isListHash, ListEntryError, readBody, type SignerPower } from "../../../shared/account-list-entry.ts";
 import {
-  followStep, gossipHead, heardHead, pcOfKey, pinList, READ_PAGES_MAX, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
-  type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type ListHead, type ListPage as PeerPage, type SaveRefusal, type Standing,
+  compareHeads, followStep, gossipHead, heardHead, pcOfKey, pinList, READ_PAGES_MAX, readSave, servePage, shownDevices, shownPcs, standing, startRead, takePage, writeSave,
+  type FollowerCopy, type FollowerSelf, type FollowRead, type FollowVerdict, type HeadsVerdict, type ListHead, type ListPage as PeerPage, type SaveRefusal, type Standing,
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
@@ -360,6 +360,20 @@ interface Held {
   readonly unread?: true;
   /** The round that gave this took pages of the log and left some: the next one goes on at once. */
   readonly behind?: true;
+  /**
+   * The copy holds a page a PC handed over that could not be saved: it is acted on from memory, and the next round
+   * writes it over the text it was taken on (`saved`) before anything else.
+   */
+  readonly unsaved?: true;
+}
+
+/** What came of a page a PC handed this device (AccountList.takeFromPeer). */
+export interface PeerTake {
+  readonly verdict: FollowVerdict;
+  /** The request to make of that PC at once, or null. */
+  readonly read: FollowRead | null;
+  /** False: what the page proved is acted on in this page's memory, and was not saved; it is not said to be taken. */
+  readonly saved: boolean;
 }
 
 /**
@@ -525,6 +539,18 @@ export interface AccountList {
   gossip(): ListHead | null;
   /** This device's entries after a place, for another member to take: at most `limit`, up to the last one a member signed; null while it follows none. */
   pageAfter(after: number | null, limit: number): PeerPage | null;
+  /** How this device's copy stands against where a PC says it stands (compareHeads), and what to ask that PC for; null while it follows none. */
+  compare(theirs: ListHead): { readonly verdict: HeadsVerdict; readonly read: FollowRead | null } | null;
+  /**
+   * A page of the list a PC handed this device over a session (listGossip.ts), taken as a page of the account service
+   * is, since entries prove themselves, and never as a full read: so a removal the service withholds from this device
+   * reaches it from a PC that holds it, and another history a member signed raises the alarm here too. `read` is the
+   * request the page answers, or null for one nobody asked for, taken from the place it names. Saved under the
+   * account's lock, as a round saves. Where the save fails, what the page proved stands in this page's memory all the
+   * same (a removal is acted on at once), the next round writes it first, and the page is not said to be taken. Null:
+   * this device follows no list of the account signed in now, or another list than the read's.
+   */
+  takeFromPeer(page: PeerPage, read: FollowRead | null): Promise<PeerTake | null>;
 }
 
 export function accountList(options: AccountListOptions): AccountList {
@@ -611,8 +637,9 @@ export function accountList(options: AccountListOptions): AccountList {
    * The time of its last full read and the floor of its clock move with every round that reached the account
    * service. They go into a small record of their own, so that such a round does not write a long copy again.
    */
-  const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null }, copy: FollowerCopy): Promise<string> => {
-    if (before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) {
+  const save = async (before: { readonly copy: FollowerCopy | null; readonly saved: string | null; readonly unsaved?: true }, copy: FollowerCopy): Promise<string> => {
+    // a copy held in memory that its text does not hold yet (Held.unsaved) is written whatever it differs in
+    if (before.unsaved !== true && before.copy !== null && before.saved !== null && sameHistory(before.copy, copy)) {
       if (before.copy.read_at !== copy.read_at || before.copy.seen_at !== copy.seen_at) {
         // never back: another page may have read later
         const kept = readTimes(await store.get("times", copy.account), copy.list);
@@ -1003,10 +1030,15 @@ export function accountList(options: AccountListOptions): AccountList {
       }
       const keys = await deviceListKeys(accountStore);
       ctx = { account, keys, bound };
-      const loaded = await load(account, keys, saved);
+      let loaded = await load(account, keys, saved);
       if (typeof loaded === "string") {
         held = null;
         return publish({ account, status: loaded === "version" ? { at: "newer_save" } : { at: "damaged", why: loaded }, reached: hint !== undefined, devices: [], pcs: [] });
+      }
+      // what a PC handed over and this page could not save is written first, over the text it was taken on
+      if (loaded.unsaved === true && loaded.copy !== null) {
+        const { unsaved: _written, ...rest } = loaded;
+        loaded = { ...rest, saved: await save(loaded, loaded.copy) };
       }
       let next = loaded;
       // for a device that follows a list, an account off the service's switch is the service being away, never "the list is gone"
@@ -1037,6 +1069,50 @@ export function accountList(options: AccountListOptions): AccountList {
       held = next;
       return publish(view);
     }
+  };
+
+  /** AccountList.takeFromPeer, under the account's lock: one page at a time among this page's rounds and the other pages'. */
+  const takeFromPeer = async (page: PeerPage, asked: FollowRead | null): Promise<PeerTake | null> => {
+    const session = await service.session();
+    if (session === undefined) return null;
+    const { account } = session;
+    return lock(account, async () => {
+      for (let tries = 1; tries <= SAVE_TRIES; tries += 1) {
+        const saved = await store.get("copy", account);
+        if (saved === undefined) return null;
+        const keys = await deviceListKeys(accountStore);
+        let loaded: Held | SaveRefusal;
+        try { loaded = await load(account, keys, saved); } catch (error) {
+          if (error instanceof StaleCopyError) continue;
+          throw error;
+        }
+        if (typeof loaded === "string" || loaded.copy === null || loaded.copy.state === null) return null;
+        const copy = loaded.copy;
+        if (asked !== null && asked.list !== copy.list) return null;
+        // the request this page answers; a page nobody asked for is taken from the place it names
+        const after = isRecord(page) && (page.after === null || (typeof page.after === "number" && Number.isSafeInteger(page.after) && page.after >= 0)) ? page.after : undefined;
+        const read: FollowRead = asked !== null && (after === undefined || after === asked.after) ? asked : { ...startRead(copy, "peer"), ...(after === undefined ? {} : { after }) };
+        const took = await takePage(copy, read, page, seconds());
+        let next: Held;
+        let wrote = true;
+        try {
+          next = { ...loaded, copy: took.copy, saved: await save(loaded, took.copy) };
+          if (next.unsaved === true) { const { unsaved: _written, ...rest } = next; next = rest; }
+        } catch (error) {
+          if (error instanceof StaleCopyError) continue;
+          // verified and not saved: acted on from memory all the same, written by the next round, and not said to be taken
+          console.warn("Ovis: entries of the account's list a PC handed over could not be saved", error instanceof Error ? error.name : error);
+          next = { ...loaded, copy: took.copy, unsaved: true };
+          wrote = false;
+        }
+        held = next;
+        const view = await viewOf(next, keys, null);
+        // a peer's page is no word of the account service's: whether that was reached stays as the last round found
+        publish({ ...view, reached: shown.account === account && shown.reached });
+        return { verdict: took.verdict, read: took.read, saved: wrote };
+      }
+      return null;
+    });
   };
 
   const sync = (options: { readonly read?: boolean } = {}): Promise<AccountListView> => {
@@ -1192,6 +1268,11 @@ export function accountList(options: AccountListOptions): AccountList {
       const copy = held?.copy ?? null;
       return copy === null || copy.state === null ? null : servePage(copy, { list: copy.list, after }, limit);
     },
+    compare(theirs) {
+      const copy = held?.copy ?? null;
+      return copy === null || copy.state === null ? null : compareHeads(copy, theirs);
+    },
+    takeFromPeer,
     async forget(account) {
       // the round under way for the account ends here, rather than be waited for: it holds the account's lock
       if (roundStop?.account === account) roundStop.stop.abort(new DOMException("The account's list is forgotten", "AbortError"));

@@ -33,6 +33,8 @@ import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
+import { keepListGossip } from "../account/listGossip.ts";
+import { pageAccountList } from "../account/pageList.ts";
 import { listRemovedLink, refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
 import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
@@ -252,6 +254,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   document.addEventListener("click", pressedJoin, true);
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
+  /** Ends the exchanges of the account's list with the PC the app has open (listGossip.ts). */
+  let stopGossip: (() => void) | null = null;
   let last: Attempt | null = null, opening: AbortController | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let shown: RelayShellState | null = null, sheetJoin: SheetJoin | null = null, codeOffer: RelayOffer | null = null;
@@ -1044,6 +1048,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     keepDeviceOnlyPc(null);
     keepConfirmedSignIn(null);
     setTransport(opened);
+    // the PC and this device say where the account's list stands, for as long as this PC is the one open: only where
+    // the PC follows the list and this device does too, otherwise nothing is asked
+    stopGossip?.();
+    stopGossip = keepListGossip(opened, { list: pageAccountList, live: () => transport === opened });
     shell?.unmount(); shell = null;
     app = mount.renderApp(); account.armRefresh();
     registerPending(attempt.offer.server_id);
