@@ -127,7 +127,11 @@ describe("the loopback Pages server", () => {
 
   it("follows Pages' html handling for the shell's own files", async () => {
     const get = shellSite();
-    const redirected: [string, string][] = [["/index.html", "/"], ["/render.html", "/render"], ["/render.html?x=1", "/render?x=1"]];
+    // a path that decodes to leading slashes never leads off the site: Pages strips them from its own redirects
+    const redirected: [string, string][] = [
+      ["/index.html", "/"], ["/render.html", "/render"], ["/render.html?x=1", "/render?x=1"],
+      ["/%2Frender.html", "/render"], ["/%2Frender.html?x=1", "/render?x=1"], ["/%2F%2Frender.html", "/render"],
+    ];
     for (const [path, location] of redirected) {
       const answer = await get(path);
       expect([answer.status, answer.headers.get("location")]).toEqual([308, location]);
