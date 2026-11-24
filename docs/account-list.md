@@ -849,19 +849,19 @@ and the `list*.ts` files beside it; it takes every entry through
 [`shared/account-list-follower.ts`](../shared/account-list-follower.ts) and decides nothing of its
 own about who is in.
 
-Two things bound what this does today:
+Three things bound what this does today:
 
 - **Only for an account the account service keeps lists for** (the service's switch). For any other
   account the app asks one question when it reads a sign-in, `GET /v2/lists/mine`, and is answered
   as for an unknown route (`404`). It keeps the time of that answer and asks again a day later at
   the earliest, however often the app starts and whichever page asks. It makes no key and sends
   nothing else.
-- **Nothing decides by the copy.** My PCs, what opens by itself and the notices still go by the
-  account service's directory, as [Linking devices with an account](account.md) says. The device
-  only records where its list would have said otherwise
-  ([Compared with the directory](#compared-with-the-directory)).
-
-A PC's own page follows no list.
+- **Only a device that is in the list goes by it.** For such a device the account's PCs are the
+  ones the list holds, and it lets a device in and puts a PC out by entries it signs
+  ([PCs of a list account](#pcs-of-a-list-account), [Letting a device in](#letting-a-device-in)).
+  A device of an account with no list, and one that waits to be let into a list, go by the account
+  service's directory, as [Linking devices with an account](account.md) says.
+- **A PC's own page follows no list.** It lists the account's PCs by the directory, as before.
 
 ### Its keys
 
@@ -890,6 +890,7 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
 | `shadow` | what the copy and the directory differed in |
 | `asked` | when the account service last said that it keeps no list for the account |
 | `offer` | the place in a list that a member who let this device in handed it, until the log shows it |
+| `seen` | for each PC that is new to this device, the place of its entry and when the device first held it |
 
 - **No key is in it.** An epoch key is never stored: each page opens the wraps again with the
   device's encryption key and holds the keys in memory. So what is kept is text and numbers, and a
@@ -1070,6 +1071,87 @@ again**.
 **An account with no list, and a device that is in none**, do exactly what they did: the `add`
 and the introduction of [Introductions](account.md#introductions), and nothing of the above.
 
+### PCs of a list account
+
+For a device that follows its account's list and is in it, the account's PCs are the PCs that list
+holds. The code is [`src/lib/account/listPcs.ts`](../src/lib/account/listPcs.ts),
+[`listRemove.ts`](../src/lib/account/listRemove.ts) and
+[`listWrite.ts`](../src/lib/account/listWrite.ts).
+
+**What is listed.** My PCs, the PCs in Settings and the sidebar's account PCs show a row for every
+PC the list holds, under the name the list seals; a name this device cannot open is shown as the
+start of the PC's id, never as the account service's word for it. The directory
+(`GET /v1/pcs`) is read as before and says only how to reach a PC:
+
+| from the directory | counts when |
+|---|---|
+| the relay of a PC | the row's relay key is the very key the list holds |
+| when the PC was last there (`last_seen_at`) | the same; it only says whether the row reads as offline |
+
+A PC that the directory alone names gets no row, and nothing opens it through the account. A PC
+the list holds with no route in the directory keeps its row and cannot be opened from it. What the
+directory says of a PC being new, or added before this device joined, is not read. A pairing this
+device made with a PC stays a row of its own, whatever either says.
+
+The list is read before the account's PCs are first drawn on a device that keeps a copy of one, so
+no row is drawn by the account service's word alone, not even for a moment.
+
+**What opens by itself.** A PC the list holds, that the directory gives a route for, and that is
+not new to this device. That the account service ever saw the PC is not asked: the entry is what
+makes it the account's. The sign-in is the one of
+[What a pinned PC asks of the app](#what-a-pinned-pc-asks-of-the-app).
+
+**New to this device.** A PC is new to a device for a day from when the device first held the
+entry that brought the PC in, by the device's own clock, unless the device signed that entry
+itself or the PC was in before the device was. So a phone that was off for a week is told of a PC
+added meanwhile when it comes back, and has its day to answer. While a PC is new it opens only by
+hand, its row says **New PC**, and the device shows the notice it shows today, **New PC added to
+your account: {name}**, with **Added from {device}.** where it can read the name of the device
+that signed the entry, and **I didn't add this**.
+
+**I didn't add this**, and **Remove** in Settings, put the PC out by entries this device signs,
+in one request: what `pcRemoval` of the kinds gives (the `remove` that fits how the PC came in,
+and that of the invite it joined by while that invite still lets a PC in), with them a `remove`
+for every key whose time is over, then the `epoch` entry, and the new epoch's key wrapped to
+everybody who stays. The account service removes nothing for it and asks for no new sign-in. The
+PC is out once the device's own copy shows the last entry at its place, as for an Allow, with the
+same tries. A device that holds no key of the current epoch signs the removal alone. A PC that is
+out never comes back with its key: it joins again only as a new PC.
+
+**A pairing that was only opened lists nothing.** Opening a saved pairing used to list the PC in
+the directory and enroll it where an enrollment was planned. On an account with a list, the
+account service refuses that listing, and a PC comes into the account by an entry. So for a saved
+pairing on such an account the app sends no listing and starts no enrollment, sends no link to a
+PC that is in no account, and says nothing at the row: the pairing opens the PC as before. This
+holds for a device that follows the list and for one that waits to be let in. A new pairing made
+from **Add** is not changed by this.
+
+**A PC that lets devices in by the list alone** answers a link `409 list_followed` and writes
+nothing. A pairing made at such a PC is whole without the link: the app keeps it as the device's
+own, calls it neither a failed pairing nor a failed enrollment, and a member's Allow is what
+brings the device into the account there.
+
+### What a pinned PC asks of the app
+
+A PC that follows a list a person named (a pinned PC) lets a device of the account in by the key
+the list holds for it, the account key, and no longer by the key a sign-in registered.
+
+- **Every sign-in that is no pairing offers `account-list-1`**, beside `account-opens-all-1`. It is
+  required only when the device comes with the key the list holds.
+- **A PC the device's list holds** is opened with the account key, under the device id that key
+  gives for that PC, with `account-list-1` required. A PC that does not select it follows no
+  list: the device comes once more the way from before, with the key its sign-in registered.
+- **`account_list_required`** is the PC's answer to a device that offered the feature and came
+  with another key. The device reads its list at once, and comes again with the account key if
+  the list now holds it and the PC. A device the list does not hold is led to the join: it asks
+  to be let in, and nothing says it was removed.
+- **A PC that pins under an open session** ends that session as a row that changed
+  (`auth_changed`). The transport comes back by itself, is answered `account_list_required`, and
+  the app opens the PC again with the account key. Nothing typed is sent by this: what was typed
+  and not sent waits as after any disconnect.
+- **A list key the PC refuses** (`auth_failed`) means the device is not in that PC's list: the
+  join again, and no word of a removal.
+
 ### Which list it follows
 
 Never the one the account service names, on that word alone. A device follows a list only when
@@ -1160,7 +1242,10 @@ once it goes by the list:
   relay key, the id that key gives, how it came in and whether a person at it can allow a device;
   each with its name where it opens. Nobody is listed unless the device follows the list and is in
   it.
-- `holdsPc(relay key)` and `pcOfKey(signing key)`: whether that PC is in the list.
+  A PC also has the place of its entry, the key that signed it, and from when it is new to this
+  device.
+- `holdsPc(relay key)` and `pcOfKey(signing key)`: whether that PC is in the list. `follows(account)`:
+  whether the device keeps a copy of a list of that account, from its own store alone.
 - `adopt(place)`: takes the place a member handed this device. `writer()`: what an entry is signed
   on (the device's state, its keys, the epoch keys it holds), or none for a device that may not
   sign. `gossip()` and `pageAfter(place, limit)`: where the device stands, and its entries after a
@@ -1169,10 +1254,11 @@ once it goes by the list:
 
 ### Compared with the directory
 
-After each read of the directory and each change of the list, the device holds the two against
-each other: the PCs both name, those only the directory lists (with whether the PC itself has
-pulled the account's mailbox, and whether the app would open it by itself today), and those only
-the list holds. It keeps how many comparisons it made, how many differed and the last one, on the
+After each read of the directory and each change of the list, a device that is in the list holds
+the two against each other, for the record: what it lists and opens is the list's
+([PCs of a list account](#pcs-of-a-list-account)). It counts the PCs both name, those only the
+directory lists (with whether the PC itself has pulled the account's mailbox), and those only the
+list holds. It keeps how many comparisons it made, how many differed and the last one, on the
 device alone, and writes one line to the console when the difference changes, with counts and no
 name, id or key.
 

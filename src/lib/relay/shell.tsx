@@ -2,7 +2,7 @@
 import { createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { encodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
-import { AccountOpenUnsupportedError, RelayPcOfflineError } from "../../../shared/relay-channel.ts";
+import { AccountListUnsupportedError, AccountOpenUnsupportedError, RelayPcOfflineError } from "../../../shared/relay-channel.ts";
 import { MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
@@ -666,10 +666,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * for, or for a PC whose join card a launch put up (only a press on its link ends that card).
    */
   const accountOpenOf = (pc: MyPc): Attempt | null => {
-    const openKey = account.openKey;
-    if (!pc.join || pc.accountOpen !== true || openKey === null || launchJoinFor(pc.server_id)) return null;
+    if (!pc.join || launchJoinFor(pc.server_id)) return null;
     const fresh = newPcs([pc], Date.now()).length > 0;
-    return { offer: { v: 1, server_id: pc.server_id, ...pc.join, name: pc.name }, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) };
+    const offer = { v: 1 as const, server_id: pc.server_id, ...pc.join, name: pc.name };
+    // A PC the account's signed list holds is opened with the key that list holds for this device. A PC that follows
+    // no list refuses that (AccountListUnsupportedError), and the way from before is tried (failed).
+    const listKey = account.listHolds(pc.server_id) ? account.listKey : null;
+    if (listKey !== null) return { offer, code: false, paired: true, listOpen: listKey, ...(fresh ? { freshPc: true as const } : {}) };
+    const openKey = account.openKey;
+    if (pc.accountOpen !== true || openKey === null) return null;
+    return { offer, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) };
   };
   /**
    * A press on the join sheet of a PC inside its 24 hours in the account, which nothing opens without that press: the
@@ -684,11 +690,32 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const failed = async (error: unknown, attempt: Attempt): Promise<void> => {
     if (last !== attempt) return;
     comparison = null;
-    const refusal = attempt.accountOpen === undefined ? null : openRefusalOf(error);
+    // The PC follows no list, and this device came with its list key: the way from before, once. And the other way
+    // round: the PC lets its account's devices in by the list (`account_list_required`, or its session ended as a
+    // row that changed, at the moment it pinned), so the device reads its list and comes with its list key, once.
+    if (attempt.listOpen !== undefined && error instanceof AccountListUnsupportedError && !attempt.retriedListOpen) {
+      const openKey = account.openKey;
+      const { listOpen: _key, ...rest } = attempt;
+      if (openKey !== null) { await connect({ ...rest, accountOpen: openKey, retriedListOpen: true }); return; }
+    }
+    if (attempt.listOpen === undefined && error instanceof MuxProtocolError && error.code === "account_list_required" && !attempt.retriedListOpen) {
+      await account.readList();
+      if (last !== attempt) return;
+      const listKey = account.listHolds(attempt.offer.server_id) ? account.listKey : null;
+      const { accountOpen: _key, ...rest } = attempt;
+      if (listKey !== null) { await connect({ ...rest, listOpen: listKey, retriedListOpen: true }); return; }
+    }
+    const refusal = attempt.accountOpen === undefined && attempt.listOpen === undefined ? null : openRefusalOf(error);
     // a PC answers a key it does not list with a bare auth_failed (server/relay/session.ts): after a press on a new PC's
     // sheet, that is the account's way refused too, and the join follows; this device was never in, so nothing is removed
     const unlisted = attempt.pressed === true && error instanceof MuxProtocolError && error.code === "auth_failed";
-    const step = attempt.accountOpen !== undefined && (error instanceof AccountOpenUnsupportedError || unlisted) ? { kind: "pair" as const }
+    // a list key the PC does not hold, or holds no more, is `auth_failed` too: the device is not in that PC's list, and
+    // the way in is to be let in again (the join)
+    const notInList = attempt.listOpen !== undefined && (error instanceof AccountListUnsupportedError || (error instanceof MuxProtocolError && (error.code === "auth_failed" || error.code === "account_list_required")));
+    // and a device that came with another key, and that the read above found no place for in the list, is not in it
+    // either: the PC took nothing away from it, and the way in is the same
+    const notLetIn = attempt.listOpen === undefined && error instanceof MuxProtocolError && error.code === "account_list_required";
+    const step = notInList || notLetIn || (attempt.accountOpen !== undefined && (error instanceof AccountOpenUnsupportedError || unlisted)) ? { kind: "pair" as const }
       : refusal === null ? null : nextOpenStep(refusal, attempt.retriedAccountOpen === true);
     if (step !== null) {
       switch (step.kind) {
@@ -796,7 +823,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     let opened: RelayTransport;
     try {
       // a saved pairing signs in with the row its record names: that row is the one this attempt may forget
-      if (attempt.paired && attempt.accountOpen === undefined && attempt.row === undefined) {
+      if (attempt.paired && attempt.accountOpen === undefined && attempt.listOpen === undefined && attempt.row === undefined) {
         attempt.row = (await store.get(attempt.offer.server_id))?.device_id ?? null;
         if (controller.signal.aborted) return;
       }
@@ -806,7 +833,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         controller.signal.throwIfAborted();
         if (session?.sign_in_id !== accountOpen.sign_in_id || session.account !== accountOpen.account) throw new SignedOutError();
       }
-      const prepared = accountOpen === undefined ? await account.prepare(attempt.offer, controller.signal, consentOf(attempt)) : {};
+      const listOpen = attempt.listOpen;
+      const prepared = accountOpen === undefined && listOpen === undefined ? await account.prepare(attempt.offer, controller.signal, consentOf(attempt)) : {};
       attempt.accountEnrollment = prepared.accountKey !== undefined;
       if (!attempt.paired) {
         const marked = attempt.offer.code !== undefined && attempt.offer.admission === 1;
@@ -820,6 +848,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         store, label, signal: controller.signal,
         ...prepared,
         ...(accountOpen === undefined ? {} : { store: withAccountDevice(store, accountDevice(attempt.offer, accountOpen.key)), accountOpensAll: true }),
+        ...(listOpen === undefined ? {} : { store: withAccountDevice(store, accountDevice(attempt.offer, listOpen)), accountListKey: true }),
         ...(directSocket ? { directSocket, ...(directTailnet ? { directTailnet } : {}) } : {}),
         ...(!attempt.paired && attempt.offer.code !== undefined ? {
           keyProof: (keyFingerprint: string) => {
@@ -964,7 +993,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   /** Forgets the attempt's own row (Attempt.row), or the saved record when the attempt never knew one. */
   const forgetRow = async (attempt: Attempt): Promise<void> => {
-    if (attempt.accountOpen !== undefined || attempt.row === null) return;
+    if (attempt.accountOpen !== undefined || attempt.listOpen !== undefined || attempt.row === null) return;
     if (attempt.row === undefined) await store.remove(attempt.offer.server_id);
     else await store.removeRow(attempt.offer.server_id, attempt.row);
   };
@@ -996,7 +1025,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const enroll = (opened: RelayTransport, attempt: Attempt, settled?: () => void, signal?: AbortSignal): void => {
     // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
-    if (attempt.accountless || attempt.accountOpen !== undefined) return;
+    // a sign-in through the account, by the registered key or by the list's: no pairing of this device's to enroll
+    if (attempt.accountless || attempt.accountOpen !== undefined || attempt.listOpen !== undefined) return;
     enrolling.add(opened);
     const done = account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}), ...(signal ? { signal } : {}) }).then((enrollment) => {
       // the new row's link passed (or none was needed): the record it replaced is no longer kept

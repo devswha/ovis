@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { AccountList, AccountListView } from "../account/accountList.ts";
 import type { DirectoryPc } from "../account/service.ts";
+import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { memoryAccountStore, newKey, type AccountSession, type AccountStore } from "../account/store.ts";
 import { createAccountController } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
@@ -35,6 +37,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
   const heard: (() => void)[] = [];
   const list: AccountList = {
     sync: async () => { calls.push("sync"); return OFF; },
+    follows: async () => false,
     view: () => OFF,
     subscribe: (listener) => { heard.push(() => listener(OFF)); return () => {}; },
     holdsPc: () => false,
@@ -66,7 +69,7 @@ describe("the hosted shell and the account's signed list", () => {
   afterEach(() => browser.dispose());
 
   const settle = async (): Promise<void> => { for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
-  const controller = (accountList?: AccountList | null) => createAccountController({
+  const controller = (accountList?: AccountList | null, changed: () => void = () => {}) => createAccountController({
     container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore, accountService: SERVICE,
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
@@ -75,7 +78,7 @@ describe("the hosted shell and the account's signed list", () => {
     },
     renderApp: () => ({ render() {}, unmount() {} }),
     ...(accountList === undefined ? {} : { accountList }),
-  }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
+  }, { active: () => true, changed: async () => { changed(); }, outdated: () => new Set() });
   const signIn = async (account: string, no: number | null = 1): Promise<void> => {
     const signedIn = session(account);
     await accountStore.set("session", signedIn);
@@ -134,6 +137,41 @@ describe("the hosted shell and the account's signed list", () => {
     expect(without.state).toEqual(drawn!);
     expect(without.directory).toEqual(withList.directory);
     expect(asked).toEqual(sent);
+  });
+
+  it("draws the PCs its list holds for a device that is in it, from the first draw on, and again when the list moves", async () => {
+    await signIn("acct-one");
+    const keys = [generateKeyPair().publicKey, generateKeyPair().publicKey, generateKeyPair().publicKey];
+    const [held, rogue, unreached] = keys.map((key) => ({ endpoint: Array.from(key, (byte) => byte.toString(16).padStart(2, "0")).join(""), server_id: deriveServerId(key) }));
+    const routed = (pc: { endpoint: string; server_id: string }): DirectoryPc => ({ ...row(pc.server_id), label: "The service's name", public_key: pc.endpoint, relay: "wss://relay.test", last_seen_at: new Date().toISOString() });
+    directory = [routed(held!), routed(rogue!)];
+    const listed = (pc: { endpoint: string; server_id: string }, label: string) => ({ ...pc, how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });
+    const { list, heard } = recordingList();
+    let view: AccountListView = { account: "acct-one", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [listed(held!, "Desk")] };
+    // the list is read from this device's own store and the account service: it answers after the directory does
+    let read = false;
+    list.view = () => read ? view : OFF;
+    list.sync = async () => { await settle(); read = true; return view; };
+    list.follows = async () => true;
+    const drawn: string[][] = [];
+    const account = controller(list, () => { const { state } = account; if (state?.kind === "signed-in" && state.pcs !== null) drawn.push(state.pcs.map((pc) => pc.server_id)); });
+    await account.refresh(true);
+    await settle();
+    // never a row for the PC that only the account service names
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn.every((rows) => rows.length === 1 && rows[0] === held!.server_id)).toBe(true);
+    expect(account.state).toMatchObject({ kind: "signed-in", pcs: [{ server_id: held!.server_id, name: "Desk", byList: true, accountOpen: true, join: { relay: "wss://relay.test" } }] });
+    // the list moved: a PC came in that the account service does not say how to reach
+    view = { ...view, pcs: [...view.pcs, listed(unreached!, "Laptop")] };
+    for (const tell of heard) tell();
+    await settle();
+    expect(account.state).toMatchObject({ pcs: [{ server_id: held!.server_id }, { server_id: unreached!.server_id, name: "Laptop", byList: true }] });
+    expect((account.state as { pcs: { join?: unknown }[] }).pcs[1]!.join).toBeUndefined();
+    // put out of the list, this device goes by the account service's directory again, as a device of an account with no list does
+    view = { ...view, status: { at: "following", list: "5c".repeat(32), standing: "out", head: 3, read_at: 1, trouble: null }, pcs: [] };
+    for (const tell of heard) tell();
+    await settle();
+    expect((account.state as { pcs: { server_id: string }[] }).pcs.map((pc) => pc.server_id).sort()).toEqual([held!.server_id, rogue!.server_id].sort());
   });
 
   it("asks the PC a member just let it in at for its place in the list, and takes the first one it is handed", async () => {

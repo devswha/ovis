@@ -256,6 +256,7 @@ const BASE: Record<string, string> = {
   "Delete": "删除",
   "Close": "关闭",
   "New PC added to your account: {name}": "你的账号添加了新电脑：{name}",
+  "Added from {device}.": "从 {device} 添加。",
   "If you did not add it, remove it.": "如果不是你添加的，请移除。",
   "I didn't add this": "不是我添加的",
   "The PC could not be removed. Try again.": "无法移除这台电脑。请重试。",

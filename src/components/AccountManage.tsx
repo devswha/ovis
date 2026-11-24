@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
+import { pagePcs } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
 import { AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -138,7 +139,8 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     if (inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
-  const read = useCallback(() => service.listPcs().then(setPcs, () => setPcs("failed")), [service]);
+  // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
+  const read = useCallback(() => service.listPcs().then((listed) => setPcs(pagePcs(account, listed)), () => setPcs("failed")), [service, account]);
   useEffect(() => {
     void read();
     const changed = () => { void read(); };

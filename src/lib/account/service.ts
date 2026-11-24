@@ -225,6 +225,13 @@ export interface DirectoryPc {
   readonly asking?: AccountAsker;
   /** Until when an unconfirmed PC may be let in, by the account service's clock; null when no window applies; absent from a service that does not say. */
   readonly asking_until?: string | null;
+  /**
+   * Never from the account service: the row is a PC that this device's verified list holds (listPcs.ts). Its name and
+   * its new window are the list's, and only its relay and `last_seen_at` are the directory's.
+   */
+  readonly by_list?: true;
+  /** On such a row, while it is new: the name of the device whose signature brought the PC in, where this device can read it. */
+  readonly added_by?: string;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;

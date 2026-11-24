@@ -1,6 +1,8 @@
 import { Monitor, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { pagePcs } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
@@ -67,7 +69,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         setListing((prior) => prior !== null && sameSignIn(prior.session, session) ? prior : null);
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]);
         const directory = indexedAccountService.forSignIn(session);
-        const [pcs, signedInAt] = await Promise.all([
+        const [listed, signedInAt] = await Promise.all([
           directory.listPcs(signal),
           joined !== undefined && joined.sign_in_id === session.sign_in_id ? joined.at : directory.signedInAt(signal),
         ]);
@@ -78,6 +80,8 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const current = await indexedAccountService.session();
         if (mine !== version) return;
         const now = Date.now();
+        // a device that is in its account's signed list tells of the PCs that list holds, new by the list's own word
+        const pcs = pagePcs(session.account, listed, now);
         // a service that does not say when this device signed in leaves every new PC told, as before
         const addedSinceJoin = (pc: NewPc): boolean => joinedAt === null || pc.admitted_at === null || !(Date.parse(pc.admitted_at) < joinedAt);
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now && addedSinceJoin(pc)));
@@ -101,7 +105,10 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
     window.addEventListener("focus", focusRead);
     window.addEventListener(ACCOUNT_SIGN_OUT_EVENT, signInChanged);
     window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, visibleRead);
+    // the list moved: a PC came in, or one went
+    const unfollow = pageAccountList()?.subscribe(visibleRead);
     return () => {
+      unfollow?.();
       version++;
       pending?.abort();
       clearInterval(timer);
@@ -191,6 +198,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
         <span>{t("New PC added to your account: {name}", { name: pc.label })}</span>
+        {pc.added_by !== undefined && <span className="settings-hint">{t("Added from {device}.", { device: pc.added_by })}</span>}
         <span className="settings-hint">{t("If you did not add it, remove it.")}</span>
         {failure}
         {removal.prompt}

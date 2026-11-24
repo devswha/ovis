@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Machine } from "../../../shared/machines.ts";
 import { AccountService } from "./service.ts";
 import { indexedAccountStore } from "./store.ts";
+import { pagePcs } from "./listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "./myPcs.ts";
 import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountPcEntry, type AccountPcState } from "../api.ts";
 import { useT } from "../i18n.ts";
@@ -32,7 +33,7 @@ export function signedInAccount(): AccountPcsSource {
       const session = await service.session();
       if (session === undefined) return null;
       bound = service.forSignIn(session);
-      const pcs = myPcs(await bound.listPcs(), [], { now: Date.now() }).flatMap((pc) => pc.join === undefined ? [] : [
+      const pcs = myPcs(pagePcs(session.account, await bound.listPcs()), [], { now: Date.now() }).flatMap((pc) => pc.join === undefined ? [] : [
         { server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }) },
       ]);
       return { account: session.account, pcs };

@@ -3,6 +3,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { accountList } from "../account/accountList.ts";
+import { pcsByList } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
 import { listNames } from "../account/listGenesis.ts";
@@ -13,7 +14,7 @@ import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
-import type { AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
+import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, listOffer, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
@@ -127,6 +128,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const vouched = new Map<string, string>();
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
   let directory: readonly DirectoryPc[] = [];
+  /**
+   * The rows My PCs is drawn from: for a device that is in its account's signed list, the PCs that list holds, with
+   * the directory only as the way to reach them (account/listPcs.ts); the directory as it is otherwise.
+   */
+  const drawnPcs = (rows: readonly DirectoryPc[], account: string, now: number): readonly DirectoryPc[] => (lists === null ? null : pcsByList(lists.view(), account, rows, now)) ?? rows;
   /** `at`: when the account last answered; the rows of a failed read are aged to then, never past what it confirmed */
   let listedFor: { readonly epoch: number; readonly projection: { readonly accountKey: string; readonly account: string; readonly registered: boolean }; readonly at: number; readonly openKey: SignInKey | null } | undefined;
   let shownFor: AccountSession | undefined;
@@ -186,8 +192,18 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           : live() && (registrationJustTried === undefined || !sameSignIn(registrationJustTried, session)) ? await registerSignIn(session) : null;
         const devices = await store.list();
         const key = await accountStore.key();
+        memberKey = key;
         if (!live()) return;
         // the answer was on its way while another tab stored another sign-in, or none: it is not drawn
+        // The list is read after this sign-in's key is registered, which says whether this device may start the
+        // account's list. A device that keeps a copy of its account's list draws its PCs by that list from the first
+        // draw on, never by the account service's word alone: for it, that read is waited for
+        if (followedFor === undefined || !sameSignIn(followedFor, session)) {
+          followedFor = session;
+          const round = followed?.poke();
+          if (lists !== null && await lists.follows(session.account).catch(() => false)) await round;
+          if (!live()) return;
+        }
         const still = await account.session();
         if (!live()) return;
         if (still === undefined) throw new SignedOutError();
@@ -196,10 +212,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const at = Date.now();
         const projection = { accountKey: key.public_spki, account: session.account, registered: openKey !== null };
         listedFor = { epoch, projection, at, openKey };
-        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: at, ...projection, outdated: view.outdated() }) };
+        accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(drawnPcs(listed, session.account, at), devices, { now: at, ...projection, outdated: view.outdated() }) };
         keepKnownPcs(session.account, accountView.pcs ?? []);
-        // after this sign-in's key is registered, which says whether this device may start the account's list
-        if (followedFor === undefined || !sameSignIn(followedFor, session)) { followedFor = session; followed?.poke(); }
         void compareList();
         sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
       } catch (error) {
@@ -213,7 +227,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           const devices = await store.list();
           if (!live()) return;
           const kept = current?.kind === "signed-in" && current.pcs !== null && listedFor?.epoch === epoch
-            ? myPcs(directory, devices, { now: listedFor.at, ...listedFor.projection, outdated: view.outdated() })
+            ? myPcs(drawnPcs(directory, listedFor.projection.account, listedFor.at), devices, { now: listedFor.at, ...listedFor.projection, outdated: view.outdated() })
             : current?.kind === "signed-in" && current.pcs !== null ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
           const known = readFor === undefined ? [] : knownPcs(readFor.account);
           // what is kept now replaces what an earlier failed read had, even none (another tab's read may have emptied it)
@@ -238,7 +252,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const opens = new Set(accountOpenablePcs(accountView.pcs, here).map((pc) => pc.server_id));
     await lists.shadow(here.account, directory, opens).catch((error: unknown) => console.warn("Ovis: the account's list was not compared", error instanceof Error ? error.name : error));
   };
-  lists?.subscribe(() => { void compareList(); });
+  // the list moved: the rows are drawn again from it and the directory last read, and the two are compared again
+  lists?.subscribe(() => {
+    if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) void redraw().then(compareList);
+    else void compareList();
+  });
   /** A sign-in to `account` ended on this device: as its PCs' names go (dropKnownPcs), so does what opens the names in its list. */
   const forgetNames = (account: string | undefined): void => {
     if (account === undefined) return;
@@ -248,7 +266,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const redraw = async (): Promise<void> => {
     const devices = await store.list();
     if (accountView?.kind === "signed-in" && accountView.pcs !== null && listedFor?.epoch === generation) {
-      accountView = { ...accountView, pcs: myPcs(directory, devices, { now: Date.now(), ...listedFor.projection, outdated: view.outdated() }) };
+      const now = Date.now();
+      accountView = { ...accountView, pcs: myPcs(drawnPcs(directory, listedFor.projection.account, now), devices, { now, ...listedFor.projection, outdated: view.outdated() }) };
     }
     await changed();
   };
@@ -633,6 +652,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
   };
+  /**
+   * Whether the account lets its devices and PCs in by a signed list, as far as this device knows: it follows one, or
+   * the account service named one it is not in. Before the first read of a sign-in has ended, that read is waited for.
+   */
+  const keepsList = async (account: string): Promise<boolean> => {
+    if (lists === null) return false;
+    let view = lists.view();
+    if (view.account !== account) view = await lists.sync().catch(() => lists.view());
+    return view.account === account && view.status.at !== "off" && view.status.at !== "none";
+  };
   const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled, signal }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
     signal?.throwIfAborted();
     const epoch = forgotten.get(serverId);
@@ -703,21 +732,29 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         return response;
       };
       const status = await pcAccountStatus(fetch);
-      // The account stopped listing this PC, and it waits for an add made at the PC itself. The pairing this device
-      // kept still opens it, as a device of its own: no link goes out and nothing is listed. A new pairing sends its
-      // link as ever, since only the PC knows whether a code it issued itself was used
-      if (!fresh && status.account === null && status.pcAddRequired === true) {
+      // An account with a signed list takes a PC in by an entry of that list, and its account service lists none for a
+      // pairing that was only opened: a saved pairing lists no PC there and starts no enrollment (docs/account-list.md,
+      // "PCs of a list account")
+      const byList = !fresh && await keepsList(session.account);
+      signal?.throwIfAborted();
+      /** The pairing stays this device's own, with nothing said of an account at its row. */
+      const keptOwn = async (): Promise<"local"> => {
         await enrollmentStore.update(serverId, (current) => {
           const { account: _left, account_enrollment: _steps, ...own } = assertPairing(current) as SavedDevice;
           return own;
         });
         return "local";
-      }
+      };
+      // The account stopped listing this PC, and it waits for an add made at the PC itself. The pairing this device
+      // kept still opens it, as a device of its own: no link goes out and nothing is listed. A new pairing sends its
+      // link as ever, since only the PC knows whether a code it issued itself was used. A PC in no account is not
+      // brought into a list account by a link either
+      if (!fresh && status.account === null && (status.pcAddRequired === true || byList)) return await keptOwn();
       const linking = needsLink(status, device, session.account);
       // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
       // gets this client's enrollment: the account's removals first, read from its other PCs
       signal?.throwIfAborted();
-      if (linking && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
+      if (linking && !byList && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
       if (linking) {
         // the admission named another key than this link does: the key it names now is posted first, once. A post that
         // fails sends no link, which the PC would refuse and spend a use on
@@ -757,17 +794,25 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
             return sendLink(sent + 1);
           }
         };
+        let listAlone = false;
         try { device = await sendLink(1); } catch (error) {
+          // the PC lets its account's devices in by the account's signed list alone, and wrote nothing: the pairing made
+          // at it is whole as it is, and the way into the account there is a member's Allow
+          if (error instanceof AccountPcError && error.code === "list_followed") listAlone = true;
           // a marked pairing's link the PC turned away, ending its new row: the code ended, the account did not confirm
           // the device, or, on a PC that was in no account, the link named another account than the one named for it.
           // Any other refusal, and every refusal of an unmarked pairing, goes as before: the device keeps what it paired
-          if (marked && error instanceof AccountPcError && firstLinkRefusal(error.code, status.account)) throw new AccountPcError(error.status, error.code, error.retryAfterMs, true);
-          throw error;
+          else if (marked && error instanceof AccountPcError && firstLinkRefusal(error.code, status.account)) throw new AccountPcError(error.status, error.code, error.retryAfterMs, true);
+          else throw error;
         } finally {
           await accountStore.update("linking", (current) => {
             const { [link]: _settled, ...rest } = current ?? {};
             return Object.keys(rest).length > 0 ? rest : undefined;
           });
+        }
+        if (listAlone) {
+          settled?.();
+          return await keptOwn();
         }
       }
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
@@ -791,7 +836,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // A send the connection dropped under goes again once it is back, while this enrollment still owns the pairing
       // Only the enrollment that brings a PC into the account lists it. Opening a PC that is in the account writes
       // nothing to the directory: the account may have removed it a moment ago, and this would put it back
-      if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
+      if (!byList && (await accountStore.get("enrolls"))?.[serverId] !== undefined) {
         const listing = { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay };
         const again = sendAgainWhenBack({ before: sending, signal });
         // listed first, so a removal this client signs from now on reaches it by mailbox too
@@ -871,7 +916,23 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const offeredNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.providers);
   /** The providers the service named, an empty list included; the build's only when it gave no answer to read. */
   const listedNow = (): Promise<readonly AccountProvider[]> => answered().then((said) => said.listed);
-  return { get state() { return accountView; }, get directory() { return directory; },
+  /**
+   * The key the account's signed list holds for this device, the account key, while the device follows the list of the
+   * account in view and is in it; null otherwise. Read with each directory read, which reads the key anyway.
+   */
+  let memberKey: AccountKey | null = null;
+  const listKey = (): AccountKey | null => {
+    const view = lists?.view();
+    return view !== undefined && view.status.at === "following" && view.status.standing === "in" && shownFor !== undefined && view.account === shownFor.account
+      && memberKey !== null && view.devices.some((device) => device.self && device.key === memberKey!.public_spki) ? memberKey : null;
+  };
+  /** Whether the account's signed list, as this device holds it, holds the PC with this id. */
+  const listHolds = (serverId: string): boolean => listKey() !== null && (lists?.view().pcs.some((pc) => pc.server_id === serverId) ?? false);
+  /** Reads the list now, as when a PC said that it lets devices in by it (shell.tsx). */
+  const readList = async (): Promise<void> => {
+    await lists?.sync().catch((error: unknown) => { if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error); });
+  };
+  return { get state() { return accountView; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, readList,
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }

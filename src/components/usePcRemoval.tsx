@@ -1,7 +1,10 @@
 import { useState, type ReactNode } from "react";
 
 import { shellAccountActions, type FreshSignIn } from "../lib/account/hostedSignIn.ts";
+import { pageListPc } from "../lib/account/listPcs.ts";
+import { removeListPc } from "../lib/account/listRemove.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { AccountServiceError, listingChanged, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
@@ -13,6 +16,14 @@ type Refusal = "reauth_required" | "own_sign_in_required";
 
 const refusalOf = (error: unknown): Refusal | null =>
   error instanceof AccountServiceError && (error.code === "reauth_required" || error.code === "own_sign_in_required") ? error.code : null;
+
+/** The list did not take the removal of a PC (listWrite.ts, WriteRefusal): the PC is in the account as before. */
+export class ListPcRemovalError extends Error {
+  constructor(readonly why: string) {
+    super(`The PC was not removed from the account's list (${why})`);
+    this.name = "ListPcRemovalError";
+  }
+}
 
 type Asked = {
   readonly session: AccountSession;
@@ -31,6 +42,9 @@ type Asked = {
  * PC is removed by a press after the return. A removal naming the listing its card showed (`listingId`, account#67) that
  * the service refuses as `listing_changed` removed nothing and is no failure: it resolves false and the account's PCs are
  * read again, so the card shows what is there now. Any other failure throws.
+ *
+ * A PC that this device's list of the account holds leaves by an entry of that list, which this device signs
+ * (listRemove.ts): the account service removes nothing for it, and asks for no sign-in.
  */
 export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed: (serverId: string) => void | Promise<void>): {
   readonly remove: (session: AccountSession, serverId: string, listingId?: string) => Promise<boolean>;
@@ -48,6 +62,14 @@ export function usePcRemoval(service: Pick<AccountService, "forSignIn">, removed
 
   const remove = async (session: AccountSession, serverId: string, listingId?: string): Promise<boolean> => {
     setAsked(null);
+    const list = pageAccountList();
+    const endpoint = list === null ? null : pageListPc(session.account, serverId);
+    if (list !== null && endpoint !== null) {
+      const outcome = await removeListPc(list, endpoint);
+      if (!outcome.removed) throw new ListPcRemovalError(outcome.why);
+      await removed(serverId);
+      return true;
+    }
     try { await service.forSignIn(session).deletePc(serverId, listingId); }
     catch (error) {
       if (listingChanged(error)) { window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT)); return false; }
