@@ -451,7 +451,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const ownLink = relayPeer?.provisional === true && request.method === "POST" && (pathname === "/api/account/link" || pathname === "/api/account/list/named");
   // a member tells this PC where its account's signed list stands and hands it entries it lacks: entries prove
   // themselves, so a device that only watches may carry them too (server/account/routes.ts)
-  const listGossip = request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page");
+  // only on a PC that follows a list a person named: one that follows none answers every caller as before
+  const listGossip = request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page") && (ctx.services.accountList?.peerHead() ?? null) !== null;
   if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink && !listGossip)) {
     setRequestRoute("watch-refusal");
     // A device the account's list holds only to watch, asking for the joins that wait at this pinned PC or deciding one:

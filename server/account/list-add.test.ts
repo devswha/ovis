@@ -29,11 +29,16 @@ async function adding(options: { list?: string | null } = {}) {
   const binding = cardBinding({ key: keys.key, enc: keys.enc, list: LIST, endpoint: ENDPOINT, invite: null });
   const world = { now: 1_800_000_000_000, serverId: SERVER, open: null as Open | null, calls: [] as string[], joins: 0, by: undefined as string | null | undefined, joined: { waiting: "waiting" } as JoinOutcome, told: 0, phone: phone.key,
     /** What happens while the list is read, with what the join was handed. */
-    during: null as ((given: Parameters<ListAddDeps["join"]>[0]) => void) | null };
+    during: null as ((given: Parameters<ListAddDeps["join"]>[0]) => void) | null,
+    /** What happens while a call to the account service is out. */
+    calling: null as ((path: string, body: Record<string, unknown>) => void) | null,
+    /** The account and list this PC is pinned to, as its follower says. */
+    pinnedTo: null as { account: string; list: string } | null };
   const add = new ListAdd({
     own: async () => ({ serverId: world.serverId, endpoint: ENDPOINT, keys }),
     listNamed: async () => options.list === undefined ? LIST : options.list,
     call: async (path, body) => {
+      world.calling?.(path, body);
       world.calls.push(body.nonce === undefined ? path : `${path} nonce`);
       if (path === "/v2/pc/list/keys") return {};
       const open = world.open;
@@ -44,6 +49,7 @@ async function adding(options: { list?: string | null } = {}) {
     },
     join: async (given) => { world.joins++; world.by = given.by; world.during?.(given); return world.joined; },
     joined: async () => { world.told++; },
+    joinedTo: (account, list) => world.pinnedTo !== null && world.pinnedTo.account === account && world.pinnedTo.list === list,
     now: () => world.now,
     mono: () => world.now,
   });
@@ -235,6 +241,38 @@ test("the ten minutes and a No are asked at the binding itself: a read of the li
   expect(await cancelled).toMatchObject({ state: "ended", why: "cancelled" });
   expect(told).toEqual([false]);
   expect(no.world.told).toBe(0);
+});
+
+test("an add whose PC is in the account by that list when its ten minutes end says so, not that it timed out", async () => {
+  const { add, world, number } = await adding();
+  await add.start(ACCOUNT);
+  const digits = await number();
+  // the PC is pinned, and its first copy has not reached the disk yet
+  world.joined = { waiting: "in" };
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
+  world.pinnedTo = { account: ACCOUNT, list: LIST };
+  world.now += ADD_WINDOW_MS;
+  expect(await add.state()).toMatchObject({ state: "added", account: ACCOUNT, list: LIST });
+  expect(world.told).toBe(1);
+  // and one that is not in by then timed out, as before
+  const late = await adding();
+  await late.add.start(ACCOUNT);
+  late.world.joined = { waiting: "in" };
+  await late.add.confirm(await late.number());
+  late.world.now += ADD_WINDOW_MS;
+  expect(await late.add.state()).toMatchObject({ state: "ended", why: "timeout" });
+});
+
+test("a poll that was out at the account service when the person said No answers no commitment", async () => {
+  const { add, world, commits, next } = await adding();
+  await add.start(ACCOUNT);
+  commits();
+  let cancelled: Promise<unknown> | null = null;
+  world.calling = (path, body) => { if (path === "/v2/pc/list/attempt" && body.nonce === undefined && cancelled === null) cancelled = add.cancel(); };
+  expect(await next()).toMatchObject({ state: "ended", why: "cancelled" });
+  expect(await cancelled).toMatchObject({ state: "ended", why: "cancelled" });
+  expect(world.calls.filter((call) => call.endsWith("nonce"))).toEqual([]);
+  expect(world.open?.nonce).toBeNull();
 });
 
 test("a relay identity reset meanwhile ends the add: it was the old PC's", async () => {
