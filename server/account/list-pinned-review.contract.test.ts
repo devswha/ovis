@@ -463,6 +463,15 @@ describe("R10 (B): a listing the service replaces takes a pinned PC out of nothi
     expect(pc.services.devices.account()).toBe(ACCOUNT);
     expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in" });
     expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+    // from here the PC's reads of the snapshot may add nobody; one that names a list device as removed puts none out
+    const link = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await link.auth(pc.idOf(pc.laptop))).toMatchObject({ role: "drive" });
+    pc.service.removeDevice(ACCOUNT, pc.laptop.key);
+    await pc.pull();
+    await pc.services.accountMailbox.readSnapshot();
+    expect(pc.rowKeys()).toContain(pc.laptop.key);
+    expect(pc.services.devices.sessionRow(pc.idOf(pc.laptop).id)?.role).toBe("drive");
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
   });
 });
 

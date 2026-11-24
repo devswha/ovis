@@ -4,7 +4,7 @@
  * shows two histories can and cannot bring about, whatever way it goes about it.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -16,7 +16,8 @@ import { readSave, writeSave } from "../../shared/account-list-follower.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
 import { bounded, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
-import { STALE_READ_MS } from "./account-devices.ts";
+import { ACCOUNT_DEVICES_FILE, STALE_READ_MS } from "./account-devices.ts";
+import { privateStateFs } from "../private-state.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ask } from "./pairing.test-helpers.ts";
 import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
@@ -548,6 +549,27 @@ describe("a removal the PC has seen is final", () => {
     expect(await pc.signsIn({ keys: pc.member.keys, publicKey: pc.member.publicKey, id: pc.member.id })).toBeNull();
     expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
     expect(pc.list.status().devices).toBe(1);
+  });
+
+  test("a device whose time passed is refused also when the rows could not be written then", async () => {
+    const pc = await pinnedPc();
+    const borrowed = await listMember();
+    await pc.account.addDevice(borrowed, { power: "bound", until: pc.time.seconds() + 600 });
+    await pc.pull();
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    expect(await pc.signsIn(pc.idOf(borrowed))).toBe("drive");
+    // the disk takes no write of the account's rows when the time comes
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (String(to).endsWith(ACCOUNT_DEVICES_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+      renameSync(String(from), String(to));
+    });
+    try {
+      pc.time.advance(600_000);
+      pc.list.tick();
+      await pc.list.settled();
+      expect(await pc.signsIn(pc.idOf(borrowed))).toBeNull();
+      expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+    } finally { failing.mockRestore(); }
   });
 
   test("a device is let in only before its until, by the PC's clock, and a session open at that second closes", async () => {
