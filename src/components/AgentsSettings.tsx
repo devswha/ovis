@@ -421,7 +421,7 @@ export function AgentsSettings({ watching, agentCalls = false, onLocalLogin, onO
   const otherIntegrations = page?.otherIntegrations ?? [];
   return (
     <SettingsBare.Provider value={true}>
-      {local && agentCalls && agents !== null && !catalog?.windows && <AgentCallsRows agents={agents} watching={watching} />}
+      {local && agentCalls && catalog?.windows !== true && <AgentCallsRows agents={agents ?? []} watching={watching} />}
       {/* the first-run guide again (lib/setupGuide.ts): it sets up this PC, and a watching device is never shown it */}
       {!watching && local && <SettingsGroup section="guide">
         <SettingsRow icon={Compass} label={t("Setup guide")} description={t("Opens the first-run guide again, from its first step, to install coding agents on this PC and connect them. What was set up before stays as it is.")}>

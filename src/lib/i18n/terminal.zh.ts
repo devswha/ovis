@@ -128,6 +128,5 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Codex selected this: Option+drag copies or quotes it here": "Codex 已选择：按住 Option 拖动可在此复制或引用",
   "Pane {index} of {count}": "第 {index} 个窗格，共 {count} 个",
   "Hand back": "交还",
-  "Not stopped: Ovis could not reach this agent. Try again.": "未停止：Ovis 无法连接此 Agent。请重试。",
   "Not handed back: Ovis could not reach this agent. Try again.": "未交还：Ovis 无法连接此 Agent。请重试。",
 };

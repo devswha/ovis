@@ -277,10 +277,8 @@ export class AcpChildren {
 
   /** This server's children whose keeper's terminal hc runs under `parentPane`. */
   async childrenOf(parentPane: string): Promise<AcpChild[]> {
-    const under = new Set((await this.terminals())
-      .filter(terminal => terminal.state === "live" && terminal.parent === parentPane && terminal.labels[LABEL] !== undefined)
-      .map(terminal => terminal.address));
-    return [...this.children.values()].filter(child => under.has(child.terminal));
+    const under = (await this.terminals()).filter(terminal => terminal.state === "live" && terminal.parent === parentPane);
+    return [...this.children.values()].filter(child => under.some(terminal => terminal.address === child.terminal && terminal.labels[LABEL] === child.id));
   }
 
   cancelTurn(id: string): void {

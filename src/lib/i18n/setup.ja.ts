@@ -90,4 +90,5 @@ export const SETUP_JA: Record<string, string> = {
   "Let agents call other agents": "ほかのエージェントを呼び出す",
   "On this PC only. You still answer every permission request.": "この PC のみ。許可のリクエストには常にあなたが答えます。",
   "Agents they may call": "呼び出せるエージェント",
+  "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
 };

@@ -675,8 +675,11 @@ export function PaneTerminal({
 
   const { pressKey, toggleModifier, abortTurn: abortTyped } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
   // an ACP child's Stop is a person's hold (server/dispatch.ts): its turn is cancelled and the agent that called it gets no new turn
+  // a PC whose Ovis has no hold yet, or a child whose real TUI has the conversation, takes the Stop key instead
+  const [acpError, setAcpError] = useState<string | null>(null);
+  useEffect(() => { setAcpError(null); }, [paneId, acpHold?.child_id, acpHold?.generation]);
   const abortTurn = acpChild && paneId !== null
-    ? () => { void holdAcpChild(paneId, machineId).catch(() => setInputError(t("Not stopped: Ovis could not reach this agent. Try again."))); }
+    ? () => { setAcpError(null); void holdAcpChild(paneId, machineId).catch(() => abortTyped()); }
     : abortTyped;
 
   // what a paste into the line is for: this PC's pane on this connection, while it can type there.
@@ -835,10 +838,11 @@ export function PaneTerminal({
   if (paneId !== null) {
     const owner = paneStorageId(machineId, paneId);
     const takeOver = !observing && socketRef.current?.canTakeOver() === true;
+    // one notice per hold: a hold set again elsewhere draws a new button, so a press never hands back a hold it did not see
     if (acpHold) noticeItems.push({
-      id: `${owner}:acp-hold`, priority: "activity", revision: `${acpHold.child_id}:${acpHold.generation}`, warning: false, mark: <Pause />,
-      text: t("Stopped by you. The agent that called it cannot give it new work."),
-      actions: <button type="button" className="composer-notice-action" disabled={viewOnly} onClick={() => { void releaseAcpChild(paneId, acpHold, machineId).catch(() => setInputError(t("Not handed back: Ovis could not reach this agent. Try again."))); }}>{t("Hand back")}</button>,
+      id: `${owner}:acp-hold:${acpHold.child_id}:${acpHold.generation}`, priority: "activity", revision: "", warning: acpError !== null, mark: <Pause />,
+      text: acpError ?? t("Stopped by you. The agent that called it cannot give it new work."),
+      actions: <button type="button" className="composer-notice-action" disabled={viewOnly} onClick={() => { setAcpError(null); void releaseAcpChild(paneId, acpHold, machineId).catch(() => setAcpError(t("Not handed back: Ovis could not reach this agent. Try again."))); }}>{t("Hand back")}</button>,
     });
     if (held) noticeItems.push({
       id: `${owner}:held`, priority: "urgent", revision: takeOver ? "open-here" : "", warning: true, mark: <Unplug />,

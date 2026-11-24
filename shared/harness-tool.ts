@@ -12,8 +12,8 @@ export interface HarnessToolSetting {
   readonly depth: 1 | 2 | 3;
   readonly harnesses: readonly string[];
 }
-/** What a parent that cannot prove its permission ceiling may start: each has an ask-every-time launch (server/agent-tools/permission-launch.ts). */
-export const ASK_EVERY_TIME_HARNESSES: readonly string[] = ["opencode"];
+/** What a parent that cannot prove its permission ceiling may start, at the one version each has an ask-every-time launch for (server/agent-tools/permission-launch.ts, hub.ts's version check). */
+export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { opencode: "2.2.2" };
 export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "view", depth: 1, harnesses: [] };
 export const HARNESS_TOOL_OFF: HarnessToolSetting = { ...HARNESS_TOOL_DEFAULT, level: "off" };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {

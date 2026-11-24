@@ -1072,11 +1072,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     if (body instanceof Response) return body;
     if (typeof body.pane_id !== "string") return badRequest("missing_pane_id", "pane_id is required.");
     if (pathname.endsWith("/cancel-children")) {
-      // every ACP child the pane started gets the same hold as its own Stop; one that cannot take it is named
+      // every ACP child the pane started gets the same hold as its own Stop; one a person holds already keeps its hold
+      // (a new one would cancel the turn that person started), and one that cannot take it is named
       let children;
       try { children = await acp.childrenOf(body.pane_id); } catch (error) { return errorResponse(error); }
       const tried = await Promise.allSettled(children.map(async child => {
         if (!child.client.connected || !child.client.session) throw new Error("not connected");
+        if (child.client.holdGeneration !== null) return { pane_id: child.terminal, child_id: child.id, generation: child.client.holdGeneration };
         return { pane_id: child.terminal, child_id: child.id, generation: await child.client.hold(child.client.session) };
       }));
       return jsonResponse({

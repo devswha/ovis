@@ -732,7 +732,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       }]),
       // one switch for every alert channel and every browser (lib/paneMutes.ts); a watching device sees its state and cannot flip it
       ...(menuRow === undefined || menuCalled === 0 ? [] : [{
-        id: "stop-called", label: t("Stop agents it called ({count})", { count: menuCalled }), icon: Pause, disabled: watching,
+        id: "stop-called", label: t("Stop agents it called ({count})", { count: menuCalled }), icon: Pause, disabled: watching || menuRow.machine.view_only === true,
         run: () => stopCalled(menuRow),
       }]),
       ...(muted === null || menuRow === undefined ? [] : [{

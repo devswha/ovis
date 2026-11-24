@@ -90,4 +90,5 @@ export const SETUP_ZH: Record<string, string> = {
   "Let agents call other agents": "允许 Agent 调用其他 Agent",
   "On this PC only. You still answer every permission request.": "仅限此 PC。每个权限请求仍由你回答。",
   "Agents they may call": "可调用的 Agent",
+  "Not saved: this PC did not answer. Try again.": "未保存：此 PC 没有响应。请重试。",
 };
