@@ -66,6 +66,16 @@ async function placeInvite(w: World, by: WorldDevice, given: { readonly auto: bo
   return invite.key;
 }
 
+/**
+ * The account service holds five open invites at a time. Its own invites of the ones placed are revoked after each,
+ * which leaves the list's entries as they are: a test may so hold more open invites in the list than a person makes.
+ */
+async function revokeServiceInvites(w: World, by: WorldDevice): Promise<void> {
+  const auth = { authorization: `Bearer ${by.session.access_token}` };
+  const open = await (await w.fake.fetch(`${w.origin}/v1/pc-invites`, { headers: auth })).json() as { invites?: { id: string }[] };
+  for (const { id } of open.invites ?? []) expect((await w.fake.fetch(`${w.origin}/v1/pc-invites/${id}`, { method: "DELETE", headers: auth })).status).toBe(204);
+}
+
 /** `by` lets a borrowed browser in: power bound, role drive, until `seconds` after `by`'s own clock. */
 async function letInBorrowed(w: World, by: WorldDevice, label: string, seconds: number): Promise<WorldDevice> {
   const browser = await w.device({ label });
@@ -399,7 +409,7 @@ describe("what the Codex read of P13 found", () => {
       texts.push(placed.text);
       state = placed.state;
     }
-    for (const text of texts) await first.service.placeEntries(w.held().id, [text], []);
+    for (const text of texts) { await first.service.placeEntries(w.held().id, [text], []); await revokeServiceInvites(w, first); }
     w.clock.now += 5 * 60_000;
     const from = placements(first).length;
     expect(await removeFromList(first.list, { keys: [(await second.keys()).key], pcs: [] }, noWait)).toEqual(REMOVED);
@@ -419,12 +429,12 @@ describe("what the Codex read of P13 found", () => {
     const invites: string[] = [];
     for (let index = 0; index < 17; index += 1) {
       const invite = await deviceListKeys(memoryAccountStore());
-      const placed = await signListEntry(state, { kind: "invite", key: invite.key, exp: at + 3600, uses: 1, auto: false, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+      const placed = await signListEntry(state, { kind: "invite", key: invite.key, exp: at + 840, uses: 1, auto: false, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
       texts.push(placed.text);
       invites.push(invite.key);
       state = placed.state;
     }
-    for (const text of texts) await first.service.placeEntries(w.held().id, [text], []);
+    for (const text of texts) { await first.service.placeEntries(w.held().id, [text], []); await revokeServiceInvites(w, first); }
     let parts = 0;
     first.wire.answer = (request) => {
       if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries")) return null;
