@@ -920,6 +920,27 @@ not in the list), and `never` starts none; both are for testing.
   list id where a PC's id stands and no listing. By itself a device starts a list only from a new
   sign-in, which needs no proof.
 
+### What a device writes after entry 0
+
+Not built yet: so far a device writes entry 0 and nothing else. The rules its writer keeps, so
+that they are in one place when it is built:
+
+- **Only through the kinds' writer** (`signListEntry`, `signListEntries`), which builds an entry on
+  the device's own footing and signs it only when it would count there. An entry that would not
+  count is not signed: the device reads the list again and tries anew.
+- **Names are sealed only where `sealEpoch` says so**, on the device's state, by the list's clock
+  (`listClock`). The device never decides for itself under which epoch it seals.
+- **It never writes a member without a name because the list was left untidy.** `sealEpoch` says
+  no after a removal, and also while an invite that a PC joins with by itself is past its `exp`
+  unused, or a device that is in is past its `until`: whoever holds such a key still has the
+  current epoch's key. Before an entry that carries names the device then places, in the same
+  request, what tidies up (`remove` of that invite's or device's key, then `epoch`, with the next
+  key wrapped to whoever stays), and after them the entry with its names sealed under the new
+  epoch.
+- **A device of power `full` that is in front does that tidying by itself** when it sees such an
+  invite or device, at the list's own pace, without waiting for somebody's next act.
+- An invite past its `exp` is shown as expired, never as open.
+
 ### Which list it follows
 
 Never the one the account service names, on that word alone. A device follows a list only when
