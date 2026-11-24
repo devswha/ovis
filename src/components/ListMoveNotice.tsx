@@ -43,8 +43,9 @@ async function removeFromList(list: AccountList, endpoint: string): Promise<bool
 
 /**
  * The one-time notice, drawn where its host puts it. `removePc`: Not me's removal of a PC (the list's own by default).
- * `notMeDevice`: Not me's removal of a device, which asks Remove's question of the devices list; without it a device's
- * row has no Not me here.
+ * `notMeDevice`: Not me's removal of a device, which asks Remove's question of the devices list with everything ticked
+ * (`useNotMe(list).notMe` of ListDevices.tsx, whose `dialog` its host draws beside this); without it a device's row has
+ * no Not me here, rather than a button that does nothing.
  */
 export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice, scrim = false }: {
   readonly list?: AccountList | null;

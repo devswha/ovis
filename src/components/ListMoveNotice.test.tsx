@@ -100,3 +100,22 @@ it("tells a device the list carried in why it did not join, naming the PC and wh
   await act(async () => { renderer!.update(<SettingsProvider><ListJoinRefusal list={listWith(waiting, null).list} pcName={() => null} /></SettingsProvider>); });
   expect(renderer!.toJSON()).toBeNull();
 });
+
+it("draws a carried device's row with no Not me while nothing removes a device here: no button that does nothing", async () => {
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }], pcs: [] };
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} /></SettingsProvider>); });
+  await settle();
+  expect(text()).toContain("Laptop");
+  expect(renderer!.root.findAll((node) => node.type === "button" && node.props.children === "Not me")).toHaveLength(0);
+});
+
+it("hands a carried device's key and name to the devices list's Remove (useNotMe's notMe) on Not me", async () => {
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }, { key: "J", name: null }], pcs: [] };
+  const asked: [string, string][] = [];
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} notMeDevice={(key, name) => { asked.push([key, name]); }} /></SettingsProvider>); });
+  await settle();
+  const notMe = renderer!.root.findAll((node) => node.type === "button" && node.props.children === "Not me");
+  expect(notMe).toHaveLength(2);
+  await act(async () => { notMe[0]!.props.onClick(); notMe[1]!.props.onClick(); });
+  expect(asked).toEqual([["K", "Laptop"], ["J", "A device of yours"]]);
+});
