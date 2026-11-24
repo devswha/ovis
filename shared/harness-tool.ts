@@ -12,13 +12,17 @@ export interface HarnessToolSetting {
   readonly harnesses: readonly string[];
 }
 export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "view", depth: 1, harnesses: [] };
-export function harnessToolSetting(stored: unknown): HarnessToolSetting {
-  if (!isRecord(stored)) return HARNESS_TOOL_DEFAULT;
+export const HARNESS_TOOL_OFF: HarnessToolSetting = { ...HARNESS_TOOL_DEFAULT, level: "off" };
+export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {
+  if (!isRecord(stored) || !Object.keys(stored).every(k => ["level","depth","harnesses"].includes(k))) return null;
   const { level, depth, harnesses } = stored;
-  if (level === "off") return { ...HARNESS_TOOL_DEFAULT, level };
-  if (!(level === "view" || level === "start") || !(depth === 1 || depth === 2 || depth === 3)
-    || !Array.isArray(harnesses) || !harnesses.every((id): id is string => typeof id === "string" && /^[a-z][a-z0-9-]*$/.test(id))) return HARNESS_TOOL_DEFAULT;
+  if (level === "off" && depth === undefined && harnesses === undefined) return HARNESS_TOOL_OFF;
+  if (!(level === "view" || level === "start" || level === "off") || !(depth === 1 || depth === 2 || depth === 3)
+    || !Array.isArray(harnesses) || !harnesses.every((id): id is string => typeof id === "string" && /^[a-z][a-z0-9-]*$/.test(id))) return null;
   return { level, depth, harnesses: [...new Set(harnesses)] };
+}
+export function harnessToolSetting(stored: unknown): HarnessToolSetting {
+  return stored === undefined ? HARNESS_TOOL_DEFAULT : parseHarnessSetting(stored) ?? HARNESS_TOOL_OFF;
 }
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
