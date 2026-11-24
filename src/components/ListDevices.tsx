@@ -46,7 +46,7 @@ export function roleOf(t: Translate, device: ListedDevice): string | null {
 }
 
 /** What the person is told when a removal did not go through: never that it did. */
-function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true }>, name: string, total: number): string {
+function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true }>, name: string, total: number, asked: string): string {
   if (outcome.why === "stopped") return t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.");
   if (outcome.placed > 0) return t("{done} of {total} were removed. Try again for the rest.", { done: String(outcome.placed), total: String(total) });
   // the request went out and no answer came, and the log could not be read: it may have been placed
@@ -58,7 +58,9 @@ function failureOf(t: Translate, outcome: Exclude<RemoveOutcome, { removed: true
   if (outcome.why === "blocked") return t("This device cannot change your account's list right now.");
   if (outcome.why === "changed") return t("Your sign-in changed while this was asked. Nothing was removed.");
   // the question named a key the device has handed on: the person is asked again, for the key it holds now
-  if (outcome.why === "handed") return t("{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.", { name });
+  if (outcome.why === "handed") return outcome.heirs?.[asked] !== undefined
+    ? t("{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.", { name })
+    : t("Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
   return t("{name} could not be removed. Try again.|device", { name });
 }
 
@@ -161,7 +163,7 @@ export function RemoveDialog({ list, view, removing, name, ticked, onClose, onRe
     if (!outcome.removed && outcome.why === "handed") setHeirs((before) => ({ ...before, ...outcome.heirs }));
     // the change that waits is shown with its own Try again and Cancel, wherever the page draws its card
     if (!outcome.removed && outcome.why === "waiting") window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT));
-    if (!outcome.removed) throw new Error(failureOf(t, outcome, name, 1 + picked.length));
+    if (!outcome.removed) throw new Error(failureOf(t, outcome, name, 1 + picked.length, now(removing)));
     onRemoved(name);
   };
   return (

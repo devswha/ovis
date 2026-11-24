@@ -298,6 +298,27 @@ describe("Manage account's devices from the account's signed list", () => {
     expect(listView(w.held().state).devices.find((row) => row.key === next)?.ended).not.toBeNull();
   });
 
+  it("says that what was ticked moved to a new key, not the device asked for, when only a ticked one handed its place on", async () => {
+    const { w, first, third } = await withAdditions();
+    const root = await mount(first);
+    await act(async () => { root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-device")[0]!.props.onClick(); });
+    await act(async () => { boxes(root)[0]!.props.onChange(); });
+    // the laptop, ticked, hands its place to a new key of its own before the press
+    const heir = await w.device({ label: "Laptop" });
+    await heir.list.sync();
+    const next = (await heir.keys()).key;
+    const claim = (await third.service.listClaims(w.held().id)).find((each) => each.key === next)!;
+    const old = await third.keys();
+    const rotation = await signListEntry(w.held().state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: true },
+      { key: old.key, privateKey: old.signs }, Math.floor(w.clock.now / 1000));
+    await third.service.placeEntries(w.held().id, [rotation.text], []);
+    await confirm(root, "Remove");
+    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.");
+    await confirm(root, "Remove");
+    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    expect(listView(w.held().state).devices.find((row) => row.key === next)?.ended).not.toBeNull();
+  });
+
   it("offers no Remove to a device that may not remove anybody", async () => {
     const w = listWorld();
     const first = await w.device({ label: "Dana's phone" });

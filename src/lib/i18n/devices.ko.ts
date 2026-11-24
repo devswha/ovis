@@ -365,4 +365,5 @@ export const DEVICES_KO: Record<string, string> = {
   "Moved to a new key on {day}": "{day}에 새 키로 바뀜",
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "이 기기의 계정 자리가 새 키({name})로 넘어갔어요. 직접 한 일이 아니라면 다른 기기에서 그 기기를 제거하세요.",
   "a device that is no longer in your account": "이제 계정에 없는 기기",
+  "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "확인한 뒤에 고른 항목 중 하나가 새 키로 바뀌었어요. 아무것도 제거하지 않았으니, 제거하려면 다시 제거를 누르세요.",
 };
