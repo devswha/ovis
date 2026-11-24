@@ -24,7 +24,7 @@ import {
   devicePlace, heirOf, joinVerdict, MigrationError, migrationPlan, ownEvidence, signMigration, signNaming, signRotation, signVouch, standsFor,
   type JoinRefusal, type MigrationKnown, type NoMigration, type SignedNaming, type SignedVouch,
 } from "../../../shared/account-list-migrate.ts";
-import { makeGenesis, type Genesis } from "./listGenesis.ts";
+import { listNames, makeGenesis, type Genesis } from "./listGenesis.ts";
 import {
   birthRecord, birthSeals, handOverRecord, knownPcs, MOVE_AGAIN_SECONDS, noticeRecord, notCarriedAt, pageAnswers, readBirth, readHandOver, readNotice, readRefusal, refusalRecord,
   scaled, signLink, type KeptBirth, type MoveNotice, type PcAnswers,
@@ -1013,7 +1013,7 @@ export function accountList(options: AccountListOptions): AccountList {
     const label = new Map(directory.flatMap((pc) => (pc.public_key === null ? [] : [[pc.public_key, pc.label] as const])));
     const pcs = knownPcs({
       account, record, letIn, answers, now: at, scale, skip: new Set(refusal?.endpoints ?? []),
-      names: (endpoint) => { const name = label.get(endpoint); return name === undefined || name === "" ? null : { label: name.slice(0, 48), os: null }; },
+      names: (endpoint) => { const name = label.get(endpoint); return name === undefined ? null : listNames(name, null); },
     });
     const skip = new Set(refusal?.keys ?? []);
     const known: MigrationKnown = {

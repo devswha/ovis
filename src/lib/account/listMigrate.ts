@@ -332,6 +332,8 @@ export function waitsOnPcs(status: AccountListView["status"]): boolean {
 export async function onPcSession(given: {
   readonly list: Pick<AccountList, "view" | "naming" | "sync">; readonly answers: PcAnswers; readonly account: string; readonly fetch: PcFetch;
   readonly endpoint: string; readonly pinned: boolean; readonly session: string | null; readonly signIn: string | null;
+  /** On a PC that follows a list, for a device that follows its own: the keys the move left that PC without (listCarriedPc.ts). */
+  readonly carriedKeys?: () => Promise<unknown>;
 }): Promise<void> {
   const { list, account, endpoint } = given;
   const view = list.view();
@@ -342,7 +344,11 @@ export async function onPcSession(given: {
     if (said !== null) await list.sync().catch(() => undefined);
     return;
   }
-  if (given.pinned || given.session === null || list.naming === undefined) return;
+  if (given.pinned) {
+    if (view.status.at === "following" && view.status.standing === "in") await given.carriedKeys?.();
+    return;
+  }
+  if (given.session === null || list.naming === undefined) return;
   const named = await list.naming({ session: given.session, endpoint, signIn: given.signIn });
   if (named === null) return;
   try {

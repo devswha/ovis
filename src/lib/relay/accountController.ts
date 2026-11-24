@@ -16,7 +16,8 @@ import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
-import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import { askWitness, onPcSession, pageAnswers, pageScale, pcsToAsk, waitsOnPcs } from "../account/listMigrate.ts";
@@ -301,9 +302,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const kept = await accountStore.get("signin_key").catch(() => undefined);
     const signIn = kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept.key.public_spki : null;
     const endpoint = Array.from(importPublicKey(serverPublicKey), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const fetch = (path: string, init?: RequestInit): Promise<Response> => opened.fetch(path, init);
     await onPcSession({
-      list: lists, answers: pageAnswers, account: session.account, fetch: (path, init) => opened.fetch(path, init), endpoint,
+      list: lists, answers: pageAnswers, account: session.account, fetch, endpoint,
       pinned: opened.server?.features?.includes(ACCOUNT_LIST_FEATURE) === true, session: opened.deviceKey ?? null, signIn,
+      carriedKeys: async () => {
+        const label = directory.find((pc) => pc.public_key === endpoint)?.label;
+        const added = await keysForCarriedPc({ list: lists, fetch, account: session.account, endpoint, record: readSeenPcs(session.account), names: label === undefined ? null : listNames(label, null) });
+        // the PC is handed its own entry over this session, rather than wait for its next read of the account service
+        if (added === "added") await handListToPc(fetch, lists).catch(() => false);
+      },
     });
   };
   /** When each PC was last asked in the background for the move, by relay key, in ms: once in ASK_AGAIN_MS at most. */

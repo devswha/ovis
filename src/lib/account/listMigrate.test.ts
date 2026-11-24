@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, MIGRATION_KNOWN_SECONDS, type PcAnswer } from "../../../shared/account-list-migrate.ts";
 import { listView } from "../../../shared/account-list.ts";
-import { askingPc, listWorld, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
+import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
+import { keysForCarriedPc } from "./listCarriedPc.ts";
 import { MOVE_AGAIN_SECONDS, pcAnswers, readBirth, readNotice, type PcAnswers } from "./listMigrate.ts";
 import type { SeenPcs } from "./seenPcs.ts";
 
@@ -278,3 +279,40 @@ describe("what a device that follows its moved list says to a PC that follows no
 // keep the imports honest when a test above is narrowed
 void MIGRATION_KNOWN_SECONDS;
 export type { Member, PcAnswers };
+
+describe("a PC the move carried in with no key, met over a session while it follows the list", () => {
+  /** The PC's own answer to `GET /api/account/list/card` over the session (W4), after it posted those keys for the list. */
+  const cardWire = (card: { key: string; enc: string; card: string; endpoint: string; list: string }) => async (path: string): Promise<Response> =>
+    path === "/api/account/list/card" ? Response.json(card) : Response.json({ error: { code: "not_found" } }, { status: 404 });
+
+  test("a device that paired with it at the PC signs its `pc` entry with the card the PC gave over the session", async () => {
+    const { phone, pc, world } = await moved();
+    const list = world.held().id;
+    const card = await postPcKeys(world.fake.fetch, world.origin, phone.device.session.access_token, pc, list);
+    const added = await keysForCarriedPc({ list: phone.device.list, fetch: cardWire({ key: pc.key, enc: pc.enc, card, endpoint: pc.endpoint, list }), account: world.account, endpoint: pc.endpoint, record: phone.kept()!, names: null });
+    expect(added).toBe("added");
+    const row = listView(world.held().state).pcs.find((one) => one.endpoint === pc.endpoint);
+    expect(row).toMatchObject({ key: pc.key, removed: null });
+  });
+
+  test("a device that only opened it signs nothing: that PC gets its keys by the number at it", async () => {
+    const { phone, pc, world } = await moved();
+    const list = world.held().id;
+    const card = await postPcKeys(world.fake.fetch, world.origin, phone.device.session.access_token, pc, list);
+    const none = { ...phone.kept()!, pcs: { [pc.endpoint]: { since: 1, last: 2, how: "none" as const } } };
+    expect(await keysForCarriedPc({ list: phone.device.list, fetch: cardWire({ key: pc.key, enc: pc.enc, card, endpoint: pc.endpoint, list }), account: world.account, endpoint: pc.endpoint, record: none, names: null })).toBe("no_evidence");
+    expect(listView(world.held().state).pcs.find((one) => one.endpoint === pc.endpoint)?.key).toBeNull();
+  });
+
+  test("a card for another relay key, another list, or one that does not hold, is no card", async () => {
+    const { phone, pc, world } = await moved();
+    const list = world.held().id;
+    const card = await postPcKeys(world.fake.fetch, world.origin, phone.device.session.access_token, pc, list);
+    const other = await askingPc();
+    for (const shown of [{ endpoint: other.endpoint, list }, { endpoint: pc.endpoint, list: "ab".repeat(32) }]) {
+      expect(await keysForCarriedPc({ list: phone.device.list, fetch: cardWire({ key: pc.key, enc: pc.enc, card, ...shown }), account: world.account, endpoint: pc.endpoint, record: phone.kept()!, names: null })).toBe("no_card");
+    }
+    expect(await keysForCarriedPc({ list: phone.device.list, fetch: cardWire({ key: other.key, enc: pc.enc, card, endpoint: pc.endpoint, list }), account: world.account, endpoint: pc.endpoint, record: phone.kept()!, names: null })).toBe("no_card");
+    expect(listView(world.held().state).pcs.find((one) => one.endpoint === pc.endpoint)?.key).toBeNull();
+  });
+});

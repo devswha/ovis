@@ -90,3 +90,17 @@ describe("a session the app opened to a PC of the account", () => {
 // the real naming a PC checks: covered end to end in listMigrate.test.ts
 void heldNaming;
 void heldVouches;
+
+describe("a session to a PC that follows the list", () => {
+  test("a device that follows its list gives the PC its keys where the move left it none, and names it nothing", async () => {
+    const wire = pcWire({});
+    let asked = 0;
+    const following = { at: "following" as const, list: "a".repeat(64), standing: "in" as const, head: 3, read_at: null, trouble: null };
+    await onPcSession({ list: listOf(following), answers: pcAnswers(), account: ACCOUNT, fetch: wire.fetch, endpoint: E(1), pinned: true, session: KEY, signIn: KEY, carriedKeys: async () => { asked += 1; } });
+    expect(asked).toBe(1);
+    expect(wire.asked).toEqual([]);
+    // a PC that follows no list is named the list instead, and is given no keys
+    await onPcSession({ list: listOf(following), answers: pcAnswers(), account: ACCOUNT, fetch: wire.fetch, endpoint: E(1), pinned: false, session: KEY, signIn: KEY, carriedKeys: async () => { asked += 1; } });
+    expect(asked).toBe(1);
+  });
+});
