@@ -6,8 +6,8 @@
  * The account service's answer to the placement is trusted for nothing: the entries are placed once this device's own
  * copy shows the last of them at its place.
  */
-import { ListWriteError, listView, signListEntries, wrapKeys, type ListKind, type ListState } from "../../../shared/account-list.ts";
-import { nextEpoch, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
+import { ListWriteError, listView, namesFields, sealEpoch, signListEntries, wrapKeys, type ListKind, type ListNames, type ListState, type Sealed } from "../../../shared/account-list.ts";
+import { nextEpoch, sealFields, wrapEpochKey, wrapEpochKeyFor, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../../shared/account-list-signers.ts";
 import type { AccountList, ListWriter } from "./accountList.ts";
 import type { PlacedWrap } from "./listAnswers.ts";
@@ -121,6 +121,29 @@ export interface WriteOptions {
    * the device's own copy must show the entry.
    */
   readonly trustPlaced?: boolean;
+}
+
+/**
+ * The request that brings a member in under a name (a device, a PC), signed on the writer's state. Where the kinds
+ * say names may be sealed, it is the one entry, its names under the current epoch and that epoch's key wrapped to the
+ * newcomer's encryption key. Where they say no, the request first tidies up: a `remove` for every key whose time is
+ * over (as many as one request takes), one `epoch`, then the entry with its names under the epoch that request opens,
+ * and the new key wrapped to everybody who is in after the whole of it. A device that holds no key of the current
+ * epoch seals nothing and wraps nothing: the newcomer comes in all the same.
+ */
+export async function signedNamed(writer: ListWriter, names: ListNames | null, enc: string, kind: (sealed: Sealed | null) => ListKind): Promise<Written> {
+  const { list, state, clock } = writer;
+  const seal = async (on: ListState, key: EpochKey, opens: string): Promise<Sealed | null> => names === null ? null
+    : { epoch: key.epoch, bytes: await sealFields({ place: { list, seq: on.footing.seq + 1 }, epoch: key, commitment: opens, fields: namesFields(names) }) };
+  const current = writer.epochs.get(state.epoch) ?? null;
+  if (current === null) return signedOn(writer, [kind(null)]);
+  const where = sealEpoch(state, clock);
+  if (where !== null) {
+    const wrap = await wrapEpochKey({ list, epoch: current, member: enc });
+    return signedOn(writer, [kind(await seal(state, current, where.opens))], wrap === null ? [] : [{ epoch: current.epoch, member: enc, wrap: wrapToText(wrap) }]);
+  }
+  return signedWithEpoch(writer, current, overTime(state, clock).slice(0, WRITE_ENTRIES_MAX - 2).map((key): ListKind => ({ kind: "remove", ends: key })),
+    (next) => [async (after) => kind(await seal(after, next.epoch, next.commitment))]);
 }
 
 /** The account service's own refusal of a request, as against no answer or a refresh that failed. */

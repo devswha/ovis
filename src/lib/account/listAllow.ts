@@ -8,12 +8,11 @@
  * copy shows the entry at its place, and that place is what the newcomer is handed.
  */
 import type { AccountOs } from "../../../shared/account-asker.ts";
-import { namesFields, sealEpoch, type ListKind, type ListNames, type ListState, type Sealed } from "../../../shared/account-list.ts";
-import { sealFields, wrapEpochKey, wrapToText, type EpochKey } from "../../../shared/account-list-seal.ts";
+import type { ListKind, ListNames } from "../../../shared/account-list.ts";
 import type { AccountList, ListOffer, ListWriter } from "./accountList.ts";
 import type { ListClaim } from "./listAnswers.ts";
 import { listNames } from "./listGenesis.ts";
-import { WRITE_RESENDS, WRITE_TRIES, overTime, placeOf, signedOn, signedWithEpoch, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
+import { WRITE_RESENDS, WRITE_TRIES, placeOf, signedNamed, writeToList, type WriteRefusal, type Written } from "./listWrite.ts";
 
 /** The device a person is letting in: the key it showed the PC it asked, and the name and system it gave the account service. */
 export interface Newcomer {
@@ -33,28 +32,9 @@ export type AllowOutcome =
 export const ALLOW_TRIES = WRITE_TRIES;
 export const ALLOW_RESENDS = WRITE_RESENDS;
 
-/**
- * The request that lets the newcomer in, signed on the writer's state. Where the kinds say names may be sealed, it
- * is the one entry, its names under the current epoch and that epoch's key wrapped to the newcomer. Where they say
- * no, the request first tidies up: a `remove` for every key whose time is over, one `epoch`, then the entry with its
- * names under the epoch that request opens, and the new key wrapped to everybody who is in after the whole of it. A
- * device that holds no key of the current epoch seals nothing and wraps nothing: the newcomer is let in all the same.
- */
-async function written(writer: ListWriter, claim: ListClaim, names: ListNames | null): Promise<Written> {
-  const { list, state, clock } = writer;
-  const device = (sealed: Sealed | null): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false });
-  const seal = async (on: ListState, key: EpochKey, opens: string): Promise<Sealed | null> => names === null ? null
-    : { epoch: key.epoch, bytes: await sealFields({ place: { list, seq: on.footing.seq + 1 }, epoch: key, commitment: opens, fields: namesFields(names) }) };
-  const current = writer.epochs.get(state.epoch) ?? null;
-  if (current === null) return signedOn(writer, [device(null)]);
-  const where = sealEpoch(state, clock);
-  if (where !== null) {
-    const wrap = await wrapEpochKey({ list, epoch: current, member: claim.enc });
-    return signedOn(writer, [device(await seal(state, current, where.opens))], wrap === null ? [] : [{ epoch: current.epoch, member: claim.enc, wrap: wrapToText(wrap) }]);
-  }
-  return signedWithEpoch(writer, current, overTime(state, clock).map((key): ListKind => ({ kind: "remove", ends: key })),
-    (next) => [async (after) => device(await seal(after, next.epoch, next.commitment))]);
-}
+/** The request that lets the newcomer in (listWrite.ts, signedNamed): its `device` entry, power `full` and role `drive`, with the card its own sign-in claimed. */
+const written = (writer: ListWriter, claim: ListClaim, names: ListNames | null): Promise<Written> =>
+  signedNamed(writer, names, claim.enc, (sealed): ListKind => ({ kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed, rotates: false }));
 
 /**
  * Lets `newcomer` into the list this device follows. It reads the list first, signs on what it then holds, and

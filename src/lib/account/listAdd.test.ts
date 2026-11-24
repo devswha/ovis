@@ -1,0 +1,156 @@
+import { describe, expect, it } from "bun:test";
+import { readKind, signCard } from "../../../shared/account-list.ts";
+import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
+import { askingPc, listWorld, pcComparing, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
+import { addPostedPc, numberWith, postedPcs, type AddNumber } from "./listAdd.ts";
+import { allowDevice } from "./listAllow.ts";
+
+type World = ReturnType<typeof listWorld>;
+
+/** An account with a list and one device in it, and a PC that asks to be added: it posted its keys and its card. */
+async function asking(w: World = listWorld()) {
+  const phone = await w.device({ label: "Dana's phone" });
+  await phone.list.sync();
+  const pc = await askingPc();
+  await postPcKeys(w.fake.fetch, w.origin, phone.session.access_token, pc, w.held().id);
+  return { w, phone, pc, play: pcComparing(w, pc, w.held().id) };
+}
+/** The PC answers as soon as it is asked: every wait of the device is the PC's turn. */
+const pcTurn = (play: ReturnType<typeof pcComparing>) => ({ wait: async () => { await play.answer(); } });
+const shown = (outcome: Awaited<ReturnType<typeof numberWith>>): AddNumber => {
+  if (!outcome.shown) throw new Error(`no number: ${outcome.why}`);
+  return outcome.number;
+};
+const sentTo = (from: WorldDevice, suffix: string) => from.sent.filter((each) => each.route.endsWith(suffix));
+
+describe("the PCs that ask to be added", () => {
+  it("are those whose card holds for this device's list and their own relay key, and no other", async () => {
+    const { w, phone, pc } = await asking();
+    expect(await postedPcs(phone.list)).toEqual([{ list: w.held().id, endpoint: pc.endpoint, server_id: pc.server_id, key: pc.key, enc: pc.enc, card: await postedCard(phone, pc) }]);
+    // the service shows a card that is another key's, a card for another list, and an id that the relay key does not give
+    const other = await askingPc();
+    const forged = await signCard({ key: other.key, enc: pc.enc, list: w.held().id, endpoint: pc.endpoint, invite: null }, other.signs);
+    const elsewhere = await signCard({ key: pc.key, enc: pc.enc, list: "ef".repeat(32), endpoint: pc.endpoint, invite: null }, pc.signs);
+    for (const lie of [{ card: forged }, { card: elsewhere }, { server_id: other.server_id }, { enc: other.enc }]) {
+      phone.wire.answer = async (request) => {
+        if (request.method !== "GET" || !new URL(request.url).pathname.endsWith("/posts")) return null;
+        const body = await (await w.fake.fetch(request)).json() as { posts: Record<string, unknown>[] };
+        return Response.json({ posts: body.posts.map((post) => ({ ...post, ...lie })) });
+      };
+      expect(await postedPcs(phone.list)).toEqual([]);
+    }
+  });
+
+  it("are none for a device that may not write to the list", async () => {
+    const { w, pc } = await asking();
+    const waiting = await w.device({ label: "Tablet" });
+    await waiting.list.sync();
+    expect([await postedPcs(waiting.list), sentTo(waiting, "/posts"), pc.endpoint.length]).toEqual([[], [], 64]);
+  });
+});
+
+async function postedCard(phone: WorldDevice, pc: AskingPc): Promise<string> {
+  const post = (await phone.service.listPosts((await phone.list.sync()).status.at === "following" ? phone.list.writer()!.list : "")).find((each) => each.endpoint === pc.endpoint);
+  return post!.card;
+}
+
+describe("the number for a PC that asks to be added", () => {
+  it("is the same on both ends, worked out from the PC's own card, and shown here only after the PC answered", async () => {
+    const { phone, play } = await asking();
+    const [post] = await postedPcs(phone.list);
+    const number = shown(await numberWith(phone.list, post!, pcTurn(play)));
+    expect(number.digits).toMatch(/^[0-9]{6}$/);
+    expect(await play.digits()).toBe(number.digits);
+    // the device committed before the PC's nonce was known, and revealed only after it
+    const messages = sentTo(phone, "/attempt").map((each) => Object.keys(each.body!).sort().join(" "));
+    expect(messages).toEqual(["adder commitment key", "adder commitment key reveal"]);
+    expect(sentTo(phone, "/attempt")[0]!.body!.adder).toBe((await phone.keys()).key);
+  });
+
+  it("differs for a PC whose own card is another than the one this device was shown: nothing between the two can make them agree", async () => {
+    const { w, phone, pc } = await asking();
+    const [post] = await postedPcs(phone.list);
+    // the PC really holds another encryption key than the card the service showed this device: its binding is another
+    const other = await askingPc();
+    const play = pcComparing(w, { ...pc, enc: other.enc }, w.held().id);
+    const number = shown(await numberWith(phone.list, post!, pcTurn(play)));
+    expect(await play.digits()).not.toBe(number.digits);
+  });
+
+  it("is not shown where the PC does not answer in time", async () => {
+    const { phone } = await asking();
+    const [post] = await postedPcs(phone.list);
+    let clock = 0;
+    expect(await numberWith(phone.list, post!, { wait: async () => { clock += 20_000; }, now: () => clock })).toEqual({ shown: false, why: "silent" });
+  });
+
+  it("is not shown where another device of the account asked for a number meanwhile: one attempt stands, the later one", async () => {
+    const { w, phone, play } = await asking();
+    const [post] = await postedPcs(phone.list);
+    const second = await w.device({ label: "Tablet" });
+    await second.list.sync();
+    const outcome = await allowDevice(phone.list, { key: (await second.keys()).key, label: "Tablet", os: null }, { wait: async () => {} });
+    if (!outcome.allowed) throw new Error(outcome.why);
+    await second.list.adopt(outcome.offer);
+    const theirs = (await postedPcs(second.list))[0]!;
+    let other: Promise<unknown> | undefined;
+    expect(await numberWith(phone.list, post!, { wait: async () => { other ??= numberWith(second.list, theirs, pcTurn(play)); await other; } })).toEqual({ shown: false, why: "gone" });
+  });
+
+  it("is not shown where the PC posted other keys since, or asked too often", async () => {
+    const { w, phone, pc, play } = await asking();
+    const [post] = await postedPcs(phone.list);
+    const again = { ...pc, enc: (await askingPc()).enc };
+    await postPcKeys(w.fake.fetch, w.origin, phone.session.access_token, again, w.held().id);
+    expect(await numberWith(phone.list, post!, pcTurn(play))).toEqual({ shown: false, why: "gone" });
+    phone.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt") ? Response.json({ error: { code: "attempts_spent", message: "" } }, { status: 429 }) : null;
+    expect(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play))).toEqual({ shown: false, why: "spent" });
+  });
+
+  it("can be given up while it waits for the PC", async () => {
+    const { phone } = await asking();
+    const [post] = await postedPcs(phone.list);
+    const stop = new AbortController();
+    const waiting = numberWith(phone.list, post!, { signal: stop.signal, wait: (_ms, signal) => new Promise((_, reject) => { signal!.addEventListener("abort", () => reject(signal!.reason as Error)); stop.abort(new DOMException("closed", "AbortError")); }) });
+    await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("Add, beside the number", () => {
+  it("admits the PC and signs a pc entry with the very card the number came from, its name sealed and the key wrapped to it", async () => {
+    const { w, phone, pc, play } = await asking();
+    const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    const admitted: string[] = [];
+    expect(await addPostedPc(phone.list, number.post, { label: "Desk in the study", os: "linux" }, { wait: async () => {}, admit: async () => { admitted.push(number.post.server_id); } })).toEqual({ added: true });
+    expect(admitted).toEqual([pc.server_id]);
+    const body = readBody(entryFromText(w.held().entries.at(-1)!).body);
+    expect([body.signer, readKind(body)]).toMatchObject([(await phone.keys()).key, { kind: "pc", key: pc.key, endpoint: pc.endpoint, enc: pc.enc, card: number.post.card }]);
+    const view = await phone.list.sync();
+    expect(view.pcs.map((row) => [row.endpoint, row.server_id, row.name])).toEqual([[pc.endpoint, pc.server_id, { label: "Desk in the study", os: "linux" }]]);
+    const placed = sentTo(phone, "/entries").at(-1)!.body!;
+    expect((placed.wraps as { member: string }[]).map((wrap) => wrap.member)).toEqual([pc.enc]);
+    // pressed again (the answer was slow): nothing more is admitted or signed
+    const before = w.held().entries.length;
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { admitted.push("again"); } })).toEqual({ added: true });
+    expect([admitted, w.held().entries.length]).toEqual([[pc.server_id], before]);
+  });
+
+  it("signs nothing where the account service does not admit the PC, and says what it said", async () => {
+    const { w, phone, play } = await asking();
+    const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    const before = w.held().entries.length;
+    const { AccountServiceError } = await import("./service.ts");
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { throw new AccountServiceError(403, "session_not_fresh", "x"); } }))
+      .toEqual({ added: false, why: "admit", code: "session_not_fresh", retryAfterMs: null });
+    expect(w.held().entries.length).toBe(before);
+  });
+
+  it("signs nothing for another account or list than the one the card was shown for", async () => {
+    const { w, phone, play } = await asking();
+    const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    const before = w.held().entries.length;
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => {}, expect: { account: "acct_another", list: number.post.list } })).toMatchObject({ added: false, why: "changed" });
+    expect(await addPostedPc(phone.list, { ...number.post, list: "ef".repeat(32) }, null, { wait: async () => {}, admit: async () => {} })).toMatchObject({ added: false, why: "changed" });
+    expect(w.held().entries.length).toBe(before);
+  });
+});
