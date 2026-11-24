@@ -29,13 +29,16 @@ import type { AccountSession } from "./store.ts";
  * - `number`: the service refused the admission for want of two-step sign-in: that PC adds itself with its number.
  * - `sign-in-again`: the service refused this sign-in (not fresh, or not this device's own).
  * - `list-cannot-add`: the account keeps a signed list, and this PC cannot sign another PC into it (it joined by an
- *   invite, say): that PC adds itself with `ovis add` there.
+ *   invite, or follows no list): that PC is added with the number `ovis add` shows there.
  * - `update-that-pc`: the account keeps a signed list, and that PC's Ovis is too old to be named it.
+ * - `list-not-added`: that PC posted its keys, and its entry did not go into the list: adding it again goes on from there.
+ * - `list-placed`: its entry is in the list, and that PC has not taken it yet: adding it again finishes, signing nothing more.
  * - `disconnected`: the SSH connection the take needs ended before it was sent (or the job is gone): connecting again goes on.
  * - `refused`: anything else, the attempt given up or the sign-in changed included.
  */
 export type SshAddOutcome = "added" | "already" | "added-unchecked" | "already-unchecked" | "added-unanswered" | "already-unanswered"
-  | "not-online" | "relay-off" | "maybe" | "other-account" | "number" | "sign-in-again" | "list-cannot-add" | "update-that-pc" | "disconnected" | "refused";
+  | "not-online" | "relay-off" | "maybe" | "other-account" | "number" | "sign-in-again" | "list-cannot-add" | "update-that-pc" | "list-not-added" | "list-placed"
+  | "disconnected" | "refused";
 
 /**
  * What this PC said of the take: that PC's relay as it answered (null: not said; `unanswered`: the take's answer was lost and
@@ -83,8 +86,11 @@ async function taken(take: (jobId: string, serverId: string) => Promise<SshTake>
   }
   if ("refused" in said) {
     if (said.refused === "disconnected" || said.refused === "job_not_found") return "disconnected";
-    if (said.refused === "list_cannot_add") return "list-cannot-add";
+    // `list_add`: this PC follows no list, and that PC's account keeps one, so it takes no add on the account service's word
+    if (said.refused === "list_cannot_add" || said.refused === "list_add") return "list-cannot-add";
     if (said.refused === "that_pc_old") return "update-that-pc";
+    if (said.refused === "list_not_added") return "list-not-added";
+    if (said.refused === "list_unbound") return "list-placed";
     return said.refused === "take_unanswered" ? "maybe" : "refused";
   }
   if (said.unanswered === true) return already ? "already-unanswered" : "added-unanswered";

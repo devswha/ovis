@@ -324,8 +324,10 @@ function addedWords(outcome: SshAddOutcome | "adding" | "other-pc", t: ReturnTyp
     case "other-account": return t("That PC is in another account.");
     case "number": return t("Add it with the number on the server's Ovis page.");
     case "sign-in-again": return t("Sign in again on this PC, then add it again.");
-    case "list-cannot-add": return t("This PC cannot add other PCs to your account's list. Run ovis add on that PC instead.");
+    case "list-cannot-add": return t("This PC cannot add PCs to your account's list. On that PC, run ovis add and add it with the number it shows.");
     case "update-that-pc": return t("Update Ovis on that PC, then add it again: its Ovis cannot join your account's list.");
+    case "list-not-added": return t("That PC was not put in your account's list. Add it again.");
+    case "list-placed": return t("That PC is in your account's list, and has not taken it yet. Add it again to finish.");
     case "refused": case "disconnected": return t("It was not added to your account. Try again.");
   }
 }
