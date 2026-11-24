@@ -25,7 +25,9 @@ import { readOmpHeldFilesSetting } from "./omp.ts";
 import { readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub } from "./approvals/hub.ts";
 import { claudeApprovals } from "./approvals/claude.ts";
+import { CodexServers } from "./approvals/codex.ts";
 import { omoApprovals } from "./approvals/omo.ts";
+import { ompApprovals } from "./approvals/omp.ts";
 import { piApprovals } from "./approvals/pi.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
@@ -53,7 +55,7 @@ import { mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./
 import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
-import { OpenCodePromptState } from "./prompt.ts";
+import { OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -217,6 +219,8 @@ export function createServer(
     relayPcSocket?: (url: string) => RelaySocket;
     relayPcDirectSocket?: (url: string) => RelaySocket;
     pcUpdateTimings?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number };
+    /** how long this PC, added to an account over SSH, waits for its relay to come online before it answers (30 s) */
+    accountAddRelayMs?: number;
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
     /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
@@ -417,7 +421,8 @@ export function createServer(
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
   readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
   // a turn a hook tells of goes to the status of its pane: no hook runs before the core below starts an agent
-  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals], { onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn) });
+  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals], { onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn) });
+  const codexServers = new CodexServers(approvals);
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = capabilities().pins ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   try {
@@ -485,10 +490,11 @@ export function createServer(
   const agentDetector = options.agentDetector ?? new AgentDetector({ locate: catalogLocator({ probe: null }) });
   const catalogPlatformHere = catalogPlatform(process.platform);
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
+  readHeldApprovals(approvals);
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
     return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;
-  });
+  }, codexServers);
   const installFolder = (binary: string): { path: string; mark: string } | null => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(binary));
     const dirs = entry !== undefined && catalogPlatformHere !== null ? entry.detect.install_dirs?.[catalogPlatformHere] ?? [] : [];
@@ -513,7 +519,7 @@ export function createServer(
   // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
-  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => approvals.forget(paneId) }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
@@ -667,7 +673,7 @@ export function createServer(
   }) : undefined;
   const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
     stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
-    relay: ovisRelay, accountMailbox,
+    relay: ovisRelay, accountMailbox, addedRelayOnlineMs: options.accountAddRelayMs,
   }) : null;
   // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)
   const lockSignal = safetyLog ? new LockSignal() : undefined;
@@ -822,6 +828,8 @@ export function createServer(
       safetyLog?.close();
       void usageLogin.stopAll();
       void shellAgents.stop();
+      useApprovalHub(null);
+      codexServers.stop();
       approvals.stop();
       agentDetector.close();
       server.stop(true);
