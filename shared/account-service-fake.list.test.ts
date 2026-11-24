@@ -814,7 +814,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await open({ commitment: nonce(1), reveal: nonce(9) })).status).toBe(200);
       expect(refusal(await open({ commitment: nonce(1), reveal: nonce(8) }))).toBe("409 attempt_changed");
       expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts?.[0]).toMatchObject({ attempt: { reveal: nonce(9) } });
-      // the same keys posted again keep the comparison; other keys are another card, and it goes
+      // the same keys posted again keep the comparison while the post stands; other keys are another card, and it goes
       expect((await post()).status).toBe(200);
       expect((await atPc()).body.attempt).toMatchObject({ reveal: nonce(9) });
       const other = await newKey();
@@ -831,6 +831,11 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await open({ commitment: nonce(3) }))).toBe("429 attempts_spent");
       expect(refusal(await w.call("POST", `/v2/lists/${list}/posts/${pc.endpoint}/attempt`, { key: key.key, adder, commitment: "short" }, w.token))).toBe("400 invalid_request");
       expect(refusal(await pcCall(w, machine(), "/v2/pc/list/attempt", { list }))).toBe("404 not_found");
+      // a post that ran out is over: posting the same keys again starts with no comparison
+      expect((await atPc()).body.attempt).not.toBeNull();
+      w.tick(LIST_CLAIM_MS + 1000);
+      expect((await post()).status).toBe(200);
+      expect((await atPc()).body.attempt).toBeNull();
     });
 
     test("a join is placed only through the PC route, by the PC whose relay key it names, after that PC redeemed that invite", async () => {

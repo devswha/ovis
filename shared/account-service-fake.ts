@@ -1890,9 +1890,11 @@ export class FakeAccountService {
     const posted = { key: body.key as string, enc: body.enc as string, card: body.card as string };
     if (!isListKey(posted.key) || !isListKey(posted.enc)) return this.v2Invalid();
     if (!await cardHolds({ ...posted, list: list.id, endpoint, invite: null }, posted.card)) return this.v2Problem(400, "card_invalid", "The card is not that key's for this list and this PC");
-    // posting the same keys again renews the post and keeps an open comparison; other keys are another card, and its comparison goes
+    // posting the same keys again while the post still stands renews it and keeps an open comparison; a post that ran out is
+    // over, and other keys are another card: either way the comparison goes
     const before = list.posts.get(endpoint);
-    const attempt = before !== undefined && before.key === posted.key && before.enc === posted.enc ? before.attempt : null;
+    const stands = before !== undefined && this.now() - before.at <= LIST_CLAIM_MS;
+    const attempt = stands && before.key === posted.key && before.enc === posted.enc ? before.attempt : null;
     const at = this.now();
     list.posts.set(endpoint, { ...posted, server_id: serverId, at, attempt });
     return this.v2Json({ endpoint, key: posted.key, until: untilOf(at) });
