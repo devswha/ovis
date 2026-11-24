@@ -39,8 +39,9 @@ export class KeeperAnswers {
     this.settle(id, waiting && by !== null && waiting.by === by && waiting.optionId === optionId ? "won" : "lost");
   }
 
-  dropped(id: string, by: string | null): void {
-    if (by !== null && this.reservations.get(id)?.by === by) this.settle(id, this.resolved.has(id) ? "lost" : "gone");
+  /** `answering`: the keeper dropped it because another client's answer is on its way to the agent. */
+  dropped(id: string, by: string | null, answering: boolean): void {
+    if (by !== null && this.reservations.get(id)?.by === by) this.settle(id, this.resolved.has(id) || answering ? "lost" : "gone");
   }
 
   settle(id: string, outcome: AnswerOutcome): void {

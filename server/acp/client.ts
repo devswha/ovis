@@ -286,7 +286,7 @@ export class KeeperClient {
         return true;
       }
       case "_keeper/dropped":
-        if (id !== null) this.answers.dropped(id, text(params["by"]));
+        if (id !== null) this.answers.dropped(id, text(params["by"]), params["answering"] === true);
         return false;
       case "_keeper/expired":
         if (id === null) return false;

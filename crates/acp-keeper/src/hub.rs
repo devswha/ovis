@@ -606,7 +606,10 @@ impl Hub {
             return;
         }
         let Some(wire_id) = self.agent_ids.get(key).filter(|_| !self.answering.contains(key)) else {
-            self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": "not pending (already answered or unknown)"}));
+            self.note_row(
+                "_keeper/dropped",
+                json!({"id": id, "by": by, "reason": "not pending (already answered or unknown)", "answering": self.answering.contains(key)}),
+            );
             return;
         };
         let option = answer.pointer("/result/outcome/optionId").and_then(Value::as_str).map(str::to_string);

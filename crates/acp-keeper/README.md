@@ -71,7 +71,7 @@ Switching needs job control (the pane's terminal) and is not built for Windows.
 |---|---|
 | `_keeper/ready`, `_keeper/session`, `_keeper/agent_exit` | start, session opened or loaded, agent ended |
 | `_keeper/mode`, `_keeper/switch_refused` | the steps of a switch to the real TUI and back; a switch that was not allowed |
-| `_keeper/resolved`, `_keeper/dropped` | the answer that went to the agent and who sent it; a later answer that did not |
+| `_keeper/resolved`, `_keeper/dropped` | the answer that went to the agent and who sent it; a later answer that did not (`answering`: another client's answer is still on its way to the agent) |
 | `_keeper/auto_answered` | the agent asked for `fs/*` or `terminal/*`, which the keeper does not offer |
 | `_keeper/client` | a client connected, with its number |
 | `_keeper/rejected` | a client reused an id it still has in flight, or sent a request while the real TUI had the pane |
