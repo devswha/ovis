@@ -60,15 +60,17 @@ export function cameInThrough(state: ListState, key: string, self: string | null
 }
 
 /**
- * The keys whose time is over by `clock` and that still hold their place: an invite past its `exp` (one that a PC
- * joins with by itself only while it has a use left), and a device that is in past its `until`. Each still holds the
- * current epoch's key or may still sign, so a member that is awake ends it.
+ * The keys whose time is over by `clock` and that still hold the current epoch's key, in the order to put them out:
+ * every device that is in at or past its `until`, and every invite that a PC joins with by itself which is in, still
+ * has a use and is past its `exp`. Exactly the set of the kinds layer's `lapsedRemovals` (shared/account-list.ts,
+ * PR #4593), which this gives way to once that reaches this branch. A plain invite holds no key and lets nobody in by
+ * itself, so it is left alone.
  */
 export function overdueKeys(state: ListState, clock: number): string[] {
   const view = listView(state);
   return [
-    ...view.invites.filter((row) => state.signers[row.key]?.ended === null && clock > row.exp && (!row.auto || row.joins < row.uses)).map((row) => row.key),
     ...view.devices.filter((row) => row.ended === null && row.until !== null && !(clock < row.until)).map((row) => row.key),
+    ...view.invites.filter((row) => row.auto && state.signers[row.key]?.ended === null && row.joins < row.uses && clock > row.exp).map((row) => row.key),
   ];
 }
 

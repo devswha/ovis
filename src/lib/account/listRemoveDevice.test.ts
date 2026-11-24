@@ -285,14 +285,14 @@ describe("tidying up what is over its time", () => {
     expect(await tidyList(first.list, tried, noWait)).toBeNull();
   });
 
-  it("ends a plain invite past its exp, which held no key of the epoch, and opens none", async () => {
+  it("leaves a plain invite past its exp alone: it holds no key of the epoch and lets nobody in (lapsedRemovals' set)", async () => {
     const { w, first } = await twoDevices();
-    const invite = await placeInvite(w, first, { auto: false });
+    await placeInvite(w, first, { auto: false });
     w.clock.now += 16 * 60_000;
     await first.list.sync();
-    expect(await tidyList(first.list, new Set(), noWait)).toEqual(REMOVED);
-    expect(kinds(w.held().entries).slice(-2)).toEqual(["invite", "remove"]);
-    expect(ends(w.held().entries.at(-1)!)).toBe(invite);
+    const before = w.held().entries.length;
+    expect(await tidyList(first.list, new Set(), noWait)).toBeNull();
+    expect(w.held().entries).toHaveLength(before);
   });
 
   it("tries an invite once, whatever the service answers", async () => {

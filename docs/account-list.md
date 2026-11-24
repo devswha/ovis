@@ -1170,8 +1170,10 @@ account's directory each time a sign-in is read, so a removal it missed while it
 even where the directory no longer answers that sign-in.
 
 **Tidying by itself.** After each read that reached the account service, a device of power `full`
-that is in the list ends each invite past its `exp` (an `auto` one while it has a use left) and
-each device past its `until`, by its own clock and judged again on the state it signs on, then
+that is in the list ends each device at or past its `until` and each invite that a PC joins with
+by itself, still has a use and is past its `exp` (the kinds layer's `lapsedRemovals`; a plain
+invite holds no key and lets nobody in, and is left alone), by its own clock and judged again on
+the state it signs on, then
 opens the next epoch where the kinds call for one; where nothing
 is over its time and nobody could seal under the current epoch (another member put itself out), it
 opens the epoch alone. It says nothing on screen, and tries each key once per page, whatever the
