@@ -30,6 +30,12 @@ const BACKOFF_MS = [100, 250, 500, 1_000, 2_000, 5_000] as const;
 export class KeeperClient {
   readonly history: AcpHistory;
   session: string | null = null;
+  sessionError: { code: number; message: string } | null = null;
+  turnSequence = 0;
+  usage: { tokens?: number; cost?: { amount: number; currency: string } } | null = null;
+  model: string | null = null;
+  sessionMode: string | null = null;
+  private opening: unknown;
   turn: AcpTurn | null = null;
   agentGone = false;
   malformedRows = 0;
@@ -239,7 +245,13 @@ export class KeeperClient {
         if (row.client === this.client && this.client !== null && method === null) this.requests.answered(message);
         return false;
       case "to-agent":
+        if (method === "initialize" || method === "session/new" || method === "session/load") {
+          this.opening = message.id;
+          this.sessionError = null;
+        }
         if (method === "session/prompt" && typeof message.id === "string") {
+          this.turnSequence = row.seq;
+          this.usage = null;
           this.prompts.add(message.id);
           this.turn = { running: true, stopReason: null, text: "", error: null };
           return true;
@@ -256,12 +268,30 @@ export class KeeperClient {
 
 
   private fromAgent(row: Row, message: Message, method: string | null, params: Record<string, unknown>): boolean {
+    if (method === null && typeof message.id === "string" && message.id === this.opening) {
+      this.opening = undefined;
+      if (message.error) this.sessionError = { code: typeof message.error.code === "number" ? message.error.code : 0, message: text(message.error.message) ?? "error" };
+      this.model = text(record(message.result?.models)?.currentModelId) ?? this.model;
+      this.sessionMode = text(record(message.result?.modes)?.currentModeId) ?? this.sessionMode;
+      return true;
+    }
     if (method === "session/request_permission" && typeof message.id === "string") {
       this.approvals.set(message.id, approval(row, message.id, params));
       return true;
     }
     if (method === "session/update") {
       const update = record(params["update"]);
+      if (update?.sessionUpdate === "usage_update" && this.turn?.running) {
+        const tokens = update.used;
+        const cost = record(update.cost);
+        this.usage = { ...(typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens >= 0 ? { tokens } : {}),
+          ...(typeof cost?.amount === "number" && Number.isFinite(cost.amount) && cost.amount >= 0 && typeof cost.currency === "string" && /^[A-Z]{3}$/.test(cost.currency) ? { cost: { amount: cost.amount, currency: cost.currency } } : {}) };
+        return true;
+      }
+      if (update?.sessionUpdate === "current_mode_update" && typeof update.currentModeId === "string") {
+        this.sessionMode = update.currentModeId;
+        return true;
+      }
       const chunk = text(record(update?.["content"])?.["text"]);
       if (update?.["sessionUpdate"] !== "agent_message_chunk" || chunk === null || this.turn === null || !this.turn.running) return false;
       this.turn = { ...this.turn, text: this.turn.text + chunk };
@@ -270,6 +300,8 @@ export class KeeperClient {
     if (method !== null || typeof message.id !== "string" || !this.prompts.delete(message.id)) return false;
     const error = record(message.error);
     const stopReason = text(record(message.result)?.["stopReason"]);
+    const total = record(message.result?.usage)?.totalTokens;
+    if (typeof total === "number" && Number.isSafeInteger(total) && total >= 0) this.usage = { ...this.usage, tokens: total };
     this.turn = { running: this.prompts.size > 0, stopReason, text: this.turn?.text ?? "", error: error === null ? null : text(error["message"]) ?? "error" };
     return true;
   }

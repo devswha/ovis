@@ -1,0 +1,87 @@
+import { afterEach, beforeEach, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { HARNESS_CONTRACT, HARNESS_TOOL_DEFAULT, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { AcpChildren } from "../acp/children.ts";
+import { lineCall } from "../line-call.ts";
+import { AgentToolHub } from "./hub.ts";
+
+let dir: string, hub: AgentToolHub, token: string;
+let setting: HarnessToolSetting;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "ath-"));
+  setting = HARNESS_TOOL_DEFAULT;
+  hub = new AgentToolHub({ dir, setting: () => setting, acp: new AcpChildren(join(dir, "acp")) });
+  const key = hub.runs.reserve();
+  key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "claude" });
+  token = readFileSync(key.tokenFile, "utf8");
+  hub.listen();
+});
+afterEach(() => { hub.close(); rmSync(dir, { recursive: true, force: true }); });
+const call = (verb: string, args: object = {}, credential = token) =>
+  lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token: credential, verb, args }, 2000);
+const start = () => { setting = { level: "start", depth: 1, harnesses: ["gjc"] }; };
+
+it("at view level start, send, wait, result, ask and stop are refused", async () => {
+  for (const verb of ["start", "send", "wait", "result", "ask", "stop"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("scope")).toMatchObject({ verbs: ["machines", "harnesses", "ls", "read"] });
+});
+it("refuses a start on another machine without starting it", async () => {
+  start();
+  expect(await call("start", { on: "other", harness: "gjc" })).toMatchObject({ error: { code: "approval_required" } });
+});
+it("start takes no mode, args, model or env", async () => {
+  start();
+  for (const name of ["mode", "args", "model", "env"]) expect(await call("start", { harness: "gjc", [name]: "x" })).toMatchObject({ error: { code: "bad_request" } });
+});
+it("a send to oneself is refused", async () => {
+  start();
+  expect(await call("send", { session: "t1", task: "ignored" })).toMatchObject({ error: { code: "self_target" } });
+});
+it.each([1,2,3] as const)("a run at depth %d cannot start, even with the local harness granted", async depth => {
+  setting = { level: "start", depth, harnesses: ["gjc"] };
+  const parent = hub.runs.verify(token);
+  if (!parent) throw new Error("missing parent");
+  let starter = parent.id;
+  let leaf = "";
+  for (let i = 1; i <= depth; i++) {
+    const r = hub.runs.reserve();
+    r.bind({ self: `child-${i}`, root: parent.id, depth: i, started_by: starter, harness: "gjc" });
+    leaf = readFileSync(r.tokenFile, "utf8");
+    starter = r.id;
+  }
+  expect(await call("start", { harness: "gjc" }, leaf)).toMatchObject({ error: { code: "depth_exceeded" } });
+});
+it("neither an unticked harness nor an approval verb can act", async () => {
+  start();
+  expect(await call("start", { harness: "other" })).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("approve", { session: "t1" })).toMatchObject({ error: { code: "bad_request" } });
+  expect(await call("scope", {}, "ordinary-http-token")).toMatchObject({ error: { code: "not_granted" } });
+});
+it("the 31st call in a minute is refused", async () => {
+  for (let i = 0; i < 30; i++) expect(await call("scope")).toMatchObject({ kind: "scope" });
+  expect(await call("scope")).toMatchObject({ error: { code: "rate_limited" } });
+});
+it("the off switch rejects every verb and revokes credentials already issued", async () => {
+  setting = { ...setting, level: "off" };
+  hub.settingsChanged();
+  expect(await call("read")).toMatchObject({ error: { code: "tools_off" } });
+  start();
+  expect(await call("scope")).toMatchObject({ error: { code: "not_granted" } });
+});
+it("depth holds from another process that uses the child's token", async () => {
+  start();
+  const parent = hub.runs.verify(token);
+  if (!parent) throw new Error("missing parent");
+  const child = hub.runs.reserve();
+  child.bind({ self: "t2", root: parent.id, started_by: parent.id, depth: 1, harness: "gjc" });
+  const relay = Bun.spawn([process.execPath, join(import.meta.dir, "mcp.ts"), "--socket", hub.address, "--token-file", child.tokenFile], {
+    stdin: new Response(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agent_start", arguments: { harness: "gjc" } } })}\n`),
+    stdout: "pipe", stderr: "inherit",
+  });
+  const response = JSON.parse(await new Response(relay.stdout).text());
+  expect(await relay.exited).toBe(0);
+  expect(response.result.structuredContent).toMatchObject({ error: { code: "depth_exceeded" } });
+  expect(await call("send", { session: "t1", task: "x" }, readFileSync(child.tokenFile, "utf8"))).toMatchObject({ error: { code: "ancestor_target" } });
+});

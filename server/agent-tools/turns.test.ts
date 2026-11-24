@@ -1,0 +1,150 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { HARNESS_CONTRACT, isRecord } from "../../shared/harness-tool.ts";
+import { FakeHcCore } from "../herdr-core/core.fake.ts";
+import { HcConnection } from "../herdr-core/connection.ts";
+import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
+import { AcpChildren, type AcpHc } from "../acp/children.ts";
+import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
+import { lineCall } from "../line-call.ts";
+import { AgentToolHub } from "./hub.ts";
+
+describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keepers", () => {
+  let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection, hc: AcpHc, now: number;
+  const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
+  const open = () => {
+    acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 1500 });
+    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 1, harnesses: ["test", "mute"] }),
+      resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT] }) });
+    hub.listen();
+  };
+  beforeEach(() => {
+    now = Date.now();
+    serveRuntime(HERDR_CORE);
+    dir = mkdtempSync(join(tmpdir(), "at-"));
+    const fake = new FakeHcCore();
+    fake.onStart = program => { programs.set(program.address, Bun.spawn([...program.argv], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })); };
+    connection = new HcConnection(() => fake.transport());
+    hc = { call: (method, params) => {
+      if (method === "terminal.kill" && "terminal" in params && typeof params.terminal === "string") programs.get(params.terminal)?.kill();
+      return connection.call(method, params);
+    } };
+    open();
+    const root = hub.runs.reserve();
+    root.bind({ self: "top", harness: "claude", depth: 0, root: root.id, started_by: null });
+    token = readFileSync(root.tokenFile, "utf8");
+  });
+  afterEach(async () => {
+    hub.close(); acp.close();
+    for (const proc of programs.values()) { proc.kill(); await proc.exited; }
+    programs.clear(); connection.close(); serveRuntime(null); rmSync(dir, { recursive: true, force: true });
+  });
+  async function call(verb: string, args: object) {
+    const value = await lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token, verb, args }, 5000);
+    if (!isRecord(value)) throw new Error("invalid answer");
+    return value;
+  }
+  async function start(task?: string) {
+    const value = await call("start", { harness: "test", cwd: dir, ...(task ? { task } : {}) });
+    if (!isRecord(value.session) || typeof value.session.address !== "string") throw new Error(JSON.stringify(value));
+    return value.session.address;
+  }
+  it("the same key sends one prompt; the second send does not change mode", async () => {
+    const session = await start();
+    const first = await call("send", { session, task: "echo A", key: "one" });
+    expect(await call("send", { session, task: "echo A", key: "one" })).toMatchObject({ duplicate: true, turn_id: first.turn_id });
+    await call("wait", { session });
+    expect(await call("send", { session, task: "echo B", key: "two" })).toMatchObject({ duplicate: false });
+    await call("wait", { session });
+    expect(await call("result", { session })).toMatchObject({ final_message: { untrusted: true, from: session, text: "echo bytes=6" } });
+    const child = acp.forPane(session);
+    if (!child) throw new Error("missing keeper");
+    const rows = readFileSync(join(child.root, "archive.jsonl"), "utf8").trim().split("\n").map(s => JSON.parse(s));
+    const messages = rows.filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw));
+    expect(messages.map(m => m.method)).toEqual(["initialize", "session/new", "session/prompt", "session/prompt"]);
+    for (const msg of messages.slice(2)) expect(Object.keys(msg.params).sort()).toEqual(["prompt", "sessionId"]);
+    expect(await call("stop", { session })).toMatchObject({ stopped: true });
+    const verbs = readFileSync(join(dir, "tools/audit.jsonl"), "utf8").trim().split("\n").map(s => JSON.parse(s).verb);
+    expect(verbs.sort()).toEqual(["send", "send", "start", "stop", "turn", "turn"]);
+  });
+  it("wait and read show only waiting_human at a card, including after restart", async () => {
+    const session = await start("ask");
+    hub.close(); acp.close(); open(); await acp.restore();
+    expect(await call("wait", { session })).toMatchObject({ state: { state: "waiting_human" } });
+    for (const what of ["transcript","screen","result"]) {
+      const value = await call("read", { session, what });
+      expect(value).toMatchObject({ state: { state: "waiting_human" } });
+      expect(JSON.stringify(value)).not.toContain("touch x");
+    }
+    expect(await call("send", { session, task: "answer" })).toMatchObject({ error: { code: "waiting_human" } });
+    const child = acp.forPane(session);
+    const approval = child?.client.pending()[0];
+    if (!child || !approval) throw new Error("missing card");
+    expect(await child.client.answer(approval.keeperId, "reject")).toBe("won");
+    expect(await call("wait", { session })).toMatchObject({ state: { state: "done" } });
+    expect(await call("result", { session })).toMatchObject({ final_message: { text: "answered reject", untrusted: true } });
+  });
+  it("wait already in flight wakes when the child asks a person, before the turn ends", async () => {
+    const session = await start("hold");
+    // The ninth refusal is the server's receipt that all eight other waits are held.
+    const waits = Array.from({ length: 9 }, () => call("wait", { session, timeout_s: 45 }));
+    expect(await Promise.race(waits)).toMatchObject({ error: { code: "rate_limited" } });
+    const child = acp.forPane(session);
+    if (!child) throw new Error("missing child");
+    child.client.notify("fixture/ask", { sessionId: child.client.session });
+    const responses = await Promise.all(waits);
+    expect(responses.filter(r => isRecord(r.state) && r.state.state === "waiting_human")).toHaveLength(8);
+    expect(child.client.turn?.running).toBe(true);
+  });
+  it("a person's cancel holds the child until release", async () => {
+    const session = await start("hold");
+    expect(hub.hold(session, true)).toBe(true);
+    expect(await call("send", { session, task: "ignored" })).toMatchObject({ error: { code: "taken_over" } });
+    expect(hub.hold(session, false)).toBe(true);
+    await call("wait", { session });
+    expect(await call("send", { session, task: "echo again" })).toMatchObject({ accepted: true });
+  });
+  it("two simultaneous asks with one key run one child and stop never makes that key fresh again", async () => {
+    const args = { harness: "test", cwd: dir, task: "echo exactly once", key: "dedup" };
+    const [one, two] = await Promise.all([call("ask", args), call("ask", args)]);
+    expect(one.kind).toBe("ask");
+    expect(two.session).toEqual(one.session);
+    expect(programs.size).toBe(1);
+    if (!isRecord(one.session)) throw new Error("missing session");
+    await call("stop", { session: one.session.address });
+    expect(await call("ask", args)).toMatchObject({ error: { code: "unknown_session" } });
+    expect(programs.size).toBe(1);
+  });
+  it("five concurrent starts start four; old children accept no new work but stay alive", async () => {
+    const outputs = await Promise.all(Array.from({ length: 5 }, () => call("start", { harness: "test", cwd: dir })));
+    expect(outputs.filter(v => v.kind === "session")).toHaveLength(4);
+    expect(outputs.find(v => v.kind === "refusal")).toMatchObject({ error: { code: "children_limit" } });
+    now += 3_600_000;
+    for (const [session, proc] of programs) {
+      expect(await call("send", { session, task: "late" })).toMatchObject({ error: { code: "time_limit" } });
+      expect(proc.exitCode).toBeNull();
+    }
+  });
+  it("a keeper that never opens its session is refused cleanly", async () => {
+    expect(await call("start", { cwd: dir, harness: "mute" })).toMatchObject({ error: { code: "start_failed" } });
+    for (const proc of programs.values()) expect(await proc.exited).toBeNumber();
+  });
+
+  it("allow always on one child leaves a wider-mode request on another child waiting for a person", async () => {
+    const a = await start("widen");
+    const first = acp.forPane(a);
+    const awaiting = await call("wait", { session: a });
+    expect(awaiting).toMatchObject({ state: { state: "waiting_human" } });
+    const asked = first?.client.pending()[0];
+    if (!first || !asked) throw new Error("missing approval");
+    expect(await first.client.answer(asked.keeperId, "always")).toBe("won");
+    await call("wait", { session: a });
+    await call("send", { session: a, task: "widen" });
+    expect(await call("wait", { session: a })).toMatchObject({ state: { state: "done" } });
+    const b = await start("widen");
+    expect(await call("wait", { session: b })).toMatchObject({ state: { state: "waiting_human" } });
+    expect(acp.forPane(b)?.client.sessionMode).toBe("ask");
+  });
+});

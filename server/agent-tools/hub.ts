@@ -1,0 +1,218 @@
+import { chmodSync, lstatSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { createServer, type Server, type Socket } from "node:net";
+import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, harnessVerb, isRecord, isView, refuse, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { projectSafeCommand } from "../entries.ts";
+import { coreConnection } from "../herdr-core/runtime.ts";
+import { AcpStartFailed, type AcpChildren } from "../acp/children.ts";
+import { resolveHarness, type HarnessCommand } from "./harnesses.ts";
+import { RunStore, type Run } from "./runs.ts";
+import { Ledger, type ToolChild } from "./ledger.ts";
+import { RunRate, validArgs } from "./guards.ts";
+import { ChildTurns, childRef, childState } from "./turns.ts";
+import { HarnessView, type ViewOptions } from "./view.ts";
+
+interface Options extends ViewOptions {
+  readonly acp: AcpChildren;
+  readonly dir: string;
+  readonly setting: () => HarnessToolSetting;
+  readonly now?: () => number;
+  readonly resolve?: (kind: string) => HarnessCommand | null;
+}
+export class AgentToolHub {
+  readonly address: string;
+  readonly runs: RunStore;
+  private server: Server | null = null;
+  private readonly ledger: Ledger;
+  private readonly turns: ChildTurns;
+  private readonly view: HarnessView;
+  private readonly now: () => number;
+  private readonly rate = new RunRate();
+  private readonly waits = new Map<string, number>();
+  private readonly tails = new Map<string, Promise<unknown>>();
+  private readonly off: () => void;
+  private closed = false;
+  constructor(private readonly options: Options) {
+    this.address = join(options.dir, "hub.sock");
+    this.runs = new RunStore(options.dir);
+    this.now = options.now ?? Date.now;
+    this.ledger = new Ledger(options.dir);
+    this.turns = new ChildTurns(this.ledger, options.acp, this.now);
+    this.view = new HarnessView(options, options.acp, this.ledger);
+    this.off = options.acp.onStatus(child => {
+      const row = this.ledger.children.get(child.terminal);
+      if (row?.id === child.id && (child.client.keeperGone || child.client.agentGone)) {
+        this.runs.revoke(row.run);
+        this.rate.forget(row.run);
+        if (child.client.keeperGone) { this.turns.forget(child); return; }
+      }
+      this.turns.watch(child);
+    });
+    this.settingsChanged();
+  }
+  get setting() { return this.options.setting(); }
+  settingsChanged(): void { if (this.setting.level === "off") this.runs.revokeAll(); }
+  listen(): void {
+    if (this.server) return;
+    if (process.platform === "win32" || Buffer.byteLength(this.address) > 100) throw new Error("Agent tool socket is not available at this path.");
+    const existing = lstatSync(this.address, { throwIfNoEntry: false });
+    if (existing) {
+      if (!existing.isSocket() || existing.uid !== process.getuid?.()) throw new Error("Agent tool socket path is occupied.");
+      rmSync(this.address);
+    }
+    const server = createServer(s => this.receive(s));
+    server.on("error", () => console.warn("Agent tool socket unavailable."));
+    const mask = process.umask(0o077);
+    try { server.listen(this.address); chmodSync(this.address, 0o600); this.server = server; }
+    finally { process.umask(mask); }
+  }
+  close(): void { this.closed = true; this.off(); this.turns.close(); this.server?.close(); this.server = null; }
+  hold(session: string, held: boolean): boolean { return this.turns.hold(session, held); }
+  command(tokenFile: string) {
+    const [command, ...args] = projectSafeCommand("agent-mcp");
+    if (!command) throw new Error("Missing relay command.");
+    return { name: "ovis-agent", command, args: [...args, "--socket", this.address, "--token-file", tokenFile], env: [] };
+  }
+  private receive(s: Socket): void {
+    let buffer = "", bytes = 0, handled = false;
+    s.setEncoding("utf8");
+    s.setTimeout(2000, () => s.destroy());
+    s.on("error", () => s.destroy());
+    s.on("data", (chunk: string) => {
+      if (handled) return;
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > 65536) { s.destroy(); return; }
+      buffer += chunk;
+      const end = buffer.indexOf("\n");
+      if (end < 0) return;
+      handled = true; s.setTimeout(0);
+      let request: unknown;
+      try { request = JSON.parse(buffer.slice(0, end)); } catch { s.end(`${JSON.stringify(refuse("bad_request", "Invalid JSON."))}\n`); return; }
+      void this.call(request).catch(() => refuse("unavailable", "The requested session is unavailable.")).then(reply => {
+        const data = JSON.stringify(reply);
+        s.end(`${Buffer.byteLength(data) <= 262144 ? data : JSON.stringify(refuse("unavailable", "This response is too large."))}\n`);
+      });
+    });
+  }
+  private async serial<T>(id: string, action: () => Promise<T>): Promise<T> {
+    const prior = this.tails.get(id) ?? Promise.resolve();
+    const next = prior.then(action, action);
+    this.tails.set(id, next);
+    try { return await next; } finally { if (this.tails.get(id) === next) this.tails.delete(id); }
+  }
+  private async call(input: unknown): Promise<object> {
+    if (!isRecord(input) || input.contract !== HARNESS_CONTRACT) return refuse("unknown_contract", "Unknown contract.");
+    const { token, verb, args } = input;
+    const auth = () => !this.closed && this.setting.level !== "off" && typeof token === "string" ? this.runs.verify(token) : null;
+    const deny = () => this.setting.level === "off" ? refuse("tools_off", "Agent tools are off.") : refuse("not_granted", "This run is not granted that operation.");
+    const began = this.now();
+    const run = auth();
+    if (!run) return deny();
+    const limited = this.rate.take(run.id, this.now());
+    if (limited) return limited;
+    if (verb === "scope") return answer("scope", { verbs: this.setting.level === "start" && run.depth < this.setting.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS });
+    if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");
+    if (!isView(verb) && this.setting.level !== "start") return deny();
+    if (!validArgs(verb, args)) return refuse("bad_request", "Invalid or unexpected argument.");
+    if (verb === "read" && args.what === "result" && this.setting.level !== "start") return deny();
+    if (isView(verb)) {
+      const result = await this.view.query(verb, args, this.turns);
+      return auth() && !(args.what === "result" && this.setting.level !== "start") ? result : deny();
+    }
+    const allowed = () => !!auth() && this.setting.level === "start";
+    const session = String(args.session ?? "");
+    if (verb === "start" || verb === "ask") {
+      const started = await this.serial(run.id, async () => {
+        if (!allowed()) return deny();
+        return this.start(run, args, allowed);
+      });
+      if (verb === "start" || !("session" in started) || started.kind !== "session") return started;
+      const ref = started.session;
+      const remaining = Math.max(0, HARNESS_LIMITS.wait_seconds - (this.now() - began) / 1000);
+      const turnId = started.sent?.turn_id;
+      const waiting = await this.wait(run, ref.address, { ...args, turn: turnId, timeout_s: Math.min(Number(args.timeout_s ?? 30), remaining) });
+      if (!allowed()) return deny();
+      if (!("state" in waiting)) return waiting;
+      const child = this.options.acp.forPane(ref.address), row = this.ledger.children.get(ref.address);
+      const result = child && row && waiting.state.state === "done" ? this.turns.result(child, row, turnId) : null;
+      const payload = result?.kind === "result" ? (({ contract: _contract, kind: _kind, session: _session, ...body }) => body)(result) : null;
+      return answer("ask", { session: ref, state: waiting.state, sent: started.sent, result: payload });
+    }
+    if (session === run.self) return refuse("self_target", "A run cannot target itself.");
+    if (this.runs.ancestors(run).includes(session)) return refuse("ancestor_target", "A run cannot target an ancestor.");
+    const row = this.ledger.children.get(session);
+    if (!row) return refuse("unknown_session", "Unknown session.");
+    if (row.starter !== run.id) return refuse("not_owner", "Not your child.");
+    const child = this.options.acp.forPane(session);
+    if (!child || child.id !== row.id) return refuse("unknown_session", "The child has ended.");
+    await child.client.ready();
+    if (!allowed()) return deny();
+    this.turns.watch(child);
+    if (verb === "result") return this.turns.result(child, row, args.turn);
+    if (verb === "wait") {
+      const result = await this.wait(run, session, args);
+      return allowed() ? result : deny();
+    }
+    return this.serial(run.id, async () => {
+      if (!allowed()) return deny();
+      if (this.options.acp.forPane(session) !== child) return refuse("unknown_session", "The child has ended.");
+      if (verb === "send") return this.turns.send(child, row, args);
+      if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
+      this.ledger.audit(row, "stop", null);
+      await this.options.acp.stop(row.id);
+      this.turns.forget(child);
+      this.ledger.children.delete(session); this.ledger.save(); this.runs.revoke(row.run);
+      return answer("stopped", { session, stopped: true });
+    });
+  }
+  private async wait(run: Run, session: string, args: Record<string, unknown>) {
+    const row = this.ledger.children.get(session), child = this.options.acp.forPane(session);
+    if (!row || !child || row.id !== child.id) return refuse("unknown_session", "The child has ended.");
+    if (args.turn && args.turn !== `${row.id}.${row.turns.at(-1)?.n}`) {
+      const old = row.turns.find(t => `${row.id}.${t.n}` === args.turn);
+      return old?.end ? answer("state", { session, state: { state: "done", turn: old.n } }) : refuse("unknown_session", "Unknown turn.");
+    }
+    const n = this.waits.get(run.id) ?? 0;
+    if (n >= 8) return refuse("rate_limited", "Too many open waits.");
+    this.waits.set(run.id, n + 1);
+    try { return await this.turns.wait(child, row, Number(args.timeout_s ?? 30) * 1000); }
+    finally { this.waits.set(run.id, (this.waits.get(run.id) ?? 1) - 1); }
+  }
+  private async start(run: Run, args: Record<string, unknown>, allowed: () => boolean) {
+    const kind = String(args.harness);
+    if (args.on !== undefined && args.on !== "local") return refuse("approval_required", "Starting on another machine needs a person's approval and is not supported yet.");
+    if (!this.setting.harnesses.includes(kind)) return refuse("not_granted", "This harness was not enabled.");
+    if (run.depth >= this.setting.depth) return refuse("depth_exceeded", "This run is at its depth limit.");
+    const own = [...this.ledger.children.values()].filter(r => r.starter === run.id && this.options.acp.forPane(r.terminal)?.id === r.id);
+    const used = typeof args.key === "string" ? this.runs.previousStart(run.id, args.key) : undefined;
+    if (used) {
+      const row = own.find(r => r.run === used), child = row ? this.options.acp.forPane(row.terminal) : null;
+      if (row && child) return answer("session", { session: childRef(row, child), state: childState(child, row), sent: row.turns[0] ? { accepted: true, turn_id: `${row.id}.${row.turns[0].n}`, key: args.key, duplicate: true } : null });
+      return refuse("unknown_session", "This key named a child that is no longer available.");
+    }
+    if (own.length >= HARNESS_LIMITS.children) return refuse("children_limit", "Four children are already running.");
+    const launch = (this.options.resolve ?? resolveHarness)(kind);
+    if (!launch) return refuse("start_failed", "This harness has no supported ACP adapter.");
+    const cwd = typeof args.cwd === "string" ? args.cwd : (await coreConnection().call("terminal.get", { terminal: run.self })).cwd;
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return refuse("bad_request", "The folder does not exist.");
+    if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) return refuse("not_granted", "The grant changed.");
+    const key = this.runs.reserve();
+    try {
+      if (typeof args.key === "string") this.runs.rememberStart(run.id, args.key, key.id);
+      const child = await this.options.acp.start({ harness: kind, argv: launch.argv, env: { ...launch.env, OVIS_AGENT_SOCKET: this.address, OVIS_AGENT_TOKEN_FILE: key.tokenFile },
+        cwd, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)] });
+      this.view.signInNeeded.delete(kind);
+      const row: ToolChild = { id: child.id, terminal: child.terminal, harness: kind, starter: run.id, parent: run.self, run: key.id, created: this.now(), held: false, turns: [] };
+      this.ledger.children.set(child.terminal, row); this.ledger.save(); this.ledger.audit(row, "start", null); this.turns.watch(child);
+      if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) { key.cancel(); return refuse("not_granted", "The grant changed while starting."); }
+      key.bind({ self: child.terminal, depth: run.depth + 1, root: run.root, harness: kind, started_by: run.id });
+      const accepted = args.task ? await this.turns.send(child, row, args) : null;
+      if (accepted?.kind === "refusal") return accepted;
+      const sent = accepted ? { accepted: true, turn_id: accepted.turn_id, key: accepted.key, duplicate: accepted.duplicate } : null;
+      return answer("session", { session: childRef(row, child), state: childState(child, row), sent });
+    } catch (error) {
+      if (error instanceof AcpStartFailed && error.agentCode === -32000) this.view.signInNeeded.add(kind);
+      key.cancel(); return refuse("start_failed", "The harness did not open an ACP session.");
+    }
+  }
+}

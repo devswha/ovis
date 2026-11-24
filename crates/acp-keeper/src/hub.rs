@@ -316,15 +316,19 @@ impl Hub {
     }
 
     pub fn start(&mut self) {
+        let mut capabilities = json!({"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false});
+        if self.opts.announce_subagents {
+            capabilities["subagents"] = json!({});
+        }
         self.request(
             "initialize",
-            json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}, "clientInfo": {"name": "acp-keeper", "version": env!("CARGO_PKG_VERSION")}}),
+            json!({"protocolVersion": 1, "clientCapabilities": capabilities, "clientInfo": {"name": "acp-keeper", "version": env!("CARGO_PKG_VERSION")}}),
             Own::Initialize,
         );
     }
 
     fn new_session(&mut self) {
-        let mut params = json!({"cwd": self.opts.cwd, "mcpServers": []});
+        let mut params = json!({"cwd": self.opts.cwd, "mcpServers": self.opts.mcp_servers});
         if let Some(meta) = &self.opts.session_meta {
             params["_meta"] = meta.clone();
         }
@@ -472,7 +476,7 @@ impl Hub {
                         self.model.session = Some(id.clone());
                         self.request(
                             "session/load",
-                            json!({"sessionId": id, "cwd": self.opts.cwd, "mcpServers": []}),
+                            json!({"sessionId": id, "cwd": self.opts.cwd, "mcpServers": self.opts.mcp_servers}),
                             Own::LoadSession { resumed: self.resumed },
                         );
                     }

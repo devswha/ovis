@@ -18,7 +18,7 @@ import { handleSeenRequest, type SeenStore } from "./seen.ts";
 import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary, type TailnetNode } from "./tailscale.ts";
 import { handleTailnetNodeRequest, tailnetNodeGate, type TailnetNodes } from "./tailnet-nodes.ts";
 import { TAILSCALE_CONTROLS } from "./dispatch-routes.ts";
-import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
+import { badRequest, errorResponse, jsonResponse, readJsonObject, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
@@ -141,6 +141,7 @@ export interface RequestServices {
   readonly approvals: ApprovalHub;
   /** the agents this server drives over ACP (server/acp/children.ts); null off this PC's herdr-core */
   readonly acp: AcpChildren | null;
+  readonly agentTools?: { hold(session: string, held: boolean): boolean } | null;
   readonly cliProxyRoutes: CLIProxyRoutes;
   readonly usageLogin: UsageLoginService;
   readonly usage: UsageService;
@@ -1057,6 +1058,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return handleSessionResumeRequest(request, { readOnly, stores: { codexHome: options.codexHome, opencodeDb: options.opencodeDb, hermesHome: options.hermesHome }, holdOpen: (seconds) => ctx.timeout(request, seconds) });
   }
 
+  if (pathname === "/api/pane/turn/cancel" || pathname === "/api/pane/turn/release") {
+    setRequestRoute(pathname);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST.");
+    const body = await readJsonObject(request);
+    if (body instanceof Response) return body;
+    if (typeof body.pane_id !== "string") return badRequest("missing_pane_id", "pane_id is required.");
+    return ctx.services.agentTools?.hold(body.pane_id, pathname.endsWith("/cancel")) ? jsonResponse({ ok: true }) : badRequest("unavailable", "No connected agent tool child in this pane.");
+  }
   if (pathname.startsWith("/api/pane/prompt")) {
     try {
       const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), onAnswered: () => options.telemetry?.tally("prompt_answers") });
