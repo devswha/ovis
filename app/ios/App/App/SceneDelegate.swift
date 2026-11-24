@@ -8,6 +8,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         window = UIWindow(windowScene: windowScene)
+        // before anything opens: what a build with the shell inside the app can no longer open leaves the list
+        PCStore.setAsideHosted()
         window?.rootViewController = HerdrBridgeViewController.first()
         window?.makeKeyAndVisible()
 

@@ -8,7 +8,7 @@
  * point at a shell served elsewhere. OVIS_APP_HOME=bundled keeps the app's own page as the first screen, where the
  * native code otherwise opens the hosted shell's (hosted-origin.ts, appHome).
  *
- * The Android app also carries the shell itself (bundled-shell.ts): OVIS_APP_SHELL=bundled, the default for a build of
+ * Both apps also carry the shell itself (bundled-shell.ts): OVIS_APP_SHELL=bundled, the default for a build of
  * the production origin, copies OVIS_APP_SHELL_DIR's dist-shell (or one built from this checkout) into
  * app/bundled-shell, where the native builds take it from; OVIS_APP_SHELL=hosted, the default with OVIS_APP_URL, loads
  * it from the network instead.
@@ -63,7 +63,7 @@ if (shell === "bundled") {
   try {
     if (!given) buildShell(from);
     const packed = packShell(from, shellAssets);
-    console.log(`The Android app carries the shell from ${given || "this checkout"}: ${packed.files} files, ${(packed.bytes / 1048576).toFixed(1)} MB`);
+    console.log(`The apps carry the shell from ${given || "this checkout"}: ${packed.files} files, ${(packed.bytes / 1048576).toFixed(1)} MB`);
   } finally {
     if (!given) rmSync(from, { recursive: true, force: true });
   }

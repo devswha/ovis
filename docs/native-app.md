@@ -111,7 +111,8 @@ relay's FCM credentials are a service account key of the app's Firebase project,
   iPhone.
 - Speed: measure what is slow before changing anything. The PC still serves its own UI at its own
   address; the hosted shell (relay PCs, home) is carried in the Android app since 2026-11-24 (see
-  [The bundled shell](#the-bundled-shell-android)).
+  [The bundled shell](#the-bundled-shell-android)) and in the iOS app (see
+  [The shell inside the app](#the-shell-inside-the-app-ios)).
 
 ## Spike results (2026-10-19)
 
@@ -516,6 +517,98 @@ packaging checks that compare the hosted origin compare it as well, so the pages
 packaged with the first screen of another. A build with `OVIS_APP_ACCOUNT=0` takes that too unless it sets
 `OVIS_APP_HOME=hosted`.
 
+### The shell inside the app (iOS)
+
+A build made with `OVIS_APP_SHELL=bundled` (the default without `OVIS_APP_URL`, so what a store build is) carries the
+hosted app's files, the shell, and serves them itself: nothing of the shell is loaded from the network. `bun run build:web`
+packs the dist-shell it is given (`OVIS_APP_SHELL_DIR`, a release's verified `dist-shell.tar.gz` unpacked) or builds from
+the checkout into `app/bundled-shell` (`packShell` in `app/scripts/bundled-shell.ts`, the one copy both apps carry,
+[The bundled shell](#the-bundled-shell-android)): `shell/`, the files, and `shell-policy.json`, the two policies read
+from that copy's own `_headers`. The App target's "Carry the shell" phase copies that folder into the app
+(`app/ios/carry-shell.sh`; no folder reference in the project, as a hosted build has no such folder). A
+build made with `OVIS_APP_SHELL=hosted` (the default with `OVIS_APP_URL`: the owner's preview app, the QA twin) loads the
+shell from that origin as every build did before, and everything below is as it was there.
+
+- **Where.** WebKit gives an app no http or https address of its own, so the shell is at the hosted origin's host on the
+  app's scheme: `capacitor://app.ovis.sh` (`Home.shellOrigin`; `PCStore.shellOrigin` is what every gate compares a page
+  with, and in a hosted build it is the hosted origin itself). The app's own pages (`app/web`) stay at
+  `capacitor://localhost`. The two are told apart by their host, which a page cannot choose (`Home.bundledPage`,
+  `Home.shellFrame`). That is another origin than `https://app.ovis.sh`, so what the hosted app kept there (the
+  sign-in, this phone's device keys, its pairings) is out of the shell's reach: a person who updates signs in once
+  more, and pairs a PC paired without an account again. Nothing of the old origin's storage is deleted.
+- **Serving** (`ShellHost.swift`, `ShellRoute` in `OvisHomeCore`). A request for the shell's host is answered as the
+  hosted app's host answers the same path (`shellRedirects` and `shellHeaders` in `scripts/shell-build.ts`): `/` and
+  everything under `/s/<id>/` is `index.html`; `/s/<id>/~render` is `render.html`, never the page;
+  `/s/<id>/manifest.webmanifest` is the manifest; a file is served by its path under its own Content-Type; a path with
+  no file is the page, except under `assets/`, where it is a 404; `sw.js`, `_headers`, `_redirects`, `.well-known/`,
+  `render.html` by its own name, a path with an escape or a `.`/`..` segment, and Capacitor's own `/_capacitor_file_`
+  and `/_capacitor_http_interceptor_` are 404 (the web view has no service worker; the last two would read the app's
+  files and fetch any address for a page). Every answer carries the shell's policy as a `Content-Security-Policy`
+  header, the render host's answer its own instead (`sandbox allow-scripts; default-src 'none'; …`): a `<meta>` cannot
+  carry `sandbox` or `frame-ancestors`, so it is a header or nothing. A shell whose policies are missing is not served.
+- **Why it stands in front of Capacitor's handler.** Capacitor registers one handler for the app's scheme, sends only a
+  Content-Type, has no setting for headers, its view controller's `loadView` is final, and the package is a built
+  framework that a patch does not reach. `ShellHost.origin` exchanges that handler's `webView(_:start:)` for one that
+  answers the shell's host itself and passes the app's own host on to Capacitor; any other host on the scheme gets
+  nothing. If the exchange cannot be made (a Capacitor that renamed the method no longer compiles; one that dropped it
+  at run time fails the check), or the build's shell or policies are missing, nothing is the shell: no page gets what
+  a shell page may ask, and the app opens on its own page. The alternative, should the exchange ever break: give
+  Capacitor another scheme for the app's own pages (`descriptor.urlScheme`) and register a handler of the app's own
+  for `capacitor`, which needs no exchange but moves the app's own pages to another origin.
+- **What the client is told.** At the start of every main-frame document of the shell, before its first script,
+  `window.__ovisAppShell = { bundled: true, platform: "ios", appVersion, build }` (`Home.appShellScript`, a
+  `WKUserScript`; frozen and not writable). Only there: a PC's own page is that PC's copy of the client, and the app's
+  own pages and the demo are not the shell. The main frame only: the render host is a document of the shell's origin
+  in a frame, and nothing a rendered page reads or writes there counts for anything. The object grants nothing; what a
+  page may ask of the app is decided by where it was loaded from. A hosted build says nothing.
+- **Keys.** A relay PC is saved by its scope where its page is, `capacitor://app.ovis.sh/s/<server_id>/`, and the
+  shell as the current PC by `capacitor://app.ovis.sh`, which is what the shell's My PCs compares with its own origin.
+  The app's own pages name the shell by the hosted origin on both platforms, so `getState` gives them those keys as
+  addresses on the hosted origin (`Home.hostedForm`), and `open` and `forget` take either form (`Home.shellForm`): a
+  pairing link, a sign-in or a QR code written for `https://app.ovis.sh` opens as that page inside the app. A shell
+  page's own link to the hosted origin is turned to its page inside the app too, and a PC's scope named without its
+  slash gets it (`Home.shellNavigation`), so the network's copy of the shell is never loaded in the app.
+- **Home** is the shell's own first screen, `capacitor://app.ovis.sh/#pcs`, with the cover until the client drew. No
+  clock runs against it and nothing stands in for it when the phone has no network (`Home.timedOut` with `inApp`); a
+  cover that stays (a web content process that runs nothing) offers Try again: 5 seconds in once the page answered,
+  20 when it has not.
+- **What a page may ask** is what it could ask in a hosted build, page kind by page kind:
+
+  | Gate | Hosted build | Shell inside the app |
+  |---|---|---|
+  | `OvisDirect`, every method (`DirectCallGate.fromApp`) | main frame of `https://app.ovis.sh` | main frame of `capacitor://app.ovis.sh` |
+  | `OvisSsh`, every method (`DirectCallGate.fromBundle`, `OvisSshPlugin.fromAppPage`) | main frame of `capacitor://localhost` | the same; the shell is on that scheme and is refused by its host |
+  | `OvisSsh.add` handing over to the setup sheet, `HerdrShell.openSshSetup` (`SshPcs.setupOpener`) | the app's own pages and `https://app.ovis.sh` | the app's own pages and `capacitor://app.ovis.sh` |
+  | `HerdrShell.forget` of an SSH PC, `disconnect` leading to an SSH PC's Manage | the app's own pages (any `capacitor:` page, of which there was no other) | the app's own pages by their host (`Home.bundledPage`) |
+  | `getState`'s `ids` (`Home.shownIds`) | the app's own pages and `https://app.ovis.sh` | the app's own pages and `capacitor://app.ovis.sh` |
+  | `HerdrShell.identify` (`Home.identifiedKey`) | a saved PC's own address, never the hosted app or a relay scope | the same, never the shell or a relay scope there |
+  | `OvisPush` (`shownPc`) | the PC whose page is on screen, by its key | the same; a relay PC's key is its scope inside the app |
+  | A message to the bridge from a frame inside a page | carried out for every plugin but `OvisDirect` and `OvisSsh` | dropped for every plugin (`DirectCallGate`) |
+
+  The last row is the one that differs, and it takes away: in such a build the render host is a document the app
+  serves, so no plugin takes a message from any frame inside any page.
+- **After the update** (`PCStore.setAsideHosted`, at each start): what the app saved on the hosted origin leaves the
+  list, the hosted app as the PC a sign-in opened and every relay PC's scope there, with `current` and `last` when
+  they name one. Those entries are kept aside (`herdr.hosted.saved`, `.names`, `.ids` in UserDefaults), not deleted,
+  for a later step that may read the old origin's keys. A PC opened at its own address keeps its entry, name, relay ID
+  and place: a Tailscale or home network address, any other, an SSH PC's address on this phone. Its page and its
+  cookie are its own origin's. When anything was set aside, the next screen says so once
+  (`ShellMovedViewController`, `Home.movedNotice`: English, Korean, Japanese, Chinese by the phone's first language):
+  "Sign in again to get your PCs back", that a PC paired without an account needs pairing again, and, when some are
+  left, that the PCs opened by an address, Tailscale or SSH are still there. Its one button opens the shell's first
+  screen, where the sign-in is, over a PC that is still current.
+- **Push.** An endpoint is kept by the PC's key (`ovis.push.endpoint.<key>`), so a hosted build's endpoints for relay
+  PCs stay under their old keys, unread and not deleted, and a PC signed in to or paired again registers a new one
+  under its new key. The PC keeps pushing to the old endpoint for the device it knew, which the phone still shows,
+  until that device is removed on the PC (Settings → Devices and PCs) or the relay retires the endpoint; until then an
+  alert for a pane can arrive by both, the later one replacing the earlier (the same thread).
+- **Building.** `OVIS_APP_SHELL` reaches the app as `OvisAppShell` in Info.plist (`hosted-origin.xcconfig`, `bundled`
+  unless the run wrote `hosted`). The App target's "Check the hosted origin" phase (`check-hosted-origin.sh`) fails a
+  bundled build with no shell in `app/bundled-shell`, a hosted one where that folder is still there, a bundled one whose hosted
+  origin is `localhost` (the app's own pages' host), and an archive (Product > Archive, what an App Store upload is
+  made from) of `sh.ovis.app` that would load the shell from the network. A test build with another bundle ID may stay
+  hosted.
+
 ### Push in the app
 
 The app's web view has no service worker, so a PC's alerts reach it through the app, as
@@ -788,7 +881,7 @@ page) and answers it from its assets at the hosted origin itself, `BuildConfig.A
 (`https://app.ovis.sh`, or a test build's `OVIS_APP_URL`), with no network. The origin string stays, so a
 person who updates from a build that loaded the shell from there keeps that origin's storage: the account's
 sign-in and keys (IndexedDB `ovis-account`, `ovis-relay`) and the pairings. Decided 2026-11-24 for both store
-apps; the iOS app moves to an origin of its own in a later change.
+apps; the iOS app moves to an origin of its own ([The shell inside the app](#the-shell-inside-the-app-ios)).
 
 Build (`app/scripts/bundled-shell.ts`, called by `build-web.ts`):
 

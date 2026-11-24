@@ -1,5 +1,6 @@
 import Capacitor
 import Foundation
+import OvisHomeCore
 import WebKit
 
 /// The PC's direct carriers for the hosted shell (src/lib/relay/directSocket.ts; docs/relay.md, "Direct on
@@ -279,10 +280,13 @@ private final class SessionEvents: NSObject, URLSessionWebSocketDelegate {
 
 /// Stands in front of Capacitor's script message handler: every OvisDirect message (its own methods and the
 /// listener methods it inherits, addListener, removeListener and removeAllListeners) goes on only from the main
-/// frame of the app's own origin (the hosted shell, PCStore.appOrigin), never from a PC page opened by its
-/// address or any frame, which Capacitor's iOS bridge would otherwise let call every plugin. The plugin's own
-/// methods act only on calls this approved, so without the gate they answer nothing; only those calls leave an
-/// approval, and each takes its own, so none is kept unused.
+/// frame of the shell's origin (PCStore.shellOrigin: the hosted app, or its copy inside the app in a build that
+/// serves it itself), never from a PC page opened by its address or any frame, which Capacitor's iOS bridge would
+/// otherwise let call every plugin. The plugin's own methods act only on calls this approved, so without the gate
+/// they answer nothing; only those calls leave an approval, and each takes its own, so none is kept unused.
+/// In a build that serves the shell itself, no plugin takes a message from a frame inside a page at all: there the
+/// render host (`/s/<id>/~render`, which draws a page from a PC's files in a frame) is a document the app serves, and
+/// what the main frame's address lets a page ask must not be asked from inside it.
 final class DirectCallGate: NSObject, WKScriptMessageHandler {
     private static let lock = NSLock()
     private static var approved = Set<String>()
@@ -314,17 +318,18 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
 
     static func fromApp(_ frame: WKFrameInfo) -> Bool {
         let origin = frame.securityOrigin
-        guard frame.isMainFrame, let app = PCStore.appOrigin, let appHost = app.host?.lowercased() else { return false }
         // a WKSecurityOrigin's port is 0 for its scheme's own
-        return origin.protocol == "https" && origin.host.lowercased() == appHost && (origin.port == 0 ? 443 : origin.port) == (app.port ?? 443)
+        return frame.isMainFrame && Home.shellFrame(scheme: origin.protocol, host: origin.host, port: origin.port, shell: PCStore.shellOrigin)
     }
 
-    /// The main frame of the app's own bundled pages (the connect screen), the only one OvisSsh answers.
+    /// The main frame of the app's own bundled pages (the connect screen), the only one OvisSsh answers: by its
+    /// host, which the shell a build serves on the same scheme does not have.
     static func fromBundle(_ frame: WKFrameInfo) -> Bool {
-        frame.isMainFrame && frame.securityOrigin.protocol == "capacitor" && frame.securityOrigin.host.lowercased() == "localhost"
+        frame.isMainFrame && frame.securityOrigin.protocol == Home.appScheme && frame.securityOrigin.host.lowercased() == Home.bundledHost && frame.securityOrigin.port == 0
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        if PCStore.shellBundled, !message.frameInfo.isMainFrame { return }
         // the SSH PCs' keys, host keys and setup: never a PC page's to reach (OvisSshPlugin). One call of the hosted
         // app's own main frame goes on: `add`, which a released front page makes itself and which there only hands
         // over to the app's own page (OvisSshPlugin.add), as HerdrShell openSshSetup does

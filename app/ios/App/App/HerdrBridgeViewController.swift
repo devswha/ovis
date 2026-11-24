@@ -13,9 +13,64 @@ enum PCStore {
     /// in a store build. Without it nothing is the hosted shell.
     static let appOrigin = (Bundle.main.object(forInfoDictionaryKey: "OvisAppOrigin") as? String).flatMap { URL(string: $0) }
 
+    /// Whether this build serves the shell from inside the app (OvisAppShell in Info.plist, `bundled` in a build made
+    /// with OVIS_APP_SHELL=bundled) instead of loading it from `appOrigin`.
+    static let shellBundled = appOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppShell") as? String) == "bundled"
+
+    /// Where the shell's pages are, which every gate that asks "is this page the shell's" compares with: `appOrigin`
+    /// in a build that loads the shell from there, and in one that serves it itself that origin's host on the app's
+    /// own scheme (`capacitor://app.ovis.sh`), once it is served (ShellHost.origin): never the network's copy.
+    static let shellOrigin = shellBundled ? ShellHost.origin : appOrigin
+
+    /// `text` as this build opens it (Home.shellForm): an address on the hosted origin is that page of the shell
+    /// inside the app, where the build serves it; anything else as it is.
+    static func shellForm(_ text: String) -> String {
+        Home.shellForm(text, hosted: appOrigin, shell: shellOrigin)
+    }
+
+    /// Whether the PC `key` is one the app serves itself: the shell inside the app, or a relay PC's scope there.
+    /// Nothing is waited on for its page, and no address explains a page that does not come.
+    static func inApp(_ key: String?) -> Bool {
+        guard shellBundled, let key, let url = URL(string: key) else { return false }
+        return url.scheme?.lowercased() == Home.appScheme && origin(of: url) != nil
+    }
+
+    /// The update to a build with the shell inside the app found a sign-in or a PC of the hosted origin on this
+    /// phone (setAsideHosted), and the screen that says so (ShellMovedViewController) has not been answered yet.
+    static var moveNotice: Bool {
+        get { shellBundled && defaults.bool(forKey: "herdr.shell.notice") }
+        set { defaults.set(newValue, forKey: "herdr.shell.notice") }
+    }
+
+    /// In a build that serves the shell from inside the app, at each start: what the app saved on the hosted origin
+    /// (the hosted app as the PC a sign-in opened, every relay PC's scope there) no longer opens, as the sign-in and
+    /// the pairing keys behind it are the hosted origin's own storage, which the shell's new origin cannot read. Those
+    /// entries leave the list, and the person is told once (moveNotice). A PC opened at its own address (Tailscale, a
+    /// home network, any other, an SSH PC's on this phone) keeps its entry, its name and its place as the current PC:
+    /// its page and its cookie are its own origin's. Nothing is deleted: the entries are kept aside (`herdr.hosted.*`),
+    /// their push endpoints stay under their keys, and the hosted origin's storage in the web view is not touched.
+    static func setAsideHosted() {
+        guard shellBundled, shellOrigin != nil else { return }
+        let kept = Home.withoutHosted(saved: saved, names: names, ids: ids, current: current, last: last, hosted: appOrigin)
+        guard !kept.dead.isEmpty else { return }
+        let aside = defaults.stringArray(forKey: "herdr.hosted.saved") ?? []
+        defaults.set(aside + kept.dead.filter { !aside.contains($0) }, forKey: "herdr.hosted.saved")
+        let asideNames = defaults.dictionary(forKey: "herdr.hosted.names") as? [String: String] ?? [:]
+        defaults.set(asideNames.merging(names.filter { kept.dead.contains($0.key) }) { _, new in new }, forKey: "herdr.hosted.names")
+        let asideIds = defaults.dictionary(forKey: "herdr.hosted.ids") as? [String: String] ?? [:]
+        defaults.set(asideIds.merging(ids.filter { kept.dead.contains($0.key) }) { _, new in new }, forKey: "herdr.hosted.ids")
+        saved = kept.saved
+        names = kept.names
+        ids = kept.ids
+        current = kept.current
+        last = kept.last
+        moveNotice = true
+    }
+
     /// PCs opened before, the latest first, each by its key: the origin of a PC opened at its own
-    /// address, or the scope of one opened through the Ovis relay (`https://app.ovis.sh/s/<server_id>/`),
-    /// as every relay PC shares the hosted shell's origin.
+    /// address, or the scope of one opened through the Ovis relay (`https://app.ovis.sh/s/<server_id>/`,
+    /// `capacitor://app.ovis.sh/s/<server_id>/` in a build that serves the shell itself),
+    /// as every relay PC shares the shell's origin.
     static var saved: [String] {
         get { defaults.stringArray(forKey: "herdr.saved") ?? [] }
         set { defaults.set(newValue, forKey: "herdr.saved") }
@@ -70,7 +125,7 @@ enum PCStore {
 
     /// Whether the app's first screen is the hosted Connect a PC screen (Home): OvisAppHome in Info.plist, the build's
     /// (hosted-origin.xcconfig), `bundled` in a build made with OVIS_APP_HOME=bundled, which keeps the app's own page.
-    static let homeHosted = appOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppHome") as? String) != "bundled"
+    static let homeHosted = shellOrigin != nil && (Bundle.main.object(forInfoDictionaryKey: "OvisAppHome") as? String) != "bundled"
 
     /// The hosted Connect a PC screen did not load, so the app's own page stands in for it, until the person tries it
     /// again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started again
@@ -261,8 +316,16 @@ enum PCStore {
         return ScopePath.within(path, scope: scope)
     }
 
-    /// `scheme://host[:port]` of an http or https URL, the host in lowercase as WebKit reports it, or nil.
+    /// `scheme://host[:port]` of an http or https URL, the host in lowercase as WebKit reports it, or nil. In a build
+    /// that serves the shell itself, also the shell's origin for a page of it (`capacitor://app.ovis.sh`), and of no
+    /// other host on the app's scheme: the app's own pages are never a PC. There the hosted origin is no PC either,
+    /// so nothing opens the network's copy of the shell: an address on it is turned to the shell's first (shellForm).
     static func origin(of url: URL) -> String? {
+        if shellBundled, url.scheme?.lowercased() == Home.appScheme {
+            guard let shell = shellOrigin, let host = shell.host, url.host?.lowercased() == host, url.port == nil else { return nil }
+            return "\(Home.appScheme)://\(host)"
+        }
+        if shellBundled, Home.sameOrigin(url, appOrigin) { return nil }
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               let host = url.host?.lowercased(), !host.isEmpty else { return nil }
         let shownHost = host.contains(":") ? "[\(host)]" : host
@@ -508,14 +571,20 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// Asked of the PC's page while the cover is up: whether the client is up, its root no longer
     /// holding index.html's loading spinner, or the page is no client at all (no root). The PC
     /// answers before its page commits, and until then the web view holds its first, empty
-    /// document (about:blank), which has no root either: only an http(s) page counts.
-    private static let clientUpScript = """
+    /// document (about:blank), which has no root either: only an http(s) page counts, and in a build
+    /// that serves the shell itself a page of the shell (its host is letters, digits, dots and hyphens:
+    /// Home.shellOrigin).
+    private static let clientUpScript: String = {
+        let shell = PCStore.shellBundled ? PCStore.shellOrigin?.host : nil
+        let inApp = shell.map { "(location.protocol === '\(Home.appScheme):' && location.host === '\($0)')" } ?? "false"
+        return """
         (() => {
-          if (!/^https?:$/.test(location.protocol) || document.readyState === 'loading') return false;
+          if (!(/^https?:$/.test(location.protocol) || \(inApp)) || document.readyState === 'loading') return false;
           const root = document.getElementById('root');
           return !root || !root.querySelector(':scope > .boot');
         })()
         """
+    }()
     private var firstPageDone = false
     private static let answerSeconds = 20
     private static let demoPage = "demo/index.html"
@@ -563,11 +632,12 @@ class HerdrBridgeViewController: CAPBridgeViewController {
 
     /// What to open now, from what the app holds (PCStore).
     private static func start() -> (screen: Home.Screen, opened: String?) {
-        let pc = PCStore.shown.flatMap { key in URL(string: key)?.host == nil ? nil : key }
+        // a key no page of this build has (a relay PC saved by a build that served the shell itself) opens nothing
+        let pc = PCStore.shown.flatMap { key in PCStore.origin(ofKey: key) == nil ? nil : key }
         let screen = Home.screen(hosted: PCStore.homeHosted, pc: pc != nil, demo: PCStore.demo, asked: PCStore.bundledAsked, failed: PCStore.homeFailed)
         switch screen {
         case .pc: return (screen, pc)
-        case .home: return (screen, PCStore.appOrigin.flatMap { PCStore.origin(of: $0) })
+        case .home: return (screen, PCStore.shellOrigin.flatMap { PCStore.origin(of: $0) })
         case .bundled, .demo: return (screen, nil)
         }
     }
@@ -666,7 +736,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 
     private func arrived(_ webView: WKWebView) {
-        if Home.relayPc(webView.url, appOrigin: PCStore.appOrigin) { home(.relayPc) }
+        if Home.relayPc(webView.url, appOrigin: PCStore.shellOrigin) { home(.relayPc) }
     }
 
     override func instanceDescriptor() -> InstanceDescriptor {
@@ -677,10 +747,13 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             // what server.url sets; the pairing link until a PC page has loaded, the PC's first page
             // after it (a relay PC's scope keeps a pairing offer's `#offer=` fragment through here).
             // The hosted screen is the hosted app's front page as the app's own way there (#pcs), not a
-            // launch that goes on to the PC opened last
+            // launch that goes on to the PC opened last. In a build that serves the shell itself these
+            // are addresses on the app's own scheme (capacitor://app.ovis.sh/…), which ShellHost answers
             descriptor.serverURL = screen == .home ? origin + "/" + homeStart : PCStore.pendingStart ?? PCStore.firstPage(origin)
             // the whole PC is the app: its own links stay in the WebView, others go to Safari. For a
-            // relay PC that host is the hosted shell's (app.ovis.sh), the one the app then allows
+            // relay PC that host is the hosted shell's (app.ovis.sh), the one the app then allows; where
+            // the shell is inside the app, a link to that host over https is turned to its page there
+            // (NavigationFailureProxy), never loaded from the network
             descriptor.allowedNavigationHostnames = descriptor.allowedNavigationHostnames + [host]
         } else if screen == .demo, FileManager.default.fileExists(atPath: descriptor.appLocation.appendingPathComponent(Self.demoPage).path) {
             // the bundled demo as the first page (HerdrShell openDemo); Capacitor ends the app on a start page that is missing
@@ -714,7 +787,20 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         // the first page loads
         if let rules = Self.loopbackRules { webView?.configuration.userContentController.add(rules) }
         if let handler = (bridge as? CapacitorBridge)?.webViewDelegationHandler { DirectCallGate.install(on: handler) }
+        tellShell()
         followPageColor()
+    }
+
+    /// In a build that serves the shell itself, every main-frame document of the shell is told so before its first
+    /// script runs (`window.__ovisAppShell`, Home.appShellScript): the main frame alone, as a page drawn in a frame
+    /// (the render host, on the shell's own origin) is no client, and nothing it reads or writes there counts for
+    /// anything. A build that loads the shell from the network says nothing.
+    private func tellShell() {
+        guard PCStore.shellBundled, let controller = webView?.configuration.userContentController else { return }
+        let info = Bundle.main.infoDictionary ?? [:]
+        guard let script = Home.appShellScript(shell: PCStore.shellOrigin, version: info["CFBundleShortVersionString"] as? String ?? "",
+                                               build: (info["CFBundleVersion"] as? String).flatMap { Int($0) } ?? 0) else { return }
+        controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
     /// What the document on show said its colour is, as the status bar icons that stand out on it; nil until it
@@ -807,7 +893,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
                     PCStore.homeFailed = false
                     // a relay PC picked on the hosted screen is kept by its own scope too, as one opened from a
                     // pairing link is
-                    if self.phase == .pc, let scope = Home.relayScope(url, appOrigin: PCStore.appOrigin) { PCStore.remember(scope) }
+                    if self.phase == .pc, let scope = Home.relayScope(url, appOrigin: PCStore.shellOrigin) { PCStore.remember(scope) }
                 }
                 self.askPage()
             }
@@ -818,8 +904,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             proxy.onPageFailed = { [weak self] webView, reason, kind in
                 // the PC's first page only (the cover may be gone once the PC answered), never the
                 // bundled error page, which would load itself again
-                guard let self, !self.firstPageDone, let reason,
-                      ["http", "https"].contains(webView.url?.scheme?.lowercased() ?? "") else { return }
+                guard let self, !self.firstPageDone, let reason, webView.url.flatMap({ PCStore.origin(of: $0) }) != nil else { return }
                 self.showFailure(in: webView, reason: reason, kind: kind)
             }
             proxy.opened = opened
@@ -921,14 +1006,17 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         let stage = watch.stage(at: now)
         let shown = watch.shownProgress()
         self.watch = watch
+        // a page the app serves itself waits on no network: no clock gives up on it, and Try again is all a cover
+        // that stays (a web content process that runs nothing) has to offer
+        let inApp = PCStore.inApp(origin)
         if phase == .loading {
             // only time in front counts (Home.Clock): a page that came up while the app was away is asked (askPage)
             // before the time it was away could count against it
-            if Home.timedOut(elapsed: homeClock.tick(now: now), answered: watch.answered) {
+            if Home.timedOut(elapsed: homeClock.tick(now: now), answered: watch.answered, inApp: inApp) {
                 home(.timedOut)
                 return
             }
-        } else if stage == .noAnswer {
+        } else if stage == .noAnswer, !inApp {
             // said on the cover itself: while the PC's connection hangs, WebKit did not show the
             // error page either (it stayed unpainted), in this web view or a new one
             gaveUp = true
@@ -936,7 +1024,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
             showNoAnswer(origin)
             return
         }
-        showStage(stage, shown: shown, answered: watch.answered)
+        showStage(inApp && stage == .noAnswer ? .slow : stage, shown: shown, answered: watch.answered, inApp: inApp)
         askPage()
     }
 
@@ -960,12 +1048,12 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         }
     }
 
-    private func showStage(_ stage: OpeningWatch.Stage, shown: Double, answered: Bool) {
+    private func showStage(_ stage: OpeningWatch.Stage, shown: Double, answered: Bool, inApp: Bool) {
         let ko = Self.korean
         switch stage {
-        case .slow:
+        case .slow where !inApp:
             openingLabel?.text = ko ? "연결이 느립니다. \(openingName) 여는 중…" : "Slow connection. Still opening \(openingName)…"
-        case .opening, .noAnswer:
+        case .opening, .noAnswer, .slow:
             openingLabel?.text = ko ? "\(openingName) 여는 중…" : "Opening \(openingName)…"
         }
         openingBar?.isHidden = !answered
@@ -983,10 +1071,10 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         return UIColor { $0.userInterfaceStyle == .dark ? rgb(dark) : rgb(light) }
     }
     static let pageColor = look(0xffffff, 0x181818)
-    private static let textColor = look(0x1a1c1f, 0xececec)
+    static let textColor = look(0x1a1c1f, 0xececec)
     private static let dimColor = look(0x5d6067, 0xa3a3a3)
-    private static let strongColor = look(0x0d0d0d, 0xffffff)
-    private static let accentColor = look(0x3a83f7, 0x3a83f7)
+    static let strongColor = look(0x0d0d0d, 0xffffff)
+    static let accentColor = look(0x3a83f7, 0x3a83f7)
     private static let borderColor = look(0xe5e5e5, 0x2e2e2e)
 
     /// The cover until the first page shows. `home`: over the hosted screen, which is no PC: "Opening Ovis…", and no Change PC.
@@ -1140,6 +1228,8 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// another app holds is not opened, and the connect screen says why.
     static func reopen() {
         guard let window else { return }
+        // the screen that says the shell moved (ShellMovedViewController) stays until its button is pressed
+        if PCStore.moveNotice, window.rootViewController is ShellMovedViewController { return }
         // the view controller that goes may stay a moment longer (an SSH PC's tunnel is made first): nothing its
         // page still does counts from here on
         (window.rootViewController as? HerdrBridgeViewController)?.leave()
@@ -1152,6 +1242,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// The app's first view controller: the PC or the connect screen at once, or, for an SSH PC, a blank one of the
     /// app's colour until its tunnel listens (reopen).
     static func first() -> UIViewController {
+        if PCStore.moveNotice { return ShellMovedViewController() }
         // with no SSH PC there is no gate to keep from other ports, nor a tunnel to start: the page opens at once
         guard OvisSsh.supported, !OvisSsh.store.list().isEmpty else { return HerdrBridgeViewController() }
         let pc = OvisSsh.pc(PCStore.shown)
@@ -1254,7 +1345,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     /// not a PC worth keeping, and its page would leave the app no way back: the error page shows
     /// instead. Capacitor's delegate does not decide responses; WebKit allows all of them.
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        if navigationResponse.isForMainFrame, ["http", "https"].contains(navigationResponse.response.url?.scheme?.lowercased() ?? "") { onAnswer?() }
+        if navigationResponse.isForMainFrame, navigationResponse.response.url.flatMap({ PCStore.origin(of: $0) }) != nil { onAnswer?() }
         guard navigationResponse.isForMainFrame, let response = navigationResponse.response as? HTTPURLResponse,
               response.statusCode >= 400 else {
             decisionHandler(.allow)
@@ -1279,6 +1370,15 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
         // this phone's loopback at a port no SSH PC listens on would get the SSH PCs' gate cookies (SshPcs.otherLoopbackPort)
         if let url = navigationAction.request.url, SshPcs.otherLoopbackPort(url.absoluteString, sshPorts: OvisSsh.tunnels.ports()) {
             decisionHandler(.cancel)
+            return
+        }
+        // where the shell is inside the app, a shell page's link to the hosted origin (a pairing link written for
+        // https://app.ovis.sh) is that page inside the app, and a PC's scope without its slash gets it: the app allows
+        // the shell's host as it allows any PC's, and would otherwise load the network's copy of the shell here
+        if navigationAction.targetFrame?.isMainFrame == true, PCStore.inApp(opened), let url = navigationAction.request.url,
+           let inApp = Home.shellNavigation(url, hosted: PCStore.appOrigin, shell: PCStore.shellOrigin) {
+            decisionHandler(.cancel)
+            webView.load(URLRequest(url: inApp))
             return
         }
         if !pageShown, provisional, navigationAction.targetFrame?.isMainFrame == true,

@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import Network
 import UIKit
+import OvisHomeCore
 import OvisSshCore
 import Security
 import UIKit
@@ -207,7 +208,7 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func fromAppPage(_ call: CAPPluginCall) -> Bool {
-        if bridge?.webView?.url?.scheme == "capacitor" { return true }
+        if Home.bundledPage(bridge?.webView?.url) { return true }
         call.reject("Only the app's own pages manage SSH PCs.")
         return false
     }
@@ -218,9 +219,9 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
         // the hosted app's front page of a release before HerdrShell openSshSetup calls this itself (DirectCallGate
         // lets that one call through): it gets what that gives, the setup sheet over the page. Any other PC's page is
         // refused
-        if bridge?.webView?.url?.scheme != "capacitor" {
+        if !Home.bundledPage(bridge?.webView?.url) {
             let target = SshPcs.target(user: user, host: host, port: port)
-            guard target.count <= 300, SshPcs.setupOpener(bridge?.webView?.url, appOrigin: PCStore.appOrigin) else {
+            guard target.count <= 300, SshPcs.setupOpener(bridge?.webView?.url, appOrigin: PCStore.shellOrigin) else {
                 call.reject("Only the app's own pages manage SSH PCs.")
                 return
             }
