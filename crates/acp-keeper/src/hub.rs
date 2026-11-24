@@ -345,7 +345,7 @@ impl Hub {
                 if generation == self.generation {
                     match receipt {
                         Receipt::Answer(answer) => self.answer_written(answer),
-                        Receipt::Request { conn, id } => self.reply(conn, &json!({"jsonrpc":"2.0","method":"_keeper/delivered","params":{"id":id}})),
+                        Receipt::Request { conn, id } => self.note_row("_keeper/delivered", json!({"client": conn, "id": id})),
                     }
                 }
             }

@@ -234,10 +234,7 @@ export class KeeperClient {
       && (!this.history.session || params.sessionId !== this.history.session)) return false;
     switch (row.dir) {
       case "to-client":
-        if (row.client === this.client && this.client !== null) {
-          if (method === "_keeper/delivered") this.requests.delivered(params.id);
-          else if (method === null) this.requests.answered(message);
-        }
+        if (row.client === this.client && this.client !== null && method === null) this.requests.answered(message);
         return false;
       case "to-agent":
         if (method === "session/prompt" && typeof message.id === "string") {
@@ -278,6 +275,9 @@ export class KeeperClient {
   private note(method: string | null, params: Record<string, unknown>): boolean {
     const id = text(params["id"]);
     switch (method) {
+      case "_keeper/delivered":
+        if (this.client !== null && params.client === this.client) this.requests.delivered(params.id);
+        return false;
       case "_keeper/mode":
         this.inTerminal = params.mode !== "acp" || params.phase !== "ready";
         return true;
