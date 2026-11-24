@@ -457,6 +457,31 @@ describe("what the PC does when the entry does not go in", () => {
     expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(1_900);
   });
 
+  test("the PC signs only for an approval from its own window: one from another browser that drives it signs nobody in", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const base = `http://127.0.0.1:${made.pc.app.port}`;
+    // the pairing window is open, so the comparison is this PC's to decide, by any browser that drives it
+    expect((await made.pc.local("/api/relay/link", { method: "POST", headers: { ...own, "x-herdr-update": "1" } })).status).toBe(200);
+    const asking = await join(made, phone, { card: { enc: phone.enc, card } });
+    const waiting = await bounded((async () => {
+      for (;;) {
+        const listed = made.services.relay.approvals.list();
+        if (listed[0]) return listed[0];
+        await Bun.sleep(10);
+      }
+    })());
+    // a browser on the LAN with the access token: it drives this PC, and is not this PC's own window
+    const answer = await fetch(`${base}/api/relay/pairing`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", "x-forwarded-for": "100.64.0.9", ...own },
+      body: JSON.stringify({ id: waiting.id, decision: "approve" }) });
+    expect(answer.status).toBe(200);
+    asking.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await asking.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+  });
+
   test("a head that moved under it is read, and the entry signed again on the new head", async () => {
     const made = await allowingPc();
     const phone = await listMember();

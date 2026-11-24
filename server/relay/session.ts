@@ -143,7 +143,7 @@ export class RelaySession {
   private welcomed = false;
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; approvedOwn?: boolean; ended: boolean; membersOnly: boolean; localOnly: boolean; firstJoin: boolean; closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   private closingReason: SessionError | undefined;
@@ -590,6 +590,7 @@ export class RelaySession {
           sas.approved = true;
           if (decision.pcLabel) sas.label = decision.pcLabel;
           sas.approvedBy = decision.by?.id;
+          sas.approvedOwn = decision.own === true;
           // an approver revoked or given another role before the phone confirms takes the approval with it, for good
           if (decision.by) sas.stopApprover = this.options.services.devices.onRevoke(decision.by.id, () => { if (this.pairing) this.close("auth_failed"); });
           this.finishPairing();
@@ -709,7 +710,9 @@ export class RelaySession {
     // while the relay refuses new sessions no join makes a device: nothing is signed, and nothing is answered from here on
     if (!this.admitNewDevice()) { this.endPairing(true); return; }
     this.mux.extendSetup(LIST_ALLOW_MS);
-    const outcome = list ? await list.allowDevice({ key: sas.publicKey, enc: card.enc, card: card.card, label: sas.label }, sas.approvedBy === undefined) : { refused: "not_pinned" as const, detail: null };
+    // the PC signs only where a person at this PC decided: its own window, or the digits typed at its local command.
+    // A member's approval, and one from another browser that drives this PC, sign nothing here
+    const outcome = list ? await list.allowDevice({ key: sas.publicKey, enc: card.enc, card: card.card, label: sas.label }, sas.approvedBy === undefined && sas.approvedOwn === true) : { refused: "not_pinned" as const, detail: null };
     if (!this.mux.active || this.sas !== sas || sas.ended) return;
     // the service's refusal, or its silence, is no failed pairing of this device's: it counts against nobody
     this.endPairing(true);

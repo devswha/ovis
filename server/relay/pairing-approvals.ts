@@ -12,7 +12,8 @@ export const PAIRING_WINDOW_MS = 10 * 60_000;
 export const pairingWindowFs = { rmSync, truncateSync };
 
 /** How a waiting comparison ended: approved (by this PC when `by` is absent, else by that account member) or not. */
-export type PairingDecision = { approved: true; by?: DeviceMatch; pcLabel?: string } | { approved: false };
+/** `own`: the approval came from this PC's own window or its local command (dispatch.ts ownWindow), the only place a person at this PC decides. */
+export type PairingDecision = { approved: true; by?: DeviceMatch; pcLabel?: string; own?: true } | { approved: false };
 
 /** What a remote approval came to: done, nothing waiting under that id, or the wrong digits picked (which ends it). */
 export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" };
@@ -289,7 +290,7 @@ export class RelayPairingApprovals {
     const entry = this.waiting.get(id);
     if (!entry || !ownJoin(entry)) return "gone";
     if (!entry.firstJoin) return "typed_only";
-    entry.finish(approved ? { approved: true } : { approved: false });
+    entry.finish(approved ? { approved: true, own: true } : { approved: false });
     return "decided";
   }
 
@@ -299,7 +300,7 @@ export class RelayPairingApprovals {
     if (!entry || !ownJoin(entry)) return "gone";
     const typed = Buffer.from(digits), shown = Buffer.from(entry.request.digits);
     if (typed.length !== shown.length || !timingSafeEqual(typed, shown)) { entry.finish({ approved: false }); return "wrong_digits"; }
-    entry.finish({ approved: true });
+    entry.finish({ approved: true, own: true });
     return "decided";
   }
 
@@ -336,12 +337,16 @@ export class RelayPairingApprovals {
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };
   }
 
-  /** On this PC. False for an id that is not waiting: never asked, already decided, withdrawn or expired. */
-  decide(id: string, approved: boolean): boolean {
+  /**
+   * On this PC. False for an id that is not waiting: never asked, already decided, withdrawn or expired. `own`: the
+   * caller is this PC's own window, which the decision keeps: a pairing is approved by any browser that drives this
+   * PC, but only its own window signs for it (session.ts allowIntoList).
+   */
+  decide(id: string, approved: boolean, own = false): boolean {
     const entry = this.waiting.get(id);
     // a join the PC's own windows were never shown is not theirs to decide
     if (!entry || entry.membersOnly) return false;
-    entry.finish(approved ? { approved: true } : { approved: false });
+    entry.finish(approved ? { approved: true, ...(own ? { own: true as const } : {}) } : { approved: false });
     return true;
   }
 
