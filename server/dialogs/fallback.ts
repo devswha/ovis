@@ -117,7 +117,11 @@ const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
     { pattern: new RegExp(`^☤ ([^│\\s][^│]*?) │ (?:.* │ )?⏱ ${ELAPSED}(?: {2,}(\\S.*))?$`, "u"), steady: (_all, model, echo) => `☤ ${model} <status>${echo ? ` ${echo}` : ""}` },
   ],
   // "◈ Request user input Color — running (59s)", its glyph turning ◆/◈/◇
-  muse: [{ pattern: new RegExp(`^[◆◈◇] (\\S(?:.*\\S)?) — running \\(${ELAPSED}\\)$`, "u"), steady: "◈ $1 — running (<time>)" }],
+  muse: [
+    { pattern: new RegExp(`^[◆◈◇] (\\S(?:.*\\S)?) — running \\(${ELAPSED}\\)$`, "u"), steady: "◈ $1 — running (<time>)" },
+    // over its approval dialog, while the call waits (Muse 1.4.25): "◇ Calling tools (21s · esc to interrupt)"
+    { pattern: new RegExp(`^[◆◈◇] (\\S(?:.*\\S)?) \\(${ELAPSED} · esc to interrupt\\)$`, "u"), steady: "◈ $1 (<time> · esc to interrupt)" },
+  ],
   // "⠏ bash> List directory contents    16:34:03" and "⠇ [BUILD]../lab-maki  anthropic/… $0.001"
   maki: [{ pattern: new RegExp(`^${BRAILLE_SPINNER} (\\S.*)$`, "u"), steady: "<spinner> $1", each: true }],
   // "⠋ Using Shell (ls -la)"

@@ -237,6 +237,17 @@ test.each(["long-a1", "phone-a1"])("keeps Grok's permission card (%s) while its 
   expect(parseFallbackPrompt("grok", screen.replace(row, row.replace("◆ Run", "◆ Remove"))).id).not.toBe(parseFallbackPrompt("grok", screen).id);
 });
 
+// Muse 1.4.25 keeps "◇ Calling tools (21s · esc to interrupt)" over its approval dialog, its time and glyph ticking
+test("keeps Muse's approval card while the row over it ticks, and not once its words change", () => {
+  const turn = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/muse.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns
+    .find((recorded) => recorded.turn === "long-a1")!;
+  const row = turn.screen.split("\n").find((line) => line.includes("· esc to interrupt)"))!;
+  const ticked = row.replace(/\((\d+)s · /u, (_all, seconds: string) => `(${Number(seconds) + 7}s · `).replace(/[◆◈◇]/u, "◇");
+  expect(ticked).not.toBe(row);
+  expect(parseFallbackPrompt("muse", turn.screen.replace(row, ticked)).id).toBe(parseFallbackPrompt("muse", turn.screen).id);
+  expect(parseFallbackPrompt("muse", turn.screen.replace(row, row.replace("Calling tools", "Deleting files"))).id).not.toBe(parseFallbackPrompt("muse", turn.screen).id);
+});
+
 test("keeps Hermes's card in its first ten seconds, where the timer is padded with two spaces", () => {
   const screen = recorded("lab-hermes-waiting-a");
   expect(screen.split("( 57.9s").length).toBe(2);

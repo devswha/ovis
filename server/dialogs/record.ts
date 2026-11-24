@@ -15,52 +15,69 @@ export interface RecordRequest {
  * How an agent's record names its pending approval: `pending` reads the record (a session file's tail, or its rows);
  * `dialog` is the line the agent's approval dialog starts with on the screen, or absent where the generic card
  * itself is the dialog (gjc's selector, read from its opening border); `wrapMark` is what the agent draws at the
- * end of a row it wrapped a command at; `before` and `after` are the dialog's own rows that may stand right above
- * and right under the command, beside a blank or box-drawn row, the `dialog` line, and the dialog's edges.
+ * end of a row it wrapped a command at; `lead` is what starts the command's first row, where the agent draws one (a
+ * shell's `$ `), so no other row is taken for it; `before` and `after` are the dialog's own rows that may stand
+ * right above and right under the command, beside a blank or box-drawn row, the `dialog` line, and the dialog's
+ * edges; `cut` is a row that says the dialog left part of the command out, where no key may answer it at all.
  */
 export interface AgentRecord<Source = string> {
   pending(source: Source): RecordRequest | null;
   readonly dialog?: RegExp;
   readonly wrapMark?: RegExp;
+  readonly lead?: RegExp;
   readonly before?: RegExp;
   readonly after?: RegExp;
+  readonly cut?: RegExp;
 }
 
 type DialogShape = Omit<AgentRecord, "pending">;
 
-/** What a screen adds around a command it draws: box drawing (borders, its rule glyphs) and whitespace runs. */
-const BOX_RE = /[\u2500-\u257f]/gu;
-const spaced = (text: string): string => text.replace(BOX_RE, " ").replace(/\s+/gu, " ").trim();
+/** Box drawing and spaces at a row's ends: the borders, rules and indents a screen draws around a command's rows. */
+const EDGES_RE = /^[\s\u2500-\u257f]+|[\s\u2500-\u257f]+$/gu;
+const drawnRow = (row: string): string => row.replace(EDGES_RE, "");
 
 /**
- * The rows that draw the whole command, from the first row of the dialog that starts it to the row that ends it: each
- * row's words in the command's order with nothing before or after them (but a shell's `$ ` on the first), a row
- * break standing for the space the screen wrapped at or for none (a word cut in two). Whitespace counts as one space,
- * as a screen draws a tab and a newline. The rows around them must be the dialog's own (`bounded`), so a longer command
- * wrapped right at a word is not taken for a shorter one. Null when no rows draw exactly this command: a cut one, a
- * longer one that starts or ends with it, or one with other spacing between its words.
+ * Where a command's text could go on after one of its rows, read from `from`: the row's characters in order, a tab
+ * drawn as one or more of the spaces before the next character.
  */
-export function commandRows(command: string, rows: readonly string[], bounded: (start: number, end: number) => boolean = () => true): { start: number; end: number } | null {
-  const wanted = spaced(command);
+function rowEnds(command: string, from: number, row: string, at = 0): number[] {
+  if (at === row.length) return [from];
+  if (command[from] === row[at]) return rowEnds(command, from + 1, row, at + 1);
+  if (command[from] !== "\t" || row[at] !== " ") return [];
+  const ends: number[] = [];
+  for (let next = at + 1; next <= row.length && row[next - 1] === " "; next += 1) ends.push(...rowEnds(command, from + 1, row, next));
+  return ends;
+}
+
+/** Where the text goes on after a row break: right there (a word cut in two), or past the whitespace it broke at. */
+function breakEnds(command: string, at: number): number[] {
+  let end = at;
+  while (end < command.length && /\s/u.test(command[end]!)) end += 1;
+  return end === at ? [at] : [at, end];
+}
+
+/**
+ * The rows that draw the whole command, after `first` (the row the dialog starts with): each row's characters in the
+ * command's order with nothing before or after them but box drawing and indentation (and `lead` on the first, a
+ * shell's `$ `), every space as drawn and a tab as a run of spaces, a row break standing for whitespace the screen
+ * wrapped at or for none (a word cut in two). The rows around them must be the dialog's own (`bounded`), so a longer
+ * command wrapped right at a word is not taken for a shorter one. Null when no rows draw exactly this command: a cut
+ * one, a longer one that starts or ends with it, or one with other spacing.
+ */
+export function commandRows(command: string, rows: readonly string[], bounded: (start: number, end: number) => boolean = () => true,
+  first = 0, lead?: RegExp): { start: number; end: number } | null {
+  const wanted = command.trim();
   if (wanted === "") return null;
-  const words = rows.map(spaced);
-  for (let start = 0; start < words.length; start += 1) {
-    const first = words[start]!;
-    for (const lead of first.startsWith("$ ") ? [first, first.slice(2)] : [first]) {
-      if (lead === "") continue;
-      let positions = new Set([0]);
-      for (let at = start; at < words.length && positions.size > 0; at += 1) {
-        const row = at === start ? lead : words[at]!;
-        const next = new Set<number>();
-        for (const from of positions) {
-          if (!wanted.startsWith(row, from)) continue;
-          const to = from + row.length;
-          if (to === wanted.length && row !== "" && bounded(start, at)) return { start, end: at };
-          next.add(to);
-          if (row !== "" && wanted[to] === " ") next.add(to + 1);
-        }
-        positions = next;
-      }
+  for (let start = first; start < rows.length; start += 1) {
+    const opening = drawnRow(rows[start]!);
+    const led = lead === undefined ? opening : opening.replace(lead, "");
+    if (led === "" || (lead !== undefined && led === opening)) continue;
+    let positions = [0];
+    for (let at = start; at < rows.length && positions.length > 0; at += 1) {
+      const row = at === start ? led : drawnRow(rows[at]!);
+      const ends = [...new Set(positions.flatMap((from) => rowEnds(wanted, from, row)))];
+      if (row !== "" && ends.includes(wanted.length) && bounded(start, at)) return { start, end: at };
+      positions = [...new Set(ends.flatMap((end) => breakEnds(wanted, end)))];
     }
   }
   return null;
@@ -88,9 +105,10 @@ export function withRecord(card: ParsedPrompt, request: RecordRequest | null, sc
   const rows = request === null ? null : dialogRows(card, screen, record);
   const unmarked = rows?.map((row) => record.wrapMark ? row.replace(record.wrapMark, "") : row);
   const own = (row: string | undefined, also: RegExp | undefined): boolean =>
-    row === undefined || spaced(row) === "" || record.dialog?.test(row) === true || also?.test(spaced(row)) === true;
+    row === undefined || drawnRow(row) === "" || record.dialog?.test(row) === true || also?.test(drawnRow(row)) === true;
   const drawn = request === null || !unmarked ? null
-    : commandRows(request.command, unmarked, (start, end) => own(unmarked[start - 1], record.before) && own(unmarked[end + 1], record.after));
+    : commandRows(request.command, unmarked, (start, end) => own(unmarked[start - 1], record.before) && own(unmarked[end + 1], record.after),
+      record.dialog === undefined ? 0 : 1, record.lead);
   if (request === null || rows === null || drawn === null) return card;
   const body = keysBody(card, rows) ?? (card.body ?? "").split("\n");
   const shown = rows.slice(drawn.start, drawn.end + 1);
@@ -100,6 +118,18 @@ export function withRecord(card: ParsedPrompt, request: RecordRequest | null, sc
   const id = createHash("sha256").update(JSON.stringify({ card: card.id, record: request.id, command: request.command })).digest("hex").slice(0, 12);
   const words = [...body.slice(0, at), request.command, ...body.slice(at + shown.length)].join("\n");
   return { ...card, id, body: words.slice(0, CARD_BODY_MAX), record: request };
+}
+
+/**
+ * Whether the screen's last approval dialog says it left part of its command out (`cut`): a card would ask to run
+ * a command no one sees whole, so the terminal answers it.
+ */
+export function commandCut(screen: string, record: DialogShape): boolean {
+  if (record.cut === undefined || record.dialog === undefined) return false;
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map(cleanLine);
+  let start = lines.length - 1;
+  while (start >= 0 && !record.dialog.test(lines[start]!)) start -= 1;
+  return start >= 0 && lines.slice(start + 1).some((line) => record.cut!.test(line));
 }
 
 /**

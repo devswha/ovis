@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentRecord } from "./record.ts";
-import { withRecord } from "./record.ts";
+import { commandCut, withRecord } from "./record.ts";
 import { parseFallbackPrompt } from "./fallback.ts";
 import { parsedByPublicPrompt } from "./shared.ts";
 import { copilotRecord } from "./copilot-record.ts";
@@ -42,6 +42,8 @@ for (const { agent, record, whole } of AGENTS) {
         expect([shown.record?.command, shown.optionSteps, shown.selectedIndex]).toEqual([turn.command, card.optionSteps, card.selectedIndex]);
         expect(shown.body).toContain(turn.command);
       } else expect(shown).toBe(card);
+      // Letta cuts a longer command's preview: that dialog gets no card, the terminal answers it
+      expect(commandCut(turn.screen, record)).toBe(agent === "letta" && !whole.includes(turn.turn));
       if (turn.decision === "allow" && request !== null) expect(record.pending(turn.after.join("\n"))?.id).not.toBe(request.id);
     });
   });

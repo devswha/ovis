@@ -16,6 +16,7 @@ import { type AgentRecord, OpenRequests, jsonLines, object } from "./record.ts";
  */
 export const museRecord: AgentRecord = {
   dialog: /^Would you like to run the following command\?$/u,
+  lead: /^\$ /u,
   after: /^Stage \d+\/\d+$/u,
   pending(text) {
     const approvals = new OpenRequests();

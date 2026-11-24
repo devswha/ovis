@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { pendingToolCall, withRecord, type AgentRecord } from "./record.ts";
+import { commandCut, pendingToolCall, withRecord, type AgentRecord } from "./record.ts";
 import { parsedByPublicPrompt } from "./shared.ts";
 import { parseFallbackPrompt } from "./fallback.ts";
 
 const DIALOG = /^Run this command\?$/;
+const LEAD = /^\$ /u;
 
 const screen = (...rows: string[]): string => ["previous output", "", ...rows].join("\n");
 
@@ -25,15 +26,17 @@ describe("withRecord", () => {
   });
 
   test("a command the dialog wraps and boxes is shown whole, the rest of the dialog kept", () => {
-    const boxed = screen("╭──────────────╮", "│ Run this command? │", "│ $ echo 'a b' && │", "│ printf 한글 │", "╰──────────────╯", "Stage 1/2", ...menu);
-    const shown = withRecord(cardOf(boxed), { id: "c", command: "echo 'a b' &&\n\tprintf 한글" }, boxed, record);
-    expect(shown.record?.command).toBe("echo 'a b' &&\n\tprintf 한글");
-    expect(shown.body).toContain("echo 'a b' &&\n\tprintf 한글\nStage 1/2");
+    const boxed = screen("╭──────────────╮", "│ Run this command? │", "│ $ echo 'a  b' && │", "│     printf 한글 │", "╰──────────────╯", "Stage 1/2", ...menu);
+    const shown = withRecord(cardOf(boxed), { id: "c", command: "echo 'a  b' &&\n\tprintf 한글" }, boxed, { ...record, lead: LEAD });
+    expect(shown.record?.command).toBe("echo 'a  b' &&\n\tprintf 한글");
+    expect(shown.body).toContain("echo 'a  b' &&\n\tprintf 한글\nStage 1/2");
   });
 
   test("keeps the screen's card for a dialog that draws another command, or cuts it", () => {
     for (const [rows, command] of [
       [["ls -l ab"], "ls -l a b"],
+      [["echo 'a b'"], "echo 'a  b'"],
+      [["echo 'a  b'"], "echo 'a b'"],
       [["git status --short"], "git status"],
       [["git status", "--short"], "git status"],
       [["Show the folder:", "  then run pwd"], "pwd"],
@@ -45,6 +48,20 @@ describe("withRecord", () => {
     }
     expect(withRecord(card, null, drawn, record)).toBe(card);
     expect(bound(screen("echo hello", ...menu), "echo hello").record).toBeUndefined();
+  });
+
+  test("with a lead, only the row that starts with it is the command, not a description that reads like one", () => {
+    const described = screen("Run this command?", "", "$ rm -rf ./build", "", "ls", ...menu);
+    const led = (command: string) => withRecord(cardOf(described), { id: "c", command }, described, { ...record, lead: LEAD }).record;
+    expect(led("ls")).toBeUndefined();
+    expect(led("rm -rf ./build")?.command).toBe("rm -rf ./build");
+  });
+
+  test("a dialog that says it cut its command is answered by no card at all", () => {
+    const cut = { ...record, cut: /^… output clipped$/u };
+    expect(commandCut(screen("Run this command?", "$ printf one two", "  … output clipped", ...menu), cut)).toBe(true);
+    expect(commandCut(screen("Run this command?", "$ printf one two", ...menu), cut)).toBe(false);
+    expect(commandCut(screen("… output clipped", "Run this command?", "$ ls", ...menu), cut)).toBe(false);
   });
 
   test("only the last dialog counts, not an older one above it", () => {

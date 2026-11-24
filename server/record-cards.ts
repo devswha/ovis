@@ -1,11 +1,11 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { paneTranscript, type NativeTranscript } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import { lettaMessagesPath } from "./letta-store.ts";
 import { grokHeldTranscript } from "./grok-store.ts";
 import { sessionSnapshot } from "./herdr/client.ts";
-import { type AgentRecord, type RecordRequest, withRecord } from "./dialogs/record.ts";
+import { FileBusyError, fileTask } from "./file-pool.ts";
+import { type AgentRecord, type RecordRequest, commandCut, withRecord } from "./dialogs/record.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { gjcRecord } from "./dialogs/gjc-record.ts";
 import { lettaRecord } from "./dialogs/letta-record.ts";
@@ -28,7 +28,7 @@ function within(record: string, request: RecordRequest | null): RecordRequest | 
 
 /** A record kept in a session file the agent appends to, found as the pane's conversation is: its last lines are read. */
 function sessionFile(record: AgentRecord, file: (transcript: NativeTranscript) => string | null): RecordSource {
-  return { record, read: async (paneId) => { const path = file(await paneTranscript(paneId)); return path === null ? null : within(path, record.pending(tail(path))); } };
+  return { record, read: async (paneId) => { const path = file(await paneTranscript(paneId)); return path === null ? null : within(path, record.pending(await tail(path))); } };
 }
 
 /** Grok's session as herdr names it, or else the one its process holds (grok-store.ts `grokHeldTranscript`). */
@@ -50,31 +50,16 @@ const RECORDS: Readonly<Record<string, RecordSource>> = {
   copilot: sessionFile(copilotRecord, (found) => found.source === "copilot-transcript" ? found.path : null),
   // the local backend's messages, which Letta appends to as the turn goes; its transcript waits for the turn's end
   letta: sessionFile(lettaRecord, (found) => found.source === "letta-transcript" && found.letta ? lettaMessagesPath(found.letta.store, found.letta.agent, found.letta.conversation) : null),
-  grok: { record: grokRecord, read: async (paneId) => { const path = await grokSessionFile(paneId); return path === null ? null : within(path, grokRecord.pending(tail(path))); } },
+  grok: { record: grokRecord, read: async (paneId) => { const path = await grokSessionFile(paneId); return path === null ? null : within(path, grokRecord.pending(await tail(path))); } },
 };
 
 export function recordFor(agent: string): Omit<AgentRecord, "pending"> | undefined {
   return RECORDS[agent]?.record;
 }
 
-/** How much of a session file's end is read: a pending call is among its last lines. */
-const RECORD_TAIL_BYTES = 1024 * 1024;
-
-/** The file's last bytes, or "" for anything but a regular file (a link, a pipe that would block the server). */
-function tail(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) return "";
-    const size = stat.size;
-    const length = Math.min(size, RECORD_TAIL_BYTES);
-    const bytes = Buffer.alloc(length);
-    readSync(fd, bytes, 0, length, size - length);
-    const text = bytes.toString("utf8");
-    return length < size ? text.slice(text.indexOf("\n") + 1) : text;
-  } finally {
-    closeSync(fd);
-  }
+/** A session file's last lines (record-tail.ts), read on a file thread. */
+async function tail(path: string): Promise<string> {
+  return await fileTask<string>({ op: "record-tail", path });
 }
 
 /**
@@ -90,7 +75,7 @@ export async function recordRequest(paneId: string, agent: string): Promise<Reco
   try {
     return await source.read(paneId);
   } catch (error) {
-    if (error instanceof ConversationUnavailable || (error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof ConversationUnavailable || error instanceof FileBusyError || (error as NodeJS.ErrnoException).code === "ENOENT") return null;
     const kind = `${agent}\0${error instanceof Error ? error.name : typeof error}`;
     if (!unreadable.has(kind)) {
       unreadable.add(kind);
@@ -100,11 +85,15 @@ export async function recordRequest(paneId: string, agent: string): Promise<Reco
   }
 }
 
-/** A generic card for the pane, with the command its agent's record holds when the dialog on the screen shows it whole. */
-export async function withAgentRecord(paneId: string, agent: string, card: InteractivePrompt, screen: string): Promise<InteractivePrompt> {
+/**
+ * A generic card for the pane, with the command its agent's record holds when the dialog on the screen shows it whole;
+ * none for a dialog that says it cut its command (`cut`), which the terminal answers.
+ */
+export async function withAgentRecord(paneId: string, agent: string, card: InteractivePrompt, screen: string): Promise<InteractivePrompt | null> {
   const source = RECORDS[agent];
   const parsed = parsedByPublicPrompt.get(card);
   if (source === undefined || parsed === undefined || !parsed.responder.startsWith("fallback")) return card;
+  if (commandCut(screen, source.record)) return null;
   const shown = withRecord(parsed, await recordRequest(paneId, agent), screen, source.record);
   return shown === parsed ? card : publicPrompt(shown);
 }
