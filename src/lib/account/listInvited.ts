@@ -10,10 +10,10 @@
  * signature of the line is no such proof: its challenge is the account service's to choose.
  */
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { cardHolds, inviteRefusal, listView, type ListNames } from "../../../shared/account-list.ts";
+import { cardHolds, inviteRefusal, listClock, listView, type ListNames } from "../../../shared/account-list.ts";
 import { verifyLineProof } from "../../../shared/account-list-invite.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import type { AccountList } from "./accountList.ts";
+import type { AccountList, ListWriter } from "./accountList.ts";
 import { addPostedPc, type AddPcOutcome, type PostedPc } from "./listAdd.ts";
 import type { ListPost } from "./listAnswers.ts";
 import type { WriteOptions } from "./listWrite.ts";
@@ -24,6 +24,19 @@ export interface InvitedPc extends PostedPc {
   readonly invite: string;
   /** The key of the member that placed the invite, as the list holds it. */
   readonly by: string | null;
+  /** When the invite ends, in seconds since 1970, as its entry says. */
+  readonly exp: number;
+}
+
+/**
+ * Whether the invite with key `invite` lets a PC in by one press, on `writer`'s state at `nowS` (seconds, this device's
+ * own clock held against the floor it saved and the list's time): an invite of the list, open as far as a member can
+ * tell (not ended, its placer still in, a use left), one that waits for a person (not one a PC joins with by itself),
+ * and not past its `exp`.
+ */
+export function inviteLetsIn(writer: ListWriter, invite: string, nowS: number): boolean {
+  const row = writer.state.invites[invite];
+  return row !== undefined && !row.auto && row.joins < row.uses && listClock(writer.state, nowS, writer.floor) <= row.exp && inviteRefusal(writer.state, invite) === null;
 }
 
 /**
@@ -35,9 +48,8 @@ export interface InvitedPc extends PostedPc {
 export async function invitedPcs(list: AccountList, posts: readonly ListPost[], nowMs: number): Promise<InvitedPc[]> {
   const writer = list.writer();
   if (writer === null) return [];
-  const clock = Math.max(writer.clock, Math.floor(nowMs / 1000));
   const open = new Map(listView(writer.state).invites
-    .filter((row) => !row.auto && row.joins < row.uses && clock <= row.exp && inviteRefusal(writer.state, row.key) === null)
+    .filter((row) => inviteLetsIn(writer, row.key, Math.floor(nowMs / 1000)))
     .map((row) => [row.key, row]));
   const found: InvitedPc[] = [];
   for (const post of posts) {
@@ -45,7 +57,8 @@ export async function invitedPcs(list: AccountList, posts: readonly ListPost[], 
     if (deriveServerId(hexToBytes(post.endpoint)) !== post.server_id) continue;
     if (!await cardHolds({ key: post.key, enc: post.enc, list: writer.list, endpoint: post.endpoint, invite: null }, post.card)) continue;
     const signed = await verifyLineProof({ account: writer.account, server_id: post.server_id, list: writer.list, card: { key: post.key, enc: post.enc, endpoint: post.endpoint } }, post.invite_proof, post.invite);
-    if (signed) found.push({ list: writer.list, endpoint: post.endpoint, server_id: post.server_id, key: post.key, enc: post.enc, card: post.card, invite: post.invite, by: open.get(post.invite)?.by ?? null });
+    const row = open.get(post.invite);
+    if (signed && row !== undefined) found.push({ list: writer.list, endpoint: post.endpoint, server_id: post.server_id, key: post.key, enc: post.enc, card: post.card, invite: post.invite, by: row.by, exp: row.exp });
   }
   return found;
 }
@@ -53,9 +66,12 @@ export async function invitedPcs(list: AccountList, posts: readonly ListPost[], 
 /**
  * The person pressed Add for a PC that joined with their invite: the account admits the PC, and this device signs its
  * `pc` entry with the card the line signed for, and ends the invite's key in the same request, so nobody else joins
- * with that line. No number is compared: the line's own signature is what says that this PC is the one. Answers as
- * addPostedPc does; only a sign-in that ended throws.
+ * with that line. No number is compared: the line's own signature is what says that this PC is the one. The invite is
+ * judged again on the state of every signature (inviteLetsIn), and the Add is done only once this device's
+ * copy holds the PC and the invite's end. `member`: the member key at the press. Answers as addPostedPc does; only a
+ * sign-in that ended throws.
  */
-export async function addInvitedPc(list: AccountList, pc: InvitedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect"> & { readonly admit: () => Promise<void> }): Promise<AddPcOutcome> {
-  return addPostedPc(list, pc, names, { ...options, then: [{ kind: "remove", ends: pc.invite }] });
+export async function addInvitedPc(list: AccountList, pc: InvitedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect" | "signal"> & { readonly admit: () => Promise<void>; readonly member?: string }): Promise<AddPcOutcome> {
+  // judged by the writer's own reading of this device's clock, held against its floor and the list's time
+  return addPostedPc(list, pc, names, { ...options, invite: { key: pc.invite, open: (writer) => inviteLetsIn(writer, pc.invite, writer.issued_at) } });
 }

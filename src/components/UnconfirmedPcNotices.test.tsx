@@ -8,7 +8,7 @@ import { isNewAccountPc, type MyPc } from "../lib/account/myPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { accountList } from "../lib/account/accountList.ts";
 import { askingPc, pcComparing, postPcKeys } from "../lib/account/accountList.test-helpers.ts";
-import { listView } from "../../shared/account-list.ts";
+import { listView, signCard } from "../../shared/account-list.ts";
 import { readJoinLine } from "../../shared/account-list-join.ts";
 import { makeInvite } from "../lib/account/listInvite.ts";
 import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
@@ -609,7 +609,7 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
 describe("a PC that asks to be added to an account with a signed list", () => {
   /** This device is in its account's list, and a PC listed itself with a device code and posted its keys and its card for that list. */
   /** what the account service carries with a PC's post, for a PC that joined with an invite: the invite's key and the line's own signature */
-  let carried: { invite: string; invite_proof: string } | null = null;
+  let carried: { invite: string; invite_proof: string; key?: string; enc?: string; card?: string } | null = null;
   async function listAccount(lies: {
     /** the account service's own answer to the admission, in place of the fake's */
     admit?: () => Response;
@@ -714,8 +714,76 @@ describe("a PC that asks to be added to an account with a signed list", () => {
     for (const by of ["unnamed", "gone", null]) expect(invitedTitle(t, { by }, members)).toBe("Add this PC to your account? (joined with an invite of your account)");
   });
 
+  /** An invite this device made, and the line's own proof for the PC's card, carried with the PC's post. */
+  async function invitedBy(list: Awaited<ReturnType<typeof listAccount>>["list"], pc: Awaited<ReturnType<typeof listAccount>>["pc"]) {
+    const made = await makeInvite(list, { auto: false });
+    if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+    const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+    carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
+    return { invite: made.invite, line };
+  }
+  const title = (): string => textOf(renderer!.root.find((node) => node.props["data-unconfirmed-pc"] !== undefined).findAll((node) => node.type === "span")[1]!);
+  const focus = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
+
+  it("is drawn again when the line's proof comes after the card, and when the invite is over: it says so only while it holds", async () => {
+    const { pc, list } = await listAccount();
+    try {
+      await mount();
+      expect(title()).toBe("Add this PC to your account?");
+      const { invite } = await invitedBy(list, pc);
+      await focus();
+      expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+      // a PC that joined with an invite came with no sign-in code: the card says nothing of one
+      expect(text()).not.toContain("entered the code it showed");
+      now = (invite.exp + 1) * 1000;
+      await focus();
+      expect(title()).toBe("Add this PC to your account?");
+    } finally { setPageAccountList(null); }
+  });
+
+  it("signs for the card that was shown and no other: a post with other keys under the same relay key is drawn again, and nothing is added at that press", async () => {
+    const { pc, list, held, pcAdmits } = await listAccount();
+    try {
+      const { invite, line } = await invitedBy(list, pc);
+      await mount();
+      expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+      // the PC posted again, with other keys and a proof of the line for them, after the card was drawn
+      const other = await askingPc();
+      const card = await signCard({ key: other.key, enc: other.enc, list: held().id, endpoint: pc.endpoint, invite: null }, other.signs);
+      carried = { invite: invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: { key: other.key, enc: other.enc, endpoint: pc.endpoint } }), key: other.key, enc: other.enc, card };
+      const before = held().entries.length;
+      await press("Add");
+      expect([pcAdmits(), held().entries.length]).toEqual([0, before]);
+      expect(list.view().pcs).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("writes the invited record before the card goes: a card is never dismissed while the record waits for another tab", async () => {
+    const { pc, list } = await listAccount();
+    const locks = Promise.withResolvers<void>();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { value: { ...navigator, locks: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } } }, configurable: true });
+    try {
+      await invitedBy(list, pc);
+      await mount();
+      const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
+      await act(async () => { void add.props.onClick(); });
+      await settle();
+      // another tab holds the record's lock: the PC is in the list, and the card stays until its record is written
+      expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      locks.resolve();
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "navigator", saved);
+      setPageAccountList(null);
+    }
+  });
+
   it("asks for the number, as for any PC that asks, where the invite's proof is another PC's", async () => {
-    const { list, held } = await listAccount();
+    const { list } = await listAccount();
     try {
       const made = await makeInvite(list, { auto: false });
       if (!made.made) throw new Error(`no invite was made: ${made.why}`);

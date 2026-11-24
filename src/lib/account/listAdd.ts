@@ -14,7 +14,7 @@ import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { AccountList, ListWriter } from "./accountList.ts";
 import type { ListPost } from "./listAnswers.ts";
-import { signedNamed, writeNamed, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
+import { signedNamed, signedOn, writeNamed, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, SignedOutError } from "./service.ts";
 
 /** A PC that asks to be added, whose card this device checked: it is that key's own, for this device's list and that relay key. */
@@ -181,7 +181,12 @@ export async function numberWith(list: AccountList, post: PostedPc, options: { r
 }
 
 /** Why a PC was not added: what stops any write (listWrite.ts), or the account service did not admit the PC (`admit`, with its code). */
-export type AddPcOutcome = { readonly added: true } | { readonly added: false; readonly why: WriteRefusal | "admit"; readonly code?: string; readonly retryAfterMs: number | null };
+/**
+ * Why a PC was not added: what stops any write (listWrite.ts), the account service did not admit the PC (`admit`, with
+ * its code), or the invite the PC joined with no longer lets it in by one press, on the state a signature was to be
+ * made on (`invite_ended`: over by this device's clock, used, revoked, or its placer gone).
+ */
+export type AddPcOutcome = { readonly added: true } | { readonly added: false; readonly why: WriteRefusal | "admit" | "invite_ended"; readonly code?: string; readonly retryAfterMs: number | null };
 
 /**
  * The person pressed Add beside the number: the account admits the PC (the account service places a `pc` entry only
@@ -195,15 +200,27 @@ export type AddPcOutcome = { readonly added: true } | { readonly added: false; r
 export async function addPostedPc(list: AccountList, post: PostedPc, names: ListNames | null, options: Pick<WriteOptions, "wait" | "expect" | "signal"> & {
   readonly admit: () => Promise<void>;
   readonly member?: string;
-  /** what the same request places after the PC's entry (the removal of the invite it joined with) */
-  readonly then?: readonly ListKind[];
+  /**
+   * The invite the PC joined with, which the same request ends (listInvited.ts): the Add is done only once this
+   * device's own copy holds the PC by this card AND the invite's key is ended. `open` says, on the state each signature
+   * is to be made on, whether the invite still lets this PC in by one press; where it does not, nothing more of the PC
+   * is signed (`invite_ended`).
+   */
+  readonly invite?: { readonly key: string; readonly open: (writer: ListWriter) => boolean };
 }): Promise<AddPcOutcome> {
-  const { member, admit, then, ...writeOptions } = options;
+  const { member, admit, invite, ...writeOptions } = options;
   const changed = (writer: ListWriter | null): boolean => writer === null || writer.list !== post.list
     || (options.expect !== undefined && writer.account !== options.expect.account) || (member !== undefined && writer.keys.key !== member);
+  const pcHeld = (writer: ListWriter): boolean => {
+    const row = writer.state.pcs[post.endpoint];
+    return row !== undefined && row.removed === null && row.key === post.key;
+  };
+  const inviteEnded = (writer: ListWriter): boolean => invite === undefined || (writer.state.signers[invite.key]?.ended ?? null) !== null;
   options.signal?.throwIfAborted();
   // what the person pressed for, before anything goes: the account, the list and the member key it was shown for
-  if (changed(list.writer())) return { added: false, why: "changed", retryAfterMs: null };
+  const before = list.writer();
+  if (before === null || changed(before)) return { added: false, why: "changed", retryAfterMs: null };
+  if (invite !== undefined && !pcHeld(before) && !invite.open(before)) return { added: false, why: "invite_ended", retryAfterMs: null };
   const held = list.holdsPc(post.endpoint);
   if (!held) {
     try { await admit(); } catch (error) {
@@ -213,13 +230,25 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
       return said === null ? { added: false, why: "unreached", retryAfterMs: null } : { added: false, why: "admit", code: said.code, retryAfterMs: said.retryAfterMs };
     }
   }
-  const outcome = await writeNamed<true>(list, async (writer) => {
-    // every try signs on a writer of the very account, list and member key the press was for (X3)
-    if (changed(writer)) return { refused: "changed" };
-    // the list holds that relay key already (this press, sent before): nothing more to sign
-    const row = writer.state.pcs[post.endpoint];
-    if (row !== undefined && row.removed === null && row.key === post.key) return { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } };
-    return { go: true };
-  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed }), then), { ...writeOptions, operation: `add-pc:${post.endpoint}` });
-  return outcome.written ? { added: true } : { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
+  const ends: readonly ListKind[] = invite === undefined ? [] : [{ kind: "remove", ends: invite.key }];
+  // Two rounds at most: where the request that placed the PC's entry could not carry the invite's removal beside it,
+  // the next signs that removal alone. The Add is done only when both are in this device's own copy.
+  for (let rounds = 0; rounds < 2; rounds += 1) {
+    const outcome = await writeNamed<"pc" | "ends", "invite_ended">(list, async (writer) => {
+      // every try signs on a writer of the very account, list and member key the press was for (X3)
+      if (changed(writer)) return { refused: "changed" };
+      // the list holds that relay key by this card already (this press, sent before): what is left is the invite's end
+      if (pcHeld(writer)) return inviteEnded(writer) ? { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } } : { go: "ends" };
+      // the invite is judged again on the very state this signature is made on
+      if (invite !== undefined && !invite.open(writer)) return { refused: "invite_ended" };
+      return { go: "pc" };
+    }, (writer, go) => go === "ends" ? signedOn(writer, ends)
+      : signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed }), ends),
+    { ...writeOptions, operation: `add-pc:${post.endpoint}` });
+    if (!outcome.written) return { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
+    if (invite === undefined) return { added: true };
+    const now = list.writer();
+    if (now !== null && pcHeld(now) && inviteEnded(now)) return { added: true };
+  }
+  return { added: false, why: "unknown", retryAfterMs: null };
 }

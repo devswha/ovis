@@ -5,8 +5,10 @@ import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
 import type { ListPost } from "./listAnswers.ts";
 import { lineChallenge } from "../../../shared/account-list-invite.ts";
+import { listView } from "../../../shared/account-list.ts";
+import { addPostedPc } from "./listAdd.ts";
 import { addInvitedPc, invitedPcs } from "./listInvited.ts";
-import { makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
+import { invitesOf, makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
 
 type World = ReturnType<typeof listWorld>;
 const noWait = { wait: async () => {} };
@@ -96,5 +98,36 @@ describe("Add for a PC that joined with an invite", () => {
     // the invite is spent: no second PC is offered for it, whatever proof is shown
     const other = await askingPc();
     expect(await invitedPcs(first.list, [await posted(w, first, invite, other)], w.clock.now)).toEqual([]);
+    // and the device's screen of invites says it was used, not revoked
+    expect(invitesOf(first.list, w.clock.now).map((row) => [row.key, row.state])).toEqual([[invite.key, "used"]]);
+  });
+
+  /** The PC used the invite at the account service: it is listed and posted its keys. */
+  async function listedAndPosted(w: World, first: WorldDevice, pc: AskingPc): Promise<void> {
+    await w.fake.fetch(`${w.origin}/v1/pcs/${pc.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${w.fake.issueToken(w.account, { device: true })}`, "content-type": "application/json" }, body: JSON.stringify({ label: "PC", public_key: pc.endpoint, relay: "wss://relay.test" }) });
+    await postPcKeys(w.fake.fetch, w.origin, w.fake.issueToken(w.account, { device: true }), pc, first.list.writer()!.list);
+  }
+
+  it("is done only once the invite ended too: a PC another Add placed meanwhile gets the invite's removal alone", async () => {
+    const { w, first, invite, pc } = await invited();
+    await listedAndPosted(w, first, pc);
+    const [found] = await invitedPcs(first.list, [await posted(w, first, invite, pc)], w.clock.now);
+    // the same PC was placed by an Add of its own (another tab's, by the number) before this press signed
+    expect(await addPostedPc(first.list, found!, null, { ...noWait, admit: async () => { await first.service.admitPc(pc.server_id); } })).toEqual({ added: true });
+    expect(listView(w.held().state).invites.map((row) => row.refusal)).toEqual([null]);
+    expect(await addInvitedPc(first.list, found!, null, { ...noWait, admit: async () => {} })).toEqual({ added: true });
+    const sent = first.sent.filter((each) => each.route.endsWith("/entries")).at(-1)!.body!.entries as string[];
+    expect(sent.map((text) => readBody(entryFromText(text).body).kind)).toEqual(["remove"]);
+    expect(listView(w.held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
+  });
+
+  it("judges the invite again on the state it signs on: one that ran out while the admission was on its way signs nothing", async () => {
+    const { w, first, invite, pc } = await invited();
+    await listedAndPosted(w, first, pc);
+    const [found] = await invitedPcs(first.list, [await posted(w, first, invite, pc)], w.clock.now);
+    const entries = w.held().entries.length;
+    const outcome = await addInvitedPc(first.list, found!, null, { ...noWait, admit: async () => { w.clock.now = (invite.exp + 1) * 1000; } });
+    expect(outcome).toMatchObject({ added: false, why: "invite_ended" });
+    expect(w.held().entries.length).toBe(entries);
   });
 });

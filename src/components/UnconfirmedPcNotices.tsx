@@ -200,17 +200,32 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // The PC joined with an invite of this account, by this device's own check of the line's signature over the PC's
   // card (listInvited.ts): its Add needs no number. null: it did not, or that is not known.
   const [invited, setInvited] = useState<InvitedPc | null>(null);
+  // Read again whenever what it stands on may have changed: the list (an entry placed, a revoke), the posts (a proof
+  // that came after the card was drawn), the account's PCs, the page coming back to the front, and the invite's end
+  const [reread, setReread] = useState(0);
+  useEffect(() => {
+    const again = (): void => setReread((count) => count + 1);
+    const unsubscribe = pageAccountList()?.subscribe(again);
+    window.addEventListener("focus", again);
+    window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, again);
+    return () => { unsubscribe?.(); window.removeEventListener("focus", again); window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, again); };
+  }, [session.account]);
   useEffect(() => {
     let live = true;
     void (async () => {
       const list = pageListReading(session.account) === "in" ? pageAccountList() : null;
       const writer = list?.writer() ?? null;
-      if (list === null || writer === null) return;
+      if (list === null || writer === null) { if (live) setInvited(null); return; }
       const found = (await invitedPcs(list, await writer.service.listPosts(writer.list), now())).find((each) => each.server_id === pc.server_id) ?? null;
       if (live) setInvited(found);
     })().catch((error: unknown) => { console.warn("Ovis: the PCs that joined with an invite could not be read", error instanceof Error ? error.name : error); });
     return () => { live = false; };
-  }, [session.account, pc.server_id, now]);
+  }, [session.account, pc, now, reread]);
+  useEffect(() => {
+    if (invited === null) return;
+    const timer = setTimeout(() => setReread((count) => count + 1), Math.max(0, invited.exp * 1000 - now()) + 1_000);
+    return () => clearTimeout(timer);
+  }, [invited, now]);
   // the numbers this card asked for: NUMBER_TRIES at most, Not the same and a number that ran out included
   const [tries, setTries] = useState(0);
   const spent = tries >= NUMBER_TRIES && number === null;
@@ -261,16 +276,24 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     if (known && (list === null || list.writer() === null)) throw new AddRefused({ added: false, why: "blocked", retryAfterMs: null });
     // A PC that joined with an invite of this account: the line's own signature says that it is this PC, so the one
     // press admits it, signs its entry and ends the invite. It is checked again at the press.
-    const stillInvited = list === null || invited === null || list.writer() === null ? undefined
-      : (await invitedPcs(list, await list.writer()!.service.listPosts(invited.list), now())).find((each) => each.endpoint === invited.endpoint && each.invite === invited.invite);
-    if (list !== null && stillInvited !== undefined) {
-      const outcome = await addInvitedPc(list, stillInvited, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
-        expect: { account: session.account, list: stillInvited.list },
+    // The press is for the card that was shown: the very keys, card and invite. A post that changed since (other keys
+    // under the same relay key, another invite) is drawn again for a press of its own, and nothing is signed for it
+    const shownCard = invited;
+    const writer = list?.writer() ?? null;
+    if (list !== null && writer !== null && shownCard !== null) {
+      const posted = (await invitedPcs(list, await writer.service.listPosts(shownCard.list), now())).find((each) => each.server_id === pc.server_id) ?? null;
+      const same = posted !== null && posted.endpoint === shownCard.endpoint && posted.key === shownCard.key && posted.enc === shownCard.enc && posted.card === shownCard.card && posted.invite === shownCard.invite && posted.list === shownCard.list;
+      if (!same) { setInvited(posted); return; }
+      const outcome = await addInvitedPc(list, shownCard, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
+        expect: { account: session.account, list: shownCard.list }, member: writer.keys.key,
         admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
       });
+      // the service's own window for the listing ended: nothing was admitted, and the request is started again on the PC
+      if (!outcome.added && outcome.why === "admit" && outcome.code === "listing_expired") { setToldExpired(true); setYoung(false); return; }
       if (!outcome.added) throw new AddRefused(outcome);
-      // a member's invite, proved for this PC by the line's own key, and the person's press: kept as such in this device's record of its PCs
-      void noteAct(session.account, stillInvited.endpoint, "invited").catch(() => undefined);
+      // A member's invite, proved for this PC by the line's own key, and the person's press: kept as such in this
+      // device's record of its PCs, before the card goes (a tab closed right after keeps it)
+      await noteAct(session.account, shownCard.endpoint, "invited").catch(() => undefined);
       window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
       onRemoved();
       return;
@@ -363,7 +386,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
         )}
         <span>{t("Name the PC gave itself: \"{name}\"", { name: accountLabel(pc.label) })}</span>
         {asker !== null && <span className="settings-hint" data-asker>{asker}</span>}
-        <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.")}` : ""}</span>
+        {/* a PC that joined with an invite, by the line's own proof, came with no sign-in code: nothing is said of one */}
+        {invited === null && <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.")}` : ""}</span>}
         {asking && young && <span className="settings-hint">{t("Expires in {minutes} min", { minutes: Math.min(10, Math.max(1, Math.ceil((until - now()) / 60_000))) })}</span>}
         {ranOut && <span>{t("This request ran out. To add this PC, start again on the PC.")}</span>}
         {problem !== null && <span className="account-error" role="alert">{problem.text}</span>}

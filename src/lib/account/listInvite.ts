@@ -157,6 +157,7 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
   if (held.invite !== null && (outcome.written || outcome.why === "unknown" || outcome.why === "busy")) {
     return { made: false, why: "unknown", retryAfterMs: null, pending: { ...held.invite, auto: options.auto } };
   }
+  if (outcome.written) return { made: false, why: "unknown", retryAfterMs: null };
   // nothing to show: the account service's invite, if one was made, redeems nothing more
   if (held.kept !== null) await endAtService(list, held.kept);
   if (outcome.why === "service" && held.said !== null) return { made: false, why: "service", code: held.said.code, retryAfterMs: held.said.retryAfterMs };
