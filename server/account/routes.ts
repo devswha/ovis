@@ -1,4 +1,4 @@
-import { canonicalBase64Url } from "../../shared/account-list-entry.ts";
+import { canonicalBase64Url, isListHash } from "../../shared/account-list-entry.ts";
 import type { Sealed } from "../../shared/account-list.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
@@ -21,6 +21,10 @@ const LINK_STATUS: Record<LinkRefusal, number> = {
   link_required: 403, unverified_device: 403, pairing_ended: 409, older_device: 403, closed: 409, read_pending: 409,
   replacement_needs_app: 409, list_followed: 409, list_removed: 409,
 };
+
+/** The most entries a member hands this PC in one call (POST /api/account/list/page), and the longest text of one. */
+const LIST_PEER_PAGE_MAX = 256;
+const LIST_PEER_ENTRY_CHARS = 16_384;
 
 /** What `ovis join` is told where this PC joins no list (POST /api/account/list/join…), by the refusal's name. */
 const JOIN_REFUSALS: Readonly<Record<string, string>> = {
@@ -67,6 +71,30 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // ignored). The read is a moment the device's time is judged at
     if (!devices.provisionalStands(waiting)) return fail("link_required", "This device did not link itself into an account in time. Pair it again.", 403);
     return reply({ account: null, members: 0, unlinked: [waiting], own_word: [], removals: [], adds: [], blocked: [], enrolling: false, blocked_all: false, mailbox: { last_pull_at: null, error: null } });
+  }
+  // A member and this PC say where the account's signed list stands, and the member hands the PC the entries it lacks
+  // (docs/account.md, "What the account service still can"). Any device that is signed in may, one that only watches
+  // too: an entry proves itself, so nothing is taken on the device's word, and a removal the account service
+  // withholds reaches the PC this way. A PC that follows no list a person named answers 404
+  if (waiting === null && access.level === "full" && request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page")) {
+    setRequestRoute(pathname);
+    if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
+    const list = context.services.accountList;
+    const body = await readJsonObject(request);
+    if (body instanceof Response) return body;
+    const own = list?.peerHead() ?? null;
+    if (list === null || own === null) return fail("not_found", "This PC follows no list", 404);
+    if (pathname === "/api/account/list/head") return reply(own);
+    const { entries, head, after } = body as { entries?: unknown; head?: unknown; after?: unknown };
+    const place = head as { seq?: unknown; hash?: unknown } | null | undefined;
+    if (body.list !== own.list) return fail("not_my_list", "This PC follows another list", 409);
+    if (!Array.isArray(entries) || entries.length > LIST_PEER_PAGE_MAX || !entries.every((entry) => typeof entry === "string" && entry.length <= LIST_PEER_ENTRY_CHARS)
+      || !(after === null || (typeof after === "number" && Number.isSafeInteger(after) && after >= 0))
+      || typeof place !== "object" || place === null || typeof place.seq !== "number" || !Number.isSafeInteger(place.seq) || place.seq < 0 || typeof place.hash !== "string" || !isListHash(place.hash)) {
+      return fail("invalid_page", "Send the entries after a place, and the head they lead to", 400);
+    }
+    const verdict = await list.takeFromPeer({ list: own.list, after, entries: entries as string[], head: { seq: place.seq, hash: place.hash } });
+    return verdict === null ? fail("not_found", "This PC follows no list", 404) : reply({ verdict, ...list.peerHead() });
   }
   const ownLink = waiting !== null && pathname === "/api/account/link" && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);

@@ -587,6 +587,18 @@ entry for the PC's own key, at this call or at a later read. 400 `invalid_list`;
 `list_removed` for an account whose list removed this PC; 503 `unavailable` when the PC's copy or
 its keys cannot be read or written.
 
+`POST /api/account/list/head` `{ "list", "place" }`: a device tells this PC where it stands in the
+account's signed list, and reads where the PC stands: `{ "list", "place": { "seq", "hash" } }`, the
+PC's list and the last entry a member signed in its copy (`place` `null` before it read any). `POST
+/api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands the PC the entries
+after the place the PC named, 256 at most, with the head they lead to; the PC takes them as it
+takes the account service's pages, each entry on its own signature, and answers `{ "verdict",
+"list", "place" }` with where it stands then (`caught_up`, `more`, `asks_after` for an entry kept
+beside the list that no member signed, `refused`, `stuck`, `fork`). Any signed-in device may call
+both, one that only watches and one in its join hold too; nothing is taken on its word. 404
+`not_found` on a PC that follows no list a person named; 409 `not_my_list` for a page of another
+list; 400 `invalid_page`.
+
 `POST /api/account/list/add` `{ "account" }`: a person at this PC adds it to an account that keeps a
 signed list ([A PC is added to the list](#a-pc-is-added-to-the-list)). This PC's own window and CLI
 alone (403 `owner_only` otherwise), for the account named for this PC (409 `account_mismatch`), on a
@@ -1722,9 +1734,12 @@ a signed `remove` and a signed block apply. Where it adds, it does not: a signed
 #### What the account service still can
 
 - **Withhold.** A removal the service does not show reaches the PC only from another source. The PC
-  takes entries any member hands it directly, since entries prove themselves, but no route carries
-  them yet: until one does, a removed device still opens a pinned PC that has not been shown its
-  removal, for as long as the service withholds it.
+  takes entries any device hands it over its session, since entries prove themselves
+  (`POST /api/account/list/head`, `POST /api/account/list/page`): a device says where it stands,
+  the PC says where it stands, and the device hands the PC the entries after that place. So a
+  removal one device holds reaches every PC that device opens, whatever the service shows. Until a
+  device that holds it opens the PC, a removed device still opens a pinned PC that has not been
+  shown its removal.
 - **Deny.** It can answer nothing, and it can keep a new device or a new PC from being added.
 - **See.** It sees how many devices and PCs an account has and when each came and went, and not what
   they are called.

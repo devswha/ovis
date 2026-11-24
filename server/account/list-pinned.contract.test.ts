@@ -19,6 +19,7 @@ import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_LIST_FILE } from "./list-follow.ts";
 import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
+import { ask } from "./pairing.test-helpers.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { pressOnce } from "./one-press.ts";
 import { applyAccountRecords } from "./records.ts";
@@ -518,6 +519,77 @@ describe("a removal the PC has seen is final", () => {
     await again.app.context.services.accountList!.settled();
     const next = await relayConnection(again, { serverId: pc.serverId });
     await expect(next.auth(pc.idOf(pc.laptop))).rejects.toThrow();
+  });
+
+  test("over its session, a device says where the list stands and hands the PC the removal the service withholds", async () => {
+    const pc = await pinnedPc();
+    const held = pc.list.status().head!;
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq });
+    const removal = await pc.account.remove(pc.laptop.key);
+    await pc.pull();
+    const laptop = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await laptop.auth(pc.idOf(pc.laptop))).toMatchObject({ role: "drive" });
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    // the two say where they stand: the PC is behind
+    const heads = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: pc.account.place } });
+    expect([heads.status, heads.body]).toEqual([200, { list: pc.account.id, place: held }]);
+    const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+    expect([handed.status, handed.body]).toEqual([200, { verdict: "caught_up", list: pc.account.id, place: pc.account.place }]);
+    expect(await bounded(laptop.serverError, 2000)).toBe("auth_revoked");
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+  });
+
+  test("a device that only watches may hand entries over too, and what no member signed is taken from nobody", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    await pc.account.addDevice(tablet, { role: "watch", power: "bound" });
+    await pc.pull();
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    const held = pc.list.status().head!;
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq });
+    const watching = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await watching.auth(pc.idOf(tablet))).toMatchObject({ role: "watch" });
+    // an entry a stranger signed, at the place after the PC's head
+    const stranger = await listMember();
+    const forged = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, stranger, held);
+    const refused = await ask(watching, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [forged], head: { seq: held.seq + 1, hash: "ab".repeat(32) } } });
+    // kept beside the list at most, never in it: the PC stands where it stood
+    expect([refused.status, refused.body]).toEqual([200, { verdict: "asks_after", list: pc.account.id, place: held }]);
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+    // and a member's own removal, carried by the same device
+    const removal = await pc.account.remove(pc.laptop.key);
+    const handed = await ask(watching, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+    expect(handed.body).toMatchObject({ verdict: "caught_up", place: pc.account.place });
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+    // nothing else of the account opens to it
+    expect((await ask(watching, "/api/account/list/pin", { method: "POST", body: { list: pc.account.id } })).status).toBe(403);
+  });
+
+  test("the calls answer nothing to a page of another list or out of form, and a PC that only reads its list answers 404", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const page = (body: unknown) => ask(member, "/api/account/list/page", { method: "POST", body });
+    const other = await page({ list: "ef".repeat(32), after: 0, entries: [], head });
+    expect([other.status, other.body.error?.code]).toEqual([409, "not_my_list"]);
+    for (const body of [
+      { list: pc.account.id, after: 0, entries: "x", head },
+      { list: pc.account.id, after: -1, entries: [], head },
+      { list: pc.account.id, after: 0, entries: [], head: { seq: "1", hash: head.hash } },
+      { list: pc.account.id, after: 0, entries: Array<string>(257).fill("x"), head },
+    ]) expect([(await page(body)).status]).toEqual([400]);
+    expect(pc.list.status().head).toEqual(head);
+
+    const shadow = await listedPc();
+    // a device this PC paired itself
+    const laptop = await relayConnection(shadow.fixture, { serverId: shadow.serverId });
+    await laptop.auth({ keys: shadow.member.keys, publicKey: shadow.member.publicKey, id: shadow.member.id });
+    for (const path of ["/api/account/list/head", "/api/account/list/page"]) {
+      const none = await ask(laptop, path, { method: "POST", body: { list: shadow.account.id, place: shadow.account.place, after: 0, entries: [], head: shadow.account.place } });
+      expect([path, none.status, none.body.error?.code]).toEqual([path, 404, "not_found"]);
+    }
   });
 
   test("what a stranger hands over proves nothing: an entry no member signed removes nobody", async () => {

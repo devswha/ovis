@@ -26,8 +26,8 @@ import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writ
 import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import {
-  admitsSession, admittedDevices, followStep, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, writeSave, PC_BUSY_READ_SECONDS,
-  type FollowerCopy, type FollowRead, type FollowVerdict, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
+  admitsSession, admittedDevices, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, shownPcs, standing, startRead, takePage, writeSave, PC_BUSY_READ_SECONDS,
+  type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
 import { inviteRefusal, isListLabel, joinEntry, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
 import { signerPower } from "../../shared/account-list-signers.ts";
@@ -779,6 +779,16 @@ export class ListFollow implements ListAuthority {
     return opened.value;
   }
 
+  /**
+   * Where this PC stands in its list, as it tells a member that asks (gossipHead): its list id and the last entry a
+   * member signed in its copy. Null while it follows no list a person named, and while its copy cannot be used.
+   */
+  peerHead(): ListHead | null {
+    const scope = this.bound();
+    if (scope === null || this.copy === null || this.problem !== null || (!this.isPinned && this.want === null)) return null;
+    return gossipHead(this.copy);
+  }
+
   /** What this PC asks another member for, so that member can hand it the entries it lacks; null while it follows no list a person named. */
   asks(): PeerAsk | null {
     const scope = this.bound();
@@ -799,7 +809,12 @@ export class ListFollow implements ListAuthority {
       await this.ensureCopy(scope);
       const copy = this.copy;
       if (copy === null || this.problem !== null || (!this.isPinned && this.want === null)) return null;
-      const result = await takePage(copy, startRead(copy, "peer"), page, this.seconds());
+      // A member hands entries after the place this PC said it stands at (peerHead: its footing). Where the copy
+      // holds entries above that which no member signed, that is the read back to the footing, as the follower asks it
+      const start = startRead(copy, "peer");
+      const footing = copy.state?.footing.seq;
+      const read: FollowRead = page.after !== undefined && page.after === footing && start.after !== footing ? { ...start, after: footing, back: true } : start;
+      const result = await takePage(copy, read, page, this.seconds());
       if (!this.live(scope)) return null;
       this.keep(result.copy, scope, changed(copy, result.copy));
       return result.verdict;

@@ -457,6 +457,8 @@ describe("demo transport", () => {
     "/api/account/pc-proof": "this PC's own proof for its listing: asked only by a signed-in window on this PC itself, which the demo never is",
     "/api/account/list": "how this PC follows its account's signed list: read by this PC's own window and CLI for diagnosis, and no screen of the app asks for it",
     "/api/account/list/pin": "a person at the PC names the list it pins: this PC's own window and CLI alone, and no screen of the app asks for it yet",
+    "/api/account/list/head": "a device and the PC say where the account's signed list stands: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/page": "a device hands the PC entries of the account's signed list: the demo's PC follows no list, and 404 is what such a PC answers",
     "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` on the PC, and the demo's PC is in its account",
     "/api/account/list/add/confirm": "the person at the PC says the adding device shows the same number: asked by `ovis add` on the PC",
     "/api/account/list/add/cancel": "the person at the PC says the numbers differ: asked by `ovis add` on the PC",
