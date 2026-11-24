@@ -403,7 +403,8 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await page.clock.install({ time });
       await page.clock.pauseAt(new Date(time.getTime() + 1000));
     }
-    await page.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })), options.theme ?? "dark");
+    // a test that sets qa-language in the tab's sessionStorage reloads in that language
+    await page.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: sessionStorage.getItem("qa-language") ?? "en", theme })), options.theme ?? "dark");
     csp.push(await watchCsp(page));
     return { context, page, bridge };
   };
@@ -1658,7 +1659,6 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
         // the phone app's own copy of the client: what the app sets at document start (lib/appShell.ts)
         const bundled = (context: BrowserContext) => context.addInitScript(() => {
           Object.defineProperty(window, "__ovisAppShell", { value: { bundled: true, platform: "android", appVersion: "1.1.0", build: 15 } });
-          if (sessionStorage.getItem("qa-language") === "ko") localStorage.setItem("ovis:settings", JSON.stringify({ language: "ko", theme: "light" }));
         });
         {
           const pc = await skewPc(newer, undefined, newer);
@@ -1715,10 +1715,14 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           await inApp(page);
           assert.ok(await page.evaluate(() => navigator.serviceWorker.controller !== null), "the hosted page is now served by its worker");
           assert.ok((await page.evaluate(() => caches.keys())).length > 0, "the worker kept caches");
+          const marker = `kept-${randomBytes(4).toString("hex")}`;
+          await page.evaluate((marker) => localStorage.setItem("qa-retire-marker", marker), marker);
           await bundled(context);
+          // the app opens the PC's page anew, a navigation: a page that is itself a reload never reloads (lib/shellMode.ts)
+          await page.goto("about:blank");
           const loads: string[] = [];
           page.on("load", () => loads.push(page.url()));
-          await page.reload();
+          await page.goto(scopeOf(offer.server_id));
           await inApp(page);
           for (const deadline = Date.now() + 20_000; loads.length < 2;) {
             if (Date.now() > deadline) throw new Error(`the page a worker served did not load again from the app (loads: ${JSON.stringify(loads)})`);
@@ -1728,9 +1732,9 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           const after = await page.evaluate(async () => ({
             registrations: (await navigator.serviceWorker.getRegistrations()).length,
             controlled: navigator.serviceWorker.controller !== null,
-            settings: localStorage.getItem("ovis:settings") !== null,
+            marker: localStorage.getItem("qa-retire-marker"),
           }));
-          assert.deepEqual(after, { registrations: 0, controlled: false, settings: true }, "no worker; web storage kept");
+          assert.deepEqual(after, { registrations: 0, controlled: false, marker }, "no worker; web storage kept, the value written before it untouched");
           assert.ok((await saved(page, offer.server_id))?.device_id, "the pairing in IndexedDB stays");
           await page.reload();
           await inApp(page);

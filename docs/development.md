@@ -319,8 +319,8 @@ release its PCs run. Store builds are cut from a release tag's verified shell (t
   own, with a changelog line.
 - **A release that changes the contract runs the oldest supported client against itself**:
   `bun scripts/relay-client-skew-regression.ts [<tag>]` builds the shell of the tag (by default the oldest client a
-  store build carries; while none carries one, the latest release) and opens this checkout's PC through the relay
-  in a browser: it pairs, attaches a terminal, types and reads the output. It is the reverse of
+  store build carries at or above the floor; while none carries one, the latest release) and opens this checkout's
+  PC through the relay in a browser: it pairs, attaches a terminal, types and reads the output. It is the reverse of
   `relay-e2e-regression.ts --skew`, which runs this client against an older PC. It is not in CI yet: run it by hand.
 
 ## Growth snapshot

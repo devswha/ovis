@@ -358,7 +358,7 @@ export function RelayShellCardContent({ props, other = null }: RelayShellCardCon
           <p className="relay-shell-copy">{t("{name} needs a newer version of this app.", { name: pc })}</p>
           <div className="relay-shell-actions">
             {state.platform !== null && <ExternalLink kind="link" className="btn btn-primary" href={STORE_PAGES[state.platform]}>{t("Open the store")}</ExternalLink>}
-            {back}
+            {back ?? <button type="button" className="btn btn-ghost" onClick={onCancel}>{t("Back")}</button>}
           </div>
         </>
       )}

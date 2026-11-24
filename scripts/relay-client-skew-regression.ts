@@ -6,8 +6,8 @@
  * the app's contract set on the page (lib/appShell.ts), and opens this checkout's PC through the Bun relay: it pairs,
  * attaches a terminal, types, and reads the output back in the page and in herdr's own pane.
  *
- * The tag is by default the oldest client a store build carries (server/relay/store-app-versions.json); while every
- * store build loads the hosted shell, the latest release, which the first store build to carry the client will hold.
+ * The tag is by default the oldest client a store build carries (server/relay/store-app-versions.json) at or above the
+ * floor; while no store build carries one, the latest release, which the first store build to carry the client will hold.
  *
  *   bun scripts/relay-client-skew-regression.ts [<tag>]
  *   RELAY_CLIENT_SHELL_DIR=<dist-shell> bun scripts/relay-client-skew-regression.ts    a shell built already
@@ -41,11 +41,12 @@ interface StoreBuild { readonly client: string | null }
 
 async function defaultTag(): Promise<{ tag: string; why: string }> {
   const stores = JSON.parse(readFileSync(join(repo, "server/relay/store-app-versions.json"), "utf8")) as Record<string, readonly StoreBuild[]>;
-  const carried = Object.values(stores).flat().flatMap((build) => build.client === null ? [] : [build.client]);
-  const oldest = [...carried].sort((a, b) => compareVersions(parseVersion(a)!, parseVersion(b)!))[0];
-  if (oldest !== undefined) return { tag: `v${oldest}`, why: "the oldest client a store build carries" };
+  const floor = parseVersion(MIN_SUPPORTED_CLIENT_VERSION)!;
+  const supported = Object.values(stores).flat().flatMap((build) => build.client === null || compareVersions(parseVersion(build.client)!, floor) < 0 ? [] : [build.client]);
+  const oldest = [...supported].sort((a, b) => compareVersions(parseVersion(a)!, parseVersion(b)!))[0];
+  if (oldest !== undefined) return { tag: `v${oldest}`, why: "the oldest client a store build carries that the floor still supports" };
   const latest = (await $`git describe --tags --abbrev=0 --match ${"v[0-9]*"} --exclude ${"v*-*"} HEAD`.cwd(repo).text()).trim();
-  return { tag: latest, why: "no store build carries a client yet: the latest release" };
+  return { tag: latest, why: "no store build carries a client the floor supports: the latest release" };
 }
 
 async function shellOf(tag: string, root: string): Promise<{ dir: string; done: () => Promise<void> }> {

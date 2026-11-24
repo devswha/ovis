@@ -219,6 +219,19 @@ describe("direct carrier", () => {
     await expect(opened(page)).rejects.toThrow();
   });
 
+  it("refuses the app's own pages' origins alike, hosted or carried by the iOS app: only the plugin's socket, which names none, opens it", async () => {
+    const { fixture, offer, url } = await directFixture();
+    for (const origin of ["https://app.ovis.sh", "capacitor://app.ovis.sh", "capacitor://localhost"]) {
+      const page = new WebSocket(url(), { headers: { origin } } as never);
+      cleanup.push(() => page.close());
+      await expect(opened(page)).rejects.toThrow();
+    }
+    const device = await relayDevice(fixture);
+    const channel = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(url()) }));
+    cleanup.push(() => channel.close());
+    expect(channel.device.device_id).toBe(device.id);
+  });
+
   it("answers only private network peers", async () => {
     const fixture = relayFixture();
     const strict = new DirectCarrier({ identity: loadRelayIdentity(fixture.stateDir), services: fixture.app.context.services,

@@ -1025,6 +1025,12 @@ The app and the client agree on one contract:
 - Only the relay and the direct carrier name the floor: both speak Ovis Mux, whose `WELCOME` carries
   it. A PC added by address, Tailscale or SSH loads its own client from the PC, so the two never
   differ and nothing is compared.
+- The iOS copy's fetches and sockets carry `Origin: capacitor://app.ovis.sh`. Nothing on a PC or a
+  relay accepts the hosted origin by name, so nothing accepts this one either, and nothing had to
+  change: the relay reads no `Origin`; through it the PC gives every request its own origin
+  (`relayHeaders`); the direct carrier takes only a socket that names no origin, the plugin's; a
+  PC's own HTTP and WebSocket take only their own origin. Tests pin each for both origins and
+  `capacitor://localhost`, and a PC from 0.5.9 behaves the same.
 
 What a PC supports, and when the floor may rise: [The phone app's client](development.md#the-phone-apps-client).
 

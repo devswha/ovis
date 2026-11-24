@@ -236,6 +236,25 @@ describe("RelayShellScreens", () => {
     }
     const unknown = render(createElement(RelayShell, baseProps({ kind: "app-outdated", name: "Desk PC", platform: null })));
     expect(unknown).not.toContain("Open the store");
+    expect(unknown).toContain(">Back</button>");
+  });
+
+  it("leaves Update the app for the front page by Cancel where no PC's page is open", async () => {
+    const cancelled: string[] = [];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(createElement(SettingsProvider, { children: createElement(RelayShellCardContent, {
+          props: { ...baseProps({ kind: "app-outdated", name: "Desk PC", platform: null }), scoped: false, onCancel: () => cancelled.push("cancel"), onBack: () => cancelled.push("back") },
+        }) }));
+      });
+      const back = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Back");
+      expect(back).toHaveLength(1);
+      await act(async () => { back[0]!.props.onClick(); });
+      expect(cancelled).toEqual(["cancel"]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+    }
   });
 
   it("renders Copy buttons for both manual update command blocks and updates to Copied on click", async () => {

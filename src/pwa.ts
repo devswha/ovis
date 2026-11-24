@@ -10,7 +10,8 @@ import { retireServiceWorkers, shellMode, shellServiceWorker } from "./lib/shell
 
 const bundled = appShell() !== null;
 if (bundled && "serviceWorker" in navigator) {
-  retireServiceWorkers(navigator.serviceWorker, typeof caches === "undefined" ? null : caches, () => window.location.reload()).catch((err: unknown) => {
+  const reloaded = (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type === "reload";
+  retireServiceWorkers(navigator.serviceWorker, typeof caches === "undefined" ? null : caches, () => window.location.reload(), reloaded).catch((err: unknown) => {
     console.warn("the hosted app's service workers were not removed", err);
   });
 }
