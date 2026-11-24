@@ -8,10 +8,11 @@
  * that joins reads the list's names. Revoking an invite is a `remove` of its key, and for such an invite the next
  * epoch after it.
  */
-import { listView, sealEpoch, signListEntries, type ListKind, type Sealed } from "../../../shared/account-list.ts";
+import { lapsedRemovals, listView, sealEpoch, signListEntries, type ListKind, type Sealed } from "../../../shared/account-list.ts";
 import { newInvite } from "../../../shared/account-list-join.ts";
-import type { AccountList } from "./accountList.ts";
-import { overTime, placeOf, signedNamed, signedOn, signedWithEpoch, writeToList, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
+import type { ListPlace } from "../../../shared/account-list-signers.ts";
+import type { AccountList, ListWriter } from "./accountList.ts";
+import { WRITE_ENTRIES_MAX, placeOf, signedNamed, signedOn, signedWithEpoch, writeNamed, writeToList, type WriteOptions, type WriteRefusal, type Written } from "./listWrite.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, SignedOutError } from "./service.ts";
 
 /**
@@ -71,7 +72,8 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
     kept: string | null;
     said: { readonly code: string; readonly retryAfterMs: number | null } | null;
   } = { invite: null, kept: null, said: null };
-  const outcome = await writeToList<"service">(list, async (writer) => {
+  type Invite = { readonly key: string; readonly line: string };
+  const prepare = async (writer: ListWriter): Promise<{ readonly refused: WriteRefusal | "service" } | { readonly done: ListPlace } | { readonly go: Invite }> => {
     if (held.invite === null) {
       const session = await writer.service.session();
       if (session === undefined || session.account !== writer.account) return { refused: "changed" };
@@ -91,13 +93,18 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
       }
       held.invite = fresh;
     }
-    const invite = held.invite;
     // the list holds it already: placed by a request whose answer was lost
-    if (writer.state.invites[invite.key] !== undefined) return { done: placeOf(writer.state) };
+    return writer.state.invites[held.invite.key] !== undefined ? { done: placeOf(writer.state) } : { go: held.invite };
+  };
+  const sign = async (writer: ListWriter, invite: Invite): Promise<Written> => {
     const kind = (sealed: Sealed | null): ListKind => ({ kind: "invite", key: invite.key, exp: writer.clock + INVITE_S, uses: 1, auto: options.auto, sealed });
+    // an invite a machine joins with by itself is wrapped the epoch's key, as a member that comes in is
     const request = options.auto ? await signedNamed(writer, null, invite.key, kind) : await signedOn(writer, [kind(null)]);
-    return { request: { ...request, invite: { key: invite.key, auto: options.auto } } };
-  }, options);
+    return { ...request, invite: { key: invite.key, auto: options.auto } };
+  };
+  const outcome = options.auto
+    ? await writeNamed<Invite, "service">(list, prepare, sign, options)
+    : await writeToList<"service">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, options);
   if (outcome.written && held.invite !== null) {
     const row = list.writer()?.state.invites[held.invite.key];
     if (row !== undefined) return { made: true, invite: { ...held.invite, exp: row.exp, auto: options.auto } };
@@ -157,7 +164,8 @@ export async function revokeInvite(list: AccountList, key: string, options: Pick
     // what the kinds say of the list after the removal: names may still be sealed, or the next epoch is called for
     const after = await signListEntries(state, [remove], { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at);
     if (sealEpoch(after.state, clock) !== null) return { request: await signedOn(writer, [remove]) };
-    const lapsed = overTime(state, clock).filter((each) => each !== key).map((each): ListKind => ({ kind: "remove", ends: each }));
+    // with the epoch this request opens anyway, as many of the keys over their time as one request holds beside them
+    const lapsed = lapsedRemovals(state, clock).filter((each) => !(each.kind === "remove" && "ends" in each && each.ends === key)).slice(0, WRITE_ENTRIES_MAX - 2);
     return { request: await signedWithEpoch(writer, current, [remove, ...lapsed]) };
   }, options);
   if (!outcome.written) return { revoked: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };

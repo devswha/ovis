@@ -14,7 +14,7 @@ import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { AccountList } from "./accountList.ts";
 import type { ListPost } from "./listAnswers.ts";
-import { signedNamed, writeToList, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
+import { signedNamed, writeNamed, type WriteOptions, type WriteRefusal } from "./listWrite.ts";
 import { AccountRefreshError, AccountServiceError, AccountServiceUnreachableError, SignedOutError } from "./service.ts";
 
 /** A PC that asks to be added, whose card this device checked: it is that key's own, for this device's list and that relay key. */
@@ -155,12 +155,11 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
       return said === null ? { added: false, why: "unreached", retryAfterMs: null } : { added: false, why: "admit", code: said.code, retryAfterMs: said.retryAfterMs };
     }
   }
-  const outcome = await writeToList<never>(list, async (writer) => {
+  const outcome = await writeNamed<true>(list, async (writer) => {
     // the list holds that relay key already (this press, sent before): nothing more to sign
     const row = writer.state.pcs[post.endpoint];
     if (row !== undefined && row.removed === null && row.key === post.key) return { done: { seq: writer.state.footing.seq, hash: writer.state.footing.hash } };
-    if (writer.list !== post.list) return { refused: "changed" as const };
-    return { request: await signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })) };
-  }, options);
+    return writer.list !== post.list ? { refused: "changed" } : { go: true };
+  }, (writer) => signedNamed(writer, names, post.enc, (sealed): ListKind => ({ kind: "pc", key: post.key, endpoint: post.endpoint, enc: post.enc, card: post.card, sealed })), options);
   return outcome.written ? { added: true } : { added: false, why: outcome.why, retryAfterMs: outcome.retryAfterMs };
 }

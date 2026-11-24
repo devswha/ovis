@@ -530,14 +530,14 @@ export class AccountService {
    * service gives no challenge (404: one from before key proofs, or Step 2 off; 403 `own_sign_in_required`: a device code's
    * sign-in, which the add then refuses as before).
    */
-  private async pcAddProof(session: AccountSession, key: AccountKey, purpose: PcAddPurpose, serverId: string, listingId: string, signal?: AbortSignal, again?: SendAgain): Promise<PcAddProof | null> {
-    return this.challengeProof(key, (id, challenge) => pcAddSigningBytes(purpose, session.account, serverId, listingId, id, challenge), signal, again);
+  private async pcAddProof(session: AccountSession, key: AccountKey, purpose: PcAddPurpose, serverId: string, listingId: string, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
+    return this.challengeProof(key, (id, challenge) => pcAddSigningBytes(purpose, session.account, serverId, listingId, id, challenge), signal, again, only);
   }
 
   /** A proof by `key` over the bytes `signed` gives for the service's single-use challenge; null as pcAddProof says. */
-  private async challengeProof(key: AccountKey, signed: (challengeId: string, challenge: string) => Uint8Array<ArrayBuffer>, signal?: AbortSignal, again?: SendAgain): Promise<PcAddProof | null> {
+  private async challengeProof(key: AccountKey, signed: (challengeId: string, challenge: string) => Uint8Array<ArrayBuffer>, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
     let issued: unknown;
-    try { issued = await this.call("POST", "/v1/pcs/challenge", {}, signal, again); }
+    try { issued = await this.call("POST", "/v1/pcs/challenge", {}, signal, again, only); }
     catch (error) {
       const refused = error instanceof AccountServiceError && !(error instanceof AccountRefreshError);
       if (refused && (error.status === 404 || (error.status === 403 && error.code === "own_sign_in_required"))) return null;
@@ -555,14 +555,14 @@ export class AccountService {
    * registered no key; else pcAddProof over the listing `listing` names, read only then (null: this call adds nothing, and
    * proves nothing). One proof per call.
    */
-  private async addProof(purpose: PcAddPurpose, serverId: string, listing: () => Promise<string | null>, signal?: AbortSignal, again?: SendAgain): Promise<PcAddProof | null> {
+  private async addProof(purpose: PcAddPurpose, serverId: string, listing: () => Promise<string | null>, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
     const session = await this.bound();
     const age = session.signed_in_at === undefined ? Number.NaN : this.now() - session.signed_in_at;
     if (age >= 0 && age <= PC_ADD_FRESH_MS) return null;
     const key = await this.registeredKey(session);
     if (key === null) return null;
     const listingId = await listing();
-    return listingId === null ? null : this.pcAddProof(session, key, purpose, serverId, listingId, signal, again);
+    return listingId === null ? null : this.pcAddProof(session, key, purpose, serverId, listingId, signal, again, only);
   }
 
   /**
@@ -851,7 +851,8 @@ export class AccountService {
    * Claimed again, it is renewed.
    */
   async claimListKey(list: string, card: { readonly key: string; readonly enc: string; readonly card: string }, signal?: AbortSignal): Promise<void> {
-    const proved = (): Promise<PcAddProof | null> => this.addProof("list-claim", list, async () => card.key, signal);
+    // asked by the device itself, as the list's own routes are: the challenge is sent once, and no answer to it ends the sign-in
+    const proved = (): Promise<PcAddProof | null> => this.addProof("list-claim", list, async () => card.key, signal, SENT_ONCE, 200);
     const send = (proof: PcAddProof | null) => this.proving(proof, () => this.listCall("POST", `/v2/lists/${list}/claims`, proof === null ? card : { ...card, key_proof: proof }, signal));
     const proof = await proved();
     try { await send(proof); }

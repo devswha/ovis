@@ -7,6 +7,8 @@ import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/a
 import { DeviceStore, type StoredDevice } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
+import { ACCOUNT_LIST_FILE, bringSiblingList } from "./list-follow.ts";
+import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { PendingRedemptions } from "./pending.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
@@ -334,6 +336,41 @@ describe("a binding pinned to the account's signed list", () => {
       writeFileSync(join(dir, ADMISSION_FILE), JSON.stringify(doc));
       expect(PcAccountState.open(dir).strict).not.toBeNull();
     }
+  });
+
+  test("the other folder takes a pin only together with the list keys and the copy that go with it", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    await linked(store(dir));
+    const pinned = PcAccountState.open(dir);
+    const binding = pinned.binding()!;
+    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
+    expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
+    // the pinned folder holds the keys the list knows this PC by, and its copy of the list
+    const keys = await new ListKeyStore(dir).keysFor(SERVER_ID);
+    writeFileSync(join(dir, ACCOUNT_LIST_FILE), JSON.stringify({ v: 1, server_id: SERVER_ID, bind_id: binding.bind_id, want: LIST, save: null }));
+    // the sibling made keys of its own meanwhile, which no list knows
+    const strangers = await new ListKeyStore(sibling).keysFor(SERVER_ID);
+    expect(strangers.key).not.toBe(keys.key);
+    const other = PcAccountState.open(sibling);
+    other.takeSibling(dir, (pin) => bringSiblingList(sibling, dir, pin));
+    expect(other.strict).toBeNull();
+    expect(PcAccountState.open(sibling).binding()).toMatchObject({ bind_id: binding.bind_id, list: LIST });
+    expect((await new ListKeyStore(sibling).keysFor(SERVER_ID)).key).toBe(keys.key);
+    expect(JSON.parse(readFileSync(join(sibling, ACCOUNT_LIST_FILE), "utf8"))).toMatchObject({ bind_id: binding.bind_id, want: LIST });
+  });
+
+  test("and takes none where the keys cannot be brought: the folder fails closed, with its binding as it was on disk", async () => {
+    const [dir, sibling] = [stateDir(), stateDir()];
+    await linked(store(dir));
+    const pinned = PcAccountState.open(dir);
+    const binding = pinned.binding()!;
+    writeFileSync(join(sibling, ADMISSION_FILE), readFileSync(join(dir, ADMISSION_FILE)));
+    expect(pinned.pinToList(binding.bind_id, LIST)).toBe(true);
+    // the pinned folder has no keys file
+    const other = PcAccountState.open(sibling);
+    other.takeSibling(dir, (pin) => bringSiblingList(sibling, dir, pin));
+    expect(other.strict).toContain(ACCOUNT_LIST_KEYS_FILE);
+    expect((JSON.parse(readFileSync(join(sibling, ADMISSION_FILE), "utf8")) as { binding: { list?: string } }).binding.list).toBeUndefined();
   });
 
   test("the other folder of the same PC takes the pin of the binding they share, and two different pins fail closed", async () => {
