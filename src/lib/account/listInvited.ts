@@ -5,30 +5,18 @@
  * own key signed for that very PC and that very card, and the device's own copy of the list holds that invite as
  * open, placed by a member, waiting for Add.
  *
- * The line never leaves the PC it was typed at. What it signs there is a redeem message (shared/account-list-invite.ts)
- * for the account, the PC's id and relay key, and a challenge made from the list's id and the PC's card.
+ * The line never leaves the PC it was typed at. What it signs there is the line's proof (shared/account-list-invite.ts,
+ * lineProofBytes): a message of its own for the account, the PC's id, the list and the PC's very card. A redeem
+ * signature of the line is no such proof: its challenge is the account service's to choose.
  */
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
-import { cardBinding, cardHolds, inviteRefusal, listView, type ListNames } from "../../../shared/account-list.ts";
-import { verifyInviteRedeem } from "../../../shared/account-list-invite.ts";
+import { hexToBytes } from "@noble/hashes/utils.js";
+import { cardHolds, inviteRefusal, listView, type ListNames } from "../../../shared/account-list.ts";
+import { verifyLineProof } from "../../../shared/account-list-invite.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { AccountList } from "./accountList.ts";
 import { addPostedPc, type AddPcOutcome, type PostedPc } from "./listAdd.ts";
 import type { ListPost } from "./listAnswers.ts";
 import type { WriteOptions } from "./listWrite.ts";
-
-/** What the challenge an invite's line signs for a PC is made under: the PC makes it the same way. */
-const LINE_CHALLENGE_PREFIX = "ovis-list-join/1";
-
-/**
- * The challenge an invite's line signs to say that the PC with this card joins `list` with it: 32 hex digits made
- * from the list's id and the binding of the PC's card for that list.
- */
-export function lineChallenge(list: string, pc: { readonly key: string; readonly enc: string; readonly endpoint: string }): string {
-  const binding = cardBinding({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null });
-  return bytesToHex(sha256(concatBytes(utf8ToBytes(LINE_CHALLENGE_PREFIX), utf8ToBytes(list), binding))).slice(0, 32);
-}
 
 /** A posted PC that the line of an open invite of this device's list signed for. */
 export interface InvitedPc extends PostedPc {
@@ -56,10 +44,7 @@ export async function invitedPcs(list: AccountList, posts: readonly ListPost[], 
     if (post.invite === undefined || post.invite_proof === undefined || !open.has(post.invite)) continue;
     if (deriveServerId(hexToBytes(post.endpoint)) !== post.server_id) continue;
     if (!await cardHolds({ key: post.key, enc: post.enc, list: writer.list, endpoint: post.endpoint, invite: null }, post.card)) continue;
-    let signed = false;
-    try {
-      signed = await verifyInviteRedeem({ account: writer.account, server_id: post.server_id, public_key: post.endpoint, challenge_id: lineChallenge(writer.list, post) }, post.invite_proof, post.invite);
-    } catch { signed = false; }
+    const signed = await verifyLineProof({ account: writer.account, server_id: post.server_id, list: writer.list, card: { key: post.key, enc: post.enc, endpoint: post.endpoint } }, post.invite_proof, post.invite);
     if (signed) found.push({ list: writer.list, endpoint: post.endpoint, server_id: post.server_id, key: post.key, enc: post.enc, card: post.card, invite: post.invite, by: open.get(post.invite)?.by ?? null });
   }
   return found;

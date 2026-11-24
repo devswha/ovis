@@ -11,7 +11,6 @@ import { askingPc, pcComparing, postPcKeys } from "../lib/account/accountList.te
 import { listView } from "../../shared/account-list.ts";
 import { readJoinLine } from "../../shared/account-list-join.ts";
 import { makeInvite } from "../lib/account/listInvite.ts";
-import { lineChallenge } from "../lib/account/listInvited.ts";
 import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
 import { setPageAccountList } from "../lib/account/pageList.ts";
 import { AccountService } from "../lib/account/service.ts";
@@ -691,7 +690,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       const made = await makeInvite(list, { auto: false });
       if (!made.made) throw new Error(`no invite was made: ${made.why}`);
       const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
-      carried = { invite: made.invite.key, invite_proof: await line.signRedeem({ server_id: pc.server_id, public_key: pc.endpoint, challenge_id: lineChallenge(held().id, pc) }) };
+      carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
       await mount();
       // the card says where the PC comes from, by the device's own check of the line's signature: this device made the invite
       expect(text()).toContain("Add this PC to your account? (joined with your invite)");
@@ -722,7 +721,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       if (!made.made) throw new Error(`no invite was made: ${made.why}`);
       const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
       const other = await askingPc();
-      carried = { invite: made.invite.key, invite_proof: await line.signRedeem({ server_id: other.server_id, public_key: other.endpoint, challenge_id: lineChallenge(held().id, other) }) };
+      carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: other.server_id, card: other }) };
       await mount();
       expect(text()).not.toContain("joined with your invite");
       await press("Add");

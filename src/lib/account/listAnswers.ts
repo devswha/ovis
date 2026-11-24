@@ -134,7 +134,7 @@ export interface ListPost {
   readonly attempt: ListAttempt | null;
   /**
    * A PC that joined with an invite's line: the invite's public key, and the line's own signature over this very post
-   * (listInvited.ts lineChallenge). Both or neither; the account service only carries them.
+   * (shared/account-list-invite.ts lineProofBytes). Both or neither; the account service only carries them.
    */
   readonly invite?: string;
   readonly invite_proof?: string;

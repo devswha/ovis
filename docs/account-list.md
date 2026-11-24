@@ -1473,10 +1473,11 @@ device's clock is never shown as open.
 **Add this PC to your account? (joined with your invite)**, and its **Add** needs no number
 ([`listInvited.ts`](../src/lib/account/listInvited.ts)). The account service says which PC used an
 invite, and that is only its word. So the device goes by what the service cannot make: the PC's
-post carries the invite's public key and the line's own signature (`invite`, `invite_proof`), a
-redeem message for this account, the PC's id and its relay key, over a challenge made from the
-list's id and the PC's card (32 hex digits of SHA-256 over `ovis-list-join/1`, the list id and the
-card's binding). The device offers the one-press Add only where that signature holds, the card
+post carries the invite's public key and the line's own proof (`invite`, `invite_proof`): the
+line's signature over `lineProofBytes` for this account, the PC's id, this list and the PC's very
+card (see "What a line signs for a PC's card" above), checked with `verifyLineProof`. A redeem
+signature of the line is never taken for it: the account service chooses a redeem's challenge, so
+it could have the line sign the challenge of a card of its own. The device offers the one-press Add only where that proof holds, the card
 holds for this list and that relay key, and its own copy of the list holds the invite as open,
 placed by a member, waiting for Add. Add has the account admit the PC, signs its `pc` entry and
 ends the invite's key in the same request. Any other post is a PC that asks, and gets the number.

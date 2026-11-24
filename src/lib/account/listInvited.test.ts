@@ -4,7 +4,8 @@ import { readJoinLine } from "../../../shared/account-list-join.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
 import type { ListPost } from "./listAnswers.ts";
-import { addInvitedPc, invitedPcs, lineChallenge } from "./listInvited.ts";
+import { lineChallenge } from "../../../shared/account-list-invite.ts";
+import { addInvitedPc, invitedPcs } from "./listInvited.ts";
 import { makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
 
 type World = ReturnType<typeof listWorld>;
@@ -22,12 +23,12 @@ async function invited(auto = false) {
 }
 
 /** The PC's post as it reaches the device: its card for the list, and the line's proof that whoever holds the line named this very card. */
-async function posted(w: World, first: WorldDevice, invite: MadeInvite, pc: AskingPc, more: { signedFor?: AskingPc; list?: string } = {}): Promise<ListPost> {
+async function posted(w: World, first: WorldDevice, invite: MadeInvite, pc: AskingPc, more: { signedFor?: AskingPc } = {}): Promise<ListPost> {
   const list = first.list.writer()!.list;
   const card = await signCard({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null }, pc.signs);
   const line = await readJoinLine(invite.line, { service: w.origin, followsLists: true });
   const named = more.signedFor ?? pc;
-  const proof = await line.signRedeem({ server_id: named.server_id, public_key: named.endpoint, challenge_id: lineChallenge(more.list ?? list, { key: named.key, enc: named.enc, endpoint: named.endpoint }) });
+  const proof = await line.signLineProof({ server_id: named.server_id, card: { key: named.key, enc: named.enc, endpoint: named.endpoint } });
   return { endpoint: pc.endpoint, server_id: pc.server_id, key: pc.key, enc: pc.enc, card, attempt: null, invite: invite.key, invite_proof: proof };
 }
 
@@ -47,13 +48,24 @@ describe("a PC that joined with an invite a device of the account made", () => {
       bare,
       // the line signed for another PC, and the service shows that proof beside this PC's card
       await posted(w, first, invite, pc, { signedFor: other }),
-      await posted(w, first, invite, pc, { list: "6d".repeat(32) }),
       { ...good, invite_proof: "A".repeat(86) },
       // a key that is no invite of the list
       { ...good, invite: (await first.keys()).key },
     ] as ListPost[]) {
       expect(await invitedPcs(first.list, [post], w.clock.now)).toEqual([]);
     }
+  });
+
+  it("is not offered on a redeem signature of the line: a lying account service chooses the challenge of a redeem, so it could have the line sign the challenge of a card of its own", async () => {
+    const { w, first, invite, pc } = await invited();
+    const list = first.list.writer()!.list;
+    // the service's own keys, under the PC's real relay key and id
+    const service = await askingPc();
+    const card = await signCard({ key: service.key, enc: service.enc, list, endpoint: pc.endpoint, invite: null }, service.signs);
+    const line = await readJoinLine(invite.line, { service: w.origin, followsLists: true });
+    const redeemed = await line.signRedeem({ server_id: pc.server_id, public_key: pc.endpoint, challenge_id: lineChallenge(list, { key: service.key, enc: service.enc, endpoint: pc.endpoint }) });
+    const lie: ListPost = { endpoint: pc.endpoint, server_id: pc.server_id, key: service.key, enc: service.enc, card, attempt: null, invite: invite.key, invite_proof: redeemed };
+    expect(await invitedPcs(first.list, [lie], w.clock.now)).toEqual([]);
   });
 
   it("is not offered for an invite that is over, was revoked, or lets a PC join by itself", async () => {
