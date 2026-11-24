@@ -71,7 +71,9 @@ type Without =
 export type AccountListStatus =
   | Without
   /** What this device saved does not read. It is kept as it is, and nothing takes its place by itself. */
-  | { readonly at: "damaged"; readonly why: SaveRefusal }
+  | { readonly at: "damaged"; readonly why: Exclude<SaveRefusal, "version"> }
+  /** What this device saved was written by a later build of the app, which this one cannot read: it needs a newer app. Kept as it is. */
+  | { readonly at: "newer_save" }
   /** `head`: the place of the last entry of the copy. `read_at`: when it last held all the account service showed, in seconds. */
   | { readonly at: "following"; readonly list: string; readonly standing: Standing; readonly head: number; readonly read_at: number | null; readonly trouble: ListTrouble | null };
 
@@ -321,7 +323,10 @@ export function accountList(options: AccountListOptions): AccountList {
     // the entries gave another state than the one saved with them (another build's, as after an update): the copy is
     // written again as this build writes it, once
     const text = read.rebuilt ? writeSave(read.copy) : saved;
-    if (read.rebuilt) await store.set("copy", account, text);
+    if (read.rebuilt) {
+      await store.set("copy", account, text);
+      console.info("Ovis: the account's list was read again from its entries, and saved as this build saves it");
+    }
     return { ...fresh, copy: read.copy, saved: text };
   };
 
@@ -553,7 +558,7 @@ export function accountList(options: AccountListOptions): AccountList {
       const loaded = await load(account, keys, saved);
       if (typeof loaded === "string") {
         held = null;
-        return publish({ account, status: { at: "damaged", why: loaded }, reached: hint !== undefined, devices: [], pcs: [] });
+        return publish({ account, status: loaded === "version" ? { at: "newer_save" } : { at: "damaged", why: loaded }, reached: hint !== undefined, devices: [], pcs: [] });
       }
       let next = loaded;
       // for a device that follows a list, an account off the service's switch is the service being away, never "the list is gone"
@@ -608,7 +613,7 @@ export function accountList(options: AccountListOptions): AccountList {
     },
     due(inFront) {
       const { status } = shown;
-      if (!inFront || shown.account === null || status.at === "damaged") return null;
+      if (!inFront || shown.account === null || status.at === "damaged" || status.at === "newer_save") return null;
       // the account service keeps no list for the account: once a day
       if (offAt !== null) return (offAt + OFF_SECONDS) * 1000;
       // it was not reached: a longer wait after each round in a row that was not

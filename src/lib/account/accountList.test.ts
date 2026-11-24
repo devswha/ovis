@@ -624,6 +624,13 @@ describe("after a reload", () => {
     expect(again.list.due(true)).toBeNull();
     await phone.lists.set("copy", ACCOUNT, { not: "a save" });
     expect((await reloaded(phone).list.sync()).status).toEqual({ at: "damaged", why: "form" });
+    // a later build's save is not damage: the device says it needs a newer app, keeps the save, and asks nothing by the clock
+    const later = saved.replace(/"v":1\}$/, '"v":2}');
+    expect(later).not.toBe(saved);
+    await phone.lists.set("copy", ACCOUNT, later);
+    const older = reloaded(phone);
+    expect((await older.list.sync()).status).toEqual({ at: "newer_save" });
+    expect([await phone.lists.get("copy", ACCOUNT), older.list.due(true), asked(older, "POST /v2/lists")]).toEqual([later, null, 0]);
     // a person's reset is the one way on: the device then finds the list it started again
     await again.list.forget(ACCOUNT);
     expect(await phone.lists.get("copy", ACCOUNT)).toBeUndefined();

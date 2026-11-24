@@ -877,13 +877,15 @@ In an IndexedDB database of its own, `ovis-account-list`, by account:
 - **It is a database of its own** because `ovis-account` has one version that pages of older builds
   still open, and because a copy grows with the list while the records beside the account key are
   read on every request.
-- **It is read strictly.** A `copy` that does not read (a changed byte, another form, parts that do
-  not agree) is reported as `damaged` and kept as it is: the device then follows nothing and puts
-  nothing in its place, since a device that lost its copy must not take the account service's word
-  for a new one. Only a person's reset forgets it. A `copy` that was saved under another account key
-  is dropped: with a new key the device is another member. A `copy` whose entries hold and give
-  another state than the one saved with them (a save of another build, after an update) is no
-  damage: the entries are the truth, and the device writes the copy again as this build writes it.
+- **It is read strictly.** A `copy` that does not read (a changed byte, another form, entries that
+  do not hold) is reported as `damaged` and kept as it is; one that a later build of the app wrote
+  is reported as `newer_save`, which asks for a newer app, and kept too. Either way the device then
+  follows nothing and puts nothing in its place, since a device that lost its copy must not take the
+  account service's word for a new one. Only a person's reset forgets it. A `copy` that was saved
+  under another account key is dropped: with a new key the device is another member. A `copy` whose
+  entries hold and give another state than the one saved with them (a save of another build, after
+  an update) is no damage: the entries are the truth, and the device writes the copy again as this
+  build writes it.
 - **What protects it is the app's origin**, as for the account key. A PC's own page is served at
   the PC's address, another origin with a storage of its own. A page rendered from a PC's file
   runs in a frame with no origin of the app's ([relay.md](relay.md), "Rendered HTML pages"), a web
@@ -1039,7 +1041,7 @@ One object per page (`accountList`), which the rest of the app asks instead of t
 once it goes by the list:
 
 - `view()`: the account, where the device stands (`off`, `none` with why no list was started,
-  `not_in` with why, `damaged`, or `following` with the list id, the head, whether the device is in,
+  `not_in` with why, `damaged`, `newer_save`, or `following` with the list id, the head, whether the device is in,
   and what is wrong), whether the last read reached the account service, and the devices and PCs
   that are in, in the order they came in. A device has its key, power, role and `until`; a PC its
   relay key, the id that key gives, how it came in and whether a person at it can allow a device;
