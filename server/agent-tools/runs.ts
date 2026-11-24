@@ -102,7 +102,7 @@ export class RunStore {
   rememberStart(id: string, key: string, child: string): void {
     const row = this.entries.get(id);
     if (!row) throw new Error("Agent tool run has ended.");
-    this.entries.set(id, { ...row, starts: [...row.starts ?? [], { key, run: child }].slice(-256) });
+    this.entries.set(id, { ...row, starts: [...row.starts ?? [], { key, run: child }] });
     this.save();
   }
   revoke(id: string): void {

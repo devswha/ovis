@@ -18,6 +18,8 @@ it("a reserved run is nobody; after bind its depth survives restart, and revocat
     store.rememberForeground(reservation.id, process.pid);
     const childToken = readFileSync(child.tokenFile, "utf8");
     const restored = new RunStore(dir);
+    for (let n = 0; n < 257; n++) restored.rememberStart(reservation.id, `key${n}`, child.id);
+    expect(new RunStore(dir).previousStart(reservation.id, "key0")).toBe(child.id);
     expect(restored.verify(childToken)).toMatchObject({ self: "t2", depth: 1 });
     expect(readFileSync(join(dir, "runs.json"), "utf8")).not.toContain(childToken);
     restored.reconcile([

@@ -137,6 +137,17 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     expect(await call("ask", args)).toMatchObject({ error: { code: "unknown_session" } });
     expect(programs.size).toBe(1);
   });
+  it("keeps the original send receipt after 256 other keys", async () => {
+    const session = await start();
+    const args = { session, task: "echo", key: "first" };
+    const first = await call("send", args);
+    for (let i = 0; i < 256; i++) {
+      now += 7000;
+      await call("wait", { session });
+      expect(await call("send", { ...args, key: `next${i}` })).toMatchObject({ accepted: true });
+    }
+    expect(await call("send", args)).toMatchObject({ turn_id: first.turn_id, duplicate: true });
+  }, 30000);
   it("five concurrent starts start four; old children accept no new work but stay alive", async () => {
     const outputs = await Promise.all(Array.from({ length: 5 }, () => call("start", { harness: "test", cwd: dir })));
     expect(outputs.filter(v => v.kind === "session")).toHaveLength(4);

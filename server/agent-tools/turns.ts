@@ -54,7 +54,6 @@ export class ChildTurns {
     const n = (row.turns.at(-1)?.n ?? 0) + 1;
     const turn: ToolChild["turns"][number] = { key, n, seq: null, end: null };
     row.turns.push(turn);
-    if (row.turns.length > 256) row.turns.shift();
     this.ledger.save();
     this.ledger.audit(row, "send", n);
     try { await child.client.submit(String(args.task), true); }
