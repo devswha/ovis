@@ -1,0 +1,962 @@
+import { describe, expect, test } from "bun:test";
+import nacl from "tweetnacl";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "./account-list-entry.ts";
+import { kindBody, replayList, shownList, signCard, type ListKind, type Sealed } from "./account-list.ts";
+import type { ListPlace } from "./account-list-signers.ts";
+import { newRecordId, pcAddSigningBytes, signSafetyRecord, type PcAddPurpose } from "./account-records.ts";
+import { FakeAccountService, LIST_CLAIM_MS, type ListAttempt, type ListWrap } from "./account-service-fake.ts";
+import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
+import { answerServerChallenge, deriveServerId } from "./relay-server-proof.ts";
+
+const BASE = "https://account.test";
+const ACCOUNT = "acct_1";
+const T0 = Date.UTC(2026, 10, 24, 12);
+const MINUTE = 60_000;
+
+const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
+const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
+const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
+const spki = async (key: CryptoKey) => toBase64Url(new Uint8Array(await crypto.subtle.exportKey("spki", key)));
+
+interface Key { readonly key: string; readonly enc: string; readonly pair: CryptoKeyPair }
+async function newKey(): Promise<Key> {
+  const pair = await crypto.subtle.generateKey(P256, true, ["sign", "verify"]);
+  const enc = await spki((await crypto.subtle.generateKey(ECDH, true, ["deriveBits"])).publicKey);
+  return { key: await spki(pair.publicKey), enc, pair };
+}
+
+/** Names as an entry carries them, under epoch 0 unless said: bytes the service never opens. */
+const sealed = (epoch = 0): Sealed => ({ epoch, bytes: Uint8Array.from({ length: 60 }, (_, index) => index) });
+const OPENS = (epoch: number) => (epoch + 10).toString(16).padStart(2, "0").repeat(32);
+/** A wrap as the service sees one: 151 characters, checked for their length and spelling only. */
+const WRAP = (n: number) => toBase64Url(new Uint8Array(113).fill(n));
+
+interface Place { readonly seq: number; readonly list: string; readonly prev: string }
+interface Signed { readonly text: string; readonly head: ListPlace }
+async function sign(by: Key, place: Place, kind: ListKind, issuedAt: number): Promise<Signed> {
+  const entry = await signEntry(kindBody({ ...place, issued_at: issuedAt, signer: by.key }, kind), by.pair.privateKey);
+  return { text: entryToText(entry), head: { seq: place.seq, hash: entryHash(entry.body) } };
+}
+/** Entries signed one after the other from `head` on: their texts, and the head after the last. */
+async function chain(list: string, head: ListPlace, steps: readonly (readonly [Key, ListKind])[], issuedAt: number): Promise<{ texts: string[]; head: ListPlace }> {
+  const texts: string[] = [];
+  let at = head;
+  for (const [by, kind] of steps) {
+    const signed = await sign(by, { seq: at.seq + 1, list, prev: at.hash }, kind, issuedAt);
+    texts.push(signed.text);
+    at = signed.head;
+  }
+  return { texts, head: at };
+}
+
+const cardOf = (key: Key, list: string, endpoint: string | null = null, invite: string | null = null) => signCard({ key: key.key, enc: key.enc, list, endpoint, invite }, key.pair.privateKey);
+const genesisOf = (owner: Key, account = ACCOUNT): ListKind => ({ kind: "genesis", account, enc: owner.enc, opens: OPENS(0), sealed: sealed() });
+const deviceOf = async (key: Key, list: string, rotates = false, card?: string): Promise<ListKind> =>
+  ({ kind: "device", key: key.key, power: "full", role: "drive", until: null, enc: key.enc, card: card ?? await cardOf(key, list), sealed: sealed(), rotates });
+const pcOf = async (key: Key, list: string, endpoint: string): Promise<ListKind> => ({ kind: "pc", key: key.key, endpoint, enc: key.enc, card: await cardOf(key, list, endpoint), sealed: sealed() });
+const inviteOf = (key: Key, exp: number, auto = true, uses = 2, names: Sealed | null = sealed()): ListKind => ({ kind: "invite", key: key.key, exp, uses, auto, sealed: names });
+const joinOf = async (key: Key, list: string, endpoint: string, invite: Key): Promise<ListKind> =>
+  ({ kind: "join", endpoint, pc: key.key, enc: key.enc, card: await cardOf(key, list, endpoint, invite.key), sealed: sealed() });
+const removeOf = (key: Key): ListKind => ({ kind: "remove", ends: key.key });
+const epochOf = (epoch: number): ListKind => ({ kind: "epoch", epoch, opens: OPENS(epoch + 1), link: new Uint8Array(61) });
+
+interface Answer {
+  readonly now: number;
+  readonly error?: { readonly code: string; readonly index?: number; readonly outcome?: string; readonly reason?: string | null; readonly head?: ListPlace; readonly list?: string };
+  readonly list?: string | null | { readonly id: string; readonly head: ListPlace };
+  readonly head?: ListPlace;
+  readonly after?: number | null;
+  readonly entries?: readonly string[];
+  readonly more?: boolean;
+  readonly placed?: number;
+  readonly wraps?: readonly { readonly epoch: number; readonly wrap: string }[];
+  readonly claims?: readonly { readonly key: string; readonly enc: string; readonly card: string; readonly until: number }[];
+  readonly posts?: readonly { readonly endpoint: string; readonly server_id: string; readonly key: string; readonly enc: string; readonly card: string; readonly until: number; readonly attempt: ListAttempt | null }[];
+  readonly attempt?: ListAttempt | null;
+  readonly key?: string;
+  readonly endpoint?: string;
+  readonly until?: number;
+}
+interface Called { readonly status: number; readonly body: Answer; readonly headers: Headers }
+
+/** One world: a fake service on a clock the test moves, with every account on the list switch, and the account's first device. */
+async function world() {
+  let clock = T0;
+  const service = new FakeAccountService(() => clock);
+  service.listAccounts = "*";
+  const owner = await newKey();
+  const token = service.issueToken(ACCOUNT);
+  const call = async (method: string, path: string, body?: unknown, bearer?: string): Promise<Called> => {
+    const response = await service.fetch(new Request(BASE + path, {
+      method, ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+      headers: { "content-type": "application/json", ...(bearer === undefined ? {} : { authorization: `Bearer ${bearer}` }) },
+    }));
+    const text = await response.text();
+    return { status: response.status, body: (text === "" ? {} : JSON.parse(text)) as Answer, headers: response.headers };
+  };
+  const tick = (ms: number) => { clock += ms; };
+  const seconds = () => Math.floor(clock / 1000);
+  const place = (list: string, entries: readonly string[], wraps?: readonly ListWrap[], bearer = token) =>
+    call("POST", `/v2/lists/${list}/entries`, { entries, ...(wraps === undefined ? {} : { wraps }) }, bearer);
+  const claim = async (list: string, key: Key, bearer = token, more: Record<string, unknown> = {}) =>
+    call("POST", `/v2/lists/${list}/claims`, { key: key.key, enc: key.enc, card: await cardOf(key, list), ...more }, bearer);
+  const log = (list: string, query = "", bearer = token) => call("GET", `/v2/lists/${list}/log${query}`, undefined, bearer);
+  /** The account's list, started by the owner with its own wrap. */
+  const start = async (wraps: readonly ListWrap[] = [{ epoch: 0, member: owner.enc, wrap: WRAP(1) }]) => {
+    const first = await sign(owner, { seq: 0, list: "", prev: "" }, genesisOf(owner), seconds());
+    const made = await call("POST", "/v2/lists", { entry: first.text, wraps }, token);
+    expect(made.status).toBe(201);
+    return { list: made.body.list as string, head: made.body.head!, first: first.text };
+  };
+  return { service, owner, token, call, tick, seconds, place, claim, log, start };
+}
+type World = Awaited<ReturnType<typeof world>>;
+
+const code = (called: Called) => called.body.error?.code;
+const refusal = (called: Called) => `${called.status} ${code(called)}`;
+
+function machine() {
+  const keys = nacl.box.keyPair();
+  return { keys, serverId: deriveServerId(keys.publicKey), endpoint: bytesToHex(keys.publicKey) };
+}
+type Machine = ReturnType<typeof machine>;
+
+/** A PC's relay-key proof for one call: a challenge of POST /v1/pc/challenge, answered with role `account`. */
+async function proof(w: World, pc: Machine): Promise<Record<string, string>> {
+  const challenge = await (await w.service.fetch(new Request(`${BASE}/v1/pc/challenge`, { method: "POST", body: JSON.stringify({ server_id: pc.serverId, public_key: pc.endpoint }) }))).json() as { challenge_id: string; frame: string };
+  const answer = answerServerChallenge(challenge.frame, pc.keys.secretKey, { server_id: pc.serverId, role: "account", connection_id: challenge.challenge_id });
+  return { server_id: pc.serverId, public_key: pc.endpoint, challenge_id: challenge.challenge_id, proof: answer! };
+}
+const pcCall = async (w: World, pc: Machine, path: string, body: Record<string, unknown>) => w.call("POST", path, { ...(await proof(w, pc)), ...body });
+
+/** The account lists the PC, as an app's own sign-in does (confirmed), or as a device code's sign-in does while Step 2 is on (unconfirmed). */
+async function listPc(w: World, pc: Machine, bearer = w.token): Promise<void> {
+  const listed = await w.call("PUT", `/v1/pcs/${pc.serverId}`, { label: "tower", public_key: pc.endpoint, relay: "wss://relay.test" }, bearer);
+  expect(listed.status).toBe(200);
+}
+
+/** The mailbox pull of a PC, with `with_list` unless said. */
+async function pull(w: World, pc: Machine, withList = true): Promise<Record<string, unknown>> {
+  const response = await w.service.fetch(new Request(`${BASE}/v1/pc/mailbox`, { method: "POST", body: JSON.stringify({ ...(await proof(w, pc)), ack: null, account: ACCOUNT, ...(withList ? { with_list: true } : {}) }) }));
+  return await response.json() as Record<string, unknown>;
+}
+
+/** A key proof by `signer` (the key `bearer`'s sign-in registered) for this purpose, list id and slot, on a challenge of POST /v1/pcs/challenge. */
+async function keyProof(w: World, bearer: string, signer: Key, purpose: PcAddPurpose, list: string, slot = "") {
+  const challenge = await (await w.service.fetch(new Request(`${BASE}/v1/pcs/challenge`, { method: "POST", body: "{}", headers: { authorization: `Bearer ${bearer}` } }))).json() as { challenge_id: string; challenge: string };
+  const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, signer.pair.privateKey, pcAddSigningBytes(purpose, ACCOUNT, list, slot, challenge.challenge_id, challenge.challenge))));
+  return { challenge_id: challenge.challenge_id, signature };
+}
+
+/** An own sign-in older than ten minutes, with its own registered account key. */
+function staleSignIn(w: World, key: Key): string {
+  const bearer = w.service.issueToken(ACCOUNT);
+  w.service.registerSessionKey(bearer, key.key, "phone");
+  w.tick(11 * MINUTE);
+  return bearer;
+}
+
+describe("the fake account service's list routes (Part D)", () => {
+  describe("the switch and what every answer carries", () => {
+    test("off the switch every route answers as an unknown one, the mailbox's with_list says null, and the list is kept", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const pc = machine();
+      await listPc(w, pc);
+      w.service.listAccounts = "acct_2,acct_3";
+      for (const [method, path] of [["GET", "/v2/lists/mine"], ["POST", "/v2/lists"], ["GET", `/v2/lists/${list}/log`], ["GET", `/v2/lists/${list}/wraps?member=x`],
+        ["POST", `/v2/lists/${list}/entries`], ["POST", `/v2/lists/${list}/claims`], ["GET", `/v2/lists/${list}/claims`], ["GET", `/v2/lists/${list}/posts`]] as const) {
+        const answered = await w.call(method, path, method === "POST" ? {} : undefined, w.token);
+        expect([refusal(answered), typeof answered.body.now]).toEqual(["404 not_found", "number"]);
+      }
+      for (const [path, body] of [["/v2/pc/list", { account: ACCOUNT }], ["/v2/pc/list/log", { list }], ["/v2/pc/list/wraps", { list, member: w.owner.enc }],
+        ["/v2/pc/list/entries", { list, entries: ["x.y"] }], ["/v2/pc/list/keys", { list, key: "k", enc: "e", card: "c".repeat(86) }]] as const) {
+        expect(refusal(await pcCall(w, pc, path, body))).toBe("404 not_found");
+      }
+      // with only some accounts named, a missing sign-in is not told apart from an account that is not named
+      expect(refusal(await w.call("GET", "/v2/lists/mine"))).toBe("404 not_found");
+      expect((await pull(w, pc)).list).toBeNull();
+      w.service.listAccounts = ` acct_2, ${ACCOUNT} `;
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.list).toBe(list);
+      expect(((await pull(w, pc)).list as { id: string }).id).toBe(list);
+      w.service.listAccounts = "";
+      expect(refusal(await w.call("GET", "/v2/lists/mine", undefined, w.token))).toBe("404 not_found");
+    });
+
+    test("every answer carries now in seconds and no-store; a body out of form, a dead token, an unknown route and another account's list are refused", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const mine = await w.call("GET", "/v2/lists/mine", undefined, w.token);
+      expect([mine.body.now, mine.headers.get("cache-control")]).toEqual([w.seconds(), "no-store"]);
+      expect(refusal(await w.call("GET", "/v2/lists/mine"))).toBe("401 unauthorized");
+      expect(refusal(await w.call("GET", "/v2/lists/mine", undefined, "nope"))).toBe("401 unauthorized");
+      expect(refusal(await w.call("GET", "/v2/lists/other", undefined, w.token))).toBe("404 not_found");
+      expect(refusal(await w.call("PUT", `/v2/lists/${list}/entries`, {}, w.token))).toBe("404 not_found");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, "{", w.token))).toBe("400 invalid_json");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: ["x"], extra: 1 }, w.token))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: [] }, w.token))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: Array(17).fill("x") }, w.token))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: ["x".repeat(600 * 1024)] }, w.token))).toBe("413 too_large");
+      // any sign-in of the account reads, a device code's included; another account's sign-in sees no such list
+      expect((await w.log(list, "", w.service.issueToken(ACCOUNT, { device: true }))).status).toBe(200);
+      expect(refusal(await w.log("0".repeat(64)))).toBe("404 not_found");
+      expect(refusal(await w.log("short"))).toBe("404 not_found");
+      const stranger = w.service.issueToken("acct_2");
+      expect(refusal(await w.log(list, "", stranger))).toBe("404 not_found");
+      expect((await w.call("GET", "/v2/lists/mine", undefined, stranger)).body.list).toBeNull();
+    });
+  });
+
+  describe("POST /v2/lists: the genesis", () => {
+    test("starts the account's one list with its own wrap; a second genesis, the same one included, is list_exists", async () => {
+      const w = await world();
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body).toEqual({ now: w.seconds(), list: null });
+      const { list, head, first } = await w.start();
+      expect(list).toBe(entryHash(entryFromText(first).body));
+      expect(head).toEqual({ seq: 0, hash: list });
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body).toEqual({ now: w.seconds(), list, head });
+      expect((await w.call("GET", `/v2/lists/${list}/wraps?member=${w.owner.enc}`, undefined, w.token)).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(1) }]);
+      expect(w.service.accountList(ACCOUNT)?.wraps).toEqual([{ epoch: 0, member: w.owner.enc, wrap: WRAP(1) }]);
+      const again = await w.call("POST", "/v2/lists", { entry: first }, w.token);
+      expect([refusal(again), again.body.error?.list, again.body.error?.head]).toEqual(["409 list_exists", list, head]);
+      const other = await sign(await newKey(), { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: other.text }, w.token))).toBe("409 list_exists");
+      // two that race for an account with none: one list, the other is told which
+      const racer = w.service.issueToken("acct_2");
+      const [a, b] = await Promise.all([newKey(), newKey()]);
+      const zeros = await Promise.all([a, b].map((by) => sign(by, { seq: 0, list: "", prev: "" }, genesisOf(by, "acct_2"), w.seconds())));
+      const raced = await Promise.all(zeros.map(({ text }) => w.call("POST", "/v2/lists", { entry: text }, racer)));
+      expect(raced.map(({ status }) => status).sort()).toEqual([201, 409]);
+      expect(raced.find(({ status }) => status === 409)?.body.error?.list).toBe(w.service.accountList("acct_2")?.id);
+      expect(raced.find(({ status }) => status === 201)?.body.list).toBe(w.service.accountList("acct_2")?.id);
+      // the account's deletion is the only thing that deletes it
+      expect((await w.call("DELETE", "/v1/account", undefined, w.token)).status).toBe(204);
+      expect(w.service.accountList(ACCOUNT)).toBeNull();
+    });
+
+    test("refuses what is no genesis of this account at level 1, and wraps but the one for epoch 0 and its own enc", async () => {
+      const w = await world();
+      const owner = w.owner;
+      const at0 = { seq: 0, list: "", prev: "" };
+      const post = (entry: string, wraps?: unknown) => w.call("POST", "/v2/lists", { entry, ...(wraps === undefined ? {} : { wraps }) }, w.token);
+      const good = await sign(owner, at0, genesisOf(owner), w.seconds());
+      expect(refusal(await post("not an entry"))).toBe("400 entry_malformed");
+      expect((await post("not an entry")).body.error?.index).toBe(0);
+      expect(refusal(await post(`${good.text}=`))).toBe("400 entry_malformed");
+      const flipped = entryFromText(good.text);
+      const changed = new Uint8Array(flipped.body);
+      changed[20] = changed[20]! ^ 1;
+      expect(refusal(await post(entryToText({ body: changed, signature: flipped.signature })))).toBe("400 signature_invalid");
+      const second = await sign(owner, { seq: 1, list: good.head.hash, prev: good.head.hash }, inviteOf(await newKey(), w.seconds() + 600), w.seconds());
+      expect(refusal(await post(second.text))).toBe("400 chain_broken");
+      const card = await sign(owner, at0, { kind: "card", enc: owner.enc }, w.seconds());
+      const notGenesis = await post(card.text);
+      expect([refusal(notGenesis), notGenesis.body.error?.outcome, notGenesis.body.error?.reason]).toEqual(["400 entry_refused", "no_effect", "entry_invalid"]);
+      expect(refusal(await post((await sign(owner, at0, genesisOf(owner, "acct_2"), w.seconds())).text))).toBe("403 account_mismatch");
+      for (const [wraps, index] of [
+        [[{ epoch: 0, member: owner.enc, wrap: WRAP(1) }, { epoch: 1, member: owner.enc, wrap: WRAP(2) }], 1],
+        [[{ epoch: 1, member: owner.enc, wrap: WRAP(1) }], 0],
+        [[{ epoch: 0, member: owner.key, wrap: WRAP(1) }], 0],
+        [[{ epoch: 0, member: owner.enc, wrap: WRAP(1).slice(1) }], 0],
+        [[{ epoch: 0, member: owner.enc, wrap: `${WRAP(1).slice(0, -1)}=` }], 0],
+      ] as const) {
+        const refused = await post(good.text, wraps);
+        expect([refusal(refused), refused.body.error?.index]).toEqual(["400 wrap_invalid", index]);
+      }
+      expect(refusal(await post(good.text, [{ epoch: 0, member: owner.enc }]))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: good.text, account: ACCOUNT }, w.token))).toBe("400 invalid_request");
+      expect(w.service.accountList(ACCOUNT)).toBeNull();
+      // two wraps for one place: the first is stored, the second dropped without an error
+      expect((await post(good.text, [{ epoch: 0, member: owner.enc, wrap: WRAP(1) }, { epoch: 0, member: owner.enc, wrap: WRAP(2) }])).status).toBe(201);
+      expect((await w.call("GET", `/v2/lists/${good.head.hash}/wraps?member=${owner.enc}`, undefined, w.token)).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(1) }]);
+    });
+
+    test("the second lock: an app's own sign-in, not frozen, made in the last ten minutes or proving its registered key", async () => {
+      const w = await world();
+      const owner = w.owner;
+      w.service.opensAll = true;
+      const genesis = await sign(owner, { seq: 0, list: "", prev: "" }, genesisOf(owner), w.seconds());
+      const list = genesis.head.hash;
+      const post = (bearer: string, more: Record<string, unknown> = {}) => w.call("POST", "/v2/lists", { entry: genesis.text, ...more }, bearer);
+      expect(refusal(await post(w.service.issueToken(ACCOUNT, { device: true })))).toBe("403 own_sign_in_required");
+      const frozen = w.service.issueToken(ACCOUNT);
+      w.service.registerSessionKey(frozen, (await newKey()).key, "frozen");
+      (w.service as unknown as { registry(account: string): { freezes: { block: string; target: string; after: number }[] } }).registry(ACCOUNT).freezes.push({ block: "b", target: "t", after: 0 });
+      expect(refusal(await post(frozen))).toBe("403 frozen");
+      (w.service as unknown as { registry(account: string): { freezes: unknown[] } }).registry(ACCOUNT).freezes.length = 0;
+      // a block kept before a sign-in was made freezes it even with no key of its own; one made before the block is not frozen by it
+      const before = w.service.issueToken(ACCOUNT);
+      const [elder, target] = [await newKey(), await newKey()];
+      const elderNo = w.service.registerDevice(ACCOUNT, elder.key, "elder");
+      const targetNo = w.service.registerDevice(ACCOUNT, target.key, "target");
+      w.tick(1000);
+      const block = await signSafetyRecord({ v: 1, account: ACCOUNT, signed_at: new Date(T0).toISOString(), kind: "block", target: target.key, target_no: targetNo, signer: elder.key, signer_no: elderNo, nonce: newRecordId() }, elder.pair.privateKey);
+      expect((await w.call("POST", "/v1/safety-records", { record: block }, w.token)).status).toBe(200);
+      w.tick(1000);
+      const after = w.service.issueToken(ACCOUNT);
+      // a genesis for another account passes the frozen check and stops at account_mismatch: a probe that writes nothing
+      const elsewhere = (await sign(owner, { seq: 0, list: "", prev: "" }, genesisOf(owner, "acct_2"), w.seconds())).text;
+      const probe = (bearer: string) => w.call("POST", "/v2/lists", { entry: elsewhere }, bearer);
+      expect(refusal(await probe(after))).toBe("403 frozen");
+      expect(refusal(await probe(before))).toBe("403 account_mismatch");
+      const lift = await signSafetyRecord({ v: 1, account: ACCOUNT, signed_at: new Date(T0).toISOString(), kind: "lift", target: block.id, signer: elder.key, signer_no: elderNo }, elder.pair.privateKey);
+      expect((await w.call("POST", "/v1/safety-records", { record: lift }, w.token)).status).toBe(200);
+      expect(refusal(await probe(after))).toBe("403 account_mismatch");
+      const phone = await newKey();
+      const stale = staleSignIn(w, phone);
+      expect(refusal(await post(stale))).toBe("403 session_not_fresh");
+      // a proof for another purpose, another list or another slot, or by a key this sign-in did not register, proves nothing
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, "list-claim", list) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, "list-genesis", OPENS(4)) }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, phone, "list-genesis", list, "x") }))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: await keyProof(w, stale, await newKey(), "list-genesis", list) }))).toBe("403 session_not_fresh");
+      // a proof is spent by its first use, whatever came of it
+      const spent = await keyProof(w, stale, phone, "list-genesis", list);
+      const other = await sign(owner, { seq: 0, list: "", prev: "" }, genesisOf(owner), w.seconds() + 1);
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: other.text, key_proof: spent }, stale))).toBe("403 session_not_fresh");
+      expect(refusal(await post(stale, { key_proof: spent }))).toBe("400 challenge_invalid");
+      expect(refusal(await post(stale, { key_proof: { challenge_id: "0".repeat(32) } }))).toBe("400 invalid_request");
+      expect((await post(stale, { key_proof: await keyProof(w, stale, phone, "list-genesis", list) })).status).toBe(201);
+    });
+  });
+
+  describe("which list, and the log", () => {
+    test("a PC learns the list while its account lists it in any state, or while its relay key has a row in the list", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const pc = machine();
+      const asking = machine();
+      await listPc(w, pc);
+      await listPc(w, asking, w.service.issueToken(ACCOUNT, { device: true }));
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).body.list).toBeNull();
+      const { list, head } = await w.start();
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).body).toEqual({ now: w.seconds(), list, head });
+      expect((await pcCall(w, asking, "/v2/pc/list", { account: ACCOUNT })).body.list).toBe(list);
+      // a listing that only asks to join reads no log
+      expect(refusal(await pcCall(w, asking, "/v2/pc/list/log", { list }))).toBe("404 not_found");
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list", { account: ACCOUNT }))).toBe("404 not_found");
+      expect((await pcCall(w, pc, "/v2/pc/list/log", { list })).body.entries).toHaveLength(1);
+      // a PC let in by the list and then dropped from the directory still learns the head and reads its removal
+      const key = await newKey();
+      const posted = await pcCall(w, pc, "/v2/pc/list/keys", { list, key: key.key, enc: key.enc, card: await cardOf(key, list, pc.endpoint) });
+      expect(posted.status).toBe(200);
+      const added = await chain(list, head, [[w.owner, await pcOf(key, list, pc.endpoint)], [w.owner, removeOf(key)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      expect((await w.call("DELETE", `/v1/pcs/${pc.serverId}`, undefined, w.token)).status).toBe(204);
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).body.head).toEqual(added.head);
+      expect((await pcCall(w, pc, "/v2/pc/list/log", { list, after: 0 })).body.entries).toEqual(added.texts);
+      expect(refusal(await pcCall(w, pc, "/v2/pc/list/log", { list, limit: 0 }))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", "/v2/pc/list/log", { ...(await proof(w, pc)), server_id: asking.serverId, list }))).toBe("400 server_key_mismatch");
+      expect(refusal(await w.call("POST", "/v2/pc/list/log", { ...(await proof(w, pc)), proof: "{}", list }))).toBe("401 proof_invalid");
+    });
+
+    test("a proven PC's calls are counted per server_id, past the limit 429 rate_limited with retry-after; off the switch nothing is spent", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const pc = machine();
+      await listPc(w, pc);
+      w.service.listLimits.pcCallsPerMinute = 2;
+      // off the switch the call is refused before the proof: its challenge is still good, and nothing is counted
+      w.service.listAccounts = "";
+      const kept = await proof(w, pc);
+      expect(refusal(await w.call("POST", "/v2/pc/list/log", { ...kept, list }))).toBe("404 not_found");
+      w.service.listAccounts = "*";
+      expect((await w.call("POST", "/v2/pc/list/log", { ...kept, list })).status).toBe(200);
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).status).toBe(200);
+      const limited = await pcCall(w, pc, "/v2/pc/list/log", { list });
+      expect([refusal(limited), limited.headers.get("retry-after")]).toEqual(["429 rate_limited", "60"]);
+      expect((await pcCall(w, machine(), "/v2/pc/list", { account: ACCOUNT })).status).toBe(404);
+      w.tick(MINUTE);
+      expect((await pcCall(w, pc, "/v2/pc/list/log", { list })).status).toBe(200);
+    });
+
+    test("the log is paged by after and limit, says more while entries follow, and serves every entry as the text it was sent", async () => {
+      const w = await world();
+      const { list, head, first } = await w.start();
+      const invites = await Promise.all(Array.from({ length: 5 }, () => newKey()));
+      const placed = await chain(list, head, invites.map((key) => [w.owner, inviteOf(key, w.seconds() + 600)] as const), w.seconds());
+      expect((await w.place(list, placed.texts)).body).toEqual({ now: w.seconds(), list, head: placed.head, placed: 5 });
+      const all = [first, ...placed.texts];
+      expect((await w.log(list)).body).toEqual({ now: w.seconds(), list, after: null, entries: all, head: placed.head, more: false });
+      const page = await w.log(list, "?after=1&limit=2");
+      expect([page.body.after, page.body.entries, page.body.more]).toEqual([1, all.slice(2, 4), true]);
+      expect((await w.log(list, "?after=5")).body).toMatchObject({ entries: [], more: false });
+      expect((await w.log(list, "?after=99")).body).toMatchObject({ entries: [], more: false, head: placed.head });
+      for (const query of ["?after=-1", "?after=01", "?after=x", "?limit=0", "?limit=257", "?limit=1&x=1", "?after="]) expect(refusal(await w.log(list, query))).toBe("400 invalid_request");
+      // the same body with the other spelling of its signature (r || n-s) is another text: not the one in the log
+      const n = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+      const entry = entryFromText(placed.texts[0]!);
+      const s = BigInt(`0x${bytesToHex(entry.signature.subarray(32))}`);
+      const twin = new Uint8Array(entry.signature);
+      twin.set(hexToBytes((n - s).toString(16).padStart(64, "0")), 32);
+      expect(refusal(await w.place(list, [entryToText({ body: entry.body, signature: twin })]))).toBe("409 head_moved");
+      expect((await w.log(list, "?after=0&limit=1")).body.entries).toEqual([placed.texts[0]!]);
+    });
+  });
+
+  describe("POST /v2/lists/{list}/entries: placing", () => {
+    test("places a batch at the head, whole; head_moved names the head; a batch already in the log is placed 0 again", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const a = await newKey();
+      const b = await newKey();
+      const batch = await chain(list, head, [[w.owner, inviteOf(a, w.seconds() + 600)], [w.owner, inviteOf(b, w.seconds() + 600)]], w.seconds());
+      const placed = await w.place(list, batch.texts);
+      expect([placed.status, placed.body.placed, placed.body.head]).toEqual([200, 2, batch.head]);
+      expect((await w.place(list, batch.texts)).body).toEqual({ now: w.seconds(), list, head: batch.head, placed: 0 });
+      expect((await w.place(list, batch.texts.slice(1))).body.placed).toBe(0);
+      const stale = await w.place(list, (await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds())).texts);
+      expect([refusal(stale), stale.body.error?.head]).toEqual(["409 head_moved", batch.head]);
+      // in the log in part, new in part: the head moved
+      const more = await chain(list, batch.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      expect(refusal(await w.place(list, [batch.texts[1]!, ...more.texts]))).toBe("409 head_moved");
+      const ahead = await chain(list, more.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      expect(refusal(await w.place(list, ahead.texts))).toBe("409 head_moved");
+      expect(w.service.accountList(ACCOUNT)?.head).toEqual(batch.head);
+    });
+
+    test("each text must hold where it stands: entry_malformed, chain_broken and signature_invalid name its index, and nothing is placed", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const good = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      const at = (called: Called) => [refusal(called), called.body.error?.index];
+      expect(at(await w.place(list, [good.texts[0]!, "x.y"]))).toEqual(["400 entry_malformed", 1]);
+      const broken = await sign(w.owner, { seq: 2, list, prev: head.hash }, inviteOf(await newKey(), w.seconds() + 600), w.seconds());
+      expect(at(await w.place(list, [good.texts[0]!, broken.text]))).toEqual(["400 chain_broken", 1]);
+      const other = await sign(w.owner, { seq: 1, list: OPENS(3), prev: head.hash }, inviteOf(await newKey(), w.seconds() + 600), w.seconds());
+      expect(at(await w.place(list, [other.text]))).toEqual(["400 chain_broken", 0]);
+      const forged = entryFromText(good.texts[1]!);
+      const signature = new Uint8Array(forged.signature);
+      signature[40] = signature[40]! ^ 1;
+      expect(at(await w.place(list, [good.texts[0]!, entryToText({ body: forged.body, signature })]))).toEqual(["400 signature_invalid", 1]);
+      expect(w.service.accountList(ACCOUNT)?.entries).toHaveLength(1);
+    });
+
+    test("only an entry the library takes as counts is placed: entry_refused names its index, outcome and reason, and the batch goes whole or not at all", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const stranger = await newKey();
+      const refusedAt = async (steps: readonly (readonly [Key, ListKind])[]) => {
+        const refused = await w.place(list, (await chain(list, head, steps, w.seconds())).texts);
+        return [refusal(refused), refused.body.error?.index, refused.body.error?.outcome, refused.body.error?.reason];
+      };
+      expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [stranger, inviteOf(await newKey(), w.seconds() + 600)]])).toEqual(["400 entry_refused", 1, "passed_over", "signer_unknown"]);
+      expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, sealed(1))]])).toEqual(["400 entry_refused", 1, "no_effect", "epoch_other"]);
+      const phone = await newKey();
+      expect(await refusedAt([[w.owner, await deviceOf(phone, list, false, await cardOf(stranger, list))]])).toEqual(["400 entry_refused", 0, "no_effect", "card_invalid"]);
+      // carrying members in has no second lock yet: the service places no carried entry
+      expect(await refusedAt([[w.owner, { kind: "carried", key: phone.key, role: "drive", sealed: sealed() }]])).toEqual(["400 entry_refused", 0, "service", "carried_not_open"]);
+      // a kind of a level above the service's: cannot_read
+      const raised: EntryBody = { issued_at: w.seconds(), kind: "later_kind", list, prev: head.hash, seq: 1, signer: w.owner.key, v: 2, own: [] };
+      const later = await w.place(list, [entryToText(await signEntry(raised, w.owner.pair.privateKey))]);
+      expect([refusal(later), later.body.error?.outcome, later.body.error?.reason]).toEqual(["400 entry_refused", "cannot_read", null]);
+      expect(w.service.accountList(ACCOUNT)?.entries).toHaveLength(1);
+    });
+
+    test("after a removal, names are placed only once the next epoch is open: epoch_stale until then, and an entry without names counts", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      await w.claim(list, phone);
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)], [w.owner, removeOf(phone)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      const named = await chain(list, added.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      const stale = await w.place(list, named.texts);
+      expect([refusal(stale), stale.body.error?.outcome, stale.body.error?.reason]).toEqual(["400 entry_refused", "service", "epoch_stale"]);
+      expect((await w.place(list, (await chain(list, added.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds())).texts)).status).toBe(200);
+      const at = w.service.accountList(ACCOUNT)!.head;
+      const opened = await chain(list, at, [[w.owner, epochOf(0)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, sealed(1))]], w.seconds());
+      expect((await w.place(list, opened.texts)).status).toBe(200);
+    });
+
+    test("of two writers at one head exactly one is placed; the other gets head_moved and none of its wraps is stored", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const long = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      const short = await chain(list, head, [[w.owner, epochOf(0)]], w.seconds());
+      const [slow, quick] = await Promise.all([w.place(list, long.texts, [{ epoch: 0, member: w.owner.enc, wrap: WRAP(7) }]), w.place(list, short.texts, [{ epoch: 1, member: w.owner.enc, wrap: WRAP(9) }])]);
+      expect([slow.status, quick.status].sort()).toEqual([200, 409]);
+      const winner = slow.status === 200 ? long : short;
+      expect(w.service.accountList(ACCOUNT)?.head).toEqual(winner.head);
+      expect((slow.status === 409 ? slow : quick).body.error?.head).toEqual(winner.head);
+      const wraps = (await w.call("GET", `/v2/lists/${list}/wraps?member=${w.owner.enc}`, undefined, w.token)).body.wraps;
+      expect(wraps).toEqual(slow.status === 200 ? [{ epoch: 0, wrap: WRAP(1) }] : [{ epoch: 0, wrap: WRAP(1) }, { epoch: 1, wrap: WRAP(9) }]);
+    });
+
+    test("the service's clock judges invites only: an invite dated ahead, and a join after its invite's exp", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const ahead = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 900)]], w.seconds() + 301);
+      const refused = await w.place(list, ahead.texts);
+      expect([refusal(refused), refused.body.error?.reason]).toEqual(["400 entry_refused", "issued_at_ahead"]);
+      expect((await w.place(list, (await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 900)]], w.seconds() + 300)).texts)).status).toBe(200);
+      const after = w.service.accountList(ACCOUNT)!.head;
+      const pool = await newKey();
+      const invited = await chain(list, after, [[w.owner, inviteOf(pool, w.seconds() + 60)]], w.seconds());
+      expect((await w.place(list, invited.texts)).status).toBe(200);
+      const pc = machine();
+      const pcKey = await newKey();
+      const joined = await chain(list, invited.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool)]], w.seconds());
+      w.tick(61_000);
+      const late = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts });
+      expect([refusal(late), late.body.error?.index]).toEqual(["409 invite_expired", 0]);
+    });
+
+    test("size and budget: from removalsOnlyFrom only remove and epoch, from closedFrom nothing, and additions are 60 in any ten minutes", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      expect((await w.claim(list, phone)).status).toBe(200);
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      w.service.listLimits.removalsOnlyFrom = 2;
+      const invite = await chain(list, added.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      expect(refusal(await w.place(list, invite.texts))).toBe("409 list_full");
+      const removal = await chain(list, added.head, [[w.owner, removeOf(phone)], [w.owner, epochOf(0)]], w.seconds());
+      expect((await w.place(list, removal.texts)).status).toBe(200);
+      w.service.listLimits.closedFrom = 4;
+      expect(refusal(await w.place(list, (await chain(list, removal.head, [[w.owner, epochOf(1)]], w.seconds())).texts))).toBe("409 list_full");
+      w.service.listLimits.closedFrom = 1e9;
+      w.service.listLimits.removalsOnlyFrom = 1e9;
+      w.service.listLimits.stateChars = 10;
+      // epoch 1 is open now: names sealed under epoch 0 would be epoch_other, so these invites carry none
+      expect(refusal(await w.place(list, (await chain(list, removal.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds())).texts))).toBe("409 list_full");
+      // past the hard size only a remove, which adds no row
+      w.service.listLimits.stateHardChars = 10;
+      expect(refusal(await w.place(list, (await chain(list, removal.head, [[w.owner, epochOf(1)]], w.seconds())).texts))).toBe("409 list_full");
+      w.service.listLimits.stateChars = 1e9;
+      w.service.listLimits.stateHardChars = 1e9;
+      w.service.listLimits.additionsPerWindow = 2;
+      const two = await chain(list, removal.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      expect((await w.place(list, two.texts)).status).toBe(200);
+      w.tick(MINUTE);
+      const over = await chain(list, two.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      const budget = await w.place(list, over.texts);
+      // the device and the invite are the window's two additions: the first leaves it nine minutes on
+      expect([refusal(budget), budget.headers.get("retry-after")]).toEqual(["429 entry_budget", String(9 * 60)]);
+      w.tick(9 * MINUTE);
+      expect((await w.place(list, over.texts)).status).toBe(200);
+    });
+
+    test("removals alone by a signer of the list spend that signer's own counter, so a spent account still removes", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      const tablet = await newKey();
+      await w.claim(list, phone);
+      await w.claim(list, tablet, w.service.issueToken(ACCOUNT));
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)], [w.owner, await deviceOf(tablet, list)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      // the account's sign-ins spend all its requests
+      while ((await w.call("GET", "/v2/lists/mine", undefined, w.token)).status === 200);
+      // an epoch beside an addition spends the account's
+      const mixed = await w.place(list, (await chain(list, added.head, [[w.owner, epochOf(0)], [w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds())).texts);
+      expect(refusal(mixed)).toBe("429 rate_limited");
+      // a removal with the epoch it moves, whose first entry verifies under a signer of the list, is counted apart, under that signer
+      const removed = await chain(list, added.head, [[w.owner, removeOf(phone)], [w.owner, epochOf(0)]], w.seconds());
+      expect((await w.place(list, removed.texts)).status).toBe(200);
+      // a removal nobody of the list signed spends the account's, so it buys no way past the limit
+      const forged = await chain(list, removed.head, [[await newKey(), removeOf(tablet)]], w.seconds());
+      expect(refusal(await w.place(list, forged.texts))).toBe("429 rate_limited");
+      w.service.listLimits.removalsPerWindow = 1;
+      const second = await chain(list, removed.head, [[w.owner, removeOf(tablet)]], w.seconds());
+      expect(refusal(await w.place(list, second.texts))).toBe("429 rate_limited");
+      w.tick(10 * MINUTE);
+      expect((await w.place(list, second.texts)).status).toBe(200);
+    });
+
+    test("a placement rings the account's other subscribed devices", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const other = w.service.issueToken(ACCOUNT);
+      const subscription = { endpoint: "https://push.test/other", keys: { p256dh: "B".repeat(87), auth: "A".repeat(22) } };
+      expect((await w.call("PUT", "/v1/push", subscription, other)).status).toBe(204);
+      expect((await w.call("PUT", "/v1/push", { ...subscription, endpoint: "https://push.test/mine" }, w.token)).status).toBe(204);
+      expect((await w.place(list, (await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds())).texts)).status).toBe(200);
+      expect(w.service.rings().map((ring) => ring.endpoint)).toEqual(["https://push.test/other"]);
+    });
+  });
+
+  describe("wraps", () => {
+    test("a wrap is stored only with its placed batch, for the epoch current after it and one of its wrapKeys, and once", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      await w.claim(list, phone);
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      const wrapsOf = async (member: string) => (await w.call("GET", `/v2/lists/${list}/wraps?member=${member}`, undefined, w.token)).body.wraps;
+      const noMember = await w.place(list, added.texts, [{ epoch: 0, member: phone.enc, wrap: WRAP(2) }, { epoch: 0, member: (await newKey()).enc, wrap: WRAP(3) }]);
+      expect([refusal(noMember), noMember.body.error?.index]).toEqual(["400 wrap_invalid", 1]);
+      expect(w.service.accountList(ACCOUNT)?.entries).toHaveLength(1);
+      expect(await wrapsOf(phone.enc)).toEqual([]);
+      expect((await w.place(list, added.texts, [{ epoch: 0, member: phone.enc, wrap: WRAP(2) }, { epoch: 0, member: phone.enc, wrap: WRAP(4) }])).status).toBe(200);
+      expect(await wrapsOf(phone.enc)).toEqual([{ epoch: 0, wrap: WRAP(2) }]);
+      // the removal moves the epoch: remove, epoch and the new epoch's wraps in one request, for those who stay
+      const removal = await chain(list, added.head, [[w.owner, removeOf(phone)], [w.owner, epochOf(0)]], w.seconds());
+      expect(refusal(await w.place(list, removal.texts, [{ epoch: 1, member: phone.enc, wrap: WRAP(5) }]))).toBe("400 wrap_invalid");
+      expect(refusal(await w.place(list, removal.texts, [{ epoch: 0, member: w.owner.enc, wrap: WRAP(5) }]))).toBe("400 wrap_invalid");
+      expect((await w.place(list, removal.texts, [{ epoch: 1, member: w.owner.enc, wrap: WRAP(6) }])).status).toBe(200);
+      expect(await wrapsOf(w.owner.enc)).toEqual([{ epoch: 0, wrap: WRAP(1) }, { epoch: 1, wrap: WRAP(6) }]);
+      expect(refusal(await w.call("GET", `/v2/lists/${list}/wraps`, undefined, w.token))).toBe("400 invalid_request");
+      const pc = machine();
+      await listPc(w, pc);
+      expect((await pcCall(w, pc, "/v2/pc/list/wraps", { list, member: w.owner.enc })).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(1) }, { epoch: 1, wrap: WRAP(6) }]);
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/wraps", { list, member: w.owner.enc }))).toBe("404 not_found");
+    });
+  });
+
+  describe("wraps by the service's clock", () => {
+    test("an open auto invite's own key takes a wrap until its exp, by the service's clock, and none after", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const pool = await newKey();
+      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 60)]], w.seconds());
+      expect((await w.place(list, invited.texts, [{ epoch: 0, member: pool.key, wrap: WRAP(3) }])).status).toBe(200);
+      w.tick(61_000);
+      const later = await chain(list, invited.head, [[w.owner, epochOf(0)]], w.seconds());
+      const refused = await w.place(list, later.texts, [{ epoch: 1, member: pool.key, wrap: WRAP(4) }]);
+      expect([refusal(refused), refused.body.error?.index]).toEqual(["400 wrap_invalid", 0]);
+      expect((await w.place(list, later.texts, [{ epoch: 1, member: w.owner.enc, wrap: WRAP(4) }])).status).toBe(200);
+    });
+  });
+
+  describe("the second lock", () => {
+    test("a device entry is placed only on a live claim of its key, which the placement uses up", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      const unclaimed = await w.place(list, added.texts);
+      expect([refusal(unclaimed), unclaimed.body.error?.index]).toEqual(["403 not_claimed", 0]);
+      const newcomer = w.service.issueToken(ACCOUNT);
+      const claimed = await w.claim(list, phone, newcomer);
+      expect(claimed.body).toEqual({ now: w.seconds(), key: phone.key, until: Math.floor((T0 + LIST_CLAIM_MS) / 1000) });
+      expect(w.service.accountList(ACCOUNT)?.claims.map(({ key }) => key)).toEqual([phone.key]);
+      expect((await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims).toEqual([{ key: phone.key, enc: phone.enc, card: expect.any(String), until: claimed.body.until! }]);
+      // a claim lasts ten minutes
+      w.tick(LIST_CLAIM_MS + 1000);
+      expect(refusal(await w.place(list, added.texts))).toBe("403 not_claimed");
+      expect((await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims).toEqual([]);
+      // a claim whose sign-in has signed out since is no claim
+      const fresh = w.service.issueToken(ACCOUNT);
+      expect((await w.claim(list, phone, fresh)).status).toBe(200);
+      expect((await w.call("POST", "/v1/signout", undefined, fresh)).status).toBe(204);
+      expect(refusal(await w.place(list, added.texts))).toBe("403 not_claimed");
+      const again = w.service.issueToken(ACCOUNT);
+      expect((await w.claim(list, phone, again)).status).toBe(200);
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      expect((await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims).toEqual([]);
+    });
+
+    test("a claim takes the key's own card, from an own sign-in that is fresh or proves its key; claiming another key drops the earlier", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const { list } = await w.start();
+      const phone = await newKey();
+      const tablet = await newKey();
+      expect(refusal(await w.claim(list, phone, w.token, { card: await cardOf(tablet, list) }))).toBe("400 card_invalid");
+      expect(refusal(await w.claim(list, phone, w.token, { card: await cardOf(phone, list, "ab".repeat(32)) }))).toBe("400 card_invalid");
+      expect(refusal(await w.claim(list, phone, w.service.issueToken(ACCOUNT, { device: true })))).toBe("403 own_sign_in_required");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/claims`, { key: phone.key, enc: phone.enc }, w.token))).toBe("400 invalid_request");
+      const signedIn = await newKey();
+      const stale = staleSignIn(w, signedIn);
+      expect(refusal(await w.claim(list, phone, stale))).toBe("403 session_not_fresh");
+      const proof = await keyProof(w, stale, signedIn, "list-claim", list, phone.key);
+      expect((await w.claim(list, phone, stale, { key_proof: proof })).status).toBe(200);
+      expect(refusal(await w.claim(list, phone, stale, { key_proof: proof }))).toBe("400 challenge_invalid");
+      const claimed = async () => (await w.call("GET", `/v2/lists/${list}/claims`, undefined, w.token)).body.claims?.map(({ key }) => key);
+      const other = w.service.issueToken(ACCOUNT);
+      w.tick(1000);
+      expect((await w.claim(list, tablet, other)).status).toBe(200);
+      expect(await claimed()).toEqual([phone.key, tablet.key]);
+      // one claim per key: another sign-in's claim of it takes it over, and drops that sign-in's earlier claim
+      expect((await w.claim(list, phone, other)).status).toBe(200);
+      expect(await claimed()).toEqual([phone.key]);
+      expect(refusal(await w.claim(list, phone, other, { card: "A".repeat(85) }))).toBe("400 invalid_request");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/claims`, { key: "nokey", enc: phone.enc, card: await cardOf(phone, list) }, other))).toBe("400 invalid_request");
+    });
+
+    test("a rotation asks the claim of the new key", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const next = await newKey();
+      const rotated = await chain(list, head, [[w.owner, await deviceOf(next, list, true)]], w.seconds());
+      expect(refusal(await w.place(list, rotated.texts))).toBe("403 not_claimed");
+      await w.claim(list, next);
+      expect((await w.place(list, rotated.texts)).status).toBe(200);
+    });
+
+    test("a pc entry is placed only on a live post of its key and relay key, by a PC the account lists", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const pc = machine();
+      const key = await newKey();
+      const post = async (on: Machine, card?: string) => pcCall(w, on, "/v2/pc/list/keys", { list, key: key.key, enc: key.enc, card: card ?? await cardOf(key, list, on.endpoint) });
+      expect(refusal(await post(pc))).toBe("404 not_found");
+      await listPc(w, pc);
+      expect(refusal(await post(pc, await cardOf(key, list)))).toBe("400 card_invalid");
+      const added = await chain(list, head, [[w.owner, await pcOf(key, list, pc.endpoint)]], w.seconds());
+      const unposted = await w.place(list, added.texts);
+      expect([refusal(unposted), unposted.body.error?.index]).toEqual(["403 not_posted", 0]);
+      const posted = await post(pc);
+      expect(w.service.accountList(ACCOUNT)?.posts.map(({ endpoint, key: posted }) => [endpoint, posted])).toEqual([[pc.endpoint, key.key]]);
+      expect(posted.body).toEqual({ now: w.seconds(), endpoint: pc.endpoint, key: key.key, until: Math.floor((T0 + LIST_CLAIM_MS) / 1000) });
+      expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts).toEqual([{ endpoint: pc.endpoint, server_id: pc.serverId, key: key.key, enc: key.enc, card: expect.any(String), until: posted.body.until!, attempt: null }]);
+      w.tick(LIST_CLAIM_MS + 1000);
+      expect(refusal(await w.place(list, added.texts))).toBe("403 not_posted");
+      await post(pc);
+      expect((await w.call("DELETE", `/v1/pcs/${pc.serverId}`, undefined, w.service.issueToken(ACCOUNT))).status).toBe(204);
+      expect(refusal(await w.place(list, added.texts))).toBe("403 not_posted");
+      await listPc(w, pc);
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      // the post is used up by the entry it let in
+      expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts).toEqual([]);
+    });
+
+    test("a post carries the number comparison: the adder opens an attempt, the PC answers it once, the adder reveals", async () => {
+      const w = await world();
+      const { list } = await w.start();
+      const pc = machine();
+      await listPc(w, pc);
+      const key = await newKey();
+      const adder = w.owner.key;
+      const post = async (as = key) => pcCall(w, pc, "/v2/pc/list/keys", { list, key: as.key, enc: as.enc, card: await cardOf(as, list, pc.endpoint) });
+      const nonce = (n: number) => toBase64Url(new Uint8Array(32).fill(n));
+      const open = (body: Record<string, unknown>) => w.call("POST", `/v2/lists/${list}/posts/${pc.endpoint}/attempt`, { key: key.key, adder, commitment: nonce(1), ...body }, w.token);
+      const atPc = (body: Record<string, unknown> = {}) => pcCall(w, pc, "/v2/pc/list/attempt", { list, ...body });
+      expect(refusal(await open({}))).toBe("409 post_changed");
+      expect((await post()).status).toBe(200);
+      expect((await atPc()).body.attempt).toBeNull();
+      expect((await open({})).body).toMatchObject({ endpoint: pc.endpoint, key: key.key, attempt: { adder, commitment: nonce(1), nonce: null, reveal: null } });
+      // a reveal before the PC's nonce, or for another commitment, is not the open attempt's
+      expect(refusal(await open({ reveal: nonce(9) }))).toBe("409 attempt_changed");
+      expect(refusal(await atPc({ commitment: nonce(1) }))).toBe("400 invalid_request");
+      expect(refusal(await atPc({ commitment: nonce(2), nonce: nonce(5) }))).toBe("409 attempt_changed");
+      expect((await atPc({ commitment: nonce(1), nonce: nonce(5) })).body.attempt).toMatchObject({ nonce: nonce(5) });
+      expect((await atPc({ commitment: nonce(1), nonce: nonce(5) })).status).toBe(200);
+      expect(refusal(await atPc({ commitment: nonce(1), nonce: nonce(6) }))).toBe("409 attempt_changed");
+      expect((await open({ commitment: nonce(1), reveal: nonce(9) })).body.attempt).toEqual({ adder, commitment: nonce(1), nonce: nonce(5), reveal: nonce(9) });
+      expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts?.[0]).toMatchObject({ attempt: { reveal: nonce(9) } });
+      // the same keys posted again keep the comparison; other keys are another card, and it goes
+      expect((await post()).status).toBe(200);
+      expect((await atPc()).body.attempt).toMatchObject({ reveal: nonce(9) });
+      const other = await newKey();
+      expect((await post(other)).status).toBe(200);
+      expect((await atPc()).body.attempt).toBeNull();
+      expect(refusal(await open({}))).toBe("409 post_changed");
+      // six openings per PC post in ten minutes (the one that found no post counted too); a reveal is not counted
+      expect((await post()).status).toBe(200);
+      for (let opened = 3; opened < 6; opened++) expect((await open({})).status).toBe(200);
+      const spent = await open({});
+      expect([refusal(spent), spent.headers.get("retry-after")]).toEqual(["429 attempts_spent", "600"]);
+      expect(refusal(await open({ commitment: nonce(3) }))).toBe("429 attempts_spent");
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/posts/${pc.endpoint}/attempt`, { key: key.key, adder, commitment: "short" }, w.token))).toBe("400 invalid_request");
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/attempt", { list }))).toBe("404 not_found");
+    });
+
+    test("a join is placed only through the PC route, by the PC whose relay key it names", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const pool = await newKey();
+      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 3600, true, 3)]], w.seconds());
+      expect((await w.place(list, invited.texts)).status).toBe(200);
+      const pc = machine();
+      const key = await newKey();
+      const joined = await chain(list, invited.head, [[pool, await joinOf(key, list, pc.endpoint, pool)]], w.seconds());
+      // the PC that joins must be one the account lists, in any state (what its redeem of the invite wrote)
+      const unlisted = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts });
+      expect([refusal(unlisted), unlisted.body.error?.index]).toEqual(["403 not_listed", 0]);
+      await listPc(w, pc, w.service.issueToken(ACCOUNT, { device: true }));
+      const byDevice = await w.place(list, joined.texts);
+      expect([refusal(byDevice), byDevice.body.error?.index]).toEqual(["403 pc_proof_required", 0]);
+      // another PC, not in the list, has no right to the route for a join that names another
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/entries", { list, entries: joined.texts }))).toBe("404 not_found");
+      // a PC that is not in the list learns nothing of it from an unreadable batch
+      expect(refusal(await pcCall(w, machine(), "/v2/pc/list/entries", { list, entries: ["x.y"] }))).toBe("404 not_found");
+      expect((await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts })).body).toMatchObject({ head: joined.head, placed: 1 });
+      // now in the list, the PC places what it is given; a join naming another relay key is still not its to place
+      const other = machine();
+      const second = await chain(list, joined.head, [[pool, await joinOf(await newKey(), list, other.endpoint, pool)]], w.seconds());
+      expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: second.texts }))).toBe("403 pc_proof_required");
+      expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: ["x.y"] }))).toBe("400 entry_malformed");
+      // an invite lets a PC in with nobody else awake: a PC's key alone places none
+      const invite = await chain(list, joined.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: invite.texts }))).toBe("403 sign_in_required");
+    });
+  });
+
+  describe("the mailbox's with_list", () => {
+    test("adds the list's id and head for a PC the account lists confirmed, null for one that only asks to join, nothing without the member", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const pc = machine();
+      const asking = machine();
+      await listPc(w, pc);
+      await listPc(w, asking, w.service.issueToken(ACCOUNT, { device: true }));
+      expect((await pull(w, pc)).list).toBeNull();
+      const { list, head } = await w.start();
+      expect((await pull(w, pc)).list).toEqual({ id: list, head });
+      expect((await pull(w, asking)).list).toBeNull();
+      expect("list" in await pull(w, pc, false)).toBe(false);
+    });
+  });
+
+  describe("tamper mode: each lie is served", () => {
+    /** A list of four entries: genesis, two invites and a device, and the device's sign-in. */
+    async function told() {
+      const w = await world();
+      const { list, head, first } = await w.start();
+      const phone = await newKey();
+      const phoneToken = w.service.issueToken(ACCOUNT);
+      await w.claim(list, phone, phoneToken);
+      const placed = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, await deviceOf(phone, list)]], w.seconds());
+      expect((await w.place(list, placed.texts, [{ epoch: 0, member: phone.enc, wrap: WRAP(2) }])).status).toBe(200);
+      return { w, list, all: [first, ...placed.texts], head: placed.head, phone, phoneToken };
+    }
+
+    test("inject: an entry of a key that is no member is served after the log, and a member passes it over", async () => {
+      const { w, list, all, head } = await told();
+      const stranger = await newKey();
+      const injected = await chain(list, head, [[stranger, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      w.service.tamperList(list, { inject: injected.texts });
+      const served = await w.log(list);
+      expect([served.body.entries, served.body.head]).toEqual([[...all, ...injected.texts], injected.head]);
+      const replayed = await replayList(served.body.entries!, 1, { saved: null });
+      expect(replayed.member?.state.signers[stranger.key]).toBeUndefined();
+      expect(w.service.accountList(ACCOUNT)?.entries).toEqual(all);
+    });
+
+    test("wraps: a wrap of the service's own is served in place of the stored one", async () => {
+      const { w, list, phone } = await told();
+      w.service.tamperList(list, { wraps: [{ epoch: 0, member: phone.enc, wrap: WRAP(66) }] });
+      expect((await w.call("GET", `/v2/lists/${list}/wraps?member=${phone.enc}`, undefined, w.token)).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(66) }]);
+    });
+
+    test("withholdAfter: one reader's log ends at that seq, its head with it, while the others read on", async () => {
+      const { w, list, all, phoneToken } = await told();
+      w.service.tamperList(list, { reader: { token: phoneToken }, withholdAfter: 1 });
+      const lied = await w.log(list, "", phoneToken);
+      expect([lied.body.entries, lied.body.head?.seq, lied.body.more]).toEqual([all.slice(0, 2), 1, false]);
+      expect((await w.call("GET", "/v2/lists/mine", undefined, phoneToken)).body.head?.seq).toBe(1);
+      expect((await w.log(list)).body.entries).toEqual(all);
+      const pc = machine();
+      await listPc(w, pc);
+      w.service.tamperList(list, { reader: { server_id: pc.serverId }, withholdAfter: 2 });
+      expect(((await pull(w, pc)).list as { head: ListPlace }).head.seq).toBe(2);
+      expect((await pcCall(w, pc, "/v2/pc/list/log", { list })).body.entries).toEqual(all.slice(0, 3));
+    });
+
+    test("withholdAfter for every reader replays an old prefix: a member that holds more keeps its head", async () => {
+      const { w, list, all } = await told();
+      const member = (await replayList(all, 1, { saved: null })).member!;
+      w.service.tamperList(list, { withholdAfter: 1 });
+      expect((await w.log(list)).body.entries).toEqual(all.slice(0, 2));
+      const served = await w.log(list, "?after=3");
+      expect([served.body.entries, served.body.head?.seq]).toEqual([[], 1]);
+      const shown = await shownList(member, { after: 3, entries: served.body.entries!, head: served.body.head! });
+      expect([shown.member.entries, shown.stuck]).toEqual([all, false]);
+    });
+
+    test("head: every answer reports a head the log does not reach, or an old one", async () => {
+      const { w, list, all, head } = await told();
+      const beyond = { seq: head.seq + 5, hash: "ab".repeat(32) };
+      w.service.tamperList(list, { head: beyond });
+      const served = await w.log(list);
+      expect([served.body.entries, served.body.head, served.body.more]).toEqual([all, beyond, false]);
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.head).toEqual(beyond);
+      w.service.untamperList(list);
+      w.service.tamperList(list, { head: { seq: 1, hash: entryHash(entryFromText(all[1]!).body) } });
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.head?.seq).toBe(1);
+      expect((await w.log(list)).body.entries).toEqual(all);
+    });
+
+    test("fork: two readers are served two valid member-signed continuations at the same seq", async () => {
+      const { w, list, all, head, phoneToken } = await told();
+      const ours = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      expect((await w.place(list, ours.texts)).status).toBe(200);
+      const theirs = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      w.service.tamperList(list, { reader: { token: phoneToken }, fork: theirs.texts });
+      const toPhone = await w.log(list, "", phoneToken);
+      const toOwner = await w.log(list);
+      expect([toPhone.body.entries, toPhone.body.head]).toEqual([[...all, ...theirs.texts], theirs.head]);
+      expect([toOwner.body.entries, toOwner.body.head]).toEqual([[...all, ...ours.texts], ours.head]);
+      for (const entries of [toPhone.body.entries!, toOwner.body.entries!]) expect((await replayList(entries, 1, { saved: null })).stopped).toBeNull();
+    });
+
+    test("pages: pages end after the cuts with more true, and asking on after the last seq joins the whole log", async () => {
+      const { w, list, all } = await told();
+      w.service.tamperList(list, { pages: [0, 2] });
+      const pages: (readonly string[])[] = [];
+      let after: number | null = null;
+      for (let more = true; more;) {
+        const page: Called = await w.log(list, after === null ? "" : `?after=${after}`);
+        pages.push(page.body.entries!);
+        after = (after ?? -1) + page.body.entries!.length;
+        more = page.body.more!;
+      }
+      expect(pages.map((page) => page.length)).toEqual([1, 2, 1]);
+      expect(pages.flat()).toEqual(all);
+    });
+
+    test("listId: another id is reported as the account's list while the log is unchanged", async () => {
+      const { w, list, all } = await told();
+      const pc = machine();
+      await listPc(w, pc);
+      const wrong = OPENS(9);
+      w.service.tamperList(list, { listId: wrong });
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.list).toBe(wrong);
+      expect((await pcCall(w, pc, "/v2/pc/list", { account: ACCOUNT })).body.list).toBe(wrong);
+      expect(((await pull(w, pc)).list as { id: string }).id).toBe(wrong);
+      expect((await w.log(list)).body).toMatchObject({ list, entries: all });
+      expect(w.service.accountList(ACCOUNT)?.id).toBe(list);
+    });
+
+    test("answerList: another account's list is answered under this one's id, and its entry 0 is not the pinned one", async () => {
+      const { w, list } = await told();
+      const elsewhere = w.service.issueToken("acct_2");
+      const stranger = await newKey();
+      const theirs = await sign(stranger, { seq: 0, list: "", prev: "" }, genesisOf(stranger, "acct_2"), w.seconds());
+      const made = await w.call("POST", "/v2/lists", { entry: theirs.text }, elsewhere);
+      w.service.tamperList(list, { answerList: made.body.list as string });
+      const served = await w.log(list);
+      expect([served.body.list, served.body.entries]).toEqual([list, [theirs.text]]);
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.list).toBe(made.body.list);
+      expect((await replayList(served.body.entries!, 1, { saved: null, given: list })).stopped?.code).toBe("list_mismatch");
+    });
+
+    test("flipEntry and flipWrap: one byte of an entry or a wrap is flipped as served", async () => {
+      const { w, list, all, phone } = await told();
+      w.service.tamperList(list, { flipEntry: { seq: 2 }, flipWrap: { member: phone.enc, epoch: 0, byte: 0 } });
+      const served = await w.log(list);
+      expect(served.body.entries?.filter((text, seq) => text !== all[seq])).toHaveLength(1);
+      const stopped = (await replayList(served.body.entries!, 1, { saved: null })).stopped;
+      expect([stopped?.seq, ["signature_invalid", "entry_malformed"].includes(stopped?.code ?? "")]).toEqual([2, true]);
+      const wrap = (await w.call("GET", `/v2/lists/${list}/wraps?member=${phone.enc}`, undefined, w.token)).body.wraps![0]!.wrap;
+      expect(Array.from(fromBase64Url(wrap)).filter((byte, at) => byte !== fromBase64Url(WRAP(2))[at])).toHaveLength(1);
+    });
+
+    test("headMoved: every placement is refused head_moved forever, and nothing is placed", async () => {
+      const { w, list, head } = await told();
+      w.service.tamperList(list, { headMoved: true });
+      const batch = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const refused = await w.place(list, batch.texts);
+        expect([refusal(refused), refused.body.error?.head]).toEqual(["409 head_moved", head]);
+      }
+      expect(w.service.accountList(ACCOUNT)?.head).toEqual(head);
+    });
+
+    test("dropWraps: a placed batch's entries are stored and its wraps are not", async () => {
+      const { w, list, head } = await told();
+      w.service.tamperList(list, { dropWraps: true });
+      const tablet = await newKey();
+      await w.claim(list, tablet);
+      const added = await chain(list, head, [[w.owner, await deviceOf(tablet, list)]], w.seconds());
+      expect((await w.place(list, added.texts, [{ epoch: 0, member: tablet.enc, wrap: WRAP(3) }])).status).toBe(200);
+      expect(w.service.accountList(ACCOUNT)?.head).toEqual(added.head);
+      expect((await w.call("GET", `/v2/lists/${list}/wraps?member=${tablet.enc}`, undefined, w.token)).body.wraps).toEqual([]);
+      expect(w.service.accountList(ACCOUNT)?.wraps.map(({ member }) => member)).not.toContain(tablet.enc);
+    });
+  });
+});

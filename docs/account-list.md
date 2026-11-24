@@ -805,3 +805,72 @@ Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vector
 `footing`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it holds a `stop`, the
 `seq` and `by` of its `alarm`, `read_at`, `seen_at`, and `opens`: for each named key the role it opens a session as,
 or the refusal) or `refused` (the refusal). A save that reads is written back to the same text.
+
+## The list routes in tests
+
+The account service stores and serves the list; a member trusts none of its answers for who is in.
+Tests reach the service's list routes (`/v2`) through the in-memory service in
+[`shared/account-service-fake.ts`](../shared/account-service-fake.ts), on the same accounts,
+sign-ins and PCs as its `/v1` routes. It runs this page's library on every entry it is asked to
+place, as the service does, so a test fails where a client relies on something the service would
+refuse. The tests in
+[`shared/account-service-fake.list.test.ts`](../shared/account-service-fake.list.test.ts) show
+every route in use.
+
+- **The switch.** `listAccounts` stands for the service's `OVIS_LIST_ACCOUNTS`: account ids
+  separated by commas, or `*` for every account. It is empty by default, and then every `/v2` route
+  answers `404 not_found` as an unknown one and the mailbox's `with_list` says `list: null`. A test
+  sets it first.
+- **Devices** call by bearer: `POST /v2/lists` (entry 0), `GET /v2/lists/mine`, and under
+  `/v2/lists/{list}/`: `GET log?after=&limit=`, `GET wraps?member=`, `POST entries`, `POST claims`,
+  `GET claims`, `GET posts`, `POST posts/{endpoint}/attempt`. A write takes an app's own sign-in that no block freezes. A genesis and
+  a claim also take a sign-in made in the last ten minutes, or an older one with a key proof: a
+  challenge of `POST /v1/pcs/challenge` (with `opensAll` on), signed by the key that sign-in
+  registered over `pcAddSigningBytes` (`shared/account-records.ts`) with the purpose `list-genesis`,
+  the list id in the place of the server_id and no listing, or `list-claim` with the claimed key as
+  the listing.
+- **PCs** prove their relay key in the body of each call (a challenge of `POST /v1/pc/challenge`
+  answered with the role `account`, one per call): `POST /v2/pc/list`, `/v2/pc/list/log`,
+  `/v2/pc/list/wraps`, `/v2/pc/list/entries`, `/v2/pc/list/keys` and `/v2/pc/list/attempt`. A
+  mailbox pull with `with_list: true` also gets the list's id and head.
+- **The number a person compares** when adding a PC rides on the PC's post: the adder opens an
+  attempt with its key and commitment, the PC answers it with its nonce once, the adder reveals.
+  The fake only carries them, as the service does; six openings per post in ten minutes.
+- **What a placement checks**, in order, nothing stored on a refusal: every text in its form, and
+  the first at the head (`409 head_moved` names the head; a batch already in the log text for text
+  is `200` with `placed: 0`); then entry by entry, that it holds and counts for the library
+  (`entry_refused` with its `outcome` and `reason`), and what only the service judges: no names
+  until an epoch is open after the last removal (`epoch_stale`), no `carried` yet, an `invite` only
+  from a sign-in and not dated ahead of its clock, a `join` before its invite's `exp` and only from
+  the PC it names, the list's size; then the second lock (a `device` needs a live claim of its key,
+  a `pc` a live post of its keys by a PC the account lists, each used up by the entry, a `join` a
+  PC the account lists), the wraps, and the budget of additions. Two writers at one head: one is
+  placed. A batch whose every entry is a `remove` or an `epoch`, whose first entry is signed by a
+  signer of the list, spends that signer's own counter instead of the account's requests.
+- **Limits** are in `listLimits`, which a test may lower to reach `list_full`, `entry_budget` or a
+  PC's calls a minute.
+- `accountList(account)` gives what the service holds, no lie applied: the list id, every entry's
+  text, the head, the service's own state of the list, every stored wrap, and the claims and posts
+  that still lock.
+
+### Making the service lie
+
+A member must come to no harm from anything the service says, so the fake lies when a test asks
+it to: `tamperList(list, lie)` adds a lie and `untamperList(list)` ends them all. Nothing lies by
+default, and a lie changes only what is served or refused: the log the fake holds stays as placed.
+`reader` (`{ token }` for a device's sign-in, `{ server_id }` for a PC) lies to that reader alone,
+and to everyone when it is left out.
+
+| lie | what is served | what a test proves with it |
+|---|---|---|
+| `inject` | these texts after the log, the head moved to the last | an entry of a key that is no member is passed over and lets nobody in |
+| `wraps` | these wraps in place of the stored ones | a wrap of a key of the service's own is refused against `epoch_opens` |
+| `withholdAfter` | the log up to that seq, its head with it | a removal that never arrives (one reader), or an old prefix replayed (every reader): a member never goes back |
+| `head` | that head in every answer | a head the log does not reach shows the tail withheld; an old head changes nothing |
+| `fork` | these texts in place of the log from the first one's seq on | two readers each hold a valid history at the same seq, which only comparing heads parts |
+| `pages` | pages that end after these seqs | a reader joins the same log wherever the pages are cut |
+| `answerList` | another list under this list's id | its entry 0 is not the list the member pinned (`list_mismatch`) |
+| `listId` | that id as the account's list, the log unchanged | the id is a hint: a member pins it only from another member |
+| `flipEntry`, `flipWrap` | one byte flipped in that entry's body or that wrap | the entry no longer holds; the wrap does not open |
+| `headMoved` | `409 head_moved` for every placement | a writer stops after its own bound and says so |
+| `dropWraps` | a placed batch's entries without its wraps | a member with no wrap sees no names and is let in all the same |
