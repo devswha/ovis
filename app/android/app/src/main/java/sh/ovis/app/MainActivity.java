@@ -675,42 +675,38 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * Before the WebView's first page (HerdrShellPlugin.load: Capacitor loads its plugins before it loads a page), in a
-     * build that carries the shell: where this activity answers the hosted origin, the clients that keep its requests
-     * and its workers' off the network from the first one; the contract every page the app serves from its assets gets
-     * at document start (window.__ovisAppShell, BundledShell.contractScript), on the app's own origin and, where this
-     * activity answers it, the hosted origin; and the boot page's word that it cleared the workers. A build that loads
-     * the shell from the network adds none of them.
+     * Before the WebView's first page (HerdrShellPlugin.load: Capacitor loads its plugins before it loads a page), where
+     * this activity answers the hosted origin from the shell this build carries: the clients that keep its requests and
+     * its workers' off the network from the first one; the contract the shell's pages get at document start
+     * (window.__ovisAppShell, BundledShell.contractScript), on that origin alone (never a PC's own page, and the render
+     * host's sandbox has no origin); and the boot page's word that it cleared the workers. Where the shell comes from the
+     * network, or the page is another, none of them.
      */
     void beforeFirstPage(Bridge bridge) {
         BundledShell served = shell;
-        if (served != null) {
-            // Capacitor asks for the first page as it loads it, before this activity's own client is in place (onCreate,
-            // which answers the hosted origin the same way): until then this one keeps that request off the network
-            bridge.setWebViewClient(
-                new BridgeWebViewClient(bridge) {
-                    @Override
-                    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                        return served.serve(request, () -> super.shouldInterceptRequest(view, request));
-                    }
+        if (served == null) return;
+        // Capacitor asks for the first page as it loads it, before this activity's own client is in place (onCreate, which
+        // answers the hosted origin the same way): until then this one keeps that request off the network
+        bridge.setWebViewClient(
+            new BridgeWebViewClient(bridge) {
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                    return served.serve(request, () -> super.shouldInterceptRequest(view, request));
                 }
-            );
-            // and a worker the network's copy registered asks the bundled shell too, never the network
-            ServiceWorkerController.getInstance().setServiceWorkerClient(
-                new ServiceWorkerClient() {
-                    @Override
-                    public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
-                        return served.serve(request, () -> bridge.getLocalServer().shouldInterceptRequest(request));
-                    }
+            }
+        );
+        // and a worker the network's copy registered asks the bundled shell too, never the network
+        ServiceWorkerController.getInstance().setServiceWorkerClient(
+            new ServiceWorkerClient() {
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                    return served.serve(request, () -> bridge.getLocalServer().shouldInterceptRequest(request));
                 }
-            );
-        }
-        if (!BuildConfig.SHELL_BUNDLED || !BundledShell.supported()) return;
+            }
+        );
         WebView view = bridge.getWebView();
-        Set<String> origins = new HashSet<>(Collections.singleton(bridge.getScheme() + "://" + bridge.getHost()));
-        if (shell != null) origins.add(BuildConfig.APP_ORIGIN);
         try {
-            WebViewCompat.addDocumentStartJavaScript(view, BundledShell.contractScript(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), origins);
+            WebViewCompat.addDocumentStartJavaScript(view, BundledShell.contractScript(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), Collections.singleton(BuildConfig.APP_ORIGIN));
             if (!booting) return;
             // only the boot page's main frame is heard (another page of the origin saying so would only spare the next start
             // a clean-up), and once: the pages after it go without the listener

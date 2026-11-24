@@ -800,10 +800,10 @@ Build (`app/scripts/bundled-shell.ts`, called by `build-web.ts`):
   one, so a hosted shell is never uploaded.
 - `OVIS_APP_SHELL_DIR` names the dist-shell to carry: a release passes its tag's verified
   `dist-shell.tar.gz`, unpacked; without it the shell is built from this checkout (`vite build --mode shell`),
-  as the demo is. It goes to `app/android/app/bundled-shell/shell/`, an assets folder of the Android build's
-  own (`build.gradle` adds it), so `bunx cap sync` leaves it alone and the app's own origin
-  (`https://localhost`, `app/www`) never serves it. The `.gz`/`.br` sidecars, `_headers`, `_redirects` and
-  `.well-known/` stay out. The two policies come from that copy's own `_headers`
+  as the demo is. It goes to `app/bundled-shell/shell/`, written once for every platform outside `app/www`, so
+  `bunx cap sync` leaves it alone and the app's own origin (`https://localhost`) never serves it; the Android
+  build adds it as an assets folder of its own (`build.gradle`). The `.gz`/`.br` sidecars, `_headers`,
+  `_redirects` and `.well-known/` stay out. The two policies come from that copy's own `_headers`
   (`shell-policy.json` beside it), which `scripts/shell-build.ts` writes from `shellPolicies()`: a test
   reads them back from `shellHeaders()`, so the app and Pages cannot send different ones. The copy fails the
   build over 64 MB (31 MB on 2026-11-24: `SHELL_BUDGET_BYTES`). It is not shared with the bundled demo: 427
@@ -840,12 +840,17 @@ Serving (`BundledShell.java`, `MainActivity`):
   origin. So a worker of the network's copy, whose kept shell (a day old at most) would otherwise answer the
   first page of a relay PC, never serves it once. Storage is untouched: `WebStorage.deleteAllData` would take
   the keys with it. A clean-up that fails or takes over 3 s goes on all the same and runs again at the next
-  start; a start that loads the shell from the network again (below) marks it needed again.
-- Every page the app serves from its assets in such a build (the shell at the hosted origin, the app's own
-  pages and the demo at `https://localhost`) gets `window.__ovisAppShell = { bundled: true, platform:
-  "android", appVersion, build }` (frozen; `versionName` and `versionCode`) at document start, before its own
-  scripts; a hosted build injects nothing. The client reads it to register no worker and never reload for a
-  newer hosted copy.
+  start; a start that loads the shell from the network again (below) marks it needed again. The client retires
+  workers on its first bundled page too (it asks that page to be `/`); the boot page runs before whatever the
+  first page is (home, a saved relay PC, a link or an alert that opens a PC's page), so the app does not open `/`
+  first, and the client finds nothing left to retire.
+- The bundled shell's pages, on the hosted origin alone, get `window.__ovisAppShell = { bundled: true,
+  platform: "android", appVersion, build }` (frozen; `versionName` and `versionCode`) at document start, before
+  their own scripts. Never a PC's own page (its own origin), the render host (its sandbox has no origin), the
+  app's own pages or the demo; a hosted build injects nothing. The client reads it to register no worker, never
+  reload for a newer hosted copy, and compare its own version with the PC's floor. Its "Update the app" button is a
+  `target=_blank` link to the Play page, which the WebView takes as a main-frame link to another origin: `MainActivity`
+  hands it to the system (the Play app, else the browser), never opening it in the WebView.
 - A WebView without document-start scripts or message listeners loads the shell from the network as before.
 
 What was checked on 2026-11-24 (Android 16 emulator, WebView 133, the QA twin `sh.ovis.app.previewqa`): a

@@ -10,7 +10,8 @@
  *
  * The Android app also carries the shell itself (bundled-shell.ts): OVIS_APP_SHELL=bundled, the default for a build of
  * the production origin, copies OVIS_APP_SHELL_DIR's dist-shell (or one built from this checkout) into
- * android/app/bundled-shell; OVIS_APP_SHELL=hosted, the default with OVIS_APP_URL, loads it from the network instead.
+ * app/bundled-shell, where the native builds take it from; OVIS_APP_SHELL=hosted, the default with OVIS_APP_URL, loads
+ * it from the network instead.
  */
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

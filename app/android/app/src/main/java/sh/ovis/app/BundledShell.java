@@ -200,8 +200,8 @@ final class BundledShell {
     }
 
     /**
-     * The script every page of the bundled shell (and the app's own pages) gets at document start, before its own:
-     * the contract the client reads (`window.__ovisAppShell`) to know it is the app's copy, with the app's version.
+     * The script the bundled shell's pages get at document start, before their own, on its origin alone: the contract the
+     * client reads (`window.__ovisAppShell`) to know it is the app's copy, with the app's version.
      */
     static String contractScript(String versionName, int versionCode) {
         return "window.__ovisAppShell = Object.freeze({ bundled: true, platform: \"android\", appVersion: " + JSONObject.quote(versionName) + ", build: " + versionCode + " });";

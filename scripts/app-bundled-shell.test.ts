@@ -1,44 +1,12 @@
 import { describe, expect, it, mock } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { appShell, carried, packShell, SHELL_ASSETS, shellPoliciesOf } from "../app/scripts/bundled-shell.ts";
 import { writeNativeOrigin } from "../app/scripts/hosted-origin.ts";
 import { RENDER_PATH, SHELL_META, shellHeaders, shellPolicies } from "./shell-build.ts";
 
-const app = join(import.meta.dir, "../app");
-const java = readFileSync(join(app, "android/app/src/main/java/sh/ovis/app/BundledShell.java"), "utf8");
-const gradle = readFileSync(join(app, "android/app/build.gradle"), "utf8");
-
-/** A `static final String` of BundledShell.java as Java reads it: its literals and the constants before it, joined. */
-function javaString(name: string, known: Record<string, string> = {}): string {
-  const start = java.indexOf(`static final String ${name} =`);
-  if (start < 0) throw new Error(`BundledShell.java declares no ${name}`);
-  let at = java.indexOf("=", start) + 1;
-  let value = "";
-  for (;;) {
-    while (/\s|\+/.test(java[at]!)) at++;
-    if (java[at] === ";") return value;
-    if (java[at] === '"') {
-      let end = at + 1;
-      while (java[end] !== '"') end += java[end] === "\\" ? 2 : 1;
-      value += JSON.parse(java.slice(at, end + 1));
-      at = end + 1;
-      continue;
-    }
-    const identifier = /^[A-Z_]+/.exec(java.slice(at))?.[0];
-    if (!identifier || !(identifier in known)) throw new Error(`${name} joins something this test does not know at: ${java.slice(at, at + 40)}`);
-    value += known[identifier];
-    at += identifier.length;
-  }
-}
-
-const BOOT_PATH = javaString("BOOT_PATH");
-const FILES_CACHE = javaString("FILES_CACHE");
-const BOOT_JS = javaString("BOOT_JS", { BOOT_PATH, FILES_CACHE });
-const RETIRING_WORKER = javaString("RETIRING_WORKER", { FILES_CACHE });
-
-describe("where the Android app takes the shell from", () => {
+describe("where a build takes the shell from", () => {
   it("carries it for the production origin and loads it from the network for a preview's, unless told", () => {
     expect(appShell(undefined, null)).toBe("bundled");
     expect(appShell("", null)).toBe("bundled");
@@ -67,15 +35,6 @@ describe("where the Android app takes the shell from", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  it("is what the Android build reads, carried by default, and a hosted shell is never the store app", () => {
-    expect(gradle).toContain('getProperty("appShell", "bundled") != "hosted"');
-    expect(gradle).toContain('buildConfigField "boolean", "SHELL_BUNDLED", "${shellBundled}"');
-    expect(gradle).toContain(`main.assets.srcDirs += ['${basename(SHELL_ASSETS)}']`);
-    expect(dirname(SHELL_ASSETS)).toBe("android/app");
-    expect(gradle).toContain("task.name ==~ /(assemble|bundle|install|package|sign)Release(Bundle)?/");
-    expect(gradle).toContain('android.defaultConfig.applicationId == "sh.ovis.app"');
   });
 });
 
@@ -127,9 +86,6 @@ describe("packing a dist-shell into the app", () => {
       expect(shell).toEqual(["assets/index-0123456789.js", "build.json", "icons/icon-192.png", "index.html", "manifest.webmanifest", "render.html", "sw.js"]);
       expect(packed.files).toBe(7);
       expect(JSON.parse(readFileSync(join(assets, "shell-policy.json"), "utf8"))).toEqual(shellPolicies());
-      // the folder BundledShell.java reads (DIR, POLICY)
-      expect(javaString("DIR")).toBe("shell");
-      expect(javaString("POLICY")).toBe("shell-policy.json");
     } finally {
       rmSync(from, { recursive: true, force: true });
       rmSync(assets, { recursive: true, force: true });
@@ -156,6 +112,54 @@ describe("packing a dist-shell into the app", () => {
       rmSync(from, { recursive: true, force: true });
       rmSync(dirname(assets), { recursive: true, force: true });
     }
+  });
+});
+
+// The Android app that serves the carried shell (BundledShell.java, build.gradle)
+const app = join(import.meta.dir, "../app");
+const java = readFileSync(join(app, "android/app/src/main/java/sh/ovis/app/BundledShell.java"), "utf8");
+const gradle = readFileSync(join(app, "android/app/build.gradle"), "utf8");
+
+/** A `static final String` of BundledShell.java as Java reads it: its literals and the constants before it, joined. */
+function javaString(name: string, known: Record<string, string> = {}): string {
+  const start = java.indexOf(`static final String ${name} =`);
+  if (start < 0) throw new Error(`BundledShell.java declares no ${name}`);
+  let at = java.indexOf("=", start) + 1;
+  let value = "";
+  for (;;) {
+    while (/\s|\+/.test(java[at]!)) at++;
+    if (java[at] === ";") return value;
+    if (java[at] === '"') {
+      let end = at + 1;
+      while (java[end] !== '"') end += java[end] === "\\" ? 2 : 1;
+      value += JSON.parse(java.slice(at, end + 1));
+      at = end + 1;
+      continue;
+    }
+    const identifier = /^[A-Z_]+/.exec(java.slice(at))?.[0];
+    if (!identifier || !(identifier in known)) throw new Error(`${name} joins something this test does not know at: ${java.slice(at, at + 40)}`);
+    value += known[identifier];
+    at += identifier.length;
+  }
+}
+
+const BOOT_PATH = javaString("BOOT_PATH");
+const FILES_CACHE = javaString("FILES_CACHE");
+const BOOT_JS = javaString("BOOT_JS", { BOOT_PATH, FILES_CACHE });
+const RETIRING_WORKER = javaString("RETIRING_WORKER", { FILES_CACHE });
+
+describe("the Android build", () => {
+  it("is what the Android build reads, carried by default, and a hosted shell is never the store app", () => {
+    expect(gradle).toContain('getProperty("appShell", "bundled") != "hosted"');
+    expect(gradle).toContain('buildConfigField "boolean", "SHELL_BUNDLED", "${shellBundled}"');
+    expect(gradle).toContain(`main.assets.srcDirs += ['../../${SHELL_ASSETS}']`);
+    expect(gradle).toContain("task.name ==~ /(assemble|bundle|install|package|sign)Release(Bundle)?/");
+    expect(gradle).toContain('android.defaultConfig.applicationId == "sh.ovis.app"');
+  });
+
+  it("reads the folder packShell writes", () => {
+    expect(javaString("DIR")).toBe("shell");
+    expect(javaString("POLICY")).toBe("shell-policy.json");
   });
 });
 

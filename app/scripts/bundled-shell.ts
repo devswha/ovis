@@ -27,11 +27,12 @@ export function appShell(value: string | undefined, appUrl: string | null): AppS
 }
 
 /**
- * Where, under app/, the Android build takes the carried shell from: an assets folder of its own (build.gradle), so
- * `bunx cap sync` leaves it alone and the app's own origin (https://localhost, app/www) never serves it. `shell/` is the
- * dist-shell the app serves, `shell-policy.json` the policies it sends with it.
+ * Where, under app/, the carried shell is written once for every platform's build: `shell/` is the dist-shell the app
+ * serves, `shell-policy.json` the policies it sends with it (`page` on every answer, `render` alone on a PC's render
+ * host). Outside app/www, so `bunx cap sync` leaves it alone and the app's own origin (https://localhost) never serves
+ * it: the Android build adds it as an assets folder of its own (android/app/build.gradle).
  */
-export const SHELL_ASSETS = "android/app/bundled-shell";
+export const SHELL_ASSETS = "bundled-shell";
 
 /** The carried copy's size limit: 31 MB on 2026-11-24, so a copy that doubles (sidecars, a second copy) fails the build. */
 export const SHELL_BUDGET_BYTES = 64 * 1024 * 1024;
