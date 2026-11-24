@@ -70,9 +70,20 @@ describe("withRecord", () => {
     expect(bound(twice, "ls").record?.command).toBe("ls");
   });
 
+  test("many tabs drawn as one long run of spaces are matched without trying every split", () => {
+    const command = `printf '${"\t".repeat(8)}x'`;
+    const drawnTabs = screen("Run this command?", `printf '${" ".repeat(64)}x'`, ...menu);
+    const started = performance.now();
+    expect(withRecord(cardOf(drawnTabs), { id: "c", command }, drawnTabs, record).record?.command).toBe(command);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   test("an agent with no dialog line of its own is read from the card's words, its own rows around the command", () => {
     expect(withRecord(card, { id: "c", command: "echo hello" }, "", { before: /^previous output$/u }).record?.command).toBe("echo hello");
     expect(withRecord(card, { id: "c", command: "echo hello" }, "", {}).record).toBeUndefined();
+    // a command's last row under its first is not the command
+    const longer = screen("echo first &&", "pwd", ...menu);
+    expect(withRecord(cardOf(longer), { id: "c", command: "pwd" }, "", { before: /\S/u }).record).toBeUndefined();
   });
 });
 

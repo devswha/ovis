@@ -38,15 +38,21 @@ const drawnRow = (row: string): string => row.replace(EDGES_RE, "");
 
 /**
  * Where a command's text could go on after one of its rows, read from `from`: the row's characters in order, a tab
- * drawn as one or more of the spaces before the next character.
+ * drawn as one or more of the spaces before the next character. Each (command, row) position is tried once.
  */
-function rowEnds(command: string, from: number, row: string, at = 0): number[] {
-  if (at === row.length) return [from];
-  if (command[from] === row[at]) return rowEnds(command, from + 1, row, at + 1);
-  if (command[from] !== "\t" || row[at] !== " ") return [];
-  const ends: number[] = [];
-  for (let next = at + 1; next <= row.length && row[next - 1] === " "; next += 1) ends.push(...rowEnds(command, from + 1, row, next));
-  return ends;
+function rowEnds(command: string, from: number, row: string): number[] {
+  const ends = new Set<number>();
+  const seen = new Set<string>();
+  const walk = (position: number, at: number): void => {
+    const state = `${position}:${at}`;
+    if (seen.has(state)) return;
+    seen.add(state);
+    if (at === row.length) { ends.add(position); return; }
+    if (command[position] === row[at]) walk(position + 1, at + 1);
+    else if (command[position] === "\t") for (let next = at; next < row.length && row[next] === " "; next += 1) walk(position + 1, next + 1);
+  };
+  walk(from, 0);
+  return [...ends];
 }
 
 /** Where the text goes on after a row break: right there (a word cut in two), or past the whitespace it broke at. */
@@ -106,8 +112,10 @@ export function withRecord(card: ParsedPrompt, request: RecordRequest | null, sc
   const unmarked = rows?.map((row) => record.wrapMark ? row.replace(record.wrapMark, "") : row);
   const own = (row: string | undefined, also: RegExp | undefined): boolean =>
     row === undefined || drawnRow(row) === "" || record.dialog?.test(row) === true || also?.test(drawnRow(row)) === true;
+  // a card that is the dialog itself (no dialog line) has its command right at its top, under the title `before` names
+  const opening = (start: number): boolean => record.dialog !== undefined || start <= (record.before === undefined ? 0 : 1);
   const drawn = request === null || !unmarked ? null
-    : commandRows(request.command, unmarked, (start, end) => own(unmarked[start - 1], record.before) && own(unmarked[end + 1], record.after),
+    : commandRows(request.command, unmarked, (start, end) => opening(start) && own(unmarked[start - 1], record.before) && own(unmarked[end + 1], record.after),
       record.dialog === undefined ? 0 : 1, record.lead);
   if (request === null || rows === null || drawn === null) return card;
   const body = keysBody(card, rows) ?? (card.body ?? "").split("\n");

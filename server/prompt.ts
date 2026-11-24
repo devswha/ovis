@@ -1609,8 +1609,6 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // keeps main's keys)
         if (parsedPrompt?.responder === "dsh-question" && !(await dshAsks(paneId, signal))) throw new DshNotAsking();
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
-        // a card showing its record's command goes to that request only: the record must still hold it open
-        if (parsedPrompt?.record !== undefined && (await recordRequest(paneId, keyAgent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
       };
       const verifyThenSend = async <T>(look: AbortSignal, guardUntil: number | null, readUntil: number,
         same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly: boolean | "editor" = false): Promise<T> => {
@@ -1635,6 +1633,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (readsLive && request.signal.aborted) throw new KeyRefused();
         if (!read || read.inputUnverified || (screenOnly === "editor" && (!screen || read.suppressFallback))
           || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
+        // a card showing its record's command goes to that request only: after the screen's last read, the record must
+        // still hold it open, so another request that opened meanwhile with the same command takes none of its keys
+        if (parsedPrompt?.record !== undefined && (await recordRequest(body.pane_id, agent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
