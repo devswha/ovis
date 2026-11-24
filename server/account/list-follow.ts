@@ -822,7 +822,12 @@ export class ListFollow implements ListAuthority {
     if (this.owed !== null && this.seconds() - this.owed.at >= OWED_SAID_SECONDS) return "This PC keeps a device out by a change of your account's list that it acted on and, for an hour now, has not been shown again or could not save. It goes on reading the list; if this stays, check this PC's disk.";
     const stands = standing(copy);
     if (stands === "stopped") return "A device of your account wrote something into its list that this Ovis is too old to read, so this PC lets no device of your account in. Update Ovis on this PC.";
+    const own = ownPcRow(copy);
+    // a PC with no key of its own in a list it read to its head: no read gives it one (it came to follow the list as its account moved, and lost its copy since)
+    if (stands === "waiting" && copy.state !== null && copy.read_at !== null && (own === null || own.key === null)) return "This PC follows your account's list, which holds no key of this PC's own, so it lets no device of your account in. Run `ovis add` on this PC and compare the number with a device of your account.";
     if (stands === "waiting") return "This PC is reading your account's list again from its start, and lets no device of your account in until that read shows this PC in the list.";
+    if (copy.pin.how === "migrated" && own !== null && own.key !== null && own.key !== copy.me.key) return "Your account's list holds another key for this PC, so it lets your account's devices in but cannot let a new one in. Remove this PC from your account and add it again, or run `ovis add` on this PC after its relay identity is reset.";
+    if (copy.pin.how === "migrated" && own?.key === copy.me.key && !this.keysTaken(copy)) return "Your account's list holds this PC's keys by an entry of a device that did not ask this PC for them, so it lets your account's devices in but cannot let a new one in. Run `ovis add` on this PC and compare the number with the device that added this PC to the list.";
     return null;
   }
 
@@ -1064,6 +1069,18 @@ export class ListFollow implements ListAuthority {
         if (!named.status.pinned) return { waiting: named.status.standing ?? "waiting" };
         // pinned to this list, maybe by another Ovis on this folder: it says it joined by the copy on disk, never by none
         if (this.copy === null) return await this.copyOnDisk(read.bound);
+        // A PC pinned with no key of its own in its list, or one that came to follow it as its account moved: it is added
+        // by the entry that adds its own key, signed by the adder a person at this PC confirmed (B7), and by no other
+        let held = this.copy;
+        if (by !== null && (held.pin.how === "migrated" || ownPcRow(held)?.key !== held.me.key)) {
+          // each ask reads once, as for a PC in no account
+          if (ownPcRow(held)?.key !== held.me.key) { await this.read(read.bound); held = this.copy ?? held; }
+          if (ownPcRow(held)?.key !== held.me.key) return { waiting: standing(held) };
+          if (addedBy(held) !== by) return { refused: "other_adder" };
+          if (held.pin.how === "migrated" && !this.keysTaken(held)) {
+            try { this.vouches.keepCardBy({ serverId: read.bound.serverId, bindId: read.bound.bindId }, held.list, by); } catch { return { refused: "unavailable" }; }
+          }
+        }
         // joined by this list, and the copy is still not on disk: offered to it again before the PC says so
         if (this.unsaved) this.unsaved = !this.persist(read.bound);
         return this.unsaved ? { waiting: "in" } : { joined: this.status() };
@@ -1353,10 +1370,65 @@ export class ListFollow implements ListAuthority {
     if (!this.pinned()) return "not_pinned";
     const copy = this.copy;
     if (copy === null || copy.state === null || this.problem !== null || this.held === null || this.held.key !== copy.me.key) return "unavailable";
-    return cannotAllow(copy);
+    return this.cannotSign(copy);
+  }
+
+  /**
+   * cannotAllow, and for a PC that came to follow its list as its account moved (`migrated`): its own key in that
+   * list is one it signs with only when the `pc` entry that holds it was signed by the device that asked it for its
+   * card, or by the adder whose number a person at this PC confirmed (B7: the adder of the act). Any other entry with
+   * its keys, and another key at its relay key, gives it nothing to sign with.
+   */
+  private cannotSign(copy: FollowerCopy): AllowRefusal | null {
+    const cannot = cannotAllow(copy);
+    if (cannot !== null || copy.pin.how !== "migrated") return cannot;
+    return this.keysTaken(copy) ? null : "not_signer";
+  }
+
+  /** Whether this migrated PC took the `pc` entry its list holds for its own key (cannotSign). */
+  private keysTaken(copy: FollowerCopy): boolean {
+    const scope = this.bound();
+    const own = ownPcRow(copy);
+    if (scope === null || own === null || own.key !== copy.me.key) return false;
+    const by = addedBy(copy);
+    return by !== null && by === this.vouches.cardBy({ serverId: scope.serverId, bindId: scope.bindId }, copy.list);
+  }
+
+  /**
+   * A device the list this PC is pinned to holds to drive with full power asks it, in its own session, for its card
+   * (POST /api/account/list/card): it signs the `pc` entry that gives this PC its own keys in the list, which a PC
+   * carried in as an endpoint has none of. The PC posts its keys and card at the account service (the second lock of
+   * that entry), keeps that this device asked, and takes the entry for itself only when that device signed it.
+   */
+  cardForMember(by: string): Promise<{ readonly card: { readonly key: string; readonly enc: string; readonly card: string; readonly endpoint: string; readonly list: string } } | { readonly refused: "not_pinned" | "not_member" | "has_keys" | "unavailable" }> {
+    return this.enqueue(async () => {
+      const scope = this.bound();
+      if (scope === null || !this.isPinned || scope.list === null) return { refused: "not_pinned" as const };
+      await this.ready;
+      const copy = this.copy;
+      if (copy === null || copy.state === null || this.problem !== null) return { refused: "unavailable" as const };
+      if (this.allowsJoins(by) !== true) return { refused: "not_member" as const };
+      if (ownPcRow(copy)?.key === copy.me.key && (copy.pin.how !== "migrated" || this.keysTaken(copy))) return { refused: "has_keys" as const };
+      const keys = await this.keysOf(scope);
+      if (keys === null || !this.live(scope) || keys.key !== copy.me.key) return { refused: "unavailable" as const };
+      try { this.vouches.keepCardBy({ serverId: scope.serverId, bindId: scope.bindId }, copy.list, by); } catch { return { refused: "unavailable" as const }; }
+      // posted now, whatever the last post was, with the very card the device is handed: it places the entry right after this answer
+      const card = await signCard({ key: keys.key, enc: keys.enc, list: copy.list, endpoint: scope.endpoint, invite: null }, keys.privateKey);
+      this.postedAt = null;
+      await this.post(copy, keys, scope, card);
+      if (this.postedUntil === null || !this.live(scope)) return { refused: "unavailable" as const };
+      return { card: { key: keys.key, enc: keys.enc, card, endpoint: scope.endpoint, list: copy.list } };
+    });
   }
 
   canAllow(): boolean { return this.allowRefusal() === null; }
+
+  /** Whether this PC is pinned to its list and holds no key of its own in it that it signs with: a person at it gives it one by `ovis add`. */
+  needsKeys(): boolean {
+    const copy = this.pinned() ? this.copy : null;
+    if (copy === null || copy.state === null) return false;
+    return ownPcRow(copy)?.key !== copy.me.key || (copy.pin.how === "migrated" && !this.keysTaken(copy));
+  }
 
   /**
    * The list a join's card is taken for (ACCOUNT_LIST_ALLOW), or null: this PC is pinned to it, is in it, its copy is
@@ -1457,7 +1529,7 @@ export class ListFollow implements ListAuthority {
         // in already: this PC's own entry that the log now shows, or one a member placed
         const place = placeOf(copy, device);
         if (place !== null) return { allowed: place };
-        const cannot = keys.key !== copy.me.key ? "unavailable" : cannotAllow(copy);
+        const cannot = keys.key !== copy.me.key ? "unavailable" : this.cannotSign(copy);
         if (cannot !== null) return no(cannot);
         if (kept === "unread") return no("not_written", "kept_unreadable");
         // the copy does not reach the head this PC signed on (a restart on an older copy, a service that shows less):
@@ -1490,7 +1562,7 @@ export class ListFollow implements ListAuthority {
         const stopped = (): AllowOutcome | null => {
           const now = this.copy;
           if (!this.live(scope) || !this.isPinned || now === null || now.state === null) return no("unavailable");
-          const cannot = keys.key !== now.me.key ? "unavailable" : cannotAllow(now);
+          const cannot = keys.key !== now.me.key ? "unavailable" : this.cannotSign(now);
           if (cannot !== null) return no(cannot);
           if (this.deps.mayAdmit?.(device.key) === false) return no("held_here");
           return this.deps.mayAdmit?.(sent.key) === false ? no("not_written", "place_kept") : null;
@@ -2089,11 +2161,11 @@ export class ListFollow implements ListAuthority {
   }
 
   /** The second lock for a `pc` entry: this PC's keys and its card for this list, at the account service, for ten minutes. */
-  private async post(copy: FollowerCopy, keys: PcListKeys, scope: Scope): Promise<void> {
+  private async post(copy: FollowerCopy, keys: PcListKeys, scope: Scope, signed?: string): Promise<void> {
     const now = this.deps.now();
     if (this.postedAt !== null && now - this.postedAt >= 0 && now - this.postedAt < LIST_POST_RENEW_MS) return;
     try {
-      const card = await signCard({ key: keys.key, enc: keys.enc, list: copy.list, endpoint: scope.endpoint, invite: null }, keys.privateKey);
+      const card = signed ?? await signCard({ key: keys.key, enc: keys.enc, list: copy.list, endpoint: scope.endpoint, invite: null }, keys.privateKey);
       // nothing is posted for an account the PC has left meanwhile, or once it stopped
       const still = this.sync();
       if (this.stopped || still === null || still.serverId !== scope.serverId || still.bindId !== scope.bindId) return;
@@ -2276,6 +2348,13 @@ function placeOf(copy: FollowerCopy, device: AllowedDevice): { id: string; seq: 
   const text = row === undefined ? undefined : copy.entries[row.seq];
   if (row === undefined || text === undefined || row.as !== "device" || row.ended !== null || state.devices[device.key]?.enc !== device.enc) return null;
   return { id: copy.list, seq: row.seq, hash: entryHash(entryFromText(text).body) };
+}
+
+/** The list's row of the PC this copy is of, at its own relay key, while it is in: `key` is null for a PC carried in as an endpoint with no key. */
+function ownPcRow(copy: FollowerCopy): { readonly key: string | null } | null {
+  const { state, me } = copy;
+  const row = state === null || me.endpoint === null || !Object.hasOwn(state.pcs, me.endpoint) ? undefined : state.pcs[me.endpoint];
+  return row === undefined || row.removed !== null ? null : { key: row.key };
 }
 
 /** The key that signed the entry which put the PC this copy is of into the list: the member that added it, or the invite it joined with; null when it is not in. */

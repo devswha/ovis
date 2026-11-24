@@ -238,7 +238,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
       // as one press: the account named for this PC, a PC in no account, and never one that account's list removed
       if (context.services.relay.savedRelayAccount() !== account) return fail("account_mismatch", "This PC was set up for another account. Sign in to that one, or add this PC again.", 409);
-      if (devices.account() !== null) return fail("in_account", "This PC is already in an account", 409);
+      // in an account already: only a PC that follows that account's list with no key of its own in it is added so, for its keys
+      if (devices.account() !== null && !(devices.account() === account && context.services.accountList?.needsKeys() === true)) return fail("in_account", "This PC is already in an account", 409);
       if (devices.listRemovedFrom(account)) return fail("list_removed", LIST_REMOVED_FROM, 409);
       try { return reply(noted(await add.start(account))); }
       catch (error) {
@@ -391,6 +392,24 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (devices.account() === null) return fail("not_in_account", "This PC is in no account", 409);
       const outcome = await list.nameList({ session: peer.key, naming: naming as SignedNaming, vouches: vouches as SignedVouch[] });
       return reply(outcome);
+    }
+    case "/api/account/list/card": {
+      setRequestRoute(pathname);
+      // A device the list this PC is pinned to holds to drive with full power asks, in its own session, for this PC's
+      // card: it signs the `pc` entry that gives this PC its keys (docs/account-list.md, "An account that was in use")
+      const list = context.services.accountList;
+      if (list === null) return fail("not_found", "This PC follows no list", 404);
+      if (peer.kind !== "relay" || peer.key === "") return fail("session_required", "Ask for this PC's card from the device's own session", 403);
+      const asked = await list.cardForMember(peer.key);
+      if ("card" in asked) return reply(asked.card);
+      const refusals = {
+        not_pinned: ["This PC follows no list.", 409],
+        not_member: ["Only a device that can add devices to your account's list may add this PC to it.", 403],
+        has_keys: ["Your account's list holds this PC's keys already.", 409],
+        unavailable: ["This PC's list, its keys or the account service cannot be used now; try again.", 503],
+      } as const;
+      const [message, status] = refusals[asked.refused];
+      return fail(asked.refused === "not_member" ? "list_cannot_allow" : asked.refused === "has_keys" ? "list_holds_pc" : asked.refused, message, status);
     }
     case "/api/account/list/named": {
       setRequestRoute(pathname);

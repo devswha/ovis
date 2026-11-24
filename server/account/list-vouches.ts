@@ -6,6 +6,9 @@
  * holds the vouches of both. After the pin they keep a device the PC put out by its old sign-in key out by its member
  * key too (heldOut).
  *
+ * Beside them, for a PC that came to follow its list that way and holds no key of its own in it: the device that last
+ * asked it for its card (POST /api/account/list/card), whose `pc` entry alone gives it the keys it signs with.
+ *
  * `account-list-vouches.json` (0600), for one relay identity and one binding; another's is no vouch here, and the next
  * write replaces it. Every write is lock, read, reconcile, write, as the binding's own file (pc-binding.ts): another
  * Ovis on the same folder loses nothing it kept.
@@ -23,7 +26,11 @@ export const VOUCHES_PER_LIST_MAX = 64;
 
 export interface HeldVouch { readonly key: string; readonly device: string }
 interface Scope { readonly serverId: string; readonly bindId: string }
-interface VouchDoc { readonly v: 1; readonly server_id: string; readonly bind_id: string; readonly lists: Readonly<Record<string, readonly HeldVouch[]>> }
+interface VouchDoc {
+  readonly v: 1; readonly server_id: string; readonly bind_id: string; readonly lists: Readonly<Record<string, readonly HeldVouch[]>>;
+  /** The member key that last asked this PC for its card for `list`. */
+  readonly card_by?: { readonly list: string; readonly by: string };
+}
 
 const LIST = /^[0-9a-f]{64}$/;
 
@@ -31,8 +38,9 @@ function parse(text: string): VouchDoc | null {
   let value: unknown;
   try { value = JSON.parse(text); } catch { return null; }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const { v, server_id, bind_id, lists } = value as Record<string, unknown>;
+  const { v, server_id, bind_id, lists, card_by } = value as Record<string, unknown>;
   if (v !== 1 || typeof server_id !== "string" || typeof bind_id !== "string" || typeof lists !== "object" || lists === null || Array.isArray(lists)) return null;
+  if (card_by !== undefined && (typeof card_by !== "object" || card_by === null || !LIST.test((card_by as { list?: unknown }).list as string) || typeof (card_by as { by?: unknown }).by !== "string")) return null;
   for (const [list, held] of Object.entries(lists)) {
     if (!LIST.test(list) || !Array.isArray(held)) return null;
     for (const one of held as unknown[]) {
@@ -55,6 +63,18 @@ export class ListVouches {
     if (!this.read) { this.held = this.onDisk(); this.read = true; }
     const doc = this.held;
     return doc === null || !mine(doc, scope) ? [] : doc.lists[list] ?? [];
+  }
+
+  /** The member key that last asked this PC for its card for `list`, or null. */
+  cardBy(scope: Scope, list: string): string | null {
+    if (!this.read) { this.held = this.onDisk(); this.read = true; }
+    const doc = this.held;
+    return doc !== null && mine(doc, scope) && doc.card_by?.list === list ? doc.card_by.by : null;
+  }
+
+  /** Keeps that the member key `by` asked this PC for its card for `list`, in the place of whoever asked before. Throws when the file cannot be written. */
+  keepCardBy(scope: Scope, list: string, by: string): void {
+    this.write(scope, (lists) => lists, { list, by });
   }
 
   /** Keeps `vouches` for `list` beside what is kept. `full`: the binding keeps vouches for as many lists as it may, and none of them is `list`. Throws when the file cannot be written. */
@@ -83,12 +103,14 @@ export class ListVouches {
     try { rmSync(this.path, { force: true }); } catch (error) { console.error(`[account] ${ACCOUNT_LIST_VOUCHES_FILE} could not be removed: ${(error as NodeJS.ErrnoException).code ?? "unknown error"}`); }
   }
 
-  private write(scope: Scope, change: (lists: VouchDoc["lists"]) => VouchDoc["lists"] | null): boolean {
+  private write(scope: Scope, change: (lists: VouchDoc["lists"]) => VouchDoc["lists"] | null, card?: VouchDoc["card_by"]): boolean {
     return withFileLock(this.path, () => {
       const disk = this.onDisk();
-      const lists = change(disk !== null && mine(disk, scope) ? disk.lists : {});
+      const held = disk !== null && mine(disk, scope) ? disk : null;
+      const lists = change(held?.lists ?? {});
       if (lists === null) { this.held = disk; this.read = true; return false; }
-      const doc: VouchDoc = { v: 1, server_id: scope.serverId, bind_id: scope.bindId, lists };
+      const by = card ?? held?.card_by;
+      const doc: VouchDoc = { v: 1, server_id: scope.serverId, bind_id: scope.bindId, lists, ...(by === undefined ? {} : { card_by: by }) };
       writePrivateState(this.path, doc);
       this.held = doc;
       this.read = true;

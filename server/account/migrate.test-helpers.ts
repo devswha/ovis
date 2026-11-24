@@ -5,11 +5,12 @@
  * entry 0 and the rest is served after it (tamperList `inject`), as the service would serve a whole birth.
  */
 import { epochKeyCommitment, generateStoredEncryptionKey, newEpochKey, nextEpoch, readStoredEncryptionKey, sealFields, type EpochKey } from "../../shared/account-list-seal.ts";
-import { namesFields, signCard, signListEntry, type ListKind, type ListSigner, type ListState } from "../../shared/account-list.ts";
+import { cardBinding, namesFields, signCard, signListEntry, type ListKind, type ListSigner, type ListState } from "../../shared/account-list.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import { signMigration, signNaming, signRotation, signVouch, type MigratingDevice, type MigrationPlan, type MigrationSeals, type SignedNaming, type SignedVouch } from "../../shared/account-list-migrate.ts";
 import { accountDeviceId, exportAccountKey } from "../../shared/account-records.ts";
 import type { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 
 const SERVICE = "https://account.test";
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
@@ -140,6 +141,35 @@ export class MigratedList {
   /** A card some other key signs for this PC's relay key: what a member that did nothing for that PC must not sign into a `pc` entry. */
   card(given: { key: string; enc: string; endpoint: string }, privateKey: CryptoKey): Promise<string> {
     return signCard({ ...given, list: this.id, endpoint: given.endpoint, invite: null }, privateKey);
+  }
+
+  /**
+   * The adder's side of the number it compares with a PC that posted its keys (B7; the account service only carries
+   * it): `commit` opens the attempt, `reveal` takes the PC's nonce and answers the six digits the adder's screen shows,
+   * null while the PC has not answered.
+   */
+  async compare(endpoint: string, adder: ListSigner): Promise<{ readonly commit: () => Promise<void>; readonly reveal: () => Promise<string | null> }> {
+    const token = this.service.issueToken(this.account, { twoStep: true });
+    const answer = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/posts`, { headers: { authorization: `Bearer ${token}` } }));
+    const post = (await answer.json() as { posts: { endpoint: string; key: string; enc: string }[] }).posts.find((candidate) => candidate.endpoint === endpoint);
+    if (!post) throw new Error("The PC posted no keys");
+    const binding = cardBinding({ key: post.key, enc: post.enc, list: this.id, endpoint, invite: null });
+    const nonce = randomPairNonce();
+    const commitment = toBase64Url(pairCommitment(binding, adder.key, nonce));
+    const send = async (reveal?: string): Promise<{ nonce: string | null } | null> => {
+      const sent = await this.service.fetch(new Request(`${SERVICE}/v2/lists/${this.id}/posts/${endpoint}/attempt`, { method: "POST", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ key: post.key, adder: adder.key, commitment, ...(reveal === undefined ? {} : { reveal }) }) }));
+      if (sent.status === 409) return null;
+      if (!sent.ok) throw new Error(`The attempt was not taken: ${sent.status} ${await sent.text()}`);
+      return (await sent.json() as { attempt: { nonce: string | null } }).attempt;
+    };
+    return {
+      commit: async () => { if (await send() === null) throw new Error("The attempt was not opened"); },
+      reveal: async () => {
+        const open = await send(toBase64Url(nonce));
+        return open === null || open.nonce === null ? null : pairDigits(binding, adder.key, nonce, fromBase64Url(open.nonce));
+      },
+    };
   }
 
   /** The account service shows every entry: entry 0 is placed, the rest is served after it. */

@@ -4,7 +4,7 @@
  * with the rows of that list once it follows it.
  */
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { accountDeviceId } from "../../shared/account-records.ts";
@@ -48,7 +48,7 @@ async function accountInUse() {
   service.opensAll = true;
   service.listAccounts = "*";
   const accountService = { url: "https://account.test", fetch: service.fetch };
-  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService });
+  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 });
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
   const { services } = fixture.app.context;
@@ -302,6 +302,133 @@ describe("a PC that follows no list, and a device of its account names one in it
     const local = await fetch(`${base}/api/account/list/name`, { method: "POST", headers: { origin: base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ naming }) });
     expect(local.status).toBe(403);
     expect(pc.list.status().pinned).toBe(false);
+  });
+});
+
+/** The PC once the phone moved the account onto its list, carrying the tablet in and this PC as an endpoint with no key, and named it here. */
+async function followsByMove() {
+  const pc = await accountInUse();
+  const born = await MigratedList.born(pc.service, ACCOUNT, pc.phone, birthPlan([pc.tablet], [pc.endpoint]), pc.time.seconds);
+  await pc.pull();
+  expect(await names(await sessionOf(pc, pc.phone), { naming: await born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) })).toEqual({ pinned: true, list: born.id });
+  await pc.settle();
+  expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in" });
+  pc.time.advance(JOIN_HOLD_MS + 1_000);
+  /** A member hands this PC entries over its own session, as it does after it placed them. */
+  const hand = async (link: Awaited<ReturnType<typeof relayConnection>>, texts: readonly string[]) => {
+    const after = born.head.seq - texts.length;
+    born.serve();
+    return await ask(link, "/api/account/list/page", { method: "POST", body: { list: born.id, after, entries: texts, head: born.head } });
+  };
+  const own = { headers: { origin: `http://127.0.0.1:${pc.fixture.app.port}`, "x-herdr-machine": "1", "content-type": "application/json" } };
+  /** This PC's own window. */
+  const local = async (path: string, body?: unknown) => {
+    const answer = await fetch(`http://127.0.0.1:${pc.fixture.app.port}${path}`, body === undefined ? { headers: own.headers } : { method: "POST", ...own, body: JSON.stringify(body) });
+    return { status: answer.status, body: await answer.json() as Record<string, unknown> };
+  };
+  return { ...pc, born, hand, local };
+}
+
+type Card = { key: string; enc: string; card: string; endpoint: string; list: string };
+
+describe("keys for a PC the list carried in as an endpoint", () => {
+  test("a device that may add devices asks for the PC's card in its session, signs its pc entry and hands it over: the PC signs with its keys from then on", async () => {
+    const pc = await followsByMove();
+    // it follows the list and lets its devices in, and lets nobody in itself
+    expect(pc.list.allowRefusal()).toBe("not_signer");
+    const phone = await sessionOf(pc, pc.phone, "member");
+    const asked = await ask(phone, "/api/account/list/card", { method: "POST", body: {} });
+    expect(asked.status).toBe(200);
+    const card = asked.body as Card;
+    expect([card.endpoint, card.list]).toEqual([pc.endpoint, pc.born.id]);
+    // its keys are posted at the account service, the second lock of the entry that adds them
+    expect(pc.service.accountList(ACCOUNT)!.posts.find((post) => post.endpoint === pc.endpoint)).toMatchObject({ key: card.key, enc: card.enc, card: card.card });
+    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.phone.member, false);
+    const handed = await pc.hand(phone, [entry]);
+    expect([handed.status, (handed.body as { verdict: string }).verdict]).toEqual([200, "caught_up"]);
+    expect(pc.list.allowRefusal()).toBeNull();
+    expect(pc.list.status().reason).toBeNull();
+    // once it holds its keys, nobody asks for its card again
+    expect((await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).status).toBe(409);
+  });
+
+  test("a pc entry with its keys that another device signed is no key it signs with, and one with another key at its relay key: it says so", async () => {
+    const pc = await followsByMove();
+    const phone = await sessionOf(pc, pc.phone, "member");
+    const card = (await ask(phone, "/api/account/list/card", { method: "POST", body: {} })).body as Card;
+    // the tablet, which did nothing for this PC, signs the entry the phone asked for
+    const tablet = await sessionOf(pc, pc.tablet);
+    const entry = await pc.born.append({ kind: "pc", key: card.key, endpoint: card.endpoint, enc: card.enc, card: card.card, sealed: null }, pc.tablet.signIn, false);
+    expect((await pc.hand(tablet, [entry])).status).toBe(200);
+    expect(pc.list.status().pcs).toBe(1);
+    expect(pc.list.allowRefusal()).toBe("not_signer");
+    expect(pc.list.status().reason).toContain("ovis add");
+    // its devices are let in all the same
+    expect(await pc.signsIn(pc.phone, "member")).toBe("drive");
+  });
+
+  test("the list holds another key at this PC's relay key: the PC follows its list, signs nothing, and says so", async () => {
+    const pc = await followsByMove();
+    const other = await migratingDevice("Other");
+    const card = await pc.born.card({ key: other.member.key, enc: other.enc, endpoint: pc.endpoint }, other.memberPair.privateKey);
+    const phone = await sessionOf(pc, pc.phone, "member");
+    const entry = await pc.born.append({ kind: "pc", key: other.member.key, endpoint: pc.endpoint, enc: other.enc, card, sealed: null }, pc.phone.member, false);
+    expect((await pc.hand(phone, [entry])).status).toBe(200);
+    expect(pc.list.allowRefusal()).toBe("not_signer");
+    expect(pc.list.status().reason).toContain("another key");
+    expect(await pc.signsIn(pc.tablet)).toBe("drive");
+  });
+
+  test("who may ask for the card: a device the list holds with full power, to drive, over its own session", async () => {
+    const pc = await followsByMove();
+    const bound = await migratingDevice("Watch");
+    const boundCard = await pc.born.card({ key: bound.member.key, enc: bound.enc, endpoint: null as unknown as string }, bound.memberPair.privateKey);
+    await pc.born.append({ kind: "device", key: bound.member.key, power: "bound", role: "drive", until: null, enc: bound.enc, card: boundCard, sealed: null, rotates: false }, pc.phone.member);
+    await pc.pull();
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    const asking = await sessionOf(pc, bound, "member");
+    const refused = await ask(asking, "/api/account/list/card", { method: "POST", body: {} });
+    expect([refused.status, (refused.body as { error: { code: string } }).error.code]).toEqual([403, "list_cannot_allow"]);
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.member);
+    expect((await ask(member, "/api/account/list/card", { method: "POST", body: {} })).status).toBe(403);
+    expect((await pc.local("/api/account/list/card", {})).status).toBe(403);
+    // a PC that follows no list has no card to give for one
+    const unpinned = await accountInUse();
+    expect((await ask(await sessionOf(unpinned, unpinned.phone), "/api/account/list/card", { method: "POST", body: {} })).status).toBe(409);
+  });
+
+  test("with nobody's evidence, the number at the PC gives it its keys: ovis add on a PC that follows its list with no key of its own", async () => {
+    const pc = await followsByMove();
+    expect(pc.services.relay.setRelayAccount(ACCOUNT)).toBe(true);
+    const started = await pc.local("/api/account/list/add", { account: ACCOUNT });
+    expect(started).toMatchObject({ status: 200, body: { state: "waiting", list: pc.born.id } });
+    const number = await pc.born.compare(pc.endpoint, pc.phone.member);
+    await number.commit();
+    expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "waiting" });
+    const digits = await number.reveal();
+    expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "number", digits });
+    expect((await pc.local("/api/account/list/add/confirm", { digits })).body).toMatchObject({ state: "confirmed" });
+    // the phone whose number the person confirmed signs the entry; until it is there the PC waits
+    const post = pc.service.accountList(ACCOUNT)!.posts.find((one) => one.endpoint === pc.endpoint)!;
+    await pc.born.append({ kind: "pc", key: post.key, endpoint: pc.endpoint, enc: post.enc, card: post.card, sealed: null }, pc.phone.member);
+    expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "added", list: pc.born.id });
+    expect(pc.list.allowRefusal()).toBeNull();
+  });
+
+  test("a PC that follows its list with no key of its own and lost its copy lets nobody in, and says to run ovis add", async () => {
+    const pc = await followsByMove();
+    pc.fixture.app.stop();
+    rmSync(join(pc.fixture.stateDir, ACCOUNT_LIST_FILE));
+    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: pc.service.fetch } });
+    closes.push(() => again.app.stop());
+    const { accountList, accountMailbox } = again.app.context.services;
+    await accountMailbox.pull();
+    await accountList!.settled();
+    accountList!.tick();
+    await accountList!.settled();
+    expect(accountList!.status()).toMatchObject({ pinned: true, standing: "waiting" });
+    expect(accountList!.summary()?.reason).toContain("ovis add");
   });
 });
 
