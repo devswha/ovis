@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ACCOUNT_OS_NAMES, accountLabel, placeName, type AccountAsker } from "../../shared/account-asker.ts";
 import { addPostedPc, numberWith, postedPcs, type AddNumber, type AddPcOutcome, type NumberRefusal } from "../lib/account/listAdd.ts";
 import { listNames } from "../lib/account/listGenesis.ts";
+import { addInvitedPc, invitedPcs, type InvitedPc } from "../lib/account/listInvited.ts";
 import { pageListReading } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
@@ -184,6 +185,20 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // On an account with a signed list, for a PC that posted its keys for it: the number both screens show, worked out
   // with the PC (listAdd.ts). The person confirms it at the PC first; the Add beside it then signs the PC into the list.
   const [number, setNumber] = useState<AddNumber | null>(null);
+  // The PC joined with an invite of this account, by this device's own check of the line's signature over the PC's
+  // card (listInvited.ts): its Add needs no number. null: it did not, or that is not known.
+  const [invited, setInvited] = useState<InvitedPc | null>(null);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const list = pageListReading(session.account) === "in" ? pageAccountList() : null;
+      const writer = list?.writer() ?? null;
+      if (list === null || writer === null) return;
+      const found = (await invitedPcs(list, await writer.service.listPosts(writer.list), now())).find((each) => each.server_id === pc.server_id) ?? null;
+      if (live) setInvited(found);
+    })().catch((error: unknown) => { console.warn("Ovis: the PCs that joined with an invite could not be read", error instanceof Error ? error.name : error); });
+    return () => { live = false; };
+  }, [session.account, pc.server_id, now]);
   const numberEnd = useRef<AbortController | null>(null);
   useEffect(() => () => numberEnd.current?.abort(new DOMException("The card closed", "AbortError")), []);
   useEffect(() => {
@@ -225,6 +240,21 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     if (!youngAt(now())) { setYoung(false); return; }
     // the account has a list and this device is in it: a PC that posted for the list is added by the number
     const list = pageListReading(session.account) === "in" ? pageAccountList() : null;
+    // A PC that joined with an invite of this account: the line's own signature says that it is this PC, so the one
+    // press admits it, signs its entry and ends the invite. It is checked again at the press.
+    const stillInvited = list === null || invited === null || list.writer() === null ? undefined
+      : (await invitedPcs(list, await list.writer()!.service.listPosts(invited.list), now())).find((each) => each.endpoint === invited.endpoint && each.invite === invited.invite);
+    if (list !== null && stillInvited !== undefined) {
+      const outcome = await addInvitedPc(list, stillInvited, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
+        expect: { account: session.account, list: stillInvited.list },
+        admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
+      });
+      if (!outcome.added) throw new AddRefused(outcome);
+      void noteAct(session.account, stillInvited.endpoint, "added").catch(() => undefined);
+      window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
+      onRemoved();
+      return;
+    }
     const post = list === null ? undefined : (await postedPcs(list)).find((each) => each.server_id === pc.server_id);
     if (list !== null && post !== undefined) {
       numberEnd.current?.abort(new DOMException("Another number was asked for", "AbortError"));
@@ -263,7 +293,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     const at = admitted.admitted_at ?? (await directory.listPcs().catch(() => [])).find((each) => each.server_id === pc.server_id)?.admitted_at ?? null;
     const { unconfirmed: _unconfirmed, asking: _asking, asking_until: _until, ...listed } = pc;
     onConfirmed({ ...listed, new_until: admitted.new_until, admitted_at: at });
-  }, (error) => error instanceof NumberError ? { text: numberRefusal(t, error.why), signInAgain: false } : refusal(t, error));
+  }, (error) => error instanceof NumberError ? { text: numberRefusal(t, error.why), signInAgain: false } : error instanceof AddRefused ? addRefusal(t, error.outcome) : refusal(t, error));
   /** Add, beside the number: the account admits the PC, and this device signs it into the list with the card the number came from. */
   const addByNumber = (shown: AddNumber): Promise<void> => act(async () => {
     const list = pageAccountList();
@@ -297,7 +327,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     <div className="update-notice is-paired device-notice" role="status" data-unconfirmed-pc={pc.server_id} {...(asking ? { "data-asking": young ? "open" : "ran-out" } : {})}>
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
-        {young && <span>{t("Add this PC to your account?")}</span>}
+        {young && <span>{invited === null ? t("Add this PC to your account?") : t("Add this PC to your account? (joined with your invite)")}</span>}
         {number !== null && young && (
           <>
             <span>{t("Check that the PC shows this number and confirm it there, then Add")}</span>

@@ -8,6 +8,10 @@ import { isNewAccountPc, type MyPc } from "../lib/account/myPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
 import { accountList } from "../lib/account/accountList.ts";
 import { askingPc, pcComparing, postPcKeys } from "../lib/account/accountList.test-helpers.ts";
+import { listView } from "../../shared/account-list.ts";
+import { readJoinLine } from "../../shared/account-list-join.ts";
+import { makeInvite } from "../lib/account/listInvite.ts";
+import { lineChallenge } from "../lib/account/listInvited.ts";
 import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
 import { setPageAccountList } from "../lib/account/pageList.ts";
 import { AccountService } from "../lib/account/service.ts";
@@ -604,8 +608,11 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
 
 describe("a PC that asks to be added to an account with a signed list", () => {
   /** This device is in its account's list, and a PC listed itself with a device code and posted its keys and its card for that list. */
+  /** what the account service carries with a PC's post, for a PC that joined with an invite: the invite's key and the line's own signature */
+  let carried: { invite: string; invite_proof: string } | null = null;
   async function listAccount() {
     fake.listAccounts = "*";
+    carried = null;
     await signIn();
     await registerKey();
     const pc = await askingPc();
@@ -615,6 +622,10 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       const request = new Request(input, init);
       const answer = await fake.fetch(request.clone());
       if (request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt")) await play?.answer();
+      if (carried !== null && request.method === "GET" && new URL(request.url).pathname.endsWith("/posts") && answer.ok) {
+        const body = await answer.json() as { posts: Record<string, unknown>[] };
+        return Response.json({ ...body, posts: body.posts.map((post) => post.endpoint === pc.endpoint ? { ...post, ...carried } : post) });
+      }
       return answer;
     } });
     const list = accountList({ service, accountStore: store, listStore: memoryListStore(), lock: memoryListLock(), now: () => now, genesis: () => "always", durable: async () => true, names: () => ({ label: "Phone", os: "ios" }) });
@@ -659,6 +670,44 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
       expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
       expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds a PC that joined with this account's invite at one press, with no number, where the line itself signed for it, and ends the invite", async () => {
+    const { pc, list, held, pcAdmits } = await listAccount();
+    try {
+      const made = await makeInvite(list, { auto: false });
+      if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+      const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+      carried = { invite: made.invite.key, invite_proof: await line.signRedeem({ server_id: pc.server_id, public_key: pc.endpoint, challenge_id: lineChallenge(held().id, pc) }) };
+      await mount();
+      // the card says where the PC comes from, by the device's own check of the line's signature
+      expect(text()).toContain("joined with your invite");
+      const before = held().entries.length;
+      await press("Add");
+      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([pcAdmits(), held().entries.length - before]).toEqual([1, 2]);
+      expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+      expect(listView(held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
+      // the line's own signature is evidence the account service could not make: the device's record of its PCs says it added this one
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
+    } finally { setPageAccountList(null); }
+  });
+
+  it("asks for the number, as for any PC that asks, where the invite's proof is another PC's", async () => {
+    const { list, held } = await listAccount();
+    try {
+      const made = await makeInvite(list, { auto: false });
+      if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+      const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+      const other = await askingPc();
+      carried = { invite: made.invite.key, invite_proof: await line.signRedeem({ server_id: other.server_id, public_key: other.endpoint, challenge_id: lineChallenge(held().id, other) }) };
+      await mount();
+      expect(text()).not.toContain("joined with your invite");
+      await press("Add");
+      expect(text()).toContain("Check that the PC shows this number and confirm it there, then Add");
+      expect(list.view().pcs).toEqual([]);
     } finally { setPageAccountList(null); }
   });
 

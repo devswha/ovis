@@ -294,6 +294,7 @@ const BASE: Record<string, string> = {
   "I didn't add this": "自分で追加していません",
   "The PC could not be removed. Try again.": "PCを削除できませんでした。もう一度お試しください。",
   "Add this PC to your account?": "この PC をアカウントに追加しますか？",
+  "Add this PC to your account? (joined with your invite)": "この PC をアカウントに追加しますか？（あなたの招待で参加）",
   "Name the PC gave itself: \"{name}\"": "この PC の名前: \"{name}\"",
   "A PC was added to your account with a sign-in code at {time}.": "{time} にサインインコードで PC がアカウントに追加されました。",
   "Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.": "その PC の追加を自分で始めて、その PC に表示されたコードを入力した場合だけ追加してください。ほかの人からコードを渡された場合や、自分で始めていない場合は「いいえ」を押してください。",

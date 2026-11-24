@@ -1445,8 +1445,20 @@ key and ends the service's invite; for an invite a PC joins with by itself the s
 the next epoch, since the holder of the line held the epoch's key. An invite past its `exp` by the
 device's clock is never shown as open.
 
-Not built here: the card that adds a PC which joined with an invite that waits for **Add**
-(**Add {name}? (joined with your invite)**). Until it exists the screen is not shown.
+**The PC that joined with an invite that waits for Add** shows on the card of a PC that asks, as
+**Add this PC to your account? (joined with your invite)**, and its **Add** needs no number
+([`listInvited.ts`](../src/lib/account/listInvited.ts)). The account service says which PC used an
+invite, and that is only its word. So the device goes by what the service cannot make: the PC's
+post carries the invite's public key and the line's own signature (`invite`, `invite_proof`), a
+redeem message for this account, the PC's id and its relay key, over a challenge made from the
+list's id and the PC's card (32 hex digits of SHA-256 over `ovis-list-join/1`, the list id and the
+card's binding). The device offers the one-press Add only where that signature holds, the card
+holds for this list and that relay key, and its own copy of the list holds the invite as open,
+placed by a member, waiting for Add. Add has the account admit the PC, signs its `pc` entry and
+ends the invite's key in the same request. Any other post is a PC that asks, and gets the number.
+
+The account service and the PC do not carry `invite` and `invite_proof` with a post yet: until
+they do, a PC that joined with such an invite is added with the number.
 
 ### What a pinned PC asks of the app
 
