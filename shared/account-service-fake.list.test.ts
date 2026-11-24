@@ -1653,6 +1653,11 @@ describe("the fake account service's list routes (Part D)", () => {
       const shown = (await w.call("GET", "/v1/pc-invites", undefined, w.token)).body as unknown as { invites: { used_at: string | null }[] };
       expect(shown.invites.map((invite) => invite.used_at !== null)).toEqual([true]);
       expect(refusal(await redeemCall(w, machine(), pool))).toBe("400 invite_invalid");
+      // an invite placed and put out in one batch leaves no open invite at the service
+      const brief = await newKey();
+      const both = await chain(list, out.head, [[w.owner, inviteOf(brief, w.seconds() + 600, true, 1, null)], [w.owner, removeOf(brief)]], w.seconds());
+      expect((await w.place(list, both.texts)).status).toBe(200);
+      expect(refusal(await redeemCall(w, machine(), brief))).toBe("400 invite_invalid");
     });
 
     test("an account that has a list hands out no one-press admission: the PC's take is refused, a retry of one taken before the list too", async () => {
@@ -1768,6 +1773,9 @@ describe("the fake account service's list routes (Part D)", () => {
       const typed = await newKey();
       w.service.registerSessionKey(w.service.issueToken(ACCOUNT, { device: true }), typed.key, "typed");
       expect(at(await send(await birthOf(w, first, next, [carriedKey(phone), carriedKey(late)])))).toEqual(["403 not_carried", 2, null]);
+      // the service's word on the carried keys comes after the whole run is judged: a run cut short is birth_shape first
+      const cut = await chain(list, zero.head, [[first, carriedKey(late)], [first, carriedKey(phone)]], w.seconds());
+      expect(at(await send({ entry: zero.text, entries: cut.texts }))).toEqual(["400 entry_refused", 3, "birth_shape"]);
       expect(at(await send(await birthOf(w, first, next, [carriedKey(typed)])))).toEqual(["403 not_carried", 1, null]);
       expect(at(await send(await birthOf(w, first, next, [carriedPc(machine())])))).toEqual(["403 not_carried", 1, null]);
       const typedPc = machine();
@@ -1855,7 +1863,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await w.call("GET", "/v2/lists/mine", undefined, phoneTok))).toBe("401 unauthorized");
     });
 
-    test("a carried key that the table links to another sign-in's key stands for that one, not for its own", async () => {
+    test("a carried key that the table links to another sign-in's key stands for that one, not for its own; its removal signs both out", async () => {
       const w = await world();
       w.service.listMigrateAccounts = ACCOUNT;
       const first = await newKey();
@@ -1869,11 +1877,12 @@ describe("the fake account service's list routes (Part D)", () => {
       const elsewhere = await newKey();
       const elsewhereTok = signedIn(w, elsewhere);
       expect((await w.call("POST", `/v2/lists/${born.list}/links`, { key: phone.key, link: await linkOf(born.list, phone, elsewhere) }, elsewhereTok)).status).toBe(200);
-      // the phone's own sign-in stores no wraps for it now, and the key's removal signs out the linked sign-in only
+      // the phone's own sign-in stores no wraps for it now; the key's removal retires the linked sign-in, and the registered
+      // key that is the key itself, as the service does
       expect(refusal(await w.call("PUT", `/v2/lists/${born.list}/wraps`, { wraps: [{ epoch: 1, member: next.enc, wrap: WRAP(3) }] }, phoneTok))).toBe("403 not_linked");
       const out = await chain(born.list, born.head, [[next, removeOf(phone)]], w.seconds());
       expect((await w.place(born.list, out.texts, undefined, firstTok)).status).toBe(200);
-      expect([refusal(await w.call("GET", "/v2/lists/mine", undefined, elsewhereTok)), (await w.call("GET", "/v2/lists/mine", undefined, phoneTok)).status]).toEqual(["401 unauthorized", 200]);
+      expect([refusal(await w.call("GET", "/v2/lists/mine", undefined, elsewhereTok)), refusal(await w.call("GET", "/v2/lists/mine", undefined, phoneTok))]).toEqual(["401 unauthorized", "401 unauthorized"]);
     });
 
     test("a carried key stands up the snapshot's chain for a device it let in, as a link would", async () => {

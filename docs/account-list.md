@@ -1766,8 +1766,10 @@ every route in use.
   marks that key removed; one that ends an invite revokes its unused service invite. A registered
   key that is itself entry 0's or a carried member key is its own link until it hands over (a link
   the table holds for either key comes first): it stands up the snapshot's chain, its sign-in may
-  store wraps, and its removal signs it out. A registered key that is itself a key of the list that
-  is in is taken wherever a link is (`link_taken` on `POST links`; a claim's or a hand-over's link
+  store wraps, and a removal of it signs that sign-in out (any registered key that is the ended key
+  is, unless that sign-in is linked to a device the batch leaves in). A registered key that is
+  itself a key of the list that is in is taken wherever a link is (`link_taken` on `POST links`;
+  a claim's or a hand-over's link
   to it is not written, and the entry is placed all the same). A later
   hand-over (one `device` entry that rotates its signer, signed by the key the calling sign-in
   registered, where that signer is a device carried in) needs no claim, is outside the budget and
@@ -1825,8 +1827,8 @@ and to everyone when it is left out.
 | `flipEntry`, `flipWrap` | one byte flipped in that entry's body or that wrap | the entry no longer holds; the wrap does not open |
 | `headMoved` | `409 head_moved` for every placement | a writer stops after its own bound and says so |
 | `dropWraps` | a placed batch's entries without its wraps | a member with no wrap sees no names and is let in all the same |
-| `rebuilding` | `503 list_rebuilding` (retry-after 1) to placements, a PC's reads whose only right is its row in the list, the links and wrap uploads, a redeem and the snapshot | the client sends the same request again; a PC keeps the devices it read last |
-| `stopped` | `503 list_stopped` to the same calls; the snapshot adds nobody for the list | the client shows that the service cannot change the list |
+| `rebuilding` | `503 list_rebuilding` (retry-after 1) to placements, a PC's reads whose only right is its row in the list, the links and wrap uploads, a redeem and the snapshot | the client sends the same request again (a PC with a new challenge and proof: each call spends one); a PC keeps the devices it read last |
+| `stopped` | `503 list_stopped` to the same calls but the snapshot, which answers `200` by Step 2's rules and adds nobody for the list | the client shows that the service cannot change the list |
 
 `withholdAfter` on a list that a birth made serves a part of that birth: entry 0 and some
 `carried`, or everything but the `epoch`. Two lies are about an account rather than a list:

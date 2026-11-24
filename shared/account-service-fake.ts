@@ -1220,6 +1220,8 @@ export class FakeAccountService {
     if (!await verifyInviteRedeem({ account: invite.account, server_id: serverId, public_key: publicKey, challenge_id: body.challenge_id as string }, body.invite_signature, invite.key)) return dead;
     // an account that has a list redeems only an invite its list holds as open (D11.5), told only to a PC that holds the line;
     // a used invite is past this, so the same PC's retry is answered as before whatever the list says of it since
+    // an unused invite that ran out while its proof was checked redeems nothing
+    if (invite.used === null && this.now() >= inviteEnd(invite)) return dead;
     const asked = invite.used === null ? this.listOfAccount(invite.account) : undefined;
     if (asked !== undefined) {
       const halted = this.halted(asked, { server_id: serverId, endpoint: publicKey });
@@ -2043,7 +2045,7 @@ export class FakeAccountService {
    */
   private async birth(session: Session, entry: string, texts: unknown, wraps: readonly ListWrap[], link: unknown, proof: unknown): Promise<Response> {
     const account = session.account;
-    if (proof !== undefined || !Array.isArray(texts) || texts.length < 2 || texts.length > MIGRATION_CARRIED_MAX + 2 || !texts.every((text) => typeof text === "string")) return this.v2Invalid();
+    if (!Array.isArray(texts) || texts.length < 2 || texts.length > MIGRATION_CARRIED_MAX + 2 || !texts.every((text) => typeof text === "string")) return this.v2Invalid();
     const refused = this.writeRefusal(account, session.family);
     if (refused !== null) return refused;
     const read = await this.readGenesis(session, entry);
@@ -2053,6 +2055,7 @@ export class FakeAccountService {
     const before = this.listExists(account);
     if (before !== null) return before;
     if (!this.migrateOn(account)) return this.refusedAt(1, "service", "carried_not_open", "Carrying members in from before the list is not open for this account");
+    if (proof !== undefined) return this.v2Problem(400, "invalid_request", "A birth takes no key proof: entry 0 is signed by this sign-in's registered key");
     const firstSigner = () => (first.body.signer === this.registeredKey(account, session.family) ? null
       : this.refusedAt(0, "service", "first_signer", "Entry 0 of a birth is signed by the key this sign-in registered"));
     const signerRefused = firstSigner();
@@ -2091,7 +2094,6 @@ export class FakeAccountService {
         return this.refusedAt(index, taken.outcome.outcome === "counts" ? "no_effect" : taken.outcome.outcome, reason, "A member would not count this entry");
       }
       if (last.body.issued_at > nowS + LIST_ISSUED_AHEAD_S) return this.refusedAt(index, "service", "issued_at_ahead", "An entry's issued_at is not ahead of the service's clock");
-      if (kind.kind === "carried" && !this.carriable(account, kind)) return notCarried(index);
       if (kind.kind === "carried") {
         carried += 1;
         carriedAt.push({ index, kind });
@@ -2101,8 +2103,10 @@ export class FakeAccountService {
       state = taken.state;
       held.push(last);
     }
-    // a run that stops before its hand-over or its epoch
+    // a run that stops before its hand-over or its epoch; then the service's word on each key and PC carried in
     if (!opened) return misshaped(run.length + 1);
+    const unfit = carriedAt.find(({ kind }) => !this.carriable(account, kind));
+    if (unfit !== undefined) return notCarried(unfit.index);
     const wrapAt = wrapRefusal(wraps, state, nowS);
     if (wrapAt !== null) return this.wrapInvalid(wrapAt);
     const linked = link === undefined || handOver === null ? null : await this.linkedKey(session, first.hash, handOver, link);
@@ -2263,7 +2267,8 @@ export class FakeAccountService {
     if (body instanceof Response) return body;
     const wraps = wrapsOf(body.wraps);
     if (!hasOnly(body, ["wraps"]) || wraps === null || wraps.length === 0) return this.v2Invalid();
-    const refused = this.writeRefusal(session.account, session.family);
+    // the sign-in read again once the body is in: one that signed out meanwhile stores nothing
+    const refused = this.writerFell(session);
     if (refused !== null) return refused;
     const list = this.ownList(session.account, id);
     if (list === undefined) return this.v2Unknown();
@@ -2449,7 +2454,7 @@ export class FakeAccountService {
     const joins: { index: number; server_id: string; endpoint: string; invite: string }[] = [];
     let invited: { readonly index: number; readonly key: string; readonly auto: boolean; readonly exp: number } | null = null;
     // the device keys and the invite keys a `remove` of the batch put out: their sign-ins and the service's invites end with them
-    const out = { devices: [] as string[], invites: [] as string[], selves: [] as string[] };
+    const out = { devices: [] as string[], invites: [] as string[] };
     // a later hand-over (F10b): the batch's one `device`, ending its own signer, which is the key this sign-in registered
     const own = caller.family === undefined ? undefined : this.registeredKey(list.account, caller.family);
     let handOver: string | null = null;
@@ -2505,7 +2510,6 @@ export class FakeAccountService {
         // what the key was before this entry: a device that goes is signed out at the service, an invite that goes is revoked
         const was = rowOf(state.signers, kind.ends)?.as;
         if (was === "device") out.devices.push(kind.ends);
-        if (was === "device" && this.selfLinked(list, state, kind.ends)) out.selves.push(kind.ends);
         if (was === "invite") out.invites.push(kind.ends);
       }
       // a hand-over needs no claim: its own signature, by the sign-in's registered key, is its lock; only a device the list
@@ -2597,9 +2601,10 @@ export class FakeAccountService {
     if (lie.dropWraps !== true) for (const wrap of wraps) storeWrap(list, wrap);
     list.additions.splice(0, list.additions.length, ...day, ...Array<number>(additions).fill(now));
     // a device put out is signed out and its registered key removed (D11.4), read after this batch's links: the key linked to
-    // it, or the member key itself where it is its own link (entry 0's or a carried key), unless that sign-in is linked to a
-    // device the batch leaves in. Last, as the writer may be among them
-    const selfOut = (key: string) => out.selves.includes(key) && ![...list.links].some(([member, registered]) => registered === key && stay.has(member));
+    // it, and a registered key that is the ended key itself (a key carried in, or entry 0's), unless that sign-in is linked to
+    // a device the batch leaves in. Last, as the writer may be among them
+    const registry = this.registries.get(list.account);
+    const selfOut = (key: string) => registry?.devices.has(key) === true && ![...list.links].some(([member, registered]) => registered === key && stay.has(member));
     for (const key of out.devices) {
       for (const registered of new Set([list.links.get(key), selfOut(key) ? key : undefined])) {
         if (registered === undefined) continue;
@@ -2608,15 +2613,15 @@ export class FakeAccountService {
         this.removeDevice(list.account, registered);
       }
     }
-    // an invite whose key was put out is revoked at the service too, while nobody used it
-    for (const invite of this.invites.values()) if (invite.account === list.account && invite.used === null && out.invites.includes(invite.key)) invite.revoked = true;
     // the list's invite is the service's invite: made here unless one of that key stands already, for fifteen minutes or to
-    // the entry's `exp`, by the sign-in that placed it
+    // the entry's `exp`, by the sign-in that placed it; then an invite whose key the batch put out is revoked, while nobody
+    // used it (one the same batch made and put out among them)
     if (making !== null && device !== undefined && ![...this.invites.values()].some((held) => held.key === making.key)) {
       const made: FakeInvite = { id: randomHex(16), account: list.account, key: making.key, auto: making.auto, family: device.session.family, madeAt: now,
         expiresAt: Math.min(now + PC_INVITE_TTL_MS, making.exp * 1000), revoked: false, used: null };
       this.invites.set(made.id, made);
     }
+    for (const invite of this.invites.values()) if (invite.account === list.account && invite.used === null && out.invites.includes(invite.key)) invite.revoked = true;
     // the doorbell rings the account's other devices from a budget of its own, never the one admissions ring from
     if (this.withinRateLimit(`list_rings:${list.account}`, LIST_RINGS_PER_WINDOW)) this.ring(list.account, caller.family ?? "");
     this.withheld(list.account);
