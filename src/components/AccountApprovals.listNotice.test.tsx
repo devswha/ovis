@@ -5,15 +5,16 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { translate, type Language } from "../lib/i18n.ts";
-import { unconfirmedReason } from "./AccountApprovals.tsx";
+import type { AccountList, WaitingRequest } from "../lib/account/accountList.ts";
+import { unconfirmedReason, waitingOf } from "./AccountApprovals.tsx";
 import { keepStalled, ListAllowNotice } from "./ListChangeNotice.tsx";
 
 /** `pairedAtPc`: the PC let the device in by a pairing of its own (one that does not follow the list), as every case here but the last */
-function render(why: AllowRefusal, retryAfterMs: number | null = null, pairedAtPc = true): string {
+function render(why: AllowRefusal, retryAfterMs: number | null = null, pairedAtPc = true, placed = false): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
-    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", pairedAtPc, why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
+    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", pairedAtPc, placed, why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
     else Reflect.deleteProperty(navigator, "languages");
@@ -67,6 +68,18 @@ describe("a device a PC that lets devices in by the list did not let in", () => 
       expect(html).not.toContain("only");
     }
     expect(render("unknown", null, false)).toContain("Not known yet: is Dana&#x27;s tablet in your account?");
+  });
+});
+
+describe("a device the list took, where what was to follow its entry stopped", () => {
+  it("says that the device was added to the list, never that it is not in the account or was added to the PC only", () => {
+    for (const pairedAtPc of [true, false]) {
+      const html = render("changed", null, pairedAtPc, true);
+      expect(html).toContain("Dana&#x27;s tablet was added to your account&#x27;s list");
+      expect(html).not.toContain("is not in your account");
+      expect(html).not.toContain("only");
+      expect(html).toContain("The sign-in on this device changed since you approved it.");
+    }
   });
 });
 
@@ -125,5 +138,18 @@ describe("an approval a PC that lets devices in by the list has not seen confirm
       expect(words).toContain("Dana's tablet");
       expect(words).toContain("Desk");
     }
+  });
+});
+
+describe("the request a stalled approval's card acts on", () => {
+  const waits = (account: string): WaitingRequest => ({ account, list: "5c".repeat(32), key: "member", on: { seq: 1, hash: "ab".repeat(32) }, place: { seq: 2, hash: "cd".repeat(32) }, for: "allow:k", at: 1 });
+  const listOf = (request: WaitingRequest | null) => ({ waiting: async () => request }) as unknown as AccountList;
+
+  it("is the request that waits for the account the approval began under, and none that waits for another account", async () => {
+    expect(await waitingOf(listOf(waits("acct_a")), "acct_a")).toEqual(waits("acct_a"));
+    // the sign-in moved to another account while the approval waited: its request is not this card's to send or let go
+    expect(await waitingOf(listOf(waits("acct_b")), "acct_a")).toBeNull();
+    expect(await waitingOf(listOf(null), "acct_a")).toBeNull();
+    expect(await waitingOf(null, "acct_a")).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
 import type { RemotePairingRequest } from "../../shared/protocol.ts";
 import { AdmissionChangedError, approveForAccount, ListAllowError, NotConfirmedError, UnverifiedJoinError, vouchedAdmission } from "../lib/account/join.ts";
 import { resendWaiting } from "../lib/account/listWrite.ts";
+import type { AccountList, WaitingRequest } from "../lib/account/accountList.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountServiceOf, AccountService, type Admission } from "../lib/account/service.ts";
@@ -28,6 +29,15 @@ import { VouchedPcApproval } from "./VouchedPcApproval.tsx";
  * (approveJoin): an account join, or another PC of the account vouched for. Any other request is answered on the PC only.
  */
 export const restsOnAdmission = (request: RemotePairingRequest | undefined): boolean => request?.intent === "account" || request?.vouched === true;
+
+/**
+ * The request that waits at this device's head for `account`, the one an approval began under: a sign-in that moved to
+ * another account meanwhile leaves the page's list another account's, whose request is not this card's to send or let go.
+ */
+export async function waitingOf(list: AccountList | null, account: string): Promise<WaitingRequest | null> {
+  const request = list === null ? null : await list.waiting().catch(() => null);
+  return request !== null && request.account === account ? request : null;
+}
 
 /**
  * What the card says where an approval ended before the PC said that the new device confirmed (NotConfirmedError). A
@@ -140,9 +150,9 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
           // it is the earlier change's, Try again sends that one first.
           const list = pageAccountList();
           const waits = stalled.why === "busy" || stalled.why === "unknown" || stalled.why === "stopped" || stalled.why === "waiting";
-          const kept = waits && list !== null ? await list.waiting().catch(() => null) : null;
+          const kept = waits ? await waitingOf(list, session!.account) : null;
           const retry = stalled.why === "waiting" && kept !== null && list !== null ? async (): Promise<void> => { await resendWaiting(list, kept); await stalled.retry(); } : stalled.retry;
-          onStalled(request.key, { key: request.key, device: stalled.label, pc: where.pcName, pairedAtPc: stalled.pairedAtPc, why: stalled.why, retryAfterMs: stalled.retryAfterMs, retry,
+          onStalled(request.key, { key: request.key, device: stalled.label, pc: where.pcName, pairedAtPc: stalled.pairedAtPc, placed: stalled.placed, why: stalled.why, retryAfterMs: stalled.retryAfterMs, retry,
             // Cancel reads the log first: a request that was placed after all is this approval going through, which
             // is then finished; one whose outcome cannot be read is not let go, and the card stays
             ...(kept !== null && list !== null ? { cancel: async () => {
@@ -169,6 +179,6 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
   };
 
   const shown = { ...request, label: deviceName };
-  return <AccountApprovalPrompt key={request.id} request={shown} pcName={where.pcName} pcCount={where.pcCount}
+  return <AccountApprovalPrompt key={request.id} request={shown} pcName={where.pcName} pcCount={where.pcCount} followsList={getTransport().followsList === true}
     asker={checked ? known?.asker : null} onDecide={decide} />;
 }

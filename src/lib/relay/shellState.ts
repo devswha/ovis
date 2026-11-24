@@ -199,7 +199,7 @@ export function failureOf(error: unknown, attempt: { code: boolean; paired: bool
   if (error instanceof ListMismatchError) return "list-other";
   // once digits were shown, only the PC's refusal is a decline; a deadline or a session lost on the way is no answer.
   // A PC that lets devices in by its account's list says why no entry let this one in
-  if (attempt.compared && error instanceof MuxProtocolError && error.code === "auth_failed") return LIST_JOIN_CAUSES[error.message] ?? "pair-declined";
+  if (attempt.compared && error instanceof MuxProtocolError && error.code === "auth_failed") return Object.hasOwn(LIST_JOIN_CAUSES, error.message) ? LIST_JOIN_CAUSES[error.message]! : "pair-declined";
   if (attempt.compared && (error instanceof RelayAdmissionTimeoutError || error instanceof RelayUnreachableError
     || error instanceof MuxProtocolError && (error.code === "timeout" || error.code === "internal_error"))) return "pair-unanswered";
   if (error instanceof ServerIdentityChangedError) return "identity-changed";
