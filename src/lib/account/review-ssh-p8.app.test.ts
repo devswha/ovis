@@ -55,8 +55,7 @@ describe("P8 review, the window's record of an add over SSH by the account's lis
       const target = pcFields();
       const outcome = await withStorage(async () => {
         const said = await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take: async (): Promise<SshTake> => ({ refused }) });
-        // noteAct is fire-and-forget: give it time to land
-        await Bun.sleep(150);
+        // the record is written, when at all, before addOverSsh answers (since the round that fixed L3): nothing to wait for
         return { said, row: readSeenPcs(ACCOUNT).pcs[endpointOf(target)] };
       });
       expect(outcome.said).not.toBe("added");
