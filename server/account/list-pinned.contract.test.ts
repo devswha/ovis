@@ -25,6 +25,7 @@ import { signCard } from "../../shared/account-list.ts";
 import { listMember, memberCard, TestList, type ListMember } from "./list.test-helpers.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { pressOnce } from "./one-press.ts";
+import { AccountServiceRefusal } from "./mailbox.ts";
 import { applyAccountRecords } from "./records.ts";
 
 const closes: (() => void)[] = [];
@@ -839,6 +840,22 @@ describe("a PC the list removed", () => {
     expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(true);
     await off.app.context.services.relay.resetIdentity();
     expect(off.app.context.services.devices.listRemovedFrom(ACCOUNT)).toBe(false);
+  });
+});
+
+describe("one press, for an account that keeps a signed list", () => {
+  test("the account service's refusal to take the PC by an admission is said as that, not as a service that is away", async () => {
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    const fixture = relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.test", fetch: service.fetch } });
+    closes.push(() => fixture.close());
+    const { services } = fixture.app.context;
+    services.relay.setRelayAccount(ACCOUNT);
+    const refused = spyOn(services.accountMailbox, "admission").mockRejectedValue(new AccountServiceRefusal(409, "list_add", "/v1/pc/admission"));
+    try {
+      expect(await pressOnce(services, ACCOUNT)).toMatchObject({ refused: { code: "list_add", status: 409 } });
+    } finally { refused.mockRestore(); }
+    expect(services.devices.account()).toBeNull();
   });
 });
 
