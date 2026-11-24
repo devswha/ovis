@@ -689,9 +689,9 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect([pcAdmits(), held().entries.length - before]).toEqual([1, 2]);
       expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
       expect(listView(held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
-      // the line's own signature is evidence the account service could not make: the device's record of its PCs says it added this one
+      // the line's own signature is evidence the account service could not make: the device's record of its PCs says where this one came from
       await settle();
-      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
     } finally { setPageAccountList(null); }
   });
 

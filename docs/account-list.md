@@ -1457,6 +1457,11 @@ holds for this list and that relay key, and its own copy of the list holds the i
 placed by a member, waiting for Add. Add has the account admit the PC, signs its `pc` entry and
 ends the invite's key in the same request. Any other post is a PC that asks, and gets the number.
 
+What that proves and what it does not: whoever holds the line can put a PC of theirs on the card,
+under a name they choose, for the invite's fifteen minutes, and the press is the person's check
+of that name. A lying account service cannot: it never has the line. An invite a PC joins with by
+itself needs no card at all.
+
 The account service and the PC do not carry `invite` and `invite_proof` with a post yet: until
 they do, a PC that joined with such an invite is added with the number.
 

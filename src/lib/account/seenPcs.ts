@@ -14,10 +14,12 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 
 /**
  * What this device did itself for a PC: paired with it at the PC (`paired`: a QR, a code, the digits), added it to the
- * account on this device (`added`), added it over SSH (`ssh`), or is that PC's own window (`window`); `none` where it
- * only opened a PC it was shown. It moves from `none` to one of the others, never back and never between them.
+ * account on this device (`added`), added it over SSH (`ssh`), or is that PC's own window (`window`); `invited`: the
+ * PC joined with an invite of the account, which the line's own key proved for that PC, and the person pressed Add;
+ * `none` where it only opened a PC it was shown. It moves from `none` to one of the others, never back and never
+ * between them.
  */
-export type SeenHow = "paired" | "added" | "ssh" | "window" | "none";
+export type SeenHow = "paired" | "added" | "ssh" | "window" | "invited" | "none";
 
 /** `since`, `last`: seconds since 1970 by this device's clock, of the first and the latest session in which the PC let this device in; absent until there was one. */
 export interface SeenPc { readonly since?: number; readonly last?: number; readonly how: SeenHow }
@@ -29,7 +31,7 @@ export interface SeenPcs { readonly v: 1; readonly account: string; readonly pcs
 export const SEEN_PCS_MAX = 256;
 
 const ENDPOINT = /^[0-9a-f]{64}$/;
-const HOWS: readonly SeenHow[] = ["paired", "added", "ssh", "window", "none"];
+const HOWS: readonly SeenHow[] = ["paired", "added", "ssh", "window", "invited", "none"];
 const keyOf = (account: string): string => `ovis:seen-pcs:${account}`;
 const isSeconds = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

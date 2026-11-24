@@ -250,7 +250,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
         admit: async () => { await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
       });
       if (!outcome.added) throw new AddRefused(outcome);
-      void noteAct(session.account, stillInvited.endpoint, "added").catch(() => undefined);
+      // a member's invite, proved for this PC by the line's own key, and the person's press: kept as such in this device's record of its PCs
+      void noteAct(session.account, stillInvited.endpoint, "invited").catch(() => undefined);
       window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
       onRemoved();
       return;

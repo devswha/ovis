@@ -2128,7 +2128,8 @@ that it has a history by the time something does.
   faked. `paired`: it paired with it at the PC (a QR, a code, the digits). `added`: the person
   pressed Add for it where a number was compared on both screens (the card's Add with the
   number, on an account with a signed list). `ssh`: this device added it over SSH. `window`: the page is that
-  PC's own window. `none`: everything else, also one press of **Add** on the card of a PC that
+  PC's own window. `invited`: the PC joined with an invite of the account, which the invite's own
+  key proved for that PC, and the person pressed Add. `none`: everything else, also one press of **Add** on the card of a PC that
   asked, where no number is compared: the service could have listed a PC of its own at that
   moment. It moves from `none` to one of the others, never back and never between them.
 - It is kept in the browser's storage under `ovis:seen-pcs:<account>`, the newest 256 PCs for an
