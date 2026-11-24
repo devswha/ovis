@@ -1247,7 +1247,9 @@ vouched for. The copy is saved before the place is forgotten, so a save that fai
 place. A log that ends before that place, or shows another entry there, is followed by nobody:
 the device keeps the place it was handed and reads again at its own pace. Being handed a place
 ends the search for one and says nothing more: the new device says **In your account** only once
-its own copy shows it in. So a new device takes
+its own copy shows it in. While it still waits to be let into the list, it asks again at every
+open of a PC it is paired with, so an Allow that went through later than its first asking still
+reaches it. So a new device takes
 the list from a member, through the one PC it compared digits with, and never from the account
 service. A device that follows a list takes no place from anybody. A PC that does not carry the
 place yet (it keeps the introduction's PCs and drops what else it is sent) hands the new device

@@ -940,7 +940,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // Handing the place to the list ends the search for it, and says nothing yet of the device being in: the list
       // reads the log itself, and a device that follows a list already takes no place (accountList.ts adopt).
       let took = false;
-      const onList = lists === null || !introducible ? undefined : async (offer: ListOffer): Promise<void> => {
+      // A device that still waits to be let into its account's list asks at every open of a PC it is paired with, not
+      // only right after it was let in there: a member's Allow may go through later than this device first asked, and
+      // the PC carries the place until it is read.
+      const waits = lists !== null && lists.view().account === session.account && lists.view().status.at === "not_in";
+      const onList = lists === null || !(introducible || waits) ? undefined : async (offer: ListOffer): Promise<void> => {
         if (took) return;
         assertPairing(await store.get(serverId));
         took = true;
