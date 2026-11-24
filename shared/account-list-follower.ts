@@ -22,13 +22,15 @@ import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { ListEntryError, entryFromText, entryHash, isListHash, readBody, verifySignature, type ListRefusalCode } from "./account-list-entry.ts";
 import { signerPower, type ListPlace } from "./account-list-signers.ts";
 import {
-  LIST_LEVEL, admitsDevice, isListKey, listClock, listView, readListState, replayList, shownList,
+  LIST_LEVEL, admitsDevice, isListKey, listClock, listView, replayList, shownList,
   type DeviceView, type ListCopy, type ListRole, type ListState, type PcView,
 } from "./account-list.ts";
 
 /**
- * The save's version: a build reads only its own. The state in a save is the kinds' own (ListState): a build
- * that changes what a state holds writes a later version, and reads the earlier one by replaying its entries.
+ * The save's version, which counts the forms of the save itself: its members and what each means. A build
+ * reads its own version and every earlier one, each by replaying its entries, and no later one. What the state
+ * in a save holds is the kinds' own and is no part of the version: a state is read back by replay whatever a
+ * build saved in it (readSave).
  */
 export const FOLLOWER_SAVE_VERSION = 1;
 /** A save's sum is SHA-256 over these bytes and the save's text without the sum. */
@@ -775,53 +777,59 @@ const saveSum = (body: string): string => bytesToHex(sha256(concatBytes(utf8ToBy
 
 /**
  * A copy as the one text a member saves: JSON in one form (each object's members in ascending order of name,
- * no white space) with the members `account`, `alarm`, `entries`, `list`, `me`, `pin`, `read_at`, `seen_at`,
- * `state`, `stop`, `sum` and `v`. `sum` is SHA-256 over LIST_SAVE_PREFIX and the text of the same object without `sum`.
- * It holds nothing secret: no private key and no key to the names.
+ * no white space) with the members `account`, `alarm`, `entries`, `footing`, `level`, `list`, `me`, `pin`,
+ * `read_at`, `seen_at`, `state`, `stop`, `sum` and `v`. `footing` is the place of the last entry a member
+ * signed and `level` the level of the build that saved. `sum` is SHA-256 over LIST_SAVE_PREFIX and the text of
+ * the same object without `sum`. It holds nothing secret: no private key and no key to the names.
  */
 export function writeSave(copy: FollowerCopy): string {
   const { account, alarm, entries, list, me, pin, read_at, seen_at, state, stop } = copy;
-  const body = { account, alarm, entries, list, me: { endpoint: me.endpoint, key: me.key }, pin, read_at, seen_at, state, stop, v: FOLLOWER_SAVE_VERSION };
+  const footing = state === null ? null : { hash: state.footing.hash, seq: state.footing.seq };
+  const body = { account, alarm, entries, footing, level: state?.level ?? LIST_LEVEL, list, me: { endpoint: me.endpoint, key: me.key }, pin, read_at, seen_at, state, stop, v: FOLLOWER_SAVE_VERSION };
   return canonical({ ...body, sum: saveSum(canonical(body)) });
 }
 
-function readAlarm(value: unknown, state: ListState | null): ListAlarm | null | undefined {
+/** An alarm in its form, null, or undefined for anything else. Whom it names is not held against the state: an alarm is kept, whatever the state has become. */
+function readAlarm(value: unknown): ListAlarm | null | undefined {
   if (value === null) return null;
-  if (!isRecord(value) || state === null || Object.keys(value).sort().join(" ") !== "at by code devices pcs seq source") return undefined;
+  if (!isRecord(value) || Object.keys(value).sort().join(" ") !== "at by code devices pcs seq source") return undefined;
   const { at, by, code, devices, pcs, seq, source } = value;
-  // The key that signed the other history was a signer of this one before the place where the two part.
-  const signer = typeof by === "string" ? rowOf(state.signers, by) : null;
-  if (typeof by !== "string" || signer === null || !isCount(seq) || signer.seq >= seq) return undefined;
-  if (code !== "fork" || (source !== "service" && source !== "peer") || !isCount(at) || !isCount(seq) || seq < 1 || seq > state.footing.seq) return undefined;
+  if (code !== "fork" || (source !== "service" && source !== "peer") || !isCount(at) || !isCount(seq) || seq < 1 || typeof by !== "string" || !isListKey(by)) return undefined;
   if (!Array.isArray(devices) || !Array.isArray(pcs)) return undefined;
-  const sorted = (names: readonly unknown[]): names is readonly string[] => names.every((name, at) => typeof name === "string" && (at === 0 || (names[at - 1] as string) < name));
-  if (!sorted(devices) || !sorted(pcs)) return undefined;
-  // Whom it held then: devices and PCs that the list holds a row for.
-  if (!devices.every((key) => rowOf(state.signers, key)?.as === "device") || !pcs.every((endpoint) => rowOf(state.pcs, endpoint) !== null)) return undefined;
+  const sorted = (names: readonly unknown[], named: (name: string) => boolean): names is readonly string[] =>
+    names.every((name, at) => typeof name === "string" && named(name) && (at === 0 || (names[at - 1] as string) < name));
+  if (!sorted(devices, isListKey) || !sorted(pcs, (name) => ENDPOINT.test(name))) return undefined;
   return { code, source, seq, by, at, devices: [...devices], pcs: [...pcs] };
 }
 
 /**
- * A saved copy, read again: the copy, or why it does not read. Nothing is half read: a save gives the whole
- * copy it was written from, or none.
+ * A saved copy, read again: the copy, or why it does not read. Nothing is half read: a save gives a whole copy
+ * or none.
+ *
+ * The entries are what a save holds as true, and its state is only what they gave the build that saved. So the
+ * entries are replayed from entry 0, each checked as when it was first taken, and the copy holds the state the
+ * replay gives. Where that is not the saved state, `rebuilt` says so: a later build holds other things in a
+ * state or judges an entry by a later rule, or the saved state was changed. That is no refusal, and a caller
+ * notes it once. So no update of the app or of a PC makes a save unreadable, and no state reads that the
+ * entries do not give.
  *
  * - `form`: no JSON, not the members of a save each in its form, or not in its one form.
- * - `version`: another build's save.
+ * - `version`: a later build's save, which this build does not read: a later `v`, or entries that only a
+ *   later level can place.
  * - `sum`: the text is not the one that was written: a byte of it changed.
- * - `broken`: the parts do not agree: an entry does not hold on the one before it, the entries do not give the
- *   saved state, entry 0 is not the list's or not what the pin asks for, the alarm or the stopped entry is not
- *   of this copy.
+ * - `broken`: the entries themselves do not hold: one does not verify or does not continue the one before it,
+ *   they end before the saved footing or show another entry there, entry 0 is not the pinned list's, is of
+ *   another account or is not signed by whom the pin asks for, or the stopped entry is not the next one.
  *
- * The entries are replayed from entry 0, told the saved state (replayList), so a restart holds exactly what
- * was saved and never a shorter history. A build of another level than the one that saved takes the state its
- * own replay gives, or reads no copy where it cannot reach the saved footing. The stopped entry is replayed
- * with the others, so a build that can place it goes on.
+ * The replay never gives a shorter history than the saved one: it reaches the saved footing, with the very
+ * entry there. The stopped entry is replayed with the others, so a build that can place it goes on, and one
+ * that cannot stays stopped at it.
  *
  * The sum finds a damaged file, not a forged one: whoever can write a member's store can write its sum, and
  * holds its private key too. A save that does not read is not a member with no list: it is still pinned, and
  * only a person's reset starts it over.
  */
-export async function readSave(text: string): Promise<{ readonly read: true; readonly copy: FollowerCopy } | { readonly read: false; readonly why: SaveRefusal }> {
+export async function readSave(text: string): Promise<{ readonly read: true; readonly copy: FollowerCopy; readonly rebuilt: boolean } | { readonly read: false; readonly why: SaveRefusal }> {
   const no = (why: SaveRefusal) => ({ read: false, why }) as const;
   let value: unknown;
   try {
@@ -831,9 +839,9 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
     return no("form");
   }
   if (!isRecord(value)) return no("form");
-  const { account, alarm: savedAlarm, entries, list, me, pin: savedPin, read_at, seen_at, state: savedState, stop, sum, v, ...rest } = value;
-  if (isCount(v) && v !== FOLLOWER_SAVE_VERSION) return no("version");
-  if (v !== FOLLOWER_SAVE_VERSION || Object.keys(rest).length > 0 || Object.keys(value).length !== 12) return no("form");
+  const { account, alarm: savedAlarm, entries, footing, level, list, me, pin: savedPin, read_at, seen_at, state: savedState, stop, sum, v, ...rest } = value;
+  if (isCount(v) && v > FOLLOWER_SAVE_VERSION) return no("version");
+  if (v !== FOLLOWER_SAVE_VERSION || Object.keys(rest).length > 0 || Object.keys(value).length !== 14) return no("form");
   let again: string;
   try {
     again = canonical(value);
@@ -842,41 +850,41 @@ export async function readSave(text: string): Promise<{ readonly read: true; rea
     return no("form");
   }
   if (again !== text || typeof sum !== "string") return no("form");
-  if (saveSum(canonical({ account, alarm: savedAlarm, entries, list, me, pin: savedPin, read_at, seen_at, state: savedState, stop, v })) !== sum) return no("sum");
+  if (saveSum(canonical({ account, alarm: savedAlarm, entries, footing, level, list, me, pin: savedPin, read_at, seen_at, state: savedState, stop, v })) !== sum) return no("sum");
 
   if (typeof account !== "string" || !ACCOUNT.test(account) || typeof list !== "string" || !isListHash(list) || !isSelf(me) || Object.keys(me).length !== 2) return no("form");
   const pin = readPin(savedPin, me);
   if (pin === null || canonical(pin) !== canonical(savedPin)) return no("form");
   if (!Array.isArray(entries) || entries.length > LIST_ENTRIES_MAX || !entries.every((entry) => typeof entry === "string")) return no("form");
   if (!(stop === null || typeof stop === "string") || !(read_at === null || isCount(read_at)) || !(seen_at === null || isCount(seen_at)) || !(savedState === null || isRecord(savedState))) return no("form");
+  if (!isCount(level) || level < 1 || !(footing === null || (isPlace(footing) && Object.keys(footing).length === 2))) return no("form");
+  const alarm = readAlarm(savedAlarm);
+  if (alarm === undefined) return no("form");
   const texts = entries as readonly string[];
   const self: FollowerSelf = { key: me.key, endpoint: me.endpoint };
-  if (savedState === null) {
-    if (texts.length > 0 || stop !== null || savedAlarm !== null || read_at !== null) return no("broken");
-    return { read: true, copy: { account, list, me: self, pin, entries: [], state: null, stop: null, read_at: null, seen_at, alarm: null } };
+  const held = { account, list, me: self, pin, read_at, seen_at, alarm };
+  if (texts.length === 0) {
+    // A member that has read nothing holds no footing and stopped nowhere.
+    if (footing !== null || stop !== null) return no("broken");
+    return { read: true, copy: { ...held, entries: [], state: null, stop: null }, rebuilt: savedState !== null };
   }
-  const told = readListState(savedState, LIST_LEVEL);
-  if (told === null || told.list !== list || texts.length <= told.footing.seq) return no("broken");
-  // The stopped entry stands right after the entries, and it is the one the state names.
-  if (stop !== null && (told.needs_replay === undefined || told.needs_replay.seq !== texts.length || hashOf(stop) !== told.needs_replay.hash)) return no("broken");
-  let replayed: Awaited<ReturnType<typeof replayList>>;
-  try {
-    replayed = await replayList(stop === null ? texts : [...texts, stop], LIST_LEVEL, { saved: told, given: list });
-  } catch (error) {
-    if (!(error instanceof RangeError)) throw error;
-    return no("broken");
-  }
+  if (footing === null || footing.seq >= texts.length) return no("broken");
+  /** What only a later level can place is a later build's save; anything else that does not hold is a save whose entries are not what was saved. */
+  const refused = no(level > LIST_LEVEL ? "version" : "broken");
+  const replayed = await replayList(stop === null ? texts : [...texts, stop], LIST_LEVEL, { saved: null, given: list });
   const member = replayed.member;
-  const body = replayed.took[0]?.held.body;
-  // A later build's state that this one cannot reach by its own replay is that build's save.
-  if (member === null || body === undefined) return no(told.level > LIST_LEVEL ? "version" : "broken");
-  const moved = stop !== null && member.entries.length === texts.length + 1;
-  if (!moved && (member.entries.length !== texts.length || member.entries.some((entry, at) => entry !== texts[at]))) return no("broken");
-  // A build of the level that saved holds exactly the saved state. Another level's replay is its own.
-  if (told.level === LIST_LEVEL && !moved && canonical(member.state) !== canonical(savedState)) return no("broken");
-  if (member.state.account !== account) return no("broken");
-  if ((pin.how === "genesis" && body.signer !== self.key) || (pin.how === "migrated" && !pin.admitted.includes(body.signer))) return no("broken");
-  const alarm = readAlarm(savedAlarm, member.state);
-  if (alarm === undefined) return no("broken");
-  return { read: true, copy: { account, list, me: self, pin, entries: member.entries, state: member.state, stop: member.state.needs_replay === undefined ? null : stop, read_at, seen_at, alarm } };
+  const first = replayed.took[0]?.held.body;
+  if (member === null || first === undefined) return replayed.stopped?.code === "entry_invalid" ? refused : no("broken");
+  // Every entry was taken, but for the stopped one where this build cannot place it either.
+  const { state } = member;
+  const at = replayed.stopped;
+  if (at !== null && at.code !== "needs_replay") return no("broken");
+  if (member.entries.length < texts.length || (at !== null && stop === null)) return refused;
+  // Never a shorter history than the saved one: the very entry at the saved footing, and a footing no earlier.
+  if (hashOf(member.entries[footing.seq]) !== footing.hash) return no("broken");
+  if (state.footing.seq < footing.seq) return refused;
+  if (state.account !== account) return no("broken");
+  if ((pin.how === "genesis" && first.signer !== self.key) || (pin.how === "migrated" && !pin.admitted.includes(first.signer))) return no("broken");
+  const rebuilt = savedState === null || canonical(state) !== canonical(savedState);
+  return { read: true, copy: { ...held, entries: member.entries, state, stop: state.needs_replay === undefined ? null : stop }, rebuilt };
 }

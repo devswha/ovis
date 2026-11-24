@@ -508,30 +508,43 @@ name, no white space).
 
 | member | value |
 |---|---|
-| `v` | `1` |
+| `v` | `1`: the version of the save's own members |
 | `account`, `list` | the account's id and the list id it is pinned to |
 | `me` | `key`, its signing key, and `endpoint`, a PC's relay key (`null` for a device) |
 | `pin` | `how`, and with it `seq` and `hash` (`allowed`) or `admitted` (`migrated`, in ascending order) |
 | `entries` | every entry it took, from entry 0, each as its text |
-| `state` | [the state](#the-state) those entries give; `null` before entry 0 |
+| `footing` | the place (`seq`, `hash`) of the last entry a member signed; `null` before entry 0 |
+| `level` | the [level](#levels) of the build that saved |
+| `state` | [the state](#the-state) those entries gave that build; `null` before entry 0 |
 | `stop` | the text of the entry it stopped at for a newer client, or `null` |
 | `read_at` | when it last held everything the account service showed, or `null` |
 | `seen_at` | the latest hour its own clock showed when it took a page or a hint, or `null` |
 | `alarm` | `null`, or `code` (`fork`), `source`, `seq`, `by`, `at`, and the `devices` and `pcs` it held then |
 | `sum` | SHA-256 over `ovis-list-save/1` and the text of the same object without `sum`, as a hash |
 
-It holds nothing secret. A save reads whole or not at all:
+It holds nothing secret.
+
+**The entries are what a save holds as true; its state is only what they gave the build that
+saved.** A member that starts replays its entries from entry 0, checks each as when it first took
+it, and holds the state the replay gives. Where that is not the saved state, the save is
+**rebuilt**: the member goes on with the replayed state and notes it once. That happens when a
+later build holds other things in a state or judges an entry by a later rule, and when the saved
+state was changed. So no update of the app or of a PC makes a member start over, and no state
+reads that the entries do not give. The replay never gives a shorter history than the saved one:
+it must reach the saved `footing`, with the very entry there.
+
+A build reads its own `v` and every earlier one, each by replay. A save reads whole or not at all:
 
 | refusal | when |
 |---|---|
 | `form` | no JSON, a member missing, extra or out of form, or not the one form |
-| `version` | another `v` |
+| `version` | a later build's save: a later `v`, or entries that only a later level can place |
 | `sum` | the text is not the one that was written |
-| `broken` | its parts do not agree: the entries, replayed from entry 0, do not give the saved state, or the list, the pin, the alarm or the stopped entry is not of this copy |
+| `broken` | the entries do not hold: one does not verify or does not continue the one before it, they end before the saved footing or show another entry there, entry 0 is not the pinned list's, is of another account or is not signed by whom the pin asks for, or the stopped entry is not the next one |
 
 The sum finds a damaged file. It does not stop whoever can write the member's store, who holds the
-member's private key too. The replay is what holds the state to the entries: no state reads that
-the entries do not give.
+member's private key too. A save that does not read is still a pin: only a person's reset at the
+member starts it over.
 
 ## The join line
 
@@ -678,6 +691,7 @@ names).
 Each file of [`shared/account-list-vectors/save/`](../shared/account-list-vectors/save) is one
 [save](#the-save): `name`, `about`, `keys`, the `save` text, `now` (the member's clock for
 `opens`) and `expect`: either `reads` (`account`, `list`, `me`, `pin`, the copy's `head` and
-`footing`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it holds a `stop`, the
+`footing`, whether it was `rebuilt`, its `standing` (`waiting`, `in`, `out` or `stopped`), whether it holds a `stop`, the
 `seq` and `by` of its `alarm`, `read_at`, `seen_at`, and `opens`: for each named key the role it opens a session as,
-or the refusal) or `refused` (the refusal). A save that reads is written back to the same text.
+or the refusal) or `refused` (the refusal). A save that reads is written back to the same text,
+unless it was rebuilt: then it is written as the build that read it writes it.
