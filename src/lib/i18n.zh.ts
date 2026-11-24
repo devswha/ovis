@@ -20,6 +20,7 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
+import { MEMORY_ZH } from "./i18n/memory.zh.ts";
 
 /**
  * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
@@ -98,6 +99,19 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
   "The account service could not be reached. The PCs this device is paired with still work.": "无法连接账户服务。已与此设备配对的 PC 仍可正常使用。",
   "Add a new device?": "要添加新设备吗？",
+  "{device} was added to {pc} only": "{device} 只添加到了 {pc}",
+  "Update Ovis on that device and sign in there, then try again.": "请在那台设备上更新 Ovis 并登录，然后重试。",
+  "That device was removed from your account. Sign in again on it first.": "那台设备已从账户中移除。请先在那台设备上重新登录。",
+  "The account service cannot change the list right now.": "账户服务目前无法更改列表。",
+  "The account service did not answer. Try again to check.": "账户服务没有响应。请重试以确认。",
+  "This device's clock looks wrong. Check its date and time, then try again.": "此设备的时钟似乎不正确。请检查日期和时间后重试。",
+  "This device cannot change your account's list right now.": "现在无法从此设备更改账户名单。",
+  "Update Ovis on this device, then try again.": "请先更新此设备上的 Ovis，然后重试。",
+  "The sign-in on this device changed since you approved it. Sign in to that account again, then try again.": "批准之后此设备的登录已更改。请重新登录该账户，然后重试。",
+  "Too many devices were added. Try again tomorrow.": "添加的设备过多。请明天再试。",
+  "Not known yet: is {device} in your account?": "尚不清楚：{device} 是否已加入你的账户？",
+  "Too many devices were added just now. Try again in a few minutes.": "刚才添加的设备太多。请过几分钟再试。",
+  "It could not be added to your account. Try again.": "未能添加到你的账户。请重试。",
   "Pair this PC?": "要配对此电脑吗？",
   "This PC could not be verified.": "无法验证此电脑。",
   "Check the number, then approve": "核对数字后再批准",
@@ -255,9 +269,11 @@ const BASE: Record<string, string> = {
   "Add this PC to your account?": "要把这台电脑添加到你的账号吗？",
   "Name the PC gave itself: \"{name}\"": "这台电脑的名称：\"{name}\"",
   "A PC was added to your account with a sign-in code at {time}.": "{time} 有电脑通过登录码添加到了你的账号。",
-  "Add it only if you typed that code on that PC's own screen a moment ago.": "只有你刚才在那台电脑的屏幕上亲自输入了登录码，才添加它。",
+  "Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.": "只有你自己刚开始添加那台电脑，并输入了它显示的代码，才添加它。如果代码是别人给你的，或者不是你发起的，请点“不”。",
   "Add|account pc": "添加",
   "No|account pc": "不",
+  "Expires in {minutes} min": "{minutes} 分钟后过期",
+  "This request ran out. To add this PC, start again on the PC.": "请求已过期。要添加这台电脑，请在那台电脑上重新开始。",
   "{name} was added to your account before this phone joined. Did you add it?": "{name} 在这部手机加入之前已添加到你的账号。是你自己添加的吗？",
   "{name} was added to your account before this device joined. Did you add it?": "{name} 在这台设备加入之前已添加到你的账号。是你自己添加的吗？",
   "Yes|account pc": "是",
@@ -269,6 +285,7 @@ const BASE: Record<string, string> = {
   "The PC could not be added. Try again.": "无法添加这台电脑，请重试。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "登录已超过 10 分钟，无法添加。请重新登录。",
   "Sign in on this device to add it.": "请在这台设备上直接登录后再添加。",
+  "This account has added as many PCs as it can today. Try again later.": "这个账号今天能添加的电脑已达上限，请稍后再试。",
   "Sign in again to remove it: your sign-in is more than ten minutes old.": "登录已超过 10 分钟，无法移除。请重新登录。",
   "Sign in on this device to remove it.": "请在这台设备上直接登录后再移除。",
   "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "这个账号没有两步验证信息，无法在这里直接添加。请在电脑屏幕上用数字添加。",
@@ -299,7 +316,6 @@ const BASE: Record<string, string> = {
   "Other PCs": "其他电脑",
   "Unnamed PC": "未命名的电脑",
   "Relay": "中继",
-  "Online": "在线",
   "Off|pc state": "已关闭",
   "Checking…": "正在检查…",
   "relay": "中继",
@@ -308,6 +324,7 @@ const BASE: Record<string, string> = {
   "Via a loopback address: this PC, or a tunnel to it": "经由回环地址：本机，或通往它的隧道",
   "Via the Ovis relay": "经由 Ovis 中继",
   "Directly on the same network, not through the relay": "在同一网络上直接连接，不经过中继",
+  "Directly over Tailscale, not through the relay": "通过 Tailscale 直接连接，不经过中继",
   "Via the Portal relay": "经由 Portal 中继",
   "Via Tailscale": "经由 Tailscale",
   "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
@@ -413,6 +430,9 @@ const BASE: Record<string, string> = {
 
   "Loading…": "正在加载…",
   "Done": "完成",
+  "Forget PCs": "移除电脑",
+  "This page came back without its connection, and this device would not keep its unsent text through a reload. Copy what you need, then reload.": "此页面恢复时已失去连接，且此设备无法在重新加载期间保留未发送的文字。请先复制需要的内容，再重新加载。",
+  "The unsent text is still not kept. Copy it or clear it, then reload.": "未发送的文字仍未保留。请复制或清除后再重新加载。",
   "Name": "名称",
   "Recent": "最近",
   "Needs you": "需回应",
@@ -553,6 +573,7 @@ const BASE: Record<string, string> = {
   "Sign in and add this PC": "登录并添加此电脑",
   "Stop waiting": "停止等待",
   "Manage account": "管理账号",
+  "Account ID": "账号 ID",
   "Plan|account plan": "套餐",
   "On another device of your account, choose Add on {name}.": "在你账号的另一台设备上，为 {name} 选择“添加”。",
   "Sign in again now to add it right away.": "现在重新登录即可立即添加。",
@@ -607,7 +628,6 @@ const BASE: Record<string, string> = {
   "Type the number {name} shows": "输入 {name} 显示的数字",
   "Ready": "就绪",
   "Offline": "离线",
-  "Open": "打开",
   "Connect a PC": "连接电脑",
   "All": "全部",
   "Search": "搜索",
@@ -737,6 +757,12 @@ const BASE: Record<string, string> = {
   "Reload page": "重新加载页面",
   "Stop": "停止",
   "Disconnect": "断开连接",
+  "Confirm": "确认",
+  "Project": "项目",
+  "Add a note": "添加备注",
+  "Note": "备注",
+  "Memory|notes": "记忆",
+  "Stopped by you. The agent that called it cannot give it new work.": "已由你停止 · 调用它的 Agent 无法再给它新任务。",
 };
 
 export const ZH_PARTS: Record<string, Record<string, string>> = {
@@ -758,6 +784,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
+  memory: MEMORY_ZH,
 };
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));

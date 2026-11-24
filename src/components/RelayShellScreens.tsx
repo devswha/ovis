@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronRight, Monitor } from "lucide-react";
 
+import { STORE_PAGES } from "../lib/appShell.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
@@ -16,22 +17,21 @@ import { KeyFingerprintWait } from "./PendingKeys.tsx";
 import { approveOnLine } from "./approveOnLine.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { CodeEntry, ReadyCheckpoint, type RelayShellProps } from "./RelayShell.tsx";
-import { ConnectStart } from "./ConnectStart.tsx";
-import { canScanQr, RelayAddPc } from "./RelayAddPc.tsx";
+import { canScanQr } from "./RelayAddPc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 
 /** Why the plain screen is up (#16): what the person does next on the PC, or why nothing goes on. */
-export type PlainReason = "allow" | "type" | "off" | "declined" | "unanswered" | "removed" | "no-account-pc";
+export type PlainReason = "allow" | "type" | "off" | "declined" | "unanswered" | "removed";
 
 /**
- * #16: the one plain screen a signed-in device shows instead of the connect tabs, app and browser alike: the PC's name,
- * one line with what to do there (press Allow, type this number, turn Ovis on, ask again after a decline or a removal,
- * sign in on a PC), the number when the join shows one, and under it the PC screen's QR way in (a code in a browser) and
- * the other ways to connect. No tabs, no banner, no list.
+ * #16: the one plain screen a signed-in device waits on while the join a launch asked by itself goes on, or after this
+ * device was removed from a PC, app and browser alike: the PC's name, one line with what to do there (press Allow, type
+ * this number, turn Ovis on, ask again after a decline or a removal), the number when the join shows one, and under it
+ * the PC screen's QR way in (a code in a browser). No tabs, no banner, no list.
  */
-export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onCheck, onAskAgain, onOtherWays }: {
-  readonly reason: PlainReason; readonly name: string | null; readonly digits?: string | null; readonly menu?: ReactNode;
-  readonly onQr: () => void; readonly onCheck?: (() => void) | undefined; readonly onAskAgain?: (() => void) | undefined; readonly onOtherWays?: (() => void) | undefined;
+export function PcApprovalWait({ reason, name, digits = null, onQr, onCheck, onAskAgain }: {
+  readonly reason: PlainReason; readonly name: string | null; readonly digits?: string | null;
+  readonly onQr: () => void; readonly onCheck?: (() => void) | undefined; readonly onAskAgain?: (() => void) | undefined;
 }) {
   const t = useT();
   const line = (() => {
@@ -42,7 +42,6 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
       case "declined": return t("Not allowed. Ask again, then press [Allow] on {name}.", { name: name ?? t("this PC") });
       case "unanswered": return t("No answer from {name}", { name: name ?? t("this PC") });
       case "removed": return t("This device was removed from {name}. Ask again to join it.", { name: name ?? t("this PC") });
-      case "no-account-pc": return t("Sign in with the same account on the PC where Ovis runs");
       default: {
         const exhaustive: never = reason;
         return exhaustive;
@@ -52,7 +51,6 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
   const waiting = reason === "allow" || reason === "type";
   return (
     <div className="relay-shell account-centered relay-approval-wait" data-approval-wait={name === null && reason === "off" ? "no-pc" : reason === "allow" || reason === "type" ? "pc" : reason}>
-      {menu !== undefined && <div className="relay-approval-wait-menu">{menu}</div>}
       {name !== null && <h1 className="relay-shell-title">{name}</h1>}
       <p className={reason === "declined" || reason === "unanswered" || reason === "removed" ? "relay-shell-copy add-pc-problem" : "relay-shell-copy"} role={reason === "declined" || reason === "unanswered" || reason === "removed" ? "alert" : "status"}>{line}</p>
       {digits !== null && digits !== "" && <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>}
@@ -60,7 +58,6 @@ export function PcApprovalWait({ reason, name, digits = null, menu, onQr, onChec
       {onAskAgain && <button type="button" className="btn btn-primary" data-action="ask-again" onClick={onAskAgain}>{t("Ask again")}</button>}
       {onCheck && <button type="button" className="btn" data-action="check-again" onClick={onCheck}>{t("Check again")}</button>}
       <button type="button" className="btn btn-ghost account-link" data-action="approval-wait-qr" onClick={onQr}>{canScanQr() ? t("Or scan the QR on the PC's screen") : t("Or pair with a code")}</button>
-      {onOtherWays && <button type="button" className="btn btn-ghost account-link" data-action="other-ways" onClick={onOtherWays}>{t("Other ways to connect")}</button>}
     </div>
   );
 }
@@ -161,9 +158,9 @@ function CopyableCommand({ command }: { readonly command: string }) {
 }
 
 export interface RelayShellCardContentProps {
-  readonly props: RelayShellProps; readonly view: "sign-in" | "pair" | null;
-  readonly signInFirst: boolean; readonly addingPc: boolean;
-  readonly setSignedOutView: (view: "sign-in" | "pair") => void; readonly setAddingPc: (adding: boolean) => void;
+  readonly props: RelayShellProps;
+  /** a saved PC's failure: the button that opens it by another way the phone app saved it by */
+  readonly other?: ReactNode;
 }
 
 /** What continuing agrees to: Ovis's privacy policy (ovis.sh/privacy, in English and Korean), linked. */
@@ -207,26 +204,14 @@ function PairConfirm({ state, pc, onPair }: { state: Extract<RelayShellProps["st
   );
 }
 
-/** Where a PC's QR code is, for a page with no scanner of its own, and the way to pair with a code instead. */
-export function ScanQrStep({ onCodeStart, back }: { readonly onCodeStart: () => void; readonly back: ReactNode }) {
-  const t = useT();
-  return (
-    <>
-      <h1 className="relay-shell-title">{t("Scan the QR code on your PC")}</h1>
-      <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and scan the QR code.")}</p>
-      <div className="relay-shell-actions"><button type="button" className="btn btn-primary" data-action="add-code" onClick={onCodeStart}>{t("Pair with a code")}</button>{back}</div>
-    </>
-  );
-}
-
-export function RelayShellCardContent({ props, view, signInFirst, addingPc, setSignedOutView, setAddingPc }: RelayShellCardContentProps) {
+/**
+ * What the card says on every screen but the front page (RelayShell draws My PCs and Add a PC itself): a pairing's steps,
+ * a code typed in, a failure, an update, and the list of this device's pairings on a relay with no accounts.
+ */
+export function RelayShellCardContent({ props, other = null }: RelayShellCardContentProps) {
   const { state, pcStatus, onCheckPcs, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch, onCodeStart, onCodeSubmit, onCodeMatch, onOpenPc, onSignIn, accountProviders } = props;
   const t = useT();
   const account = (state.kind === "list" || state.kind === "empty") && onSignIn ? state.account ?? null : null;
-  const signingIn = account?.kind === "signing-in";
-  const signInError = account?.kind === "signed-out" ? account.error : null;
-  const signIn = (account?.kind === "signed-out" || signingIn) && onSignIn
-    ? <AccountSignIn onSignIn={onSignIn} error={signInError} notice={account?.kind === "signed-out" ? (account.notice ?? null) : null} busy={signingIn} busyProvider={signingIn ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null} {...(accountProviders ? { providers: accountProviders } : {})} /> : null;
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;
   const pc = name ?? t("this PC");
@@ -236,7 +221,7 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
   const failure = state.kind === "failed" ? relayFailureText(t, state.failure, pc, state.detail) : null;
   // a marked pairing that stopped for a sign-in signs in right here, and goes on after it without a new scan
   const pairSignIn = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn ? state.account ?? null : undefined;
-  const statusText = signingIn ? t("Signing in…") : state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? (state.approved ? t("Approved. {name} opens in a moment.", { name: pc }) : t("Connecting to {name}…", { name: pc }))
+  const statusText = state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? (state.approved ? t("Approved. {name} opens in a moment.", { name: pc }) : t("Connecting to {name}…", { name: pc }))
     : state.kind === "compare" && state.confirmed ? t("Approve this device on {name} within 90 seconds to finish.", { name: pc })
     : state.kind === "outdated" && state.update.phase === "reading" ? t("Checking {name}…", { name: pc })
     : state.kind === "outdated" && state.update.phase === "installing" ? (progress ? `${progress.step}: ${t(progress.label)}` : t("Asking the PC to update…"))
@@ -253,15 +238,6 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
     <>
       <div className="visually-hidden" role="status">{announcedStatus}</div>
       {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} state={state} retry={onRetry} />}
-      {signInFirst && (
-        <ConnectStart devices={state.kind === "list" ? state.devices : []} onForget={props.onForgetSaved} relay={(
-          <>
-            {signIn}
-            <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>
-            <button type="button" className="btn btn-ghost account-link connect-start-code" data-action="add-code" disabled={signingIn} onClick={onCodeStart}>{t("Pair with a code")}</button>
-          </>
-        )} />
-      )}
       {state.kind === "list" && account === null && (
         <>
           <h1 className="relay-shell-title">{t("Your PCs")}</h1>
@@ -286,14 +262,6 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
           <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
         </>
       )}
-      {(account === null ? state.kind === "empty" : view === "pair" && !addingPc) && (
-        <RelayAddPc
-          onBack={account ? () => setSignedOutView("sign-in") : scoped ? onBack : undefined}
-          devices={state.kind === "list" ? state.devices : []}
-          qr={(qrBack) => <ScanQrStep onCodeStart={onCodeStart} back={<button type="button" className="btn btn-ghost" onClick={qrBack}>{t("Back")}</button>} />}
-        />
-      )}
-      {account && addingPc && <ScanQrStep onCodeStart={onCodeStart} back={<button type="button" className="btn btn-ghost" onClick={() => setAddingPc(false)}>{t("Back")}</button>} />}
       {(state.kind === "code-entry" || state.kind === "code-looking") && (
         <CodeEntry failure={state.kind === "code-entry" ? state.failure : null} looking={state.kind === "code-looking"} onSubmit={onCodeSubmit} back={<button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>} />
       )}
@@ -369,7 +337,7 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
               {state.mismatch && <KeyIds mismatch={state.mismatch} named="paired" />}
               <div className="relay-shell-actions"><button type="button" className="btn btn-danger" onClick={onForget}>{t("Forget this PC")}</button>{back}</div>
             </>
-          ) : (failure.retry || back) && <div className="relay-shell-actions">{failure.retry && retry}{back}</div>}
+          ) : (failure.retry || back || other) && <div className="relay-shell-actions">{failure.retry && retry}{other}{back}</div>}
         </>
       )}
       {state.kind === "outdated" && (
@@ -382,6 +350,16 @@ export function RelayShellCardContent({ props, view, signInFirst, addingPc, setS
           {state.update.phase === "installing" && <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{progress ? `${progress.step}: ${t(progress.label)}` : t("Asking the PC to update…")}</p></div>}
           {state.update.phase === "restarting" && <div className="relay-shell-wait"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Waiting for {name} to restart…", { name: pc })}</p></div>}
           {state.update.phase === "failed" && <><p className="relay-shell-copy relay-shell-more">{t("The update did not finish.")}</p>{state.update.detail !== null && <p className="relay-shell-detail"><code>{state.update.detail}</code></p>}<div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onUpdate}>{t("Update now")}</button>{back}</div></>}
+        </>
+      )}
+      {state.kind === "app-outdated" && (
+        <>
+          <h1 className="relay-shell-title">{t("Update the app")}</h1>
+          <p className="relay-shell-copy">{t("{name} needs a newer version of this app.", { name: pc })}</p>
+          <div className="relay-shell-actions">
+            {state.platform !== null && <ExternalLink kind="link" className="btn btn-primary" href={STORE_PAGES[state.platform]}>{t("Open the store")}</ExternalLink>}
+            {back ?? <button type="button" className="btn btn-ghost" onClick={onCancel}>{t("Back")}</button>}
+          </div>
         </>
       )}
       {state.kind === "forged" && (

@@ -20,6 +20,7 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
+import { MEMORY_JA } from "./i18n/memory.ja.ts";
 
 /**
  * Japanese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -96,6 +97,19 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "サインインが終了しました。アカウントのすべての PC を表示するには、もう一度サインインしてください。",
   "The account service could not be reached. The PCs this device is paired with still work.": "アカウントサービスに接続できません。このデバイスとペアリング済みの PC はそのまま使えます。",
   "Add a new device?": "新しいデバイスを追加しますか？",
+  "{device} was added to {pc} only": "{device} は {pc} にだけ追加されました",
+  "Update Ovis on that device and sign in there, then try again.": "そのデバイスで Ovis を更新してログインし、もう一度お試しください。",
+  "That device was removed from your account. Sign in again on it first.": "そのデバイスはアカウントから削除されています。先にそのデバイスでもう一度ログインしてください。",
+  "The account service cannot change the list right now.": "現在、アカウントサービスはリストを変更できません。",
+  "The account service did not answer. Try again to check.": "アカウントサービスが応答しませんでした。もう一度試して確認してください。",
+  "This device's clock looks wrong. Check its date and time, then try again.": "この端末の時計がずれているようです。日付と時刻を確認して、もう一度お試しください。",
+  "This device cannot change your account's list right now.": "今はこの端末からアカウントの名簿を変更できません。",
+  "Update Ovis on this device, then try again.": "この端末の Ovis を更新してから、もう一度お試しください。",
+  "The sign-in on this device changed since you approved it. Sign in to that account again, then try again.": "承認した後にこの端末のサインインが変わりました。そのアカウントにもう一度サインインしてから、もう一度お試しください。",
+  "Too many devices were added. Try again tomorrow.": "追加した端末が多すぎます。明日もう一度お試しください。",
+  "Not known yet: is {device} in your account?": "まだ分かりません: {device} はアカウントに追加されましたか?",
+  "Too many devices were added just now. Try again in a few minutes.": "デバイスの追加が短時間に多すぎます。数分後にもう一度お試しください。",
+  "It could not be added to your account. Try again.": "アカウントに追加できませんでした。もう一度お試しください。",
   "Pair this PC?": "このPCをペアリングしますか？",
   "This PC could not be verified.": "このPCを確認できませんでした。",
   "Check the number, then approve": "番号を確かめてから承認してください",
@@ -253,9 +267,11 @@ const BASE: Record<string, string> = {
   "Add this PC to your account?": "この PC をアカウントに追加しますか？",
   "Name the PC gave itself: \"{name}\"": "この PC の名前: \"{name}\"",
   "A PC was added to your account with a sign-in code at {time}.": "{time} にサインインコードで PC がアカウントに追加されました。",
-  "Add it only if you typed that code on that PC's own screen a moment ago.": "その PC の画面でさきほど自分でコードを入力した場合だけ追加してください。",
+  "Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.": "その PC の追加を自分で始めて、その PC に表示されたコードを入力した場合だけ追加してください。ほかの人からコードを渡された場合や、自分で始めていない場合は「いいえ」を押してください。",
   "Add|account pc": "追加",
   "No|account pc": "いいえ",
+  "Expires in {minutes} min": "あと {minutes} 分で期限切れ",
+  "This request ran out. To add this PC, start again on the PC.": "リクエストの期限が切れました。追加するには、その PC でもう一度始めてください。",
   "{name} was added to your account before this phone joined. Did you add it?": "{name}は、このスマホが加わる前にアカウントに追加されました。ご自身で追加しましたか？",
   "{name} was added to your account before this device joined. Did you add it?": "{name}は、このデバイスが加わる前にアカウントに追加されました。ご自身で追加しましたか？",
   "Yes|account pc": "はい",
@@ -267,6 +283,7 @@ const BASE: Record<string, string> = {
   "The PC could not be added. Try again.": "PC を追加できませんでした。もう一度お試しください。",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "サインインから 10 分以上たっているため追加できません。もう一度サインインしてください。",
   "Sign in on this device to add it.": "追加するには、このデバイスで直接サインインしてください。",
+  "This account has added as many PCs as it can today. Try again later.": "このアカウントで今日追加できる PC の上限に達しました。後でもう一度お試しください。",
   "Sign in again to remove it: your sign-in is more than ten minutes old.": "サインインから 10 分以上たっているため外せません。もう一度サインインしてください。",
   "Sign in on this device to remove it.": "外すには、このデバイスで直接サインインしてください。",
   "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "このアカウントには 2 段階認証の情報がないため、ここからは追加できません。PC の画面で番号を使って追加してください。",
@@ -297,7 +314,6 @@ const BASE: Record<string, string> = {
   "Other PCs": "ほかの PC",
   "Unnamed PC": "名前のないPC",
   "Relay": "リレー",
-  "Online": "オンライン",
   "Off|pc state": "オフ",
   "Checking…": "確認しています…",
   "relay": "リレー",
@@ -306,6 +322,7 @@ const BASE: Record<string, string> = {
   "Via a loopback address: this PC, or a tunnel to it": "ループバックアドレス経由: このPC、またはそこへのトンネル",
   "Via the Ovis relay": "Ovis リレー経由",
   "Directly on the same network, not through the relay": "同じネットワークでリレーを通さず直接接続",
+  "Directly over Tailscale, not through the relay": "Tailscaleでリレーを通さず直接接続",
   "Via the Portal relay": "Portal リレー経由",
   "Via Tailscale": "Tailscale 経由",
   "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
@@ -408,6 +425,9 @@ const BASE: Record<string, string> = {
 
   "Loading…": "読み込んでいます…",
   "Done": "完了",
+  "Forget PCs": "PC を削除",
+  "This page came back without its connection, and this device would not keep its unsent text through a reload. Copy what you need, then reload.": "この画面は接続がないまま戻りました。この端末は再読み込みのあいだ未送信のテキストを保持できませんでした。必要な分をコピーしてから再読み込みしてください。",
+  "The unsent text is still not kept. Copy it or clear it, then reload.": "未送信のテキストはまだ保持されていません。コピーするか消してから再読み込みしてください。",
   "Name": "名前",
   "Recent": "最近",
   "Needs you": "応答待ち",
@@ -548,6 +568,7 @@ const BASE: Record<string, string> = {
   "Sign in and add this PC": "サインインしてこのPCを追加",
   "Stop waiting": "待機をやめる",
   "Manage account": "アカウント管理",
+  "Account ID": "アカウント ID",
   "Plan|account plan": "プラン",
   "On another device of your account, choose Add on {name}.": "アカウントの別のデバイスで {name} の「追加」を選んでください。",
   "Sign in again now to add it right away.": "今サインインし直すと、すぐ追加できます。",
@@ -602,7 +623,6 @@ const BASE: Record<string, string> = {
   "Type the number {name} shows": "{name} に表示された番号を入力してください",
   "Ready": "準備完了",
   "Offline": "オフライン",
-  "Open": "開く",
   "Connect a PC": "PC を接続",
   "All": "すべて",
   "Search": "検索",
@@ -732,6 +752,12 @@ const BASE: Record<string, string> = {
   "Reload page": "ページを再読み込み",
   "Stop": "停止",
   "Disconnect": "切断",
+  "Confirm": "確認",
+  "Project": "プロジェクト",
+  "Add a note": "メモを追加",
+  "Note": "メモ",
+  "Memory|notes": "メモリー",
+  "Stopped by you. The agent that called it cannot give it new work.": "あなたが停止 · 呼び出したエージェントは新しい作業を渡せません。",
 };
 
 export const JA_PARTS: Record<string, Record<string, string>> = {
@@ -753,6 +779,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_JA,
   dashboard: DASHBOARD_JA,
   "runtime-move": RUNTIME_MOVE_JA,
+  memory: MEMORY_JA,
 };
 
 export const JA: Record<string, string> = Object.assign({}, ...Object.values(JA_PARTS));

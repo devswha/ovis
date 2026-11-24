@@ -5,13 +5,14 @@
  *   bun tui/testing/run.ts [--fixture demo|agents|machines|scale] [--size COLSxROWS] [--keys <list>] [--dump]
  *     [--cut-line] [--crash]
  *
- * `--keys` types a comma-separated list once every shown pane is live (`enter`, `tab`, `esc`, `space`, `backspace`,
- * `up`, `down`, `left`, `right`, `ctrl+<letter>` are keys; anything else is typed as written). `--dump` prints the final
+ * `--keys` types a comma-separated list once every shown pane is live, one read per item (tui/testing/keys.ts: keys,
+ * mouse reports such as `click@30:5`, anything else typed as written). `--dump` prints the final
  * cell grid as text, one line a row. `--cut-line` ends the fake core's line after the first frame. `--crash` forces an
  * unexpected error after the keys (one write the host refuses with EBADF) and writes the crash record the entry would,
  * into OVIS_TUI_STATE_DIR. Exit code 2 for a wrong call. Nothing here waits for real time but the socket's own turns.
  */
 
+import type { OvisServer } from "../core/ovis-server.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,12 +22,14 @@ import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { connectCoreSocket } from "../../server/herdr-core/socket-transport.ts";
 import { crashRecord, recordCrash } from "../crash.ts";
 import { type Loop, type LoopClock, type LoopEnd, startLoop } from "../loop.ts";
+import type { ViewStore } from "../view-store.ts";
 import { agents } from "./fixtures/agents.ts";
 import { demo } from "./fixtures/demo.ts";
 import type { Fixture } from "./fixtures/fixture.ts";
 import { machines } from "./fixtures/machines.ts";
 import { scale } from "./fixtures/scale.ts";
 import { HeadlessHost } from "./headless-host.ts";
+import { keyBytes } from "./keys.ts";
 
 const FIXTURES: Readonly<Record<string, Fixture>> = { demo, agents, machines, scale };
 
@@ -90,6 +93,17 @@ export interface RunOptions {
   rows?: number;
   /** the host's COLORTERM: "truecolor" by default; anything else is a 256-colour host (tui/host colorDepth) */
   colorTerm?: string;
+  /** where the screen keeps its view per core (a scratch folder's store); none: nothing is kept */
+  views?: ViewStore;
+  /** what the host answers before its DA1 besides the probe's own answers (a background colour, for the light theme) */
+  answerFirst?: string;
+  /** the folder the screen was started from, and the user's home (the loop's `cwd` and `home`) */
+  cwd?: string;
+  home?: string;
+  /** the wall clock the screen reads (the loop's `wall`); unset: the run's own clock, so no test waits on real time */
+  wall?: () => number;
+  /** the Ovis server the launcher named (the loop's `server`) */
+  server?: OvisServer;
 }
 
 export class Run {
@@ -110,9 +124,11 @@ export class Run {
     readonly clock: ManualClock,
     readonly folder: string,
     readonly socket: string,
+    views: ViewStore | undefined,
+    where: Pick<RunOptions, "cwd" | "home" | "wall" | "server"> = {},
   ) {
     this.nextBeat = HEARTBEAT_MS;
-    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path) });
+    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}), ...where, wall: where.wall ?? (() => clock.now()) });
   }
 
   readonly loop: Loop;
@@ -123,8 +139,8 @@ export class Run {
     if (!options.core) fixture?.build(core);
     const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "run-"));
     const socket = join(folder, "hc.sock");
-    const host = new HeadlessHost({ cols: options.cols ?? 120, rows: options.rows ?? 40, colorTerm: options.colorTerm ?? "truecolor", answer: PROBE_ANSWER });
-    const run = new Run(core, host, new ManualClock(), folder, socket);
+    const host = new HeadlessHost({ cols: options.cols ?? 120, rows: options.rows ?? 40, colorTerm: options.colorTerm ?? "truecolor", answer: (options.answerFirst ?? "") + PROBE_ANSWER });
+    const run = new Run(core, host, new ManualClock(), folder, socket, options.views, { cwd: options.cwd, home: options.home, wall: options.wall, server: options.server });
     try {
       await run.listen();
       await run.settle();
@@ -314,18 +330,6 @@ export class Run {
   }
 }
 
-const KEYS: Record<string, string> = {
-  enter: "\r", tab: "\t", esc: "\x1b", space: " ", backspace: "\x7f", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D",
-};
-
-function keyBytes(item: string): string {
-  const named = KEYS[item];
-  if (named !== undefined) return named;
-  const ctrl = /^ctrl\+([a-z])$/.exec(item);
-  if (ctrl) return String.fromCharCode(ctrl[1]!.charCodeAt(0) - 96);
-  return item;
-}
-
 /** `COLSxROWS` within what an emulator takes (1x1 to 1000x500), or null. */
 function parseSize(text: string): { cols: number; rows: number } | null {
   const match = /^(\d{1,4})x(\d{1,4})$/.exec(text);
@@ -380,7 +384,8 @@ async function main(argv: string[]): Promise<number> {
   if (choice.dump) process.stdout.write(`${run.grid().join("\n")}\n`);
   const report = run.loop.report();
   const end = await run.close();
-  process.stderr.write(`fixture=${choice.fixture} size=${choice.size.cols}x${choice.size.rows} passes=${report.passes} writes=${report.writes} link=${report.link.kind}${report.link.code ? `:${report.link.code}` : ""} end=${end.kind} maxArmed=${run.clock.maxArmed}\n`);
+  const docSets = run.core.calls().filter((call) => call.method === "doc.set").length;
+  process.stderr.write(`fixture=${choice.fixture} size=${choice.size.cols}x${choice.size.rows} passes=${report.passes} writes=${report.writes} link=${report.link.kind}${report.link.code ? `:${report.link.code}` : ""} end=${end.kind} maxArmed=${run.clock.maxArmed} doc.set=${docSets}\n`);
   return 0;
 }
 

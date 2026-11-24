@@ -99,6 +99,8 @@ describe.each([["Korean", KO, ["업데이트", "갱신"]], ["Japanese", JA, ["�
     const journey = [
       "Update needed",
       "Update Ovis on {name}",
+      "Update the app",
+      "{name} needs a newer version of this app.",
       "Update it from here: the PC installs the latest release and restarts Ovis, then this app reconnects.",
       "Update now",
       "Its Ovis does not update itself. On the PC, run the installer:",
@@ -136,7 +138,7 @@ describe.each(Object.entries(DICTIONARIES))("%s dictionary", (_name, dictionary)
 
   it("is not just the English repeated", () => {
     const themeNames = ["Codex", "Catppuccin", "Catppuccin Latte", "Tokyo Night", "Tokyo Night Day", "Gruvbox", "Gruvbox Light", "One Dark", "One Light", "Solarized", "Solarized Light", "Kanagawa", "Kanagawa Lotus", "Rosé Pine", "Rosé Pine Dawn", "Dracula", "Nord", "Vesper"];
-    const sameOnPurpose = new Set(["PC {name}", "CPU", "CPU {value}", "Control C", "Control D", "Control Z", "Shift Tab", "Enter", "Shell", "Agent", "Ultracode", ...themeNames]);
+    const sameOnPurpose = new Set(["PC {name}", "SSH PC", "CPU", "CPU {value}", "Control C", "Control D", "Control Z", "Shift Tab", "Enter", "Shell", "Agent", "Ultracode", ...themeNames]);
     const same = Object.entries(dictionary).filter(([en, text]) => en === text && /[a-z]{3}/i.test(en) && !sameOnPurpose.has(en));
     expect(same.map(([en]) => en)).toEqual([]);
   });
@@ -155,11 +157,12 @@ const PART_FILES: Record<string, string[]> = {
   usage: ["components/UsageAccountDialog.tsx", "components/UsageSignInDialog.tsx", "components/UsageLocalLogin.tsx", "components/UsageHubConnect.tsx", "components/CLIProxyLogin.tsx", "components/UsageMeters.tsx", "components/UsageRemoveAccount.tsx", "lib/usage.ts"],
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
   palette: ["components/CommandPalette.tsx"],
-  setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
+  setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx", "components/AgentCallsRows.tsx"],
   relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/NoPcOnline.tsx", "components/RelayAddPc.tsx", "components/ConnectStart.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
   guide: ["components/SetupGuide.tsx", "components/RelayOnlyWarning.tsx"],
   dashboard: ["components/AddPcSheet.tsx", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
+  memory: ["components/MemorySettings.tsx"],
 };
 
 const PARTS = { Korean: [KO, KO_PARTS], Japanese: [JA, JA_PARTS], Chinese: [ZH, ZH_PARTS] } as const;

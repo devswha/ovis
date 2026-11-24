@@ -14,6 +14,13 @@ import com.getcapacitor.annotation.PermissionCallback;
 @CapacitorPlugin(name = "HerdrShell", permissions = { @Permission(alias = "camera", strings = { Manifest.permission.CAMERA }) })
 public class HerdrShellPlugin extends Plugin {
     private final PCStore.Openings openings = new PCStore.Openings();
+
+    /** Capacitor loads its plugins before the WebView's first page: what that page must have from its start is added here. */
+    @Override
+    public void load() {
+        if (getActivity() instanceof MainActivity) ((MainActivity) getActivity()).beforeFirstPage(getBridge());
+    }
+
     @PluginMethod
     public void getState(PluginCall call) {
         JSObject state = new JSObject();
@@ -25,16 +32,75 @@ public class HerdrShellPlugin extends Plugin {
         state.put("current", current == null ? "" : current);
         state.put("last", last == null ? "" : last);
         state.put("choosing", PCStore.choosing && current != null);
+        MainActivity activity = (MainActivity) getActivity();
+        // the page asking is the hosted Connect a PC screen, opened without being the current PC (Home)
+        state.put("home", activity != null && activity.atHome());
+        // the page asking is the app's own, standing in for the hosted screen that did not load: Try again is goHome
+        state.put("fallback", activity != null && activity.fallback());
+        // where the page's own way back leads, as the phone's Back does with nothing behind the page: "current"
+        // (backToCurrent), "home" (goHome) or nowhere
+        state.put("back", activity == null ? "" : activity.backWay());
+        // the app's own page was asked for to manage an SSH PC (Change PC where one did not open): it opens on SSH
+        state.put("manage", activity != null && activity.manages());
         state.put("failure", PCStore.failure == null ? "" : PCStore.failure);
         state.put("kind", PCStore.failureKind == null ? "" : PCStore.failureKind);
         state.put("command", PCStore.failureCommand == null ? "" : PCStore.failureCommand);
+        // the relay ID each saved PC's own page said it has, for My PCs to list a PC saved by several ways once: only to
+        // the app's own pages, never to a PC's page, which has this bridge too
+        org.json.JSONObject ids = Home.shownIds(loadedUrl(), showingConnectScreen(), BuildConfig.APP_ORIGIN, PCStore.ids(getContext()));
+        if (ids != null) state.put("ids", ids);
         call.resolve(state);
+    }
+
+    /** The address of the page loaded now, read on the UI thread, or null when it does not answer in time. */
+    private String loadedUrl() {
+        if (getActivity() == null) return null;
+        java.util.concurrent.CompletableFuture<String> loaded = new java.util.concurrent.CompletableFuture<>();
+        getActivity().runOnUiThread(() -> loaded.complete(getBridge().getWebView().getUrl()));
+        try {
+            return loaded.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception unanswered) {
+            return null;
+        }
+    }
+
+    /**
+     * A PC's own page says which PC it is: `server_id`, its relay ID as its own /api/health gave it to that page, and
+     * `name`. Kept only for the saved PC the app shows when the page loaded now is on that PC's own address
+     * (Home.identifiedKey), so a page speaks for its own PC alone, never for another saved one; My PCs then lists that PC
+     * once with the relay row of the same ID.
+     */
+    @PluginMethod
+    public void identify(PluginCall call) {
+        String key = Home.identifiedKey(loadedUrl(), PCStore.current(getContext()), BuildConfig.APP_ORIGIN);
+        if (key == null) {
+            call.reject("Only a saved PC's own page says which PC it is.");
+            return;
+        }
+        PCStore.identify(getContext(), key, call.getString("server_id"), call.getString("name"));
+        call.resolve();
     }
 
     /** url: an http or https address, the first page (a pairing link's code or a relay pairing offer's fragment included). */
     @PluginMethod
     public void open(PluginCall call) {
         String text = call.getString("url");
+        MainActivity shown = (MainActivity) getActivity();
+        // the word "demo" as the hosted screen's address field sends it: the bundled demo, as on the app's own page.
+        // Only there: anywhere else that address is a PC's, as it always was
+        if (Home.opensDemo(text, shown != null && shown.atHome())) {
+            openDemo(call);
+            return;
+        }
+        // the hosted app's front page (a sign-in from the app's own page, its saved row): an attempt at the hosted
+        // screen, which makes nothing the current PC before it loaded
+        String start = BuildConfig.HOME_HOSTED ? Home.homeStart(text, BuildConfig.APP_ORIGIN) : null;
+        if (start != null && shown != null) {
+            openings.cancel();
+            call.resolve();
+            shown.runOnUiThread(() -> shown.homeAttempt(start));
+            return;
+        }
         String key = text == null ? null : PCStore.origin(text);
         if (key == null) {
             call.reject("That is not an http or https address.");
@@ -68,30 +134,31 @@ public class HerdrShellPlugin extends Plugin {
         }, "ovis-check").start();
     }
 
+    /**
+     * Opens the PC, on the UI thread in one turn with the activity's leaving, so nothing the page still does (a relay
+     * PC's page landing in the hosted screen) can be written over it in between. An open that was cancelled, or that
+     * answers once the app is already going elsewhere (Try again, another open), writes nothing.
+     */
     private void openChecked(PluginCall call, String key, String text, String name, int mine, long answerBy) {
-        synchronized (openings) {
-            android.app.Activity activity = getActivity();
-            if (!openings.current(mine) || activity == null || activity.isFinishing() || activity.isDestroyed()) {
-                call.reject("Cancelled", "cancelled");
-                return;
-            }
-            if (name != null && !name.isEmpty()) PCStore.setName(getContext(), key, name.length() > 64 ? name.substring(0, 64) : name);
-            PCStore.open(getContext(), key, text);
-            PCStore.fail(null, null);
-            PCStore.redirects = 0;
-            PCStore.answerBy = answerBy;
+        MainActivity activity = (MainActivity) getActivity();
+        if (activity == null) {
+            call.reject("Cancelled", "cancelled");
+            return;
         }
-        call.resolve();
-        android.app.Activity activity = getActivity();
         activity.runOnUiThread(() -> {
             synchronized (openings) {
-                if (!openings.current(mine)) {
-                    PCStore.setCurrent(getContext(), null);
-                    PCStore.answerBy = 0;
+                if (!openings.current(mine) || activity.isFinishing() || activity.isDestroyed() || activity.leaving()) {
+                    call.reject("Cancelled", "cancelled");
                     return;
                 }
+                if (name != null && !name.isEmpty()) PCStore.setName(getContext(), key, Home.capped(name, 64));
+                PCStore.open(getContext(), key, text);
+                PCStore.fail(null, null);
+                PCStore.redirects = 0;
+                PCStore.answerBy = answerBy;
             }
-            ((MainActivity) activity).reopen();
+            call.resolve();
+            activity.reopen();
         });
     }
 
@@ -164,9 +231,9 @@ public class HerdrShellPlugin extends Plugin {
     }
 
     /**
-     * From any page of the app, a PC's (the hosted app's) included: the app's own connect screen, on Direct with
-     * `target` (an SSH login, user@host[:port], or empty) in its field. Nothing is added here, and no PC page is given
-     * OvisSsh: the connect screen, an app page, takes the login to the SSH setup screen, where the person adds the PC.
+     * From the hosted app (Add a PC's SSH) or the app's own page: the SSH setup screen over that page, with `target` (an
+     * SSH login, user@host[:port], or empty) filled in (MainActivity.openSshSetup). Nothing is added here, and the page
+     * is given no OvisSsh: the person adds the PC on the setup screen, and Back there returns to the page as it was.
      */
     @PluginMethod
     public void openSshSetup(PluginCall call) {
@@ -181,7 +248,7 @@ public class HerdrShellPlugin extends Plugin {
         } catch (Exception unanswered) {
             url = null;
         }
-        if (!SshPcs.setupOpener(url, showingConnectScreen())) {
+        if (!SshPcs.setupOpener(url, showingConnectScreen(), BuildConfig.APP_ORIGIN)) {
             call.reject("Only the app's own pages open the SSH setup.");
             return;
         }
@@ -190,24 +257,9 @@ public class HerdrShellPlugin extends Plugin {
             call.reject("That is not an SSH login.");
             return;
         }
-        PCStore.sshSetup = target;
-        PCStore.setCurrent(getContext(), null);
+        openings.cancel();
         call.resolve();
-        reopen();
-    }
-
-    /** The connect screen's alone: the SSH login a page asked it to open with (openSshSetup), taken once. */
-    @PluginMethod
-    public void takeSshSetup(PluginCall call) {
-        String target = null;
-        if (showingConnectScreen()) {
-            target = PCStore.sshSetup;
-            PCStore.sshSetup = null;
-        }
-        JSObject result = new JSObject();
-        result.put("asked", target != null);
-        result.put("target", target == null ? "" : target);
-        call.resolve(result);
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).openSshSetup(target));
     }
 
     /**
@@ -230,16 +282,19 @@ public class HerdrShellPlugin extends Plugin {
         call.resolve(result);
     }
 
+    /** Change PC: in the demo the app opened (openDemo) it leaves the demo alone, and the PC it was opened over stays current. */
     @PluginMethod
     public void disconnect(PluginCall call) {
-        PCStore.setCurrent(getContext(), null);
+        openings.cancel();
         call.resolve();
-        reopen();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).disconnect());
     }
 
     /** A PC page's Connect a PC: the connect screen, the current PC kept until another opens (PCStore.choosing). */
     @PluginMethod
     public void chooseAnother(PluginCall call) {
+        // an address still being asked whether it is Ovis must not open over the screen this goes to
+        openings.cancel();
         call.resolve();
         getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).chooseAnother());
     }
@@ -247,14 +302,35 @@ public class HerdrShellPlugin extends Plugin {
     /** The connect screen's way back to the PC it was opened from to choose another way. */
     @PluginMethod
     public void backToCurrent(PluginCall call) {
+        // an address still being asked whether it is Ovis must not open over the screen this goes to
+        openings.cancel();
         call.resolve();
         getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).backToCurrent());
+    }
+
+    /** The hosted Connect a PC screen again: Try again on the app's own page standing in for it (getState's `fallback`). */
+    @PluginMethod
+    public void goHome(PluginCall call) {
+        // an address still being asked whether it is Ovis must not open over the screen this goes to
+        openings.cancel();
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).goHome());
+    }
+
+    /** The bundled demo, which only the app can open: a page of another origin cannot reach the app's own files. */
+    @PluginMethod
+    public void openDemo(PluginCall call) {
+        // an address still being asked whether it is Ovis must not open over the screen this goes to
+        openings.cancel();
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).openDemo());
     }
 
     @PluginMethod
     public void retry(PluginCall call) {
         // a Tailscale check the person has just approved: the PC's tunnel signs in again
         SshTunnels.resume(PCStore.current(getContext()));
+        openings.cancel();
         PCStore.fail(null, null);
         PCStore.redirects = 0;
         call.resolve();

@@ -20,6 +20,7 @@ import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
 import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
+import { MEMORY_KO } from "./i18n/memory.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -94,6 +95,19 @@ const BASE: Record<string, string> = {
   "Your sign-in ended. Sign in again to see every PC of your account.": "로그인이 끝났습니다. 계정의 PC를 모두 보려면 다시 로그인하세요.",
   "The account service could not be reached. The PCs this device is paired with still work.": "계정 서비스에 연결할 수 없습니다. 이 기기와 연결된 PC는 그대로 쓸 수 있습니다.",
   "Add a new device?": "새 기기를 추가할까요?",
+  "{device} was added to {pc} only": "{device} 기기는 {pc}에만 추가됐어요",
+  "Update Ovis on that device and sign in there, then try again.": "그 기기에서 Ovis를 업데이트하고 로그인한 뒤 다시 시도하세요.",
+  "That device was removed from your account. Sign in again on it first.": "그 기기는 계정에서 제거됐어요. 먼저 그 기기에서 다시 로그인하세요.",
+  "The account service cannot change the list right now.": "지금은 계정 서비스가 목록을 바꿀 수 없어요.",
+  "The account service did not answer. Try again to check.": "계정 서비스가 응답하지 않았어요. 다시 시도해 확인하세요.",
+  "This device's clock looks wrong. Check its date and time, then try again.": "이 기기의 시계가 맞지 않는 것 같아요. 날짜와 시간을 확인한 뒤 다시 시도하세요.",
+  "This device cannot change your account's list right now.": "지금은 이 기기에서 계정 명단을 바꿀 수 없어요.",
+  "Update Ovis on this device, then try again.": "이 기기의 Ovis를 업데이트한 뒤 다시 시도하세요.",
+  "The sign-in on this device changed since you approved it. Sign in to that account again, then try again.": "승인한 뒤 이 기기의 로그인이 바뀌었어요. 그 계정으로 다시 로그인한 뒤 다시 시도하세요.",
+  "Too many devices were added. Try again tomorrow.": "기기를 너무 많이 추가했어요. 내일 다시 시도하세요.",
+  "Not known yet: is {device} in your account?": "아직 알 수 없어요: {device} 기기가 계정에 추가됐나요?",
+  "Too many devices were added just now. Try again in a few minutes.": "방금 기기를 너무 많이 추가했어요. 몇 분 뒤에 다시 시도하세요.",
+  "It could not be added to your account. Try again.": "계정에 추가하지 못했어요. 다시 시도하세요.",
   "Pair this PC?": "이 PC를 연결할까요?",
   "This PC could not be verified.": "이 PC를 확인할 수 없어요.",
   "Check the number, then approve": "숫자를 확인한 뒤 승인하세요",
@@ -251,9 +265,11 @@ const BASE: Record<string, string> = {
   "Add this PC to your account?": "이 PC를 내 계정에 추가할까요?",
   "Name the PC gave itself: \"{name}\"": "이 PC 이름: \"{name}\"",
   "A PC was added to your account with a sign-in code at {time}.": "{time}에 로그인 코드로 PC가 계정에 추가됐어요.",
-  "Add it only if you typed that code on that PC's own screen a moment ago.": "방금 그 PC 화면에서 코드를 직접 입력했을 때만 추가하세요.",
+  "Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.": "방금 그 PC를 직접 추가하기 시작했고 그 PC에 나온 코드를 입력했을 때만 추가하세요. 다른 사람이 코드를 줬거나 직접 시작하지 않았다면 아니요를 누르세요.",
   "Add|account pc": "추가",
   "No|account pc": "아니요",
+  "Expires in {minutes} min": "{minutes}분 후 만료",
+  "This request ran out. To add this PC, start again on the PC.": "요청 시간이 지났어요. 추가하려면 그 PC에서 다시 시작하세요.",
   "{name} was added to your account before this phone joined. Did you add it?": "{name}가 이 폰이 들어오기 전에 계정에 추가됐어요. 직접 추가하셨나요?",
   "{name} was added to your account before this device joined. Did you add it?": "{name}가 이 기기가 들어오기 전에 계정에 추가됐어요. 직접 추가하셨나요?",
   "Yes|account pc": "네",
@@ -265,6 +281,7 @@ const BASE: Record<string, string> = {
   "The PC could not be added. Try again.": "PC를 추가하지 못했어요. 다시 시도하세요.",
   "Sign in again to add it: your sign-in is more than ten minutes old.": "로그인한 지 10분이 지나서 추가할 수 없어요. 다시 로그인하세요.",
   "Sign in on this device to add it.": "이 기기에서 직접 로그인해야 추가할 수 있어요.",
+  "This account has added as many PCs as it can today. Try again later.": "오늘은 이 계정에 PC를 더 추가할 수 없어요. 나중에 다시 시도하세요.",
   "Sign in again to remove it: your sign-in is more than ten minutes old.": "로그인한 지 10분이 지나서 뺄 수 없어요. 다시 로그인하세요.",
   "Sign in on this device to remove it.": "이 기기에서 직접 로그인해야 뺄 수 있어요.",
   "This account has no two-step sign-in to add it here. Add it with the number on the PC's screen.": "이 계정은 2단계 로그인 정보가 없어 여기서 바로 추가할 수 없어요. PC 화면에서 숫자로 추가하세요.",
@@ -295,7 +312,6 @@ const BASE: Record<string, string> = {
   "Other PCs": "다른 PC",
   "Unnamed PC": "이름 없는 PC",
   "Relay": "릴레이",
-  "Online": "온라인",
   "Off|pc state": "꺼짐",
   "Checking…": "확인 중…",
   "relay": "릴레이",
@@ -304,6 +320,7 @@ const BASE: Record<string, string> = {
   "Via a loopback address: this PC, or a tunnel to it": "루프백 주소로 연결: 이 PC, 또는 이 PC로 오는 터널",
   "Via the Ovis relay": "Ovis 릴레이를 거쳐 연결",
   "Directly on the same network, not through the relay": "같은 네트워크에서 릴레이 없이 바로 연결",
+  "Directly over Tailscale, not through the relay": "Tailscale로 릴레이 없이 바로 연결",
   "Via the Portal relay": "Portal 릴레이를 거쳐 연결",
   "Via Tailscale": "Tailscale을 거쳐 연결",
   "Via Tailscale, or Funnel from the internet": "Tailscale을 거쳐 연결, 또는 인터넷에서 Funnel로 연결",
@@ -406,6 +423,9 @@ const BASE: Record<string, string> = {
 
   "Loading…": "불러오는 중…",
   "Done": "완료",
+  "Forget PCs": "PC 지우기",
+  "This page came back without its connection, and this device would not keep its unsent text through a reload. Copy what you need, then reload.": "이 화면이 연결 없이 돌아왔고, 이 기기가 새로 고치는 동안 보내지 않은 글을 보관하지 못했어요. 필요한 글을 복사한 뒤 새로 고치세요.",
+  "The unsent text is still not kept. Copy it or clear it, then reload.": "보내지 않은 글을 아직 보관하지 못했어요. 복사하거나 지운 뒤 새로 고치세요.",
   "Name": "이름",
   "Recent": "최근",
   "Needs you": "응답 필요",
@@ -546,6 +566,7 @@ const BASE: Record<string, string> = {
   "Sign in and add this PC": "로그인하고 이 PC 추가",
   "Stop waiting": "그만 기다리기",
   "Manage account": "계정 관리",
+  "Account ID": "계정 ID",
   "Plan|account plan": "요금제",
   "On another device of your account, choose Add on {name}.": "내 계정의 다른 기기에서 {name}의 추가를 고르세요.",
   "Sign in again now to add it right away.": "방금 다시 로그인하면 바로 추가돼요.",
@@ -600,7 +621,6 @@ const BASE: Record<string, string> = {
   "Type the number {name} shows": "{name}에 나온 숫자를 입력하세요",
   "Ready": "준비됨",
   "Offline": "오프라인",
-  "Open": "열기",
   "Connect a PC": "PC 연결",
   "All": "전체",
   "Search": "검색",
@@ -730,6 +750,12 @@ const BASE: Record<string, string> = {
   "Reload page": "페이지 새로고침",
   "Stop": "중지",
   "Disconnect": "연결 끊기",
+  "Confirm": "확인",
+  "Project": "프로젝트",
+  "Add a note": "메모 추가",
+  "Note": "메모",
+  "Memory|notes": "메모리",
+  "Stopped by you. The agent that called it cannot give it new work.": "직접 멈춤 · 이 에이전트를 부른 에이전트는 새 일을 줄 수 없습니다.",
 };
 
 export const KO_PARTS: Record<string, Record<string, string>> = {
@@ -751,6 +777,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_KO,
   dashboard: DASHBOARD_KO,
   "runtime-move": RUNTIME_MOVE_KO,
+  memory: MEMORY_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

@@ -291,6 +291,7 @@ export class FakeHcCore {
   private clock = 0;
   private seq = 0;
   private conflicts = 0;
+  private readonly refusedFolders = new Set<string>();
 
   constructor(options: FakeCoreOptions = {}) {
     this.version = options.version ?? "0.1.18";
@@ -432,6 +433,11 @@ export class FakeHcCore {
     this.conflicts = count;
   }
 
+  /** `terminal.run` in `folder` fails as hc's does for a folder it cannot start a program in (removed, mode 000): `spawn_failed`. */
+  refuseFolder(folder: string): void {
+    this.refusedFolders.add(folder);
+  }
+
   /** A kept terminal's program died by a signal: its streams close, and it waits for `restartTerminal`. */
   lose(terminal: string, signal = 9): void {
     const held = this.held(terminal);
@@ -482,7 +488,16 @@ export class FakeHcCore {
     this.emit("turn", terminal, { state: status.state, turn: record.turn });
   }
 
-  /** How many `size` events are held back on their way (`late`): none once the event loop has turned. */
+  /** While set, every event and heartbeat waits on its line, in order, until `releaseEvents`: a core that answers before it tells. */
+  holdingEvents = false;
+
+  /** What `holdingEvents` held goes out, in order, and events flow again. */
+  releaseEvents(): void {
+    this.holdingEvents = false;
+    for (const line of this.lines.values()) this.release(line);
+  }
+
+  /** How many events are held back on their way (`late` sizes, none once the event loop has turned; `holdingEvents`). */
   heldEvents(): number {
     return [...this.lines.values()].reduce((sum, line) => sum + line.held.length, 0);
   }
@@ -685,6 +700,9 @@ export class FakeHcCore {
   }
 
   private run(params: TerminalRunParams): Terminal {
+    if (typeof params.cwd === "string" && this.refusedFolders.has(params.cwd)) {
+      throw new CallError(-32000, "spawn_failed", `cannot start a program in "${params.cwd}"`, "check that the folder exists and can be entered");
+    }
     if (params.on && !this.machines.some((machine) => machine.name === params.on)) {
       throw new CallError(-32000, "machine_unknown", `unknown machine "${params.on}"`, this.machines.length === 0 ? "no machines yet: hc machine add <ssh-target>" : "see `hc machine list`");
     }
@@ -694,7 +712,7 @@ export class FakeHcCore {
     const terminal: Terminal = {
       address, argv: params.argv ?? (params.line ? ["sh", "-c", params.line] : ["sh"]), cols: size.cols, created_ms: Date.now(), cwd: params.cwd ?? "/",
       die_with_parent: false, exit_code: null, finished_ms: null, identity: "ghostty", keep: params.keep ?? false, labels: { ...params.labels }, name: params.name ?? null,
-      notify: !params.no_notify, parent: null, pid: this.pid(), reason: null, reported: false, rm: params.rm ?? false, rows: size.rows, screen: "exact", signal: null,
+      notify: !params.no_notify, parent: params.parent ?? null, pid: this.pid(), reason: null, reported: false, rm: params.rm ?? false, rows: size.rows, screen: "exact", signal: null,
       state: "live", status: null, status_ms: null, template: null, title: "", turn: 0,
     };
     const held: Held = { terminal, program: this.startProgram(terminal), viewers: [], paint: { body: "", mark: "l", after: "", split: false }, lost: false };
@@ -848,8 +866,8 @@ export class FakeHcCore {
       if (!heard(stream.filter!)) continue;
       stream.carried = true;
       const { line } = stream;
-      if (size && (line.held.length > 0 || this.late?.() === true)) {
-        if (line.held.length === 0) setImmediate(() => this.release(line));
+      if (this.holdingEvents || (size && (line.held.length > 0 || this.late?.() === true))) {
+        if (!this.holdingEvents && line.held.length === 0) setImmediate(() => this.release(line));
         line.held.push({ stream, bytes: lineOf(message) });
         continue;
       }
@@ -860,6 +878,7 @@ export class FakeHcCore {
 
   /** What was held back for `line` (`late`) goes out, in order. */
   private release(line: Line): void {
+    if (this.holdingEvents) return;
     for (const { stream, bytes } of line.held.splice(0)) if (line.channels.get(stream.id) === stream) stream.push(bytes);
   }
 

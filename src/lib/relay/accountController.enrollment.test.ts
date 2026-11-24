@@ -11,13 +11,16 @@ import type { AddRecord } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { PcFetch } from "../account/join.ts";
 import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
-import { memoryAccountStore, memoryLock } from "../account/store.ts";
+import { memoryAccountStore, memoryLock, newKey } from "../account/store.ts";
+import { refusalOf } from "./firstLink.ts";
 import { AccountService, AccountServiceUnreachableError } from "../account/service.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
 import { ConsentChangedError, createAccountController } from "./accountController.ts";
 import { ACCOUNT_SENDS, NETWORK_RETRY_MS, RETRY_AFTER_MAX_MS } from "./networkRetry.ts";
 import { offerOf } from "./shellState.ts";
+import { keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
+import type { MyPc } from "../account/myPcs.ts";
 import { enrollmentOf, type RelayDevice, type ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport } from "./transport.ts";
@@ -39,12 +42,29 @@ describe("account enrollment ownership", () => {
 
   async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly planned?: false; readonly addAtPc?: true; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string;
     readonly accountAnswer?: (route: string, sent: number, init?: RequestInit) => Response | Error | undefined | Promise<Response | Error | undefined>;
-    readonly viewActive?: boolean } = {}) {
+    readonly viewActive?: boolean;
+    /**
+     * an own sign-in made 30 days ago, on an account service with Step 2 on (both clocks agree), with the key it registered
+     * or none; `before`: the account service from before key proofs
+     */
+    readonly old?: { readonly key: boolean; readonly before?: boolean } } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
-    const service = new FakeAccountService();
-    await accountStore.set("session", { service: "https://account.invalid", account: "account", provider: "github", access_token: service.issueToken("account"), refresh_token: "test", expires_at: Date.now() + 3_600_000 });
+    let ahead = 0;
+    const service = new FakeAccountService(() => Date.now() + ahead);
+    const token = service.issueToken("account");
+    await accountStore.set("session", { service: "https://account.invalid", account: "account", provider: "github", access_token: token, refresh_token: "test", expires_at: Date.now() + 3_600_000,
+      ...(options.old === undefined ? {} : { sign_in_id: "this-sign-in", signed_in_at: Date.now() - 30 * 86_400_000 }) });
+    if (options.old !== undefined) {
+      service.opensAll = true;
+      service.pcAddProofs = options.old.before !== true;
+      if (options.old.key) {
+        const registered = await newKey();
+        await accountStore.set("signin_key", { account: "account", sign_in_id: "this-sign-in", key: registered, no: service.registerSessionKey(token, registered.public_spki, "Phone") });
+      }
+      ahead = 30 * 86_400_000;
+    }
     const key = await accountStore.key();
     const original: RelayDevice = { ...offer, device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone", account: "account" };
     const devices = new Map([[offer.server_id, original]]);
@@ -188,6 +208,14 @@ describe("account enrollment ownership", () => {
     run.accountRelease.resolve();
     await run.viewChanged;
     expect(run.controller.state).toEqual({ kind: "signed-out", error: null });
+  });
+
+  it.each(["account", "another"] as const)("drops the account's PCs kept on this device at a leave only when they are the leaving account's (%s)", async (owner) => {
+    const run = await fixture("unused");
+    keepKnownPcs(owner, [{ server_id: "a".repeat(32), name: "Desk", paired: false, join: { server_public_key: "k", relay: "wss://relay.invalid" } } as unknown as MyPc]);
+    const said = await run.controller.leave();
+    expect(said.left).toBe(true);
+    expect(knownPcs(owner)).toEqual(owner === "account" ? [] : [{ server_id: "a".repeat(32), name: "Desk" }]);
   });
 
   it.each(["renewal", "link answer"] as const)("leaves at once while an enrollment of this tab waits on its %s, and names a PC that may still take the key", async (held) => {
@@ -442,6 +470,50 @@ describe("account enrollment ownership", () => {
     expect(enrollmentOf((await run.store.get(run.original.server_id))!)).toBeUndefined();
     expect((await run.controller.prepare({ ...offer, code: "123456" }, signal, later)).accountKey).toBeDefined();
     expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: later })).toEqual({ state: "complete", admitted: 2 });
+  });
+
+  describe("Add and pair, and its enrollment, from an own sign-in made 30 days ago", () => {
+    const marked = (run: Run) => { const { name: _name, ...offer } = offerOf(run.original); return { ...offer, code: "123456", admission: 1 as const }; };
+    const consent = async (run: Run) => (await run.accountStore.get("session"))!;
+
+    it("with the key that sign-in registered, the listing carries its proof and the pairing goes on, with no sign-in again", async () => {
+      const run = await fixture("unused", { old: { key: true } });
+      expect((await run.controller.prepare(marked(run), new AbortController().signal, await consent(run))).accountKey).toBeDefined();
+      expect(run.sent("POST /v1/pcs/challenge")).toHaveLength(1);
+      expect(run.service.pcs("account").map((pc) => [pc.server_id, pc.listed_by_device])).toEqual([[run.original.server_id, false]]);
+    });
+
+    it("with no key to prove, the account service refuses the listing, and the failure screen signs in again in place", async () => {
+      const run = await fixture("unused", { old: { key: false } });
+      const refused = await run.controller.prepare(marked(run), new AbortController().signal, await consent(run)).catch((error: unknown) => error);
+      expect(refusalOf(refused)).toBe("sign-in-first");
+      expect(run.sent("POST /v1/pcs/challenge")).toEqual([]);
+      expect(run.service.pcs("account")).toEqual([]);
+    });
+
+    it("an account service from before key proofs gives no challenge and lists the PC as before", async () => {
+      const run = await fixture("unused", { old: { key: true, before: true } });
+      expect((await run.controller.prepare(marked(run), new AbortController().signal, await consent(run))).accountKey).toBeDefined();
+      expect(run.sent("POST /v1/pcs/challenge")).toHaveLength(1);
+      expect(run.service.pcs("account").map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+    });
+
+    it("the enrollment of a pairing just made from that confirm lists the PC with the key's proof, and completes", async () => {
+      jest.useFakeTimers();
+      const run = await fixture("unused", { old: { key: true } });
+      expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: await consent(run) })).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent("POST /v1/pcs/challenge")).toHaveLength(1);
+      expect(run.service.pcs("account").map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+    });
+
+    it("opening a saved pairing signs nothing: its enrollment lists the PC with no proof, as before while the service's list rule is off", async () => {
+      jest.useFakeTimers();
+      const run = await fixture("unused", { old: { key: true } });
+      run.service.listProofRequired = false;
+      expect(await run.controller.enroll(await run.open(), run.original.server_id, false)).toEqual({ state: "complete", admitted: 2 });
+      expect(run.sent("POST /v1/pcs/challenge")).toEqual([]);
+      expect(run.service.pcs("account").map((pc) => pc.server_id)).toEqual([run.original.server_id]);
+    });
   });
 
   it("says its session is settled only once the link and the renewal are done, and before the rest of the enrollment", async () => {

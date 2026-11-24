@@ -18,7 +18,7 @@ import { handleSeenRequest, type SeenStore } from "./seen.ts";
 import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary, type TailnetNode } from "./tailscale.ts";
 import { handleTailnetNodeRequest, tailnetNodeGate, type TailnetNodes } from "./tailnet-nodes.ts";
 import { TAILSCALE_CONTROLS } from "./dispatch-routes.ts";
-import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
+import { badRequest, errorResponse, jsonResponse, readJsonObject, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
@@ -43,6 +43,8 @@ import type { StopRefusal } from "./runtime-move-service.ts";
 import type { MoveService } from "./runtime-move-service.ts";
 import { handlePushRequest } from "./push.ts";
 import { handlePromptRequest, type OpenCodePromptState } from "./prompt.ts";
+import type { ApprovalHub } from "./approvals/hub.ts";
+import type { AcpChildren } from "./acp/children.ts";
 import { attachableIdentity } from "./pty/sidecar.ts";
 import { runtime } from "./herdr-core/runtime.ts";
 import { handleUpdateRequest, updateRequestAllowed } from "./update-api.ts";
@@ -62,6 +64,8 @@ import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
+import type { ListFollow } from "./account/list-follow.ts";
+import type { AccountWitness } from "./account/witness.ts";
 import { accountDispatchRefusal } from "./account/dispatch-rights.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
 import type { RelayService } from "./relay/service.ts";
@@ -73,11 +77,12 @@ import { handleUserFontsRequest } from "./user-fonts.ts";
 import { USER_FONTS_PATH } from "../shared/user-fonts.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
+import { handleMemoryRequest } from "./memory/routes.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
 import { ACCOUNT_PC_OWNER_ONLY, accountRoster, handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
-import { machinePairingEvents } from "./machine-pairing-events.ts";
+import { machinePairingEvents, remotePairingEvents } from "./machine-pairing-events.ts";
 import { handleJoinSeen, JOIN_SEEN_PATH, type JoinNotices, type JoinViewer } from "./join-notices.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
@@ -92,6 +97,7 @@ import type { CLIProxyRoutes } from "./cliproxy-routes.ts";
 import type { UsageLoginService } from "./usage-login.ts";
 import type { UsageService } from "./usage.ts";
 import type { VoiceService } from "./voice.ts";
+import type { MemoryStore } from "./memory/store.ts";
 
 type PortalStartup = { ok: true } | { ok: false; error: unknown };
 
@@ -117,6 +123,12 @@ export interface RequestServices {
   checkAccountFreshness(): void;
   /** Step 2 (S2-25): the account-joined rows of this PC's relay identity; null with the release flag off. */
   readonly accountRows: ReturnType<typeof accountRowsFor> | null;
+  /** This PC following its account's signed list (server/account/list-follow.ts); null with the release flag off. */
+  readonly accountList: ListFollow | null;
+  /** For how long this PC has let each key of its account in (server/account/witness.ts); null with the release flag off. */
+  readonly accountWitness: AccountWitness | null;
+  /** On a server that follows no list (Step 2 off): looks whether another Ovis on this folder pinned the PC, and then closes this server's account part. Null on a server that follows its list itself. */
+  readonly pinWatch: (() => void) | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */
@@ -131,6 +143,9 @@ export interface RequestServices {
   readonly agentOffered: (kind: string) => Promise<boolean>;
   readonly agentInstaller: AgentInstaller;
   readonly openCodeState: OpenCodePromptState;
+  readonly approvals: ApprovalHub;
+  /** the agents this server drives over ACP (server/acp/children.ts); null off this PC's herdr-core */
+  readonly acp: AcpChildren | null;
   readonly cliProxyRoutes: CLIProxyRoutes;
   readonly usageLogin: UsageLoginService;
   readonly usage: UsageService;
@@ -139,6 +154,8 @@ export interface RequestServices {
   /** the state folder's fonts/, served to every device that may read this PC (server/user-fonts.ts) */
   readonly fontsDir: string;
   readonly voice: VoiceService;
+  /** Settings → Memory's notes for agents (server/memory/store.ts) */
+  readonly memory: MemoryStore;
   readonly browserSnapshot: <S extends SessionSnapshot>(snapshot: S) => S;
   readonly core: ReturnType<typeof createCore>;
   readonly seen: SeenStore;
@@ -199,7 +216,7 @@ const tailscaleCli = (ctx: ServerContext): string | null => ctx.services.tailsca
 const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|docs|image)$|workspace\/(?:diff\/|git\/|directories$|pr(?:$|\/)))/;
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
-  const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
+  const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup } = ctx.services;
   const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage, askFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   if (options.profile === "machine") wordHerdrFailures(machineFailure, machineLayoutReason);
@@ -367,7 +384,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("auth-refusal");
     // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
     if (presented === "held" && pathname !== "/ws" && request.headers.has("authorization")) return presentedTokenHeld(client);
-    return pathname === "/ws" ? new Response("unauthorized", { status: 401 }) : unauthorizedJson(access.level === "none" ? access.reason : "token_required");
+    // this PC's own window is told what it cannot read (the file, the folder), where any other caller hears the general words
+    return pathname === "/ws" ? new Response("unauthorized", { status: 401 })
+      : unauthorizedJson(access.level === "none" ? access.reason : "token_required", ownWindow ? devices.accountError : null);
   }
 
   if (options.profile === "machine" && machineRouteRestricted(pathname, request.method)) {
@@ -429,6 +448,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const ownLink = relayPeer?.provisional === true && request.method === "POST" && pathname === "/api/account/link";
   if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink)) {
     setRequestRoute("watch-refusal");
+    // A device the account's list holds only to watch, asking for the joins that wait at this pinned PC or deciding one:
+    // it is told, in a code of its own, that it is in the list and may not let a device in (relay/routes.ts says the
+    // same to a device that drives with bound power)
+    if (ctx.peer.kind === "relay" && ctx.peer.key !== "" && (pairingDigits && request.method === "GET" || pathname === "/api/relay/pairing" && request.method === "POST")
+      && ctx.services.accountList?.allowsJoins(ctx.peer.key) === false) {
+      return jsonResponse({ error: { code: "list_cannot_allow", message: "This device is in your account's list, but only a device that can add devices to the list may let one in." } }, 403);
+    }
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
   // a text file is edited (read for it and saved) only by a device that drives this PC, here or through it on another PC (file-edit.ts)
@@ -471,6 +497,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if ((pathname === "/api/account/one-press" || pathname === "/api/account/pc-proof") && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
+  }
+  // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
+  // this PC names the list it pins
+  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin") && !ownWindow) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Read this on this PC itself." } }, 403);
   }
   // the list of waiting pairings shows their digits, so it goes only where the approval may come from
   if (access.level === "full" && (access.via === "open" || access.via === "portal") && pathname === "/api/relay/pairings") {
@@ -621,6 +653,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const localRoster = machines && eventsEnabled && listed ? (tell: (rows: Machine[]) => void) => machines.subscribe(event => {
       if (event.type === "machines") tell(accountRoster(herdrSidebar.get(), event.machines));
     }) : undefined;
+    // a device of the account's list hears the joins that wait at this PC over the same socket, when it may let one in
+    const listJoins = localRoster ? remotePairingEvents(ctx) : undefined;
     const presentedKeys = streamKeys(request);
     const issuedKey = useMachineEvents && presentedKeys.length === 0 ? newStreamKey() : null;
     const keys = issuedKey === null ? presentedKeys : [issuedKey];
@@ -630,7 +664,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       manager: machines, preferences, herdrSidebar, seen,
       pairings: machinePairingEvents(ctx, access, keys, joinViewer),
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, listJoins, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }
@@ -721,6 +755,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/cliproxy" || pathname.startsWith("/api/cliproxy/")) { ctx.timeout(request, 60); return cliProxyRoutes.handle(request); }
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
+  // Settings → Memory: every change is a person's on a screen; the bridge token never reaches it (not a bridge path)
+  if (pathname === "/api/memory" || pathname.startsWith("/api/memory/")) {
+    const by = access.level !== "full" ? "unknown" : access.device ? `device:${access.device.id}` : access.via;
+    return handleMemoryRequest(request, url, ctx.services.memory, { readOnly, by });
+  }
 
   // Settings → Alerts → Also send to: one destination this PC also posts its alerts to (a watching device: none, above)
   if (pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test") {
@@ -1035,9 +1074,42 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return handleSessionResumeRequest(request, { readOnly, stores: { codexHome: options.codexHome, opencodeDb: options.opencodeDb, hermesHome: options.hermesHome }, holdOpen: (seconds) => ctx.timeout(request, seconds) });
   }
 
+  if (acp && (pathname === "/api/pane/turn/cancel" || pathname === "/api/pane/turn/release" || pathname === "/api/pane/turn/cancel-children")) {
+    setRequestRoute(pathname);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST.");
+    const body = await readJsonObject(request);
+    if (body instanceof Response) return body;
+    if (typeof body.pane_id !== "string") return badRequest("missing_pane_id", "pane_id is required.");
+    if (pathname.endsWith("/cancel-children")) {
+      // every ACP child the pane started gets the same hold as its own Stop; one a person holds already keeps its hold
+      // (a new one would cancel the turn that person started), and one that cannot take it is named
+      let children;
+      try { children = await acp.childrenOf(body.pane_id); } catch (error) { return errorResponse(error); }
+      const tried = await Promise.allSettled(children.map(async child => {
+        if (!child.client.connected || !child.client.session) throw new Error("not connected");
+        if (child.client.holdGeneration !== null) return { pane_id: child.terminal, child_id: child.id, generation: child.client.holdGeneration };
+        return { pane_id: child.terminal, child_id: child.id, generation: await child.client.hold(child.client.session) };
+      }));
+      return jsonResponse({
+        ok: true,
+        held: tried.flatMap(outcome => outcome.status === "fulfilled" ? [outcome.value] : []),
+        failed: children.filter((_, index) => tried[index]?.status === "rejected").map(child => child.terminal),
+      });
+    }
+    const child = acp.forPane(body.pane_id);
+    if (!child?.client.connected || !child.client.session) return badRequest("unavailable", "No connected ACP child.");
+    const cancel = pathname.endsWith("/cancel");
+    if (!cancel && (body.child_id !== child.id || !Number.isSafeInteger(body.generation))) return badRequest("hold_changed", "The child and hold generation are required.");
+    try {
+      if (cancel) return jsonResponse({ ok: true, child_id: child.id, generation: await child.client.hold(child.client.session) });
+      const receipt = await child.client.request("_keeper/release", { sessionId: child.client.session, generation: body.generation });
+      if (!receipt || typeof receipt !== "object" || !("released" in receipt && receipt.released === true)) return badRequest("unavailable", "No keeper receipt.");
+      return jsonResponse({ ok: true, child_id: child.id, ...receipt });
+    } catch { return badRequest("hold_changed", "The keeper could not confirm that operation."); }
+  }
   if (pathname.startsWith("/api/pane/prompt")) {
     try {
-      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, onAnswered: () => options.telemetry?.tally("prompt_answers") });
+      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), onAnswered: () => options.telemetry?.tally("prompt_answers") });
       if (response) return response;
     } catch (error) {
       return errorResponse(error);

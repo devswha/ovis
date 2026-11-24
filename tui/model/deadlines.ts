@@ -85,6 +85,11 @@ export const CONFIG_TEXT_MAX_CHARS = 80;
 export const REFUSALS_SHOWN = 20;
 /** The most graphemes a one-line text field (rename, new tab name, goto) holds; typing or pasting past it is cut. */
 export const TEXT_FIELD_MAX_GRAPHEMES = 256;
+/**
+ * The most code points such a field holds, whatever its graphemes: a letter with endless marks after it is one
+ * grapheme, and its marks past this are refused. Room for every grapheme to carry three more (an emoji sequence).
+ */
+export const TEXT_FIELD_MAX_CODE_POINTS = 4 * TEXT_FIELD_MAX_GRAPHEMES;
 
 /**
  * A pane's first paint normally ends at hc's mark. Without one it counts as complete once the stream
@@ -98,6 +103,12 @@ export const PAINT_QUIET_MS = 1_000;
  * costs one new attach and not one per step.
  */
 export const REATTACH_SETTLE_MS = 150;
+/**
+ * How long a pane waits after the last change of its own rectangle before it attaches again. A host
+ * sends a dragged window's steps at its frame rate (16 ms at 60 Hz), so two frames still make a drag
+ * one attach; the size rules do not depend on it (another viewer's change still waits REATTACH_SETTLE_MS).
+ */
+export const RESIZE_SETTLE_MS = 32;
 /**
  * How often in a row a pane attaches again by itself after its stream was dropped though its terminal
  * lives, or after its emulator died, before it is Failed and waits for the user's retry. Counted from
@@ -113,6 +124,23 @@ export const FRAME_PASS_MS = 8;
 export const PASS_CREDIT_BYTES = 512 * 1024;
 /** Quit and a hang-up close every pane channel and the event stream within this long, answered or not. */
 export const QUIT_BOUND_MS = 2_000;
+/**
+ * Input that waited behind a layout write waits this long more, once the write is done, for the screen to show what the
+ * write did (the pane it made or moved, with focus on it; the panes a close ended, gone); past it that input is
+ * refused, never sent to the pane focused before.
+ */
+export const LAYOUT_SHOWN_WAIT_MS = 2_000;
+/**
+ * How long a screen's claim to open the first workspace holds once written (tui/core/layout.ts `claimFirst`). The screen
+ * lets it go when it is done or leaves; one that died holding it leaves the claim to this time, after which another
+ * screen takes it. Longer than a call waits for its answer (10 s), so the shell's start a claim covers was answered, or
+ * given up, before another screen starts one.
+ */
+export const FIRST_CLAIM_MS = 15_000;
+/** The most input events that wait behind a layout write; past it nothing more waits until the write is done. */
+export const BEHIND_WRITE_EVENTS = 4_096;
+/** The most bytes of typed and pasted text that wait behind a layout write: one paste at its limit. */
+export const BEHIND_WRITE_BYTES = PASTE_LIMIT_BYTES;
 /** A program's synchronized-output hold is ended this long after it began, if the program did not end it. */
 export const HOLD_RELEASE_MS = 1_000;
 /**

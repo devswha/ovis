@@ -2976,8 +2976,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Pane actions are not tab actions. Up to 768px, where a split tab shows one pane at a time, the
   tab's menu lists the tab's panes first, the open one marked current, over a hairline, each pane
   once (the pane's own actions, which carry the panes where the row counts as hidden, add no
-  second list). There a tap on the open split tab opens that menu, in the row and in the header
-  alike, and the open split tab is that pane: it wears the pane's agent mark (none for a shell) and
+  second list). A pane picked there while a pane's field held the typing (the keyboard up) takes
+  the typing, its field focused inside the tap, so the keyboard comes back on the pane now shown
+  (herdr's TUI sends the next key to the pane its focus moves to; a zoomed tab keeps the typing on
+  its zoomed pane, the one still in view).
+  There a tap on the open split tab opens that menu, in the row and in the header alike, and the
+  open split tab is that pane: it wears the pane's agent mark (none for a shell) and
   its name (the pane's agent or first-message name, else its title), unless someone named the tab,
   whose name stays, and its place among them (`1/2`, heard as "Pane 1 of 2") follows its name, in the
   row as in the header; in the row under the header that name is cut with an ellipsis at
@@ -3017,7 +3021,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The snapshot's tab order is authoritative: a tab's stable `number` is not its place. A drop calls
   `tab.move` with an insertion boundary before removal, within that workspace and PC. The visible
   order changes with herdr's snapshot, keeping selection and keyboard focus; a refusal shows an
-  inline error. One request waits for acknowledgement before another move is accepted. Escape,
+  inline error. One request waits for acknowledgement before another move is accepted. Dragging a
+  one-pane tab out of the strip onto another workspace's sidebar row on the same PC outlines that
+  row (`--accent` on `--accent-tint`, hiding `SplitDropPreview` while aimed at a row) and moves the
+  tab there via `POST /api/tab/move-to-workspace`, matching the tab menu's **Move to workspace…**
+  guards (no highlight and no move for the tab's own workspace, a split tab, a watching device, a
+  PC whose layout Ovis does not keep, or another PC); it follows VS Code and Zed dragging an editor
+  tab across groups and Chrome/Firefox dragging a tab across windows (#4458). Escape,
   a tab-list change or leaving the workspace cancels an unsent drag. Touch keeps native sideways
   scrolling and uses Move tab left/right in the selected tab's menu; Alt+Shift+Left/Right provides
   the same adjacent moves only while a tab has keyboard focus.
@@ -3535,7 +3545,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
 - In More's header, one quiet mark says how this device reaches Ovis (`.conn-route`,
   `components/ConnectionRouteMark.tsx`, `lib/connectionRoute.ts`): a 14px glyph and one short
-  `--text-dim` word, **relay** (the hosted shell, or a request Portal vouched for, whatever signed it in), **Tailscale** (a tailnet address, or a
+  `--text-dim` word, **relay** (the hosted shell, or a request Portal vouched for, whatever signed it in; once the
+  app's relay channel moves to a direct carrier, which it does only on a PC whose Direct connection is on,
+  **direct** with the Wi-Fi glyph on the PC's private address, or
+  **Tailscale** "Directly over Tailscale, not through the relay" on its Tailscale one, never Wi-Fi for a phone on mobile data), **Tailscale** (a tailnet address, or a
   request the server saw come through serve; a MagicDNS name alone says "Via Tailscale, or Funnel
   from the internet", since the name serves both), **LAN** (a private address or a local-only name), **direct** (any other
   address, a bare machine name and a request the server saw come through Funnel included) or
@@ -4085,7 +4098,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the card's one red (`--status-blocked`, `--fs-sm`, semibold); the "input needed" badge is read
   by assistive tech and not drawn. The question is prose in `--text-strong`. Reference text (the
   command of an approval, a plan, a diff: the prompt's `body`) is the card's one mono box
-  (`--bg`, `--fs-xs`); a question in words is never set in mono.
+  (`--bg`, `--fs-xs`); a question in words is never set in mono. An approval's command wraps at
+  the box's edge and never scrolls sideways, so the end of what Yes runs is always in the box; it
+  follows Claude Code's own dialog, which wraps the command at the pane's edge.
 - Claude's words before its question (#2088): Claude Code 2.1.311 writes a turn's text to its
   session file only with the answer, so while a question waits the card shows the text the
   terminal draws right over the question (`screen_words`, read off the screen; the pane's wrapping
@@ -4752,7 +4767,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Voice input
 - A mic button sits beside the add button in the composer and beside Send in the terminal input line; it
   fills with `--accent` while recording. Dictated text is inserted at the caret, never sent.
-- `voiceInput`: `auto`, `on` or `off`; default `auto`. Auto puts the mic in the composer only, not on
+- `voiceInput`: `auto`, `on` or `off`; default `off`, as the composer's other extra buttons are
+  (few installs that saw the mic used it). A device that saved its settings before keeps what it
+  saved, Auto included: the record holds every row. Auto puts the mic in the composer only, not on
   a phone (the composer's `(max-width: 640px), (pointer: coarse)`), and leaves it out where dictation
   cannot work (no HTTPS, or no key and no browser recognition). On shows it in both inputs and on a
   phone, disabled with its reason where it cannot work.
@@ -4811,7 +4828,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Rows are grouped as herdr's Goto picker groups them: a `.menu-heading` per PC/workspace (PC
   name when multiple PCs are registered, workspace name, a linked worktree's branch in mono when
   the name does not say it, the row count), Recent (up to
-  three, an unsearched and unfiltered list only) before the workspaces, Actions last. The
+  eight recently visited panes, not counting the selected one, storing nine; an unsearched and
+  unfiltered list only, following VS Code's recently opened list) before the workspaces, Actions last. The
   workspaces stand in PC then roster order (a move in the sidebar moves the section); a search puts
   the best match's workspace first, and finds a tab by the name the strip shows it under ("Tab 2").
   A row's subtitle is "tab · folder" (the tab only in a workspace with several), "workspace · folder"
@@ -5077,6 +5095,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   because to the person they are one thing: something connected to this PC. Rows are as short as
   the page allows; what pairing means is one folded sentence, and what few people change is in
   More settings. Old links to the Phone, Remote PCs and Portal groups land on My devices.
+- While the relay is on, Devices and PCs has one **Direct connection** row in More settings, under Devices and access
+  (`RelayDirectRow` in `components/RelayPanel.tsx`; not in My devices, which lists what is connected),
+  its label the same whether on or off and its switch named the same, with one line under it: off, "Relay connections
+  stay on the relay."; on, "The Ovis app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a
+  direct connection: faster, and this PC listens for it on those addresses." (the app, since a browser always stays on
+  the relay). It is off by default: one switch for the home network and the Tailscale carrier, since both are a
+  listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
+  itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
+  language), whichever line it shows.
 - My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
@@ -5094,7 +5121,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
   the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
-  typed address close Settings and open the PC setup dialog with the address filled in. **Phones and
+  typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**
+  lists its login's PCs one row a machine, as Tailscale's own machine list does (the model: one row per
+  machine, by its machine name): the ssh config aliases the server resolved to one of them fold into
+  that row only when they reach it the same way (the same User, ssh's port), under Tailscale's machine
+  name when that PC is reached only one such way. Each row is two lines: the name with its control or
+  state (a long state line wraps on the right), then, dim and whole, what the row opens before the
+  press (the alias when the name is not it, the user and the MagicDNS name), broken after its dots
+  (`atDots`, as My PCs does) and never cut with an ellipsis. **Connect** opens the alias
+  named as the machine, else the first in config order. An alias on another port (an sshd in WSL or
+  a container), as another user, or whose User a Match may set is a row of its own, by its alias,
+  with its port in the dim text, and only the PC's own plain row takes that PC's Tailscale answer
+  (Added, In your account, the update line). Nothing merges by name: two hosts of one HostName stay
+  two (`lib/reachablePcs.ts`). Under the list, **A PC not in the list** takes user@host or another PC's
+  https address and connects it as the SSH tab's field does. **Phones and
   devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
   offers it. **Ovis relay** is the account's, and draws buttons, not sentences, by state: signed
@@ -5108,7 +5148,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   fresh sign-in of the same account presses again); a sign-in to the account
   this PC is already in closes the sheet and Settings onto the main screen, and opened by hand with
   this PC in the account and the relay online, the tab is the signed-in line and the phone's QR code,
-  no list of PCs (the sidebar has them). The
+  no list of the account's PCs (the sidebar has them). Where Add PC over SSH adds a PC to the account
+  (this PC's own window, signed in to the account this PC is in, as `sshAddOffered` says), the tab
+  puts its phone part first, laid out as the Tailscale tab's top (owner, 2026-11-23): the QR code that
+  opens this PC's page (below), and beside it Pair with a code's six digits, made only on a press
+  (**Get a pairing code**, then Refresh and Copy), then the signed-in line; no Pair with a code below
+  it. Nothing that admits a device by itself is made as the tab opens: a code drawn at once would let
+  in whoever saw the screen (on macOS and Windows a relay code pairs at once; only Linux has the
+  screen's key approval), and no code kind admits the account's devices at once and others only on a
+  press on a PC already in an account. The phone part is followed, behind a hairline (`.connect-reachable`), by
+  the PCs this PC can reach: one line of
+  what Add does, then the Tailscale tab's rows and the ssh config's other hosts in one list, two lines
+  each as there: the name, then dim its way and what it opens (**Tailscale · mymac · devswha@macbookpro.tail….ts.net**,
+  **SSH config · root@hosthatch**), then **Add**, which opens the PC setup dialog with that host filled in and **Add
+  it to my account** ticked, whose Connect runs the add over SSH (docs/account.md); or in words why
+  not: **In your account** in the done green (its relay ID, as that PC's Tailscale answer or this
+  app's PC at that address gives it, is one of the account's PCs), **Added** (this app has it), or
+  the older Ovis's update line. Last, **A PC not in the list** with a user@host field and **Add**,
+  which takes an SSH address only (another PC's https address gets one line saying so).
+  Signed out, on a PC in no account and on any other device (a phone, a PC through the relay) the tab
+  is as above, with no list. The
   relay's own switch is in More settings, and on this tab only while a PC in the account has its
   relay off. Under either, behind a hairline (none where nothing is
   drawn above it), one part (`.connect-account-qr`) that depends on the PC, not on the sign-in. On a PC in no account it is
@@ -5152,19 +5211,99 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   opens with a **This app** row the native build never shows: **Forget this PC** (a neutral button that asks once in a `ConfirmDialog`, **Forget**, then
   deletes this phone's key for the PC and leaves for the front page). Neither is destructive on the
   PC, which keeps listing the phone until it is revoked there, so neither is a `.btn-danger`.
-- The hosted shell's front page is Add a PC; it has no account overview page. A launch opens the PC this device opened last unless its
+- The hosted shell's front page is **My PCs** once anything opens here (signed in, or a PC saved on this phone: a relay
+  pairing, or one the phone app saved by a Tailscale address, over SSH or at another address), else **Connect a PC**;
+  it has no account overview page. My PCs is one list of every such PC, each row its name, a small way tag (Relay,
+  Tailscale, SSH, Address) and, for a relay PC, On, Off or Update needed (never Needs approval: a PC this device is not
+  let into yet asks for that on its own page; a pairing of this phone's is On once its own check or the directory says
+  so), its name alone on the first line, ending in an ellipsis only where it does not fit there (the state word sits on
+  the second line with the way tag, beside the name only on the wide screen), an address never cut (it goes under the
+  way tag when it does not fit beside it; a row of several ways shows none on a phone, where its tags say enough, and
+  gives it a line of its own on the wide screen), and **Add PC** pinned at the bottom while
+  the list scrolls, as the Claude app keeps New chat in reach over its list. No row carries Forget: the ⋮ menu (there whenever a row can be
+  forgotten, signed in or not) has Forget PCs, after which each row this phone can forget shows Forget in its chevron's
+  place and no row opens, until Done in Add PC's place; Forget on the PC in use asks once more in the row (This is the
+  PC in use now. Forget it?). A row this screen cannot forget says why in Forget's place, in grey, so the row keeps its
+  height: Account PC (one this device has no pairing for; no way to remove it is added here) or SSH PC (which goes with
+  its keys from the app's own screen only). With no PC on it is the same
+  list, the rows Off under No PC is online and Check again; with none in the account yet, the list says to sign in with
+  the same account on the PC where Ovis runs, over Add PC (#16 drew both as a page of their own). On a screen 1024 px
+  wide or more the two stand side by side: My PCs on the left and Add a PC always open on the right in a panel, each
+  pane scrolling on its own when it is taller than the window, with no Add PC button; Connect a PC alone is one centred
+  card. Both stay mounted under one parent across the 1024 px line, so a rotation or a resize keeps the chosen tab, what
+  is typed, the focus, the search and an open under way; a pairing dialog open when the window narrows again stays the
+  top of the history, and Add PC takes its entry once the dialog closes. Past eight PCs My PCs offers a
+  search by name (any case, the PC in use found like any other, one line when nothing matches), and on the wide screen
+  the All, On and Off chips. The code is one small Pair with a code line that opens its field in place, under what to
+  do on the PC (beside the QR way in the phone app, both held while a sign-in is under way); the code is looked up
+  right there, the field read-only while it looks and keeping what was typed through a failure to correct, until it
+  finds its PC (the comparison) or Cancel closes it; the screen owns that lookup, so folding the field, Add PC's Back,
+  another tab, the comparison's Cancel or a sign-in each end it too, and what it answers later opens nothing. In the
+  phone app, a PC opened by its address says Opening it, with Cancel (only where the app has cancelOpen: iOS opens at
+  once), one at a time for the whole screen, which owns it: it follows the person to Add PC and back on a phone and
+  stands in both panes on a wide screen, a tab or a pane giving way does not end it, a QR read after its scanner's tab is
+  gone starts none, and an open the app has not answered in 25 s ends with the PC did not answer, taking taps again (a
+  second tap while the app is asked whether Tailscale is on replaces the first; one already opening holds the next;
+  leaving the screen ends it). The Tailscale tab asks the app whether Tailscale is on only while it is on screen. A
+  failed open says why from the app's own reason, with Tailscale's hint for a tailnet address (its IPv6 too), never the
+  app's own words, which are not the person's language; a saved Tailscale PC tapped while the app says
+  Tailscale is off shows Open Tailscale instead of trying it; an SSH PC whose address another app on the phone
+  took says so above the list; and while the app keeps a PC open as the person chooses another, My PCs marks it In use
+  now and its Back goes back to it (backToCurrent), the app's own connect page's ‹ PC; the In use now row goes back too,
+  rather than load that PC again. One PC is one row, as Tailscale's machine list draws one row per machine whatever
+  addresses reach it (the owner's own mockup otherwise): in the phone app a PC saved by several ways (the relay, its
+  Tailscale address, SSH, another address) is listed once, with each way's tag (Relay · Tailscale), when the page of
+  each saved way told the app that PC's relay ID (never by name: a way with no ID stays a row of its own). That is for
+  the eye alone: a row with a relay way is the relay's row (its name, or Unnamed PC, its word, In use now only when the
+  relay PC is) and a tap on it always opens by the relay, whose key is checked and whose connection stays on the relay
+  unless that PC's Direct connection is on (off by default); an address way never names it or states it, and its
+  address is not shown on the row. A row of saved ways alone opens by the one whose page loaded last in the app, and
+  shows that one's address on the wide screen; while the app keeps one of its ways open, the row shows that one and
+  goes back to it. Since the relay no longer moves to a faster way by itself, a row of
+  several ways has **More ways** beside its link (a round outlined chevron in the column Forget takes, named "More ways
+  to open {name}", `aria-expanded`, closed at first, its glyph turned up when open; a row of one way has none): open, it
+  lists under the row, one to a line, each saved way the row's tap does not open as the failure's other-way button
+  draws it (`OtherWayButton`: its way tag, then Open and its host, whole, wrapping after a dot rather than cut), and a
+  line opens that way with the checks its own row would make (Tailscale off on the phone gives the Tailscale-off card;
+  the way the app keeps open goes back to it). Choosing one is always that explicit tap on a line that shows its host;
+  it never renames, re-states or redirects the relay row. Phone width and the wide screen alike. It follows the
+  Tailscale app, which lists every address that reaches a machine under that machine, each whole, rather than picking
+  one for the person; it differs in folding them under the row in place, so My PCs stays one screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it, one button
+  naming that way's tag and the host it opens, whole (Tailscale · Open macbookpro.tail1e211e.ts.net:17317, wrapping
+  rather than cut), so the person sees what will answer: on My PCs, and on a relay PC's own failure card (not for a key
+  that is not the PC's). In Forget PCs a row of several lists its ways under it, one to a line, each with its
+  own Forget (the relay's on the PC in use asks once more) or Account PC or SSH PC; a row of one way stays as it was. A
+  browser has only the relay's rows, so nothing there is put together.
+  With no network on the device (the browser's online state: only an explicit offline
+  counts), My PCs says so in one line with Try again (this phone in the app, this device in a browser), in place of No
+  PC is online and the account service's failure, as Slack and WhatsApp say it over a list they keep; it still lists
+  every PC this device knows, the account's ones from its last read that answered (kept on the device for that account
+  by id and name, with no state word, and dropped at sign-out; while the account cannot be read, offline or not, no row
+  says On or Off by the account's word, only by this device's own check); a row tapped then says to connect first instead of
+  trying the PC; and once the network is back the screen reads the account, the app's PCs and their checks again by
+  itself. Add PC (and Connect a PC, the
+  same screen as the front page) is the desktop's Add a connection tabs holding only the ways in: the sign-in signed out
+  (under Reach your PCs from anywhere with your Ovis account, and over Tailscale and SSH need no sign-in), the PC's QR
+  (its code in a browser), a Tailscale address (with Tailscale off on the phone, under Open Tailscale, for an address on
+  the home network), user@host. A PC page's More → Connect a PC opens My PCs
+  (`/#add`) with Back to that PC and its row marked In use now. A launch opens the PC this device opened last unless its
   check finds it off (the relay had nobody for it), then the next saved PC not found off (`launchOrder`, at most
   four, two at a time; signed in with none saved here or every saved one found off, the account's PC opened last, else the one seen most
   recently that has a way to join and is not off, on its own page with its join card; a check still running after four seconds, or one the relay refused, opens that PC, and when its
   page then hears from the relay that it is off, the launch goes on to the front page, once; a PC a person opened
   keeps its failure card and Try again; the connecting card meanwhile); every one off, a later visit, Back, a sign-in's return or the phone app's own row
-  (`#pcs` inside the app) shows Add a PC, whose list says Off or Needs approval beside a PC, as the Claude and
-  ChatGPT apps open on the last conversation and keep account pages behind Settings. An old link to
+  (`#pcs` inside the app) shows the front page, as the Claude and ChatGPT apps open on the last conversation and keep
+  account pages behind Settings. An old link to
   `#overview`, `#pcs`, `#devices`, `#relay`, `#settings` or `#relay-dash-*` lands like the bare address:
   the hash is dropped and the launch goes on. The account's devices and PCs are managed in Settings →
   Devices and PCs → Manage account.
   A launch is asked once a page; an address taken while it waits wins over it, and a page Back restores whole from
-  the browser's cache loads again rather than keep the launch's wait.
+  the browser's cache loads again rather than keep the launch's wait. A PC page restored that way connects again: in a
+  browser its transports take their sockets as gone and reconnect in place; in the phone app, whose bridge dropped its
+  native listeners and sockets at the navigation away, the page loads again once its unsent text is in storage. When
+  storage refuses that text, the page stays as it is, the text in its fields, under a warning line with Reload app (as
+  the update notice draws it) that reloads once the text is stored or gone, and while it is not connected its
+  connection reads Disconnected, as stopped output does, never Reconnecting.
 - Portal, under the phone part of Add a connection's Direct tab where the server offers it: while it runs,
   the address and QR code as the Tailscale way draws them over a Relay row with Stop; otherwise one
   hint for what blocks it (no token, serve-only, no `portal` or an old one, with a link to get it)

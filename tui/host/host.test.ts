@@ -7,9 +7,9 @@ import { LEAVE as EXPORTED_LEAVE } from "./guard.ts";
 // contract and are written out here on purpose.
 const ESC = "\x1b";
 const ST = `${ESC}\\`;
-const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[>1u`;
-const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
-const AGAIN = `${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[=1;1u`;
+const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[>1u`;
+const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1003l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
+const AGAIN = `${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[=1;1u`;
 const PROBE = `${ESC}[?u${ESC}[?2026$p${ESC}]10;?${ST}${ESC}]11;?${ST}${ESC}]12;?${ST}${ESC}[16t${ESC}[c`;
 const ANSWER = `${ESC}[?1u${ESC}[?2026;2$y${ESC}]10;rgb:1111/2222/3333${ST}${ESC}]11;rgb:0000/0000/0000${ST}${ESC}]12;rgb:ffff/ffff/ffff${ST}${ESC}[6;18;9t${ESC}[?62;22c`;
 
@@ -34,6 +34,23 @@ describe("enter and leave", () => {
 
   it("exports exactly the bytes leave writes, for a parent that gives the terminal back after the screen died", () => {
     expect(EXPORTED_LEAVE).toBe(LEAVE);
+  });
+
+  it("says what it holds before it turns a mode on and once it has undone it, and at a stop just before it undoes them: enter, the colour-scheme watch, a stop, a continue and leave", () => {
+    const host = new HeadlessHost();
+    expect(host.holds()).toEqual([]);
+    host.enter();
+    host.watchDisplay();
+    host.stop();
+    host.cont();
+    host.leave();
+    expect(host.holds()).toEqual([
+      "modes after raw on",
+      `modes+watch after write ${ENTER}`,
+      `none after write ${ESC}[?2031h`,
+      "modes+watch after raw on",
+      `none after write ${ESC}[?2031l${LEAVE}`,
+    ]);
   });
 
   it("leaves once however often it is asked, and on the process's exit after a leave does nothing more", () => {

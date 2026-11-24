@@ -2,13 +2,33 @@
  * What exists (workspaces, their tabs, each tab's panes in tree order) and where this screen looks.
  * Focus is the screen's own: herdr-core has none, and it is never written anywhere shared.
  */
+import { type LayoutNode, neighbour, type PaneDirection } from "../../server/herdr-core/layout-doc.ts";
 
-/** `created`: when the core made the pane's terminal (its `created_ms`), so a later terminal at the same address is told apart */
-export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number }
-/** `zoomed`: the pane a zoom shows alone; while it lasts it is the tab's shown pane, whatever pane the focus remembers */
-export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly zoomed?: string }
-export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
-export interface World { readonly workspaces: readonly WorkspaceNode[] }
+/**
+ * `created`: when the core made the pane's terminal (its `created_ms`), so a later terminal at the same address is told apart;
+ * `agent`: the name of the agent it runs, when it runs one
+ */
+export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number; readonly agent?: string }
+/** `zoomed`: the pane the tab's zoom shows alone (the layout document's, shared with the browser); none when not zoomed */
+/** `passthrough`: the panes whose right press goes to the program that asked for the mouse (the layout document's) */
+export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly root?: LayoutNode; readonly zoomed?: string; readonly passthrough?: readonly string[] }
+/**
+ * `branch`: the workspace works in a git checkout (its branch row); `parent`: a linked worktree's workspace grouped under its
+ * repository's workspace; `group`: a repository's workspace with worktree workspaces under it, and whether it is folded
+ */
+export interface WorkspaceNode {
+  readonly id: string;
+  readonly name: string;
+  readonly tabs: readonly TabNode[];
+  readonly branch?: string;
+  readonly parent?: string;
+  readonly group?: { readonly collapsed: boolean };
+}
+/**
+ * `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); `waiting`: those that need the
+ * user, in the order the jump to the next one takes them (tui/core/world.ts `jumpOrder`). None when not told.
+ */
+export interface World { readonly workspaces: readonly WorkspaceNode[]; readonly agents?: readonly string[]; readonly waiting?: readonly string[] }
 
 export const EMPTY_WORLD: World = { workspaces: [] };
 
@@ -60,6 +80,15 @@ function pathOf(world: World, target: Target): Path | null {
   return null;
 }
 
+/** Where a target is, with the tab and pane this focus shows there: the place an action chosen on it works on. */
+export function placeOf(world: World, focus: Focus, target: Target): (Focused & { readonly workspace: WorkspaceNode }) | null {
+  const path = pathOf(world, target);
+  if (path === null) return null;
+  const tab = path.tab ?? find(path.workspace.tabs, own(focus.tabs, path.workspace.id)) ?? path.workspace.tabs[0] ?? null;
+  const pane = path.pane ?? (tab === null ? null : find(tab.panes, own(focus.panes, tab.id)) ?? tab.panes[0] ?? null);
+  return { workspace: path.workspace, tab, pane };
+}
+
 export function exists(world: World, target: Target): boolean {
   return pathOf(world, target) !== null;
 }
@@ -76,6 +105,7 @@ export function focusOn(world: World, focus: Focus, target: Target): Focus | nul
   const tab = path.tab ?? find(workspace.tabs, own(focus.tabs, workspace.id)) ?? workspace.tabs[0] ?? null;
   const pane = path.pane ?? (tab === null ? null : find(tab.panes, own(focus.panes, tab.id)) ?? tab.panes[0] ?? null);
   const next: Focus = {
+    ...focus,
     workspace: workspace.id,
     tabs: tab === null ? focus.tabs : { ...focus.tabs, [workspace.id]: tab.id },
     panes: tab === null || pane === null ? focus.panes : { ...focus.panes, [tab.id]: pane.id },
@@ -84,6 +114,36 @@ export function focusOn(world: World, focus: Focus, target: Target): Focus | nul
   const before = focused(world, focus).pane?.id ?? null;
   const shown = focused(world, next).pane?.id ?? null;
   return before !== null && shown !== null && shown !== before ? { ...next, previous: before } : next;
+}
+
+/** A zoom can only show a pane the tab still holds. */
+export function shownZoom(tab: TabNode | null | undefined): string | undefined {
+  return tab === null || tab === undefined ? undefined : find(tab.panes, tab.zoomed)?.id;
+}
+
+/** Herdr's directional focus actions and the side each looks to. */
+const FOCUS_DIRECTIONS: Readonly<Record<string, PaneDirection>> = { focus_pane_left: "left", focus_pane_right: "right", focus_pane_up: "up", focus_pane_down: "down" };
+
+export function focusDirection(action: string): PaneDirection | null {
+  return Object.hasOwn(FOCUS_DIRECTIONS, action) ? FOCUS_DIRECTIONS[action] ?? null : null;
+}
+
+/** The pane on that side in the whole tree, including panes covered by a zoom. */
+export function paneToward(root: LayoutNode | undefined, pane: string, direction: PaneDirection): string | null {
+  return root === undefined ? null : neighbour(root, pane, direction);
+}
+
+/** Herdr's directional swap actions and the side each looks to. */
+const SWAP_DIRECTIONS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_right: "right", swap_pane_up: "up", swap_pane_down: "down" };
+
+/**
+ * The pane a directional focus or swap reaches from `pane` (null: none on that side): what the key resolved when it was
+ * read, carried with the effect so a layout that changed since is refused. Undefined for any other action, or without a tree.
+ */
+export function directionalNeighbour(tab: TabNode | null, pane: PaneNode | null, action: string): string | null | undefined {
+  const direction = focusDirection(action) ?? (Object.hasOwn(SWAP_DIRECTIONS, action) ? SWAP_DIRECTIONS[action] : undefined);
+  if (direction === undefined) return undefined;
+  return tab?.root && pane ? paneToward(tab.root, pane.id, direction) : undefined;
 }
 
 /** One of `after` for a focus that was `current`: it if it is still there, else `preferred`, else the next one in `before` that is still there, else the first. */
@@ -118,6 +178,6 @@ export function nextFocus(before: World, after: World, focus: Focus): Focus {
     }
   }
   const workspace = pick(before.workspaces, after.workspaces, focus.workspace ?? undefined, previousPath?.workspace.id) ?? null;
-  const next: Focus = { workspace, tabs: Object.fromEntries(tabs), panes: Object.fromEntries(panes), previous: previousPath === null ? null : focus.previous };
+  const next: Focus = { ...focus, workspace, tabs: Object.fromEntries(tabs), panes: Object.fromEntries(panes), previous: previousPath === null ? null : focus.previous };
   return next.previous !== null && focused(after, next).pane?.id === next.previous ? { ...next, previous: null } : next;
 }

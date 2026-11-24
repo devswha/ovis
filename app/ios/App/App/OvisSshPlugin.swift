@@ -2,6 +2,8 @@ import Capacitor
 import CryptoKit
 import Foundation
 import Network
+import UIKit
+import OvisHomeCore
 import OvisSshCore
 import Security
 import UIKit
@@ -205,16 +207,30 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
         forgetRemoved()
     }
 
+    /// By the page that asked, as the gate in front of the bridge saw it (DirectCallGate.sender).
     private func fromAppPage(_ call: CAPPluginCall) -> Bool {
-        if bridge?.webView?.url?.scheme == "capacitor" { return true }
+        if Home.bundledPage(DirectCallGate.sender(call.callbackId)) { return true }
         call.reject("Only the app's own pages manage SSH PCs.")
         return false
     }
 
     /// `user`, `host`, `port`: what Direct's field held (user@host), filled in on the setup screen.
     @objc func add(_ call: CAPPluginCall) {
-        guard fromAppPage(call) else { return }
         let user = call.getString("user"), host = call.getString("host"), port = call.getInt("port")
+        // the hosted app's front page of a release before HerdrShell openSshSetup calls this itself (DirectCallGate
+        // lets that one call through): it gets what that gives, the setup sheet over the page. Any other PC's page is
+        // refused
+        let page = DirectCallGate.sender(call.callbackId)
+        if !Home.bundledPage(page) {
+            let target = SshPcs.target(user: user, host: host, port: port)
+            guard target.count <= 300, SshPcs.setupOpener(page, appOrigin: PCStore.shellOrigin) else {
+                call.reject("Only the app's own pages manage SSH PCs.")
+                return
+            }
+            call.resolve()
+            Self.presentSetup(target, over: bridge?.viewController)
+            return
+        }
         present(call) { SshSetupModel(editing: nil, user: user, host: host, port: port) }
     }
 
@@ -235,6 +251,18 @@ public class OvisSshPlugin: CAPPlugin, CAPBridgedPlugin {
                 if added { HerdrBridgeViewController.reopen() }
             }
             self.bridge?.viewController?.present(SshSetupController(model: model), animated: true)
+        }
+    }
+
+    /// The setup sheet over the page that asked for it (HerdrShell openSshSetup: the hosted app's Add a PC › SSH), with
+    /// `target` (an SSH login, or empty) filled in: Cancel returns to that page as it was, nothing loaded again; a PC
+    /// added opens (the setup made it the current PC), as one added from the app's own page does.
+    static func presentSetup(_ target: String, over controller: UIViewController?) {
+        Task { @MainActor in
+            let login = SshPcs.login(target)
+            let model = SshSetupModel(editing: nil, user: login?.user, host: login?.host, port: login?.port)
+            model.finished = { added in if added { HerdrBridgeViewController.reopen() } }
+            controller?.present(SshSetupController(model: model), animated: true)
         }
     }
 

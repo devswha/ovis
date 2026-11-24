@@ -347,6 +347,26 @@ export interface MachineSettings {
 export interface SetupRequest extends SshTarget { name?: string; machine_id?: string; update_remote?: boolean; start_new_herdr?: boolean; account_add?: boolean }
 /** What a PC's own Ovis told an account add over SSH of itself: its public relay fields, and the account it is in. */
 export interface AccountAddTarget { server_id: string; public_key: string; relay: string; label: string; account: string | null }
+/**
+ * That PC's relay when it answered the take of an account add over SSH: it turns the relay on and waits a while for it to
+ * come online (docs/account.md, "Adding a PC over SSH"). `blocked`: why it may not run there.
+ */
+export interface AccountAddRelay { phase: "off" | "connecting" | "online" | "error"; blocked: "serve_only" | "identity_unreadable" | null }
+/**
+ * POST /api/account/ssh-add's answer: that PC is in `account`; `relay` is null where its Ovis did not say (one from before
+ * this), or where the take's answer was lost and a second inspect found that PC in the account (`unanswered`).
+ */
+export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null; unanswered?: true }
+
+const RELAY_PHASES: readonly unknown[] = ["off", "connecting", "online", "error"];
+const RELAY_BLOCKS: readonly unknown[] = ["serve_only", "identity_unreadable", null];
+
+/** A relay word as an account add's take passes it on, or null for anything else. */
+export function accountAddRelay(value: unknown): AccountAddRelay | null {
+  if (value === null || typeof value !== "object") return null;
+  const { phase, blocked } = value as Record<string, unknown>;
+  return RELAY_PHASES.includes(phase) && RELAY_BLOCKS.includes(blocked) ? { phase, blocked } as AccountAddRelay : null;
+}
 export type SetupPhase = "connecting" | "authentication" | "checking" | "approval" | "installing" | "starting" | "connected" | "failed" | "cancelled";
 export interface SetupChallenge { id: string; kind: "host_key" | "secret"; prompt: string }
 export interface SetupJob {
@@ -434,6 +454,8 @@ export interface OwnJoinRequest {
   asked_at: string;
   left_ms: number;
   digits?: string;
+  /** The join is let in by the account's signed list: an approval here is received at once, and the device is in only once its entry is in the list. */
+  list?: true;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its
@@ -480,6 +502,17 @@ export interface RemotePairingRequest {
   vouched?: true;
   /** Derived by the receiving PC only after the joining server answered its channel-bound challenge. */
   proven_server_id?: string;
+  /**
+   * The join brought the new device's card for the account's signed list: the PC lets it in by an entry of the list,
+   * which its approver signs and places, never by the approval alone. Absent from an older server, or when false.
+   */
+  list?: true;
+  /**
+   * The new device's person said the digits match (its PAIR_CONFIRM reached the PC). For a join into the list the
+   * approver signs the device's entry only once this is true, so a device that gives up before it is nobody's
+   * member. Absent from an older server, or while it has not confirmed.
+   */
+  confirmed?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

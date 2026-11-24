@@ -4,13 +4,17 @@ import { Framer } from "../input/framer.ts";
 import type { Effect } from "./effects.ts";
 import { focused, type World } from "./focus.ts";
 import { modeBar } from "./hints.ts";
+import { TEXT_FIELD_MAX_CODE_POINTS, TEXT_FIELD_MAX_GRAPHEMES } from "./deadlines.ts";
 import { OVERLAYS } from "./overlays.ts";
 import { initialState, type Level, type ModelEvent, type ModelState, reduce, type Step } from "./reduce.ts";
 
 const AT = 1_000;
 const WORLD: World = {
   workspaces: [
-    { id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: "" }, { id: "p2", name: "" }] }, { id: "t2", name: "b", panes: [{ id: "p3", name: "" }] }] },
+    { id: "w1", name: "one", tabs: [{
+      id: "t1", name: "a", panes: [{ id: "p1", name: "" }, { id: "p2", name: "" }],
+      root: { split: "down", ratio: 0.5, first: { leaf: "p1" }, second: { leaf: "p2" } },
+    }, { id: "t2", name: "b", panes: [{ id: "p3", name: "" }] }] },
     { id: "w2", name: "two", tabs: [{ id: "t3", name: "c", panes: [{ id: "p4", name: "" }] }] },
   ],
 };
@@ -74,7 +78,7 @@ describe("the ladder", () => {
     { level: 3, takes: true, name: "an unbound key in Navigate", state: navigating, event: key("x"), levels: [3], pane: false,
       check: (step) => expect(step.effects).toEqual([]) },
     { level: 3, takes: true, name: "a navigate key", state: navigating, event: key("j"), levels: [3], pane: false,
-      check: (step) => expect(step.effects).toEqual([{ type: "run", action: "focus_pane_down", target: { kind: "pane", id: "p1" }, index: null, name: null }]) },
+      check: (step) => expect(focusedPane(step.state)).toBe("p2") },
     { level: 3, takes: true, name: "Escape leaves Resize mode", state: resizing, event: named("ESCAPE"), levels: [3], pane: false,
       check: (step) => expect(step.state.mode).toEqual({ name: "terminal" }) },
     { level: 3, takes: true, name: "a non-ASCII navigate key never fires", state: after(start({ navigate_pane_down: "\u{3153}" }), prefix(), text("w")), event: text("\u{3153}"), levels: [3], pane: false,
@@ -120,7 +124,7 @@ describe("the prefix machine", () => {
   const unboundKey = named("F5");
   const rows: Row[] = [
     { row: 1, name: "Idle, a prefix chord: Armed, the mode bar shows the keys after the prefix", from: idle, events: [prefix()], armed: true, pane: [],
-      check: (state) => { expect(modeBar(state).mode).toBe("prefix"); expect(modeBar(state).hints.map((hint) => hint.action)).toContain("new_tab"); } },
+      check: (state) => { expect(modeBar(state)!.mode).toBe("prefix"); expect(modeBar(state)!.hints.map((hint) => hint.label)).toEqual(["cancel", "sendPrefix", "workspaceNav", "keybinds"]); } },
     { row: 1, name: "Idle, a prefix chord: Armed with no deadline, and still Armed however late a deadline event comes", from: idle,
       events: [prefix(), { type: "deadline", name: "prefix", at: AT + 86_400_000 }], armed: true, pane: [],
       check: (state) => expect([...state.deadlines.keys()]).toEqual([]) },
@@ -128,7 +132,7 @@ describe("the prefix machine", () => {
     { row: 3, name: "Armed, a text bound after the prefix: its action runs", from: armed, events: [text("c")], armed: false, pane: [],
       check: (state) => expect(state.overlays).toEqual([expect.objectContaining({ kind: "text", purpose: "new_tab", target: { kind: "workspace", id: "w1" } })]) },
     { row: 3, name: "Armed, a key bound after the prefix: its mode is entered", from: armed, events: [key("[")], armed: false, pane: [],
-      check: (state) => expect(state.mode).toEqual({ name: "copy" }) },
+      check: (state) => expect(state.mode.name).toBe("copy") },
     { row: 3, name: "Armed, 2 as text: 1..9 gives the index (tab 2)", from: armed, events: [text("2")], armed: false, pane: [],
       check: (state) => expect(state.focus.tabs["w1"]).toBe("t2") },
     { row: 3, name: "Armed, 2 then 1 as keys: tab 2 then tab 1", from: idle, events: [prefix(), named("DIGIT_2"), prefix(), named("DIGIT_1")], armed: false, pane: [],
@@ -224,6 +228,54 @@ describe("hangul once", () => {
     const top = step.state.overlays.at(-1)!;
     expect(top.kind === "text" && top.field.graphemes).toEqual(["\u{d55c}", "\u{ae00}"]);
   });
+
+  it("in a rename field, a grapheme grown by marks in reads of their own stops at the code-point budget, and what the field held stays whole", () => {
+    const renaming = after(idle, prefix(), key("P"));
+    const shown = (state: ModelState) => { const top = state.overlays.at(-1)!; return top.kind === "text" ? top.field.graphemes : []; };
+    // a letter, then a mark at a time, each joining the grapheme before the cursor: it grows only to the budget
+    let state = after(renaming, text("ab"));
+    for (let n = 0; n < TEXT_FIELD_MAX_CODE_POINTS; n++) state = reduce(state, text("\u0301")).state;
+    expect([shown(state).length, shown(state)[0], shown(state)[1]![0], [...shown(state).join("")].length]).toEqual([2, "a", "b", TEXT_FIELD_MAX_CODE_POINTS]);
+    // one read of endless marks stops at the same budget
+    expect([...shown(after(renaming, text("ab"), text("\u0301".repeat(4 * TEXT_FIELD_MAX_CODE_POINTS)))).join("")]).toEqual([...shown(state).join("")]);
+    // one code point of room: a letter is taken and its mark refused, typed or pasted alike; then nothing more fits
+    const nearly = after(renaming, text(`x${"\u0301".repeat(TEXT_FIELD_MAX_CODE_POINTS - 2)}`));
+    const typed = after(nearly, text("e\u0301"));
+    expect([shown(nearly).length, shown(typed), shown(after(nearly, paste("e\u0301")))]).toEqual([1, [...shown(nearly), "e"], [...shown(nearly), "e"]]);
+    expect(shown(after(typed, text("z")))).toEqual(shown(typed));
+  });
+
+  it("in a rename field, Enter on a name past the field's bound left as shown renames nothing; an edit renames", () => {
+    // one grapheme longer than the code-point budget: the field shows it cut
+    const long = `e${"\u0301".repeat(2 * TEXT_FIELD_MAX_CODE_POINTS)}`;
+    const named = reduce(initialState(undefined), { type: "world", world: { workspaces: [{ id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: long }] }] }] }, at: 0 }).state;
+    const renaming = after(named, prefix(), key("P"));
+    const enter = (state: ModelState) => reduce(state, { type: "key", key: "ENTER", mods: {}, action: "press", at: AT });
+    const kept = enter(renaming);
+    expect([kept.effects, kept.state.overlays]).toEqual([[], []]);
+    // typed where nothing more fits, a character edits nothing; a deletion does
+    expect(enter(after(renaming, text("x"))).effects).toEqual([]);
+    const edited = enter(after(renaming, { type: "key", key: "BACKSPACE", mods: {}, action: "press", at: AT }, text("x")));
+    expect(edited.effects).toEqual([{ type: "run", action: "rename_pane", target: { kind: "pane", id: "p1" }, index: null, name: "x" }]);
+  });
+
+  it("renames to the displayed prefix only when the user edits the field", () => {
+    const prefixName = "x".repeat(TEXT_FIELD_MAX_GRAPHEMES);
+    const rename = (name: string, ...events: ModelEvent[]) => {
+      const workspace = { ...WORLD.workspaces[0]!, name };
+      const state = after(idle, { type: "world", world: { workspaces: [workspace] }, at: 0 });
+      const open = after(state, { type: "action", action: "rename_workspace", at: AT });
+      return reduce(after(open, ...events), named("ENTER")).effects;
+    };
+    const long = `${prefixName}y`;
+    const expected: Effect[] = [{ type: "run", action: "rename_workspace", target: { kind: "workspace", id: "w1" }, index: null, name: prefixName }];
+    expect(rename(long)).toEqual([]);
+    expect(rename(long, named("HOME"), named("END"))).toEqual([]);
+    expect(rename(long, named("END"), named("DELETE"), text("z"))).toEqual([]); // no deletion and no room
+    expect(rename(long, paste(prefixName))).toEqual([]); // a paste adds to the name: no room either
+    expect(rename(long, named("END"), named("BACKSPACE"), text("x"))).toEqual(expected);
+    expect(rename(prefixName, named("END"), named("BACKSPACE"), text("x"))).toEqual([]); // edited, but identical to the stored name
+  });
 });
 
 describe("overlay close keys", () => {
@@ -233,22 +285,29 @@ describe("overlay close keys", () => {
       text: after(idle, prefix(), key("P")),
       confirm: after(idle, prefix(), key("D")),
       goto: after(idle, prefix(), text("g")),
+      menu: after(idle, prefix(), named("ENTER")),
+      switcher: after(reduce(idle, { type: "resize", cols: 45, rows: 30, at: AT } as ModelEvent).state, prefix(), text("w")),
+      context: reduce(idle, { type: "context", target: { kind: "pane", id: focused(idle.world, idle.focus).pane!.id }, cell: { x: 30, y: 4 }, at: AT }).state,
+      worktrees: reduce(idle, { type: "worktrees", target: { kind: "workspace", id: idle.world.workspaces[0]!.id }, checkouts: [], at: AT }).state,
     };
     for (const [kind, entry] of Object.entries(OVERLAYS)) {
       const state = open[kind as keyof typeof OVERLAYS];
       expect(state.overlays.map((overlay): string => overlay.kind)).toEqual([kind]);
       for (const closeKey of entry.closeKeys) {
-        const event = closeKey === "esc" ? named("ESCAPE") : key(closeKey);
+        const event = closeKey === "esc" ? named("ESCAPE") : closeKey === "enter" ? named("ENTER") : key(closeKey);
         expect({ kind, closeKey, open: reduce(state, event).state.overlays.length }).toEqual({ kind, closeKey, open: 0 });
       }
     }
-    // a key that is not declared does not close help
+    // a key that is not declared does not close help; while its filter is typed, Escape and Enter are the filter's
     expect(reduce(open.help, key("x")).state.overlays.length).toBe(1);
+    const filtering = after(open.help, text("/"));
+    expect(reduce(filtering, named("ESCAPE")).state.overlays.length).toBe(1);
+    expect(reduce(filtering, named("ENTER")).state.overlays.length).toBe(1);
   });
 
   it("a click on an overlay's close control closes it as its first close key does; with none open it changes nothing", () => {
     const close: ModelEvent = { type: "close_overlay", at: AT };
-    for (const state of [after(idle, prefix(), text("?")), after(idle, prefix(), key("P")), after(idle, prefix(), key("D")), after(idle, prefix(), text("g"))]) {
+    for (const state of [after(idle, prefix(), text("?")), after(idle, prefix(), key("P")), after(idle, prefix(), key("D")), after(idle, prefix(), text("g")), after(idle, prefix(), named("ENTER"))]) {
       const kind = state.overlays.at(-1)!.kind;
       const [clicked, escaped] = [reduce(state, close), reduce(state, named("ESCAPE"))];
       expect({ kind, state: clicked.state, effects: clicked.effects }).toEqual({ kind, state: escaped.state, effects: escaped.effects });
@@ -327,7 +386,7 @@ describe("layout actions as data", () => {
     expect(runs(down)).toEqual([{ type: "run", action: "navigate_move_down", target: { kind: "workspace", id: "w2" }, index: null, name: null }]);
     const move = reduce(pointing, text("m"));
     expect([runs(move), move.state.mode.name]).toEqual([[{ type: "run", action: "navigate_move_pane", target: { kind: "pane", id: "p1" }, index: null, name: "a", to: "w2" }], "terminal"]);
-    expect(modeBar(pointing).hints.filter((hint) => hint.action.startsWith("navigate_move")).map((hint) => hint.keys)).toEqual([["shift+up"], ["shift+down"], ["m"]]);
+    expect(modeBar(pointing)).toMatchObject({ mode: "navigate", hints: [{ key: "", label: "escBack" }, { key: "↑/↓", label: "workspace" }, { key: "tab", label: "pane" }, { key: "?", label: "keybinds" }] });
   });
 
   it("a calm notice is marked calm; any other is not", () => {

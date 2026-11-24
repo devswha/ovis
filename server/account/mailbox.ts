@@ -9,6 +9,8 @@ import { readFileSync } from "node:fs";
 import { writePrivateState } from "../private-state.ts";
 import { logAccess } from "../connection-diagnostics.ts";
 import { accountServiceOff, DEFAULT_ACCOUNT_SERVICE } from "../../shared/web-policy.ts";
+import { isListHash } from "../../shared/account-list-entry.ts";
+import type { ListPlace } from "../../shared/account-list-signers.ts";
 import { ACCOUNT_RECORDS_MAX, isAccountKeyEncoding, isIsoTime } from "../../shared/account-records.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
@@ -23,7 +25,8 @@ import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcom
 
 /** The account service refused a PC route: its status and error code, when it named one. */
 export class AccountServiceRefusal extends Error {
-  constructor(readonly status: number, readonly code: string | null, readonly path: string) {
+  /** `retryAfter`: the seconds the service asks to wait (its `retry-after`), or null when it names none. */
+  constructor(readonly status: number, readonly code: string | null, readonly path: string, readonly retryAfter: number | null = null) {
     super(`The account service answered ${status} to ${path}`);
     this.name = "AccountServiceRefusal";
   }
@@ -173,6 +176,23 @@ function listingAdmitted(mailbox: Record<string, unknown> | null): boolean | und
   return typeof said === "boolean" ? said : undefined;
 }
 
+/** The account's signed list as a mailbox answer names it: its id and its head. A hint to read, never a word on who is in. */
+export interface NamedList { readonly id: string; readonly head: ListPlace }
+
+/**
+ * What a mailbox answer says of the account's signed list (`with_list`): the list, null for none it names to this PC,
+ * undefined when it does not say (a service from before the member, or an answer out of form).
+ */
+function namedList(mailbox: Record<string, unknown> | null): NamedList | null | undefined {
+  const said = mailbox?.list;
+  if (said === null) return null;
+  if (typeof said !== "object" || said === undefined || Array.isArray(said)) return undefined;
+  const { id, head } = said as { id?: unknown; head?: unknown };
+  if (typeof id !== "string" || !isListHash(id) || typeof head !== "object" || head === null) return undefined;
+  const { seq, hash } = head as { seq?: unknown; hash?: unknown };
+  return typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 && typeof hash === "string" && isListHash(hash) ? { id, head: { seq, hash } } : undefined;
+}
+
 /** A completion the service took: its answer names when, as the service writes a time. */
 function completed(answer: Record<string, unknown> | null): boolean {
   return isIsoTime(answer?.completed_at);
@@ -205,6 +225,12 @@ export interface AccountMailboxOptions {
    * apply it, or null for none now. The server gives it only while OVIS_ACCOUNT_OPENS_ALL is on.
    */
   readonly snapshot?: { account(): string | null; ports(readmission?: Readmission): SnapshotPorts | null; used?(): UsedReport };
+  /**
+   * Whoever follows the account's signed list on this PC (server/account/list-follow.ts): each pull asks the mailbox
+   * for the list's head (`with_list`) and tells it what the answer named for `account`. Told, never awaited: a list
+   * that is slow to read holds no pull back. Without it nothing is asked.
+   */
+  readonly list?: { heard(account: string, named: NamedList | null, asked?: string | null): void; scopeToken?(): string | null };
 }
 
 export class AccountMailbox {
@@ -470,6 +496,23 @@ export class AccountMailbox {
     return now === "changed" ? "unpinnable" : now;
   }
 
+  /**
+   * A PC route of the account's signed list (`/v2/pc/list…`): `body` beside this PC's relay key and a fresh, single-use
+   * proof of it, as for its mailbox. Throws AccountServiceRefusal for an answer that is not 2xx. `ready` runs once the
+   * proof is made (a request of its own), right before the route's request goes out: what it throws stops that
+   * request, so what the caller checks there holds at the moment its body leaves this PC.
+   */
+  async listRoute(path: string, body: Record<string, unknown>, ready?: () => void): Promise<Record<string, unknown>> {
+    const identity = this.options.identity();
+    if (!identity) throw new Error("This PC has no relay identity");
+    if (this.options.service instanceof Error) throw this.options.service;
+    const proof = await this.prove(identity);
+    ready?.();
+    const answer = await this.call(path, { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)), ...proof, ...body });
+    if (answer === null || typeof answer !== "object" || Array.isArray(answer)) throw new Error(`The account service sent a malformed answer to ${path}`);
+    return answer;
+  }
+
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
   private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number }> {
     const empty = { outcome: null, adds: 0 };
@@ -488,7 +531,9 @@ export class AccountMailbox {
     // an answer is for the binding and account it was asked for: one that came back to another names nothing
     const named = answer !== undefined && answer.binding === linked && answer.account === account ? answer.listing : undefined;
     const pinned = linked === null ? undefined : this.options.devices.serviceListing();
-    if (pinned !== undefined && typeof named === "string" && named !== pinned) {
+    // a PC pinned to its signed list stays in its account whatever listing the service names: it reads on, and the read
+    // widens nothing (`widen` below), so the members' signed blocks still reach it
+    if (pinned !== undefined && typeof named === "string" && named !== pinned && !this.options.devices.listFollowed()) {
       logAccess({ event: "account.listing.replaced" });
       this.options.devices.clearAccountBinding("unlisted", "account");
       return empty;
@@ -513,7 +558,8 @@ export class AccountMailbox {
         // the snapshot is whole and checked, so the service answered this PC: the listing's answer is the newest thing the commit rests on
         // one a link bound lets more in only under the listing its rows were let in under, named by this read's own mailbox
         widen: async () => binding !== null ? await this.checkListing(binding) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned,
-        narrow: (snapshot) => { this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)); this.options.devices.narrowedRead(); },
+        // on a PC pinned to its signed list the rows are the list's: the snapshot's word that a key was removed drops none
+        narrow: (snapshot) => { if (!this.options.devices.listFollowed()) this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)); this.options.devices.narrowedRead(); },
         commit: (stage) => {
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);
@@ -906,8 +952,11 @@ export class AccountMailbox {
       const admissions = new Map<string, number>();
       await retry();
       for (let page = 0; ; page++) {
-        const { entries, waiting, listing } = await this.page(identity, account, ack);
+        // which PC the answer is for: the binding and relay identity it has as the page is asked for
+        const asked = this.options.list?.scopeToken?.();
+        const { entries, waiting, listing, list } = await this.page(identity, account, ack);
         if (page === 0 && linked !== null) this.drainedListing = { binding: linked, account, listing };
+        if (page === 0 && list !== undefined) this.tellList(account, list, asked);
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
         if (page === MAX_PAGES) break;
@@ -965,6 +1014,12 @@ export class AccountMailbox {
     return applied;
   }
 
+  /** Never throws: what follows the list is no part of the pull. */
+  private tellList(account: string, named: NamedList | null, asked?: string | null): void {
+    try { this.options.list?.heard(account, named, asked); }
+    catch (error) { console.error(`[account] the list's head was not taken: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
   private trim(early: unknown[]): void {
     let over = early.length + this.pending.length - PENDING_MAX;
     for (let index = 0; over > 0 && index < early.length;) {
@@ -982,7 +1037,7 @@ export class AccountMailbox {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     }));
     if (gone && response.status === 410) return null;
-    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path);
+    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
     return await response.json() as Record<string, unknown>;
   }
 
@@ -1028,8 +1083,8 @@ export class AccountMailbox {
     return page === null ? { snapshot_gone: true } : { page };
   }
 
-  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[]; listing: string | null | undefined; admitted: boolean | undefined }> {
-    const mailbox = (await this.proved(identity, "/v1/pc/mailbox", { account, ack, with_listing_id: true }))!;
+  private async page(identity: RelayIdentity, account: string, ack: number | null): Promise<{ entries: { seq: number; record: unknown }[]; waiting: { key: string; at: string }[]; listing: string | null | undefined; admitted: boolean | undefined; list: NamedList | null | undefined }> {
+    const mailbox = (await this.proved(identity, "/v1/pc/mailbox", { account, ack, with_listing_id: true, ...(this.options.list ? { with_list: true } : {}) }))!;
     const records = mailbox.records;
     if (!Array.isArray(records) || !records.every((entry) => typeof entry === "object" && entry !== null && Number.isSafeInteger((entry as { seq?: unknown }).seq))) {
       throw new Error("The account service sent a malformed mailbox");
@@ -1037,6 +1092,6 @@ export class AccountMailbox {
     const admissions = Array.isArray(mailbox.admissions) ? mailbox.admissions : [];
     const waiting = admissions.filter((a): a is { key: string; at: string } => typeof a === "object" && a !== null
       && isAccountKeyEncoding((a as { key?: unknown }).key) && typeof (a as { at?: unknown }).at === "string" && !Number.isNaN(Date.parse((a as { at: string }).at)));
-    return { entries: records as { seq: number; record: unknown }[], waiting, listing: namedListing(mailbox), admitted: listingAdmitted(mailbox) };
+    return { entries: records as { seq: number; record: unknown }[], waiting, listing: namedListing(mailbox), admitted: listingAdmitted(mailbox), list: namedList(mailbox) };
   }
 }

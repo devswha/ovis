@@ -1,6 +1,8 @@
 import type { Root } from "react-dom/client";
 import type { HoldState } from "../../../shared/account-devices-api.ts";
 import type { PendingPushStore } from "../push.ts";
+import type { AccountList } from "../account/accountList.ts";
+import type { AppPlatform } from "../appShell.ts";
 import type { AccountStore } from "../account/store.ts";
 import type { EnrollmentState, ShellDeviceStore } from "./device.ts";
 import type { openRelayTransport } from "./transport.ts";
@@ -14,6 +16,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { KnownPc } from "../account/knownPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
 import { ACCOUNT_PROVIDERS, type AccountProvider, type AccountSession, type SignInKey } from "../account/store.ts";
 import { inNativeApp } from "../nativeApp.ts";
@@ -76,7 +79,8 @@ export type PcUpdate =
 export type AccountView =
   | { kind: "signed-out"; error: string | null; provider?: AccountProvider; notice?: string }
   | { kind: "signing-in"; provider?: AccountProvider }
-  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; deleteError?: string };
+  /** `known`: the read failed, and these are the account's PCs this device listed at its last read that answered (knownPcs) */
+  | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null; deleteError?: string; known?: readonly KnownPc[] };
 
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }
 
@@ -84,6 +88,8 @@ export type RelayShellState =
   /** `noneOnline`: a launch tried every PC it may open, saved or the account's, and none answered */
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null; noneOnline?: true }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
+  /** the app's own copy of the client is older than the oldest this PC supports: only the store's update opens it */
+  | { kind: "app-outdated"; name: string | null; platform: AppPlatform | null }
   /**
    * `waitPc`: signed in with nothing saved here, and none of the account's PCs is on to ask: one line says to turn one on,
    * `offPc` named when the account has one
@@ -233,6 +239,11 @@ export interface RelayShellMount {
   accountService?: string | null;
   accountProviders?: readonly AccountProvider[];
   accountFetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
+  /**
+   * this device's copy of its account's signed list (account/accountList.ts): the page's own by default, and none where
+   * `accountStore` or `accountFetch` is given without it, or with null
+   */
+  accountList?: AccountList | null;
   openSignIn?: (url: string) => void;
   checkPc?: typeof checkPc;
 }
@@ -259,6 +270,12 @@ export interface Attempt {
   readonly retriedAccountOpen?: true;
   /** a PC new in the account that no device is in yet: a pairing it falls back to takes the number its screen shows */
   readonly freshPc?: true;
+  /**
+   * the person's press on the join sheet of a PC inside its 24 hours in the account started this account sign-in: a
+   * refusal goes on to the join that press asked for, with no second press, and a key the PC does not list is one more
+   * refusal, never a removal
+   */
+  readonly pressed?: true;
   readonly holdRetryMs?: number;
   retryEnrollment?: boolean;
   retriedPending?: boolean;

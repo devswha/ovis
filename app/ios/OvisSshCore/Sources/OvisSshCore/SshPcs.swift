@@ -194,12 +194,41 @@ public final class SshPcs {
         return (address << (8 * left)) + last
     }
 
+    /// A page's SSH login (HerdrShell openSshSetup's target: user@host, user@host:port, ssh:// with them, as the hosted
+    /// app's SSH tab and app/web/shell.js sshOrAddress read it) as the setup screen's user, host and port, or nil for
+    /// anything else, which opens the screen empty.
+    public static func login(_ target: String?) -> (user: String, host: String, port: Int)? {
+        guard let target, let login = try? NSRegularExpression(pattern: #"^(?:ssh://)?([^\s@/:]+)@([^\s@/:\[\]]+|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?/?$"#) else { return nil }
+        let text = target.trimmingCharacters(in: .whitespaces) as NSString
+        guard let match = login.firstMatch(in: text as String, range: NSRange(location: 0, length: text.length)) else { return nil }
+        let part = { (at: Int) -> String? in match.range(at: at).location == NSNotFound ? nil : text.substring(with: match.range(at: at)) }
+        guard let user = part(1), let host = part(2) else { return nil }
+        let port = part(3).flatMap(Int.init) ?? 22
+        guard (1...65535).contains(port) else { return nil }
+        return (user, host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")), port)
+    }
+
+    /// OvisSsh add's user, host and port (the hosted front page of a release gives them apart) as the login openSshSetup
+    /// takes, which `login` reads back: an IPv6 host in brackets, port 22 left out; "" without both a user and a host.
+    public static func target(user: String?, host: String?, port: Int?) -> String {
+        guard let user, let host else { return "" }
+        let shown = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return "\(user)@\(shown)\(port.map { $0 == 22 ? "" : ":\($0)" } ?? "")"
+    }
+
     /// Whether the page loaded at `url` may open the SSH setup (HerdrShell openSshSetup): the app's own bundled pages
-    /// (`capacitor://localhost`) or the hosted app (`https://app.ovis.sh`), never a PC's page.
-    public static func setupOpener(_ url: URL?) -> Bool {
-        guard let url, let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return false }
-        if scheme == "capacitor" { return host == "localhost" }
-        return scheme == "https" && host == "app.ovis.sh" && (url.port == nil || url.port == 443)
+    /// (`capacitor://localhost`) or the shell at `appOrigin`, never a PC's page. The shell is the hosted app (the
+    /// build's, https://app.ovis.sh in a hosted build) or, in a build that serves it from inside the app, that host on
+    /// the app's own scheme (`capacitor://app.ovis.sh`): no other host there, and with no port.
+    public static func setupOpener(_ url: URL?, appOrigin: URL?) -> Bool {
+        guard let url, let scheme = url.scheme?.lowercased(), let host = url.host else { return false }
+        // on the app's scheme a host is as it is written and has no port: another spelling is another origin to WebKit
+        if scheme == "capacitor" {
+            guard url.port == nil else { return false }
+            return host == "localhost" || (appOrigin?.scheme?.lowercased() == "capacitor" && appOrigin?.port == nil && host == appOrigin?.host)
+        }
+        guard let appOrigin, appOrigin.scheme?.lowercased() == "https", let appHost = appOrigin.host?.lowercased() else { return false }
+        return scheme == "https" && host.lowercased() == appHost && (url.port ?? 443) == (appOrigin.port ?? 443)
     }
 
     /// 256 random bits in hex: a tunnel's gate.
