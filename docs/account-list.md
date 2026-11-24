@@ -1610,6 +1610,33 @@ the one that started the list is no reason not to follow: that device stays out 
 the pin, by whichever key it is in and whichever sign-in key vouches for it (`heldOut`), so
 neither a hand-over nor the pin undoes a removal.
 
+### On the PC (as built)
+
+- **The witness.** A device asks each PC it knows `GET /api/account/list/witness` in its own
+  session and gets the PC's `{ account, pinned, admits, removed }` (docs/account.md, "How long a key
+  has been let in").
+- **The naming.** `POST /api/account/list/name { naming: { list, key, signature }, vouches? }` from
+  the device's own session, signed in with its key (at most 16 vouches). The PC keeps the vouches
+  that hold per list (`account-list-vouches.json`, at most 4 lists and 64 vouches a list; it goes
+  with the binding), reads that list's log with its own proof (one read a list each 30 seconds),
+  and asks `pinVerdict` with its own record. It answers `{ pinned: true, list }` or `{ pinned: false,
+  why, wait }`, `why` one of the refusals above or `naming_invalid`, `named_here`, `not_read`,
+  `lists_full`, `unavailable`, `wait` in seconds of its own clock. On a yes it saves its copy, pinned
+  as `migrated`, and pins once the answer is out: the pin ends every session of the account's rows
+  with `auth_changed`, the naming one among them, and its final `WELCOME` then names the list.
+- **After the pin** a device that hands its place on keeps its row, a removal of the PC's own
+  follows the device (`heldOut`), and a carried key that never handed over is let in only while the
+  account service's snapshot names it (docs/account.md, "What a pinned PC does").
+- **Keys for a PC carried in as an endpoint.** It follows the list and lets its devices in, and
+  lets nobody in itself. A device the list holds to drive with full power asks it in its session,
+  `POST /api/account/list/card`, for `{ key, enc, card, endpoint, list }`; the PC posts its keys at
+  the account service in that call, and takes for itself only the `pc` entry that very device signs
+  (handed over `POST /api/account/list/page`, or read from the service). A device signs one with no
+  question only when it did something itself for that PC (`addedItself`). With nobody's evidence,
+  `ovis add` at the PC gives it its keys by the number, from the adder the person confirmed. An entry
+  with its keys that another device signed, and another key at its relay key, give it nothing to
+  sign with, and it says so.
+
 ### What is left
 
 - **A key that stood for a day, unnoticed, on one PC the first device asks can be carried in, and
