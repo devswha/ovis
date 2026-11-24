@@ -187,17 +187,18 @@ describe("the vectors of seal/", () => {
     "wrap", "wrap-epoch-15-digits", "wrap-made-elsewhere", "wrap-other-member", "wrap-other-list", "wrap-other-epoch", "wrap-byte-changed", "wrap-tag-changed",
     "wrap-other-point", "wrap-point-off-curve", "wrap-version-2", "wrap-version-0", "wrap-short", "wrap-trailing-byte", "wrap-text-padded",
     "wrap-text-second-spelling", "wrap-text-empty", "wrap-of-another-key", "wrap-epoch-0", "wrap-epoch-0-commitment-with-list", "wrap-commitment-other-list",
-    "wrap-commitment-other-epoch", "wrap-point-x-is-p", "wrap-point-x-above-p",
+    "wrap-commitment-other-epoch", "wrap-point-x-is-p", "wrap-point-x-above-p", "wrap-made-in-python",
+    "wrap-epoch-0-made-in-python",
   ];
   const LINKS = [
     "link", "link-made-elsewhere", "link-to-epoch-0", "link-other-list", "link-other-epoch", "link-other-from-key", "link-byte-changed", "link-nonce-changed",
-    "link-version-2", "link-short", "link-trailing-byte", "link-of-another-key", "link-commitment-other-list", "link-from-epoch-0",
+    "link-version-2", "link-short", "link-trailing-byte", "link-of-another-key", "link-commitment-other-list", "link-from-epoch-0", "link-made-in-python",
   ];
   const SEALED = [
     "sealed", "sealed-made-elsewhere", "sealed-entry-0", "sealed-no-fields", "sealed-utf8", "sealed-seq-15-digits", "sealed-other-seq", "sealed-other-list",
     "sealed-other-epoch", "sealed-other-epoch-key", "sealed-as-entry-0", "sealed-byte-changed", "sealed-nonce-changed", "sealed-tag-changed",
     "sealed-trailing-byte", "sealed-version-2", "sealed-short", "sealed-entry-0-with-list", "sealed-list-missing", "sealed-names-not-ascending",
-    "sealed-plaintext-other-prefix", "sealed-plaintext-cut", "sealed-filled", "sealed-filled-512", "sealed-filled-no-fields", "sealed-pad-other-bytes",
+    "sealed-plaintext-other-prefix", "sealed-plaintext-cut", "sealed-filled", "sealed-filled-512", "sealed-filled-no-fields", "sealed-pad-other-bytes", "sealed-made-in-python",
   ];
   const vectors = files.map((file) => JSON.parse(readFileSync(join(dir, file), "utf8")) as SealVector);
 

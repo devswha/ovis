@@ -20,7 +20,7 @@ if (!build.success || build.outputs.length !== 2) throw new AggregateError(build
 const modules = new Map(build.outputs.map((output) => [output.path.replace(/^.*\//, "/"), output]));
 const vectorDir = shared("account-list-vectors/seal");
 const vectors = readdirSync(vectorDir).filter((file) => file.endsWith(".json")).sort().map((file) => JSON.parse(readFileSync(`${vectorDir}/${file}`, "utf8")) as SealVector);
-assert.ok(vectors.length >= 64, "the vectors are read");
+assert.ok(vectors.length >= 68, "the vectors are read");
 
 const LIST = "5c".repeat(32);
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {

@@ -266,7 +266,7 @@ or PC is then shown without its name:
 | `missing` | no wrap, link, key or sealed field was given |
 | `form` | a wrong length, another first byte, a point not on the curve, a plaintext that is no fields, a place that is none (a list id with seq 0, none with a later seq) |
 | `refused` | in form, but the tag does not hold: another member's wrap, another list, seq or epoch, another key, a changed byte |
-| `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to. The name is hidden like any other, and the member also says so: a wrap comes from the account service, so a wrong key in one is a sign of tampering, where the other codes may be a lost or a stale wrap |
+| `other_key` | a wrap or a link that opens, to a key that is not the one the list commits to. The name is hidden like any other, and the member also says so, because this is no lost or stale wrap. From a wrap it means the account service gave a wrong key: the service stores the wraps, and this is a sign of tampering. From a link it means the member that signed the entry which opened that epoch wrote a wrong link: the link is in the signed list, not the service's to change |
 | `bound` | the walk back opened as many links as one walk may |
 | `unavailable` | the runtime could not do it (no WebCrypto on a page on plain http): a fault of the place, not a verdict on the bytes |
 
@@ -300,6 +300,9 @@ object with a `name`, an optional `note`, one of `wrap`, `link` and `sealed`, an
 Wraps, links and sealed fields are made with random bytes, so a vector fixes one to open; nobody is
 asked to make the same bytes again. The `-made-elsewhere` vectors were written by a second
 implementation, which also reads every vector in the tests with readers of its own (its base64url,
-its field form, its key prefix). Devices use WebCrypto with a key that
+its field form, its key prefix). The `-made-in-python` vectors (a wrap, a wrap of epoch 0 with its
+commitment, a link and a filled sealed field) were written once by a Python script that shares no
+code with either, using `hashlib` and the `cryptography` library; the same script read every other
+vector and gave its `expect`. Devices use WebCrypto with a key that
 cannot be exported, so [`scripts/account-list-seal-browser-qa.ts`](../scripts/account-list-seal-browser-qa.ts)
 reads every vector in a real browser too.
