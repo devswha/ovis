@@ -1,8 +1,8 @@
 /**
  * The new-device notice of an account whose signed list this device is in (docs/account-list.md, "Putting a member
  * out"): "{device} was allowed into your account by {approver}.", from this device's own copy of the list, with Not
- * me, which asks Remove's question with everything the device added ticked. An account with no list keeps the PCs'
- * notices of an admission.
+ * me, which asks Remove's question with its switch for what the device added on at first. An account with no list
+ * keeps the PCs' notices of an admission.
  */
 import { useEffect, useState } from "react";
 import { Smartphone, X } from "lucide-react";
@@ -78,7 +78,7 @@ export function ListDeviceNotices({ list = pageAccountList() }: { readonly list?
             <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => close(newcomer.key, shown)}><X /></button>
           </div>
           {asked === newcomer.key && (
-            <RemoveDialog list={active.list} view={active.view} removing={newcomer.key} name={name} ticked
+            <RemoveDialog list={active.list} view={active.view} removing={newcomer.key} name={name} also
               onClose={() => setAsked(null)} onRemoved={(gone) => { setAsked(null); close(newcomer.key, shown); setRemoved((now) => [...now, gone]); }} />
           )}
         </div>
