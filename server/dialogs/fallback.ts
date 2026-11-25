@@ -362,7 +362,7 @@ function fallbackGjcSelectionMenu(agent: string, lines: string[], shown: number[
   return { start, rows, selectedIndex };
 }
 
-const PICKER_MOVE_RE = /↑\s*\/?\s*↓|\bup\/down\b/i;
+const PICKER_MOVE_RE = /↑\s*\/?\s*↓|\bup\/down\s+(?:to\s+)?(?:move|choose|select|navigate)\b/i;
 const PICKER_CHOOSE_RE = /[↵⏎]|\benter\b/i;
 
 const PICKER_CURSOR_ROW_RE = /^[❯›>❭]\s*\S/;
