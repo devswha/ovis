@@ -497,7 +497,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         const row = screen.offsetHeight / term.rows;
-        const cursorBottom = screen.offsetTop + (terminalScreen(term).cursorY + 1) * row;
+        const cursorBottom = screen.offsetTop + (viewRows(term).cursorY + 1) * row;
         const max = host.scrollHeight - host.clientHeight;
         host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight;
       };

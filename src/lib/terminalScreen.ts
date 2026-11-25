@@ -128,7 +128,10 @@ export function terminalScreen(term: Terminal): TerminalScreen {
     getNullCell: () => term.buffer.active.getNullCell(),
     // xterm (5.5 and 6.0) keeps OSC 8 targets in its own link service with no public way to read them: this reads
     // its internals and finds nothing where they are not there; the caller applies its own link policy to the uri
+    // the folded view draws and hits libghostty's cells while it holds the screen: their target is its
     hyperlinkAt: (y, x) => {
+      const held = viewRows(term).getLine(y);
+      if (held?.hyperlink) return held.hyperlink(x);
       const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
       const id = cell?.extended?.urlId;
       if (!id) return null;
