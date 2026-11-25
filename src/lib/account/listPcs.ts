@@ -17,6 +17,7 @@
  * build cannot place) lists the directory's PCs, every one marked, and says so (listReading).
  */
 import type { AccountList, AccountListView } from "./accountList.ts";
+import { postedPcs, type PostedPc } from "./listAdd.ts";
 import { holdsList } from "./listWrite.ts";
 import { pageAccountList } from "./pageList.ts";
 import type { DirectoryPc } from "./service.ts";
@@ -40,6 +41,26 @@ export type ListReading = "in" | "newer" | "damaged";
 export async function unreadCopy(list: AccountList, account: string): Promise<boolean> {
   if (list.view().account === account) return false;
   try { return await list.follows(account); } catch { return true; }
+}
+
+/**
+ * What this device knows of `account`'s signed list, for a PC that asks to be added: null where the account keeps none,
+ * by this device's own knowledge and never by the directory (accountHasList); otherwise the list and the PCs that posted
+ * their keys for it, none where this device may not write it. Such a PC is added by the number both screens show
+ * (AddPcByNumber), never by a join on its own page, which is the directory's admission alone.
+ */
+export type ListAdds = { readonly account: string; readonly list: AccountList; readonly posts: readonly PostedPc[] } | null;
+
+/** The page's list (pageList.ts), as ListAdds asks it. A list whose posts could not be read offers no Add. */
+export async function pageListAdds(account: string): Promise<ListAdds> {
+  const list = pageAccountList();
+  if (list === null || !await accountHasList(list, account).catch(() => true)) return null;
+  const writes = pageListReading(account) === "in" && list.writer() !== null;
+  const posts = writes ? await postedPcs(list).catch((error: unknown) => {
+    console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
+    return [];
+  }) : [];
+  return { account, list, posts };
 }
 
 /**

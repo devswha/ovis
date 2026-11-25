@@ -1,10 +1,8 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AccountList } from "../lib/account/accountList.ts";
-import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
-import { accountHasList, pageListReading } from "../lib/account/listPcs.ts";
+import type { PostedPc } from "../lib/account/listAdd.ts";
+import { pageListAdds, type ListAdds } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs, newPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
@@ -17,27 +15,8 @@ import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
 
 /**
- * What this device knows of the account's signed list, for its join cards: null where the account keeps none, by this
- * device's own knowledge and never by the directory (listPcs.ts accountHasList); otherwise the list and the PCs that
- * posted their keys for it, none where this device may not write it.
- */
-export type ListAdds = { readonly list: AccountList; readonly posts: readonly PostedPc[] } | null;
-
-/** The page's list (pageList.ts), as ListAdds asks it. A list whose posts could not be read offers no Add. */
-async function pageListAdds(account: string): Promise<ListAdds> {
-  const list = pageAccountList();
-  if (list === null || !await accountHasList(list, account).catch(() => true)) return null;
-  const writes = pageListReading(account) === "in" && list.writer() !== null;
-  const posts = writes ? await postedPcs(list).catch((error: unknown) => {
-    console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
-    return [];
-  }) : [];
-  return { list, posts };
-}
-
-/**
  * `ids`: each shown row's own listing ID (account#57), as rendered, which its Decline names. `lists`: the account's
- * signed list, where it keeps one (ListAdds).
+ * signed list, where it keeps one (listPcs.ts ListAdds).
  */
 type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[]; readonly listings: ReadonlyMap<string, string>; readonly ids: ReadonlyMap<string, string>; readonly lists: ListAdds };
 

@@ -2,6 +2,8 @@ import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type Reac
 import { ChevronDown, ChevronLeft, ChevronRight, Plus, QrCode } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
+import type { PostedPc } from "../lib/account/listAdd.ts";
+import { pageListAdds, type ListAdds } from "../lib/account/listPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
@@ -10,6 +12,7 @@ import type { MyPc } from "../lib/account/myPcs.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { markRemovedPc, removedPcs, type RemovedPcMark } from "../lib/relay/shellState.ts";
 import { StartScreenAccountMenu } from "./AccountHead.tsx";
+import { AddPcByNumber } from "./AddPcByNumber.tsx";
 import { deviceOffline, useOffline } from "../lib/useOffline.ts";
 import { AddressForm, atDots, canScanQr, clearOutcome, offlineOpenText, OpenError, OpenStatus, OtherWayButton, scanQr, sshHandoff, TailscaleOff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
@@ -382,7 +385,7 @@ function isCurrent(saved: string, current: CurrentPc | null): boolean {
  * chips. `top`: what the screen says above the list (notices, a PC not answering); `empty`: what it says with nothing
  * listed. Add PC (`onAdd`, none beside the panel on a wide screen) stays at the bottom while the list scrolls.
  */
-export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = false, checked, phone, onForget, inUse = null, onBack, onAdd, focusAdd = 0, accountMenu = false, top, empty, wide = false, hidden = false }: {
+export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = false, checked, phone, onForget, inUse = null, onBack, onAdd, focusAdd = 0, accountMenu = false, top, empty, wide = false, hidden = false, listOf = pageListAdds }: {
   readonly devices: readonly SavedPc[];
   /** signed in, the account's PCs, which the list adds to this phone's own pairings (relayTabPcs) */
   readonly accountPcs?: readonly MyPc[] | null;
@@ -407,6 +410,8 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   readonly wide?: boolean;
   /** kept mounted but not shown (Add a PC stands in its place on a phone): what it holds survives the switch back */
   readonly hidden?: boolean;
+  /** what this device knows of the account's signed list (listPcs.ts ListAdds); a test's own */
+  readonly listOf?: (account: string) => Promise<ListAdds>;
 }) {
   const t = useT();
   const open = useAddressOpen("list");
@@ -423,6 +428,23 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   // the PCs that turned this phone away as removed (relayTabPcs), read again once one is forgotten from the list
   const [removed, setRemoved] = useState(removedPcs);
   const current = inUse === null ? phone.current : null;
+  // On an account that keeps a signed list, an account PC this device is not paired with that posted its keys for the
+  // list is added by the number both screens show (AddPcByNumber), never by the join on its own page, which is the
+  // directory's admission alone (docs/account-list.md, "Adding a PC"); one that posted nothing opens as before
+  const [listAdds, setListAdds] = useState<ListAdds>(null);
+  const [adding, setAdding] = useState<{ readonly name: string; readonly post: PostedPc } | null>(null);
+  useEffect(() => {
+    const account = pageAccountList()?.view().account ?? null;
+    if (account === null || !(accountPcs ?? []).some((pc) => !pc.paired && pc.join !== undefined)) { setListAdds(null); return; }
+    let live = true;
+    listOf(account).then((next) => { if (live) setListAdds(next); }, (error: unknown) => {
+      console.warn("Ovis: the account's list could not be read for its PCs", error instanceof Error ? error.name : error);
+    });
+    return () => { live = false; };
+  }, [accountPcs, listOf]);
+  /** the post of an account PC of this row that is added by the number, where it is one */
+  const postOf = (pc: RelayTabPc): PostedPc | undefined => pc.saved ? undefined : listAdds?.posts.find((post) => post.server_id === pc.server_id);
+  const addByNumber = (pc: RelayTabPc, post: PostedPc) => (): void => { open.setError(null); setAdding({ name: pc.name ?? t("Unnamed PC"), post }); };
   // Forget PCs: the rows this phone can forget have Forget, and the PC in use's asks once more first (`asking`, its key)
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState<string | null>(null);
@@ -464,9 +486,10 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   const outsideNote = (pc: RelayTabPc): string | undefined => pc.outside === true ? t("Not in your account's list yet") : undefined;
   const fromRelay = (pc: RelayTabPc): PhonePc => {
     const used = relayUsed(pc);
+    const post = postOf(pc);
     return {
       // a PC with no way to it (noWay) has nothing to open: its row stays, and says that it is off
-      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : pc.noWay === true ? {} : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
+      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : post !== undefined ? { open: addByNumber(pc, post) } : pc.noWay === true ? {} : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
       word: used ? "in-use" : pc.status, forget: forgetRelay(pc), kept: relayKept(pc), note: outsideNote(pc),
     };
   };
@@ -487,7 +510,8 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     const data = { "data-pc-ways": [...new Set(lines.map((line) => line.way))].join(" "), ...(tailnet ? { "data-tailnet-pc": tailnet.origin } : {}) };
     if (relay !== undefined) {
       const used = relayUsed(relay);
-      return { key: relay.server_id, name: relay.name ?? t("Unnamed PC"), way: "relay", ways: lines, others: phones.map(otherLine), word: used ? "in-use" : relay.status, note: outsideNote(relay), ...(used && goBack ? { open: goBack } : { href: serverScopePath(relay.server_id), onLink: offlineLink }), data };
+      const post = postOf(relay);
+      return { key: relay.server_id, name: relay.name ?? t("Unnamed PC"), way: "relay", ways: lines, others: phones.map(otherLine), word: used ? "in-use" : relay.status, note: outsideNote(relay), ...(used && goBack ? { open: goBack } : post !== undefined ? { open: addByNumber(relay, post) } : { href: serverScopePath(relay.server_id), onLink: offlineLink }), data };
     }
     // the way the app keeps open, where one is: the row's tap goes back to it, so the row shows it and More ways the rest
     const kept = phones.find((pc) => isCurrent(pc.origin, current));
@@ -532,6 +556,9 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
         : rows.length > 0 ? <p className="relay-shell-copy my-pcs-none" role="status">{t("No PC matches.")}</p> : empty}
       {editing ? <div className="my-pcs-add"><button type="button" className="btn btn-primary" data-action="forget-done" onClick={stopEditing}>{t("Done")}</button></div>
         : onAdd && <div className="my-pcs-add"><button ref={addButton} type="button" className="btn btn-primary" data-action="add-pc" onClick={onAdd}><Plus aria-hidden="true" />{t("Add PC")}</button></div>}
+      {adding !== null && listAdds !== null && (
+        <AddPcByNumber list={listAdds.list} account={listAdds.account} post={adding.post} name={adding.name} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
+      )}
     </div>
   );
 }

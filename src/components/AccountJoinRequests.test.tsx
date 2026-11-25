@@ -121,7 +121,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
 
     it("Allow on a PC that posted its keys for the list asks for the number, and never opens the PC's own page", async () => {
       await listedByItsOwner(mac, "hasang-MacBookPro");
-      lists = { list, posts: [postOf(mac)] };
+      lists = { account: ACCOUNT, list, posts: [postOf(mac)] };
       await mount();
       expect(text()).toContain("\"hasang-MacBookPro\" asks to join your account");
       await press("Allow");
@@ -134,7 +134,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
 
     it("shows no card for a PC that posted nothing for the list: no way into the directory's admission alone", async () => {
       await listedByItsOwner(mac, "hasang-MacBookPro");
-      lists = { list, posts: [] };
+      lists = { account: ACCOUNT, list, posts: [] };
       await mount();
       expect(text()).not.toContain("hasang-MacBookPro");
       expect(buttons()).toEqual([]);
