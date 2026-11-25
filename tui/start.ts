@@ -7,7 +7,7 @@
 
 import { join } from "node:path";
 import { plainSession } from "../server/herdr-core/core-socket.ts";
-import type { LoopEnd } from "./loop.ts";
+import type { LoopEnd } from "./loop-end.ts";
 
 export const USAGE = "usage: ovis tui [--session NAME] | -h | -V";
 
@@ -64,6 +64,12 @@ export function insideOwnCore(env: Env, target: string, envCore: string, same: (
 /** Where `ovis tui` hands the screen the folder it was typed in: the screen itself runs in the install's folder. */
 export const SCREEN_FOLDER = "OVIS_TUI_CWD";
 
+/**
+ * Where `ovis tui` hands the screen the Ovis server's address (as `ovis status` reaches it over TCP), for the entries that
+ * only the server does (herdr's New worktree and Delete worktree checkout...). No token goes with it: the screen holds none.
+ */
+export const SCREEN_SERVER = "OVIS_TUI_SERVER";
+
 /** The folder a new workspace starts in, the first one too: the one the launcher names, else the screen's own working folder. */
 export function screenFolder(env: Env, cwd: string): string {
   return env[SCREEN_FOLDER] || cwd;
@@ -98,7 +104,7 @@ export function ending(end: Exclude<LoopEnd, { kind: "crashed" }>, target: { pat
         exit: EXIT_OK,
       };
     case "no_core":
-      return { leave: false, out: null, err: [[end.code, `no herdr-core answers at ${target.path} (session ${target.session}); start one with \`hc server start\`, or run \`ovis\` to be asked`]], exit: EXIT_FAILED };
+      return { leave: false, out: null, err: [[end.code, `no herdr-core answers at ${target.path} (session ${target.session}); start one with \`hc server start\`, or run \`ovis tui\` to be asked`]], exit: EXIT_FAILED };
     case "incompatible":
       return { leave: false, out: null, err: [[end.code, end.reason]], exit: EXIT_FAILED };
     case "not_a_terminal":

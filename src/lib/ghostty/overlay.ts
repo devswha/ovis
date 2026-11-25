@@ -13,6 +13,9 @@ import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
 import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
+import { holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
+import { holdSelection } from "./selection.ts";
+import { ghosttyRows } from "./screenRows.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
@@ -66,10 +69,9 @@ const ANNOUNCED_LINES = 20;
 interface XtermRowRenderer { renderRows(start: number, end: number): void }
 
 type BufferPoint = readonly [x: number, y: number];
-/** xterm's render service: its renderer, and the selection it draws, which a drag moves before onSelectionChange (mouseup) */
+/** xterm's render service: its renderer, and the hook that hears the selection it draws change */
 interface XtermRenderService {
   _renderer?: { value?: XtermRowRenderer };
-  _selectionState?: { start?: BufferPoint; end?: BufferPoint; columnSelectMode?: boolean };
   handleSelectionChanged?: (start?: BufferPoint, end?: BufferPoint, columnSelectMode?: boolean) => void;
 }
 
@@ -215,15 +217,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   };
 
   const renderService = xtermRenderService(term);
-  const currentSelection = (): Selection | null => {
-    const state = renderService?._selectionState;
-    return state?.start && state.end ? { start: state.start, end: state.end, column: state.columnSelectMode === true } : null;
-  };
+  const reader = terminalScreen(term);
+  const currentSelection = (): Selection | null => reader.drawnSelection();
   const rowSelected: string[] = [];
   const paintRow = (y: number, runs: GhosttyRun[], selection: Selection | null): boolean => {
     const row = rowEls[y];
     if (!row) return false;
-    const selected = selectedColumns(selection, term.buffer.active.viewportY + y, term.cols);
+    const selected = selectedColumns(selection, reader.viewportY + y, term.cols);
     rowSelected[y] = String(selected);
     let html = "";
     for (const run of runs) html += runHtml(run, selected);
@@ -441,7 +441,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       fit();
     }
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
-    const buffer = term.buffer.active;
+    const buffer = reader.active();
     vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
     const selection = currentSelection();
     const changed = vt.frame((y, runs) => {
@@ -577,12 +577,55 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   muteXtermRows();
 
   host.dataset["renderer"] = "ghostty";
+  // libghostty has every byte xterm was given by now, and each later one before xterm parses it
+  // A read that fails gives the terminal back to xterm, which has every byte too: a reader runs in xterm's write
+  // callback, where a throw would leave the output behind it queued
+  const readFailed = (error: unknown): void => {
+    console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
+    overlay.dispose();
+  };
+  const heldRows = (): ScreenRows | null => {
+    if (disposed) return null;
+    try {
+      const rows = ghosttyRows(vt);
+      return {
+        ...rows,
+        getLine: (y) => {
+          if (disposed) return term.buffer.active.getLine(y);
+          try {
+            const line = rows.getLine(y);
+            if (!line) return line;
+            // a line's styled cells are read when first asked: a failure there falls back the same way
+            return {
+              ...line,
+              getCell: (x, cell) => {
+                if (!disposed) {
+                  try { return line.getCell(x, cell); } catch (error) { readFailed(error); }
+                }
+                return term.buffer.active.getLine(y)?.getCell(x, cell as never);
+              },
+            };
+          } catch (error) {
+            readFailed(error);
+            return term.buffer.active.getLine(y);
+          }
+        },
+      };
+    } catch (error) {
+      readFailed(error);
+      return null;
+    }
+  };
+  holdScreenRows(term, heldRows);
+  const releaseSelection = holdSelection(term);
   const overlay: GhosttyOverlay = {
     dispose: () => {
       if (disposed) return;
       disposed = true;
       cancelPaint();
       delete host.dataset["renderer"];
+      holdScreenRows(term, null);
+      releaseSelection();
       unmuteXtermRows();
       term.refresh(0, term.rows - 1);
       term.write = write;

@@ -178,6 +178,7 @@
   "scripts/claude-image-browser-qa.ts": 4,
   "scripts/web-panel-mobile-regression.ts": 4,
   "scripts/application-paging-regression.ts": 3,
+  "scripts/account-list-device-browser-qa.ts": 3,
   "scripts/unconfirmed-input-demo-regression.ts": 3,
   "scripts/herdr-prefix-keys-demo-regression.ts": 3,
   "scripts/devin-chat-browser-regression.ts": 3,
@@ -197,5 +198,6 @@
   "scripts/terminal-dispose-browser-qa.ts": 1,
   "scripts/external-link-tab-regression.ts": 1,
   "scripts/relay-qa-teardown-regression.ts": 1,
-  "scripts/relay-device-indexeddb-regression.ts": 1
+  "scripts/relay-device-indexeddb-regression.ts": 1,
+  "scripts/account-list-seal-browser-qa.ts": 1
 }

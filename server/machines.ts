@@ -2,10 +2,11 @@ import { authenticatedWebSocket } from "./remote-websocket.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as tcpServer } from "node:net";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { hostname } from "node:os";
 import { basename, join, posix } from "node:path";
 import { version } from "../package.json";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type SetupStepCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { accountAddRelay, BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type AccountAddRelay, type AccountAddTarget, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type SetupErrorCode, type SetupStepCode, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -46,14 +47,13 @@ import { importPublicKey } from "../shared/relay-e2ee.ts";
 import { deriveServerId } from "../shared/relay-server-proof.ts";
 import { validateOffer } from "../shared/relay-offer.ts";
 import type { HcMachine, MachineBridge } from "./herdr-core/machine-bridge.ts";
-import { AccountAddChannel } from "./account-add-channel.ts";
+import { AccountAddChannel, type AccountAddNamed } from "./account-add-channel.ts";
 import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAddressTarget, loadAddressPcToken, openAddressPcForward, pairAddressPc, removeAddressPcToken, saveAddressPcToken, type AddressPcForward } from "./address-pc.ts";
 
 /** a PC keeps the six-digit code in its offer for 10 minutes at most (server/devices.ts) */
 const RELAY_FOUND_MS = 10 * 60_000;
 /** the account service keeps an admission for 10 minutes: a key made for another PC of the account waits no longer */
 const ACCOUNT_PC_MS = 10 * 60_000;
-const ACCOUNT_PC_ANSWER_MS = 10_000;
 
 export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
@@ -166,6 +166,16 @@ export function accountAddTarget(value: unknown): AccountAddTarget | null {
   return deriveServerId(key) === server_id ? { server_id, public_key, relay, label, account } : null;
 }
 
+/**
+ * That PC's card for the account's signed list, as a take that names the list answers it over SSH, at the relay key and
+ * with the name the inspect read, and where that PC says it stands in the list (`waiting` until an entry adds it).
+ */
+export interface AccountAddCard { readonly key: string; readonly enc: string; readonly card: string; readonly endpoint: string; readonly label: string; readonly standing: string }
+
+/** What an Ovis from before lists answers a take that names one: its parser refuses the field. */
+const OLD_OVIS_REFUSAL = /^Unexpected field (?:list|adder)$/;
+
+export const ACCOUNT_ADD_LIST_OLD_OVIS = "That PC's Ovis is too old to join your account's signed list. Update Ovis there, then add it again.";
 export const ACCOUNT_ADD_BRIDGE_ONLY = "That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.";
 export const ACCOUNT_ADD_NO_OVIS = "Ovis is not running on that PC. Install it there, then add it to your account.";
 export const ACCOUNT_ADD_WINDOWS = "Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.";
@@ -1296,9 +1306,16 @@ export class MachineManager {
   /**
    * The take of an account add (POST /api/account/ssh-add): tells the PC that job reached the account to join, `account`,
    * which the caller derives from this PC's own binding. Only while the job's connection stands, its PC has not
-   * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof.
+   * reconnected since, and the PC it answered for is `serverId`. The PC takes the admission on its own proof, turns its
+   * relay on and answers with it (`relay`: null where its Ovis did not say). `named`: the account keeps a signed list,
+   * which the take names with the key whose entry adds that PC (server/account/ssh-add-list.ts): until that entry is in
+   * the list, the PC answers `waiting` with its card for the list, at the relay key the inspect read (`endpoint`), and
+   * the same take may go again on the same forward. An Ovis there from before this refuses the list with no code of its
+   * own: `that_pc_old`.
    */
-  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string }> {
+  async accountTake(jobId: string, serverId: string, account: string): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true }>;
+  async accountTake(jobId: string, serverId: string, account: string, named: AccountAddNamed): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true; listJoined?: true } | { waiting: AccountAddCard }>;
+  async accountTake(jobId: string, serverId: string, account: string, named?: AccountAddNamed): Promise<{ account: string; relay: AccountAddRelay | null; unanswered?: true; listJoined?: true } | { waiting: AccountAddCard }> {
     const job = this.jobs.get(jobId);
     const reached = job?.accountAdd?.reached;
     if (!job || !reached || job.public.phase !== "connected") throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.");
@@ -1308,11 +1325,72 @@ export class MachineManager {
       await reached.channel.close();
       throw new AccountAddError("disconnected", "The SSH connection to that PC ended. Connect to it again.");
     }
-    // one take per inspect: the channel closes the forward once it answers, whatever it answers
-    const answer = await reached.channel.take(account, serverId) as Record<string, unknown> | null;
-    if (answer !== null && typeof answer === "object" && typeof answer.error === "string") throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
+    // one take per inspect: the channel closes the forward once it answers, whatever it answers, but a `waiting`
+    let answer: Record<string, unknown> | null;
+    try { answer = await reached.channel.take(account, serverId, named) as Record<string, unknown> | null; }
+    catch {
+      // For a take that names a list, a second look is no answer: that PC being in the account (one press before the
+      // list, say) says nothing of whether it follows the list. The caller says where the add stopped
+      if (named !== undefined) throw new AccountAddError("take_lost", "That PC's answer to the take was lost. Connect again to check.");
+      // the take may have gone out and its answer been lost (the forward or the connection dropped while that PC waited
+      // for its relay): it may be bound, so this PC asks it once more which account it is in, and never says "not added"
+      // on a take that got no answer
+      const seen = await this.inspectAgain(job, reached);
+      if (seen === account) return { account, relay: null, unanswered: true };
+      if (seen === undefined) throw new AccountAddError("take_unanswered", "It may have been added. Connect again to check.");
+      throw new AccountAddError("refused", "That PC did not take the account");
+    }
+    if (answer !== null && typeof answer === "object" && typeof answer.error === "string") {
+      // an Ovis from before lists refuses the take's list as a field it does not know, with no code of its own. Any
+      // other error with no code (a log it cannot read, a failure of its own) is no sign of its age: it could not answer
+      if (named !== undefined && typeof answer.code !== "string") {
+        if (OLD_OVIS_REFUSAL.test(answer.error)) throw new AccountAddError("that_pc_old", ACCOUNT_ADD_LIST_OLD_OVIS);
+        console.warn(`[account] the PC an add over SSH reached could not answer its take: ${answer.error.slice(0, 200)}`);
+        throw new AccountAddError("that_pc_error", "That PC could not answer. Try again.");
+      }
+      throw new AccountAddError(typeof answer.code === "string" ? answer.code : "refused", answer.error);
+    }
+    if (named !== undefined && answer !== null && typeof answer === "object" && answer.state === "waiting") {
+      const { key, enc, card, standing } = answer;
+      if (typeof key !== "string" || typeof enc !== "string" || typeof card !== "string" || typeof standing !== "string" || key.length > 256 || enc.length > 256 || card.length > 256 || standing.length > 32) {
+        await reached.channel.close();
+        throw new AccountAddError("refused", "That PC answered with a card this app cannot use");
+      }
+      // the relay key is the one this PC read at the inspect, checked there against that PC's ID: never one the take names
+      const target = job.public.account_add;
+      if (target === undefined) { await reached.channel.close(); throw new AccountAddError("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again."); }
+      return { waiting: { key, enc, card, endpoint: bytesToHex(importPublicKey(target.public_key)), label: target.label, standing } };
+    }
     if (answer === null || typeof answer !== "object" || answer.account !== account) throw new AccountAddError("account_mismatch", "That PC answered for another account");
-    return { account };
+    // a take that named the list: that PC joined it by this take, not one that followed it already
+    return { account, relay: accountAddRelay(answer.relay), ...(named !== undefined && answer.list_joined === true ? { listJoined: true as const } : {}) };
+  }
+
+  /** The relay key, 64 hex, of the PC an account add's job reached, as its inspect read it over that job's connection; null for a job that reached none. */
+  accountAddEndpoint(jobId: string): string | null {
+    const job = this.jobs.get(jobId);
+    const target = job?.accountAdd?.reached === undefined ? undefined : job.public.account_add;
+    return target === undefined ? null : bytesToHex(importPublicKey(target.public_key));
+  }
+
+  /** Closes the forward of an account add that ends here, before its take was answered for good (an add by the list that this PC gave up). */
+  async accountAddEnd(jobId: string): Promise<void> {
+    await this.jobs.get(jobId)?.accountAdd?.reached?.channel.close();
+  }
+  /**
+   * The account the PC a take got no answer from says it is in, asked once on a forward of its own over the same
+   * connection: undefined when it cannot be asked or does not answer for the PC the add reached.
+   */
+  private async inspectAgain(job: JobState, reached: { ssh: SshConnection; serverId: string }): Promise<string | null | undefined> {
+    const remote = job.accountAdd?.remoteSocket;
+    if (remote === undefined || !reached.ssh.connected()) return undefined;
+    let channel: AccountAddChannel | undefined;
+    try {
+      channel = await AccountAddChannel.open(reached.ssh, remote);
+      const fields = accountAddTarget(await channel.inspect());
+      return fields !== null && fields.server_id === reached.serverId ? fields.account : undefined;
+    } catch { return undefined; }
+    finally { await channel?.close(); }
   }
   /** a step by its code (its English beside it), or by words with no code: a PC's own notice */
   private step(job: JobState, step: SetupStepCode | string): void {
@@ -2488,8 +2566,9 @@ export class MachineManager {
     if (this.stopped) throw new Error("Server stopping");
     if (!Array.isArray(pcs) || pcs.length > 32) throw new AccountPcError("invalid", "Expected the account's PCs");
     const offers = pcs.map((pc) => this.accountPcOffer(pc).offer);
+    // as long as a device waits for a PC (PC_ANSWER_MS): a busy PC answers late, and a PC that does not answer is not known to be off
     return Promise.all(offers.map(async (offer) => ({ server_id: offer.server_id,
-      state: await vouchedSupport(offer, { ...(this.relaySocket ? { socket: this.relaySocket } : {}), pcAnswerMs: ACCOUNT_PC_ANSWER_MS }) })));
+      state: await vouchedSupport(offer, this.relaySocket ? { socket: this.relaySocket } : {}) })));
   }
 
   /**
@@ -2505,6 +2584,7 @@ export class MachineManager {
     const support = await vouchedSupport(offer, this.relaySocket ? { socket: this.relaySocket } : {});
     if (support === "outdated") throw new AccountPcError("outdated", "Update Ovis on that PC first.");
     if (support === "offline") throw new AccountPcError("offline", "That PC is not on the relay now.");
+    if (support === "unreachable") throw new AccountPcError("offline", "That PC could not be reached just now. Try again.");
     if (this.stopped) throw new Error("Server stopping");
     const now = this.now();
     for (const [serverId, held] of this.accountPcs) if (now - held.at > ACCOUNT_PC_MS && !held.running) this.accountPcs.delete(serverId);
@@ -2680,7 +2760,9 @@ export function accountPcFailure(error: unknown, { shown, aborted }: { shown: bo
     }
     return new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
   }
-  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
+  // most often a PC of the account that no device of the account was paired at: nobody there may approve another PC
+  // (server/relay/session.ts accountJoin), however often it is asked
+  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.", { cause: error });
   return new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
 }
 

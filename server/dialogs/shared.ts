@@ -6,6 +6,7 @@ import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
 import type { PiAskUserForm } from "../pi-ask-bridge.ts";
 import type { NativeSteps } from "./step-navigate.ts";
+import type { RecordRequest } from "./record.ts";
 
 export function onePerPass<T>(parse: (screen: string, ctx: ReaderContext) => T): (screen: string, ctx: ReaderContext) => T {
   let last: { screen: string; ctx: ReaderContext; value: T } | null = null;
@@ -152,9 +153,22 @@ export type ParsedPrompt = InteractivePrompt & {
   /**
    * the shell command of an approval dialog the approval hub binds a held request to (server/approvals/hub.ts): Claude's
    * Bash approval, as its panel shows it between its dashed rules, and OmO's permission dialog for a shell command and
-   * the one Ovis's pi extension draws like it (dialogs/pi.ts); null for a dialog the screen does not show whole
+   * the one Ovis's pi extension draws like it (dialogs/pi.ts), omp's bash approval (dialogs/omp.ts), and the command of
+   * Codex's approval of a request it asks a client on its own app server (dialogs/codex.ts); null for a dialog the screen
+   * does not show whole
    */
   approvalCommand?: string | null;
+  /** which of the agent's approval dialogs it is, where it has several (server/approvals/hub.ts ApprovalDialog.kind) */
+  approvalKind?: string;
+  /**
+   * a card only while the approval hub holds a request for it, which then shows that request's command whole: an omp
+   * bash approval whose command omp cut, which two calls could draw the same
+   */
+  approvalHeldOnly?: true;
+  /** the pending request in the agent's own record whose command the card shows (dialogs/record.ts), checked again before each key */
+  record?: RecordRequest;
+  /** the JSON-RPC id of the question the pane's own Codex server waits on that the card shows (codex-question.ts) */
+  servedAsk?: string;
   lettaSearch?: string;
   lettaTab?: string;
   lettaTabs?: string[];
