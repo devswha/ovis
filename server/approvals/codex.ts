@@ -368,17 +368,20 @@ class Connection {
   async plan(threadId: string, mayWrite: () => boolean): Promise<"unsent" | "applied" | "unknown"> {
     const ready = (): boolean => !this.closed && this.thread === threadId && this.idle && this.model !== null;
     if (!ready()) return "unsent";
-    const [modes, config, loaded] = await Promise.all([this.within("collaborationMode/list", {}), this.within("config/read", {}), this.within("thread/loaded/list", {})]);
-    // the TUI's thread is the only one loaded besides subagents: a /resume or /new in the TUI loads another without
-    // telling Ovis which one it shows, and then nothing goes
-    const ids = loaded !== "unknown" && isObject(loaded["result"]) && Array.isArray(loaded["result"]["data"]) ? loaded["result"]["data"] : null;
-    const alone = ids !== null && ids.filter((id) => typeof id !== "string" || !this.subagents.has(id)).every((id) => id === threadId) && ids.includes(threadId);
+    const [modes, config] = await Promise.all([this.within("collaborationMode/list", {}), this.within("config/read", {})]);
     const plan = modes !== "unknown" && isObject(modes["result"]) && Array.isArray(modes["result"]["data"])
       ? modes["result"]["data"].find((mode): mode is Json => isObject(mode) && mode["mode"] === "plan") : undefined;
-    const configured = config !== "unknown" && isObject(config["result"]) && isObject(config["result"]["config"])
-      ? text(config["result"]["config"]["plan_mode_reasoning_effort"]) : null;
+    // a config that could not be read may set Plan's effort: the TUI would use it, so nothing goes
+    const settings = config !== "unknown" && isObject(config["result"]) && isObject(config["result"]["config"]) ? config["result"]["config"] : null;
+    if (plan === undefined || settings === null || !ready()) return "unsent";
+    // last, right before the request: the TUI's thread is the only one loaded besides subagents (a /resume or /new in
+    // the TUI loads another without telling Ovis which one it shows)
+    const loaded = await this.within("thread/loaded/list", {});
+    const ids = loaded !== "unknown" && isObject(loaded["result"]) && Array.isArray(loaded["result"]["data"]) ? loaded["result"]["data"] : null;
+    const alone = ids !== null && ids.includes(threadId) && ids.every((id) => id === threadId || (typeof id === "string" && this.subagents.has(id)));
     // read again after the lookups: the thread, its state or its model may have moved meanwhile
-    if (plan === undefined || !alone || !ready() || !mayWrite()) return "unsent";
+    if (!alone || !ready() || !mayWrite()) return "unsent";
+    const configured = text(settings["plan_mode_reasoning_effort"]);
     const answer = await this.within("thread/settings/update", { threadId, collaborationMode: { mode: "plan", settings: {
       model: this.model, reasoning_effort: configured ?? text(plan["reasoning_effort"]), developer_instructions: null,
     } } });

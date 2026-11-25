@@ -663,6 +663,19 @@ describe("Ovis on the pane's Codex server", () => {
     expect(await dropped).toBe("unknown");
   });
 
+  it("sends no /plan when Codex's config cannot be read, which may set Plan's effort", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], error: { code: -32603, message: "unreadable" } });
+    expect(await sent).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
+  });
+
   it("sends no /plan while another thread is loaded, which the TUI may show after a /resume or /new", async () => {
     const { codex } = launched("0.171.0", ["t1", "t9"]);
     await running(codex);
