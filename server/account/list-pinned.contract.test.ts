@@ -215,6 +215,16 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     expect(labelOf(unnamed.key)).toBe("My laptop");
   });
 
+  test("a device the list names \"failed\" is named so: no name is mistaken for a service that could not answer", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    await pc.account.addDevice(tablet, { names: { label: "failed", os: "android" } });
+    await pc.pull();
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "failed"; turn++) await pc.list.settled();
+    expect(labelOf(tablet.key)).toBe("failed");
+  });
+
   test("opening names never holds up a read: with names to open and the wraps route held, then failing, a removal is read before a session opens", async () => {
     const pc = await pinnedPc();
     const victim = await listMember();

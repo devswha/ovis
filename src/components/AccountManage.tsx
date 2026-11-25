@@ -233,7 +233,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           confirmLabel={t("Remove")} onClose={() => setAsked(null)}
           onConfirm={async () => {
             // a removal that wants a fresh sign-in first closes the question: its Sign in again, below the list, removes it
-            try { await removal.remove(await signInOfAccount(service, account), asked.server_id, undefined, asked.held); } catch (error) {
+            try { await removal.remove(await signInOfAccount(service, account), asked.server_id, undefined, asked.held, asked.by_list === true); } catch (error) {
               console.warn("Ovis: the PC was not removed from the account", error instanceof Error ? error.name : error);
               throw new Error(pcRemovalFailure(error, t, t("{name} could not be removed. Try again.", { name: asked.label })));
             }

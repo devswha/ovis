@@ -7,6 +7,9 @@ import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
 import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetNotAskedError, ResetRegistryUnavailableError } from "./service.ts";
 
+/** Why an approval of a join marked `list_unknown` (pairing-approvals.ts) let nobody in, as `ovis approve` says it. */
+const LIST_UNKNOWN_JOIN = "That device cannot be let in here: this PC lets devices into your account by its signed list, and the device asked as an Ovis older than 0.5.10 does. Update Ovis on it, then have it ask to join again.";
+
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
  * the request came from, null for this PC itself: it holds the pairing code an offer or a typed code gives it.
@@ -192,6 +195,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
           const tapped = service.approvals.decideOwn(body.id, body.decision === "approve");
           if (tapped === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
           if (tapped === "typed_only") return fail("digits_required", "Type the six digits the new device shows.", 409);
+          if (tapped === "list_unknown") return fail("list_unknown", LIST_UNKNOWN_JOIN, 409);
           // the person at this PC declined that device: what this PC signed for it and keeps goes too
           if (body.decision === "decline" && key) context.services.accountList?.declinedHere(key);
           return reply({ ok: true });
@@ -202,6 +206,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         const outcome = service.approvals.decideTyped(body.id, body.digits);
         if (outcome === "gone") return fail("relay_pairing_gone", "That device is no longer waiting: it left, was decided, or its time ran out.", 404);
         if (outcome === "wrong_digits") return fail("wrong_digits", "Those are not the digits the new device shows; it was not let in.", 409);
+        if (outcome === "list_unknown") return fail("list_unknown", LIST_UNKNOWN_JOIN, 409);
         return reply({ ok: true });
       }
       case RELAY_CONTROLS.direct: {

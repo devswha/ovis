@@ -19,11 +19,14 @@ export type PairingDecision = { approved: true; by?: DeviceMatch; pcLabel?: stri
 /** `not_confirmed`: a join into the list whose new device has not said yet that the digits match; nothing was decided, and the request waits as it did. */
 export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" | "not_confirmed" };
 
-/** What the owner's typed digits came to on this PC's own window: approved, nothing such waiting, or wrong (which ends it). */
-export type TypedDecision = "decided" | "gone" | "wrong_digits";
+/**
+ * What the owner's typed digits came to on this PC's own window: approved, nothing such waiting, wrong (which ends it), or
+ * a join this PC cannot let in (`list_unknown`), which no approval decides: it waits until it is declined or ends.
+ */
+export type TypedDecision = "decided" | "gone" | "wrong_digits" | "list_unknown";
 
-/** What a tap on this PC's own window came to: decided, nothing such waiting, or a join a member could approve, which is typed. */
-export type TapDecision = "decided" | "gone" | "typed_only";
+/** What a tap on this PC's own window came to: decided, nothing such waiting, a join a member could approve, which is typed, or one no approval decides (`list_unknown`). */
+export type TapDecision = "decided" | "gone" | "typed_only" | "list_unknown";
 
 interface Waiting {
   request: RelayPairingRequest & { intent: PairingIntent };
@@ -339,6 +342,8 @@ export class RelayPairingApprovals {
   decideOwn(id: string, approved: boolean): TapDecision {
     const entry = this.waiting.get(id);
     if (!entry || !ownJoin(entry)) return "gone";
+    // an app that knows no join into the list: this PC lets it in by nothing, so an Allow approves nothing
+    if (approved && entry.listUnknown) return "list_unknown";
     if (!entry.firstJoin) return "typed_only";
     entry.finish(approved ? { approved: true, own: true } : { approved: false });
     return "decided";
@@ -348,6 +353,7 @@ export class RelayPairingApprovals {
   decideTyped(id: string, digits: string): TypedDecision {
     const entry = this.waiting.get(id);
     if (!entry || !ownJoin(entry)) return "gone";
+    if (entry.listUnknown) return "list_unknown";
     const typed = Buffer.from(digits), shown = Buffer.from(entry.request.digits);
     if (typed.length !== shown.length || !timingSafeEqual(typed, shown)) { entry.finish({ approved: false }); return "wrong_digits"; }
     entry.finish({ approved: true, own: true });
