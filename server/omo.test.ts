@@ -98,8 +98,8 @@ it("reads session identity from bounded headers and rejects foreign cwd and esca
     session(join(home, "outside.jsonl"), "/project");
     symlinkSync(join(home, "outside.jsonl"), join(dir, "escaped.jsonl"));
     writeFileSync(join(dir, "broken.jsonl"), "{");
-    expect(omoCandidates("/project", home)).toEqual([{ path: join(dir, "valid.jsonl"), id: "session-1", createdAt: Date.parse("2026-09-27T00:00:00Z"), store: join(home, ".omo", "agent", "sessions"), identity: expect.any(String) }]);
-    expect(omoCandidates("/missing", home)).toEqual([]);
+    expect(omoCandidates("/project", home).files).toEqual([{ path: join(dir, "valid.jsonl"), id: "session-1", createdAt: Date.parse("2026-09-27T00:00:00Z"), store: join(home, ".omo", "agent", "sessions"), identity: expect.any(String) }]);
+    expect(omoCandidates("/missing", home).files).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -223,8 +223,8 @@ it("binds an omo pane whose launcher moved its agent directory out of ~/.omo", (
     const bound = omoTranscriptsOfCwd(cwd, [pane], infos, home, moved).get(pane.pane_id)?.path;
     expect(bound).toBe(path);
     expect(parseOmpTranscript(readFileSync(bound!, "utf8")).map((turn) => turn.role)).toEqual(["user", "assistant"]);
-    expect(omoCandidates(cwd, home)).toEqual([]);
-    expect(omoCandidates(cwd, home, [], [join(home, ".omo", "agent"), agentDir]).map((file) => file.path)).toEqual([path]);
+    expect(omoCandidates(cwd, home).files).toEqual([]);
+    expect(omoCandidates(cwd, home, [], [join(home, ".omo", "agent"), agentDir]).files.map((file) => file.path)).toEqual([path]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -313,6 +313,27 @@ it("reads an OmO holder's chat when sidecars outnumber the session scan limit (#
     const pane = { pane_id: "w:p1", cwd, agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: path } } as HerdrPane;
     const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
     expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id)?.path).toBe(path);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("does not pin a launch id to a second store when its own transcript scan was capped (#4499)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-incomplete-")));
+  try {
+    const cwd = join(home, "project");
+    const storeA = join(home, "agent-a");
+    const storeB = join(home, "agent-b");
+    const dirA = join(storeA, "sessions", omoSessionFolder(cwd));
+    const dirB = join(storeB, "sessions", omoSessionFolder(cwd));
+    const id = "resumed-session";
+    writeSession(dirA, id, cwd);
+    writeSession(dirB, id, cwd);
+    for (let i = 0; i < 4096; i++) writeFileSync(join(dirA, `other-${i}.jsonl`), "");
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const pidA = 2147483646, pidB = 2147483647;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [
+      { pid: pidA, argv: ["omo", "--session-id", id], cwd }, { pid: pidB, argv: ["omo"], cwd },
+    ] } }]]);
+    expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, (pid) => [`OMO_CODING_AGENT_DIR=${pid === pidA ? storeA : storeB}`]).get(pane.pane_id)?.path).toBeNull();
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
