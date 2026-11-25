@@ -309,7 +309,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "在 {time} 前于这台 PC 的屏幕上批准关闭后，严格模式才会关闭。在这台 PC 上运行 ovis confirm 即可打开该屏幕。",
   "Turn strict mode on or off in a browser on this PC itself.": "只能在这台 PC 本身的浏览器中开启或关闭严格模式。",
   "Strict mode changed already. This shows it as it is now.": "严格模式已经变了。这里显示的是当前状态。",
-  "This PC did not take the request. Try again.": "这台 PC 没有接受该请求。请重试。",
   "Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly.": "断开的设备尚未清理完，严格模式仍保持开启。请稍后再试。",
   "This PC is in strict mode.": "这台 PC 处于严格模式。",
   "Ask to turn strict mode off": "请求关闭严格模式",

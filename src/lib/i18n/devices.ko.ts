@@ -309,7 +309,6 @@ export const DEVICES_KO: Record<string, string> = {
   "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "{time}까지 이 PC 화면에서 끄기를 승인해야 꺼져요. 이 PC에서 ovis confirm을 실행하면 그 화면이 열려요.",
   "Turn strict mode on or off in a browser on this PC itself.": "엄격 모드는 이 PC의 브라우저에서만 켜고 끌 수 있어요.",
   "Strict mode changed already. This shows it as it is now.": "엄격 모드가 이미 바뀌었어요. 지금 상태를 보여 드려요.",
-  "This PC did not take the request. Try again.": "이 PC가 요청을 받지 않았어요. 다시 해 보세요.",
   "Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly.": "끊은 기기 정리가 아직 끝나지 않아 엄격 모드가 켜져 있어요. 잠시 뒤 다시 해 보세요.",
   "This PC is in strict mode.": "이 PC는 엄격 모드예요.",
   "Ask to turn strict mode off": "엄격 모드 끄기 요청",

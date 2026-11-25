@@ -161,6 +161,11 @@ describe("AddThisPc", () => {
       if (byList !== null && path.startsWith("/api/account/list/add")) {
         byList.calls.push({ what: `${init?.method ?? "GET"} ${path}${url.search}`, body, named: namedAs });
         if (path === "/api/account/list/add/cancel") return Response.json(byList.now = { state: "ended", run: String(body?.run), account: ACCOUNT, why: "cancelled" });
+        if (path === "/api/account/list/add/confirm") {
+          const shown = byList.now;
+          if (shown?.state !== "number" || shown.digits !== body?.digits || shown.run !== body?.run) return Response.json({ error: { code: "wrong_number", message: "not that number" } }, { status: 409 });
+          return Response.json(byList.now = { state: "confirmed", run: shown.run, account: shown.account, list: shown.list, until: shown.until });
+        }
         if (init?.method !== "POST") return Response.json(byList.now ?? { state: "none" });
         await byList.started?.();
         const start = byList.start;
@@ -2266,6 +2271,31 @@ describe("AddThisPc", () => {
       expect(tab.has(MARKER)).toBe(false);
       // the relists that kept the listing opened a window each and closed it at once
       expect(asked.filter(({ path }) => path === "/api/relay/link/close").length).toBe(links());
+    });
+
+    test("the wait shows the PC's number where the person pressed Add this PC, and The numbers match confirms it for its run", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "number", run: RUN, account: ACCOUNT, list: LIST, digits: "482913", until: new Date(at + 120_000).toISOString() };
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).toContain("This PC is being added to your account. Does the device adding it show 482 913?");
+      expect(buttons(renderer)).toEqual(["The numbers match", "Cancel", "Stop waiting"]);
+      await press(renderer, "The numbers match");
+      expect(byList!.calls.filter(({ what }) => what === "POST /api/account/list/add/confirm").map(({ body }) => body)).toEqual([{ run: RUN, digits: "482913" }]);
+      // confirmed: the number goes, and the wait goes on until the device's entry adds the PC
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).not.toContain("482 913");
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    });
+
+    test("Cancel beside the PC's number says the numbers were not the same, and the wait ends", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "number", run: RUN, account: ACCOUNT, list: LIST, digits: "482913", until: new Date(at + 120_000).toISOString() };
+      await advance(ADDED_POLL_MS);
+      await press(renderer, "Cancel");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }]);
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).toContain("The numbers were not the same, so nothing was added.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
     });
 
     test("a relist keeps the run the tab holds for the wait (another copy started it again), and Stop waiting gives that run up", async () => {

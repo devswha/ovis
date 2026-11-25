@@ -309,7 +309,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Strict mode stays on until you approve turning it off on this PC's screen by {time}. To open that screen, run ovis confirm on this PC.": "{time} までにこの PC の画面でオフを承認すると、オフになります。その画面は、この PC で ovis confirm を実行すると開きます。",
   "Turn strict mode on or off in a browser on this PC itself.": "厳格モードのオン・オフは、この PC 自身のブラウザーでのみできます。",
   "Strict mode changed already. This shows it as it is now.": "厳格モードはすでに変わっています。今の状態を表示しています。",
-  "This PC did not take the request. Try again.": "この PC は要求を受け付けませんでした。もう一度お試しください。",
   "Strict mode stays on until this PC finishes signing out the devices it ended. Try again shortly.": "切断したデバイスの整理がまだ終わっていないため、厳格モードはオンのままです。少ししてからもう一度お試しください。",
   "This PC is in strict mode.": "この PC は厳格モードです。",
   "Ask to turn strict mode off": "厳格モードのオフを依頼",
