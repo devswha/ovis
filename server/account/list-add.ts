@@ -302,7 +302,8 @@ export class ListAdd {
       run.polledAt = now;
       // The yes named the list and the device whose number it was: only an entry that device signed adds this PC. The
       // binding is written only while this add stands, asked at the write itself: its ten minutes, and the person's No
-      const live = () => this.run === run && run.end === null && !run.cancelled && this.mono() - run.startedAt < ADD_WINDOW_MS;
+      // a server that stopped meanwhile binds nothing either: a step already in its turn is no add that stands
+      const live = () => !this.stopped && this.run === run && run.end === null && !run.cancelled && this.mono() - run.startedAt < ADD_WINDOW_MS;
       const joined = await this.deps.join({ account: run.account, list: run.list, by: run.confirmed.adder, live });
       // the time ran out, or the person gave it up, while the list was read: that read joins nothing
       if (run.end !== null) return run.end;

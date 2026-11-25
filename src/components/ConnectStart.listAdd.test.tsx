@@ -16,6 +16,10 @@ const list = { writer: () => null, view: () => ({ account: ACCOUNT, status: { at
 const postOf = (server_id: string) => ({ list: "f".repeat(64), endpoint: "e".repeat(64), server_id, key: "member-key", enc: "enc-key", card: "card", for: { kind: "add" as const } });
 
 const globals = new Map<string, PropertyDescriptor | undefined>();
+/** who is signed in here, as My PCs reads it */
+const signedIn = async (): Promise<string | null> => ACCOUNT;
+/** the pages a tap went to */
+let assigned: string[] = [];
 let renderer: ReactTestRenderer | undefined;
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
@@ -27,7 +31,7 @@ const opens = (): [string, string][] => renderer!.root.findAll((node) => node.pr
 beforeEach(() => {
   const events = new EventTarget();
   for (const [name, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("https://app.ovis.sh/"), matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } }),
+    window: Object.assign(events, { location: Object.assign(new URL("https://app.ovis.sh/"), { assign: (href: string) => { assigned.push(href); } }), matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), history: { state: null, pushState() {}, replaceState() {}, back() {} } }),
     IS_REACT_ACT_ENVIRONMENT: true,
     document: Object.assign(new EventTarget(), { visibilityState: "visible", hidden: false, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
@@ -37,6 +41,7 @@ beforeEach(() => {
     Object.defineProperty(globalThis, name, { value, configurable: true });
   }
   setPageAccountList(list);
+  assigned = [];
 });
 
 afterEach(async () => {
@@ -54,7 +59,7 @@ describe("My PCs on an account that keeps a signed list", () => {
   it("opens the number card for a PC that posted its keys for the list, never its own page's join; one that posted nothing opens as today", async () => {
     const asked: string[] = [];
     const listOf = async (account: string) => { asked.push(account); return { account, list, posts: [postOf(ids.mini)] }; };
-    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini"), pc(ids.home, "Home server")], phone, listOf }) })); });
+    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini"), pc(ids.home, "Home server")], phone, listOf, signedIn }) })); });
     await settle();
     expect(asked).toEqual([ACCOUNT]);
     expect(opens()).toEqual([["Mac miniRelayOn", "press"], ["Home serverRelayOn", `link /s/${ids.home}/`]]);
@@ -66,7 +71,7 @@ describe("My PCs on an account that keeps a signed list", () => {
 
   it("opens the number card for the keys of a PC the move carried in with none, and leaves a PC whose keys another device signed to open as today", async () => {
     const listOf = async (account: string) => ({ account, list, posts: [{ ...postOf(ids.mini), for: { kind: "keys" as const } }, { ...postOf(ids.home), for: { kind: "signer" as const, signer: "tablet-key" } }] });
-    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini"), pc(ids.home, "Home server")], phone, listOf }) })); });
+    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini"), pc(ids.home, "Home server")], phone, listOf, signedIn }) })); });
     await settle();
     expect(opens()).toEqual([["Mac miniRelayOn", "press"], ["Home serverRelayOn", `link /s/${ids.home}/`]]);
     const row = renderer!.root.find((node) => node.props.className === "relay-add-saved-pc" && node.type !== "a");
@@ -76,9 +81,38 @@ describe("My PCs on an account that keeps a signed list", () => {
     expect([card.props["data-pc-id"], card.props["aria-label"]]).toEqual([ids.mini, "Give this PC its keys in your account's list?"]);
   });
 
+  it("while the list is not read yet, no account PC's row opens its own page: a tap reads the list, then opens the number card", async () => {
+    const posted = { account: ACCOUNT, list, posts: [postOf(ids.mini)] };
+    let reads = 0;
+    // the first read never answers; the one a tap asks for does
+    const listOf = (account: string) => ++reads === 1 ? new Promise<never>(() => {}) : Promise.resolve({ ...posted, account });
+    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini"), pc(ids.home, "Home server")], phone, listOf, signedIn }) })); });
+    await settle();
+    expect(opens()).toEqual([["Mac miniRelayOn", "press"], ["Home serverRelayOn", "press"]]);
+    const row = (name: string) => renderer!.root.find((node) => node.props.className === "relay-add-saved-pc" && node.type !== "a" && textOf(node).startsWith(name));
+    await act(async () => { row("Mac mini").props.onClick(); });
+    await settle();
+    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "add-pc-number").map((node) => node.props["data-pc-id"])).toEqual([ids.mini]);
+    // read now: the PC that posted nothing opens its page as before
+    expect(opens()).toEqual([["Mac miniRelayOn", "press"], ["Home serverRelayOn", `link /s/${ids.home}/`]]);
+    expect(assigned).toEqual([]);
+  });
+
+  it("a read that failed leaves no link either: a tap reads again, and opens the PC's page only once the account says it keeps no list", async () => {
+    let reads = 0;
+    const listOf = async () => { if (++reads === 1) throw new Error("the list store did not answer"); return null; };
+    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.home, "Home server")], phone, listOf, signedIn }) })); });
+    await settle();
+    expect(opens()).toEqual([["Home serverRelayOn", "press"]]);
+    await act(async () => { renderer!.root.find((node) => node.props.className === "relay-add-saved-pc" && node.type !== "a").props.onClick(); });
+    await settle();
+    expect(assigned).toEqual([`/s/${ids.home}/`]);
+    expect(opens()).toEqual([["Home serverRelayOn", `link /s/${ids.home}/`]]);
+  });
+
   it("keeps every row as it is on an account with no list", async () => {
     const listOf = async () => null;
-    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini")], phone, listOf }) })); });
+    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini")], phone, listOf, signedIn }) })); });
     await settle();
     expect(opens()).toEqual([["Mac miniRelayOn", `link /s/${ids.mini}/`]]);
   });

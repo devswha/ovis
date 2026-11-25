@@ -253,6 +253,17 @@ test("a cancel calls off at once the step the PC was to take by itself", async (
   expect(world.ticks).toEqual([]);
 });
 
+test("a step under way when the server stops binds nothing: the join is told the add no longer stands", async () => {
+  const { add, world, number } = await adding();
+  await add.start(ACCOUNT);
+  const digits = await number();
+  let standing = null as boolean | null;
+  // the server stops while the PC reads its list for the entry
+  world.during = (given) => { add.stop(); standing = given.live(); };
+  expect(await add.confirm(digits)).toMatchObject({ confirmed: { state: "confirmed" } });
+  expect(standing).toBe(false);
+});
+
 test("a server that stops leaves nothing of an add to run by itself", async () => {
   const { add, world } = await adding();
   await add.start(ACCOUNT);
