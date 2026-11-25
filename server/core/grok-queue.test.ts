@@ -25,9 +25,9 @@ describe("Grok's queue and prompt on recorded screens", () => {
     ["permission", null, "gone"],
     ["draft-lines", { mode: "fullscreen", rows: [], enterSendsNow: false }, "draft"],
     ["draft-second-line", { mode: "fullscreen", rows: [], enterSendsNow: false }, "draft"],
-    ["minimal-working", { mode: "minimal", count: 0 }, "gone"],
-    ["minimal-queued-1", { mode: "minimal", count: 1 }, "gone"],
-    ["minimal-queued-2", { mode: "minimal", count: 2 }, "gone"],
+    ["minimal-working", { mode: "minimal", count: 0, responding: true }, "gone"],
+    ["minimal-queued-1", { mode: "minimal", count: 1, responding: true }, "gone"],
+    ["minimal-queued-2", { mode: "minimal", count: 2, responding: true }, "gone"],
   ] as const)("%s", (name, queue, prompt) => {
     const screen = recorded(name);
     expect(grokQueue(screen)).toEqual(queue);

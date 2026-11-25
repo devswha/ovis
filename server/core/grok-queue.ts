@@ -15,7 +15,7 @@ export type GrokQueue =
    */
   | { readonly mode: "fullscreen"; readonly rows: readonly string[]; readonly enterSendsNow: boolean }
   /** Minimal mode: no input box, only a count on the info row (`1 queued · /queue`), 0 when none is drawn. */
-  | { readonly mode: "minimal"; readonly count: number };
+  | { readonly mode: "minimal"; readonly count: number; readonly responding: boolean };
 
 const QUEUE_ROW = /^ {4}#(\d+) (.*)$/;
 /** a row of the agent's output, which Grok indents by five */
@@ -28,8 +28,11 @@ export function grokQueue(screen: string): GrokQueue | null {
   const input = rows.map((row) => /^\s*│ ❯/.test(row)).lastIndexOf(true);
   if (input < 0) {
     const minimal = /(?:^|· )(\d+) queued · \/queue(?: ·|$)/.exec(last);
-    if (minimal) return { mode: "minimal", count: Number(minimal[1]) };
-    return last.endsWith("ctrl+o transcript") && rows.some((row) => /^❯(?: |$)/.test(row)) ? { mode: "minimal", count: 0 } : null;
+    const prompt = rows.map((row) => /^❯(?: |$)/.test(row)).lastIndexOf(true);
+    // Minimal mode can report done through herdr while the spinner above the input is still running.
+    const responding = prompt > 0 && /^[\u2801-\u28ff] Responding…(?:\s|$)/u.test(rows[prompt - 1] ?? "");
+    if (minimal) return { mode: "minimal", count: Number(minimal[1]), responding };
+    return last.endsWith("ctrl+o transcript") && prompt >= 0 ? { mode: "minimal", count: 0, responding } : null;
   }
   if (rows.some((row) => /^\s*│\s+#\d+ /.test(row))) return null;
   const top = rows.slice(0, input).map((row) => /^\s*╭/.test(row)).lastIndexOf(true);
@@ -114,7 +117,9 @@ function sendNowStep(seen: { status: string; screen: string }, before: GrokBefor
     case "minimal": {
       if (queue.count === 0) {
         // The count can lag a paste. While a turn is active, no count is not proof that the send left.
-        if ((before.working || seen.status === "working") && !echoesMessage(seen.screen, before.echo, message)) {
+        const wasResponding = before.queue?.mode === "minimal" && before.queue.responding;
+        if ((before.working || wasResponding || seen.status === "working" || queue.responding)
+          && !echoesMessage(seen.screen, before.echo, message)) {
           throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
         }
         return "done";
