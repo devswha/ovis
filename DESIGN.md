@@ -4725,8 +4725,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   models could read.
   An iPhone's still HEIC or HEIF photo always is, since the agents read PNG, JPEG, GIF and WebP
   only; a JPEG one always too, since the redraw drops its camera metadata (location, device,
-  date); an animated HEIC sequence and a PNG screenshot never. One the browser cannot decode
-  uploads as it is, its metadata included (`uploadableImage`, `lib/composerImageMime.ts`).
+  date); an animated HEIC sequence and a PNG screenshot never. A JPEG the browser cannot redraw
+  uploads with its APP1 and APP13 segments (Exif, XMP, IPTC) cut out of its bytes but for its Exif
+  orientation, so a portrait stored sideways still stands up, and with nothing after its first
+  image (a multi-picture file's second frame and its MPF index); a HEIC one as it is, its metadata
+  included. A JPEG whose type the browser left empty is told by its name
+  (`uploadableImage`, `lib/composerImageMime.ts`).
 - While a phone's keyboard is up, a tap on the transcript or a drag down it (`32px`) puts the
   keyboard away. Each only blurs the field, so the draft stays. The prompt card, which can stand
   where the transcript was on a short screen, does the same: a tap on its text (never on an

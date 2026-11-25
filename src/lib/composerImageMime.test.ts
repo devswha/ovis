@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { composerImageMimeType, normalizeComposerImageFile, uploadableImage } from "./composerImageMime.ts";
+import { composerImageMimeType, normalizeComposerImageFile, uploadableImage, withoutJpegMetadata } from "./composerImageMime.ts";
 
 describe("composerImageMimeType", () => {
   test("infers supported image types for missing and generic MIME types", () => {
@@ -7,6 +7,8 @@ describe("composerImageMimeType", () => {
       ["shot.PNG", "image/png"],
       ["photo.jpg", "image/jpeg"],
       ["photo.jpeg", "image/jpeg"],
+      ["photo.jfif", "image/jpeg"],
+      ["photo.JPE", "image/jpeg"],
       ["animation.gif", "image/gif"],
       ["screen.webp", "image/webp"],
     ];
@@ -33,6 +35,78 @@ describe("composerImageMimeType", () => {
     expect(await normalized.text()).toBe("image bytes");
     const unknown = new File(["x"], "notes.txt");
     expect(normalizeComposerImageFile(unknown)).toBe(unknown);
+  });
+});
+
+const segment = (marker: number, body: readonly number[]): number[] => [0xff, marker, 0, body.length + 2, ...body];
+const jfif = segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0]);
+const icc = segment(0xe2, [1, 2, 3]);
+const scan = [...segment(0xda, [9, 9]), 0x11, 0xff, 0x00, 0x22, 0xff, 0xd0, 0x33, 0xff, 0xd9];
+const withoutMetadataBytes: number[] = [0xff, 0xd8, ...jfif, ...icc, ...scan];
+const jpegBytes: Uint8Array<ArrayBuffer> = new Uint8Array([0xff, 0xd8, ...jfif, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...icc, ...segment(0xed, [8, 8]), ...scan]);
+
+describe("withoutJpegMetadata", () => {
+  test("drops APP1 and APP13, keeps every other segment and the scan byte for byte", async () => {
+    const stripped = await withoutJpegMetadata(new Blob([jpegBytes], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual(withoutMetadataBytes);
+  });
+
+  test("keeps only the Exif orientation, so a portrait stored sideways still stands up", async () => {
+    const tiff = (entries: readonly number[][]): number[] => [0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, entries.length, ...entries.flat(), 0, 0, 0, 0];
+    const exif = (entries: readonly number[][]): number[] => segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff(entries)]);
+    const orientation = [0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0];
+    const make = [0x01, 0x0f, 0, 2, 0, 0, 0, 4, 0x41, 0x70, 0x70, 0];
+    const portrait = new Blob([new Uint8Array([0xff, 0xd8, ...jfif, ...exif([orientation, make]), ...icc, ...scan])], { type: "image/jpeg" });
+    const stripped = await withoutJpegMetadata(portrait);
+    expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual([0xff, 0xd8, ...jfif, ...exif([orientation]), ...icc, ...scan]);
+
+    const littleEndian = segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0]);
+    const android = await withoutJpegMetadata(new Blob([new Uint8Array([0xff, 0xd8, ...littleEndian, ...scan])], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await android.arrayBuffer())]).toEqual([0xff, 0xd8, ...exif([orientation]), ...scan]);
+  });
+
+  test("reads past fill bytes before a marker, so they cannot hide the Exif", async () => {
+    const filled = new Uint8Array([0xff, 0xd8, 0xff, ...jfif, 0xff, 0xff, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...icc, 0xff, ...scan]);
+    const stripped = await withoutJpegMetadata(new Blob([filled], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual(withoutMetadataBytes);
+  });
+
+  test("ends at the first image, dropping a second frame's Exif and the MPF index that points at it", async () => {
+    const mpf = segment(0xe2, [0x4d, 0x50, 0x46, 0, 1, 2]);
+    const second = [0xff, 0xd8, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...scan];
+    const multi = new Uint8Array([0xff, 0xd8, ...jfif, ...mpf, ...icc, ...scan, ...second]);
+    const stripped = await withoutJpegMetadata(new Blob([multi], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual(withoutMetadataBytes);
+  });
+
+  test("reads the scan past fill bytes before a restart marker, so the first image still ends at its EOI", async () => {
+    const filledScan = [...segment(0xda, [9, 9]), 0x11, 0xff, 0xff, 0xd0, 0x22, 0xff, 0xff, 0x00, 0x33, 0xff, 0xd9];
+    const second = [0xff, 0xd8, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...scan];
+    const stripped = await withoutJpegMetadata(new Blob([new Uint8Array([0xff, 0xd8, ...jfif, ...filledScan, ...second])], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual([0xff, 0xd8, ...jfif, ...filledScan]);
+  });
+
+  test("skips stray bytes between segments, as a decoder does, so they cannot hide the Exif after them", async () => {
+    const stray = new Uint8Array([0xff, 0xd8, 0x00, ...jfif, 0x12, 0x34, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...icc, ...scan]);
+    const stripped = await withoutJpegMetadata(new Blob([stray], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual(withoutMetadataBytes);
+
+    const cut = await withoutJpegMetadata(new Blob([new Uint8Array([0xff, 0xd8, ...jfif, 0xff, 0xe1, 0])], { type: "image/jpeg" }));
+    expect([...new Uint8Array(await cut.arrayBuffer())]).toEqual([0xff, 0xd8, ...jfif]);
+  });
+
+  test("drops an Exif whose IFD lies outside its segment or whose entry count ends before the orientation", async () => {
+    const outside = segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0x10, 0, 0, 0]);
+    const counted = segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 0, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+    for (const exif of [outside, counted]) {
+      const stripped = await withoutJpegMetadata(new Blob([new Uint8Array([0xff, 0xd8, ...exif, ...scan])], { type: "image/jpeg" }));
+      expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual([0xff, 0xd8, ...scan]);
+    }
+  });
+
+  test("leaves bytes that do not open as a JPEG alone", async () => {
+    const other = new Blob(["not a jpeg"], { type: "image/jpeg" });
+    expect(await withoutJpegMetadata(other)).toBe(other);
   });
 });
 
@@ -113,7 +187,7 @@ describe("uploadableImage", () => {
     expect(converted.type).toBe("image/jpeg");
   });
 
-  test("sends the photo as it is when this browser cannot decode it", async () => {
+  test("sends a HEIC photo as it is when this browser cannot decode it", async () => {
     const photo = new File([STILL_HEIC], "IMG_0001.HEIC", { type: "image/heic" });
     expect(await uploadableImage(photo, async () => null)).toBe(photo);
     expect(await uploadableImage(photo, async () => { throw new Error("EncodingError"); })).toBe(photo);
@@ -126,10 +200,27 @@ describe("uploadableImage", () => {
 
     const small = new File(["tiny"], "IMG_3719.jpg", { type: "image/jpeg" });
     expect(await (await uploadableImage(small, jpeg)).text()).toBe("jpeg bytes");
-    expect(await uploadableImage(photo, async () => null)).toBe(photo);
 
     const names = await Promise.all(["photo.jfif", "photo.JPE", "photo.JPG"].map(async (name) => (await uploadableImage(new File(["x"], name, { type: "image/jpeg" }), jpeg)).name));
     expect(names).toEqual(["photo.jpg", "photo.jpg", "photo.jpg"]);
+  });
+
+  test("redraws a JPEG whose type the browser left empty, as a terminal attachment brings it", async () => {
+    const cases = [new File(["x"], "IMG_3721.JPG", { type: "" }), new File(["x"], "IMG_3722.jpeg", { type: "application/octet-stream" })];
+    const sent = await Promise.all(cases.map((file) => uploadableImage(file, jpeg)));
+    expect(await Promise.all(sent.map(async (file) => [file.name, file.type, await file.text()]))).toEqual([
+      ["IMG_3721.jpg", "image/jpeg", "jpeg bytes"], ["IMG_3722.jpg", "image/jpeg", "jpeg bytes"],
+    ]);
+
+    const undrawable = await uploadableImage(new File([jpegBytes], "IMG_3723.jpg", { type: "" }), async () => null);
+    expect([undrawable.type, [...new Uint8Array(await undrawable.arrayBuffer())]]).toEqual(["image/jpeg", withoutMetadataBytes]);
+  });
+
+  test("cuts the location, device and date out of a JPEG this browser cannot redraw", async () => {
+    const photo = new File([jpegBytes], "IMG_3720.jpg", { type: "image/jpeg", lastModified: 7 });
+    const sent = await uploadableImage(photo, async () => null);
+    expect([sent.name, sent.type, sent.lastModified]).toEqual(["IMG_3720.jpg", "image/jpeg", 7]);
+    expect([...new Uint8Array(await sent.arrayBuffer())]).toEqual(withoutMetadataBytes);
   });
 
   test("leaves non-HEIF payloads and other files alone without decoding them", async () => {
