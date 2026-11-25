@@ -2556,7 +2556,10 @@ on any page that has the sheet: a PC's own page, the hosted app and the phone ap
 the PC leaves the account once it is online again and is added again at the PC. A PC the account's
 signed list holds has **Remove** whether it is on or off, through the same confirm and the same
 fresh sign-in: once its removal is in the list it does not come back by itself, so the confirm says
-it comes back to the account only as a new PC, added again on that PC.
+it comes back to the account only as a new PC, added again on that PC. Such a row leaves by the
+list or not at all: where this device no longer follows the list when the confirm is pressed,
+nothing is removed (never through the directory, which would leave the PC in the list) and the
+confirm says to try again in a moment.
 
 Push (the doorbell), per signed-in device:
 

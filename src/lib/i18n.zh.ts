@@ -114,6 +114,7 @@ const BASE: Record<string, string> = {
   "An earlier change is still waiting": "之前的更改仍在等待",
   "It was not confirmed by your account yet. Try it again, or cancel it.": "账户尚未确认此更改。请重试或取消。",
   "An earlier change is still waiting: try it again or cancel it first.": "之前的更改仍在等待。请先重试或取消它。",
+  "This device cannot use your account's list right now, so the PC was not removed. Try again in a moment.": "此设备现在无法使用你账户的列表，因此没有移除该电脑。请稍后再试。",
   "Your sign-in changed while this was asked. Nothing was removed.": "确认期间登录已变更。没有移除任何内容。",
   "The sign-in on this device changed since you approved it. Sign in to that account again, then try again.": "批准之后此设备的登录已更改。请重新登录该账户，然后重试。",
   "Too many devices were added. Try again tomorrow.": "添加的设备过多。请明天再试。",
