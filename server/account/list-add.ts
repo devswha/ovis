@@ -219,7 +219,12 @@ export class ListAdd {
    */
   cancel(runId?: string): Promise<AddState> {
     const asked = this.run;
-    if (asked !== null && (runId === undefined || runId === asked.id)) asked.cancelled = true;
+    if (asked !== null && (runId === undefined || runId === asked.id)) {
+      asked.cancelled = true;
+      // the steps it took by itself end at once: a cancelled add asks the account service nothing more
+      this.following?.();
+      this.following = null;
+    }
     return this.inTurn(async () => {
       const run = this.run;
       if (run === null) return { state: "none" };
