@@ -48,8 +48,10 @@ await mock.module("../lib/account/service.ts", () => ({ ...Service, AccountServi
 await mock.module("../lib/account/listRemove.ts", () => ({ removeListPc: async (_list: unknown, endpoint: string, options: { expect?: { account: string; list: string; key?: string } }) => { calls.push(`list-remove ${endpoint} for ${options.expect?.account} ${options.expect?.list}${options.expect?.key === undefined ? "" : ` ${options.expect.key}`}`); return { removed: true }; } }));
 // the PCs that posted their keys for the list, as the page reads them, and the number dialog it opens for one
 let posted: { server_id: string; endpoint?: string; key?: string }[] | Error = [];
+/** runs while the posts are read, before they come back */
+let postsReading: () => void = () => {};
 const ListAdd = await import("../lib/account/listAdd.ts");
-await mock.module("../lib/account/listAdd.ts", () => ({ ...ListAdd, postedPcs: async () => { if (posted instanceof Error) throw posted; return posted; } }));
+await mock.module("../lib/account/listAdd.ts", () => ({ ...ListAdd, postedPcs: async () => { postsReading(); if (posted instanceof Error) throw posted; return posted; } }));
 await mock.module("./AddPcByNumber.tsx", () => ({ AddPcByNumber: (props: { post: { server_id: string }; name: string; account: string; keys?: boolean; onAdded: () => void }) =>
   createElement("div", { "data-testid": "add-pc-number", "data-post": props.post.server_id, "data-name": props.name, "data-account": props.account, "data-keys": props.keys === true ? "yes" : "no", onClick: props.onAdded }) }));
 let inShell = false;
@@ -302,6 +304,23 @@ describe("Manage account's devices and PCs", () => {
       const number = root.find((node) => node.props["data-testid"] === "add-pc-number");
       expect([number.props["data-post"], number.props["data-name"], number.props["data-keys"]]).toEqual(["e".repeat(32), "Mover", "yes"]);
     } finally { setPageAccountList(null); posted = []; }
+  });
+
+  it("classifies the posts by the list as it stands once they are read: a PC another member put out meanwhile is offered no Add", async () => {
+    const LIST = "5c".repeat(32);
+    const view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [],
+      pcs: [{ endpoint: "e".repeat(64), server_id: "e".repeat(32), how: "carried", allows: false, name: { label: "Mover", os: null }, seq: 1, by: null, new_at: null }] };
+    const carried = (removed: number | null) => ({ level: 1, list: LIST, footing: { seq: 4, hash: "h".repeat(43) }, needs: 1, behind: null, signers: {}, devices: {}, invites: {},
+      pcs: { ["e".repeat(64)]: { how: "carried", key: null, enc: null, seq: 1, invite: null, removed } } });
+    let state = carried(null);
+    setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state }) } as unknown as AccountList);
+    try {
+      pcs = [{ server_id: "e".repeat(32), label: "Mover", public_key: "e".repeat(64), relay: "wss://relay.example", added_at: ago(60), last_seen_at: ago(1) }] as Service.DirectoryPc[];
+      posted = [{ server_id: "e".repeat(32), endpoint: "e".repeat(64), key: "e-key" }];
+      postsReading = () => { state = carried(6); };
+      const root = await mount();
+      expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-pc")).toEqual([]);
+    } finally { setPageAccountList(null); posted = []; postsReading = () => {}; }
   });
 
   it("keeps the confirm up with a retry line when the removal fails", async () => {

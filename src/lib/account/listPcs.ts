@@ -76,19 +76,30 @@ export function postedFor(state: ListState, member: string, post: Pick<PostedPc,
   return signer === null || signer === member ? { kind: "keys" } : { kind: "signer", signer };
 }
 
+/**
+ * `posts` with what an Add of each does (postedFor), by the list as it stands now: a writer is a snapshot, so one taken
+ * before the posts were read would offer the keys of a PC the list put out meanwhile. None for a device that may not
+ * write the list by now.
+ */
+export function classified(list: AccountList, posts: readonly PostedPc[]): ListedPost[] {
+  const writer = list.writer();
+  if (writer === null) return [];
+  return posts.flatMap((post) => {
+    const kind = postedFor(writer.state, writer.keys.key, post);
+    return kind === null ? [] : [{ ...post, for: kind }];
+  });
+}
+
 /** The page's list (pageList.ts), as ListAdds asks it. A list whose posts could not be read offers no Add. */
 export async function pageListAdds(account: string): Promise<ListAdds> {
   const list = pageAccountList();
   if (list === null || !await accountHasList(list, account).catch(() => true)) return null;
-  const writer = pageListReading(account) === "in" ? list.writer() : null;
-  const posts = writer !== null ? await postedPcs(list).catch((error: unknown) => {
+  const writes = pageListReading(account) === "in" && list.writer() !== null;
+  const posts = writes ? await postedPcs(list).catch((error: unknown) => {
     console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
     return [];
   }) : [];
-  return { account, list, posts: writer === null ? [] : posts.flatMap((post) => {
-    const kind = postedFor(writer.state, writer.keys.key, post);
-    return kind === null ? [] : [{ ...post, for: kind }];
-  }) };
+  return { account, list, posts: classified(list, posts) };
 }
 
 /**

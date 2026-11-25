@@ -166,7 +166,7 @@ export interface ListedPc {
   readonly name: string;
   readonly serverId: string;
   readonly account: string | null;
-  readonly membership?: { readonly account: string; readonly enrolling: boolean };
+  readonly membership?: { readonly account: string; readonly enrolling: boolean; readonly needsKeys?: boolean };
 }
 
 export class AddPcWaitOver extends Error {
@@ -230,9 +230,9 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const result = { name, serverId: offer.server_id, account: session?.account ?? null };
   const readMembership = async (): Promise<ListedPc["membership"]> => {
     if (!runs()) throw new AddPcWaitOver("ended");
-    const { account, enrolling } = await thisPcMembership();
+    const { account, enrolling, needsKeys } = await thisPcMembership();
     if (!runs()) throw new AddPcWaitOver("ended");
-    return account === null ? undefined : { account, enrolling };
+    return account === null ? undefined : { account, enrolling, needsKeys };
   };
   // A first link or one-press bind can finish while the listing is being read. A refresh must not remove it.
   const membership = await readMembership();

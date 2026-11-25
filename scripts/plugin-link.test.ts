@@ -681,13 +681,17 @@ describe("ovis link, on the PC itself", () => {
   describe("on a PC in its account that the account's move left with no key of its own in the list", () => {
     const LIST = "a".repeat(64);
     const until = "2026-11-06T12:10:00Z";
-    /** `keysKept`: the PC still says it needs keys after its add said added (it never does once its key is in) */
-    const run = async (states: readonly Record<string, unknown>[], start: Response = Response.json({ state: "waiting", run: "r1", account: "acct_1", list: LIST, until }), keysKept = false) => {
+    /**
+     * `after`: what the PC's status says once its add said added: `keyed` (its key is in), `kept` (it still says it
+     * needs keys; it never does once its key is in), `left` (it left its account meanwhile: no account, no list)
+     */
+    const run = async (states: readonly Record<string, unknown>[], start: Response = Response.json({ state: "waiting", run: "r1", account: "acct_1", list: LIST, until }), after: "keyed" | "kept" | "left" = "keyed") => {
       const time = clock();
       const calls: { call: string; body: unknown }[] = [];
       const left = [...states];
       let keyed = false;
       const local = localPc(async (request, path) => {
+        if (path === "/api/account/status" && keyed && after === "left") return Response.json({ account: null, enrolling: false, unlinked: [], removals: [], adds: [], blocked: [] });
         if (path === "/api/account/status") return Response.json({ account: "acct_1", enrolling: false, unlinked: [], removals: [], adds: [], blocked: [], list: { pinned_list: LIST, standing: "in", reason: keyed ? null : "no key of its own", ...(keyed ? {} : { needs_keys: true }) } });
         if (path === "/api/relay/link/close") return Response.json({ ok: true });
         if (!path.startsWith("/api/account/list/add")) return undefined;
@@ -695,7 +699,7 @@ describe("ovis link, on the PC itself", () => {
         if (request.method === "POST" && path === "/api/account/list/add") return start;
         if (path === "/api/account/list/add/cancel") return Response.json({ state: "ended", run: "r1", account: "acct_1", why: "cancelled" });
         const next = left.shift() ?? { state: "waiting", run: "r1", account: "acct_1", list: LIST, until };
-        if (next.state === "added" && !keysKept) keyed = true;
+        if (next.state === "added" && after !== "kept") keyed = true;
         return Response.json(next);
       });
       const out: string[] = [];
@@ -733,10 +737,21 @@ describe("ovis link, on the PC itself", () => {
         { state: "number", run: "r1", account: "acct_1", list: LIST, digits: "123456", until },
         { state: "confirmed", run: "r1", account: "acct_1", list: LIST, until },
         { state: "added", run: "r1", account: "acct_1", list: LIST },
-      ], undefined, true);
+      ], undefined, "kept");
       expect(code).toBe(1);
       expect(text).not.toContain("Done:");
       expect(text).toContain("this PC still holds no key of its own in your account's list");
+    });
+
+    it("never says Done for a PC that left its account meanwhile: its status names no account and no list", async () => {
+      const { code, text } = await run([
+        { state: "number", run: "r1", account: "acct_1", list: LIST, digits: "123456", until },
+        { state: "confirmed", run: "r1", account: "acct_1", list: LIST, until },
+        { state: "added", run: "r1", account: "acct_1", list: LIST },
+      ], undefined, "left");
+      expect(code).toBe(1);
+      expect(text).not.toContain("Done:");
+      expect(text).toContain("This PC is no longer in Ovis account acct_1, so it holds no key of its own in that account's list.");
     });
 
     it("says why where this PC takes no keys by the list, and that it is still in its account", async () => {
