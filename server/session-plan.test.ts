@@ -3,6 +3,7 @@ import { appendFileSync, chmodSync, readFileSync, writeFileSync } from "node:fs"
 import type { HerdrPane, PaneContext, PlanSummary } from "../shared/protocol.ts";
 import { transcriptPage } from "./conversation.ts";
 import { paneAfterStatus } from "./machines.ts";
+import type { ServedStatus } from "./approvals/codex-status.ts";
 import { readPlan, SessionPlans } from "./session-plan.ts";
 import { at, claude, file } from "./session-plan.fixture.ts";
 
@@ -348,6 +349,23 @@ describe("SessionPlans", () => {
     await plans.refresh([pane("p2", "codex")]);
     plans.poll();
     expect(plans.contextOf("p2")).toEqual({ used: 64_600, window: 258_400 });
+  });
+
+  it("tells a Codex pane's context its server says at once, for the thread its rollout is, and the rollout's again without it", async () => {
+    const f = file("rollout-2026-11-25T12-00-00-t1.jsonl");
+    f.add({ timestamp: at(1), type: "event_msg", payload: { type: "token_count", info: { model_context_window: 475_000, last_token_usage: { total_tokens: 12_000 } } } });
+    let served: ServedStatus | null = null;
+    const changes: (PaneContext | null)[] = [];
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => f.path, codexServed: () => served, onChange: () => {}, onContext: (_id, context) => changes.push(context) });
+    await plans.refresh([pane("p2", "codex")]);
+    plans.poll();
+    served = { threadId: "t1", context: { used: 12_955, window: 475_000 }, model: null };
+    plans.servedChanged("p2");
+    served = { threadId: "t2", context: { used: 99, window: 475_000 }, model: null };
+    plans.servedChanged("p2");
+    served = null;
+    plans.servedChanged("p2");
+    expect(changes).toEqual([{ used: 12_000, window: 475_000 }, { used: 12_955, window: 475_000 }, { used: 12_000, window: 475_000 }]);
   });
 
   it("tells a pane's summary as its plan moves, reads nothing while its transcript is as it was, and clears it when the pane runs something else", async () => {
