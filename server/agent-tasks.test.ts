@@ -177,6 +177,30 @@ describe("AgentTaskStatus", () => {
     expect(status.countOf("p1")).toBe(1);
   });
 
+  it("keeps the grok session a pane holds when a snapshot names it again during a lookup of another", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const file = (name: string, tasks: [string, string, number][]) => {
+      const path = join(root, name);
+      writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, tasks))}\n`);
+      return { path, started: null, owner: null };
+    };
+    const one = file("one.jsonl", [["watch", "running", 1]]);
+    const two = file("two.jsonl", [["build", "running", 1], ["serve", "running", 1]]);
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const lookupTwo = Promise.withResolvers<typeof two | null>();
+    const asked: string[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? Promise.resolve(one) : lookupTwo.promise; }, onChange: () => undefined, onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    await status.track(session("one"));
+    expect(status.countOf("p1")).toBe(1);
+    const switching = status.refresh([session("two")]);
+    await status.refresh([session("one")]);
+    lookupTwo.resolve(two);
+    await switching;
+    expect(asked).toEqual(["one", "two"]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
   it("keeps a held agy timer's own lookup from taking the place of the grok one a snapshot started", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);

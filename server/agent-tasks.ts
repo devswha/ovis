@@ -205,8 +205,9 @@ export class AgentTaskStatus {
     const pane = agent === "grok" && reported.agent_session == null && known?.agent === agent ? { ...reported, agent_session: known.pane.agent_session } : reported;
     const session = sessionOf(pane);
     const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent, session) : known.agent === agent && sessionOf(known.pane) === session && !this.stale(pane.pane_id);
-    if (recent) return;
+    // a lookup in flight is squared with this snapshot first, even for a pane known lately: it may be for another session
     const inFlight = this.resolving.get(pane.pane_id);
+    if (recent && inFlight === undefined) return;
     if (inFlight !== undefined) {
       // a snapshot naming what is in flight already asks nothing new; one naming another agent or session does.
       // The newest snapshot is the truth: one naming what is in flight again takes back what an earlier one asked
