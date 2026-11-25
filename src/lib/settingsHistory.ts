@@ -65,6 +65,7 @@ let pending: { from: unknown; depth: number; level: SettingsLevel | null; expire
 let observed: unknown = typeof window === "undefined" ? undefined : window.history.state;
 let writing = false;
 let loadedOnSettings = false;
+let deferredForSheet = false;
 let opening: unknown;
 let openedOver: unknown;
 const buried = new Set<unknown>();
@@ -106,6 +107,13 @@ function reconcile(): void {
   if (rewinding > 0) return;
   const current = settingsEntry(state);
   const have = current?.depth ?? 0;
+  // The confirmation owns the entry above the Settings page. Keep the requested
+  // layout, but rebuild its levels only after the confirmation leaves that entry.
+  if (have > 0 && wanted.length > 0 && typeof fieldOf(state, SHEET_HISTORY_KEY) === "string") {
+    deferredForSheet = true;
+    return;
+  }
+  deferredForSheet = false;
   if (have === 0 && held.length > 0 && fieldOf(state, BASE_KEY) !== opening) buried.add(opening);
   if (have > 0) { opening = fieldOf(state, BASE_KEY); openedOver = fieldOf(state, ANCHOR_KEY); }
   // what the history holds up to here: a Back landed under what was recorded; the step shown is
@@ -209,8 +217,12 @@ if (typeof window !== "undefined") {
     const ontoUnder = anchor === undefined || fieldOf(event.state, SHEET_UNDER_KEY) === anchor;
     steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || (baseLost && ontoUnder));
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
-    for (const listener of [...listeners]) listener(entry, own);
-    if (own) reconcile();
+    const top = wanted.at(-1);
+    const rebuild = deferredForSheet && entry !== null && top !== undefined && same(entry, top)
+      && fieldOf(event.state, BASE_KEY) === opening && fieldOf(window.history.state, SHEET_HISTORY_KEY) === undefined
+      && sameEntry(event.state, window.history.state);
+    for (const listener of [...listeners]) listener(entry, own || rebuild);
+    if (own || rebuild) reconcile();
   });
   // a reload keeps the history and not the dialog: step out of the entries it left
   const left = settingsEntry(window.history.state);

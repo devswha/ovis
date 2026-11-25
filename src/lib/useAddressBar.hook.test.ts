@@ -337,6 +337,22 @@ it("writes at once what a listener after the handler changes: the entry is read 
   expect(writes).toEqual(during);
 });
 
+it("keeps the other pane's entry intact when a sheet's refused Back does not return", async () => {
+  await mount([P1, P2]);
+  sheetStep = true;
+  await back();
+  sheetStep = false;
+  expect(asked).toEqual([]);
+  expect(window.location.search).toBe(P1);
+
+  await act(async () => { place.snapshot = roster(); draw(); });
+
+  expect(writes).toEqual([]);
+  expect(addresses()).toEqual([P1, P2]);
+  await forward();
+  expect(addresses()).toEqual([P1, P2]);
+});
+
 it("holds nothing once the dispatch is over, though the handler never heard the pop", async () => {
   await mount([P1, P2]);
   waiting = () => { place.snapshot = roster(); };
