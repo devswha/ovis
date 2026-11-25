@@ -12,13 +12,16 @@ import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-servic
 import recording from "./fixtures/opencode-result-events-2.2.2.json";
 
 /**
- * OpenCode 2.2.2's GET /api/event as recorded from an isolated service: the session's agent picked (plan, then build),
- * its model picked, a prompt, then a compact. The TUI's own pickers and its /compact enqueue no message of their text:
- * their result is the selection or the compaction they end in.
+ * OpenCode 2.2.2's GET /api/event as recorded from an isolated service: a prompt, then a compact. The TUI runs /compact
+ * itself and enqueues no message of its text: its result is the compaction it started. Replayed at today's time, as a
+ * send is followed for a while only.
  */
-type Recorded = (typeof recording.events)[number];
-const session = recording.events[0]!.data.sessionID;
-const first = (type: string): Recorded => recording.events.find((event) => event.type === type)!;
+const shift = Date.now() - recording.events[0]!.created;
+const events = recording.events.map((event) => ({ ...event, created: event.created + shift }));
+type Event = (typeof events)[number];
+const session = events[0]!.data.sessionID;
+const of = (type: string): Event => events.find((event) => event.type === type)!;
+const [enqueued, started, ended] = [events.find((event) => event.data.item?.type === "compaction")!, of("session.compaction.started"), of("session.compaction.ended")];
 const root = mkdtempSync(join(tmpdir(), "opencode-result-events-"));
 const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
 afterAll(() => {
@@ -65,20 +68,29 @@ async function replaying(name: string) {
   writeFileSync(join(dir, "service.json"), JSON.stringify({ url: server.url.origin, pid: process.pid, password: "x", version: recording.opencode }));
   openCodeServiceOptions.stateDir = dir;
   forgetOpenCodeService();
-  const pane = { pane_id: "p_oc", agent: "opencode", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: session } } as unknown as HerdrPane;
+  // a permission event wakes the pane once every event before it was read; the stream's open wakes it first
+  let woken = 0;
+  let waiting: { count: number; resolve(): void } | null = null;
+  listeners.push(onOpenCodePermissionChange(() => { woken += 1; if (waiting && woken >= waiting.count) { waiting.resolve(); waiting = null; } }));
+  const wakes = (count: number): Promise<void> => {
+    if (woken >= count) return Promise.resolve();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    waiting = { count, resolve };
+    return within(promise, `wake ${count}`);
+  };
+  const pane = { pane_id: `p_${name}`, agent: "opencode", agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: session } } as unknown as HerdrPane;
   expect(await openCodePaneService(pane)).not.toBeNull();
   const stream = await within(connected.promise, "the stream opening");
-  const send = (...events: unknown[]) => { for (const event of events) stream.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); };
+  await wakes(1);
+  const send = (...sent: unknown[]) => { for (const event of sent) stream.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`)); };
   return {
-    pane, send,
+    send,
     async read(): Promise<void> {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      listeners.push(onOpenCodePermissionChange(() => resolve()));
       send({ type: "permission.asked", created: Date.now(), data: { sessionID: session } });
-      await within(promise, "the events read");
+      await wakes(woken + 1);
     },
-    sent(text: string, id: string, at: number): CommandSend & { store: null } {
-      const command: CommandSend & { store: null } = { store: null, id: `${name}-${id}`, text, at, agent: "opencode", identity: "fixture", screen: "", form: null,
+    sent(text: string, at: number): CommandSend & { store: null } {
+      const command: CommandSend & { store: null } = { id: `${name}-${at}`, text, at, agent: "opencode", identity: "fixture", screen: "", form: null, store: null,
         invocations: commandInvocations("opencode", text, []) };
       const watch = startOpenCodeWatch(pane, command)!;
       prompt.noteSubmitted(pane.pane_id, text, command, command.at);
@@ -88,33 +100,45 @@ async function replaying(name: string) {
   };
 }
 
-describe("OpenCode 2.2.2's picker and compact results settle a Chat send", () => {
-  it("takes the agent, the model and the compaction each send ends in, as recorded", async () => {
-    const replay = await replaying("replay");
-    // each sent just before the recording's event of it, in the order the user sent them
-    const compaction = recording.events.find((event) => event.type === "session.inbox.enqueued" && event.data.item?.type === "compaction")!;
-    const sends = ([["/agents", first("session.agent.selected")], ["/models", first("session.model.selected")], ["/compact", compaction]] as const)
-      .map(([text, event]) => replay.sent(text, text.slice(1), event.created - 1));
-    replay.send(...recording.events);
+const settledAt = (at: number) => ({ state: "result-observed" as const, evidence: [{ kind: "native" as const, at: new Date(at).toISOString() }] });
+const outcomeOf = (sent: CommandSend) => ({ state: sent.outcome?.state, evidence: sent.outcome?.evidence });
+
+describe("OpenCode 2.2.2's /compact settles a Chat send from the compaction it started", () => {
+  it("takes the compaction's end, as recorded", async () => {
+    const replay = await replaying("recorded");
+    const compact = replay.sent("/compact", enqueued.created - 1);
+    replay.send(...events.filter((event) => event.created >= enqueued.created));
     await replay.read();
-    expect(sends.map((sent) => [sent.outcome?.state, sent.outcome?.evidence])).toEqual(
-      ["session.agent.selected", "session.model.selected", "session.compaction.ended"].map((type) =>
-        ["result-observed", [{ kind: "native", at: new Date(first(type).created).toISOString() }]]));
+    expect(outcomeOf(compact)).toEqual(settledAt(ended.created));
   });
 
-  it("does not take a compaction OpenCode began by itself, nor another session's selection", async () => {
-    const replay = await replaying("other");
-    const ended = first("session.compaction.ended");
-    const model = first("session.model.selected");
-    const models = replay.sent("/models", "models", model.created - 1);
-    const compact = replay.sent("/compact", "compact", model.created);
-    replay.send({ ...ended, data: { ...ended.data, reason: "auto" } }, { ...model, data: { ...model.data, sessionID: "ses_another" } });
+  it("takes neither a compaction OpenCode began by itself nor one begun before the send", async () => {
+    const replay = await replaying("others");
+    const compact = replay.sent("/compact", started.created);
+    const auto = { reason: "auto" };
+    replay.send({ ...started, created: started.created + 1, data: { ...started.data, ...auto, inputID: "msg_auto" } },
+      { ...ended, created: started.created + 2, data: { ...ended.data, ...auto } }, { ...ended, created: started.created + 3 });
     await replay.read();
-    expect([compact.outcome?.state, models.outcome?.state]).not.toContain("result-observed");
-    replay.send({ ...ended, created: ended.created + 1 }, { ...model, created: model.created + 1 });
+    expect(compact.outcome?.state).not.toBe("result-observed");
+    replay.send({ ...started, created: started.created + 4, data: { ...started.data, inputID: "msg_own" } }, { ...ended, created: started.created + 5 });
     await replay.read();
-    // the model's own selection after the next send went is not its result any more; the compaction is
-    expect(models.outcome?.state).not.toBe("result-observed");
-    expect(compact.outcome?.evidence).toEqual([{ kind: "native", at: new Date(ended.created + 1).toISOString() }]);
+    expect(outcomeOf(compact)).toEqual(settledAt(started.created + 5));
+  });
+
+  it("drops the send's watch when its own compaction fails", async () => {
+    const replay = await replaying("failed");
+    const compact = replay.sent("/compact", enqueued.created - 1);
+    replay.send(started, { type: "session.compaction.failed", created: started.created + 1, data: { sessionID: session, reason: "manual", inputID: started.data.inputID } },
+      { ...started, created: started.created + 2, data: { ...started.data, inputID: "msg_next" } }, { ...ended, created: started.created + 3 });
+    await replay.read();
+    expect(compact.outcome?.state).not.toBe("result-observed");
+  });
+
+  it("follows no /compact with anything around it, which the TUI sends as a prompt", async () => {
+    const replay = await replaying("spaced");
+    const spaced = replay.sent("/compact ", enqueued.created - 1);
+    replay.send(...events.filter((event) => event.created >= enqueued.created));
+    await replay.read();
+    expect(spaced.outcome?.state).not.toBe("result-observed");
   });
 });
