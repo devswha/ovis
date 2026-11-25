@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { AccountList, AccountListView } from "../account/accountList.ts";
+import type { AccountList, AccountListView, ListClaimState } from "../account/accountList.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { memoryAccountStore, newKey, type AccountSession, type AccountStore } from "../account/store.ts";
@@ -51,6 +51,7 @@ function recordingList(): { list: AccountList; calls: string[]; heard: (() => vo
     shadow: async (account, directory, opens) => { calls.push(`shadow ${account} ${directory.map((pc) => pc.server_id).join(",")} opens:${[...opens ?? []].join(",")}`); return null; },
     dropNames: async (account) => { calls.push(`dropNames ${account}`); },
     forget: async (account) => { calls.push(`forget ${account}`); },
+    pinnedElsewhere: async () => null,
     adopt: async (offer) => { calls.push(`adopt ${offer.list} ${offer.seq}`); return OFF; },
     writer: () => null,
     placeAt: () => null,
@@ -82,6 +83,7 @@ describe("the hosted shell and the account's signed list", () => {
     accountFetch: async (input) => {
       const { pathname } = new URL(new Request(input).url);
       asked.push(pathname);
+      if (pathname === "/v1/admissions") return Response.json({}, { status: 201 });
       return pathname === "/v1/pcs" ? Response.json({ pcs: directory }) : Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
     },
     renderApp: () => ({ render() {}, unmount() {} }),
@@ -183,6 +185,38 @@ describe("the hosted shell and the account's signed list", () => {
     // the person signs out: the list's own view goes only once the account service answered, the key at once
     account.signOut();
     expect([account.listKey, list.view().account]).toEqual([null, "acct-one"]);
+  });
+
+  it("draws nothing again when the list moves on an account that has none: only a list that is drawn from, or was, redraws the rows", async () => {
+    await signIn("acct-one");
+    directory = [row("a1".repeat(16))];
+    const { list, heard } = recordingList();
+    // the account service keeps no list for this account, and says so at the end of the page's first round
+    const off: AccountListView = { account: "acct-one", reached: true, status: { at: "off" }, devices: [], pcs: [] };
+    list.view = () => off;
+    let draws = 0;
+    const account = controller(list, empty, () => { draws += 1; });
+    await account.refresh(true);
+    await settle();
+    const before = draws;
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBe(before);
+    // the device comes into a list: now its rows are the list's, and they are drawn
+    list.view = () => inList("acct-one");
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBeGreaterThan(before);
+    // and when that list is gone again, once more, to take its rows back
+    const after = draws;
+    list.view = () => off;
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBeGreaterThan(after);
+    const last = draws;
+    for (const tell of heard) tell();
+    await settle();
+    expect(draws).toBe(last);
   });
 
   it("stops following the list once it is disposed: no later round reads it", async () => {
@@ -465,6 +499,76 @@ describe("the hosted shell and the account's signed list", () => {
     expect(await account.storedAccount()).toBe("acct-one");
     expect(await accountStore.get("session")).toEqual(legacy);
     expect(asked).toEqual([]);
+  });
+
+  it("brings its card to a join only for a claim of its key that stands by a read of the list made for that join", async () => {
+    await signIn("acct-one");
+    const LIST = "5c".repeat(32);
+    const waits = (claim: ListClaimState, account = "acct-one"): AccountListView => ({ account, reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim }, devices: [], pcs: [] });
+    const { list, calls } = recordingList();
+    let drawn = waits("claimed");
+    let read = waits("unclaimed");
+    list.view = () => drawn;
+    list.sync = async () => { calls.push("sync"); drawn = read; return read; };
+    const account = controller(list);
+    const offer = { v: 1 as const, server_id: "a1".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    const card = async () => (await account.prepare(offer, new AbortController().signal)).listCard;
+    // the view drawn before this page slept shows a claim, which lapsed: the read for the join could not make it again
+    expect(await card()).toBeUndefined();
+    // a page whose first read had not landed shows none: the claim stands by the read the join waits for
+    drawn = OFF;
+    read = waits("claimed");
+    expect(await card()).toMatchObject({ list: LIST });
+    // the read finds this device signed in to another account meanwhile: no card for it
+    read = waits("claimed", "acct-two");
+    expect(await card()).toBeUndefined();
+  });
+
+  it("keeps the place a PC handed its join for the account the card was made for, also where the sign-in ended before it was taken", async () => {
+    await signIn("acct-one");
+    const LIST = "5c".repeat(32);
+    const { list, calls } = recordingList();
+    const waits: AccountListView = { account: "acct-one", reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim: "claimed" }, devices: [], pcs: [] };
+    list.view = () => waits;
+    list.sync = async () => waits;
+    list.adopt = async (offer, account) => { calls.push(`adopt ${offer.list} ${offer.seq} for ${account}`); return OFF; };
+    const account = controller(list);
+    const offer = { v: 1 as const, server_id: "a1".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    expect((await account.prepare(offer, new AbortController().signal)).listCard).toMatchObject({ list: LIST });
+    // the sign-in ends between the PC's answer and the place being taken
+    await accountStore.set("session", undefined);
+    await account.takePlace({ id: LIST, seq: 4, hash: "ab".repeat(32) });
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([`adopt ${LIST} 4 for acct-one`]);
+  });
+
+  it("says the PC may open with the list key only where the account the page shows after the place was taken is the card's", async () => {
+    await signIn("acct-one");
+    const LIST = "5c".repeat(32);
+    const { list } = recordingList();
+    const waits: AccountListView = { account: "acct-one", reached: true, status: { at: "not_in", list: LIST, why: "not_mine", claim: "claimed" }, devices: [], pcs: [] };
+    list.view = () => waits;
+    list.sync = async () => waits;
+    let elsewhere = false;
+    // another tab signs in to another account while the place is taken
+    list.adopt = async () => { if (elsewhere) await signIn("acct-two"); return OFF; };
+    const account = controller(list);
+    const offer = { v: 1 as const, server_id: "a1".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
+    expect((await account.prepare(offer, new AbortController().signal)).listCard).toMatchObject({ list: LIST });
+    const place = { id: LIST, seq: 4, hash: "ab".repeat(32) };
+    // the answer is the view's the read put up, which `listKey` gives its key for: the shell opens the PC with no other
+    expect([await account.takePlace(place), account.signedInAs?.account]).toEqual([true, "acct-one"]);
+    elsewhere = true;
+    const opens = await account.takePlace(place);
+    expect([opens, opens === (account.signedInAs?.account === "acct-one")]).toEqual([false, true]);
+  });
+
+  it("keeps no place a PC handed for a list no card of this page was made for: never under whichever account is signed in", async () => {
+    await signIn("acct-one");
+    const { list, calls } = recordingList();
+    list.adopt = async (offer, account) => { calls.push(`adopt ${offer.list} for ${account}`); return OFF; };
+    const account = controller(list);
+    expect(await account.takePlace({ id: "5c".repeat(32), seq: 4, hash: "ab".repeat(32) })).toBe(false);
+    expect(calls.filter((call) => call.startsWith("adopt"))).toEqual([]);
   });
 
   it("follows no list where a test gives its own account store or fetch and no list", async () => {

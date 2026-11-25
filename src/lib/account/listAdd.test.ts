@@ -142,6 +142,21 @@ describe("the number for a PC that asks to be added", () => {
     expect(await slowly(40_000)).toEqual({ shown: false, why: "silent" });
   });
 
+  it("ends at its deadline where the reveal is never answered, the number's two minutes notwithstanding", async () => {
+    const { w, phone, play } = await asking();
+    const [post] = await postedPcs(phone.list);
+    // the PC answers at once; then the account service holds the reveal and never answers it
+    phone.wire.answer = async (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/attempt")) return null;
+      const body = await request.clone().json() as { reveal?: string };
+      if (body.reveal !== undefined) return new Promise<Response>(() => {});
+      const answer = await w.fake.fetch(request);
+      await play.answer();
+      return answer;
+    };
+    expect(await numberWith(phone.list, post!, { waitMs: 100 })).toEqual({ shown: false, why: "silent" });
+  });
+
   it("can be given up while it waits for the PC", async () => {
     const { phone } = await asking();
     const [post] = await postedPcs(phone.list);

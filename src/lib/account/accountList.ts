@@ -20,6 +20,7 @@ import {
 } from "../../../shared/account-list-follower.ts";
 import { LIST_WRAP_TEXT_LENGTH, type EpochKey } from "../../../shared/account-list-seal.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import { standsFor } from "../../../shared/account-list-migrate.ts";
 import { makeGenesis, type Genesis } from "./listGenesis.ts";
 import { deviceCard, deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { namesAt, openEpochs, readWraps, wrapsRecord, type OpenedEpochs } from "./listNames.ts";
@@ -104,6 +105,11 @@ export interface ListedDevice {
   readonly until: number | null;
   readonly carried: boolean;
   readonly name: ListNames | null;
+  /**
+   * For a device that is in by a key it handed its place on to (a `device` entry that ended the key that signed it):
+   * when, in seconds, by that entry's own time. The same device, which a screen shows as moved to a new key.
+   */
+  readonly moved?: number;
 }
 
 /** A PC of the account, as the verified list says, by its relay key; `server_id` is the id that key gives. */
@@ -136,6 +142,11 @@ export interface AccountListView {
   readonly reached: boolean;
   readonly devices: readonly ListedDevice[];
   readonly pcs: readonly ListedPc[];
+  /**
+   * This device's own key was handed on to another key by an entry this device did not make (its key signed it
+   * elsewhere): the list goes by `to` now, and this device signs nothing by its own key any more.
+   */
+  readonly handedAway?: { readonly to: string };
 }
 
 export type GenesisMode = "first-device" | "always" | "never";
@@ -507,14 +518,26 @@ export interface AccountList {
    * one stood and no older log passes for the list. The wraps are asked for again then.
    */
   dropNames(account: string): Promise<void>;
-  /** A person's reset, or the device left the account: forgets everything kept for the account. */
-  forget(account: string): Promise<void>;
+  /**
+   * A person's reset, or the device left the account: forgets everything kept for the account. With `member`, only
+   * where the saved copy is pinned to that member key, compared with the very copy that is dropped: a copy that a
+   * member which took this one's place keeps (another tab signed in again) stays, and so does one that does not read.
+   */
+  forget(account: string, member?: string): Promise<void>;
+  /**
+   * The other account than `account` whose saved copy of its list is pinned to this member key and does not show it
+   * out (that account's list still holds this device by it), or null for none. A copy that does not read counts as
+   * holding it.
+   */
+  pinnedElsewhere(account: string, key: string): Promise<string | null>;
   /**
    * A member that let this device in handed it this place, over the PC the device compared digits with. It is kept
    * as an offer, and a round follows: the device follows that list only once the log shows its own key let in up to
    * that very entry, and until then it follows nothing. A device that follows a list already takes no offer.
+   * `account`: the account the place was handed for (the join's own). A sign-in that ended meanwhile keeps the offer for
+   * that account, and the first round of a sign-in to it takes it up; without it, the offer is the stored sign-in's.
    */
-  adopt(offer: ListOffer): Promise<AccountListView>;
+  adopt(offer: ListOffer, account?: string): Promise<AccountListView>;
   /**
    * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
    * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
@@ -559,7 +582,7 @@ export function accountList(options: AccountListOptions): AccountList {
   /** When the account service last said that it keeps no list for the account in view, in seconds; null otherwise. */
   let offAt: number | null = null;
   /** The list this device last claimed its key for, and when, in seconds. */
-  let claimedAt: { readonly account: string; readonly list: string; readonly at: number } | null = null;
+  let claimedAt: { readonly account: string; readonly list: string; readonly key: string; readonly at: number } | null = null;
   /** The keys and the sign-in of the last round, for a writer. */
   let ctx: { readonly account: string; readonly keys: DeviceListKeys; readonly bound: AccountService } | null = null;
   let running: Promise<AccountListView> | null = null;
@@ -751,7 +774,10 @@ export function accountList(options: AccountListOptions): AccountList {
       const nameAt = (seq: number): Promise<ListNames | null> => namesAt(copy.list, copy.entries, seq, opened.keys);
       const devices: ListedDevice[] = [];
       for (const row of shownDevices(copy)) {
-        devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq) });
+        // in by a key the same device handed its place on to: the entry that let the key in ended the key that signed it
+        const handed = row.by !== null && state.signers[row.by]?.ended === row.seq && copy.entries[row.seq] !== undefined;
+        const moved = handed ? readBody(entryFromText(copy.entries[row.seq]!).body).issued_at : undefined;
+        devices.push({ key: row.key, self: row.key === keys.key, power: row.power, role: row.role, until: row.until, carried: row.carried, name: await nameAt(row.seq), ...(moved === undefined ? {} : { moved }) });
       }
       const pcs: ListedPc[] = [];
       // a PC that came in after this device did, by another's signature, is new to it from when it first held the entry
@@ -772,7 +798,10 @@ export function accountList(options: AccountListOptions): AccountList {
       if (picture(news) !== picture(seen)) await beside("when it first saw a PC", () => store.set("seen", account, Object.keys(news).length === 0 ? undefined : { v: RECORD_VERSION, list: copy.list, pcs: news }));
       named = { history, complete: opened.keys.has(state.epoch), devices, pcs, keys: opened.keys };
     }
-    return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs };
+    // this device's own key went on to another by an entry it did not make: it is no longer the key the list goes by
+    const standsNow = standsFor(state, keys.key);
+    const handedAway = state.signers[keys.key]?.ended != null && standsNow !== null && standsNow !== keys.key ? { handedAway: { to: standsNow } } : {};
+    return { account, status: follows(), reached, devices: named.devices, pcs: named.pcs, ...handedAway };
   };
 
   /**
@@ -818,7 +847,8 @@ export function accountList(options: AccountListOptions): AccountList {
    */
   const claim = async (bound: AccountService, account: string, keys: DeviceListKeys, list: string, before: ListClaimState, signal: AbortSignal): Promise<ListClaimState> => {
     const at = seconds();
-    if (claimedAt !== null && claimedAt.account === account && claimedAt.list === list && at >= claimedAt.at && at - claimedAt.at < CLAIM_RENEW_SECONDS) return "claimed";
+    // a claim kept for the key it was made for: another page may have put a new key in the store all pages share
+    if (claimedAt !== null && claimedAt.account === account && claimedAt.list === list && claimedAt.key === keys.key && at >= claimedAt.at && at - claimedAt.at < CLAIM_RENEW_SECONDS) return "claimed";
     try {
       await bound.claimListKey(list, await deviceCard(keys, list), signal);
     } catch (error) {
@@ -830,7 +860,7 @@ export function accountList(options: AccountListOptions): AccountList {
       if (said.status === 403 && said.code === "own_sign_in_required") return "not_own_sign_in";
       return said.status === 403 && (said.code === "frozen" || said.code === "session_not_fresh") ? said.code : "refused";
     }
-    claimedAt = { account, list, at };
+    claimedAt = { account, list, key: keys.key, at };
     return "claimed";
   };
 
@@ -1102,6 +1132,20 @@ export function accountList(options: AccountListOptions): AccountList {
     holdsPc(endpoint) {
       return shown.pcs.some((pc) => pc.endpoint === endpoint);
     },
+    async pinnedElsewhere(account, key) {
+      for (const other of await store.accounts()) {
+        if (other === account) continue;
+        const saved = await store.get("copy", other);
+        if (saved === undefined) continue;
+        if (typeof saved !== "string") return other;
+        const read = await readSave(saved);
+        if (!read.read) return other;
+        const { me, state } = read.copy;
+        if (me.key !== key || me.endpoint !== null) continue;
+        if (state === null || (state.signers[key]?.ended ?? null) === null) return other;
+      }
+      return null;
+    },
     pcOfKey(key) {
       const endpoint = held?.copy == null || held.account !== shown.account ? null : pcOfKey(held.copy, key);
       return endpoint !== null && shown.pcs.some((pc) => pc.endpoint === endpoint) ? endpoint : null;
@@ -1180,15 +1224,16 @@ export function accountList(options: AccountListOptions): AccountList {
       await this.unkeep(now.writer.account, now.kept);
       return "gone";
     },
-    async adopt(offer) {
+    async adopt(offer, account) {
       const session = await service.session();
       const read = readOffer({ v: RECORD_VERSION, ...offer });
-      if (session === undefined || read === null) return shown;
-      await lock(session.account, async () => {
+      const under = account ?? session?.account;
+      if (under === undefined || read === null) return shown;
+      await lock(under, async () => {
         // a device that follows a list keeps to it: a pin is one-way
-        if (await store.get("copy", session.account) === undefined) await store.set("offer", session.account, { v: RECORD_VERSION, ...read });
+        if (await store.get("copy", under) === undefined) await store.set("offer", under, { v: RECORD_VERSION, ...read });
       });
-      return sync();
+      return session !== undefined && session.account === under ? sync() : shown;
     },
     placeAt(seq) {
       const text = held?.copy?.entries[seq];
@@ -1232,10 +1277,24 @@ export function accountList(options: AccountListOptions): AccountList {
       const copy = held?.copy ?? null;
       return copy === null || copy.state === null ? null : servePage(copy, { list: copy.list, after }, limit);
     },
-    async forget(account) {
+    async forget(account, member) {
       // the round under way for the account ends here, rather than be waited for: it holds the account's lock
       if (roundStop?.account === account) roundStop.stop.abort(new DOMException("The account's list is forgotten", "AbortError"));
-      await lock(account, () => store.drop(account));
+      const dropped = await lock(account, async () => {
+        if (member === undefined) return store.drop(account);
+        // the copy that goes is the one read here, pinned to the key that left: dropped only while it is still that text
+        for (let tries = 0; tries < 3; tries += 1) {
+          const saved = await store.get("copy", account);
+          // none is kept: what this page holds of it is stale, and nothing else is the departing member's to drop
+          if (saved === undefined) return true;
+          if (typeof saved !== "string") return false;
+          const read = await readSave(saved);
+          if (!read.read || read.copy.me.key !== member || read.copy.me.endpoint !== null) return false;
+          if (await store.drop(account, saved)) return true;
+        }
+        return false;
+      });
+      if (!dropped) return;
       if (held?.account === account) held = null;
       if (wrongKey === account) wrongKey = null;
       if (claimedAt?.account === account) claimedAt = null;
