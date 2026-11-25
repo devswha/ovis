@@ -50,26 +50,32 @@ import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
 
-const desktopRecord = process.env["OVIS_DESKTOP_COMMAND"] === "1" ? process.env["OVIS_DESKTOP_COMMAND_RECORD"] : undefined;
+// `ovis tui` comes first: the screen needs nothing of this install's state, so it starts before the work below reads the
+// state dirs or copies an old install's settings (adoptLegacyConfig).
+const words = process.argv.slice(2);
+const early = parseCommand(words, { account: false, tui: true });
+if (early.kind === "help" && (words[0] === "tui" || words[1] === "tui")) {
+  process.stdout.write(early.text);
+  process.exit(0);
+}
+if (early.kind === "run" && early.command === "agent") process.exit(await (await import("./plugin-agent.ts")).runAgent(early.args));
+if (early.kind === "run" && early.command === "tui") process.exit(await runTui(early.args));
+if (import.meta.main || COMPILED) {
+  const opened = await runBareTui(words);
+  if (opened !== null) process.exit(opened);
+}
+
 let desktopPort: number | null = null;
-if (desktopRecord !== undefined) {
+if (process.env["OVIS_DESKTOP_COMMAND"] === "1") {
+  const config = process.env["HERDR_PLUGIN_CONFIG_DIR"];
+  // An installed launcher from before the app's first start after an upgrade has only cli-settings.
+  const record = process.env["OVIS_DESKTOP_COMMAND_RECORD"] ?? (config && join(dirname(config), "desktop.json"));
   const { desktopCommandPort } = await import("../app/electron/src/children.ts");
-  desktopPort = await desktopCommandPort(desktopRecord);
+  desktopPort = record ? await desktopCommandPort(record) : null;
   if (desktopPort === null || String(desktopPort) !== process.env["PORT"]) {
     process.stderr.write("ovis: open the Ovis app first, then run this again\n");
     process.exit(1);
   }
-}
-
-// `ovis tui` comes first: the screen needs nothing of this install's state, so it starts before the work below reads the
-// state dirs or copies an old install's settings (adoptLegacyConfig). Its
-// --help is no run of it: runPlugin answers that with every other command's.
-const early = parseCommand(process.argv.slice(2), { account: false, tui: true });
-if (early.kind === "run" && early.command === "agent") process.exit(await (await import("./plugin-agent.ts")).runAgent(early.args));
-if (early.kind === "run" && early.command === "tui") process.exit(await runTui(early.args));
-if (import.meta.main || COMPILED) {
-  const opened = await runBareTui(process.argv.slice(2));
-  if (opened !== null) process.exit(opened);
 }
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);

@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ovisName } from "../../../server/legacy-env.ts";
+import { desktopListenerMatches } from "../../../server/desktop-listener.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -289,7 +290,7 @@ export async function desktopCommandPort(path: string): Promise<number | null> {
   const { port, server } = readSaved(path);
   if (port === null || !Number.isInteger(port) || port < 1 || port > 65535
     || server?.ready !== true || !Number.isSafeInteger(server.pid) || server.pid <= 0 || server.started === null) return null;
-  return await processStart(server.pid) === server.started ? port : null;
+  return await processStart(server.pid) === server.started && desktopListenerMatches(path, server.pid) ? port : null;
 }
 
 export interface ProcessProbe {
