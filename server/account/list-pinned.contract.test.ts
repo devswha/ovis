@@ -246,6 +246,32 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     } finally { pc.reach.hook = undefined; }
   });
 
+  test("a name sealed in an epoch before this PC's own wraps is final (sealed before it joined): it is not asked for again", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let wraps = 0;
+    // the service holds this PC's wrap of a later epoch only: the PC came into the list after the tablet's name was sealed
+    pc.reach.hook = async (request) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/wraps") return undefined;
+      wraps++;
+      return Response.json({ wraps: [{ epoch: 99, wrap: "A".repeat(10) }] });
+    };
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      const asked = wraps;
+      expect(asked).toBeGreaterThan(0);
+      pc.time.wall(2 * 60_000);
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(wraps).toBe(asked);
+      expect(labelOf(tablet.key)).toBe("Device");
+    } finally { pc.reach.hook = undefined; }
+  });
+
   test("opening names never holds up a read: with names to open and the wraps route held, then failing, a removal is read before a session opens", async () => {
     const pc = await pinnedPc();
     const victim = await listMember();

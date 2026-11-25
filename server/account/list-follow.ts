@@ -1931,7 +1931,8 @@ export class ListFollow implements ListAuthority {
 
   /**
    * epochKey, with a service that could not be asked kept apart (`failed`), and a service that holds no wrap of that
-   * epoch for this PC (`unwrapped`: not yet, for a PC just added) from a wrap that does not open (null).
+   * epoch for this PC YET (`unwrapped`: it holds none at all, a PC just added, or none of an epoch that late) from a wrap
+   * that does not open or never comes (null: an epoch before this PC's own wraps, sealed before it joined).
    */
   private async epochKeyOf(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | { readonly failed: unknown } | "unwrapped" | null> {
     const id = `${copy.list} ${epoch}`;
@@ -1942,7 +1943,13 @@ export class ListFollow implements ListAuthority {
     let wraps: unknown;
     try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) { return { failed: error }; }
     const mine = Array.isArray(wraps) ? wraps.find((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null && (wrap as { epoch?: unknown }).epoch === epoch && typeof (wrap as { wrap?: unknown }).wrap === "string") : undefined;
-    if (mine === undefined) return "unwrapped";
+    if (mine === undefined) {
+      // A wrap of an epoch this PC was not yet a member in never comes (a newcomer is given the epoch it comes in at,
+      // and later ones): an epoch before the last one it holds a wrap of is final. Only one past all of them, or any
+      // while it holds none yet (a PC just added), may still be given
+      const held = Array.isArray(wraps) ? wraps.flatMap((wrap) => typeof wrap === "object" && wrap !== null && Number.isSafeInteger((wrap as { epoch?: unknown }).epoch) ? [(wrap as { epoch: number }).epoch] : []) : [];
+      return held.length === 0 || epoch > Math.max(...held) ? "unwrapped" : null;
+    }
     const opened = await openWrap({ list: copy.list, epoch, commitment: opens, wrap: wrapFromText(mine.wrap), member: { key: keys.enc, privateKey: keys.encPrivateKey } });
     if (!opened.open) {
       if (opened.why === "other_key") this.error = "The account service gave this PC a wrong key to the list's names";
