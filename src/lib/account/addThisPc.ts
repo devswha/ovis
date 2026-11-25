@@ -288,6 +288,39 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   return result;
 }
 
+/**
+ * The runs of an add by the list whose number a wait of this page shows (AccountSection, inside the dialog it was
+ * pressed in), each with how many waits hold it: the window's own prompt (useOwnWindowPrompts) leaves those numbers to
+ * the wait, so one place alone takes the yes, and shows them again once no wait holds them (the dialog closed).
+ */
+const numbersHeld = new Map<string, number>();
+const heldWatchers = new Set<() => void>();
+
+/** A wait shows the number of `run`: until the answer it gives back is called, the window's own prompt leaves it alone. */
+export function holdListNumber(run: string): () => void {
+  numbersHeld.set(run, (numbersHeld.get(run) ?? 0) + 1);
+  for (const heard of [...heldWatchers]) heard();
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    const left = (numbersHeld.get(run) ?? 1) - 1;
+    if (left > 0) numbersHeld.set(run, left); else numbersHeld.delete(run);
+    for (const heard of [...heldWatchers]) heard();
+  };
+}
+
+/** Whether a wait of this page shows the number of `run` now. */
+export function listNumberHeld(run: string): boolean {
+  return numbersHeld.has(run);
+}
+
+/** Hears every change of which numbers waits hold, until the answer is called. */
+export function onListNumbersHeld(heard: () => void): () => void {
+  heldWatchers.add(heard);
+  return () => { heldWatchers.delete(heard); };
+}
+
 /** How long `addByList` waits for the PC to take the account's name before it asks for the add all the same. */
 export const NAMING_MS = 10_000;
 
