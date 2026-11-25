@@ -1435,7 +1435,9 @@ is sent. A list store that cannot be read stops it too. Where the list does not 
 nobody is signed out and the question says so; where only part of it went, it says how much.
 (Holding the sign-out itself to the head that was read needs the account service: a follow-up.) This device stays in the list with its key and its copy,
 signed out as before; signed out, the list opens no PC with that key, and signed in again on it,
-it is in the list at once, with no Allow.
+it is in the list at once, with no Allow. The question says so, under what it names, whether other
+devices go or none: "This device keeps its place in your account's list: signed in again here, it
+opens your PCs with no Allow. To take it out too, use Disconnect on its own row."
 
 **Signing out and leaving.** Disconnect, Sign out and Sign out every device carry what their
 question showed (the account, and the list and this device's key in it): where the sign-in stored by
