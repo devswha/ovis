@@ -2666,18 +2666,22 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
   } catch { return null; }
 }
 
-const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean }>();
+const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean; screen?: string }>();
 
 /**
  * A screen as two reads of it are compared: the rows down to the composer (the last row Codex starts with "\u203a",
  * holding any draft), whitespace removed. The rows under it are left out (the model row and the hint row, which the
  * pane's width cuts), and so are line breaks and indents, which only the width moves.
  */
-function shownScreen(screen: string): string {
+function shownScreen(screen: string, includeDraft = true): string {
   const lines = screen.split("\n");
   let composer = -1;
   for (let at = lines.length - 1; at >= 0; at--) if (lines[at]!.startsWith("\u203a")) { composer = at; break; }
-  return (composer >= 0 ? lines.slice(0, composer + 1) : lines).join("").replace(/\s+/g, "");
+  return (composer >= 0 ? lines.slice(0, composer + Number(includeDraft)) : lines).join("").replace(/\s+/g, "");
+}
+
+function bindingScreen(screen: string): string {
+  return Bun.CryptoHasher.hash("sha256", shownScreen(screen, false), "hex");
 }
 
 /**
@@ -3491,7 +3495,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   }
   if (matched !== null) {
     boundRollouts.delete(paneId);
-    boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), ...(matched === titledElsewhere ? { titled: true } : {}) });
+    boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), screen: bindingScreen(screen?.text ?? ""), ...(matched === titledElsewhere ? { titled: true } : {}) });
     if (boundRollouts.size > 64) boundRollouts.delete(boundRollouts.keys().next().value!);
     return matched;
   }
@@ -3505,20 +3509,43 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     }
   }
   const unsure = [...new Set([...boundNewer, ...(resumedPath !== null ? resumedNewer : [])])];
+  let claimed: ReadonlySet<string> = new Set();
   if (unsure.length > 0) {
     const own = [boundHere?.path, resumedPath].filter((path): path is string => typeof path === "string");
-    const claimed = await claimedByOtherPanes(paneId, cwd, unsure, own, firsts, home, panes);
+    claimed = await claimedByOtherPanes(paneId, cwd, unsure, own, firsts, home, panes);
     boundNewer = theirs(boundNewer, paneId, claimed);
     resumedNewer = theirs(resumedNewer, paneId, claimed);
   }
-  if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null) {
+  // The picker can switch to a thread older than both the process and the binding.
+  // Without a current match, neither the launch argv nor the old screen breaks that tie.
+  const unclaimed = theirs(paths, paneId, claimed);
+  const onlyPlausible = (path: string) => listed && unclaimed.every((candidate) => candidate === path);
+  if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null
+    && (onlyPlausible(boundHere.path) || (listed && screen !== null && boundHere.screen === bindingScreen(screen.text)
+      && unclaimed.every((path) => {
+        const candidate = candidates.find((entry) => entry.path === path);
+        return path === boundHere?.path || (candidate !== undefined && readWhole(path) && turnless(candidate));
+      })))) {
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, boundHere);
     return boundHere.path;
   }
   if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
-  if (resumed !== null) return resumedNewer.length === 0 ? resumedPath : null;
+  if (resumed !== null) {
+    if (resumedPath === null || resumedNewer.length > 0) return null;
+    if (onlyPlausible(resumedPath)) return resumedPath;
+    // A resume from another folder can show the same finished turn as a local thread.
+    // Keep the launch hint only when the screen still shows that resume's own turn.
+    if (!listed || screen === null || folderRollouts.has(resumedPath)) return null;
+    try {
+      const resumedCandidate = { path: resumedPath, text: codexHistoryTail(resumedPath, 1024 * 1024, home) };
+      const owners = new Set([resumedPath]);
+      const whole = (path: string) => readWhole(path);
+      return footedShortTranscript(screen.text, [resumedCandidate], owners, whole)
+        ?? footedTailTranscript(screen.text, [resumedCandidate], owners, whole);
+    } catch { return null; }
+  }
   if (agent.nestedTerminal || agent.unlabelled) return null;
   if (boundHere !== undefined) return null;
   const short = screen === null ? null : await (async () => {
