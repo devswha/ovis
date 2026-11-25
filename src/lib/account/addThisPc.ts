@@ -3,11 +3,13 @@
  * own screen, the PC lists itself in the account's directory with its relay key, and opens a
  * pairing window whose comparisons only this PC approves. A device already in the account then
  * adds it with one approval: it types the number this PC shows, and the owner approves here.
+ * An account that keeps a signed list takes the PC by that list alone (`addByList`).
  */
 import type { AccountOs } from "../../../shared/account-asker.ts";
+import type { ListAddState } from "../../../shared/machines.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer, type RelayOffer } from "../../../shared/relay-offer.ts";
-import { closeRelayLink, fetchHealth, requestRelayLink } from "../api.ts";
+import { ApiError, closeRelayLink, fetchHealth, requestRelayLink, startListAdd } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
 import { deviceOs, isLoopbackHost } from "../phone.ts";
 import { serverIdOfPath } from "../shellMode.ts";
@@ -104,7 +106,11 @@ export interface AddPcWaiting {
   readonly serverId: string;
   readonly account: string;
   readonly listedAt: number;
+  /** the PC's add by the account's list that this wait started (`addByList`), which Stop waiting gives up */
+  readonly run?: string;
 }
+
+const RUN_ID = /^[0-9a-f]{16}$/;
 
 function tabStorage(): Storage | null {
   try { return typeof window === "undefined" ? null : window.sessionStorage ?? null; } catch { return null; }
@@ -134,8 +140,9 @@ export function readAddPcWaiting(): AddPcWaiting | null {
   try {
     const kept = JSON.parse(tabStorage()?.getItem(WAITING_KEY) ?? "null") as Partial<Record<keyof AddPcWaiting, unknown>> | null;
     if (kept === null || typeof kept !== "object") return null;
-    const { name, until, serverId, account, listedAt } = kept;
-    return typeof name === "string" && time(until) && text(serverId) && text(account) && time(listedAt) ? { name: name.slice(0, 48), until, serverId, account, listedAt } : null;
+    const { name, until, serverId, account, listedAt, run } = kept;
+    if (run !== undefined && (typeof run !== "string" || !RUN_ID.test(run))) return null;
+    return typeof name === "string" && time(until) && text(serverId) && text(account) && time(listedAt) ? { name: name.slice(0, 48), until, serverId, account, listedAt, ...(run === undefined ? {} : { run }) } : null;
   } catch { return null; }
 }
 
@@ -279,6 +286,41 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
     );
   }
   return result;
+}
+
+/**
+ * What this PC said when asked to add itself by the account's signed list: `none` where the account keeps no list, or
+ * this PC has no such add for this window (it follows no list, the window is not its own, or its Ovis has no such route:
+ * 403, 404, 405), and the one press goes on as before; `run`: the add under way; `added`: the PC is in the account by
+ * its list; `refused`: the PC's refusal code, or why its add ended at once.
+ */
+export type ByList = { readonly kind: "none" } | { readonly kind: "run"; readonly run: string } | { readonly kind: "added" } | { readonly kind: "refused"; readonly why: string };
+
+/**
+ * Asks the PC, just listed under `account`, to add itself by the account's signed list (docs/account.md, "A PC is added
+ * to the list"), as `ovis add` asks before any one press: the PC is named that account first, which it adds itself to
+ * alone (409 `account_mismatch` otherwise); then it posts its card, and the device that adds it and this PC show one
+ * number. Only `none` lets the one press be tried: a 503 `account_unavailable` started nothing, and is no answer
+ * that the account keeps no list.
+ */
+export async function addByList(account: string): Promise<ByList> {
+  const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
+  // a naming that fails is not the end of it: the PC's answer to the add says what it lacks
+  await post("/api/account/relay-account").catch((error: unknown) => console.warn("Ovis: this PC was not named the account for its add", error instanceof Error ? error.name : error));
+  let state: ListAddState;
+  try { state = await startListAdd(account); } catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    if (error.status === 403 || error.status === 404 || error.status === 405) return { kind: "none" };
+    return { kind: "refused", why: error.code ?? `http_${error.status}` };
+  }
+  switch (state.state) {
+    case "no_list": return { kind: "none" };
+    case "waiting": case "number": case "confirmed": return { kind: "run", run: state.run };
+    case "added": return { kind: "added" };
+    case "ended": return { kind: "refused", why: state.why };
+    // a start answers neither: a PC that does is not one to add this way
+    case "none": case "replaced": return { kind: "refused", why: state.state };
+  }
 }
 
 /**
