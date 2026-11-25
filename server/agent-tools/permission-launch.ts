@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
+import { parseVersion } from "../../shared/agent-catalog.ts";
 import { runVersion, VERSION_TIMEOUT_MS } from "../agent-catalog-detect.ts";
 import type { HarnessCommand } from "./harnesses.ts";
 
@@ -150,15 +151,17 @@ const ASK_PROFILES = new Set(Object.values(ASK_RECIPES).map(recipe => recipe.pro
 export const askable = (kind: string): boolean => Object.hasOwn(ASK_RECIPES, kind);
 export const keepsOwnRules = (kind: string): boolean => askable(kind) && ASK_RECIPES[kind]!.ownRules === true;
 
-/** Why this harness cannot get its ask-for-everything launch here: an untested version or a setup it cannot override. */
-export async function askRefusal(kind: string, command: HarnessCommand): Promise<string | null> {
+/** Keep the version of the harness checked for this launch, not the adapter's or a later catalog lookup. */
+export async function checkLaunch(kind: string, command: HarnessCommand, parent: string | undefined): Promise<{ version?: string } | { refusal: string }> {
+  if (parent && command.ceiling?.profile === parent) return {};
   const recipe = Object.hasOwn(ASK_RECIPES, kind) ? ASK_RECIPES[kind]! : null;
-  if (!recipe) return "This harness has no verified ask-for-everything launch.";
+  if (!recipe) return { refusal: "This harness has no verified ask-for-everything launch." };
   const blocked = recipe.blocked?.();
-  if (blocked) return blocked;
+  if (blocked) return { refusal: blocked };
   const bin = recipe.versioned(command);
   const probe = bin ? await runVersion(bin, ["--version"], VERSION_TIMEOUT_MS) : null;
-  return probe && probe.exitCode === 0 && recipe.versions.test(probe.stdout.trim()) ? null : "This version has no verified ask-for-everything launch.";
+  const version = probe?.exitCode === 0 && recipe.versions.test(probe.stdout.trim()) ? parseVersion(probe.stdout) : null;
+  return version ? { version } : { refusal: "This version has no verified ask-for-everything launch." };
 }
 
 /** Never infer permissions from an adapter's mode name. For an unverified parent only a recipe

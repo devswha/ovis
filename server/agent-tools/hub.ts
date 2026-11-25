@@ -8,7 +8,7 @@ import { coreConnection } from "../herdr-core/runtime.ts";
 import { AcpStartFailed, AcpUnavailable, type AcpChildren } from "../acp/children.ts";
 import { KeeperRequestError } from "../acp/client.ts";
 import { resolveHarness, type HarnessCommand } from "./harnesses.ts";
-import { AGENT_MCP_SERVER, askable, askRefusal, permissionLaunch } from "./permission-launch.ts";
+import { AGENT_MCP_SERVER, askable, checkLaunch, permissionLaunch } from "./permission-launch.ts";
 import { RunStore, type Run } from "./runs.ts";
 import { Ledger, type ToolChild } from "./ledger.ts";
 import { validArgs } from "./guards.ts";
@@ -257,10 +257,8 @@ export class AgentToolHub {
     }
     const command = (this.options.resolve ?? resolveHarness)(kind);
     if (!command) return refuse("start_failed", "This harness has no supported ACP adapter.");
-    if (command.ceiling?.profile !== run.ceiling || !run.ceiling) {
-      const refusal = await askRefusal(kind, command);
-      if (refusal) return refuse("not_granted", refusal);
-    }
+    const checked = await checkLaunch(kind, command, run.ceiling);
+    if ("refusal" in checked) return refuse("not_granted", checked.refusal);
     const cwd = typeof args.cwd === "string" ? args.cwd : (await coreConnection().call("terminal.get", { terminal: run.self })).cwd;
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return refuse("bad_request", "The folder does not exist.");
     if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) return refuse("not_granted", "The grant changed.");
@@ -268,7 +266,7 @@ export class AgentToolHub {
     const key = this.runs.reserve(run.depth + 1, run.ceiling);
     const launch = permissionLaunch(kind, run.ceiling, key.id, command);
     if (!launch) { key.cancel(); return refuse("not_granted", "The child launch is not proven within the parent's permission ceiling."); }
-    const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, created: this.now() };
+    const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, ...checked, created: this.now() };
     try {
       if (typeof args.key === "string") this.runs.rememberStart(run.id, args.key, key.id);
       this.ledger.begin(intent);
@@ -280,7 +278,7 @@ export class AgentToolHub {
         this.ledger.finish(key.id); key.cancel();
         return refuse("not_granted", "The child did not open in its verified mode.");
       }
-      const row: ToolChild = { id: child.id, terminal: child.terminal, harness: kind, starter: run.id, parent: run.self, run: key.id, created: this.now(), held: false, turns: [] };
+      const row: ToolChild = { ...intent, id: child.id, terminal: child.terminal, created: this.now(), held: false, turns: [] };
       this.ledger.children.set(child.terminal, row); this.ledger.save(); this.ledger.audit(row, "start", null); this.turns.watch(child);
       this.ledger.finish(key.id);
       if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) { key.cancel(); return refuse("not_granted", "The grant changed while starting."); }

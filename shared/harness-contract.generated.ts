@@ -92,6 +92,7 @@ export interface SessionRef {
   machine: string;
   parent: string | null;
   started_by: "agent" | "human" | (string & {});
+  version?: string;
 }
 
 export interface SessionState {

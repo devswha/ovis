@@ -9,6 +9,7 @@ export interface ToolChild {
   id: string;
   terminal: string;
   harness: string;
+  readonly version?: string;
   parent: string;
   starter: string;
   run: string;
@@ -16,14 +17,15 @@ export interface ToolChild {
   held: boolean;
   turns: { key: string | null; n: number; seq: number | null; end: string | null }[];
 }
-type Launch = Pick<ToolChild, "run" | "starter" | "parent" | "harness" | "created">;
+type Launch = Pick<ToolChild, "run" | "starter" | "parent" | "harness" | "version" | "created">;
 function isLaunch(v: unknown): v is Launch {
-  return isRecord(v) && ["run","starter","parent","harness"].every(k => typeof v[k] === "string") && typeof v.created === "number";
+  return isRecord(v) && ["run","starter","parent","harness"].every(k => typeof v[k] === "string") && typeof v.created === "number"
+    && (v.version === undefined || typeof v.version === "string");
 }
 function isChild(row: unknown): row is ToolChild {
-  return isRecord(row) && ["id","terminal","harness","parent","starter","run"].every(k => typeof row[k] === "string")
-    && typeof row.created === "number" && typeof row.held === "boolean"
-    && Array.isArray(row.turns) && row.turns.every(t => isRecord(t) && Number.isSafeInteger(t.n) && (t.seq === null || Number.isSafeInteger(t.seq)) && (t.key === null || typeof t.key === "string") && (t.end === null || typeof t.end === "string"));
+  return isRecord(row) && typeof row.id === "string" && typeof row.terminal === "string" && typeof row.held === "boolean"
+    && Array.isArray(row.turns) && row.turns.every(t => isRecord(t) && Number.isSafeInteger(t.n) && (t.seq === null || Number.isSafeInteger(t.seq)) && (t.key === null || typeof t.key === "string") && (t.end === null || typeof t.end === "string"))
+    && isLaunch(row);
 }
 export class Ledger {
   readonly children = new Map<string, ToolChild>();

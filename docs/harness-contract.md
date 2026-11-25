@@ -153,6 +153,7 @@ interface SessionRef {
   drive: "terminal" | "acp";  // how this child is driven
   machine: string;            // Machine.id
   harness: string;            // Harness.kind
+  version?: string;           // harness executable version checked at launch, absent when unknown
   agent_session_id: string | null;  // only when a reader proved it, never guessed by folder or time
   parent: string | null;      // address of the terminal that started it
   started_by: "human" | "agent";

@@ -81,12 +81,18 @@ shrinks. Stop cancels pending approval cards without choosing any option. Use `o
 every existing run token; a new launch is needed after revocation. Changing a grant never kills
 a running child. Ovis does not install adapters
 or edit the user's settings. For unverified parents, every other harness and version gets
-`not_granted`, not a launch in the harness default. These were run and found to let an action
-through with no card (checked 2026-11-24):
+`not_granted`, not a launch in the harness default.
 
-| Harness | What answers for the person |
-| --- | --- |
-| GJC 0.18.12 | Its prompt mode gates only some tools: file writes, URL reads and MCP calls run unasked. |
+The ACP mode name alone does not tell the caller which actions reach a person (runs on 2026-11-24):
+
+| Harness | Reported mode | Observed without a human card |
+| --- | --- | --- |
+| Claude Code 2.1.330 | `auto` without a mode override; Ovis explicitly selects `default` | In `auto`, a write, a shell action and an MCP call completed. The restricted `default` launch above asked about all six actions tested. |
+| Codex 0.171.0 | `agent` by default | Its automatic reviewer approved a workspace edit, directory creation and an MCP call. Ovis uses `read-only` instead. |
+| Copilot CLI 1.0.109 | `https://agentclientprotocol.com/protocol/session-modes#agent` | Listing files ran unasked. With a project approval hook, a write, shell action and HTTP MCP call ran without a card. |
+| agy 1.5.16 | `default` | Built-in web search ran unasked. With a project approval hook, writing a file, creating a directory and calling MCP also ran unasked. |
+| GJC 0.18.12 | `default` | File writes, URL reads and MCP calls ran unasked even with its prompt policy. This launch is not offered. |
+| OpenCode 2.2.2 | Ovis's per-run `ovis-ask-…` | The launch was tested with the Ovis policy, not as evidence of what a stock default allows. |
 
 Claude Code, Codex, Copilot, OmO and pi can still be TUI **parents**. OmO and pi get the server
 from an extension Ovis adds to that launch with `-e`; an older version without
@@ -115,7 +121,12 @@ ovis agent result t12 --json
 ovis agent read t12 --transcript --json
 ```
 
-Use the address the start returned instead of `t12`. `OVIS_AGENT_SOCKET` and
+Use the address the start returned instead of `t12`. When Ovis checked the harness version
+at launch, `start`, `ask` and the session list include it as `session.version` on the child's
+session reference. This is the harness version, not its ACP adapter version. Older sessions
+without a saved version omit the field.
+
+`OVIS_AGENT_SOCKET` and
 `OVIS_AGENT_TOKEN_FILE` are set for this run's process tree. Neither contains the secret itself.
 The shell command never tries the server's ordinary HTTP credential.
 

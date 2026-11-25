@@ -8,7 +8,7 @@ export function untrusted(from: string, text: string): Untrusted {
   const bytes = Buffer.from(text);
   return { untrusted: true as const, from, text: bytes.subarray(0, 65536).toString("utf8"), ...(bytes.length > 65536 ? { truncated: true as const } : {}) };
 }
-export const childRef = (row: ToolChild, child: AcpChild): SessionRef => ({ address: row.terminal, drive: "acp", machine: "local", harness: row.harness, agent_session_id: child.client.session, parent: row.parent, started_by: "agent" });
+export const childRef = (row: ToolChild, child: AcpChild): SessionRef => ({ address: row.terminal, drive: "acp", machine: "local", harness: row.harness, ...(row.version && { version: row.version }), agent_session_id: child.client.session, parent: row.parent, started_by: "agent" });
 export function childState(child: AcpChild, row?: ToolChild): SessionState {
   const { client } = child;
   const turn = row?.turns.at(-1)?.n ?? null;

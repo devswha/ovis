@@ -35,6 +35,7 @@ export class HarnessView {
         return answer("sessions", { sessions: panes.filter(eligible).map(p => {
           const child = this.acp.forPane(p.pane_id), row = this.ledger.children.get(p.pane_id);
           return { address: p.pane_id, drive: child ? "acp" : "terminal", harness: p.agent, machine: "local", parent: panes.some(parent => parent.pane_id === p.parent_pane_id) ? p.parent_pane_id : null, agent_session_id: child?.client.session ?? p.agent_session?.value ?? null,
+            ...(row && row.id === child?.id && row.version && { version: row.version }),
             started_by: row && row.id === child?.id ? "agent" : "human", state: child ? childState(child, row) : { state: p.agent_status === "blocked" ? "waiting_human" : p.agent_status, turn: null } };
         }) });
       }

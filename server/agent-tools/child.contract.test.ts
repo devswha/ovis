@@ -97,6 +97,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error(JSON.stringify(started));
     const session = started.session.address;
     opened?.(replayed()[0]!.sessionNew);
+    expect(started.session.version).toBe(version.match(/\d+\.\d+\.\d+/)?.[0]);
     expect(acp.forPane(session)?.client.sessionMode).toBe(mode);
     await rejectEveryCard(session);
     expect(await call("send", { session, task: "again" })).toMatchObject({ accepted: true });
