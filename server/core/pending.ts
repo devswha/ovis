@@ -301,6 +301,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const expected = piUnwrittenHeaderId(path);
     return expected === null ? null : capturePiDeliveryAnchorRetrying(path, true, expected);
   };
+  const piSession = async (paneId: string): Promise<PendingIdentity["piSession"]> => {
+    const found = await piTranscriptPath(paneId).catch(() => null);
+    if (found === null) return undefined;
+    return "unwritten" in found ? { path: found.unwritten.path, fileIdentity: null } : { path: found.path, fileIdentity: found.identity };
+  };
   const recordPiTyped = (owner: Client, paneId: string, requestId: number, text: string, identity: PendingIdentity, anchor: PiDeliveryAnchor | null | undefined,
     reservation?: PiReceiptReservation<Client> | null, template = false): void => {
     if (anchor === undefined || !clients.has(owner) || connectionOf(owner).closing) return;
@@ -615,6 +620,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const own = pinned?.agent === "codex" ? codexScreenRefusal(screen, parseInteractivePrompt("codex", screen, null, true, [], null), "unknown") : null;
     if (own !== null) throw own;
     if (pinned?.agent && agentPickerWaits(pinned.agent, screen)) throw agentPickerRefusal();
+    const pi = pinned?.piSession;
+    if (pi !== undefined) {
+      const now = await piSession(paneId);
+      if (now?.path !== pi.path || (pi.fileIdentity !== null && now.fileIdentity !== pi.fileIdentity)) {
+        throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+      }
+    }
     await sameStart(pinned);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
@@ -1479,6 +1491,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const mark = pending.mark(message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease!);
             if (child && context.identity.session !== `acp:${child.id}:${child.client.session}`) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+            if (context.identity.agent === "pi" && context.identity.session === null) {
+              const pi = await piSession(message.pane_id);
+              if (pi !== undefined) context.identity.piSession = pi;
+            }
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "This pending message waited too long; nothing was typed");
             if (agentOnly && !context.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
             const held = queueHeld(message.pane_id, false);
