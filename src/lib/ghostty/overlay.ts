@@ -12,7 +12,7 @@ import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminal
 import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
-import { GHOSTTY_DREW_EVENT, VIEW_MOVED_EVENT } from "./viewMoved.ts";
+import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
 import { controlsWriter, withoutQuestions, type ControlScanner } from "./controls.ts";
 import { holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
 import { holdSelection } from "./selection.ts";
@@ -562,15 +562,16 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   }) as Terminal["write"];
   // with `only` xterm keeps no history: a wheel, a swipe or a jump to the newest rows moves libghostty's view
   const { scrollLines, scrollToBottom } = term;
+  const moveView = (rows: number): void => {
+    if (rows === fromBottom) return;
+    fromBottom = rows;
+    schedule();
+    term.element?.dispatchEvent(new Event(GHOSTTY_VIEW_EVENT));
+  };
   if (only) {
-    term.scrollLines = (amount: number) => {
-      fromBottom = Math.max(0, Math.min(Math.min(vt.history().scrollback, vt.scrollback), fromBottom - amount));
-      schedule();
-    };
-    term.scrollToBottom = () => {
-      fromBottom = 0;
-      schedule();
-    };
+    ownView(term, () => fromBottom);
+    term.scrollLines = (amount: number) => moveView(Math.max(0, Math.min(Math.min(vt.history().scrollback, vt.scrollback), fromBottom - amount)));
+    term.scrollToBottom = () => moveView(0);
   }
   const reset = term.reset.bind(term);
   // a wheel over history this terminal keeps scrolls xterm's own viewport, which with `only` holds no rows: it
@@ -589,7 +590,11 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     if (only) host.removeEventListener("wheel", onWheel);
     term.write = write;
     term.reset = reset;
-    if (only) Object.assign(term, { scrollLines, scrollToBottom });
+    if (only) {
+      Object.assign(term, { scrollLines, scrollToBottom });
+      ownView(term, null);
+      term.element?.dispatchEvent(new Event(GHOSTTY_VIEW_EVENT));
+    }
   };
   term.reset = () => {
     if (!disposed) {
