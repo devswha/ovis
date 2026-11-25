@@ -130,13 +130,14 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-it("reads a resumed thread's rollout only when its header is an interactive thread of its own, a child beside its parent included", async () => {
-  const cwd = join(root, "classifier");
+it.each([false, true])("reads a resumed rollout by its interactive header (answer visible: %s) (#4691)", async (visible) => {
+  const cwd = join(root, `classifier-${visible}`);
   mkdirSync(cwd);
   const UUID_IN_NAME = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
   const cases = rolloutHeaders.cases.map((fixture) => {
     const id = UUID_IN_NAME.exec(fixture.file)?.[1] ?? String(fixture.payload.id);
-    const answer = Bun.CryptoHasher.hash("sha384", fixture.name, "base64") + " is the unique response of this thread.";
+    const answer = visible ? Bun.CryptoHasher.hash("sha384", fixture.name, "base64") + " is the unique response of this thread."
+      : `The thread of the fixture "${fixture.name}" answers this from its own rollout file.`;
     const path = join(codexHome, "sessions", fixture.file);
     writeFileSync(path, [
       JSON.parse(JSON.stringify({ type: "session_meta", payload: fixture.payload }).replaceAll('"{{CWD}}"', JSON.stringify(cwd))),
@@ -152,14 +153,16 @@ it("reads a resumed thread's rollout only when its header is an interactive thre
   const opened = workspaces.length;
   try {
     for (const { fixture, id, answer } of cases) {
-      const screenPath = join(root, "classifier-screen.txt");
-      writeFileSync(screenPath, `› question for ${fixture.name}\n\n• ${answer}\n`);
-      const paneId = await pane(`classifier-${id.slice(-4)}`, `FLOOD_ON_ENTER=1 SCREEN_FILE=${screenPath} ${join(root, "bin", "codex")} resume ${id}`, cwd);
-      await codexRunning(paneId);
-      for (let attempt = 0; attempt < 30; attempt++) {
-        const screen = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
-        if (screen.text.replace(/\s+/g, " ").includes(answer.slice(0, 32))) break;
-        await Bun.sleep(100);
+      const command = `${join(root, "bin", "codex")} resume ${id}`;
+      let paneId: string;
+      if (visible) {
+        const screenPath = join(root, "classifier-screen.txt");
+        writeFileSync(screenPath, `› question for ${fixture.name}\n\n• ${answer}\n`);
+        paneId = await pane(`classifier-${id.slice(-4)}`, `FLOOD_ON_ENTER=1 SCREEN_FILE=${screenPath} ${command}`, cwd);
+        await codexRunning(paneId);
+        await onScreen(paneId, answer);
+      } else {
+        paneId = await pane(`classifier-${id.slice(-4)}`, command, cwd);
       }
       const conversation = await read(paneId);
       if (fixture.interactive) {

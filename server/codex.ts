@@ -3528,19 +3528,22 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // A different pane's cached binding does not prove it still holds the thread.
   const plausible = [...new Set([...paths, ...(loaded?.keys() ?? [])])];
   const onlyPlausible = (path: string) => listed && plausible.every((candidate) => candidate === path);
-  const compatible = (path: string) => {
-    if (!listed || screen === null || screen.text.trim() === "" || [...(loaded?.keys() ?? [])].some((other) => other !== path)) return false;
-    const current = candidates.find((candidate) => candidate.path === path);
-    if (current === undefined) return false;
-    const shortTurn = (candidate: typeof current) =>
+  const screenHasAnswer = screen !== null && shownAnswers(screen.text).trim() !== "";
+  const noLoadedCompetitor = (path: string) => [...(loaded?.keys() ?? [])].every((other) => other === path);
+  const withoutAnswer = (path: string) => !screenHasAnswer && noLoadedCompetitor(path)
+    && screen !== null && screen.text.trim() !== "";
+  const visibleMatch = (path: string) => {
+    if (!listed || screen === null || !screenHasAnswer || !noLoadedCompetitor(path)) return false;
+    const shortTurn = (candidate: typeof candidates[number]) =>
       footedShortTranscript(screen.text, [candidate], new Set([candidate.path]), readWhole) !== null
       || footedTailTranscript(screen.text, [candidate], new Set([candidate.path]), readWhole) !== null;
     const visible = candidates.filter(shortTurn);
     // A rendering that also fits another complete exchange cannot verify the launch hint.
-    return visible.every((candidate) => candidate.path === path);
+    return visible.length === 1 && visible[0]!.path === path;
   };
   if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null
-    && (onlyPlausible(boundHere.path) || compatible(boundHere.path) || (listed && screen !== null && boundHere.screen === bindingScreen(screen.text)
+    && ((!screenHasAnswer && onlyPlausible(boundHere.path)) || (listed && withoutAnswer(boundHere.path))
+      || visibleMatch(boundHere.path) || (listed && screen !== null && boundHere.screen === bindingScreen(screen.text)
       && plausible.every((path) => {
         const candidate = candidates.find((entry) => entry.path === path);
         return path === boundHere?.path || (candidate !== undefined && readWhole(path) && turnless(candidate));
@@ -3553,7 +3556,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
   if (resumed !== null) {
     if (resumedPath === null || resumedNewer.length > 0) return null;
-    if (onlyPlausible(resumedPath) || compatible(resumedPath)) return resumedPath;
+    // A verified launch ID is still useful before any answer is visible (including terminals
+    // with tool output only). A visible answer that fits no candidate is not launch evidence.
+    if ((!screenHasAnswer && onlyPlausible(resumedPath)) || withoutAnswer(resumedPath) || visibleMatch(resumedPath)) return resumedPath;
   }
   if (agent.nestedTerminal || agent.unlabelled) return null;
   const short = screen === null ? null : await (async () => {
