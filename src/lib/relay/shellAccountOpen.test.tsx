@@ -129,7 +129,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   const accountList: AccountList | undefined = listed === undefined ? undefined : {
     sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
     view: listView, subscribe: (listener) => { listHeard.push(() => listener(listView())); return () => {}; }, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
-    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null,
     placeAt: (seq) => listed.peer !== undefined && seq === listed.peer.head.seq ? listed.peer.head : null,
     holdsEntry: () => false, gossip: () => listed.peer === undefined ? null : { list: listed.peer.list, place: listed.peer.head },
     pageAfter: (after) => listed.peer === undefined ? null : { list: listed.peer.list, after, entries: ["entry"], head: listed.peer.head },
