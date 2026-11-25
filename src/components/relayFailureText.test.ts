@@ -26,6 +26,16 @@ describe.each(["en", "ko", "ja", "zh"] as const)("a PC that could not be opened 
   it("names the PC in what to do next where the PC is the cause", () => {
     expect((["pc-offline", "pc-unresponsive"] as const).map((failure) => relayFailureText(t, failure, "pc-a").copy.includes("pc-a"))).toEqual([true, true]);
   });
+
+  it("on the join sheet, a PC that could not reach the account says the PC is on and cannot take the device now, never that it is off", () => {
+    const text = relayFailureText(t, "account-unreachable", "pc-a", null, "join");
+    expect([text.title, text.copy, text.retry]).toEqual([
+      t("{name} could not reach your Ovis account", { name: "pc-a" }),
+      t("{name} is on, but it could not reach your Ovis account, so it cannot take this device right now. Try again in a moment.", { name: "pc-a" }),
+      true,
+    ]);
+    expect(text.copy).not.toBe(t("Machine offline"));
+  });
 });
 
 describe("a join into the list that a PC which joined by an invite was asked to sign", () => {

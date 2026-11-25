@@ -263,6 +263,13 @@ export class AccountMailbox {
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private pulling: Promise<number> | undefined;
+  /**
+   * The last read of the mailbox got no answer from the account service: its calls failed on the way or ran out of time.
+   * Only the last drain sets it (a join that starts no read sees an earlier one's, and a drain that stops early leaves
+   * it); a TypeError can also be a fault of this PC's, and a 503 or 429 counts as answered. It only chooses the words of
+   * a refusal (joinAdmitted), never who is let in.
+   */
+  private unanswered = false;
 
   private pending: unknown[];
   private draining: unknown[] = [];
@@ -846,6 +853,15 @@ export class AccountMailbox {
     return this.currentAdmission(key);
   }
 
+  /**
+   * `admitted`, telling an account service that did not answer apart from one that holds no admission for the key:
+   * "unanswered" when the read it waited for got no answer from the service, false when the service answered.
+   */
+  async joinAdmitted(key: string): Promise<boolean | "unanswered"> {
+    if (await this.admitted(key)) return true;
+    return this.unanswered ? "unanswered" : false;
+  }
+
   /** The account service is turned off on purpose: nothing can be asked of it, so nothing waits for its word. */
   serviceOff(): boolean {
     return this.options.service instanceof AccountServiceOff;
@@ -1154,9 +1170,12 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
+      this.unanswered = false;
       if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
+      // fetch fails with a TypeError only when no answer came; a call's own deadline ends it as a TimeoutError
+      this.unanswered = error instanceof TypeError || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
       try { save(); } catch {}
       this.pending = [...early, ...this.pending];
       this.draining = [];
