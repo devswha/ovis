@@ -15,7 +15,7 @@ import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../deskt
 import { ClaudeSubagentStatus, plain } from "../claude-subagents.ts";
 import { claudeLastTurnEnd, claudeTranscriptStart, type ClaudeTurnEnd } from "../claude-transcript.ts";
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
-import { servedTurnEnd } from "../approvals/codex.ts";
+import { onServedStatus, servedStatus, servedTurnEnd } from "../approvals/codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import type { TurnEvent } from "../approvals/hub.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
@@ -35,7 +35,8 @@ import { resolveGrokStore } from "../grok-store.ts";
 import { createLettaStatus, lettaPanes, lettaTitleStatus } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
-import { resolveAgent } from "../pane-context.ts";
+import { resolveAgent, versionSourceOf } from "../pane-context.ts";
+import { storeAgentVersion } from "../agent-version.ts";
 import { launchedAgents } from "../launched-agents.ts";
 import { bridgeAgentNews, MachineManager } from "../machines.ts";
 import { omoPanes } from "../omo.ts";
@@ -50,13 +51,15 @@ import { SessionPlans } from "../session-plan.ts";
 import { readStatuslineContext } from "../statusline.ts";
 import { userHome } from "../user-home.ts";
 import { notePaneFolders } from "../windows-share.ts";
-import type { Telemetry } from "../telemetry.ts";
+import type { Telemetry, VisitPane } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 const VISIT_READ_MS = 10 * 60_000;
+/** how long a pane whose session named no version waits before it is read again for the usage counts */
+const VERSION_RETRY_MS = 60 * 60_000;
 /**
  * How often a herdr-core server reads its agents' screens for an asking they did not report (server/card-waits.ts).
  * One read of one terminal costs four hc requests, not one: a `terminal.read`, plus the `terminal.list` and two
@@ -332,10 +335,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     claudePath: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null,
     omoPath: (paneId) => omo.pathOf(paneId),
     codexPath: async (pane) => codexOpenRollout(pane.pane_id, pane.cwd, await paneCodexHome(pane.pane_id, options.codexHome)),
+    codexServed: servedStatus,
     onChange: (paneId, summary) => planChanged(paneId, summary),
     onContext: (paneId, context) => contextChanged(paneId, context),
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
   });
+  const stopServed = onServedStatus((paneId) => plans.servedChanged(paneId));
   const CODEX_LOOK_MS = 1000;
   const CODEX_RETRY_MS = 2000;
   const codexFailed = new Set<string>();
@@ -536,13 +541,38 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
     if (!telemetry?.counting()) return;
-    let agents: Promise<(string | null)[]> | (string | null)[] = [];
+    let agents: Promise<VisitPane[]> | VisitPane[] = [];
     if (snapshot || Date.now() - visitReadAt >= VISIT_READ_MS) {
       visitReadAt = Date.now();
-      agents = (snapshot ?? clientSnapshot()).then((read) => read.panes.map((pane) => resolveAgent(pane).agent));
+      agents = (snapshot ?? clientSnapshot()).then(visitPanes);
     }
     void telemetry.active(agents, visit)
       .catch((error) => console.error(`telemetry: the visit was not counted (${error instanceof Error ? error.message : String(error)})`));
+  }
+  /**
+   * each pane's agent version as its session names it, by the agent and session it was read for; a read that found none
+   * is tried again only after VERSION_RETRY_MS, and a pane seen with no agent forgets it
+   */
+  const visitVersions = new Map<string, { session: string; version: string | null; at: number }>();
+  async function visitVersion(pane: HerdrPane, agent: string | null, read: SessionSnapshot): Promise<string | null> {
+    if (agent !== "claude" && agent !== "codex" && agent !== "opencode") return null;
+    const session = `${agent}\0${JSON.stringify(pane.agent_session ?? null)}`;
+    const known = visitVersions.get(pane.pane_id);
+    if (known?.session === session && (known.version !== null || Date.now() - known.at < VERSION_RETRY_MS)) return known.version;
+    const source = await paneTranscript(pane.pane_id, options.codexHome, read, undefined, options.opencodeDb).then(versionSourceOf, () => null);
+    const version = storeAgentVersion(agent, source);
+    visitVersions.set(pane.pane_id, { session, version, at: Date.now() });
+    return version;
+  }
+  /** what a visit tells the usage counts of each pane: its agent, whether this server started it, and its version */
+  async function visitPanes(read: SessionSnapshot): Promise<VisitPane[]> {
+    const agents = read.panes.map((pane) => ({ pane_id: pane.pane_id, agent: resolveAgent(pane).agent }));
+    for (const paneId of visitVersions.keys()) if (!agents.some((pane) => pane.pane_id === paneId && pane.agent)) visitVersions.delete(paneId);
+    const started = launchedAgents.startedPanes(agents, { omo: OMO_ALIASES });
+    return Promise.all(read.panes.map(async (pane, index) => {
+      const agent = agents[index]!.agent;
+      return { agent, ovis: started.has(pane.pane_id), version: await visitVersion(pane, agent, read).catch(() => null) };
+    }));
   }
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null; context?: PaneContext | null } = {}): ServerMessage =>
     ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, status), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
@@ -571,6 +601,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   function omoChanged(paneId: string, derived: AgentStatus, background: number, turn: boolean, rest: OmoRest | undefined): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
+    if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, "omo", rest) : completions.current(paneId) ?? completions.observe(paneId, derived, "omo");
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     const held = waits.waiting(paneId);
@@ -583,6 +614,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
+    if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     broadcastAll(paneStatus(paneId, status));
@@ -743,6 +775,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // back at work, the agent has had its answer, maybe from a terminal: the same prompt on
     // its screen after this is another asking, which an answer to the old card must not take.
     if (raw === "working") promptWaitEnded(paneId);
+    options.telemetry?.paneStatus(paneId, raw);
     if (raw === "working" || agent !== "codex") codexWorking(paneId, raw === "working" && agent === "codex");
     if (raw === "working" || agent !== "claude") claudeWorking(paneId, raw === "working" && agent === "claude");
     const claudeEnd = agent === "claude" && raw !== "blocked" && raw !== "working" ? claudeRest(paneId) : null;
@@ -785,8 +818,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * told before herdr reads it from the screen, and the same as herdr's rest from then on (the transcript still says
    * whether it failed), once no prompt it told of is left open (hookPrompts). A Stop after herdr's rest tells nothing
    * new. Claude's UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
+   *
+   * OmO's extension tells its runs instead (server/approvals/omo.ts): its session file stays the status's source, which
+   * holds the rest it reads while a run told began has not ended (omo-status.ts), and is read again at once when one does.
    */
   function hookTurn(paneId: string, kind: string, { turn, prompt }: TurnEvent): void {
+    if (kind === "omo") {
+      omo.told(paneId, turn);
+      if (turn === "ended") void omo.poll();
+      return;
+    }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
@@ -969,6 +1010,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       for (const pane of projected) {
         // herdr told the pane's status after this snapshot was read: the queue has the newer reading
         if (newer.has(pane.pane_id)) continue;
+        // a pane already waiting for its user when the server started (or reconnected) begins its wait for the usage counts
+        if (!(omo.tracks(pane.pane_id) || gjc.tracks(pane.pane_id) || letta.tracks(pane.pane_id))) options.telemetry?.paneStatus(pane.pane_id, pane.agent_status);
         // A fast mirrored client may queue before the collector's first baseline. A
         // known ready baseline can schedule a fresh guarded check even when the tracker
         // still remembers working; an unknown baseline never supplies that permission.
@@ -1097,7 +1140,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); stopServed(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up

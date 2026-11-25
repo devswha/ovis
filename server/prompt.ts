@@ -18,7 +18,7 @@ import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
-import { heldBody, type ApprovalDialog, type ApprovalHub } from "./approvals/hub.ts";
+import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
@@ -273,6 +273,7 @@ export function noteSubmitted(paneId: string, text: string, command?: PaneComman
   chatSent.delete(paneId);
   chatSent.set(paneId, { text, commands, reservations });
   if (chatSent.size > 128) chatSent.delete(chatSent.keys().next().value!);
+  if (command) heardBefore(paneId, command);
   if (INVISIBLE_CHAR_RE.test(text)) heldCandidates.set(paneId, { text, at: Date.now() });
   else heldCandidates.delete(paneId);
   const prompt = !INVISIBLE_CHAR_RE.test(text) && !text.trimStart().startsWith("/");
@@ -292,6 +293,50 @@ export function noteCommandEvidence(paneId: string, id: string, evidence: NonNul
   const sent = commands[index];
   if (!sent) return;
   sent.outcome = commandOutcome(paneId, sent, { now: Date.now(), evidence, nextAt: commands[index + 1]?.at });
+}
+
+/** What a hook told of a command it ran that no send matched yet: the send is noted once herdr has taken its keys. */
+type HeardCommand = CommandEvent & { agent: string; at: number };
+const hookHeard = new Map<string, HeardCommand[]>();
+const HOOK_HEARD_MAX = 8;
+const HOOK_HEARD_MS = 30_000;
+
+/**
+ * Whether the command a hook told of at `at` is `sent`: to the same agent, after it was sent and within its window, from
+ * the process it was sent to, the same command (the builtin `/clear`, `/new` and `/reset` all start the next session as a
+ * clear; a skill named clear is not one) with the same argument where the hook names it.
+ */
+function hookRan(sent: PaneCommandSend, agent: string, { name, builtin, args }: CommandEvent, at: number): boolean {
+  if (sent.agent !== agent || at <= sent.at || at >= sent.at + COMMAND_WINDOW_MS || sent.outcome?.state === "result-observed"
+    || sent.visibility?.replaced) return false;
+  const invocation = sent.invocations[0];
+  if (invocation === undefined) return false;
+  if (builtin && name === "clear") return sent.sessionChange !== undefined && invocation.name !== "resume";
+  return sent.sessionChange === undefined && invocation.name === name && (args === undefined || invocation.argument.trim() === args.trim());
+}
+
+/**
+ * A command the agent's own hook said it ran (server/approvals/hub.ts): the result of the oldest open send of it, even
+ * when another send followed it (a `/compact` takes a while). One told before the send is noted (herdr answers the keys
+ * after the agent has them) waits a while for it.
+ */
+export function noteHookCommand(paneId: string, agent: string, command: CommandEvent, at = Date.now()): void {
+  const sent = (chatSent.get(paneId)?.commands ?? []).find((sent) => hookRan(sent, agent, command, at));
+  if (sent) return noteCommandEvidence(paneId, sent.id, { kind: "native", at, named: true });
+  const heard = (hookHeard.get(paneId) ?? []).filter((entry) => at - entry.at < HOOK_HEARD_MS);
+  heard.push({ ...command, agent, at });
+  hookHeard.delete(paneId);
+  hookHeard.set(paneId, heard.slice(-HOOK_HEARD_MAX));
+  if (hookHeard.size > 128) hookHeard.delete(hookHeard.keys().next().value!);
+}
+
+/** A hook that told of `sent` before it was noted. */
+function heardBefore(paneId: string, sent: PaneCommandSend): void {
+  const heard = hookHeard.get(paneId) ?? [];
+  const index = heard.findIndex((entry) => hookRan(sent, entry.agent, entry, entry.at));
+  if (index < 0) return;
+  const [entry] = heard.splice(index, 1);
+  noteCommandEvidence(paneId, sent.id, { kind: "native", at: entry!.at, named: true });
 }
 
 async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: InteractivePrompt | null, screen: string | undefined, readSendId: string | undefined, codexHome?: string, snapshot?: SessionSnapshot): Promise<NonNullable<PanePromptResponse["outcomes"]>> {
@@ -957,6 +1002,12 @@ async function readKnownPrompt(
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
       state.applied = issued;
+      // a request answered elsewhere (its own terminal): OpenCode's dialog closes a moment before herdr stops reporting
+      // blocked, the same settling an answer from a card waits out, so no fallback card stands in for it meanwhile
+      if (permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id))) {
+        formsAnswered.set(paneId, Date.now());
+        if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+      }
       state.permissions = permissions;
       state.available = forms !== null;
       if (forms !== null) {
@@ -1367,6 +1418,13 @@ function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | n
   };
 }
 
+/** How an answer from a card went to its agent (shared/telemetry.ts TelemetryAnswerWay, but `terminal`, which is no answer from here). */
+export type AnswerWay = "native" | "record" | "screen";
+
+/** A card whose text was read from the agent's session record (the call it waits on: omo's, omp's, pi's questionnaire, or a recorded request), not off the screen alone. */
+const readFromRecord = (parsed: ParsedPrompt): boolean =>
+  parsed.omoQuestion !== undefined || parsed.ompCall !== undefined || parsed.record !== undefined || parsed.responder.startsWith("pi-questionnaire-");
+
 function promptChanged(): Response {
   return jsonResponse({ error: { code: "prompt_changed", message: "The interactive prompt changed; reopen it and try again." } }, 409);
 }
@@ -1379,7 +1437,12 @@ export interface PromptRequestOptions {
   readOnly?: boolean;
   openCodeStateDir?: string;
   openCodeState?: OpenCodePromptState;
-  onAnswered?: () => void;
+  /**
+   * told as an answer begins on a pane; what it gives back is told once the answer ended: the way it went when it was
+   * delivered (`native`: through the agent's service, hook, extension or ACP keeper; `record` or `screen`: as keys for a
+   * card read from the agent's session record or off the screen), else null
+   */
+  onAnswering?: (paneId: string) => (way: AnswerWay | null) => void;
   /** the approvals an agent this server started holds through its hook */
   approvals?: ApprovalHub;
   /** the ACP children this server runs: a child's pane gets its keeper's cards, never a read of its screen */
@@ -1528,6 +1591,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
   let delivered = false;
   /** the card it matched is one the agent waits on */
   let waitedOn = false;
+  /** how the answer went to the agent, once delivered */
+  let way: AnswerWay = "screen";
+  let answerEnded: ((way: AnswerWay | null) => void) | undefined;
+  /** tells the answer's end once */
+  const endAnswer = (ended: AnswerWay | null): void => { const told = answerEnded; answerEnded = undefined; told?.(ended); };
   try {
     if (url.pathname === "/api/pane/prompt") {
       if (request.method !== "GET") return badRequest("method_not_allowed", "GET is required.");
@@ -1584,12 +1652,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     if (!body || typeof body !== "object") return badRequest("invalid_answer", "The answer body is required.");
     if (typeof body.pane_id !== "string" || !body.pane_id.trim()) return badRequest("missing_pane_id", "pane_id is required.");
     if (typeof body.prompt_id !== "string" || !body.prompt_id) return badRequest("invalid_answer", "prompt_id is required.");
+    answerEnded = options.onAnswering?.(body.pane_id);
     const acpChild = options.acp?.forPane(body.pane_id);
     if (acpChild) {
       const answered = await answerAcpPrompt(acpChild, body.prompt_id, body.option_index);
+      endAnswer(answered === "invalid" || answered === "changed" ? null : "native");
       if (answered === "invalid") return badRequest("invalid_answer", "option_index must name one of the card's options.");
       if (answered === "changed") return promptChanged();
-      options.onAnswered?.();
       return jsonResponse({ ok: true });
     }
 
@@ -1685,6 +1754,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const replied = await replyOpenCodePermission(config, sessionID, requestID, decision, deadline);
         if (replied.ok) {
           delivered = true;
+          way = "native";
           const sent = chatSent.get(body.pane_id)?.commands.at(-1);
           if (sent?.dialogId === prompt.id) noteCommandEvidence(body.pane_id, sent.id, { kind: "native", at: Date.now() });
           formsAnswered.set(body.pane_id, Date.now());
@@ -1817,6 +1887,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const replyResult = await replyOpenCodeForm(config, openCodeForm.sessionID, openCodeForm.formId, draft.answers, deadline);
         if (replyResult.ok) {
           delivered = true;
+          way = "native";
           const sent = chatSent.get(body.pane_id)?.commands.at(-1);
           if (sent?.dialogId === prompt.id) noteCommandEvidence(body.pane_id, sent.id, { kind: "native", at: Date.now() });
           // Only clean up this asking: another form/session may already have replaced it.
@@ -1924,6 +1995,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (response.ok) askingEnded(body.pane_id);
         if (answered) {
           delivered = true;
+          way = "native";
           const sent = chatSent.get(body.pane_id)?.commands.at(-1);
           if (sent?.dialogId === prompt.id) noteCommandEvidence(body.pane_id, sent.id, { kind: "native", at: Date.now() });
           formsAnswered.set(body.pane_id, Date.now());
@@ -1999,6 +2071,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // the request left since the read: no key either, as the dialog now on the screen may be another command's
         if (!options.approvals!.answer(body.pane_id, approvalDialog(prompt)!, heldId!, decision)) return promptChanged();
         delivered = true;
+        way = "native";
         askingEnded(body.pane_id);
         form.still = parsedPrompt.responder === "claude-approval" ? claudeStepStill(parsedPrompt) : sameContent(contentId(prompt));
         return jsonResponse({ ok: true });
@@ -2336,6 +2409,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         }
         answered = true;
         delivered = true;
+        way = readFromRecord(parsed) ? "record" : "screen";
         const sent = chatSent.get(body.pane_id)?.commands.at(-1);
         if (committed && sent?.dialogId === prompt.id && sent.form?.dialog === parsed.responder
           && body.option_index !== parsed.rejectWithEscapeIndex) noteCommandEvidence(body.pane_id, sent.id, { kind: "dialog", at: Date.now() });
@@ -2383,11 +2457,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message
     // queued for it meanwhile is not held up behind the polls
     if (form.still !== undefined) await formMovedOn(body.pane_id, form.still, options.codexHome, options.openCodeStateDir);
-    if (response.ok && delivered) options.onAnswered?.();
+    endAnswer(response.ok && delivered ? way : null);
     for (const told of answering.splice(0)) told(waitedOn && response.ok && delivered);
     await logAnswer(log, response);
     return response;
   } catch (error) {
+    // keys that reached the pane are an answer even when something after them failed
+    endAnswer(delivered ? way : null);
     for (const told of answering.splice(0)) told(waitedOn && delivered);
     const response = errorResponse(error);
     if (answerLog !== null) await logAnswer(answerLog, response);
