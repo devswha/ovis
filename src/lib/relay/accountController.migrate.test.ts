@@ -407,6 +407,30 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     expect(opened).toEqual([]);
   });
 
+  it("#4723 review T9: on the front page a refresh every minute asks the PC again only once the wait the plan told has run out", async () => {
+    jest.useFakeTimers();
+    try {
+      await signIn("acct-front-told");
+      const { store } = await pairedPc("acct-front-told");
+      const said = { account: "acct-front-told", pinned: null, admits: [], removed: [] };
+      // the PC answered: a key it lets in has been let in for less than a day, 15 minutes short
+      const waiting = (): AccountListView => ({ account: "acct-front-told", reached: true, status: { at: "none", why: "moving", move: { why: "too_new", wait: 900, asks: [] } }, devices: [], pcs: [] });
+      const { list, tell } = listIn(waiting);
+      const opened: unknown[] = [];
+      const account = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ answers: { "GET /api/account/list/witness": said } }).opened; });
+      await account.refresh(true);
+      await settle();
+      tell();
+      await settle();
+      expect(opened).toHaveLength(1);
+      // the front page reads its account again every minute; each read asks whoever is due
+      for (let minute = 1; minute <= 14; minute++) { jest.advanceTimersByTime(60_000); await settle(); }
+      expect(opened).toHaveLength(1);
+      for (let minute = 15; minute <= 17; minute++) { jest.advanceTimersByTime(60_000); await settle(); }
+      expect(opened).toHaveLength(2);
+    } finally { jest.useRealTimers(); }
+  });
+
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
     await signIn("acct-check");
     const one = pcKeys();

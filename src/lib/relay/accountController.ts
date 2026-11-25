@@ -391,6 +391,8 @@ export function createAccountController(mount: RelayShellMount, view: {
   let askingPcs = false;
   /** ASK_AGAIN_MS, turned down with the QA twin's waits as far as ASK_AGAIN_MIN_MS. */
   const askGap = (): number => Math.max(ASK_AGAIN_MIN_MS, ASK_AGAIN_MS / pageScale());
+  /** The wait a `too_new` plan told, in ms: what it rests on is not asked for again before it, whatever asks. */
+  const toldMs = (status: AccountListView["status"]): number => status.at === "none" && status.move?.why === "too_new" && status.move.wait !== null ? status.move.wait * 1000 : 0;
   let askTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   /**
@@ -403,7 +405,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     askTimer = undefined;
     const status = lists?.view().status;
     if (disposed || status === undefined || !waitsOnPcs(status)) return;
-    const told = status.at === "none" && status.move?.why === "too_new" && status.move.wait !== null ? status.move.wait * 1000 : 0;
+    const told = toldMs(status);
     askTimer = setTimeout(() => {
       askTimer = undefined;
       if (document.visibilityState === "hidden") { armAsk(); return; }
@@ -438,7 +440,7 @@ export function createAccountController(mount: RelayShellMount, view: {
       const { status } = listed;
       const only = status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
       const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) })
-        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= askGap());
+        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= Math.max(askGap(), toldMs(status)));
       if (due.length === 0) return;
       const saved = await store.list();
       const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
