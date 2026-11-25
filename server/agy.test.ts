@@ -148,7 +148,8 @@ it("reads a two-day session's catalog past 64 MiB", async () => {
     const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
     const dbPath = agyDatabasePath(transcript);
     mkdirSync(dirname(dbPath), { recursive: true });
-    // 48 MiB checkpointed plus 20 MiB of WAL: an agy chat that went blank at about 81 MiB.
+    // 68 MiB of steps, some still in the WAL: an agy chat went blank at about 81 MiB (48 MiB
+    // database, 33 MiB WAL). SQLite's autocheckpoint moves most of the WAL into the database.
     const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, at) => `INSERT INTO steps VALUES (${from + at}, randomblob(1048576));`).join("");
     await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 48)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(48, 68)}`);
     expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(64 * 1024 * 1024);
