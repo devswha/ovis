@@ -15,11 +15,17 @@ const bodies: Record<"blocked" | "done", string> = { blocked: "waiting for your 
 
 // #4217: the hub's real push service, driven through the collector handlers the hub registers
 describe.each(["blocked", "done"] as const)("a %s alert still waiting when its pane goes away", (status: AgentStatus & keyof typeof bodies) => {
+  const move = (agent_status: AgentStatus) => {
+    const destination = { ...moved, agent_status };
+    handlers.onPaneMoved(pane.pane_id, destination.pane_id, agent_status);
+    handlers.onBaseline([destination]);
+  };
   it.each([
     ["is delivered when the pane stays", () => {}, [pane.pane_id]],
     ["is called off when the pane closes", () => handlers.onPaneClosed(pane.pane_id), []],
     ["is called off when a snapshot no longer lists the pane (its tab, workspace or worktree closed)", () => handlers.onBaseline([]), []],
-    ["is delivered under the new ID when the pane moves to another workspace", () => { handlers.onPaneMoved(pane.pane_id, moved.pane_id); handlers.onBaseline([moved]); }, [moved.pane_id]],
+    ["is delivered under the new ID when the pane moves without a status change", () => move(status), [moved.pane_id]],
+    ["calls off only the question when the pane moves and is already working", () => move("working"), status === "blocked" ? [] : [moved.pane_id]],
   ] as const)("%s", async (_label, away, expected) => {
     // no wait: the alert's timer still fires only after the synchronous close, move or snapshot below
     const h = hub(undefined, undefined, undefined, undefined, { short: 0, long: 0, longTurn: 0 });
