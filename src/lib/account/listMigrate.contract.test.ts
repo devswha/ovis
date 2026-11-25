@@ -19,6 +19,10 @@ import { keysForCarriedPc } from "./listCarriedPc.ts";
 import { addPostedPc, numberWith, postedPcs } from "./listAdd.ts";
 import { listNames } from "./listGenesis.ts";
 import { postedFor } from "./listPcs.ts";
+import { addByList } from "./addThisPc.ts";
+import { confirmListAdd, fetchListAdd } from "../api.ts";
+import { nativeTransport, setTransport } from "../transport.ts";
+import type { ListAddState } from "../../../shared/machines.ts";
 import { link } from "../../../scripts/plugin-link.ts";
 import { claimKey, listMember } from "../../../server/account/list.test-helpers.ts";
 import { askWitness, onPcSession, pcAnswers } from "./listMigrate.ts";
@@ -256,7 +260,12 @@ test("the device that paired with a PC the move carried in with no key gives it 
   expect(services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
 }, 30_000);
 
-test("a PC the move carried in with no key gets its keys by ovis add there and the number on a member device, whatever that device did for it: then it allows a device", async () => {
+/**
+ * A PC the move carried in with no key gets its keys by the number on a member device, whatever that device did for it:
+ * its add by the list is started `by` ovis add at it, or by its own window's button (addByList, the window's own call),
+ * and the number is confirmed there. Then it allows a device.
+ */
+async function carriedPcGetsKeys(by: "ovis add" | "window"): Promise<void> {
   let now = Date.now();
   const spy = spyOn(Date, "now").mockImplementation(() => now);
   closes.push(() => spy.mockRestore());
@@ -305,39 +314,75 @@ test("a PC the move carried in with no key gets its keys by ovis add there and t
   const record = { v: 1 as const, account: ACCOUNT, pcs: { [endpoint]: { since: 1, last: 2, how: "none" as const } } };
   expect(await keysForCarriedPc({ list: phone.list, fetch: await sessionOf(memberKey), account: ACCOUNT, endpoint, record, names: { label: "Desk", os: null } })).toBe("no_evidence");
 
-  // ovis add at the PC, as a person runs it there with no terminal: it goes on to the add by the list for its keys
   services.relay.setRelayAccount(ACCOUNT);
   const origin = `http://127.0.0.1:${fixture.app.port}`;
-  const said: string[] = [];
-  const shown = deferred<string>();
-  const asking = deferred<void>();
-  const options = (out: (text: string) => void) => ({
-    origin, headers: {}, fetch: globalThis.fetch, accountService: "https://account.test", signal: new AbortController().signal, terminal: false, isTty: false,
-    lines: { next: () => new Promise<IteratorResult<string>>(() => {}) }, now: () => now,
-    serviceFetch: async (): Promise<Response> => { throw new Error("a PC in its account signs in to nothing for its keys"); },
-    wait: async (ms: number) => { advance(ms); await new Promise((resolve) => setTimeout(resolve, 0)); },
-    out,
-  });
-  const run = link([], options((text) => {
-    said.push(text);
-    if (text.includes("Compare a number with a device of your account")) asking.resolve();
-    const number = /This PC shows ([0-9]{3}) ([0-9]{3})\./.exec(text);
-    if (number) shown.resolve(`${number[1]}${number[2]}`);
-  }));
-  await bounded(asking.promise, 20_000);
+  const yieldTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+  /** What the PC's side does, as a person at it: start its add, show the number, confirm it, and end added. */
+  let pc: { readonly shows: () => Promise<string>; readonly confirm: (digits: string) => Promise<void>; readonly done: () => Promise<void> };
+  if (by === "ovis add") {
+    // ovis add at the PC, as a person runs it there with no terminal: it goes on to the add by the list for its keys
+    const said: string[] = [];
+    const shown = deferred<string>();
+    const asking = deferred<void>();
+    const options = (out: (text: string) => void) => ({
+      origin, headers: {}, fetch: globalThis.fetch, accountService: "https://account.test", signal: new AbortController().signal, terminal: false, isTty: false,
+      lines: { next: () => new Promise<IteratorResult<string>>(() => {}) }, now: () => now,
+      serviceFetch: async (): Promise<Response> => { throw new Error("a PC in its account signs in to nothing for its keys"); },
+      wait: async (ms: number) => { advance(ms); await yieldTurn(); },
+      out,
+    });
+    const run = link([], options((text) => {
+      said.push(text);
+      if (text.includes("Compare a number with a device of your account")) asking.resolve();
+      const number = /This PC shows ([0-9]{3}) ([0-9]{3})\./.exec(text);
+      if (number) shown.resolve(`${number[1]}${number[2]}`);
+    }));
+    await bounded(asking.promise, 20_000);
+    pc = {
+      shows: () => bounded(shown.promise, 20_000),
+      confirm: async (digits) => { expect(await link(["--confirm", digits], options(() => {}))).toBe(0); },
+      done: async () => {
+        expect(await bounded(run, 20_000)).toBe(0);
+        expect(said.join("")).toContain("Done: this PC holds its own keys in your account's list now");
+      },
+    };
+  } else {
+    // the PC's own window: its requests reach this PC as the window's own (same origin, this PC's address)
+    setTransport({ ...nativeTransport, fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("origin", origin);
+      return globalThis.fetch(new URL(String(input), origin), { ...init, headers });
+    } });
+    closes.push(() => setTransport(nativeTransport));
+    const started = await addByList(ACCOUNT);
+    if (started.kind !== "run") throw new Error(`the window's add did not start: ${JSON.stringify(started)}`);
+    const run = started.run;
+    /** the window's wait: it asks the PC where its add stands until `state`, which each ask moves on */
+    const until = async <S extends ListAddState["state"]>(state: S): Promise<Extract<ListAddState, { state: S }>> => {
+      for (let turn = 0; turn < 5_000; turn++) {
+        const now = await fetchListAdd(run);
+        if (now.state === state) return now as Extract<ListAddState, { state: S }>;
+        if (now.state === "ended") throw new Error(`the window's add ended: ${now.why}`);
+        await yieldTurn();
+      }
+      throw new Error(`the window's add never came to ${state}`);
+    };
+    pc = { shows: async () => (await until("number")).digits, confirm: (digits) => confirmListAdd(run, digits), done: async () => { await until("added"); } };
+  }
   // the phone reads the PCs that posted for the list, as Manage account and My PCs read them: this one is offered for its keys
   const writer = phone.list.writer()!;
   const post = (await postedPcs(phone.list)).find((each) => each.endpoint === endpoint)!;
   expect(postedFor(writer.state, writer.keys.key, post)).toEqual({ kind: "keys" });
-  const number = await numberWith(phone.list, post, { wait: async () => { await new Promise((resolve) => setTimeout(resolve, 0)); } });
+  const numbering = numberWith(phone.list, post, { wait: yieldTurn });
+  // the person at the PC sees the same number there and confirms it, then presses Add on the phone
+  const digits = await pc.shows();
+  const number = await numbering;
   if (!number.shown) throw new Error(`no number on the phone: ${number.why}`);
-  // the person at the PC sees the same number there and confirms it (ovis add --confirm), then presses Add on the phone
-  expect(await bounded(shown.promise, 20_000)).toBe(number.number.digits);
-  expect(await link(["--confirm", number.number.digits], options(() => {}))).toBe(0);
+  expect(digits).toBe(number.number.digits);
+  await pc.confirm(digits);
   const added = await addPostedPc(phone.list, number.number.post, listNames("Desk", null), { expect: { account: ACCOUNT, list: born.id }, member: number.number.member, admit: async () => {} });
   expect(added).toMatchObject({ added: true });
-  expect(await bounded(run, 20_000)).toBe(0);
-  expect(said.join("")).toContain("Done: this PC holds its own keys in your account's list now");
+  await pc.done();
   expect(service.accountList(ACCOUNT)!.state.pcs[endpoint]?.key).not.toBeNull();
 
   // it allows a device into the list now, with its own keys
@@ -345,5 +390,10 @@ test("a PC the move carried in with no key gets its keys by ovis add there and t
   const newcomer = await listMember();
   const card = await claimKey(service, ACCOUNT, born.id, newcomer);
   expect(await services.accountList!.allowDevice({ key: newcomer.key, enc: newcomer.enc, card, label: "Tablet" }, true)).toMatchObject({ allowed: expect.anything() });
-}, 60_000);
+}
+
+test("a PC the move carried in with no key gets its keys by ovis add there and the number on a member device, whatever that device did for it: then it allows a device", () => carriedPcGetsKeys("ovis add"), 60_000);
+
+test("a PC the move carried in with no key gets its keys by its own window's button and the number on a member device: then it allows a device", () => carriedPcGetsKeys("window"), 60_000);
+
 

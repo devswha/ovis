@@ -64,6 +64,18 @@ describe("My PCs on an account that keeps a signed list", () => {
     expect(renderer!.root.findAll((node) => node.props["data-testid"] === "add-pc-number").map((node) => node.props["data-pc-id"])).toEqual([ids.mini]);
   });
 
+  it("opens the number card for the keys of a PC the move carried in with none, and leaves a PC whose keys another device signed to open as today", async () => {
+    const listOf = async (account: string) => ({ account, list, posts: [{ ...postOf(ids.mini), for: { kind: "keys" as const } }, { ...postOf(ids.home), for: { kind: "signer" as const, signer: "tablet-key" } }] });
+    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini"), pc(ids.home, "Home server")], phone, listOf }) })); });
+    await settle();
+    expect(opens()).toEqual([["Mac miniRelayOn", "press"], ["Home serverRelayOn", `link /s/${ids.home}/`]]);
+    const row = renderer!.root.find((node) => node.props.className === "relay-add-saved-pc" && node.type !== "a");
+    await act(async () => { row.props.onClick(); });
+    await settle();
+    const card = renderer!.root.find((node) => node.props["data-testid"] === "add-pc-number");
+    expect([card.props["data-pc-id"], card.props["aria-label"]]).toEqual([ids.mini, "Give this PC its keys in your account's list?"]);
+  });
+
   it("keeps every row as it is on an account with no list", async () => {
     const listOf = async () => null;
     await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(MyPcs, { devices: [], accountPcs: [pc(ids.mini, "Mac mini")], phone, listOf }) })); });
