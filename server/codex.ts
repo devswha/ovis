@@ -2638,11 +2638,11 @@ function shownAnswers(screen: string): string {
  * so nothing is offered while another of them may show text it has not written: a turn running, or
  * one interrupted or failed since it was loaded (`codex exec` shows an answer only once written).
  */
-async function loadedConversation(screen: string, weighed: readonly string[], home: string): Promise<string | null> {
+async function loadedConversation(screen: string, weighed: readonly string[], home: string, known?: ReadonlyMap<string, LoadedThread>): Promise<string | null> {
   const shown = shownAnswers(screen);
   if (normalizeDisplay(shown).length < 64) return null;
   try {
-    const loaded = await loadedRollouts(home);
+    const loaded = known ?? await loadedRollouts(home);
     if (loaded === null) return null;
     const offered = [...loaded].flatMap(([path, { offered: may }]) => may && !weighed.includes(path) ? [path] : []);
     const tails = new Map<string, string>();
@@ -3429,6 +3429,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   const bound = boundRollouts.get(paneId);
   let boundHere = bound !== undefined && bound.processes === processes && processes !== "" ? bound : undefined;
   let boundNewer: string[] = [];
+  let checkedBound = false;
   const reported = reportedRollout(session, home);
   let listed = false;
   let titledElsewhere: string | null = null;
@@ -3451,7 +3452,6 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       resumedPath = row ? codexRolloutPath(row.rollout_path, home) : null;
       resumedNewer = newerThreads(db, cwd, since, resumed, paneId, home, firsts);
     }
-    if (boundHere !== undefined) boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
     const { where, params } = storedCwdCondition(cwd);
     const rows = db.query<{ rollout_path: string }, string[]>(
       // a burst of `codex exec` runs must not push the pane's own thread out of the 32
@@ -3465,13 +3465,18 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     paths = [...new Set([...paths, ...(reported !== null ? [reported] : []), ...rollouts.filter((path): path is string => path !== null)])];
     const titled = titledCandidate(agent, codexProcesses, db, home);
     if (titled !== null && !paths.includes(titled)) { titledElsewhere = titled; paths.push(titled); }
+    if (boundHere !== undefined) {
+      boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
+      checkedBound = true;
+    }
     opened.settled();
   } catch (error) {
     if (error instanceof CodexStoreChanged || !storeUnchanged(opened)) return null;
   }
   finally { db?.close(); }
   if (reported !== null && !paths.includes(reported)) paths.push(reported);
-  if (resumedPath !== null && !paths.includes(resumedPath)) paths.push(resumedPath);
+  const addedResume = resumedPath !== null && !paths.includes(resumedPath) ? resumedPath : null;
+  if (addedResume !== null) paths.push(addedResume);
   if (boundHere?.titled === true && titledElsewhere !== boundHere.path) {
     boundRollouts.delete(paneId);
     boundHere = undefined;
@@ -3499,6 +3504,18 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     }
   }
   if (matched !== null) {
+    if (matched === addedResume && screen !== null) {
+      // This thread was offered by argv, not by the folder. A picker can load a
+      // different thread from outside the folder that shows the same answer.
+      const loaded = await loadedRollouts(home);
+      if (loaded === null
+        || ([...loaded.keys()].some((path) => path !== matched)
+          && await loadedConversation(screen.text, paths.filter((path) => path !== matched), home, loaded) !== matched)
+        || !await stillAsWeighed(paneId, processes, screen.text, home, new Set(loaded.keys()))) {
+        boundRollouts.delete(paneId);
+        return null;
+      }
+    }
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), screen: bindingScreen(screen?.text ?? ""), ...(matched === titledElsewhere ? { titled: true } : {}) });
     if (boundRollouts.size > 64) boundRollouts.delete(boundRollouts.keys().next().value!);
@@ -3531,9 +3548,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   }
   // A different pane's cached binding does not prove it still holds the thread.
   const plausible = [...new Set([...paths, ...(loaded?.keys() ?? [])])];
-  const onlyPlausible = (path: string) => listed && plausible.every((candidate) => candidate === path);
+  const onlyPlausible = (path: string) => listed && loaded !== null && plausible.every((candidate) => candidate === path);
   const screenHasAnswer = screen !== null && shownAnswers(screen.text).trim() !== "";
-  const noLoadedCompetitor = (path: string) => [...(loaded?.keys() ?? [])].every((other) => other === path);
+  const noLoadedCompetitor = (path: string) => loaded !== null && [...loaded.keys()].every((other) => other === path);
   const withoutAnswer = (path: string) => !screenHasAnswer && noLoadedCompetitor(path)
     && screen !== null && screen.text.trim() !== "";
   const visibleMatch = (path: string) => {
@@ -3545,9 +3562,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     // A rendering that also fits another complete exchange cannot verify the launch hint.
     return visible.length === 1 && visible[0]!.path === path;
   };
-  if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null
+  if (boundHere !== undefined && checkedBound && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null
     && ((!screenHasAnswer && onlyPlausible(boundHere.path)) || (listed && withoutAnswer(boundHere.path))
-      || visibleMatch(boundHere.path) || (listed && screen !== null && boundHere.screen === bindingScreen(screen.text)
+      || visibleMatch(boundHere.path) || (listed && loaded !== null && screen !== null && boundHere.screen === bindingScreen(screen.text)
       && plausible.every((path) => {
         const candidate = candidates.find((entry) => entry.path === path);
         return path === boundHere?.path || (candidate !== undefined && readWhole(path) && turnless(candidate));

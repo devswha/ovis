@@ -1042,6 +1042,32 @@ const said = (type: "user_message" | "agent_message", message: string) => ({ typ
 
 const heldIt = (name: string, test: () => Promise<void>) => it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(name, test, 20_000);
 
+heldIt("does not bind an argv resume outside the folder when another loaded thread gave the visible answer", async () => {
+  const launch = "01a16b22-7e1f-7072-8897-d5e46a0d5f90";
+  const picked = "01a16b22-7e1f-7072-8897-d5e46a0d5f91";
+  ownThread([]);
+  const rollout = elsewhereThread(launch, [answer]);
+  const competitor = elsewhereThread(picked, ["This conversation answered a different question before it was loaded in the picker."]);
+  foreground = [{ pid: 2147483523, argv: ["codex", "resume", launch] }];
+  screen = `• ${answer}`;
+  await loaded(launch, picked);
+  expect(await resolve()).toBe(rollout);
+  appendFileSync(competitor, `${JSON.stringify(said("agent_message", answer))}\n`);
+  expect(await resolve()).toBeNull();
+  expect(await codexOpenRollout(root, root, home)).toBeNull();
+});
+
+heldIt("does not trust tool-only output on an argv resume when the loaded set cannot be enumerated", async () => {
+  const older = "01a16b22-7e1f-7072-8897-d5e46a0d5f92";
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 0, 0, 'cli')").run(older, path + ".missing", root);
+  db.close();
+  foreground = [{ pid: 2147483523, argv: ["codex", "resume", thread] }];
+  screen = "• Ran inspect\n  └ Tool output\n\n› Ask Codex to do anything";
+  await loaded(older);
+  expect(await resolve()).toBeNull();
+});
+
 describe("a thread of another folder Codex has loaded, as a resume through the picker leaves it (#896)", () => {
   heldIt("is matched on screen while its answer shows there, with Codex's default title, and never remembered", async () => {
     const rollout = otherFolderThread();
