@@ -160,7 +160,9 @@ export function holdSelection(term: Terminal): () => void {
       const { finalSelectionStart: start, finalSelectionEnd: end } = this._model;
       if (!rows) return textOf?.call(this) ?? "";
       if (!start || !end) return "";
-      return selectionText(rows, start, end, this._activeSelectionMode === COLUMN_MODE, /Win/.test(navigator.platform) ? "\r\n" : "\n");
+      const text = selectionText(rows, start, end, this._activeSelectionMode === COLUMN_MODE, /Win/.test(navigator.platform) ? "\r\n" : "\n");
+      // a row read that failed on the way gave the terminal back to xterm (overlay.ts): the copy is xterm's whole, not half of each
+      return view() === null ? textOf?.call(this) ?? "" : text;
     },
   });
   // the service's own methods and getter are its prototype's: dropping the instance's puts them back
