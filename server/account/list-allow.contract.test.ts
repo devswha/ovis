@@ -518,6 +518,8 @@ describe("what the PC does when the entry does not go in", () => {
     } finally { clock.mockRestore(); }
     expect(sent).toBe(1);
     expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+    // the entry the service did not take is not kept for the next Allow to send after the device gave up
+    expect(existsSync(pathJoin(made.pc.stateDir, ACCOUNT_LIST_ALLOW_FILE))).toBe(false);
   });
 
   test("the signed entry is kept beside the copy: a second Allow at the same head sends that very entry and signs no other", async () => {

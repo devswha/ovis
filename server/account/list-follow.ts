@@ -1780,13 +1780,19 @@ export class ListFollow implements ListAuthority {
       let last: AllowRefusal = "head_lost";
       // how long the next try waits; nothing waits after the last one
       let wait = 0;
+      // the wait is one a 429 named: the service placed nothing, so an Allow that stops there keeps no entry for later
+      let limited = false;
       for (let tries = 0; tries < LIST_ALLOW_TRIES; tries++) {
         if (wait > 0) {
           // a wait the service asked for that would leave less than one try's time before the device stops waiting ends it here
-          if (by !== null && this.deps.now() + wait + LIST_ALLOW_RETRY_MAX_MS > by) return no(last);
+          if (by !== null && this.deps.now() + wait + LIST_ALLOW_RETRY_MAX_MS > by) {
+            if (limited) this.dropAllow();
+            return no(last);
+          }
           await new Promise((resolve) => setTimeout(resolve, wait));
         }
         wait = 0;
+        limited = false;
         if (!this.live(scope)) return no("unavailable");
         const copy = this.copy;
         if (copy === null || copy.state === null) return no("unavailable");
@@ -1829,6 +1835,8 @@ export class ListFollow implements ListAuthority {
         const stopped = (): AllowOutcome | null => {
           const now = this.copy;
           if (!this.live(scope) || !this.isPinned || now === null || now.state === null) return no("unavailable");
+          // past the device's wait nothing goes out: a late timer or a slow read does not place what it gave up on
+          if (by !== null && this.deps.now() > by) return no(last);
           const cannot = keys.key !== now.me.key ? "unavailable" : this.cannotSign(now);
           if (cannot !== null) return no(cannot);
           if (device.device && this.deps.mayAdmit?.(device.key) === false) return no("held_here");
@@ -1873,6 +1881,7 @@ export class ListFollow implements ListAuthority {
           // counted the request before it read it, so nothing was placed, and the same entry goes again when it says
           if (error.status === 429 && error.code === "rate_limited") {
             last = "service_away";
+            limited = true;
             wait = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_LIMITED_MAX_MS);
             continue;
           }
