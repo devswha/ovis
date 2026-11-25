@@ -14,6 +14,7 @@ const SERVICE = "https://account.ovis.sh";
 const DAY = 86400;
 const session = (account: string): AccountSession => ({ service: SERVICE, account, provider: "github", access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: `sign-in-${account}`, signed_in_at: Date.now() });
 const settle = async (): Promise<void> => { for (let turn = 0; turn < 30; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
+const deferred = <T>() => Promise.withResolvers<T>();
 
 /** A PC: its relay key as a relay offer carries it, and as a list names it (64 hex). */
 function pcKeys() {
@@ -31,7 +32,7 @@ function sessionOf(given: { readonly pinned?: boolean; readonly key?: string; re
     fetch: async (path: string, init?: RequestInit) => {
       asked.push({ method: init?.method ?? "GET", path, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
       const said = given.answers?.[`${init?.method ?? "GET"} ${path}`];
-      return said === undefined ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : Response.json(said);
+      return said === undefined ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : said instanceof Response ? said : Response.json(said);
     },
     close: () => { closed = true; },
   };
@@ -61,11 +62,12 @@ describe("the shell's sessions and the move of an account onto its list", () => 
   afterEach(() => { for (const each of made.splice(0)) each.dispose(); browser.dispose(); });
 
   /** `inApp`: a PC's app is open in the shell (its front page is not up), as `frontUp` says it */
-  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] = [], inApp = false) => {
+  /** `pcs`: the account's directory, or what answers its read (one the test holds, say) */
+  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] | (() => Promise<unknown[]>) = [], inApp = false) => {
     const made_ = createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE, accountList: list,
       ...(open === undefined ? {} : { open: open as never }),
-      accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
+      accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs: typeof pcs === "function" ? await pcs() : pcs }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
       renderApp: () => ({ render() {}, unmount() {} }),
     }, { active: () => !inApp, changed: async () => {}, outdated: () => new Set() });
     made.push(made_);
@@ -386,6 +388,263 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     await settle();
     expect(opened).toEqual([{ accountOpensAll: true }]);
     expect(pageAnswers.get("acct-first-round", pc.endpoint)).toEqual(said);
+  });
+
+  it("#4723 review T8: a controller disposed while its read of the directory is under way asks no PC when that read ends", async () => {
+    await signIn("acct-disposed-read");
+    const { store } = await pairedPc("acct-disposed-read");
+    const waiting = (): AccountListView => ({ account: "acct-disposed-read", reached: true, status: { at: "none", why: "moving", move: { why: "pcs_silent", wait: 60, asks: [] } }, devices: [], pcs: [] });
+    const { list } = listIn(waiting);
+    const directory = deferred<unknown[]>();
+    const opened: unknown[] = [];
+    const account = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({}).opened; }, () => directory.promise);
+    const read = account.refresh(true);
+    await settle();
+    account.dispose();
+    directory.resolve([]);
+    await read;
+    await settle();
+    expect(opened).toEqual([]);
+  });
+
+  it("#4723 review T9: on the front page a refresh every minute asks the PC again only once the wait the plan told has run out", async () => {
+    jest.useFakeTimers();
+    try {
+      await signIn("acct-front-told");
+      const { store } = await pairedPc("acct-front-told");
+      const said = { account: "acct-front-told", pinned: null, admits: [], removed: [] };
+      // the PC answered: a key it lets in has been let in for less than a day, 15 minutes short
+      const waiting = (): AccountListView => ({ account: "acct-front-told", reached: true, status: { at: "none", why: "moving", move: { why: "too_new", wait: 900, asks: [] } }, devices: [], pcs: [] });
+      const { list, tell } = listIn(waiting);
+      const opened: unknown[] = [];
+      const account = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ answers: { "GET /api/account/list/witness": said } }).opened; });
+      await account.refresh(true);
+      await settle();
+      tell();
+      await settle();
+      expect(opened).toHaveLength(1);
+      // the front page reads its account again every minute; each read asks whoever is due
+      for (let minute = 1; minute <= 14; minute++) { jest.advanceTimersByTime(60_000); await settle(); }
+      expect(opened).toHaveLength(1);
+      for (let minute = 15; minute <= 17; minute++) { jest.advanceTimersByTime(60_000); await settle(); }
+      expect(opened).toHaveLength(2);
+    } finally { jest.useRealTimers(); }
+  });
+
+  /** A device that waits on its PCs, asked once in the background; the fake clock is the test's to move. */
+  const waitingAsked = async (name: string, inApp = false) => {
+    await signIn(name);
+    const { store } = await pairedPc(name);
+    const { list, tell } = listIn(() => ({ account: name, reached: true, status: { at: "none", why: "moving", move: { why: "no_witness", wait: null, asks: [] } }, devices: [], pcs: [] }));
+    const opened: unknown[] = [];
+    const made = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ answers: { "GET /api/account/list/witness": { account: name, pinned: null, admits: [], removed: [] } } }).opened; }, [], inApp);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toHaveLength(1);
+    return { made, opened };
+  };
+
+  it("#4713 M3: a disposed controller asks no PC again on its clock", async () => {
+    jest.useFakeTimers();
+    try {
+      const { made, opened } = await waitingAsked("acct-disposed");
+      made.dispose();
+      jest.advanceTimersByTime(3_600_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4713 M2: once the device signs out, its clock asks none of the old account's PCs, even while its list still shows the move", async () => {
+    jest.useFakeTimers();
+    try {
+      const { made, opened } = await waitingAsked("acct-signed-out");
+      made.signOut();
+      jest.advanceTimersByTime(3_600_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4713 M3: on a hidden page the clock asks nothing, and asks once the page is shown again", async () => {
+    jest.useFakeTimers();
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    let state: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    try {
+      const { opened } = await waitingAsked("acct-hidden");
+      state = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      jest.advanceTimersByTime(30 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+      // shown again: the page reads its account again, and the PC, due long since, is asked at once
+      state = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await settle();
+      expect(opened).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+      if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+      else Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
+  /**
+   * F10 (staging): the device that moved the account is paired with its PC too, and the shell opens a PC it is paired
+   * with by that pairing, whose naming the PC does not take (a pairing is no key it let in through the account). So the
+   * device names its list over a session of its own through the account, the one way its naming counts.
+   */
+  const movedWithPairing = async (account: string, answers: { pinned: string | null }[], nameAnswer: unknown = { pinned: false, why: "session_new", wait: 60 }) => {
+    const signedIn = await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const LIST = "5c".repeat(32);
+    const named: unknown[] = [];
+    const following = (): AccountListView => ({ account, reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async (given) => { named.push(given); return { naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }; });
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const opened: { accountOpensAll: boolean; asked: () => string[] }[] = [];
+    const made = controller(list, store, async (_offer, options) => {
+      const said = answers[Math.min(opened.length, answers.length - 1)]!;
+      const one = sessionOf({ key: signedIn, answers: { "GET /api/account/list/witness": { account, pinned: said.pinned, admits: [], removed: [] }, "POST /api/account/list/name": nameAnswer } });
+      opened.push({ accountOpensAll: options.accountOpensAll === true, asked: () => one.asked.map((call) => `${call.method} ${call.path}`) });
+      return one.opened;
+    }, [row], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    return { pc, signedIn, LIST, named, opened };
+  };
+
+  it("F10: after its move, a device names its list over a session through the account to a PC it is paired with, never over the pairing", async () => {
+    const { pc, signedIn, named, opened } = await movedWithPairing("acct-name-way", [{ pinned: null }]);
+    expect(opened.map((one) => one.accountOpensAll)).toEqual([true]);
+    expect(opened[0]!.asked()).toEqual(["GET /api/account/list/witness", "POST /api/account/list/name"]);
+    // signed for that session's key, the sign-in key the PC lets in through the account, which vouches for itself
+    expect(named).toEqual([{ account: "acct-name-way", session: signedIn, endpoint: pc.endpoint, signIn: signedIn }]);
+  });
+
+  it("F10: a PC that says it follows the list is named nothing more, and asked again only on the gap", async () => {
+    jest.useFakeTimers();
+    try {
+      const { LIST, opened } = await movedWithPairing("acct-name-done", [{ pinned: null }, { pinned: "5c".repeat(32) }]);
+      expect(opened).toHaveLength(1);
+      jest.advanceTimersByTime(11 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+      expect(opened[1]!.asked()).toEqual(["GET /api/account/list/witness"]);
+      expect(LIST).toBe("5c".repeat(32));
+      // it follows the list now: nothing more on the clock
+      jest.advanceTimersByTime(60 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+    } finally { jest.useRealTimers(); }
+  });
+
+  /** How many sessions the asker opened, and how many of them named the list, after `hours` of a page left up. */
+  const leftUp = async (opened: { asked: () => string[] }[], hours: number) => {
+    for (let step = 0; step < hours * 6; step++) { jest.advanceTimersByTime(10 * 60_000 + 1_000); await settle(); }
+    return { sessions: opened.length, named: opened.filter((one) => one.asked().includes("POST /api/account/list/name")).length };
+  };
+
+  it("#4723 naming review L1: a PC that refuses the naming for a cause no wait changes is named once in this run of the page", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const why of ["first_signer_unknown", "first_signer_removed", "named_here", "lists_full", "removed"]) {
+        const { opened } = await movedWithPairing(`acct-l1-${why}`, [{ pinned: null }], { pinned: false, why, wait: null });
+        expect(await leftUp(opened, 3)).toEqual({ sessions: 1, named: 1 });
+      }
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review L1: a refusal with a wait is named again only once that wait is over, and on the gap after it", async () => {
+    jest.useFakeTimers();
+    try {
+      const { opened } = await movedWithPairing("acct-l1-wait", [{ pinned: null }], { pinned: false, why: "session_new", wait: 3_600 });
+      expect(opened).toHaveLength(1);
+      expect(await leftUp(opened, 0.5)).toEqual({ sessions: 1, named: 1 });
+      expect(await leftUp(opened, 0.7)).toEqual({ sessions: 2, named: 2 });
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review L1: a PC that follows another list, or answers no witness, is named nothing and not asked again in this run", async () => {
+    jest.useFakeTimers();
+    try {
+      const other = await movedWithPairing("acct-l1-other", [{ pinned: "6d".repeat(32) }]);
+      expect(await leftUp(other.opened, 2)).toEqual({ sessions: 1, named: 0 });
+    } finally { jest.useRealTimers(); }
+  });
+
+  /** A moved device and its paired PC whose witness answers the first session as `first` says, and every later one at once. */
+  const witnessFirst = async (account: string, first: () => Response | "lost") => {
+    const signedIn = await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const LIST = "5c".repeat(32);
+    const following = (): AccountListView => ({ account, reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async () => ({ naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }));
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const opened: { asked: () => string[] }[] = [];
+    const made = controller(list, store, async () => {
+      const said = opened.length === 0 ? first() : { account, pinned: null, admits: [], removed: [] };
+      const one = sessionOf({ key: signedIn, answers: { ...(said === "lost" ? {} : { "GET /api/account/list/witness": said }), "POST /api/account/list/name": { pinned: true, list: LIST } } });
+      opened.push({ asked: () => one.asked.map((call) => `${call.method} ${call.path}`) });
+      if (said !== "lost") return one.opened;
+      // the carrier drops under the witness's request
+      const fetch = one.opened.fetch.bind(one.opened);
+      return Object.assign(one.opened, { fetch: async (path: string, init?: RequestInit) => { await fetch(path, init); throw new TypeError("the carrier dropped"); } });
+    }, [row], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    return opened;
+  };
+
+  it("#4723 naming review (closure): a witness that asks to be asked later, is over its budget or is lost on the way is asked again on the gap", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const [name, first] of [
+        ["503", () => Response.json({ error: { code: "witness_unavailable" } }, { status: 503 })],
+        ["429", () => Response.json({ error: { code: "rate_limited" } }, { status: 429 })],
+        ["lost", () => "lost" as const],
+      ] as const) {
+        const opened = await witnessFirst(`acct-l1-again-${name}`, first);
+        expect(opened.map((one) => one.asked())).toEqual([["GET /api/account/list/witness"]]);
+        const after = await leftUp(opened, 0.25);
+        expect(after.named).toBe(1);
+      }
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review (closure): a PC with no witness route, or one that says the session is no account's, is named nothing more in this run", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const [name, first] of [
+        ["404", () => Response.json({ error: { code: "not_found" } }, { status: 404 })],
+        ["403", () => Response.json({ error: { code: "account_required" } }, { status: 403 })],
+      ] as const) {
+        const opened = await witnessFirst(`acct-l1-final-${name}`, first);
+        expect(await leftUp(opened, 2)).toEqual({ sessions: 1, named: 0 });
+      }
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("F10: a PC the directory gives no way through the account is named nothing over its pairing", async () => {
+    const signedIn = await signIn("acct-name-paired-only");
+    const { store } = await pairedPc("acct-name-paired-only");
+    const LIST = "5c".repeat(32);
+    const following = (): AccountListView => ({ account: "acct-name-paired-only", reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async () => ({ naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }));
+    const opened: unknown[] = [];
+    const made = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ key: signedIn }).opened; }, [], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toEqual([]);
   });
 
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {

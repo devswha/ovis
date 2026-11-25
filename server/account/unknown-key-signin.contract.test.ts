@@ -20,12 +20,13 @@ afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 
 /**
  * A PC in ACCOUNT. `ready` makes its account service give whole reads; `down` makes it answer every call 503, as a
- * service under load does, so no read of the account succeeds.
+ * service under load does, so no read of the account succeeds; `snapshot` answers the snapshot route alone that way.
  */
 async function pcInAccount(service: { url: string; fetch?: (request: Request) => Promise<Response> } | null = null) {
   const fake = new FakeAccountService();
-  const reach = { down: false };
-  const fetchService = async (request: Request) => reach.down ? Response.json({ error: { code: "unavailable" } }, { status: 503 }) : await fake.fetch(request);
+  const reach: { down: boolean; snapshot?: Response | undefined } = { down: false };
+  const fetchService = async (request: Request) => reach.down ? Response.json({ error: { code: "unavailable" } }, { status: 503 })
+    : reach.snapshot !== undefined && new URL(request.url).pathname === "/v1/pc/snapshot" ? reach.snapshot.clone() : await fake.fetch(request);
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, {
     accountOpensAll: true, accountService: service ?? { url: "https://account.test", fetch: fetchService },
     prepare: (stateDir) => { const pc = PcAccountState.open(stateDir); pc.migrate(ACCOUNT, true); pc.admit("remote", "code", null, Date.now()); },
@@ -87,6 +88,36 @@ test("a key with no row is refused once a read that began after it first asked f
   const pc = await pcInAccount();
   const device = await stranger();
   pc.ready();
+  expect(await signIn(pc, device)).toMatchObject(REFUSED);
+});
+
+test("a pull whose read of the account's rows failed is no read: the key still waits, though the mailbox was read", async () => {
+  const pc = await pcInAccount();
+  const device = await stranger();
+  pc.ready();
+  pc.reach.snapshot = Response.json({ error: { code: "unavailable" } }, { status: 503 });
+  expect(await signIn(pc, device)).toEqual(CATCHING_UP);
+  // the next whole read finds no row for it: refused
+  pc.reach.snapshot = undefined;
+  await pc.mailbox.pull();
+  expect(await signIn(pc, device)).toMatchObject(REFUSED);
+});
+
+test("a service that reads no rows by its own word (step2_off) is a whole read: the key is refused as before", async () => {
+  const pc = await pcInAccount();
+  const device = await stranger();
+  pc.ready();
+  pc.reach.snapshot = Response.json({ error: { code: "step2_off" } }, { status: 404 });
+  expect(await signIn(pc, device)).toMatchObject(REFUSED);
+});
+
+test("the read a sign-in starts itself refuses it, also in the millisecond it first asked", async () => {
+  const time = testTime();
+  const pc = await pcInAccount();
+  const device = await stranger();
+  pc.ready();
+  // the start's read is a second before; then the clock stands: the key's first ask and the read it starts share one millisecond
+  time.advance(1_000);
   expect(await signIn(pc, device)).toMatchObject(REFUSED);
 });
 

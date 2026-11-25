@@ -13,7 +13,7 @@ import { openSealed, openWrap, wrapFromText } from "../../shared/account-list-se
 import { readKind, readNames } from "../../shared/account-list.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
-import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { ACCOUNT_LIST_ALLOW_FILE, LIST_ALLOW_MS, LIST_MEMBER_WAIT_MS } from "./list-follow.ts";
@@ -331,6 +331,25 @@ describe("a join from an app that knows no signed list, on a pinned PC", () => {
     await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
     expect(await ownJoin(made)).not.toHaveProperty("list_unknown");
   });
+
+  test("is approved by nothing on this PC's own window: neither its Allow nor its digits let it in, and it still waits", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
+    const waiting = await ownJoin(made);
+    const base = `http://127.0.0.1:${made.pc.app.port}`;
+    const answer = async (body: unknown) => {
+      const response = await fetch(`${base}/api/relay/join`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...own }, body: JSON.stringify(body) });
+      return [response.status, ((await response.json()) as { error?: { code?: string } }).error?.code];
+    };
+    expect(await answer({ id: waiting.id, decision: "approve" })).toEqual([409, "list_unknown"]);
+    expect(await answer({ id: waiting.id, digits: asked.digits })).toEqual([409, "list_unknown"]);
+    // nothing was written for it, and the join waits until it ends by itself or is declined
+    expect(made.pc.devices.hasKey(phone.key)).toBe(false);
+    expect(made.services.relay.approvals.ownJoins().map((each) => each.id)).toEqual([waiting.id]);
+    expect(await decide(made, { id: waiting.id, decision: "decline" })).toBe(200);
+    expect(made.services.relay.approvals.ownJoins()).toEqual([]);
+  });
 });
 
 describe("what the PC does when the entry does not go in", () => {
@@ -645,6 +664,32 @@ describe("what the PC does when the entry does not go in", () => {
   });
 });
 
+/**
+ * #4720 review J2 (the lead's ruling): a join waits at most JOIN_ADMISSION_WAIT_MS for the account's word only where its
+ * client offered `account-listing-errors-1`, which can hear why and try again. Any other join (another PC of the account,
+ * an older app) waits as it always did and hears what it always heard.
+ */
+test("with the account's word late, a join that can hear why is refused at the bound, and one that cannot waits and is taken once the word comes", async () => {
+  const made = await allowingPc();
+  const [told, older] = [await listMember(), await listMember()];
+  const cards = await Promise.all([told, older].map(async (device) => ({ enc: device.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, device) })));
+  // the mailbox, where the PC reads both admissions, answers once the test lets it
+  const word = deferred<void>();
+  made.hook.on = async (request, forward) => {
+    if (new URL(request.url).pathname === "/v1/pc/mailbox") await word.promise;
+    return await forward();
+  };
+  try {
+    const waiting = join(made, older, { card: cards[1]! });
+    const refusal = await join(made, told, { card: cards[0]!, features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT, ACCOUNT_LIST_ALLOW, ACCOUNT_LISTING_ERRORS] })
+      .then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
+    expect(refusal).toBe(`The join was refused: ${JSON.stringify({ code: "account_unreachable", message: "account_unreachable" })}`);
+    // the join that offered nothing is still waiting past that bound; the word comes, and it is taken
+    word.resolve();
+    expect((await waiting).list).toBe(made.account.id);
+  } finally { word.resolve(); }
+}, 60_000);
+
 describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("a PC that follows no list takes a PAIR_REQUEST whose list members are out of their form as it always did", async () => {
     // an app that sends the extension to a PC with no list must still pair there, whatever it sent
@@ -686,9 +731,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("on a pinned PC a join that brings no card records a pairing that opens nothing: the list holds no entry for it, and its session ends", async () => {
     const made = await allowingPc();
     const phone = await listMember();
-    const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
-    // a join that takes no card is told no list
-    expect(asked.list).toBeUndefined();
+    // an app that knows joins into a list and sent no card (one that knows none is approved by nothing: list_unknown)
+    const asked = await join(made, phone);
     const waiting = await ownJoin(made);
     expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
     asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });

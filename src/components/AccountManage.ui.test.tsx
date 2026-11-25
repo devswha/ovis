@@ -205,6 +205,24 @@ describe("Manage account's devices and PCs", () => {
     } finally { setPageAccountList(null); }
   });
 
+  it("a row drawn as the list's never leaves through the account service: with the list no longer followed at the press, nothing is removed, and it says why", async () => {
+    const LIST = "5c".repeat(32);
+    let view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [],
+      pcs: [{ endpoint: "a".repeat(64), server_id: "a".repeat(32), how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: null, new_at: null }] };
+    setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
+    try {
+      pcs = [{ ...pcs[0]!, public_key: "a".repeat(64), relay: "wss://relay.example" }] as Service.DirectoryPc[];
+      const root = await mount();
+      expect(rows(root, "account-pcs")).toEqual(["OnlineDeskRemove"]);
+      // the list stops being followed here before the press (its saved copy turned out damaged), and the row is not drawn again yet
+      view = { ...view, status: { at: "damaged", why: "sum" } };
+      await act(async () => { action(root, "remove-pc").props.onClick(); });
+      await act(async () => { await press(root, "Remove"); });
+      expect(calls).toEqual([]);
+      expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("This device cannot use your account's list right now, so the PC was not removed. Try again in a moment.");
+    } finally { setPageAccountList(null); }
+  });
+
   it("the question keeps the list row it was asked for: a PC another member put out meanwhile is not removed through the account service, and no pairing is forgotten", async () => {
     const LIST = "5c".repeat(32);
     const listed = (n: string, label: string) => ({ endpoint: n.repeat(64), server_id: n.repeat(32), how: "added" as const, allows: true, name: { label, os: null }, seq: 1, by: null, new_at: null });

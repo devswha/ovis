@@ -31,6 +31,11 @@ const APPROVER_OF: Partial<Record<NodeJS.Platform, PairApprover>> = { darwin: "m
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
 /** How long a sign-in waits for the account service's word on this PC's listing: with a refused sign-in's pull before it, still inside the device's ADMISSION_MS. */
 export const LISTING_WAIT_MS = 4_000;
+/**
+ * How long a join waits for the account service's word on its admission (accountJoin). Past it the service did not
+ * answer in time, and the join hears that while the person still looks at it; the read goes on for the next try.
+ */
+export const JOIN_ADMISSION_WAIT_MS = 8_000;
 const SOURCE_LIMIT = 3 * 1024 * 1024;
 const SESSION_LIMIT = 32 * 1024 * 1024;
 export const relayClock: MuxClock = {
@@ -248,8 +253,10 @@ export class RelaySession {
       },
       onSession: (frame) => {
         void this.admit(frame).catch((error: unknown) => {
-          if (error instanceof PairingRateLimitedError) this.mux.fail("auth_failed", error.message);
-          else this.close("internal_error");
+          if (error instanceof PairingRateLimitedError) { this.mux.fail("auth_failed", error.message); return; }
+          // the device hears only internal_error: what it was is said here, on this PC
+          console.error(`[relay] a session ended on an error of this PC's: ${error instanceof Error ? error.message : String(error)}`);
+          this.close("internal_error");
         });
       },
       onHttp: (stream) => { this.choose(); void this.http(stream); },
@@ -580,6 +587,8 @@ export class RelaySession {
         if (this.intent === "vouched" || !this.options.services.relay.approvals.windowOpen()) {
           this.state = "verifying";
           const joined = await this.accountJoin(frame.payload.public_key);
+          // the account service did not answer: refused as before, saying why to a client that reads it (as an outage at a sign-in)
+          if (joined === "unanswered") { if (this.mux.active) this.close(this.listingErrors ? "account_unreachable" : "auth_failed", undefined, "account_unreachable"); return; }
           if (joined === null) { this.close("auth_failed"); return; }
           if (!this.mux.active) return;
           // the one vouched join at a time is taken only once its admission held: a request the account never saw holds no
@@ -845,7 +854,7 @@ export class RelaySession {
    * failed pairing: nobody was asked. On a PC with no member yet (added in one press), an account join is a first
    * join, which this PC's own window alone allows; a PC vouched for still needs a member.
    */
-  private async accountJoin(key: string): Promise<"members" | "first" | null> {
+  private async accountJoin(key: string): Promise<"members" | "first" | "unanswered" | null> {
     const { devices, relay, accountMailbox } = this.options.services;
     const allowed = (): "members" | "first" | null => {
       if ((this.intent !== "account" && this.intent !== "vouched") || devices.account() === null) return null;
@@ -854,11 +863,27 @@ export class RelaySession {
     };
     if (allowed() === null) return null;
     this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
-    if (!await accountMailbox.admitted(key)) return null;
+    // only a client that can hear why (account-listing-errors-1) is cut off at the bound; any other waits as it always did
+    const admitted = this.listingErrors ? await this.joinAdmission(key) : await accountMailbox.admitted(key);
+    if (admitted !== true) return admitted === "unanswered" ? "unanswered" : null;
     // decided again once admitted: a member who joined meanwhile approves it as ever
     const joined = allowed();
     // counted only once admitted, so refused strangers cannot spend the PC's joins
     return joined !== null && (this.intent === "vouched" || relay.approvals.takeAccountJoin()) ? joined : null;
+  }
+
+  /**
+   * The account's word on the join of `key`, within JOIN_ADMISSION_WAIT_MS: an answer that comes later serves the next try.
+   * At the bound it answers by what the PC has read so far: the mailbox records the admission before the rest of its read.
+   */
+  private async joinAdmission(key: string): Promise<boolean | "unanswered"> {
+    const { accountMailbox } = this.options.services;
+    let cancel = (): void => {};
+    const late = new Promise<boolean | "unanswered">((resolve) => {
+      cancel = this.clock.setTimeout(() => resolve(accountMailbox.currentAdmission(key) ? true : "unanswered"), JOIN_ADMISSION_WAIT_MS);
+    });
+    try { return await Promise.race([accountMailbox.joinAdmitted(key), late]); }
+    finally { cancel(); }
   }
 
   /**

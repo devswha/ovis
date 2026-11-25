@@ -1203,7 +1203,9 @@ waits, failed, or could not start within its minute): it may be a device the acc
 this PC has not read yet. It is `held` with `catching_up` to a client that knows the account codes,
 which asks again and gets in by the row a read brings, only while a read can come (not with the
 account service off, nor while the PC's waiting records do not read) and for 3 minutes from the
-id's first ask at most. Once such a read finished without the key, or after those 3 minutes, it is
+id's first ask at most. A read here is a pull that read the account's rows whole (or the service
+reads none, `step2_off`): one whose snapshot did not commit is none. Once such a read finished
+without the key, or after those 3 minutes, it is
 refused (`auth_failed`) as before until a read brings its row or the PC forgets the id (10 minutes;
 it remembers 512 ids, and answers a new one as before while they are all live), and so is every
 unknown key from another client, on a PC that fails closed and on a PC in no account. This changes
@@ -2090,6 +2092,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
+  The PC's own window shows it with the same words and no Allow or number field, and
+  `POST /api/relay/join` answers an approval of it `409 list_unknown` and leaves it waiting (a
+  decline still ends it).
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.
@@ -2559,7 +2564,10 @@ on any page that has the sheet: a PC's own page, the hosted app and the phone ap
 the PC leaves the account once it is online again and is added again at the PC. A PC the account's
 signed list holds has **Remove** whether it is on or off, through the same confirm and the same
 fresh sign-in: once its removal is in the list it does not come back by itself, so the confirm says
-it comes back to the account only as a new PC, added again on that PC.
+it comes back to the account only as a new PC, added again on that PC. Such a row leaves by the
+list or not at all: where this device no longer follows the list when the confirm is pressed,
+nothing is removed (never through the directory, which would leave the PC in the list) and the
+confirm says to try again in a moment.
 
 Push (the doorbell), per signed-in device:
 

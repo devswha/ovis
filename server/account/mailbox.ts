@@ -263,6 +263,13 @@ export class AccountMailbox {
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private pulling: Promise<number> | undefined;
+  /**
+   * The last read of the mailbox got no answer from the account service: its calls failed on the way or ran out of time.
+   * Only the last drain sets it (a join that starts no read sees an earlier one's, and a drain that stops early leaves
+   * it); a TypeError can also be a fault of this PC's, and a 503 or 429 counts as answered. It only chooses the words of
+   * a refusal (joinAdmitted), never who is let in.
+   */
+  private unanswered = false;
 
   private pending: unknown[];
   private draining: unknown[] = [];
@@ -358,10 +365,12 @@ export class AccountMailbox {
       const began = Date.now();
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
-      const adds = applied + (await this.readSnapshotNow(readmission, this.drainedListing)).adds;
-      // a pull that ended with no error: what the account let in by then has its row here, as far as such a pull reads
-      // (one that read only part, or nothing where there was nothing to read, refuses earlier: it never lets a key in)
-      if (this.error === null) this.readBegan = began;
+      const read = await this.readSnapshotNow(readmission, this.drainedListing);
+      const adds = applied + read.adds;
+      // a pull that ended with no error and read the account's rows whole: what the account let in by then has its row
+      // here. A snapshot that did not commit (a page that failed, a stale answer) is no such read, unless the service
+      // reads no rows by its own word (step2_off); nothing to read counts as read. A read only refuses: it lets no key in
+      if (this.error === null && read.whole) this.readBegan = began;
       await this.sendCompletion();
       return adds;
     }).finally(() => { this.pulling = undefined; });
@@ -629,8 +638,9 @@ export class AccountMailbox {
   }
 
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
-  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number }> {
-    const empty = { outcome: null, adds: 0 };
+  /** `whole`: the account's rows were read whole, or there were none to read, or the service reads none (step2_off): what unreadKey may rest on. */
+  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number; whole: boolean }> {
+    const empty = { outcome: null, adds: 0, whole: true };
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
     const account = snapshot.account();
@@ -699,7 +709,7 @@ export class AccountMailbox {
       // device's link just bound is listed by that device after its link: until then, for a bounded time, it is not yet listed
       if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
       else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string") devices.pinServiceListing(linked, named);
-      return { outcome, adds };
+      return { outcome, adds, whole: outcome.committed || step2Off };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       return empty;
@@ -844,6 +854,15 @@ export class AccountMailbox {
       await this.pull();
     }
     return this.currentAdmission(key);
+  }
+
+  /**
+   * `admitted`, telling an account service that did not answer apart from one that holds no admission for the key:
+   * "unanswered" when the read it waited for got no answer from the service, false when the service answered.
+   */
+  async joinAdmitted(key: string): Promise<boolean | "unanswered"> {
+    if (await this.admitted(key)) return true;
+    return this.unanswered ? "unanswered" : false;
   }
 
   /** The account service is turned off on purpose: nothing can be asked of it, so nothing waits for its word. */
@@ -1154,9 +1173,12 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
+      this.unanswered = false;
       if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
+      // fetch fails with a TypeError only when no answer came; a call's own deadline ends it as a TimeoutError
+      this.unanswered = error instanceof TypeError || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
       try { save(); } catch {}
       this.pending = [...early, ...this.pending];
       this.draining = [];

@@ -2652,7 +2652,7 @@ export class ListFollow implements ListAuthority {
         const got = await this.nameAt(copy, state, row.seq, keys, epochs);
         if (got === "failed") { failed = true; continue; }
         decided.push(row.seq);
-        if (got !== null) opened.set(row.key, got);
+        if (got !== null) opened.set(row.key, got.label);
       }
       if (failed) this.namesRetryAt = this.deps.now() + NAMES_RETRY_MS;
       await this.enqueue(() => {
@@ -2671,11 +2671,11 @@ export class ListFollow implements ListAuthority {
   }
 
   /**
-   * The label the entry at `seq` seals, opened with the key to its epoch's names this PC holds; null where it seals none
-   * or the PC holds no key for it; `failed` where the service could not be asked. `epochs`: what this round learnt of
-   * each epoch, so it asks the service once per epoch.
+   * The label the entry at `seq` seals, opened with the key to its epoch's names this PC holds (inside `{ label }`, so
+   * no label is ever read as the failure); null where it seals none or the PC holds no key for it; `failed` where the
+   * service could not be asked. `epochs`: what this round learnt of each epoch, so it asks the service once per epoch.
    */
-  private async nameAt(copy: FollowerCopy, state: ListState, seq: number, keys: PcListKeys, epochs: Map<number, EpochKey | "failed" | null>): Promise<string | "failed" | null> {
+  private async nameAt(copy: FollowerCopy, state: ListState, seq: number, keys: PcListKeys, epochs: Map<number, EpochKey | "failed" | null>): Promise<{ readonly label: string } | "failed" | null> {
     const text = copy.entries[seq];
     if (text === undefined) return null;
     let sealed: Sealed | null;
@@ -2694,7 +2694,7 @@ export class ListFollow implements ListAuthority {
     if (epoch === null) return null;
     const opened = await openSealed({ place: { list: seq === 0 ? "" : copy.list, seq }, epoch, sealed: sealed.bytes });
     const label = opened.open ? readNames(opened.value)?.label ?? null : null;
-    return label !== null && isListLabel(label) ? label : null;
+    return label !== null && isListLabel(label) ? { label } : null;
   }
 
   /**
