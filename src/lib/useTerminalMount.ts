@@ -1619,6 +1619,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // File paths and dropped text use xterm's programmatic paste without a DOM paste event. `typedAt`: the mark
       // (markTyped) of the pick, drop or paste it came from, so a path whose upload ends after an outage is held
       let pasteMark: number | null = null;
+      // Text an input method, dictation or a paste lets out later is dated to when it began (compositionstart, the
+      // paste), not when xterm emits it: what began before a lost link is held, what began after it goes (#4249)
+      let beganMark: number | null = null;
+      const textBegan = (): void => { beganMark ??= markTyped(); };
+      host.addEventListener("compositionstart", textBegan, true);
+      host.addEventListener("paste", textBegan, true);
+      // a plain key starts nothing that comes out later: a composition that let out nothing dates no key after it
+      const plainKey = (event: KeyboardEvent): void => {
+        if (!event.isComposing && event.keyCode !== 229 && !composingRef.current && !compositionCommitPendingRef.current) beganMark = null;
+      };
+      host.addEventListener("keydown", plainKey, true);
       const pasteText = (text: string, typedAt: number): void => {
         const previous = pasting;
         pasting = true;
@@ -1763,8 +1774,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
         const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey !== null && input === "\u001b", secret,
           // a Stop's keys are dated to the Stop: its second Escape, sent later, goes only over a link up since then
-          typedAt: pasteMark ?? stopKey ?? markTyped(),
+          typedAt: pasteMark ?? stopKey ?? beganMark ?? markTyped(),
           ...(arrow !== null ? { arrowModeEpoch: arrowModeWitness === arrowModeEpoch ? arrowModeEpoch : null } : {}), ...(automatic ? { automatic } : {}) };
+        if (!composingRef.current) beganMark = null;
         adoptTypeAhead(current);
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
@@ -2556,6 +2568,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("input", onTyped, true);
         host.removeEventListener("paste", onTyped, true);
         host.removeEventListener("paste", onFilePaste, { capture: true });
+        host.removeEventListener("compositionstart", textBegan, true);
+        host.removeEventListener("paste", textBegan, true);
+        host.removeEventListener("keydown", plainKey, true);
         host.removeEventListener("dragover", onDragOver);
         host.removeEventListener("drop", onDrop);
         offDisconnect();
