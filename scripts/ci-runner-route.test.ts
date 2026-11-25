@@ -451,6 +451,25 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(windows({ EVENT_NAME: "push", REF: "refs/heads/main", WINVM_READY: ready, PR_DRAFT: "" })).toEqual(winvm);
     });
 
+    it("reads the Actions API once for the Linux, Rust and Windows routes", () => {
+      const state = actions({ in_progress: { 1: running(2) }, queued: { 2: waiting(1, 30, ["self-hosted", "self-hosted-ovis-rust"]) } });
+      const now = Math.floor(Date.now() / 1000);
+      expect(allOutputs({ ...pr, FAKE_GH: state, WINVM_READY: readyAgo(5), RUST_SELF_HOSTED: "true", RUST_SEEN: String(now) }))
+        .toEqual({ linux: ovis, fast: ovis, rust: ["self-hosted", "self-hosted-ovis-rust"], windows: winvm });
+      const calls = readFileSync(join(state, "calls"), "utf8").trim().split("\n");
+      for (const read of ["status=in_progress", "status=queued", "/runs/1/jobs", "/runs/2/jobs"]) {
+        expect(calls.filter((call) => call.includes(read))).toHaveLength(1);
+      }
+    });
+
+    it("reads past the run that sends the Linux jobs hosted until it knows whether winvm is taken", () => {
+      const state = actions({ queued: { 1: waiting(1, 300), 2: waiting(1, 10, winvm) } });
+      expect(allOutputs({ ...pr, FAKE_GH: state, WINVM_READY: readyAgo(5) })).toMatchObject({ linux: "ubuntu-24.04", windows: "windows-latest" });
+      const free = actions({ queued: { 1: [...waiting(1, 300), ...waiting(1, 10, winvm)], 2: waiting(1, 10) } });
+      expect(allOutputs({ ...pr, FAKE_GH: free, WINVM_READY: readyAgo(5) })).toMatchObject({ linux: "ubuntu-24.04", windows: "windows-latest" });
+      expect(readFileSync(join(free, "calls"), "utf8")).not.toContain("/runs/2/jobs");
+    });
+
     it("does not follow the Linux jobs' route", () => {
       expect(allOutputs({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(1, 300) } }), WINVM_READY: readyAgo(5) })).toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04", rust: "ubuntu-24.04", windows: winvm });
       expect(allOutputs({ EVENT_NAME: "push", CONFIGURED_LABELS: labels })).toEqual({ linux: JSON.parse(labels), fast: JSON.parse(labels), rust: "ubuntu-24.04", windows: "windows-latest" });
