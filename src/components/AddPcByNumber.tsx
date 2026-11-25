@@ -67,7 +67,7 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
   const ranOutNow = (): void => {
     setNumber(null);
     setRanOut(true);
-    setProblem(lastTry ? numberRefusal(words.current, "spent") : words.current("That number ran out. Press Add for a new one."));
+    setProblem(lastTry ? numberRefusal(words.current, "spent") : words.current("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC."));
   };
   useEffect(() => {
     if (number === null || busy) return;

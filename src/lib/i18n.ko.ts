@@ -139,7 +139,7 @@ const BASE: Record<string, string> = {
   "This device's clock is behind. Check its date and time, then make the invite again.": "이 기기의 시계가 늦어요. 날짜와 시간을 확인한 뒤 초대를 다시 만드세요.",
   "Waiting for the PC…": "PC 응답 기다리는 중…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "이 PC에 너무 여러 번 시도했어요. 몇 분 뒤 PC에서 다시 시작하세요.",
-  "That number ran out. Press Add for a new one.": "숫자의 유효 시간이 지났어요. 추가를 눌러 새 숫자를 받으세요.",
+  "That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.": "숫자의 유효 시간이 지났어요. 추가를 눌러 새 숫자를 받으세요. PC에서 이미 숫자가 같다고 했다면 PC에서 다시 시작하세요.",
   "Too many devices were added just now. Try again in a few minutes.": "방금 기기를 너무 많이 추가했어요. 몇 분 뒤에 다시 시도하세요.",
   "It could not be added to your account. Try again.": "계정에 추가하지 못했어요. 다시 시도하세요.",
   "The account service cannot change the list right now. To remove a device, use Revoke on each PC.": "지금은 계정 서비스가 목록을 바꿀 수 없어요. 기기를 빼려면 각 PC에서 폐기하세요.",

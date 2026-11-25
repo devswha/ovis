@@ -211,7 +211,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(buttons()).toEqual(["Cancel", "Not the same", "Add"]);
     clock += 121_000;
     await press("Add");
-    expect(text()).toContain("That number ran out. Press Add for a new one.");
+    expect(text()).toContain("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.");
     expect([held().entries.length, readSeenPcs(ACCOUNT).pcs]).toEqual([1, {}]);
   });
 });
