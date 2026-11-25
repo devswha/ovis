@@ -764,10 +764,10 @@ export class ListFollow implements ListAuthority {
     return scope !== null && this.deps.removedFrom(account, scope.serverId);
   }
 
-  /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to, once its copy was read again from the account service. */
-  async holdsPcRead(endpoint: string): Promise<boolean> {
+  /** Whether the PC at the relay key `endpoint` is in `list`, the one this PC is pinned to, once its copy was read again from the account service. */
+  async holdsPcRead(endpoint: string, list: string): Promise<boolean> {
     await this.readNow();
-    return this.holdsPc(endpoint);
+    return this.copy?.list === list && this.status().pinned_list === list && this.holdsPc(endpoint);
   }
 
   /** Whether the PC at the relay key `endpoint` is in the list this PC is pinned to. */

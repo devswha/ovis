@@ -1402,9 +1402,13 @@ list and admit with its own sign-in, `POST /api/account/ssh-add`); the rest happ
    `adder`, carrying exactly the keys it posted at its own relay key, joins the account by the list
    (its place written already pinned, as for `ovis add`), owes its completion as any PC that joined
    by its list, turns its relay on as above, and answers `{ account, relay, list_joined: true }`
-   (`list_joined` only when B did not follow that list before this take). An entry another key signed
+   (`list_joined` only when B did not follow that list before this take). The binding is written only
+   while B's relay identity and its count of denials (Revoke all, a reset) are the ones the take
+   began with, checked in the step that writes it; after the relay wait B must still follow that very
+   list. An entry another key signed
    is refused `other_adder`, one with other keys `other_keys`, and B names no list.
-6. A says added only once B answered that it joined and A's own copy, read again, holds B. B says it
+6. A says added only once B answered that it joined and A's own copy of that very list, read again,
+   holds B. B says it
    joined and A's copy does not show it: `409 take_unanswered`. A's answer to the window carries
    `list_joined: true` when B joined the list by this add, so a B that was in the account before its
    list is told apart from one the list held already. The window keeps `ssh` in its record of its PCs
@@ -1422,7 +1426,8 @@ Where a run stops, the window says so, and running the add again goes on from th
 |---|---|---|
 | `that_pc_old` | B's Ovis refuses a take that names a list: nothing is posted or signed | after Ovis there is updated |
 | `list_not_added` | B posted its keys, and no entry of it is in the list (its card did not hold, or the account service refused the entry: it asks B's own post and a listing an own sign-in made or let in, so a B the window did not list is refused `not_posted`) | B posts again and A signs on the head it reads then |
-| `list_unbound` | the entry is in the list, and B has not taken it: five takes found it waiting, or a take after the placement was lost or refused (never "not added" while B is in the list) | B finds the entry at the first take and joins; A signs nothing more |
+| `list_unbound` | the entry is in the list, and B has not taken it (five takes found it waiting), or whether it took it could not be confirmed (a take after the placement was lost or refused): never "not added" while B is in the list | B finds the entry at the first take and joins; A signs nothing more |
+| `revoked` | **Revoke all** (or a reset) ran on B while its join read the list: nothing is bound | as it was |
 | `take_unanswered` | the entry may be in the list (no answer from the account service), B said it joined and A's copy does not show it, or the first take's answer was lost (nothing signed) | A sends the kept request again, or finds the entry |
 | `that_pc_error` | B's Ovis answered the take with an error of its own and no code (a log it cannot read, say): its words go to A's log | as it was |
 | `that_pc_behind` | B's Ovis cannot read the list it was named: nothing is signed | after Ovis there is updated |

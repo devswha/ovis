@@ -64,7 +64,7 @@ test("a PC that cannot sign names no list to the other PC: no take goes, nothing
 });
 
 test("the take names this PC's list and its own key; the card that comes back is signed with the name and relay key the inspect read", async () => {
-  const made = fixture({ answers: [{ waiting: CARD }, ADDED] });
+  const made = fixture({ answers: [{ waiting: CARD }, { ...ADDED, listJoined: true }] });
   expect(await addOverSshByList(made.deps)).toEqual({ ...ADDED, listJoined: true });
   expect(made.takes).toEqual([{ list: LIST, adder: ADDER }, { list: LIST, adder: ADDER }]);
   expect(made.signed).toEqual([CARD]);
@@ -100,11 +100,22 @@ test("the other PC says it joined, and this PC's own copy, read again, does not 
   }
 });
 
-test("a PC that joined the list by this add is said to have joined it; one that was in it already is not", async () => {
-  const joined = fixture({ answers: [{ waiting: CARD }, ADDED] });
+test("a PC that joined the list by this add is said to have joined it; one that was in it already is not, also after this PC placed an entry (PR #4645 review)", async () => {
+  const joined = fixture({ answers: [{ waiting: CARD }, { ...ADDED, listJoined: true }] });
   expect(await addOverSshByList(joined.deps)).toEqual({ ...ADDED, listJoined: true });
   const there = fixture({ answers: [ADDED] });
   expect(await addOverSshByList(there.deps)).toEqual(ADDED);
+  // it followed the list by the time of the next take (another way in): this take joined it to nothing
+  const meanwhile = fixture({ answers: [{ waiting: CARD }, ADDED] });
+  expect(await addOverSshByList(meanwhile.deps)).toEqual(ADDED);
+});
+
+test("added is held to the list this add named: this PC's own copy is read for that very list (PR #4645 review)", async () => {
+  const made = fixture({ answers: [{ waiting: CARD }, { ...ADDED, listJoined: true }] });
+  const asked: string[] = [];
+  made.deps.list.holdsPcRead = async (endpoint, list) => { asked.push(`${endpoint} ${list}`); return true; };
+  expect(await addOverSshByList(made.deps)).toEqual({ ...ADDED, listJoined: true });
+  expect(asked).toEqual([`${ENDPOINT} ${LIST}`]);
 });
 
 test("the account service's budget of additions: said as a time to wait, apart from an entry it refused", async () => {
@@ -146,7 +157,8 @@ test("a take lost before anything was signed is not known; one lost or refused a
     const made = fixture({ answers: [{ waiting: CARD }] });
     const take = made.deps.take;
     made.deps.take = async (named) => made.takes.length === 0 ? await take(named) : (() => { made.takes.push(named); throw error; })();
-    expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_unbound" } });
+    // whether it took the entry is not known (its answer may be what was lost): said so, never "has not taken it"
+    expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_unbound", message: expect.stringContaining("could not be confirmed") } });
     expect(made.signed).toHaveLength(1);
     expect(made.ended()).toBe(1);
   }

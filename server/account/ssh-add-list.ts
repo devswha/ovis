@@ -85,12 +85,14 @@ function notAdded(outcome: Extract<AllowOutcome, { refused: AllowRefusal }>): { 
 
 /** Where an add stopped with the entry in the list and that PC not following it: running the add again finishes it. */
 const UNBOUND = "That PC is in your account's list, and has not taken it yet. Add it again to finish: nothing more is signed.";
+/** The entry is in the list, and that PC's answer to the take after it was lost or refused: whether it took the entry is not known. */
+const UNCONFIRMED = "That PC's entry is in your account's list, and whether that PC took it could not be confirmed. Add it again to finish: nothing more is signed.";
 /** That PC said it joined, and this PC's own copy does not show it yet. */
 const UNSEEN = "That PC says it joined your account's list, and this PC's copy of the list does not show it yet. Connect to it again to check.";
 
-/** That PC said it joined: said added only once this PC's own copy, read again, holds it there too. */
-async function seen(deps: SshListDeps, taken: SshListTaken): Promise<SshListTaken | { readonly refused: SshListRefusal }> {
-  return await deps.list.holdsPcRead(deps.endpoint) ? taken : refuse("take_unanswered", UNSEEN, 409);
+/** That PC said it joined: said added only once this PC's own copy of the list this add named, read again, holds it too. */
+async function seen(deps: SshListDeps, list: string, taken: SshListTaken): Promise<SshListTaken | { readonly refused: SshListRefusal }> {
+  return await deps.list.holdsPcRead(deps.endpoint, list) ? taken : refuse("take_unanswered", UNSEEN, 409);
 }
 
 export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken | { readonly refused: SshListRefusal }> {
@@ -109,7 +111,7 @@ export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken 
     throw error;
   }
   // that PC says it follows the list: added once this PC's own copy holds it too
-  if (!("waiting" in taken)) return await seen(deps, taken);
+  if (!("waiting" in taken)) return await seen(deps, pinned, taken);
   try {
     return await signedIn(deps, named, pinned, taken.waiting);
   } catch (error) {
@@ -152,9 +154,10 @@ async function signedIn(deps: SshListDeps, named: AccountAddNamed, pinned: strin
       if (!(error instanceof AccountAddError)) throw error;
       console.warn(`[account] the PC an add over SSH reached did not take its entry: ${error.code}`);
       await deps.end();
-      return refuse("list_unbound", UNBOUND, 409);
+      return refuse("list_unbound", UNCONFIRMED, 409);
     }
-    if (!("waiting" in taken)) return await seen(deps, { ...taken, listJoined: true });
+    // `listJoined` as that PC said it: one that followed the list before this take (another way in) joined nothing by it
+    if (!("waiting" in taken)) return await seen(deps, pinned, taken);
   }
   await deps.end();
   return refuse("list_unbound", UNBOUND, 409);

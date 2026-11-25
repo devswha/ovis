@@ -175,7 +175,11 @@ export async function takeByList(services: PressServices & { readonly accountLis
   if (bound === null && !relay.setRelayAccount(account)) return refuse("invalid_account", "Name the account", 400);
   // following that very list before this take: the take found it there, and joined it to nothing
   const before = bound !== null && accountList.status().pinned_list === named.list;
-  const joined = await accountList.joinList({ account, list: named.list, by: named.adder, live: () => identity() === serverId });
+  // A Revoke all, a reset or a denial at this PC while the join reads the list moves this counter: the join's binding
+  // write asks `live` in the very step it writes, so one that ends while the list is read binds nothing (as pressOnce)
+  const generation = devices.gen();
+  const joined = await accountList.joinList({ account, list: named.list, by: named.adder, live: () => identity() === serverId && devices.gen() === generation });
+  if ("refused" in joined && joined.refused === "ended" && identity() === serverId) return refuse("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
   if ("refused" in joined) {
     const [code, message, status] = LIST_TAKE_REFUSALS[joined.refused];
     return refuse(code, message, status);
@@ -190,6 +194,8 @@ export async function takeByList(services: PressServices & { readonly accountLis
   accountMailbox.joinedByList();
   const relayNow = await relayForAdd(relay, account, onlineWithinMs, bound === null);
   if (devices.account() !== account) return refuse("not_listed", "The account removed this PC while it was being added", 409);
+  // still following the list this take named, after the relay wait: one that left it, or another list, is no add by it
+  if (accountList.status().pinned_list !== named.list) return refuse("not_listed", "This PC no longer follows your account's list. Add it again.", 409);
   if (identity() !== serverId) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
   return { account, relay: relayNow, ...(before ? {} : { list_joined: true as const }) };
 }

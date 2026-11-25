@@ -259,6 +259,8 @@ test.skipIf(process.platform === "win32")("finding M2a: a lost answer to the fir
   // e7b5143d7: 200 `{ account, relay: null, unanswered: true }` (MachineManager.accountTake's catch: inspectAgain found
   // that PC "in the account", which a PC bound on the service's word before the list always is)
   expect(added.status, JSON.stringify(added.body)).not.toBe(200);
+  // nothing signed and its answer lost: whether it follows the list is not known (PR #4645 review)
+  expect([added.status, added.body.error?.code]).toEqual([409, "take_unanswered"]);
 });
 
 test.skipIf(process.platform === "win32")("finding M2b: a take lost after the entry is placed, for a PC in the account from before its list, is not said added while that PC has not taken the list", async () => {
@@ -284,6 +286,8 @@ test.skipIf(process.platform === "win32")("finding M2b: a take lost after the en
   // e7b5143d7 (and ac10f7b58, whose check of this PC's own copy passes here): 200 unanswered, "Added". It should say the
   // add stopped with the entry placed and that PC not following the list (`list_unbound` on ac10f7b58's words)
   expect(added.status, JSON.stringify(added.body)).not.toBe(200);
+  // the entry is in the list, and that PC did not take it: said where the add stopped (PR #4645 review)
+  expect([added.status, added.body.error?.code]).toEqual([409, "list_unbound"]);
 });
 
 test.skipIf(process.platform === "win32")("finding L1: a take lost after the entry is placed, for a PC in no account, is not answered `refused` (\"not added, try again\") while that PC's entry is in the list", async () => {
@@ -305,6 +309,7 @@ test.skipIf(process.platform === "win32")("finding L1: a take lost after the ent
   // e7b5143d7 and ac10f7b58: 409 `refused` "That PC did not take the account" (inspectAgain found it in no account),
   // which the window shows as "It was not added to your account. Try again." It is in the list as a full signer
   expect([added.status, added.body.error?.code]).not.toEqual([409, "refused"]);
+  expect([added.status, added.body.error?.code]).toEqual([409, "list_unbound"]);
 });
 
 test.skipIf(process.platform === "win32")("finding L2: an error a current Ovis there gives with no code is not taken for an Ovis from before lists", async () => {
@@ -321,6 +326,8 @@ test.skipIf(process.platform === "win32")("finding L2: an error a current Ovis t
   expect(added.status).toBe(409);
   // e7b5143d7: `that_pc_old`, "That PC's Ovis is too old ... Update Ovis there": updating changes nothing
   expect(added.body.error?.code).not.toBe("that_pc_old");
+  // its own error, with no code: it could not answer (PR #4645 review)
+  expect(added.body.error?.code).toBe("that_pc_error");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

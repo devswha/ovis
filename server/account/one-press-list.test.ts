@@ -21,15 +21,16 @@ const status = (phase: RelayStatus["phase"]): RelayStatus =>
 function services(options: { joins: () => JoinOutcome; identity?: () => string; bound?: () => string | null }) {
   const steps: string[] = [];
   let bound: string | null = null;
-  const devices = { account: () => (options.bound ?? (() => bound))(), listRemovedFrom: () => false } as unknown as DeviceStore;
+  let pinned: string | null = null;
+  const devices = { account: () => (options.bound ?? (() => bound))(), listRemovedFrom: () => false, gen: () => 0 } as unknown as DeviceStore;
   const relay = {
     currentIdentity: () => ({ server_id: options.identity?.() ?? SERVER }),
     setRelayAccount: (account: string) => { steps.push(`named ${account}`); return true; },
     switchSet: () => false, start: () => status("connecting"), status: () => status("connecting"),
   } as unknown as RelayService;
   const accountList = {
-    status: () => ({ pinned_list: null }),
-    joinList: async () => { steps.push("join"); const joined = options.joins(); if ("joined" in joined) bound = ACCOUNT; return joined; },
+    status: () => ({ pinned_list: pinned }),
+    joinList: async () => { steps.push("join"); const joined = options.joins(); if ("joined" in joined) { bound = ACCOUNT; pinned = NAMED.list; } return joined; },
     cardFor: async () => ({ key: "pc-key", enc: "pc-enc", card: "pc-card" }),
   } as unknown as ListFollow;
   return { services: { devices, relay, accountMailbox: { joinedByList: () => {} } as unknown as AccountMailbox, accountList }, steps, bound: () => bound };
@@ -57,4 +58,25 @@ test("a relay identity reset while the take waited for its relay is not answered
   const pending = takeByList(made.services, ACCOUNT, SERVER, NAMED, 400);
   setTimeout(() => { identity = "f".repeat(32); }, 50);
   expect(await pending).toMatchObject({ refused: { code: "identity_changed" } });
+});
+
+test("a Revoke all on this PC while the join read the list ends the take with nothing bound (PR #4645 review)", async () => {
+  let generation = 1;
+  const made = services({ joins: () => JOINED });
+  // the join reads the list over the network; a Revoke all at the PC meanwhile moves the denial counter
+  (made.services.devices as unknown as { gen: () => number }).gen = () => generation;
+  made.services.accountList.joinList = async (given) => {
+    generation += 1;
+    return given.live?.() === false ? { refused: "ended" } : JOINED;
+  };
+  expect(await takeByList(made.services, ACCOUNT, SERVER, NAMED, 400)).toMatchObject({ refused: { code: "revoked" } });
+});
+
+test("a PC that follows another list, or none, once the relay wait is over is not answered as added by this take (PR #4645 review)", async () => {
+  let pinned: string | null = null;
+  const made = services({ joins: () => { pinned = NAMED.list; return JOINED; } });
+  made.services.accountList.status = (() => ({ pinned_list: pinned })) as never;
+  const pending = takeByList(made.services, ACCOUNT, SERVER, NAMED, 400);
+  setTimeout(() => { pinned = "b".repeat(64); }, 50);
+  expect(await pending).toMatchObject({ refused: { code: "not_listed" } });
 });
