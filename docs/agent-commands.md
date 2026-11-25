@@ -44,9 +44,10 @@ types it otherwise. Only a send that is exactly one command, with no `@skill`, i
 | OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it, so the send stays `accepted` as a typed `/compact` does |
 | Codex on the server Ovis started for it (0.169 to 0.171) | bare `/plan`, only while the thread is idle (Codex's own dispatcher allows `/plan` only between tasks) | `thread/settings/update` with Plan mode, Plan's own effort (`plan_mode_reasoning_effort` from `config/read`, else the preset `collaborationMode/list` gives) and the thread's model as it is when the request goes, as the TUI's `/plan` does | the server's answer: `native` evidence |
 
-A Codex `/plan` goes only to the thread herdr reports as the pane's session, read again right
-before the request (a `/resume` in the TUI moves it without the server telling Ovis), once the
-server said that thread is idle and named its model ([`server/approvals/codex.ts`](../server/approvals/codex.ts)
+A Codex `/plan` goes only to the pane's thread while it is the only one loaded on the server
+besides subagents (a `/resume` or `/new` in the TUI loads another without telling Ovis which it
+shows) and never to one herdr reports the pane does not show, read again right before the
+request; and only once the server said that thread is idle and named its model ([`server/approvals/codex.ts`](../server/approvals/codex.ts)
 `servedPlan`); until then, and in a Codex Ovis did not start, it is typed. Codex's `/compact` stays
 typed: compacting through its server aborts a turn Ovis may not have heard of yet. In a pane where
 Ovis started Codex on its server, `/plan` is offered in the palette again (`withDataRoutes`).
