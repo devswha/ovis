@@ -649,6 +649,39 @@ describe("a removal the PC has seen is final", () => {
     expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
   });
 
+  test("a read the PC goes on with inside another history past its footing is asked for at that very place, so the alarm comes", async () => {
+    const pc = await pinnedPc();
+    const footing = pc.list.status().head!;
+    // another history from entry 1: the first device lets devices in there, past the PC's footing, which alone would be a
+    // post its writer left behind; then the first of them signs on it, which makes it a second history members signed
+    const history = [pc.service.accountList(ACCOUNT)!.entries[0]!];
+    let at = { seq: 0, hash: pc.account.id };
+    const added: ListMember[] = [];
+    while (at.seq <= footing.seq) {
+      const device = await listMember();
+      added.push(device);
+      const text = await deviceEntry(pc.account, device, pc.first, at);
+      history.push(text);
+      at = { seq: at.seq + 1, hash: entryHash(entryFromText(text).body) };
+    }
+    const last = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, added[0]!, at);
+    history.push(last);
+    const top = { seq: at.seq + 1, hash: entryHash(entryFromText(last).body) };
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    // the device says where it stands, then hands what the PC asks for: each page cut before its last entry, which it
+    // hands only where the PC asks for the place right before it
+    let said = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: top } });
+    for (let round = 0; round < 16 && said.body.asks; round += 1) {
+      const after = (said.body.asks as { after: number | null }).after;
+      const from = after === null ? 0 : after + 1;
+      const entries = from >= history.length - 1 ? history.slice(from) : history.slice(from, history.length - 1);
+      said = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after, entries, head: top } });
+      expect([round, said.status]).toEqual([round, 200]);
+    }
+    expect(pc.list.status()).toMatchObject({ alarm: "fork", head: footing });
+  });
+
   test("the PC answers a device's own read only for a key its list holds: a pairing of its own keeps the plain exchange", async () => {
     const pc = await pinnedPc();
     const head = pc.list.status().head!;
@@ -671,9 +704,10 @@ describe("a removal the PC has seen is final", () => {
   });
 
   test("a call that began while the PC was pinned and ends after it left its list is answered as a new call would be", async () => {
-    const pc = await pinnedPc();
-    const head = pc.list.status().head!;
     for (const path of ["/api/account/list/head", "/api/account/list/page"]) {
+      // a PC of its own for each route, each left while that route's body is on its way
+      const pc = await pinnedPc();
+      const head = pc.list.status().head!;
       const reading = deferred<void>();
       let body!: ReadableStreamDefaultController<Uint8Array>;
       const stream = new ReadableStream<Uint8Array>({ start(controller) { body = controller; }, pull() { reading.resolve(); } });
@@ -682,7 +716,7 @@ describe("a removal the PC has seen is final", () => {
       } as RequestInit), { ...pc.fixture.app.context, peer: { kind: "relay", device: { id: pc.idOf(pc.laptop).id, label: "Laptop", role: "drive" }, sessionId: `s-${path}`, serverId: pc.serverId, key: pc.laptop.key }, timeout: () => {} });
       await bounded(reading.promise);
       // the call was let in and its body is on its way: the PC leaves its account and its list
-      if (path.endsWith("/head")) pc.services.devices.revokeAll();
+      pc.services.devices.revokeAll();
       body.enqueue(new TextEncoder().encode(JSON.stringify({ list: pc.account.id, place: head, after: head.seq, entries: [], head })));
       body.close();
       const answered = (await answer)!;

@@ -611,7 +611,9 @@ alarm. It answers the read only to a key its list lets in at that moment: any ot
 when there is none; `asks: null` is out of form. `asks` in the answer is there when the device stands further, or at another entry:
 `{ "list", "after" }`, the place the PC wants the device's entries after: never past the footing it
 states beside it (an entry no member signed above its footing, which the service may have shown it,
-is not counted as held). For another list than the
+is not counted as held), but where it goes on inside another history the device showed it, which may
+reach past its footing. The place it asks for is the place it keeps: the page that answers it is
+taken as the read's continuation. For another list than the
 PC's, in `list` or in the device's `asks`: the PC's own `list` and `place` and nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
 the PC entries, 256 at most, with the head they lead to; the PC takes them as it takes the account
 service's pages, each entry on its own signature, and answers `{ "verdict", "asks"?, "list",
@@ -1757,11 +1759,24 @@ again. On a PC that is not pinned the file is only a copy, and one that will not
 - **A device the list lets in after the pin still waits its ten seconds** and is announced on every
   older device, as a device the snapshot let in was. The devices the list held at the pin wait for
   none: a person at this PC has just taken that list as the account's.
-- **Not built yet, and a rule for when it is:** an account that was in use before it had a list
-  brings its devices into the list as carried ones, and a PC that pins such a list keeps the rows of
-  the devices it already let in: no hold, no notice and no closed session for a key it held. Today
-  a pin makes every list device a new row, which is right only for a PC whose account devices all
-  came by the list.
+- **A device that hands its place on keeps its row.** In a list an account that was in use moved
+  onto ([account-list.md](account-list.md), "An account that was in use"), each device is carried in
+  by the key of its sign-in and hands its place to its account key by an entry of its own. This PC
+  moves that device's row to the new key, with its name, its age and its admission: no new hold and
+  no notice, as it is the same device (a hold it is still in goes on). Its session under the old key ends with `auth_changed`, and it
+  signs in again with the other. The old key is no removal: nothing is kept against it.
+- **A removal of this PC's own follows the device.** A device this PC holds a removal against (a
+  Revoke here, a signed removal or block it applied) stays out by whichever key the list holds it
+  by, and by the key a sign-in key it put out vouched for (`heldOut`). A device the list removes
+  is kept as removed here by every key it has been in the list by. A device this PC put out by a
+  sign-in key it took after the move stays out by its account key too: the PC reads the account's
+  links from the account service before it pins and while it holds a removal (each signed by both
+  keys). Not covered: a service that withholds that link.
+- **A carried key that never handed over** (an app from before the list, still on the sign-in it
+  was carried in by) is let in only while the account service's last whole snapshot of this run
+  names it too. It is local and undone by the same word: no device signs a removal because the
+  service lists a key as gone. After a start the PC waits for one whole read before it lets such a
+  key in, as for the rows the snapshot made before the list.
 - **A session opened through the account is the list's to answer for, and nothing else's.** Its id
   is `accountDeviceId(server_id, key)`, the only id an app that opens the PC through its account
   knows. Such a session is let in when this PC's copy of the list holds that key as a device that
@@ -2130,6 +2145,10 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   sign-in, as apps did before), reads its list and signs in again with its list key. The refusal
   says nothing of the device, only that this PC follows a list. A client that did not offer the
   feature is refused `auth_failed`, as ever, and so is one that required it and is in no list.
+- **The `WELCOME` names the list.** With `account-list-1` selected, the final `WELCOME` also carries
+  `list`, the id of the list this PC follows: an app signs in by the key that list holds for it
+  toward any PC that says it follows the app's list, whether or not the app's copy names that PC.
+  A PC that follows no list sends what it always sent.
 - **At the moment a PC pins**, the sessions of the account devices it held until then, and every
   session open under the account's id for a key (a row a member's `add` or a join by digits made),
   end with `auth_changed`, the code for a row that changed under a session, not `auth_revoked`: each app
@@ -2177,10 +2196,10 @@ the order the service numbers devices in: a block can shut devices out, and noth
 ### How long a key has been let in
 
 A PC in an account keeps a record of how long it has let each of the account's keys in:
-`account-witness.json` in the state folder (readable by your user only). It only records. Nothing
-decides by it in this release: it is kept from now on because moving an account that was in use
-onto its signed list ([account-list.md](account-list.md), "An account that was in use") counts a
-key only where a PC has let it in for a day, and the record has to have run for that day first.
+`account-witness.json` in the state folder (readable by your user only). Moving an account that was
+in use onto its signed list ([account-list.md](account-list.md), "An account that was in use")
+counts a key only where a PC has let it in for a day: the first device asks its PCs, and a PC asks
+its own record before it follows a list a device names to it. Nothing else decides by it.
 
 - It holds the account, the PC's relay identity, when it was last written, and per key two counts
   of seconds and the day the key was last used here. No name, no secret, no moment a key came in.
@@ -2201,6 +2220,20 @@ key only where a PC has let it in for a day, and the record has to have run for 
 - **It goes with the account and the relay identity.** A file written for another account or
   another relay identity is not taken over, and a PC that leaves its account deletes it. A file
   that does not read starts the record anew.
+- **What a device of the account is told.** `GET /api/account/list/witness`, over the session of a
+  device of this PC's account (a row the account let in, or a pairing of the account's member) or
+  from its own window, answers `{ account, pinned, admits: [{ key, wall, ran, idle }], removed }`:
+  the keys the account's rows let in to drive right now, each with both counts in seconds and how
+  long ago its row was last used here (by the day), and the keys this PC holds a removal against,
+  never why. A row that waits for a whole read lets nobody in and is not told. The counts are those
+  of the record's last step, which runs on its own timer; how long ago a key was used is read at
+  the answer. A caller asks at most 30 times a minute (`429 rate_limited`). A PC in its account
+  whose rows cannot be read now answers `503 witness_unavailable`. A device outside the
+  account is refused (`403 account_required`), a PC in no account answers `409 not_in_account`.
+- **A staging run.** `OVIS_LIST_MIGRATE_TIME_SCALE` (a whole number from 1 to 86400) multiplies the
+  counts this PC hands over, to a device and to its own check of a naming, so a day passes in a
+  minute at 1440. It is ignored while the account service is `https://account.ovis.sh`. While it is
+  in force `GET /api/account/status` and `ovis status --json` say `migrate_time_scale`.
 
 ### Confirmed on this PC
 
@@ -2236,6 +2269,13 @@ reaches the same screen as you do.
 ### Limits of this release
 
 These limits apply while Step 2 is on, which is the default.
+
+- **A PC's `WELCOME` tells which list it follows** to whoever opens a channel to it and offers
+  `account-list-1`, before any sign-in: whoever can reach two PCs learns that they follow one list.
+- **A PC that came to follow its list as its account moved, and lost its copy of the list**
+  (`account-list.json`), makes the copy again from the list's start as a PC that was added, and lets
+  no device of the account in until it gets keys of its own: run `ovis add` on that PC and compare
+  the number with a device of the account. Its own window and `ovis status --json` say so.
 
 - **Lifting a block needs a two-step sign-in.** Only a device that is older than the block, and
   whose own sign-in has two-step sign-in set on the account, can lift a block from the app. A
@@ -2683,12 +2723,14 @@ that it has a history by the time something does.
   for this device alone). `added`: a QR code of that PC was scanned for the account, or the
   person pressed Add for it where a number was compared on both screens (the card's Add with the
   number, on an account with a signed list). `ssh`: this device added it over SSH. `window`: the
-  page is that PC's own window. `none`: everything else, also one press of **Add** on the card of
-  a PC that asked, where no number is compared: the service could have listed a PC of its own at
-  that moment. It moves from `none` to one of the others, never back and never between them. The
-  act is written for the account the pairing was confirmed for, whoever signed in since. A value
-  this build does not know (a later build wrote it) is kept as it is, through every write, and
-  counts as `none` for any decision.
+  page is that PC's own window. `invited`: the PC joined with an invite of the account, which the
+  invite's own line proved for that PC's card, and the person pressed Add; it is written before
+  the card goes. `none`: everything else, also one press of **Add** on the card of a PC that
+  asked, where no number is compared: the service could have listed a PC of its own at that
+  moment. It moves from `none` to one of the others, never back and never between them. The act
+  is written for the account the pairing was confirmed for, whoever signed in since. A value this
+  build does not know (a later build wrote it) is kept as it is, through every write, and counts
+  as `none` for any decision.
 - It is kept in the browser's storage under `ovis:seen-pcs:<account>`, the newest 256 PCs for an
   account. Signing out keeps it: it is the device's memory, not the account's. Removing a PC from
   the account on this device forgets its row. Cleared site data loses the record, which only
