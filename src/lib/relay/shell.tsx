@@ -256,6 +256,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   /** Ends the exchanges of the account's list with the PC whose session the shell owns (listGossip.ts), and which session that is. */
   let stopGossip: (() => void) | null = null;
   let gossipFor: RelayTransport | null = null;
+  /** The account whose list that session was compared for, as the page's list said when the shell took the session. */
+  let gossipAccount: string | null = null;
   /** What the list's calls to this PC by the key of this session draw on: shared with every tab and reopening of it. */
   const budgetOf = (opened: RelayTransport, serverId: string) => gossipBudget(`${serverId}:${opened.deviceId ?? ""}`);
   /**
@@ -267,6 +269,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (gossipFor === opened) return;
     stopGossip?.();
     gossipFor = opened;
+    gossipAccount = account.list?.view().account ?? null;
     stopGossip = keepListGossip(opened, { list: () => account.list, pc: serverId, live: () => transport === opened, budget: budgetOf(opened, serverId) });
   };
   let last: Attempt | null = null, opening: AbortController | null = null;
@@ -379,6 +382,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const listMoved = (): void => {
     const open = transport, attempt = last;
     if (open === null || attempt === null || attempt.listOpen === undefined) return;
+    // the page's list is another account's now (signed in on this browser in another tab): it says nothing of this
+    // session's PC, which is neither put out nor handed anything for it
+    if (gossipFor === open && gossipAccount !== null && account.list?.view().account !== gossipAccount) return;
     const says = account.listSays(attempt.offer.server_id);
     if (says === "holds" || says === "unknown") return;
     transport = null;

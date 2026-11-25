@@ -1808,9 +1808,11 @@ and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account
   footing, which the service may have shown it), the device hands from that footing, so a stranger's
   entry keeps no removal from the PC. Entries are handed only to a PC this device's copy holds or
   held; one that merely names the list's id is told where the device stands and handed nothing;
-- the session belongs to the account and the list of its first exchange: while the page's list is
-  another one (another account signed in on this browser in another tab), the PC is told nothing of
-  it, and once that list is back the exchanges go on;
+- the session belongs to the account, the list and the member key of its first exchange: while the
+  page's list is another one (another account signed in on this browser in another tab, or this
+  device back with another key), the PC is told nothing of it, the app says nothing of that PC by it
+  (no "removed from the account"), and once that list is back the exchanges go on. The PC, for its
+  part, asks for entries from its footing, never from an entry no member signed above it;
 - where the device needs the PC's entries after another place (the PC holds more, another entry at
   a place the device holds, or the device looks for where two histories part), it asks for them in
   the head call (`asks`), and judges what comes back. The PC answers that read only to a key its

@@ -12,7 +12,7 @@ import { allowDevice } from "./listAllow.ts";
 import { GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipBudget, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
 import { removeListPc } from "./listRemove.ts";
 import { signedOn, writeToList } from "./listWrite.ts";
-import type { PcFetch } from "./join.ts";
+import { handListToPc, type PcFetch } from "./join.ts";
 
 type World = ReturnType<typeof listWorld>;
 
@@ -80,6 +80,8 @@ async function memoryPc(w: World, texts: readonly string[], options: { followsLi
   const top = texts.length - 1;
   let copy: FollowerCopy = (await takePage(pinned.copy, startRead(pinned.copy, "service"), { entries: texts, head: { seq: top, hash: top === 0 ? list : hashOf(texts[top]!) } }, seconds(w))).copy;
   let kept: FollowRead | null = null;
+  // as a pinned PC asks: never past its footing (server/account/list-follow.ts, footingAsk)
+  const atFooting = (after: number | null): number | null => after === null || copy.state === null || after <= copy.state.footing.seq ? after : copy.state.footing.seq;
   const calls: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
   const pc = {
     calls,
@@ -109,7 +111,7 @@ async function memoryPc(w: World, texts: readonly string[], options: { followsLi
         const answered = served === null ? own : { ...own, page: served };
         if (compared.read === null) return json(answered);
         kept = compared.read;
-        return json({ ...answered, asks: { list: compared.read.list, after: compared.read.after } });
+        return json({ ...answered, asks: { list: compared.read.list, after: atFooting(compared.read.after) } });
       }
       if (path === "/api/account/list/page") {
         const after = body.after as number | null;
@@ -119,7 +121,7 @@ async function memoryPc(w: World, texts: readonly string[], options: { followsLi
         const took = await takePage(copy, read, page as unknown as ListPage, seconds(w));
         copy = took.copy;
         kept = took.read;
-        return json({ verdict: took.verdict, ...(took.read === null ? {} : { asks: { list: took.read.list, after: took.read.after } }), ...gossipHead(copy) });
+        return json({ verdict: took.verdict, ...(took.read === null ? {} : { asks: { list: took.read.list, after: atFooting(took.read.after) } }), ...gossipHead(copy) });
       }
       return json({ error: { code: "not_found" } }, 404);
     }) as PcFetch,
@@ -410,6 +412,50 @@ describe("what one exchange hands over, and what it reads of the PC", () => {
     const began = performance.now();
     expect((await gossipWithPc(silent, first.list, null, always, { limits: { ms: 50 }, hands: true })).end).toBe("unreached");
     expect(performance.now() - began).toBeLessThan(5_000);
+  });
+});
+
+describe("the account, list and member key a session was compared for", () => {
+  it("tells the PC nothing while the page's list stands for another member key of that list, and goes on once it is back", async () => {
+    const { w, first } = await account();
+    const pc = await memoryPc(w, w.held().entries);
+    let key = (await first.keys()).key;
+    // the page's list as it is, but for the member key this device stands for (one that left and came back has another)
+    const page: AccountList = new Proxy(first.list, { get: (target, name, receiver) => name !== "view" ? Reflect.get(target, name, receiver)
+      : () => { const view = target.view(); return { ...view, devices: view.devices.map((row) => row.self ? { ...row, key } : row) }; } });
+    const timers: (() => void)[] = [];
+    const stop = keepListGossip(sessionOf(pc), { list: () => page, pc: knownPc(first.list), setTimer: (run) => { timers.push(run); return run; }, clearTimer: (timer) => { const at = timers.indexOf(timer as () => void); if (at >= 0) timers.splice(at, 1); } });
+    try {
+      await until(() => pc.calls.length === 1 && timers.length > 0);
+      key = "another key";
+      timers.shift()!();
+      await until(() => timers.length > 0);
+      expect(pc.calls.length).toBe(1);
+      key = (await first.keys()).key;
+      timers.shift()!();
+      await until(() => pc.calls.length === 2);
+    } finally { stop(); }
+  });
+});
+
+describe("an entry no member signed above a PC's footing", () => {
+  it("keeps no removal from the PC: the list gossip and the approver's hand-over (join.ts) both hand from its footing", async () => {
+    for (const how of ["gossip", "hand-over"] as const) {
+      const { w, first, second } = await account();
+      const pc = await memoryPc(w, w.held().entries);
+      // the service shows the PC an entry of a key that is no member, right after where it stands
+      const stranger = await w.device({ label: "nobody", register: false });
+      const keys = await stranger.keys();
+      const { id, head } = w.held();
+      const loose = entryToText(await signEntry(kindBody({ issued_at: seconds(w), list: id, prev: head.hash, seq: head.seq + 1, signer: keys.key }, { kind: "remove", ends: (await second.keys()).key }), keys.signs));
+      await pc.read([loose]);
+      expect(gossipHead(pc.copy()).place).toEqual(head);
+      // the device's own removal stands at the very place of the loose entry
+      await removeDevice(first, (await second.keys()).key);
+      const reached = how === "gossip" ? (await gossipWithPc(pc.fetch, first.list, null, always, handing)).end === "done" : await handListToPc(pc.fetch, first.list);
+      expect([how, reached]).toEqual([how, true]);
+      expect(admitsSession(pc.copy(), (await second.keys()).key, seconds(w)).why).toBe("removed");
+    }
   });
 });
 

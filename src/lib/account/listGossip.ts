@@ -461,8 +461,8 @@ export function keepListGossip(session: GossipSession, options: KeepGossipOption
   let again = false;
   let carry: GossipCarry | null = null;
   let otherList = false;
-  /** The account and the list this session's exchanges are for, from the first of them. */
-  let bound: { readonly account: string | null; readonly list: string } | null = null;
+  /** The account, the list and the member key this session's exchanges are for, from the first of them (X3). */
+  let bound: { readonly account: string | null; readonly list: string; readonly key: string | null } | null = null;
   let up = session.route !== undefined;
   let watched: AccountList | null = null;
   let unwatch: (() => void) | null = null;
@@ -504,11 +504,15 @@ export function keepListGossip(session: GossipSession, options: KeepGossipOption
     if (options.live?.() === false) { stop(); return; }
     const list = watch();
     const head = list?.gossip() ?? null;
-    const account = list?.view().account ?? null;
-    // another account's list, or another list, than the one this session was compared for: nothing is said of it
-    const foreign = bound !== null && head !== null && (head.list !== bound.list || account !== bound.account);
+    const view = list?.view() ?? null;
+    const account = view?.account ?? null;
+    const key = view?.devices.find((device) => device.self)?.key ?? null;
+    // another account's list, another list, or another member key, than the one this session was compared for:
+    // nothing is said of it
+    const foreign = bound !== null && head !== null && (head.list !== bound.list || account !== bound.account || (key !== null && bound.key !== null && key !== bound.key));
     if (session.followsList !== true || session.route === undefined || otherList || list === null || head === null || foreign) { arm(GOSSIP_SECONDS * 1000); return; }
-    bound ??= { account, list: head.list };
+    if (bound === null) bound = { account, list: head.list, key };
+    else if (bound.key === null && key !== null) bound = { ...bound, key };
     if (running) { again = true; return; }
     const wait = budget.wait();
     if (wait > 0) { arm(wait); return; }
