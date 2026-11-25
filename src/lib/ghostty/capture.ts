@@ -12,17 +12,22 @@ function ghosttyOnly(): boolean {
   return globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY) === "on";
 }
 
-export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement): () => void {
+/** `picturesWanted`: whether this terminal is to draw iTerm2 and sixel pictures (Pictures in the terminal), which xterm draws */
+export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement, picturesWanted: () => boolean): () => void {
   let held: (string | Uint8Array)[] | null = [];
   let heldBytes = 0;
   let overlay: GhosttyOverlay | null = null;
   let stopped = false;
-  // with `only`, xterm takes the controls of what libghostty is to draw from the start (controls.ts)
-  const only = ghosttyOnly();
-  const scan = only ? controlScanner() : null;
+  // with `only` (decided when the server says what it is), xterm takes the controls of what libghostty is to draw
+  // (controls.ts). iTerm2 and sixel pictures are drawn by xterm (overlay.ts): a terminal that shows them keeps xterm's
+  // full parse
+  let only = false;
+  // the held chunks xterm was given whole, before `only` was decided
+  let wholeBefore = 0;
+  const scan = controlScanner();
   const decoder = new TextDecoder();
   const controlsOf = (data: string | Uint8Array): string =>
-    scan!(typeof data === "string" ? data : decoder.decode(data, { stream: true })).map((piece) => piece.controls + (piece.question ?? "")).join("");
+    scan(typeof data === "string" ? data : decoder.decode(data, { stream: true })).map((piece) => piece.controls + (piece.question ?? "")).join("");
   const write = term.write.bind(term);
   const reset = term.reset.bind(term);
   const unwrap = (): void => {
@@ -32,7 +37,7 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   };
   const giveUp = (): void => {
     // xterm saw only the controls of what libghostty was to draw: it parses all of it after all
-    if (only && held) for (const chunk of held) write(chunk);
+    if (only && held) for (const chunk of held.slice(wholeBefore)) write(chunk);
     held = null;
     unwrap();
   };
@@ -54,6 +59,8 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   const decide = (): void => {
     if (decided || stopped || !socket.featuresListed()) return;
     decided = true;
+    only = ghosttyOnly() && !picturesWanted();
+    wholeBefore = held?.length ?? 0;
     let taken: (string | Uint8Array)[] | null = null;
     const takeBacklog = (): (string | Uint8Array)[] | null => {
       if (stopped || !held) return null;
@@ -64,7 +71,7 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     };
     // libghostty took the backlog and does not draw after all: xterm, which saw only its controls, parses it whole
     const handBack = (): void => {
-      if (only && taken && !stopped) for (const chunk of taken) write(chunk);
+      if (only && taken && !stopped) for (const chunk of taken.slice(wholeBefore)) write(chunk);
       taken = null;
     };
     void import("./overlay.ts")

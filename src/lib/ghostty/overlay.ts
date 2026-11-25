@@ -331,6 +331,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // xterm draws the selection under this layer: a selected cell leaves its background out so the selection shows, as
     // over a plain cell (#3407), and its text is made readable on the selection, as xterm's rows make it
     const under = selected ? term.options.theme?.selectionBackground ?? theme.background : bg ?? theme.background;
+    // with `only` xterm's selection layer sizes its cells by a buffer with no text (a wide glyph is one column there):
+    // the layer paints the selection itself
+    const paintsSelection = selected && only;
     // xterm's minimumContrastRatio, as its own rows and a folded mirror draw it (terminalFold.ts cellStyle)
     const drawn = fg;
     if (fg !== null || bg !== null || selected) {
@@ -343,6 +346,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     const keepsColour = (text: string): boolean => fg !== drawn && (isBoxGlyph(text) || POWERLINE_GLYPH.test(text));
     const box = [`left:calc(var(--ghostty-cw)*${run.x})`];
     if (bg && !selected) box.push(`background:${bg}`);
+    if (paintsSelection) box.push(`background:${under}`);
     if (run.flags & STYLE_BOLD) box.push("font-weight:bold");
     // what its text inherits: a faint run dims its text, not its background, as xterm and a folded mirror draw it
     const colours = (colour: string | null): string[] => {
@@ -512,9 +516,10 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   term.write = ((data: string | Uint8Array, callback?: () => void) => {
     if (only && !disposed) {
       try {
+        // xterm, which takes the cursor and DEC 2026 with every write, renders when a synchronized update ends: the
+        // layer draws on that render (onRender), never inside an open update
         writeOnly(data, callback);
         written = true;
-        schedule();
         return;
       } catch (error) {
         console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
@@ -549,7 +554,20 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     };
   }
   const reset = term.reset.bind(term);
+  // a wheel over history this terminal keeps scrolls xterm's own viewport, which with `only` holds no rows: it
+  // moves libghostty's view instead, as far as xterm's would (a line a line, or the pixels of one row)
+  let wheelPixels = 0;
+  const onWheel = (event: WheelEvent): void => {
+    if (disposed || (term.options.scrollback ?? 0) === 0 || term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none") return;
+    wheelPixels += event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * cellH : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * cellH * term.rows : event.deltaY;
+    const lines = cellH > 0 ? Math.trunc(wheelPixels / cellH) : 0;
+    if (lines === 0) return;
+    wheelPixels -= lines * cellH;
+    term.scrollLines(lines);
+  };
+  if (only) host.addEventListener("wheel", onWheel, { passive: true });
   const restoreTerm = (): void => {
+    if (only) host.removeEventListener("wheel", onWheel);
     term.write = write;
     term.reset = reset;
     if (only) Object.assign(term, { scrollLines, scrollToBottom });
