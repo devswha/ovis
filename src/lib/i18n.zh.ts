@@ -647,6 +647,7 @@ const BASE: Record<string, string> = {
   "This PC may not have been listed in your account. Try again.": "此电脑可能尚未列入你的账号。请重试。",
   "Turn on remote access through the Ovis relay above first.": "请先在上方开启通过 Ovis 中继的远程访问。",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "请先在 设置 → 设备和电脑 中开启通过 Ovis 中继的远程访问。",
+  "This PC could not be added by your account's list in time. Try again.": "未能及时通过账户名单添加这台电脑。请重试。",
   "The account service could not be reached, so this PC was not added. Try again.": "无法连接账户服务，因此没有添加这台电脑。请重试。",
   "This PC was set up for another account. Sign in to that one, or add this PC again.": "这台电脑是为另一个账户设置的。请登录那个账户，或重新添加这台电脑。",
   "This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again.": "这台电脑已从此 Ovis 账户中移除，只能作为新电脑重新加入：在这台电脑上重置中继身份，然后重新添加。",

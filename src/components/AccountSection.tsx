@@ -231,6 +231,7 @@ function listAddRefusal(t: Translate, why: string): string {
     case "list_removed": case "removed": return t("This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again.");
     case "cancelled": return t("The numbers were not the same, so nothing was added. If the device that adds this PC showed another number, something stood between the two: try once more, and if they differ again, do not add it.");
     case "attempts": return t("Too many tries for this PC. Start again on the PC in a few minutes.");
+    case "list_late": return t("This PC could not be added by your account's list in time. Try again.");
     default: return t("This PC could not join the account's list ({why}).", { why });
   }
 }
@@ -449,10 +450,19 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       closeWindow(windowId);
       return true;
     };
+    /**
+     * A wait begun by the account's list keeps to the list (`mark.run` stays, so it opens no window): where a restart of its
+     * add got no run (the PC answered no_list, which is no word that the account keeps none, or its account service did not
+     * answer), it is `missed`, and asked again a round later (`retryAt`), until the thirty minutes end.
+     */
+    let missed = false;
+    let retryAt = 0;
     const expired = (): boolean => {
       if (Date.now() < until) return false;
       forget();
-      setState({ kind: "expired" });
+      // its add by the list was not under way at its end: said as such, never as the one press or the old window
+      if (missed) listEnded("list_late");
+      else setState({ kind: "expired" });
       return true;
     };
     /** Whether the sign-in stored now is the one the press was made under: another tab may have signed out, or in as someone else. */
@@ -480,7 +490,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
         if (await deniedElsewhere()) { if (live && !withdrawn()) declined(); return; }
-        if (!live || withdrawn()) return;
+        // a wait whose PC is added by the account's list opens no window: nobody comes in the old way beside the number
+        if (!live || withdrawn() || mark?.run !== undefined) return;
         const { serverId: pc, windowId } = await reopenAddWindow();
         const closed = windowId !== undefined && closeLate(windowId);
         // it changed PC between that question and the window: the wait is not this one's
@@ -503,7 +514,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (!live || withdrawn() || mark?.run !== run) return;
       if (now.state === "ended" && now.why !== "timeout") { forget(); listEnded(now.why); return; }
       if (now.state !== "ended" && now.state !== "replaced") return;
-      if (expired()) return;
+      if (expired() || Date.now() < retryAt) return;
       if (!await stillSignedIn()) { if (live) stopped(); return; }
       if (!live || withdrawn()) return;
       // asked before the add, as before a reopen: the address may answer for another PC now, and nothing is started on it
@@ -517,11 +528,14 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         return;
       }
       switch (again.kind) {
-        case "run": mark = { ...mark, run: again.run }; keepAddPcWaiting(mark); return;
-        // the account keeps no list now: the wait goes on as an account without one waits
-        case "none": mark = { name: mark.name, until: mark.until, serverId: mark.serverId, account: mark.account, listedAt: mark.listedAt }; keepAddPcWaiting(mark); return;
+        case "run": missed = false; retryAt = 0; mark = { ...mark, run: again.run }; keepAddPcWaiting(mark); return;
+        // a wait begun by the list never falls back to the old way (the window, the one press): no run now is asked again a
+        // round later, and a refusal for good ends the wait in its own words
+        case "none": missed = true; retryAt = Date.now() + REOPEN_MS; return;
         case "added": return;
-        case "refused": forget(); listEnded(again.why); return;
+        case "refused":
+          if (again.why === "account_unavailable") { missed = true; retryAt = Date.now() + REOPEN_MS; return; }
+          forget(); listEnded(again.why); return;
       }
     };
     let asking = false;
@@ -578,7 +592,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         const { membership } = await listed;
         // Only the caller that opened the window has its ID, even when another screen shares the result.
-        if (membership !== undefined && windowId !== undefined) {
+        // and a wait whose PC is added by the account's list closes at once the window its listing had to open
+        if ((membership !== undefined || mark?.run !== undefined) && windowId !== undefined) {
           closeWindow(windowId);
           windowId = undefined;
         }
@@ -702,6 +717,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       }
       if (account !== null && byList !== null && byList.kind !== "none") {
         if (byList.kind === "run") {
+          // the PC is added by the list alone: the pairing window the listing opened is closed, as `ovis add` closes it,
+          // so nobody is let in the old way (the digits a device types, approved here) beside the number
+          closeOpened();
           const now = Date.now();
           const mark = { name, until: now + WAITING_MS, serverId, account, listedAt: now, run: byList.run };
           pressedUntil.current = mark.until;
