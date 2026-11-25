@@ -12,6 +12,7 @@ export const SHORTCUTS = [
   { id: "find", label: "Find in terminal", keys: ["Mod", "Shift", "F"] },
   { id: "toggle-view", label: "Switch chat / terminal", keys: ["Mod", "Shift", "J"] },
   { id: "focus-input", label: "Focus pane input", keys: ["Mod", "Shift", "E"] },
+  { id: "quote-chat", label: "Quote it in your message", keys: ["Mod", "Shift", "9"] },
   { id: "scroll-up", label: "Scroll pane up", keys: ["Mod", "Shift", "PageUp"] },
   { id: "scroll-down", label: "Scroll pane down", keys: ["Mod", "Shift", "PageDown"] },
   { id: "toggle-sidebar", label: "Toggle sidebar", keys: ["Mod", "Shift", "B"] },
@@ -59,6 +60,7 @@ const KEY_TO_ID: Readonly<Record<string, ShortcutId>> = {
   f: "find",
   j: "toggle-view",
   e: "focus-input",
+  "9": "quote-chat",
   PageUp: "scroll-up",
   PageDown: "scroll-down",
   b: "toggle-sidebar",
@@ -198,7 +200,8 @@ export function keepsArrowsForText(target: KeyTargetLike | EventTarget | null): 
  * app shortcut for the pane: its key handler asks this first.
  */
 export function isAppShortcut(event: ShortcutEventLike, overrides: ShortcutOverrides = {}): boolean {
-  return matchShortcut(event, isMacPlatform(), overrides) !== null;
+  const shortcut = matchShortcut(event, isMacPlatform(), overrides);
+  return shortcut !== null && shortcut !== "quote-chat";
 }
 
 export { isMacPlatform };
@@ -264,7 +267,7 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (recordingShortcut) return;
       const shortcut = matchShortcut(event, platformIsMac, settings.shortcutOverrides);
-      if (shortcut === null) return;
+      if (shortcut === null || shortcut === "quote-chat") return;
       if (keepsKeyForText(event, shortcut)) return;
       const closeStep = shortcut === "close-pane" || shortcut === "close-tab" ? closePaneKeyStep(event, modalOpenBesides(null)) : null;
       if (closeStep === "pass") return;

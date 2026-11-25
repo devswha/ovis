@@ -15,6 +15,18 @@ describe("matchShortcut", () => {
     expect(matchShortcut(keyEvent("k", { metaKey: true }), false)).toBeNull();
   });
 
+  it("lists the editable chat quote binding without swallowing it in the terminal", () => {
+    const mac = keyEvent("(", { metaKey: true, code: "Digit9" });
+    const other = keyEvent("(", { ctrlKey: true, code: "Digit9" });
+    expect(matchShortcut(mac, true)).toBe("quote-chat");
+    expect(matchShortcut(other, false)).toBe("quote-chat");
+    expect(shortcutConflict("quote-chat", shortcutKeys("quote-chat", {}), {})).toBe(false);
+    expect(shortcutDisplayKeys("quote-chat", {})).toEqual(["Mod", "Shift", "9"]);
+    expect(matchShortcut(mac, true, { "quote-chat": null })).toBeNull();
+    expect(matchShortcut(keyEvent("8", { metaKey: true }), true, { "quote-chat": "8" })).toBe("quote-chat");
+    expect(isAppShortcut(isMacPlatform() ? mac : other)).toBe(false);
+  });
+
   it("matches every terminal-safe key", () => {
     expect(matchShortcut(keyEvent("j", { ctrlKey: true }), false)).toBe("toggle-view");
     expect(matchShortcut(keyEvent("F", { ctrlKey: true }), false)).toBe("find");
