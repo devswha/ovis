@@ -681,20 +681,36 @@ describe("OpenCode 2.4 split assistant content", () => {
     expect(rewritten.signature).not.toBe(grown.signature);
     expect(rewritten.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
 
-    // Also without event_sequence: growing write & equal-length write followed by idle row
+    // Equal-length rewrite on an older split row when a newer split row exists & event_sequence advances
+    s.prompt("Second");
+    const step2 = s.answer("", { content: [] });
+    s.part(step2, 0, { type: "text", text: "Newer" }, T0 + 10);
+    bumpRevision(4);
+    const withTwo = page(opencodeConversation(s.path, s.session));
+    expect(withTwo.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
+    s.part(step, 0, { type: "text", text: "EF" }, T0 + 3);
+    bumpRevision(5);
+    const olderRewritten = page(opencodeConversation(s.path, s.session));
+    expect(olderRewritten.turns[1]?.parts).toEqual([{ kind: "text", text: "EF", phase: "final_answer" }]);
+
+    // Also without event_sequence: growing write, equal-length UTF-8 byte expansion (AA -> éé), and equal-length write followed by idle row
     const noSeq = storeV24();
     noSeq.prompt("Go");
     const noSeqStep = noSeq.answer("", { content: [] });
-    noSeq.part(noSeqStep, 0, { type: "text", text: "A" }, T0 + 3);
-    const n1 = page(opencodeConversation(noSeq.path, noSeq.session));
-    noSeq.part(noSeqStep, 0, { type: "text", text: "AB" }, T0 + 3);
+    noSeq.part(noSeqStep, 0, { type: "text", text: "AA" }, T0 + 3);
+    const n1 = page(opencodeConversation(noSeq.path, noSeq.session, {}, OPENCODE_ROW_SIZE.bytes));
+    noSeq.part(noSeqStep, 0, { type: "text", text: "éé" }, T0 + 3);
+    const nUtf8 = page(opencodeConversation(noSeq.path, noSeq.session, {}, OPENCODE_ROW_SIZE.bytes));
+    expect(nUtf8.signature).not.toBe(n1.signature);
+    expect(nUtf8.turns[1]?.parts).toEqual([{ kind: "text", text: "éé", phase: "final_answer" }]);
+    noSeq.part(noSeqStep, 0, { type: "text", text: "ABC" }, T0 + 3);
     const n2 = page(opencodeConversation(noSeq.path, noSeq.session));
-    expect(n2.signature).not.toBe(n1.signature);
-    expect(n2.turns[1]?.parts).toEqual([{ kind: "text", text: "AB", phase: "final_answer" }]);
-    noSeq.part(noSeqStep, 0, { type: "text", text: "CD" }, T0 + 3);
+    expect(n2.signature).not.toBe(nUtf8.signature);
+    expect(n2.turns[1]?.parts).toEqual([{ kind: "text", text: "ABC", phase: "final_answer" }]);
+    noSeq.part(noSeqStep, 0, { type: "text", text: "CDE" }, T0 + 3);
     noSeq.idle();
     const n3 = page(opencodeConversation(noSeq.path, noSeq.session));
-    expect(n3.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
+    expect(n3.turns[1]?.parts).toEqual([{ kind: "text", text: "CDE", phase: "final_answer" }]);
   });
 
   it("reads tool images stored as media:<sha256> blobs scoped by session and message blob_ref", () => {
