@@ -179,14 +179,19 @@ it.each([
   }
 });
 
-it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged", "same-process Pi session changed #4232", "Pi switched during paste #4232"] as const)(
+it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged", "same-process Pi session changed #4232", "Pi switched during paste #4232",
+  "Pi enqueue session unknown", "idle Pi enqueue session unknown", "workspace first message changes Pi session",
+  "workspace first message has no Pi session proof", "foreground changes during Pi proof", "Pi backend session evidence disappears"] as const)(
   "rechecks queued Pi delivery when capture retries and the pane becomes %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-capture-race-"));
     try {
       const path = join(root, "session.jsonl");
       writeFileSync(path, JSON.stringify({ type: "session", version: 3, id: "session" }) + "\n"
         + JSON.stringify({ type: "message", id: "base", parentId: null, message: { role: "assistant", content: [] } }));
-      const pane: Pick<HerdrPane, "pane_id" | "terminal_id" | "agent" | "agent_status"> = { pane_id: "p", terminal_id: "p", agent: "pi", agent_status: "working" };
+      const pane: Pick<HerdrPane, "pane_id" | "terminal_id" | "agent" | "agent_status" | "agent_session"> = { pane_id: "p", terminal_id: "p", agent: "pi", agent_status: "working" };
+      if (change === "Pi backend session evidence disappears") {
+        pane.agent_session = { agent: "pi", source: "herdr:pi", kind: "path", value: path };
+      }
       const frames: ServerMessage[] = [], writes: string[] = [];
       const settled = Promise.withResolvers<void>();
       const owner = {
@@ -196,7 +201,7 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
           const frame = JSON.parse(value) as ServerMessage;
           frames.push(frame);
           if (frame.type === "pending-messages" && (frame.removed?.length
-            || frame.messages.some((message) => message.state === "uncertain" || message.error?.code === "pending_target_changed"))) settled.resolve();
+            || frame.messages.some((message) => message.state === "uncertain" || message.state === "held"))) settled.resolve();
           return 1;
         },
       } as Client;
@@ -246,17 +251,50 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
         resolved.mockResolvedValue({ path: other, agentDir: null, identity: `${next.dev}:${next.ino}` });
       }
 
-      await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
-      if (change === "same-process Pi session changed #4232") switchSession();
+      const unknown = change === "Pi enqueue session unknown" || change === "idle Pi enqueue session unknown"
+        || change === "workspace first message has no Pi session proof";
+      const first = change === "workspace first message changes Pi session" || change === "workspace first message has no Pi session proof";
+      if (unknown) resolved.mockResolvedValueOnce(null);
+      if (change === "idle Pi enqueue session unknown") pane.agent_status = "idle";
+      if (first) {
+        await delivery.queueFirstMessage("p", "FIRST", "pi", owner.data.connectionId, 41001);
+      } else {
+        await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
+      }
+      if (change === "same-process Pi session changed #4232" || unknown || first) switchSession();
+      if (change === "Pi backend session evidence disappears") {
+        delete pane.agent_session;
+        switchSession();
+      }
+      if (change === "foreground changes during Pi proof") resolved.mockImplementationOnce(async () => {
+        foreground = [{ pid: 41002, name: "pi" }];
+        return { path, agentDir: null, identity: `${written.dev}:${written.ino}` };
+      });
       pane.agent_status = "idle";
       delivery.pending.status("p", "idle");
       delivery.drainPending("p");
       await settled.promise;
       await serialize("p", () => {});
 
-      if (change === "same-process Pi session changed #4232") {
+      if (change === "same-process Pi session changed #4232" || first || unknown
+        || change === "foreground changes during Pi proof" || change === "Pi backend session evidence disappears") {
         expect(writes).toEqual([]);
-        expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "held", error: { code: "pending_target_changed" } }]);
+        const observed = first
+          ? frames.flatMap((frame) => frame.type === "pending-messages" ? frame.messages.filter((message) => message.text === "FIRST") : []).at(-1)
+          : delivery.pending.list(owner, "p")[0];
+        expect(observed).toMatchObject({
+          state: "held",
+          error: { code: unknown ? "input_not_ready" : "pending_target_changed" },
+        });
+        if (change === "Pi enqueue session unknown") {
+          await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: observed!.id, action: "steer" });
+          expect(writes).toEqual(["paste", "Enter"]);
+        }
+        if (change === "workspace first message has no Pi session proof") {
+          await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: observed!.id, action: "discard" });
+          expect(frames).toContainEqual(expect.objectContaining({ type: "pending-result", id: 2, ok: true }));
+          expect(writes).toEqual([]);
+        }
         return;
       }
       if (change === "Pi switched during paste #4232") {
