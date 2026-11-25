@@ -165,7 +165,9 @@ describe("AddThisPc", () => {
         await byList.started?.();
         const start = byList.start;
         if ("code" in start) return Response.json({ error: { code: start.code, message: "refused" } }, { status: start.status });
-        return Response.json(byList.now = start);
+        // a start that answers no_list leaves the PC holding no run: a read by the run asked before answers `replaced`
+        byList.now = "run" in start ? start : { state: "replaced" };
+        return Response.json(start);
       }
       if (path === "/api/account/relay-account" && onePress.admits) return new Response(null, { status: 204 });
       if (path === "/api/account/one-press") {
@@ -2230,6 +2232,40 @@ describe("AddThisPc", () => {
       expect(directory).toEqual(["putPc", "putPc"]);
       expect(links()).toBe(2);
       expect(closes()).toBe(2);
+    });
+
+    test("a wait begun by the list never opens the old window again where a restart of its add answers no_list: it asks the list again", async () => {
+      await waitingFrom();
+      expect(links()).toBe(1);
+      // the run's ten minutes are over; the PC is asked to start it again, and answers no_list (its account service did not
+      // name the list at that moment), which is no word that the account keeps none
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = { state: "no_list", account: ACCOUNT };
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(2);
+      for (let round = 0; round < 3; round++) await advance(REOPEN_MS);
+      // no window again, and the add by the list asked for again, a round apart
+      expect(links()).toBe(1);
+      expect(starts()).toBe(5);
+      expect(asked.map(({ path }) => path)).not.toContain("/api/account/one-press");
+      // once the PC names the list again, the wait follows the new run
+      byList!.start = running(NEXT);
+      await advance(REOPEN_MS);
+      expect(JSON.parse(tab.get(MARKER)!).run).toBe(NEXT);
+      expect(links()).toBe(1);
+    });
+
+    test("a wait begun by the list whose add could not be started again ends at its thirty minutes saying so, with no window left open", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = { state: "no_list", account: ACCOUNT };
+      await advance(ADDED_POLL_MS);
+      await advance(WAITING_MS);
+      expect(words(renderer)).toContain("This PC could not be added by your account's list in time. Try again.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+      // the relists that kept the listing opened a window each and closed it at once
+      expect(asked.filter(({ path }) => path === "/api/relay/link/close").length).toBe(links());
     });
 
     test("a relist keeps the run the tab holds for the wait (another copy started it again), and Stop waiting gives that run up", async () => {
