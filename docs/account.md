@@ -2066,7 +2066,10 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   Ovis is behind the list the join is marked `list_behind` too, and `ovis approve` says that the
   device was not let in and that Ovis on this PC needs an update. On a PC that joined by an invite,
   which signs for nobody, it is marked `list_not_signer`, and `ovis approve` says that the device was
-  not let in and to allow it on another device of the account.
+  not let in and to allow it on another device of the account. A join into the account on a pinned
+  PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
+  than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
+  wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.

@@ -4419,6 +4419,17 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       expect(out.join("")).not.toMatch(/is let in|was received/);
     });
 
+    it("approves nothing for a join this PC cannot let in, from an app older than its account's list, and says to update that app", async () => {
+      const { code, out, sent, reads } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list_unknown: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(sent).toEqual([]);
+      expect(reads).toBe(0);
+      expect(out.join("")).toBe("Pixel cannot be let in here: this PC lets devices into your account by its signed list, and Pixel asked without its part of that list, as an Ovis older than 0.5.10 does. Update Ovis on Pixel, then have it ask to join again.\n");
+    });
+
     it("says so when the digits are wrong, which ends that join, and how to try again; Enter by itself skips the next and sends nothing", async () => {
       const { code, out, sent } = await joining({
         joins: [firstOf("f1", "482913"), firstOf("f2", "111222")], account: "acct_1a2b3c4d5e6f",

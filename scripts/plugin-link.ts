@@ -644,7 +644,13 @@ export function lockRefusal(code: "locked" | "strict"): string {
  * them, for the own window's card to show; this terminal never shows them, and asks for them typed all the same.
  */
 /** `list`: the join is let in by the account's signed list, so an approval is only received here: the device is in once its entry is in the list. */
-export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean; readonly list_not_signer?: boolean }
+export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean; readonly list_not_signer?: boolean; readonly list_unknown?: boolean }
+
+/**
+ * A join this PC cannot let in (`list_unknown`, server/relay/session.ts): it is pinned to its account's signed list, and
+ * the app that asks knows no join into a list. Nothing is approved for it: that app is updated, and asks again.
+ */
+const olderAppWords = (label: string): string => `${label} cannot be let in here: this PC lets devices into your account by its signed list, and ${label} asked without its part of that list, as an Ovis older than 0.5.10 does. Update Ovis on ${label}, then have it ask to join again.\n`;
 
 /**
  * What a terminal says once this PC took the approval of `label`: it is let in at once, or, by the account's list, once
@@ -703,6 +709,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
   }
   for (const join of joins) {
     const label = plainLabel(join.label);
+    if (join.list_unknown === true) { out(olderAppWords(label)); continue; }
     const first = join.digits !== undefined;
     const prompt = first ? `${firstJoinLead(join, options.account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to skip: `
       : `${label} asks to join your account. Type all six digits its screen shows to let it in (one wrong entry ends this request), or press Enter by itself to leave it waiting: `;
@@ -1833,7 +1840,9 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
         if (next !== undefined) {
           seen.add(next.id);
           const label = plainLabel(next.label);
-          asked = { id: next.id, label, list: next.list === true, cannot: cannotSign(next), prompt: `${firstJoinLead(next, account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `, shownAt: null };
+          // a join this PC cannot let in is asked nothing: its six digits would let nobody in
+          if (next.list_unknown === true) say(olderAppWords(label));
+          else asked = { id: next.id, label, list: next.list === true, cannot: cannotSign(next), prompt: `${firstJoinLead(next, account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `, shownAt: null };
         }
         const rows = await throughAccount();
         if (rows !== null && known === null) known = new Map(rows.map((row) => [row.id, usage(row)]));

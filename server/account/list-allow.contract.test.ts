@@ -315,6 +315,24 @@ describe("a PC that a person added lets a new device into the list from its own 
   });
 });
 
+describe("a join from an app that knows no signed list, on a pinned PC", () => {
+  test("is marked to this PC's own window and terminal as one it cannot let in: the app offered no part of the list", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    // as an Ovis older than 0.5.10 asks: the account intent, and nothing of the list
+    await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
+    expect(await ownJoin(made)).toMatchObject({ list_unknown: true });
+    expect((await ownJoin(made)).list).toBeUndefined();
+  });
+
+  test("a join that offered the list's part is not so marked, also where this PC took no card for it", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    expect(await ownJoin(made)).not.toHaveProperty("list_unknown");
+  });
+});
+
 describe("what the PC does when the entry does not go in", () => {
   /** A join the person allowed that the PC did not let in: the device hears what a refused join always heard. */
   async function refused(made: Awaited<ReturnType<typeof allowingPc>>, phone: ListMember, card: { enc: string; card: string }) {

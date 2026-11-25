@@ -178,6 +178,8 @@ export class RelaySession {
   private tailnet = false;
   /** ACCOUNT_LIST_ALLOW was selected: a join's PAIR_REQUEST may carry the device's card, and it is then let in by the list or not at all */
   private listAllow = false;
+  /** the client offered ACCOUNT_LIST_ALLOW: it knows a join into a signed list, whether or not this PC takes its card */
+  private knowsListJoin = false;
   /** The list a card is taken for, as it stood at HELLO (ListFollow.takesCardsFor). */
   private listFor: string | null = null;
   /** the card of the device that asks to join, from its PAIR_REQUEST */
@@ -429,6 +431,7 @@ export class RelaySession {
         if (this.listOffered) selected.push(ACCOUNT_LIST_FEATURE);
         // and only a PC that can sign for its list right now takes a new device's card with a join (docs/account.md, "A
         // PC allows a device into the list"): any other PC lets nobody into the list, and says so by not selecting this
+        this.knowsListJoin = frame.payload.features.includes(ACCOUNT_LIST_ALLOW);
         this.listAllow = !!this.sasBinding && intents[0] === PAIR_INTENT_ACCOUNT && frame.payload.features.includes(ACCOUNT_LIST_ALLOW)
           && !this.options.signInOnly && (this.listFor = this.options.services.accountList?.takesCardsFor() ?? null) !== null;
         if (this.listAllow) selected.push(ACCOUNT_LIST_ALLOW);
@@ -604,7 +607,10 @@ export class RelaySession {
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
           // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
           // marked vouched, so that app shows who is asking and checks the admission, as for an account join
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin, list: this.listCard !== undefined });
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched", ...(proof ? { provenServerId: proof.id } : {}), firstJoin: sas.firstJoin, list: this.listCard !== undefined,
+            // a join into the account, on a PC pinned to its list, from an app that knows no join into a list (an Ovis
+            // older than 0.5.10): this PC lets it in by nothing, so its window and terminal say so rather than let it in
+            listUnknown: this.intent === "account" && !this.knowsListJoin && this.options.services.accountList?.pinned() === true });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;

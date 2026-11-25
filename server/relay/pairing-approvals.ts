@@ -45,6 +45,8 @@ interface Waiting {
   firstJoin: boolean;
   /** the join brought the device's card for the account's signed list (session.ts listCard) */
   list: boolean;
+  /** a join into the account on a PC pinned to its list, from an app that knows no join into a list: nothing lets it in here */
+  listUnknown: boolean;
   /** such a join that a device of the list may decide from afar (listJoins): not one asked under this PC's own add-me screen */
   listRemote: boolean;
   /** the new device's person said the digits match */
@@ -322,9 +324,9 @@ export class RelayPairingApprovals {
    * owner compares them and taps (`decideOwn`).
    */
   ownJoins(now = this.now()): OwnJoinRequest[] {
-    return [...this.waiting.values()].filter(ownJoin).map(({ request, askedAt, expiresAt, firstJoin, list }) => ({
+    return [...this.waiting.values()].filter(ownJoin).map(({ request, askedAt, expiresAt, firstJoin, list, listUnknown }) => ({
       id: request.id, label: request.label, asked_at: new Date(askedAt).toISOString(), left_ms: Math.max(0, expiresAt - now),
-      ...(firstJoin ? { digits: request.digits } : {}), ...(list ? { list: true as const } : {}),
+      ...(firstJoin ? { digits: request.digits } : {}), ...(list ? { list: true as const } : {}), ...(listUnknown ? { list_unknown: true as const } : {}),
     }));
   }
 
@@ -366,7 +368,7 @@ export class RelayPairingApprovals {
   }
 
   /** Null when MAX_PENDING_APPROVALS are already waiting. `withdraw` ends it unapproved (the phone left, or time ran out). */
-  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean; provenServerId?: string; firstJoin?: boolean; list?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void; confirm: () => void } | null {
+  ask(label: string, digits: string, expiresAt: number, device: { intent: PairingIntent; key: string; deviceId: string; membersOnly?: boolean; localOnly?: boolean; vouched?: boolean; provenServerId?: string; firstJoin?: boolean; list?: boolean; listUnknown?: boolean } = { intent: "pc", key: "", deviceId: "" }): { decision: Promise<PairingDecision>; withdraw: () => void; confirm: () => void } | null {
     if (this.waiting.size >= MAX_PENDING_APPROVALS) return null;
     const id = randomBytes(8).toString("hex");
     const decided = Promise.withResolvers<PairingDecision>();
@@ -382,7 +384,7 @@ export class RelayPairingApprovals {
     const ownOnly = !(device.membersOnly ?? false) && ownScreen;
     const localOnly = firstJoin || ownOnly;
     this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
-      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listRemote: (device.list ?? false) && !ownScreen, confirmed: false, choices: decoys(digits), finish });
+      askedAt: this.now(), expiresAt, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, vouched: device.vouched ?? false, ...(device.provenServerId ? { provenServerId: device.provenServerId } : {}), firstJoin, list: device.list ?? false, listUnknown: device.listUnknown ?? false, listRemote: (device.list ?? false) && !ownScreen, confirmed: false, choices: decoys(digits), finish });
     this.changed();
     return {
       decision: decided.promise, withdraw: () => finish({ approved: false }),
