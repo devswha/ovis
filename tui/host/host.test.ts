@@ -47,7 +47,7 @@ describe("enter and leave", () => {
     expect(host.holds()).toEqual([
       "modes after raw on",
       `modes+watch after write ${ENTER}`,
-      `stopping after write ${ESC}[?2031h`,
+      `none after write ${ESC}[?2031h`,
       "modes+watch after raw on",
       `none after write ${ESC}[?2031l${LEAVE}`,
     ]);

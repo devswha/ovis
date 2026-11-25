@@ -19,12 +19,6 @@ export const LEAVE_ALL = `${UNWATCH_DISPLAY}${LEAVE}`;
 /** Which of the terminal's modes the screen holds: none, ENTER's, or ENTER's and the colour-scheme watch. */
 export type Held = "none" | "modes" | "modes+watch";
 
-/**
- * What the screen tells the process that started it (tui/host/hold.ts): what it holds, or `stopping`: at a stop from
- * outside it gives the terminal back and then stops its whole job itself, so that process must not stop on its own.
- */
-export type HoldState = Held | "stopping";
-
 /** The bytes that give back what is held, for the screen itself and for a process that does it once the screen died. */
 export const undoHeld = (held: Held): string => held === "none" ? "" : held === "modes" ? LEAVE : LEAVE_ALL;
 /**
@@ -68,16 +62,19 @@ export interface TerminalPort {
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
   /**
-   * stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action); started by a
-   * launcher that was told `stopping`, its whole process group, the launcher with it
+   * Stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action), once
+   * `giveBack` has given the terminal back. A continue that comes from the moment it is called cancels the stop, so a
+   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called (the
+   * process that started this one, and stopped at the same signal, runs again), it gives the terminal back and does not
+   * stop. Either way the continue is heard next (`cont`).
    */
-  suspend(): void;
+  suspend(giveBack: () => void): void;
   /**
    * Told which modes the screen holds: before it turns them on, and once it has undone them (at a stop from outside,
    * just before it undoes them). Whoever started the screen reads it after the screen died without giving the terminal
    * back (tui/host/hold.ts).
    */
-  hold(held: HoldState): void;
+  hold(held: Held): void;
 }
 
 /** EIO and EPIPE: the terminal is gone; EAGAIN reaches here only once the port gave up waiting for it. */
@@ -248,23 +245,23 @@ export function guardedHost(port: TerminalPort): Host {
   let suspended = false;
   const stopped = () => {
     if (state !== "entered" || ending || suspended) return;
-    port.stopReading();
-    // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the terminal
-    // back, and a continue that comes before this process stops itself is lost, so the stop would last. Nothing new may
-    // stand between those bytes and the stop. `stopping`, not `none`: the launcher, the job's first process, then waits
-    // for this process to stop the whole job, so the shell sees the job stopped only once this process is.
-    const held = modesOn;
-    modesOn = false;
-    port.hold("stopping");
-    if (held) {
-      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
-    }
-    if (rawOn) {
-      rawOn = false;
-      try { port.setRaw(false); } catch { /* the terminal is gone */ }
-    }
-    suspended = true;
-    port.suspend();
+    port.suspend(() => {
+      port.stopReading();
+      // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the
+      // terminal back, before this process may have stopped.
+      const held = modesOn;
+      modesOn = false;
+      holding();
+      if (held) {
+        try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+      }
+      if (rawOn) {
+        rawOn = false;
+        try { port.setRaw(false); } catch { /* the terminal is gone */ }
+      }
+      // a stop cancelled by a continue still hears that continue next, and enters again then
+      suspended = true;
+    });
   };
   const continued = () => {
     if (!suspended || state !== "entered" || ending) return;
