@@ -2102,7 +2102,16 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
       // done only once this PC says so itself: it no longer needs keys (what its add answered says nothing of its key)
       for (let look = 0; look < KEYS_LOOKS; look++) {
         let keyed = false;
-        try { keyed = (await api<{ list?: { needs_keys?: boolean } | null }>("GET", "/api/account/status")).list?.needs_keys !== true; } catch (error) {
+        try {
+          // keyed only in the account it was to take its keys in, by a list it follows that says it needs none now: a
+          // status with no account or no list says nothing of a key
+          const status = await api<{ account: string | null; list?: { needs_keys?: boolean } | null }>("GET", "/api/account/status");
+          if (status.account !== press.signedIn) {
+            out(`This PC is no longer in Ovis account ${mine}, so it holds no key of its own in that account's list. Run ${cli(options)} status to see where it stands.\n`);
+            return ended({ kind: "not_added", why: "failed", listed: true }, 1);
+          }
+          keyed = status.list != null && status.list.needs_keys !== true;
+        } catch (error) {
           if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
         }
         if (keyed) {
