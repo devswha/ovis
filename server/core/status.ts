@@ -1058,7 +1058,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       options.paneVacated?.(paneId);
       push.closed(paneId);
     },
-    onPaneMoved: (from, to) => {
+    onPaneMoved: (from, to, status) => {
       options.paneVacated?.(from);
       const renumber = finishes.moved(from, to);
       for (const state of [codexFailedAt, codexTurns, codexLooked] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
@@ -1073,7 +1073,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
       broadcastAll({ type: "pane-moved", from, to });
-      push.moved(from, to);
+      push.moved(from, to, status);
       paneMoved?.(from, to);
     },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),
