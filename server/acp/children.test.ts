@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -76,10 +76,11 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(children.forPane("t999")).toBeUndefined();
   });
 
-  it("hands a child over only once its client has replayed the keeper's log, ready for its first prompt", async () => {
-    setUp();
-    // A loaded runner can read the session's row before the watermark that ends the replay: hold the watermark back
-    // until the session's row has gone through, and let it go one event-loop turn later.
+  /**
+   * A loaded runner can read rows the replay holds before the watermark that ends it: holds the watermark back until
+   * `seen` holds for the client, and lets it go one event-loop turn later.
+   */
+  function holdWatermarkUntil(seen: (client: KeeperClient) => boolean) {
     const client = KeeperClient.prototype as unknown as { receive(this: KeeperClient, chunk: string): void };
     const receive = client.receive;
     let pending = "";
@@ -89,10 +90,10 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
         const line = pending.slice(0, end + 1);
         pending = pending.slice(end + 1);
         if (!("through" in JSON.parse(line))) receive.call(this, line);
-        else if (this.session !== null) setImmediate(() => receive.call(this, line));
+        else if (seen(this)) setImmediate(() => receive.call(this, line));
         else {
           const off = this.onChange(() => {
-            if (this.session === null) return;
+            if (!seen(this)) return;
             off();
             setImmediate(() => receive.call(this, line));
           });
@@ -100,9 +101,44 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
       }
     });
     cleanups.push(() => spy.mockRestore());
+  }
+
+  it("hands a child over only once its client has replayed the keeper's log, ready for its first prompt", async () => {
+    setUp();
+    holdWatermarkUntil(client => client.session !== null);
     const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
     expect(child.client.connected).toBe(true);
     expect(child.client.status).toBe("idle");
+  });
+
+  it("fails to start an agent whose exit the replay already showed after its session, and leaves nothing behind", async () => {
+    setUp();
+    // in a terminal, as hc runs it, the keeper outlives its agent (until Ctrl+Q)
+    fake.onStart = (program) => {
+      programs.set(program.address, Bun.spawn([...program.argv], { terminal: { cols: 80, rows: 24, data() {} } }));
+    };
+    // a core slow to answer: the client attaches once the keeper's log already holds the session and the agent's exit
+    const exited = async (root: string) => {
+      const socket = Promise.withResolvers<void>();
+      const watcher = watch(root, () => { if (existsSync(join(root, "acp.sock"))) socket.resolve(); });
+      if (existsSync(join(root, "acp.sock"))) socket.resolve();
+      await socket.promise;
+      watcher.close();
+      const observer = new KeeperClient(root);
+      await until(observer, "the agent's exit", () => observer.agentGone);
+      observer.close();
+    };
+    children = new AcpChildren(dir, { keeperBin: () => KEEPER_BUILD, sessionMs: 2_000, hc: { call: async (method, params) => {
+      const reply = await hc.call(method, params);
+      const root = method === "terminal.run" && "argv" in params ? params.argv?.[1] : undefined;
+      if (root !== undefined) await exited(root);
+      return reply;
+    } } });
+    const started = children.start({ harness: "fake", argv: [FAKE_AGENT, "--exit-after-session"], cwd: dir });
+    expect(await started.catch((error: unknown) => error)).toMatchObject({ reason: "agent_exited" });
+    const id = (runs()[0]!["labels"] as Record<string, string>)["ovis.acp"]!;
+    expect(kills()).toHaveLength(1);
+    expect(existsSync(join(dir, id))).toBe(false);
   });
 
   it("tells its listeners when a person holds a child and hands it back, and finds it under its parent", async () => {

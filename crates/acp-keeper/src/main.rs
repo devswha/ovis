@@ -399,10 +399,12 @@ async fn finish_reader(reader: Option<JoinHandle<()>>) {
 fn write_process(root: &Path, acp: Option<&Agent>, tui: Option<&Agent>) {
     let pid = |a: Option<&Agent>| a.map(|a| a.pid);
     let scope = acp.or(tui).and_then(|a| a.scope.clone());
-    let _ = std::fs::write(
-        root.join("process.json"),
-        json!({"keeper": std::process::id(), "child": pid(acp), "tui": pid(tui), "scope": scope}).to_string(),
-    );
+    // Renamed into place: a client asking whether the keeper runs never reads it half written.
+    let next = root.join("process.json.next");
+    let body = json!({"keeper": std::process::id(), "child": pid(acp), "tui": pid(tui), "scope": scope}).to_string();
+    if std::fs::write(&next, body).is_ok() {
+        let _ = std::fs::rename(&next, root.join("process.json"));
+    }
 }
 
 fn ms(since: Instant) -> f64 {
@@ -458,6 +460,8 @@ async fn run(mut opts: Opts) -> i32 {
             return 1;
         }
     };
+    // The ROOT is this keeper's from here: a previous keeper's pid must not say it is gone while the agent starts.
+    write_process(&opts.root, None, None);
     let root = opts.root.clone();
     let (archive, previous) = match Archive::open(root.join("archive.jsonl")) {
         Ok((archive, previous)) => (Arc::new(archive), previous),
