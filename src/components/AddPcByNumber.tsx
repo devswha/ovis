@@ -48,13 +48,19 @@ export function AddPcByNumber({ list, account, post, name, keys = false, waitMs,
   // Back closes it, as Close does, unless the entry is being signed
   usePhoneSheetBack(() => { if (busy) return false; onClose(); });
 
+  // The comparison is the PC's post's as it stands (its list, relay key, keys and card), never the object a parent hands
+  // in: Add on the PC's row pressed again, or a read of the posts again, hands an equal post, and the number shown stays.
+  // A new comparison would throw away a number the PC may have said yes to, and a PC that did answers no new one
+  const postKey = `${post.list}\n${post.endpoint}\n${post.key}\n${post.enc}\n${post.card}`;
+  const posted = useRef(post);
+  posted.current = post;
   useEffect(() => {
     const ask = new AbortController();
     asking.current = ask;
     setNumber(null);
     setProblem(null);
     setRanOut(false);
-    void numberWith(list, post, { signal: ask.signal, now, ...(waitMs === undefined ? {} : { waitMs }) }).then((outcome) => {
+    void numberWith(list, posted.current, { signal: ask.signal, now, ...(waitMs === undefined ? {} : { waitMs }) }).then((outcome) => {
       if (ask.signal.aborted) return;
       if (outcome.shown) setNumber(outcome.number);
       else setProblem(numberRefusal(words.current, asks + 1 >= NUMBER_TRIES ? "spent" : outcome.why));
@@ -64,7 +70,7 @@ export function AddPcByNumber({ list, account, post, name, keys = false, waitMs,
       setProblem(words.current("The PC could not be added. Try again."));
     });
     return () => { ask.abort(new DOMException("The number is no longer asked for", "AbortError")); };
-  }, [list, post, waitMs, asks, now]);
+  }, [list, postKey, waitMs, asks, now]);
 
   const ranOutNow = (): void => {
     setNumber(null);
