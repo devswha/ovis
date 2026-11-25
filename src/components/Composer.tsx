@@ -395,22 +395,33 @@ export function Composer({
       status.removeAttribute("data-model");
       status.removeAttribute("data-hint-alone");
       status.removeAttribute("data-meta-empty");
+      surface?.removeAttribute("data-step-out");
       const clipped = (selector: string): boolean => {
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
-      const first = composerModelDraw({
-        modelClipped: clipped(".composer-model"),
-        effortClipped: clipped(".composer-reasoning"),
-      });
-      if (first !== "full") status.setAttribute("data-model", first);
-      const model = status.querySelector<HTMLElement>(".composer-model");
-      const draw = model === null ? first : composerLabelDraw(first, {
-        modelClipped: model.scrollWidth > model.clientWidth,
-        modelWidth: model.clientWidth,
-        modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
-      });
-      if (draw !== first) status.setAttribute("data-model", draw);
+      const drawModel = (): void => {
+        status.removeAttribute("data-model");
+        const first = composerModelDraw({
+          modelClipped: clipped(".composer-model"),
+          effortClipped: clipped(".composer-reasoning"),
+        });
+        if (first !== "full") status.setAttribute("data-model", first);
+        const model = status.querySelector<HTMLElement>(".composer-model");
+        const draw = model === null ? first : composerLabelDraw(first, {
+          modelClipped: model.scrollWidth > model.clientWidth,
+          modelWidth: model.clientWidth,
+          modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
+        });
+        if (draw !== first) status.setAttribute("data-model", draw);
+      };
+      drawModel();
+      // the plan mode icon is never cut: where the row still pushes it out, the plan chip's step steps out for it
+      const mode = status.querySelector<HTMLElement>(".composer-mode");
+      if (surface && mode !== null && mode.getBoundingClientRect().left < status.getBoundingClientRect().left - 0.5) {
+        surface.setAttribute("data-step-out", "");
+        drawModel();
+      }
       const hint = hintRef.current;
       if (!hint) return;
       const meta = status.querySelector<HTMLElement>(".composer-status-meta")?.getBoundingClientRect();

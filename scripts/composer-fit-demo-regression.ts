@@ -26,22 +26,30 @@ try {
         await page.locator(".composer-stop").waitFor();
       });
       // Claude Code's plan mode is the one mode drawn: an icon named for it, whole in the row at every width, with or
-      // without the plan chip; every other mode draws nothing
-      for (const width of [320, 360, 390, 1280]) for (const noChip of [false, true]) for (const mode of ["plan", "default", "acceptEdits", "auto", "bypassPermissions", "dontAsk"]) {
-        if (mode !== "plan" && (width !== 390 || noChip)) continue;
-        await withCard(browser, width, { agent: "claude", model: "claude-opus-5-5", status: "idle", pending: false, mode, noChip }, async (page) => {
-          const what = `${mode} at ${width}px${noChip ? " without the plan chip" : ""}`;
-          if (mode === "plan") await page.getByRole("img", { name: "Plan mode", exact: true }).waitFor();
-          await page.waitForFunction((chip) => (document.querySelector(".bg-tasks-toggle") !== null) === chip, !noChip, { timeout: 5_000 });
-          const row = await measure(page);
-          const icon = await page.evaluate(() => {
+      // without the plan chip, also with the chip's step in progress (which steps out where the icon needs its room);
+      // every other mode draws nothing
+      for (const width of [320, 360, 390, 1280]) for (const chip of ["none", "idle", "step"] as const) for (const mode of ["plan", "default", "acceptEdits", "auto", "bypassPermissions", "dontAsk"]) {
+        if (mode !== "plan" && (width !== 390 || chip !== "idle")) continue;
+        await withCard(browser, width, { agent: "claude", model: "claude-opus-5-5", status: "idle", pending: false, mode, noChip: chip === "none", step: chip === "step" }, async (page) => {
+          const what = `${mode} at ${width}px, plan chip ${chip}`;
+          await page.waitForFunction((want) => (document.querySelector(".bg-tasks-toggle") !== null) === (want !== "none")
+            && (want !== "step" || document.querySelector(".bg-tasks-current") !== null), chip, { timeout: 5_000 });
+          const icon = () => page.evaluate(() => {
             const item = document.querySelector<HTMLElement>(".composer-mode");
             if (!item) return null;
             const box = item.getBoundingClientRect(), status = document.querySelector(".composer-status")!.getBoundingClientRect();
-            return { width: box.width, inRow: box.left >= status.left - 0.5 && box.right <= status.right + 0.5 && box.top >= status.top - 0.5 && box.bottom <= status.bottom + 0.5 };
+            const svg = item.querySelector("svg")!.getBoundingClientRect();
+            return { name: item.getAttribute("aria-label"), width: svg.width, inRow: svg.left >= status.left - 0.5 && svg.right <= status.right + 0.5 && svg.top >= status.top - 0.5 && svg.bottom <= status.bottom + 0.5 };
           });
-          if (mode === "plan") assert.ok(icon !== null && icon.width > 1.5 && icon.inRow, `${what}: the plan icon is drawn whole in the row: ${JSON.stringify(icon)}`);
-          else assert.equal(icon, null, `${what}: no mode is drawn`);
+          if (mode === "plan") {
+            // the fit answers a frame after the chip's step is drawn: wait for the icon to stand whole, never a fixed time
+            await page.waitForFunction(() => {
+              const svg = document.querySelector(".composer-mode svg")?.getBoundingClientRect(), status = document.querySelector(".composer-status")!.getBoundingClientRect();
+              return svg !== undefined && svg.width > 1.5 && svg.left >= status.left - 0.5 && svg.right <= status.right + 0.5;
+            }, undefined, { timeout: 5_000 }).catch(async () => assert.fail(`${what}: the plan icon is not drawn whole in the row: ${JSON.stringify(await icon())}`));
+            assert.equal((await icon())?.name, "Plan mode", `${what}: the icon is named for the mode`);
+          } else assert.equal(await icon(), null, `${what}: no mode is drawn`);
+          const row = await measure(page);
           assert.deepEqual(row.overlaps, [], `${what}: nothing overlaps its neighbour`);
           assert.equal(row.overflowing, false, `${what}: the page does not scroll sideways`);
         });
