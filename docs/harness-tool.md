@@ -76,8 +76,10 @@ for example:
 {"settings":{"agentHarnessTool":{"level":"start","depth":1,"harnesses":["opencode"]}}}
 ```
 
-Use `view` for read-only, or `off` to revoke every existing run token. A new launch is needed
-after revocation. Changing a grant never kills a running child. Ovis does not install adapters
+With a valid run token, a parent can still stop a child it started after its start/send grant
+shrinks. Stop cancels pending approval cards without choosing any option. Use `off` to revoke
+every existing run token; a new launch is needed after revocation. Changing a grant never kills
+a running child. Ovis does not install adapters
 or edit the user's settings. For unverified parents, every other harness and version gets
 `not_granted`, not a launch in the harness default. These were run and found to let an action
 through with no card (checked 2026-11-24):
@@ -123,31 +125,24 @@ A pane opened outside Ovis (`hc run omo`, a lane another tool started) has no to
 variable set, `ovis agent` calls `<state folder>/agent-tools/hub.sock` (`OVIS_STATE_DIR` from the
 environment or Ovis's settings file, else the default one) with no token, only while **Let agents call
 other agents** is on (Linux 6.5 or later for now, which has `SO_PEERPIDFD`; an older kernel without it
-proves no pane, so every call answers `not_granted` and no card appears):
+proves no pane, so every call answers `not_granted`):
 
 1. The server asks the kernel which process connected (`SO_PEERCRED`) and pins it (`SO_PEERPIDFD`,
    so a pid reused after it exits is not that process), walks its parents through `/proc`, and asks
    this PC's herdr-core for its live panes. The caller's pane is the one pane whose root process is
    among those parents, checked again with `terminal.get` and the same parents and births. The
    `HC_TERMINAL_ID` the command sends can only fail this, never choose the pane. A process outside
-   every pane, or one that names another pane, gets `not_granted` and raises nothing.
-2. The first call from a pane raises a card on the owner's windows: **Give … the tool to call other
-   agents?** It answers `approval_required` at once and does nothing else. Run the command again
-   after **Allow**; **Deny** answers `approval_denied` for as long as that pane lives.
-3. An allowed pane is one run (`hc-pane`, depth 0, no permission ceiling): its children, start keys
-   and call limit are shared by every process of the pane, and the rules above hold as for any TUI
-   parent. Settings → Agents lists the allowed panes, each with **Remove**.
-4. The grant ends when the pane closes or its root process changes, when the owner removes it, and
-   when the switch goes back to look-only (turning it on again asks again).
+   every pane, or one that names another pane, gets `not_granted`.
+2. A proven pane can start work on its first call without an extra card. It has one run
+   (`hc-pane`, depth 0, no permission ceiling): its children, start keys and call limit are
+   shared by every process of the pane. The rules above still apply, including human approval
+   for any permission request from the child.
+3. The run ends when the pane closes, its root process changes, or the switch leaves `start`.
+   Turning starts back on lets a proven pane begin a new run. Existing children are not killed.
 
-Panes Ovis launched with a token, and its ACP children, never take this path. The owner's routes
-are `GET /api/agent-tools/panes` (`{pending, allowed}`, also pushed as `agent-tool-panes` on the
-machine events), `POST /api/agent-tools/panes/answer {id, decision: "allow"|"deny"}` and
-`POST /api/agent-tools/panes/remove {id}`; a watching device, the open LAN or a Portal visitor gets
-403. This attributes a call to a pane; it is not a sandbox against the OS account: a same-user
-debugger, or a process of the pane relaying for another program, is outside it. The card asks the
-owner, but on an install where this PC's loopback is the owner (no token or lock), any local
-program can answer it, as it can already type into any pane through `POST /api/pane/input`.
+Panes where Ovis launches an agent, with or without a token, and its ACP children never take this
+path. This attributes a call to a pane; it is not a sandbox against the OS account: a same-user
+debugger, or a process of the pane relaying for another program, is outside it.
 
 A driving device can cancel a tool child's turn with `POST /api/pane/turn/cancel {"pane_id":"t12"}`.
 This leaves the child alive but holds it against new agent input. The same device route group
@@ -157,6 +152,7 @@ sets that hold and **Hand back** releases it; the sidebar marks a held child **S
 `POST /api/pane/turn/cancel-children {"pane_id":"t7"}` holds every ACP child pane `t7` started
 (its menu's **Stop agents it called**) and answers `held` (pane, `child_id`, `generation`) and
 `failed` (panes that did not take the hold).
+A driving device can cancel with agent tools off.
 
 The token travels only over the private Unix socket, not HTTP. A same-account program can read
 the token file: this is run attribution, not isolation from other programs of the same OS user.
