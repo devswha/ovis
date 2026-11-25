@@ -200,6 +200,38 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     expect(failed).toEqual(["w1:p1"]);
   });
 
+  it("does not report an abandoned approval as the failure of a later title-only wait", async () => {
+    core();
+    const store = join(root, "letta-store-abandoned");
+    const agent = "agent-local-g";
+    const messages = lettaMessagesPath(store, agent, "default");
+    if (!messages) throw new Error("missing fixture path");
+    mkdirSync(join(messages, ".."), { recursive: true });
+    writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
+    const h = hub();
+    const failed: string[] = [];
+    spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failed.push(paneId); });
+    const resolve = resolving().mockResolvedValue({ path: join(root, "t7.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
+    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    await h.snapshot();
+    expect(h.last().status).toBe("blocked");
+    expect(h.status.letta.tracks("w1:p1")).toBe(true);
+    const aborted = JSON.parse(turn.at(-1) ?? "");
+    aborted.message.stopReason = "aborted";
+    aborted.timestamp = new Date().toISOString();
+    appendFileSync(messages, `${JSON.stringify(aborted)}\n`);
+    await h.status.letta.poll();
+
+    handlers.onStatus("w1:p1", "idle", "letta");
+    resolve.mockResolvedValue(null);
+    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    expect((await h.snapshot()).panes[0]?.agent_status).toBe("blocked");
+    h.herdrSays(letta("Tutor"));
+    await h.snapshot();
+
+    expect(failed).toEqual([]);
+  });
+
   it("works through a turn in Letta's local messages and finishes once, and gives the pane back to a report", async () => {
     core();
     const store = join(root, "letta-store");
