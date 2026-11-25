@@ -44,7 +44,7 @@ export function AgentCallsRows({ agents, watching }: { agents: readonly AgentCat
   const choose = (id: string, chosen: boolean): void => save({ ...setting, harnesses: chosen ? [...setting.harnesses, id] : setting.harnesses.filter((harness) => harness !== id) });
   return (
     <SettingsGroup section="agent-calls">
-      <SettingsRow icon={Network} label={label} description={t("On this PC only. You still answer every permission request.")}
+      <SettingsRow icon={Network} label={label} description={t("On this PC only. Only you can approve requests.")}
         condition={failed ? <span className="settings-condition" role="alert">{t("Not saved: this PC did not answer. Try again.")}</span> : undefined}>
         <Toggle label={label} checked={on} disabled={watching} onChange={turn} />
       </SettingsRow>
