@@ -2387,8 +2387,11 @@ move is never named to any PC.
   app only. While the device waits on its PCs, every session the app opens to one asks it, and the
   PCs its record knows that have not answered are asked over a session of their own (a saved
   pairing, or through the account with this sign-in's key, and once more with the key its list holds
-  where the PC lets the account's devices in by the list alone), each at most once in ten minutes. A
-  PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
+  where the PC lets the account's devices in by the list alone), each at most once in ten minutes.
+  This goes on while a PC's app is open, and on a clock as long as the device waits: after ten
+  minutes, or after the wait the plan told where that is longer. A plan that comes out the same each
+  round still asks again. The QA twin turns the ten minutes down with its waits, to 30 seconds at the
+  least. A PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
 - **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, a device whose
   storage lasts (as for a genesis) plans from `GET /v1/devices`, the directory's PCs that are listed
   as let in (a PC outside it is left out, as the service would refuse it), its record, this run's

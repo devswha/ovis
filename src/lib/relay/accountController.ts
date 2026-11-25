@@ -55,6 +55,8 @@ const LINK_SENDS = 5;
 export const LINK_RETRY_MAX_MS = 15_000;
 /** A PC this device asks in the background for the move of its account onto its list is asked again after this long at the soonest. */
 const ASK_AGAIN_MS = 10 * 60_000;
+/** However far the QA twin turns the move's waits down (pageScale), a PC is asked again no sooner than this. */
+const ASK_AGAIN_MIN_MS = 30_000;
 /** How long such an ask waits for the PC's session to open: a PC that is off is silent, which the move waits out. */
 const ASK_OPEN_MS = 20_000;
 /**
@@ -324,6 +326,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     })().finally(() => { if (reading?.read === read) reading = undefined; });
     reading = { epoch, read };
     await read;
+    void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
     // read whatever screen is up: a confirm drawn meanwhile waits for this sign-in's directory, and a Pair press that
     // found another sign-in reads that one's before anything is paired
     if (replaced) await refresh(initial, true);
@@ -383,20 +386,49 @@ export function createAccountController(mount: RelayShellMount, view: {
       },
     });
   };
-  /** When each PC was last asked in the background for the move, by relay key, in ms: once in ASK_AGAIN_MS at most. */
+  /** When each PC was last asked in the background for the move, by relay key, in ms: once in askGap() at most. */
   const askedPcs = new Map<string, number>();
   let askingPcs = false;
+  /** ASK_AGAIN_MS, turned down with the QA twin's waits as far as ASK_AGAIN_MIN_MS. */
+  const askGap = (): number => Math.max(ASK_AGAIN_MIN_MS, ASK_AGAIN_MS / pageScale());
+  let askTimer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
+  /**
+   * While this device waits on its PCs, the asking runs again on a clock too: a plan that comes out the same every
+   * round (`no_witness`, or `too_new` on an answer heard earlier) changes no view, so no listener would run it. Due
+   * after the gap, or after the wait the plan told where that is longer; not while the page is hidden.
+   */
+  const armAsk = (): void => {
+    if (askTimer !== undefined) clearTimeout(askTimer);
+    askTimer = undefined;
+    const status = lists?.view().status;
+    if (disposed || status === undefined || !waitsOnPcs(status)) return;
+    const told = status.at === "none" && status.move?.why === "too_new" && status.move.wait !== null ? status.move.wait * 1000 : 0;
+    askTimer = setTimeout(() => {
+      askTimer = undefined;
+      if (document.visibilityState === "hidden") { armAsk(); return; }
+      void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
+    }, Math.max(askGap(), told));
+  };
   /**
    * While this device waits on its PCs for the move onto its list, the PCs it knows by its own record that have not
    * answered in this run are asked over a session of their own, one at a time: by a pairing this device saved with
    * that PC, or through the account with this sign-in's key where the directory names the PC. A PC that cannot be
-   * reached is silent, which the move waits out (three days at most).
+   * reached is silent, which the move waits out (three days at most). Also while a PC's app is open: the session that
+   * app holds was opened before the device waited on its PCs, or is a pairing's, which a PC answers nothing.
    */
   const askPcs = async (): Promise<void> => {
-    if (lists === null || askingPcs || !view.active()) return;
+    if (lists === null || askingPcs) return;
+    try { await askDuePcs(); } finally { armAsk(); }
+  };
+  const askDuePcs = async (): Promise<void> => {
+    if (lists === null) return;
     const listed = lists.view();
     const session = shownFor;
     if (session === undefined || listed.account !== session.account || !waitsOnPcs(listed.status)) return;
+    // the way to each PC is chosen from this sign-in's directory: while its read is under way (the list's first round
+    // runs inside it), nothing is asked, and the read asks once it ends (refresh)
+    if (listedFor?.epoch !== generation && reading?.epoch === generation) return;
     askingPcs = true;
     try {
       const now = Date.now();
@@ -405,7 +437,7 @@ export function createAccountController(mount: RelayShellMount, view: {
       const { status } = listed;
       const only = status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
       const due = pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) })
-        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= ASK_AGAIN_MS);
+        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= askGap());
       if (due.length === 0) return;
       const saved = await store.list();
       const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -529,7 +561,9 @@ export function createAccountController(mount: RelayShellMount, view: {
   const unwatch = lists === null ? undefined : watchRemoval(lists, (gone) => { void removedHere(gone).catch((error: unknown) => console.warn("Ovis: a removed device did not forget its account", error instanceof Error ? error.name : error)); });
   /** Ends what this controller armed for itself: its refresh timer, its listener for the page coming back, and its place among the list's listeners. */
   const dispose = (): void => {
+    disposed = true;
     if (refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
+    if (askTimer !== undefined) { clearTimeout(askTimer); askTimer = undefined; }
     document.removeEventListener("visibilitychange", seen);
     unfollow?.();
     untidy?.();
