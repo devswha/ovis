@@ -300,6 +300,17 @@ describe("what this device keeps as its own evidence of an add over SSH, and whe
     });
   });
 
+  it("an attempt that ended while its take was out (the dialog closed, or another attempt took its place) writes no record (PR #4649 review)", async () => {
+    await withStorage(async () => {
+      const { service } = await window({ twoStep: true });
+      const target = pcFields();
+      let running = true;
+      const take = async (): Promise<SshTake> => { running = false; return ONLINE; };
+      await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => running, take });
+      expect(readSeenPcs(ACCOUNT).pcs[endpointOf(target)]).toBeUndefined();
+    });
+  });
+
   it("a sign-in store that fails to read ends the add as not added, with nothing taken", async () => {
     const { service, take, takes } = await window({ twoStep: true });
     let reads = 0;

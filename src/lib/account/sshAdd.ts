@@ -156,7 +156,8 @@ async function adding(service: AccountService, job: { readonly id: string; reado
   // This device added that PC over SSH: kept in its own record of its PCs, by the relay key the PC gave over that channel,
   // only once the take confirmed the add of that PC to this account, never before it and never for a refusal
   const kept = async (result: { readonly outcome: SshAddOutcome; readonly now: boolean }): Promise<SshAddOutcome> => {
-    if (result.now) {
+    // an attempt that ended while its take was out (the dialog closed, another attempt took its place) writes nothing more
+    if (result.now && options.running()) {
       try { await noteAct(session.account, hex(target.public_key), "ssh").catch(() => undefined); } catch { /* it only records: a key that does not read keeps nothing */ }
     }
     return result.outcome;
