@@ -128,15 +128,21 @@ export class SeenStore {
         if (!next) return held!;
         finishes.delete(key);
         finishes.set(key, next);
+        // trimmed per record, as one write each would: a later record of the batch merges with what that leaves
+        for (const [old, kept] of finishes) if (this.over(kept)) finishes.delete(old);
+        for (const old of finishes.keys()) {
+          if (finishes.size <= MAX_SEEN) break;
+          finishes.delete(old);
+        }
         changed = true;
-        told.push(() => { for (const listener of [...this.listeners]) this.follow(listener(next, presented)); });
+        told.push(() => { for (const listener of [...this.listeners]) this.follow(() => listener(next, presented)); });
         return next;
       };
       for (const item of batch) {
         if (item.kind === "record") {
           if (this.over(item.finish)) { results.push(item.finish); continue; }
           results.push(keep(item.finish, item.presented));
-          if (item.presented === "new") told.push(() => { for (const listener of [...this.presentations]) this.follow(listener(item.finish)); });
+          if (item.presented === "new") told.push(() => { for (const listener of [...this.presentations]) this.follow(() => listener(item.finish)); });
           continue;
         }
         for (const finish of [...finishes.values()]) {
@@ -146,17 +152,17 @@ export class SeenStore {
         results.push(undefined);
       }
       if (changed) {
-        for (const [old, kept] of finishes) if (this.over(kept)) finishes.delete(old);
-        for (const old of finishes.keys()) {
-          if (finishes.size <= MAX_SEEN) break;
-          finishes.delete(old);
-        }
         await this.persist(this.path, `${JSON.stringify([...finishes.values()])}\n`, keepDamaged);
         this.unsettled = false;
         this.finishes.clear();
         for (const [k, v] of finishes) this.finishes.set(k, v);
       }
     } catch (error) {
+      // a failed write of many is tried again one by one: only what fails alone fails, as a move cannot be retried
+      if (batch.length > 1) {
+        for (const item of batch) await this.commit([item]);
+        return;
+      }
       for (const item of batch) {
         if (item.kind === "record") this.pendingRecords--;
         item.settle.reject(error);
@@ -172,7 +178,10 @@ export class SeenStore {
     });
   }
 
-  private follow(work: unknown): void {
+  /** Runs a listener for a saved change: one that throws must not stop the writer. */
+  private follow(run: () => unknown): void {
+    let work: unknown;
+    try { work = run(); } catch (error) { console.error("seen: a listener failed:", error); return; }
     if (!(work instanceof Promise)) return;
     const tracked = work.catch(() => undefined).finally(() => { this.followUps.delete(tracked); });
     this.followUps.add(tracked);

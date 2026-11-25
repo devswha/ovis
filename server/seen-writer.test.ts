@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleSeenRequest, SeenStore } from "./seen.ts";
@@ -193,4 +193,72 @@ it("closes only after the work its listeners started for saved receipts (herdr.s
     await closing;
     expect(closed).toBe(true);
   } finally { labelled.resolve(); presented.resolve(); await store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("merges each waiting receipt with what the ones before it left, as one write each would", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "seen-writer-"));
+  const row = (pane: string, id: number) => ({ pc: "local", epoch: "e", pane, id });
+  writeFileSync(join(dir, "seen.json"), JSON.stringify(Array.from({ length: 500 }, (_, index) => row(`p${index}`, 100))));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let writes = 0;
+  const store = new SeenStore(dir, undefined, async (path, text, damaged) => {
+    if (++writes === 1) { entered.resolve(); await release.promise; }
+    writeStateDocument(path, text, damaged);
+  });
+  try {
+    const first = store.record(row("p499", 101));
+    await entered.promise;
+    // the new pane pushes the oldest, p0, out: the p0 that follows starts afresh
+    const added = store.record(row("x", 1));
+    const again = store.record(row("p0", 1));
+    release.resolve();
+    await Promise.all([first, added]);
+    expect(await again).toEqual(row("p0", 1));
+    await store.close();
+    expect(new SeenStore(dir).list()).toContainEqual(row("p0", 1));
+  } finally { release.resolve(); await store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("tries a failed write of many again one by one, so one failure costs no unrelated receipt or move", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "seen-writer-"));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let writes = 0;
+  const store = new SeenStore(dir, undefined, async (path, text, damaged) => {
+    writes++;
+    if (writes === 2) { entered.resolve(); await release.promise; }
+    if (writes === 3) throw Object.assign(new Error("fixture EIO"), { code: "EIO" });
+    writeStateDocument(path, text, damaged);
+  });
+  const row = (pane: string, id: number) => ({ pc: "local", epoch: "e", pane, id });
+  const presented: string[] = [];
+  store.onPresented((finish) => { presented.push(finish.pane); });
+  try {
+    await store.record(row("old", 1));
+    const held = store.record(row("held", 1));
+    await entered.promise;
+    const other = store.record(row("other", 1));
+    const shown = store.record(row("old", 1), "new");
+    const moved = store.moved("local", "old", "new");
+    release.resolve();
+    await Promise.all([held, other, shown, moved]);
+    expect(presented).toEqual(["old"]);
+    await store.close();
+    expect(new SeenStore(dir).list()).toEqual(expect.arrayContaining([row("other", 1), row("new", 1)]));
+  } finally { release.resolve(); await store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("keeps writing after a listener throws", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "seen-writer-"));
+  const store = new SeenStore(dir);
+  const error = console.error;
+  console.error = () => {};
+  store.subscribe(() => { throw new Error("fixture listener"); });
+  try {
+    await store.record({ pc: "local", epoch: "e", pane: "a", id: 1 });
+    await store.record({ pc: "local", epoch: "e", pane: "b", id: 1 });
+    await store.close();
+    expect(new SeenStore(dir).list()).toHaveLength(2);
+  } finally { console.error = error; await store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

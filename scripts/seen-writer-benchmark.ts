@@ -47,7 +47,9 @@ for (const answerLength of [128, 2048]) {
         }
         await new Promise<void>((resolve) => setImmediate(resolve));
         delays.push(performance.now() - previous);
-        if (writes !== 50) throw new Error(`Expected 50 writes, got ${writes}`);
+        // the store commits what waits behind a write in one write: the first, then the 49 behind it (the last is a repeat)
+        const expected = mode === "sync-baseline" ? 50 : 2;
+        if (writes !== expected) throw new Error(`Expected ${expected} writes, got ${writes}`);
         results.push({ answerLength, mode, repetition, writes, bytes, maxActive: mode === "sync-baseline" ? 1 : maxActive, elapsedMs: performance.now() - start, eventLoopGapsMs: delays });
       } finally { clearInterval(timer); rmSync(dir, { recursive: true, force: true }); }
     }

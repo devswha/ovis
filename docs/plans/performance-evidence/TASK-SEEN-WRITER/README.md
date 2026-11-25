@@ -22,14 +22,14 @@ TMPDIR="$HOME/.cache/ovis-tmp/seen-writer" bun test server/seen.test.ts server/s
 
 | Answer chars | Mode | Writes / batch | Bytes / batch | Median elapsed ms | Median maximum event-loop gap ms |
 | --- | --- | ---: | ---: | ---: | ---: |
-| 128 | sync baseline | 50 | 4744642 | 8.872 | 8.868 |
-| 128 | async | 50 | 4744642 | 17.857 | 1.130 |
-| 128 | slow async | 50 | 4744642 | 17.639 | 1.090 |
-| 2048 | sync baseline | 50 | 52744642 | 22.850 | 22.850 |
-| 2048 | async | 50 | 52744642 | 32.165 | 1.269 |
-| 2048 | slow async | 50 | 52744642 | 34.295 | 1.287 |
+| 128 | sync baseline | 50 | 4744642 | 61.771 | 61.759 |
+| 128 | async | 2 | 189785 | 6.327 | 2.546 |
+| 128 | slow async | 2 | 189785 | 4.818 | 1.167 |
+| 2048 | sync baseline | 50 | 52744642 | 104.911 | 104.907 |
+| 2048 | async | 2 | 2109785 | 9.820 | 3.429 |
+| 2048 | slow async | 2 | 2109785 | 8.602 | 3.333 |
 
-This trades throughput overhead for yielding during persistence; it does not reduce write amplification. These host measurements are not comparable to the historical Linux audit as a speedup ratio.
+Group commit yields during persistence and cuts write amplification: the 49 receipts that wait behind the first write go into one more. Measured on a loaded host (other checks running), so absolute times are noisy. These host measurements are not comparable to the historical Linux audit as a speedup ratio.
 
 ## Validation
 

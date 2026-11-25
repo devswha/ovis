@@ -33,8 +33,10 @@ export interface MachineBridge {
 const CORE_ENV = /^(?:HC_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_RUNTIME_DIR|XDG_CONFIG_HOME|XDG_STATE_HOME)$/;
 const PROGRAM_ENV = /^(?:PATH|PATHEXT|LANG|LC_.*|TMPDIR|TEMP|TMP|SystemRoot|SYSTEMROOT|WINDIR|ComSpec|COMSPEC)$/;
 const READY_MS = 30_000;
-// EOF lets the child drain its label writes and read receipts; one that does not stop is killed at this deadline
-const STOP_MS = 10_000;
+// EOF lets the child drain its label writes and read receipts. One that does not stop is killed at this deadline,
+// below the 4 s the stopping server waits (server/index.ts SHUTDOWN_DRAIN_MS): a child that outlived it could
+// still replace seen.json under the next server's bridge for the same machine
+const STOP_MS = 3_000;
 
 /**
  * Starts a machine's server: this server's own code, in a process of its own, serving herdr's API from
@@ -69,7 +71,7 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
   let stopTimer: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
     if (stopTimer === undefined && child.exitCode === null && child.signalCode === null) {
-      stopTimer = setTimeout(() => child.kill(), STOP_MS);
+      stopTimer = setTimeout(() => child.kill("SIGKILL"), STOP_MS);
       stopTimer.unref();
       try { child.stdin.end(); } catch { child.kill(); }
     }
