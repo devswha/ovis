@@ -252,13 +252,32 @@
   white-space: nowrap;
 }
 
-/* Claude Code's permission mode beside the level: it gives way first */
+/* Claude Code's permission mode beside the level: it gives way first, to its mark and then out (fitStatus) */
 .composer-mode {
   flex: 0 200 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.composer-mode-icon {
+  display: none;
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+  vertical-align: -1px;
+}
+
+.composer-status[data-mode="short"] .composer-mode {
+  flex: none;
+}
+
+.composer-status[data-mode="short"] .composer-mode-name {
+  display: none;
+}
+
+.composer-status[data-mode="short"] .composer-mode-icon {
+  display: inline-block;
 }
 
 .composer-reasoning-dot {
