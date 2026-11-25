@@ -69,7 +69,7 @@ test("a wide glyph's second column is taken as xterm takes it: in a double click
   expect(ghostty).toEqual({ rightHalf: { start: 0, length: 2 }, wrapped: { start: 0, length: 5 }, fromSecondHalf: "  c", column: "23\n B\n23" });
 });
 
-test("a row xterm keeps in its history is read as the row as far above the screen in libghostty, wherever the view is", async () => {
+test("a row of xterm's view reads as the row libghostty draws there, at the bottom and at the top", async () => {
   const term = new Terminal({ cols: 80, rows: 3, scrollback: 50, allowProposedApi: true });
   const vt = await GhosttyVt.create(80, 3);
   try {
@@ -77,17 +77,19 @@ test("a row xterm keeps in its history is read as the row as far above the scree
     const stream = [1, 2, 3, 4, 5, 6].map((n) => String(n).repeat(100)).join("\r\n");
     vt.write(stream);
     await parse(term, stream);
+    // widened, the two engines lay the screen out differently and keep different depths of history
     term.resize(120, 3);
     vt.resize(120, 3, 8, 16);
     holdScreenRows(term, () => ghosttyRows(vt));
-    // the two engines lay out a widened screen differently: what the row reads is the row drawn there (libghostty's)
-    const read = (): string => viewRows(term).getLine(term.buffer.active.baseY)?.translateToString(true) ?? "";
-    const drawn = ghosttyRows(vt).getLine(ghosttyRows(vt).viewportY)?.translateToString(true);
-    const atBottom = read();
+    // the overlay shows libghostty's view as far from the bottom as xterm's (overlay.ts drawFrame)
+    const follow = (): void => vt.scrollFromBottom(term.buffer.active.baseY - term.buffer.active.viewportY);
+    const shown = (): (string | undefined)[] => [0, 1, 2].map((y) => viewRows(term).getLine(term.buffer.active.viewportY + y)?.translateToString(true));
+    const drawn = (): (string | undefined)[] => { const rows = ghosttyRows(vt); return [0, 1, 2].map((y) => rows.getLine(rows.viewportY + y)?.translateToString(true)); };
+    follow();
+    expect(shown()).toEqual(drawn());
     term.scrollToTop();
-    vt.scrollFromBottom(vt.history().scrollback);
-    expect(atBottom).toBe(drawn!);
-    expect(read()).toBe(atBottom);
+    follow();
+    expect(shown()).toEqual(drawn());
   } finally {
     holdScreenRows(term, null);
     vt.dispose();

@@ -88,17 +88,17 @@ export function screenRows(term: Terminal): ScreenRows {
 
 /**
  * The rows of the screen up now numbered as xterm's buffer numbers them, for a reader that takes its rows from xterm
- * (a selection, a pointer on the view): libghostty's while it holds the screen, xterm's otherwise. Where xterm keeps
- * history too, a row is the row as far above the screen in either engine (a selection keeps its text while the view
- * scrolls); where it keeps none (libghostty alone parses), a row of xterm's view is the row drawn there. While the two
- * are on different screens (a switch libghostty took and xterm has yet to parse), xterm's own rows answer.
+ * (a selection, a pointer on the view): libghostty's while it holds the screen, xterm's otherwise. A row of xterm's
+ * view is the row libghostty draws there (overlay.ts), so a selection is copied and a pointer hits as they are shown:
+ * where a resize left the two engines' histories at different depths, the view's top is where they meet. While the
+ * two are on different screens (a switch libghostty took and xterm has yet to parse), xterm's own rows answer.
  */
 export function viewRows(term: Terminal): ScreenRows {
   const rows = engineRows.get(term)?.();
   const own = term.buffer.active;
   if (!rows) return own;
   if ("alternate" in rows && rows.alternate !== (own.type === "alternate")) return own;
-  const offset = own.baseY > 0 ? rows.baseY - own.baseY : rows.viewportY - own.viewportY;
+  const offset = rows.viewportY - own.viewportY;
   if (offset === 0) return rows;
   return {
     length: rows.length - offset, baseY: rows.baseY - offset, viewportY: rows.viewportY - offset, cursorX: rows.cursorX, cursorY: rows.cursorY,
