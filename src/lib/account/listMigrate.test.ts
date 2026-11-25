@@ -199,6 +199,7 @@ describe("a device that was carried in", () => {
     // the removal is placed and the sign-in ends with it: no read follows, so whether it counted is not known
     expect(await leaveList(laptop.device.list, world.account, { wait: async () => {} })).toMatchObject({ removed: false, why: "unknown" });
     expect(readBody(entryFromText(world.held().entries.at(-1)!).body).kind).toBe("remove");
+    expect(await laptop.device.lists.get("copy", world.account)).toBeDefined();
     await laptop.device.list.forget(world.account, laptop.member);
     expect(await laptop.device.lists.get("copy", world.account)).toBeUndefined();
   });
@@ -215,6 +216,8 @@ describe("a device that was carried in", () => {
     const own = await readSave((await laptop.device.lists.get("copy", world.account)) as string);
     if (!shown.read || !own.read) throw new Error("a copy did not read");
     // nothing stands for its sign-in key any more: only the hand-over ties the copy to the member key put out
+    expect(own.copy.me.key).toBe(laptop.signIn);
+    expect(shown.copy.state!.signers[laptop.member]?.ended).not.toBeNull();
     expect(standsFor(shown.copy.state!, laptop.signIn)).toBeNull();
     await laptop.device.lists.set("copy", world.account, writeSave({ ...shown.copy, me: own.copy.me, pin: own.copy.pin }));
     await laptop.device.list.forget(world.account, laptop.member);

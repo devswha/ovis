@@ -629,14 +629,14 @@ export interface AccountList {
   /**
    * A person's reset, or the device left the account: forgets everything kept for the account. With `member`, only
    * where the saved copy is pinned to that member key (or to a key it shows handed on to it: a carried device's sign-in
-   * key), compared with the very copy that is dropped: a copy that a
-   * member which took this one's place keeps (another tab signed in again) stays, and so does one that does not read.
+   * key), compared with the very copy that is dropped: a copy that a member which took this one's place keeps (another
+   * tab signed in again) stays, and so does one that does not read.
    */
   forget(account: string, member?: string): Promise<void>;
   /**
-   * The other account than `account` whose saved copy of its list is pinned to this member key (as `forget` reads it) and does not show it
-   * out (that account's list still holds this device by it), or null for none. A copy that does not read counts as
-   * holding it.
+   * The other account than `account` whose saved copy of its list is pinned to this member key (as `forget` reads it)
+   * and does not show it out (that account's list still holds this device by it), or null for none. A copy that does
+   * not read counts as holding it.
    */
   pinnedElsewhere(account: string, key: string): Promise<string | null>;
   /**
