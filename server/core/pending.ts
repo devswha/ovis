@@ -129,6 +129,7 @@ function runsOtherProgram(entry: { name?: string | null; argv0?: string | null; 
 }
 const agentRuns = (identity: PendingIdentity, recognized: boolean): boolean => identity.agent !== null && identity.processPid !== null && recognized;
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
+const PI_SESSION_UNKNOWN = { code: "input_not_ready", message: "Pi's session could not be confirmed; review the saved message before sending it" };
 const LAUNCH_GONE = { code: "first_message_launch_ended", message: "The agent started for this message has ended; review the message before sending it" };
 /** why a message that waited for a starting omp is held: its paste would follow what was typed into omp's input box meanwhile, and its Enter send both */
 const TYPED_WHILE_WAITING = { code: "typed_while_waiting", message: "Something was typed in this terminal while omp was starting. Check its input line there, then send this message" };
@@ -302,10 +303,17 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     return expected === null ? null : capturePiDeliveryAnchorRetrying(path, true, expected);
   };
   const piSession = async (paneId: string): Promise<PendingIdentity["piSession"]> => {
-    const found = await piTranscriptPath(paneId).catch(() => null);
+    const found = await piTranscriptPath(paneId, undefined, { confirmExtensionSession: true }).catch(() => null);
     if (found === null) return undefined;
     return "unwritten" in found ? { path: found.unwritten.path, fileIdentity: null } : { path: found.path, fileIdentity: found.identity };
   };
+  async function pinPiAtEnqueue(paneId: string, identity: PendingIdentity): Promise<typeof PI_SESSION_UNKNOWN | undefined> {
+    if (identity.agent !== "pi" || identity.session !== null) return undefined;
+    const pi = await piSession(paneId);
+    if (pi === undefined) return PI_SESSION_UNKNOWN;
+    identity.piSession = pi;
+    return undefined;
+  }
   const recordPiTyped = (owner: Client, paneId: string, requestId: number, text: string, identity: PendingIdentity, anchor: PiDeliveryAnchor | null | undefined,
     reservation?: PiReceiptReservation<Client> | null, template = false): void => {
     if (anchor === undefined || !clients.has(owner) || connectionOf(owner).closing) return;
@@ -613,6 +621,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * last reads or herdr's write is still not seen: the window is those reads and the write's own call.
    */
   async function noMaskedPrompt(paneId: string, cols: number | undefined, pinned: PendingIdentity | null): Promise<void> {
+    const pi = pinned?.piSession;
+    if (pinned !== null && pi !== undefined) {
+      const now = await piSession(paneId);
+      if (now?.path !== pi.path || (pi.fileIdentity !== null && now.fileIdentity !== pi.fileIdentity)) {
+        throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+      }
+      // The extension lookup can yield while the foreground changes. Keep the screen read last.
+      await stillInFront(paneId, pinned.processPid, pinned);
+    }
     const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
     if (secretPrompt(screen, cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
@@ -620,13 +637,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const own = pinned?.agent === "codex" ? codexScreenRefusal(screen, parseInteractivePrompt("codex", screen, null, true, [], null), "unknown") : null;
     if (own !== null) throw own;
     if (pinned?.agent && agentPickerWaits(pinned.agent, screen)) throw agentPickerRefusal();
-    const pi = pinned?.piSession;
-    if (pi !== undefined) {
-      const now = await piSession(paneId);
-      if (now?.path !== pi.path || (pi.fileIdentity !== null && now.fileIdentity !== pi.fileIdentity)) {
-        throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
-      }
-    }
     await sameStart(pinned);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
@@ -639,7 +649,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const unknown = (): boolean => identity?.claudeSession != null && current.claudeSession == null;
     if (unknown()) ({ pane, identity: current, processes, held: holder, recognized } = await currentIdentity(paneId, identity?.processPid ?? null));
     const lost = unknown();
-    if (identity && (!samePendingIdentity(identity, current) || (identity.session?.startsWith("acp:") && identity.session !== current.session) || lost)) {
+    const lostPi = identity?.agent === "pi" && identity.piSession === undefined && identity.session !== null && current.session === null;
+    if (identity && (!samePendingIdentity(identity, current) || (identity.session?.startsWith("acp:") && identity.session !== current.session) || lost || lostPi)) {
       throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
     }
     if (identity) {
@@ -1155,13 +1166,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         : identity.processPid !== null && identity.processPid !== undefined && identity.processPid !== shellPid
           && runsAgentProgram(processes?.foreground_processes?.find((entry) => entry.pid === identity.processPid) ?? {}, kind)
           ? { processPid: identity.processPid, processBirth: identity.processBirth } : {};
-      // after the last await: a pane that ended during any of them has nothing left to discard this message later
-      ended();
       const sessions = identity.agent === kind
         ? { session: identity.session, omoSession: identity.omoSession ?? null, claudeSession: identity.claudeSession ?? null } : { session: null };
+      const target: PendingIdentity = { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess };
+      const noPiSession = await pinPiAtEnqueue(paneId, target);
+      // After the last await, a pane that ended has nothing left to discard this message later.
+      ended();
       const attended = page !== undefined && present(page) && !ask.left;
       const item = pending.enqueue(FIRST_MESSAGE_OWNER, paneId, nextFirstRequestId--, text, null,
-        { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess }, false, false, attended ? ask.fault ?? undefined : FIRST_MESSAGE_UNATTENDED);
+        target, false, false, attended ? ask.fault ?? noPiSession : FIRST_MESSAGE_UNATTENDED);
       launchBound.add(item);
       if (kind === "omp" && !ompStarts.has(paneId)) ompStarts.set(paneId, { typed: typedCount(paneId), until: Date.now() + (options.ompStartupMs ?? OMP_STARTUP_MS) });
       learn(item, identity, shellPid, processes, held);
@@ -1491,10 +1504,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const mark = pending.mark(message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease!);
             if (child && context.identity.session !== `acp:${child.id}:${child.client.session}`) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
-            if (context.identity.agent === "pi" && context.identity.session === null) {
-              const pi = await piSession(message.pane_id);
-              if (pi !== undefined) context.identity.piSession = pi;
-            }
+            const noPiSession = await pinPiAtEnqueue(message.pane_id, context.identity);
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "This pending message waited too long; nothing was typed");
             if (agentOnly && !context.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
             const held = queueHeld(message.pane_id, false);
@@ -1505,7 +1515,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               // paste + Enter; agent.prompt commits its key inside herdr.
               // A held message is never typed by arriving after the turn: it waits for Send now.
               // Queued, it never clears a stopped send Claude put back in its box, as the drain does not (#2546).
-              if (message.delivery !== "hold" && !pending.waiting(message.pane_id) && !typedWhileOmpStarted(message.pane_id)) {
+              if (noPiSession === undefined && message.delivery !== "hold" && !pending.waiting(message.pane_id) && !typedWhileOmpStarted(message.pane_id)) {
                 const sendingAt = new Date().toISOString();
                 const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt,
                   (working) => pending.typedAtOnce(message.pane_id, working), false, message.id, agentOnly, true, { uncertain: afterWriteFailure });
@@ -1515,7 +1525,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             }
             if (!waited) pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
-            const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly);
+            const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly, noPiSession);
             if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
             return { ok: true, pending: item.message };
           }).catch((error): SubmitReply => ({ ok: false, ...pendingFault(error, options.herdrFailure) })));
@@ -1559,8 +1569,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const lease = arrived ?? pendingLease(client, message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease);
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "This message waited too long; nothing was typed");
-            const queued = await requestBook(client).run(message.id, fingerprint, async (): Promise<SubmitReply> =>
-              ({ ok: true, pending: pending.enqueue(client, message.pane_id, message.id, pendingText(message.text), lease, context.identity, false, agentOnly).message }));
+            const queued = await requestBook(client).run(message.id, fingerprint, async (): Promise<SubmitReply> => {
+              const noPiSession = await pinPiAtEnqueue(message.pane_id, context.identity);
+              return { ok: true, pending: pending.enqueue(client, message.pane_id, message.id, pendingText(message.text), lease, context.identity, false, agentOnly, noPiSession).message };
+            });
             behind = queued.pending;
             if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
             return;
