@@ -173,7 +173,9 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
     expect(groups().map(([label]) => label)).toEqual(["PC Desk", "PC Away"]);
     expect(text(row("Desk"))).toContain("Not in your account's list yet");
+    // the account service gives no way to it: it keeps saying only that it cannot be reached
     expect(text(row("Away"))).toContain("Can't reach the PC");
+    expect(text(row("Away"))).not.toContain("may be off");
     // nothing was admitted or paired, and the PC with no way to it was asked nothing
     expect(admitted).toEqual([]);
     expect(requests.filter(({ path, body }) => path === "/api/machines/relay/account/check" && (body as { pcs: AccountPcEntry[] }).pcs.some((pc) => pc.server_id === AWAY.server_id))).toEqual([]);
