@@ -9,7 +9,7 @@ import { readPluginSettings } from "./plugin-settings.ts";
 /**
  * This command has no fallback to the owner's HTTP door or another run. With a launch's token (OVIS_AGENT_SOCKET and
  * OVIS_AGENT_TOKEN_FILE, even one alone) it uses that run only; with neither it asks as the hc pane it runs in, which
- * the server proves and its owner allows once (docs/harness-tool.md).
+ * the server proves on every call while local starts are enabled (docs/harness-tool.md).
  */
 export async function runAgent(words: readonly string[]): Promise<number> {
   const [word, ...rest] = words;
@@ -29,7 +29,11 @@ export async function runAgent(words: readonly string[]): Promise<number> {
     if (verb === "read" && ["screen","state","result","transcript"].includes(name)) { value = name; name = "what"; }
     else { value = rest[++i]; if (value === undefined) return bad(); }
     if (!Object.hasOwn(TOOL_SCHEMAS[verb].properties, name) || Object.hasOwn(args, name)) return bad();
-    args[name] = name === "timeout_s" ? Number(value) : value;
+    if (name === "choice" || name === "choices") {
+      const indexes = String(value).split(",");
+      if (!indexes.every(v => /^\d+$/.test(v)) || name === "choice" && indexes.length !== 1) return bad();
+      args[name] = name === "choice" ? Number(value) : indexes.map(Number);
+    } else args[name] = name === "timeout_s" ? Number(value) : value;
   }
   for (const key of ["session","task"]) if (positional.length && Object.hasOwn(TOOL_SCHEMAS[verb].properties, key) && !(key in args)) args[key] = positional.shift();
   if (positional.length) return bad();
