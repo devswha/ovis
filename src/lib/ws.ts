@@ -291,10 +291,6 @@ export class HerdrSocket {
     }));
   }
 
-  get connectedSince(): number | null {
-    return this.openedAt;
-  }
-
   get lostSince(): number | null {
     return this.lostAt;
   }

@@ -1217,12 +1217,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // What was typed for a new tab before it existed (lib/typeAhead.ts) waits with the keys typed here after it, as
       // a pane taken back does, and goes ahead of them: taken before the attach and before any key reaches this pane.
       // It is held for review instead, never sent by itself, when it holds a paste, when the user went elsewhere
-      // meanwhile, or when the PC's connection was not open all along since it was typed (nothing goes after a disconnect).
+      // meanwhile, or when the PC's link was not up all along since a key was typed: each key is judged by its own mark
+      // (CaughtKey.typedAt, HerdrSocket.takesKey), so keys typed after a connection was replaced are not held for one
+      // that came before (nothing goes after a disconnect).
       const adoptTypeAhead = (pane: string): void => {
-        let at = 0;
         let held = false;
         const take = (items: CaughtKey[], heldNow: boolean): void => {
-          held ||= heldNow || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+          held ||= heldNow || !socket.connected;
           for (const item of items) {
             // as typing here: a masked prompt on screen now makes it secret (never held, never kept for a receipt),
             // and a draft held for this pane (a late attach held what came first) takes what follows it
@@ -1240,8 +1241,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         };
         const ahead = takeTypeAhead(paneStorageId(machineId, pane), { more: take, done: takeKeyboard });
         if (ahead === null) return;
-        at = ahead.at;
-        held = ahead.held || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+        held = ahead.held || !socket.connected;
         if (ahead.pasteRefused) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
         if (!held) startResume(pane, ahead.since);
         const typed = ahead.items.length > 0;
