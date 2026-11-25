@@ -889,7 +889,7 @@ export function PaneTerminal({
     if (autoTabNamesRef.current) learnFromSend(machineIdRef.current, pane, agentRef.current, text);
     showSentCommand(pane, text, known, seen);
   }, [showSentCommand]);
-  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand: showSentAndName, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
+  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, dropSecondEscape, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand: showSentAndName, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
 
   // Capture the owner's pane for the entire upload batch, even across a pane switch.
   const uploadImage = useCallback((file: Blob) => uploadPaneImage(paneId ?? "", file), [paneId]);

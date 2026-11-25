@@ -1,10 +1,16 @@
 import { afterAll, afterEach, beforeAll, expect, it, jest } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { backoffDelay, HerdrSocket, markTyped } from "./ws.ts";
 import { sendInOrder } from "./sendInOrder.ts";
 import { nativeTransport, setTransport, type WebSocketLike } from "./transport.ts";
 import type { ClientConnectionTrace, PendingMessage } from "../../shared/protocol.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { RECONNECT_GRACE_MS } from "./reconnectGrace.ts";
+import { pendingMessages } from "./pendingMessages.ts";
+import { useComposerSends } from "./useComposerSends.ts";
+import { useTypedKeys, type TypedKeysDeps } from "./useTypedKeys.ts";
+import { DOUBLE_ESCAPE_GAP_MS } from "./hermesStop.ts";
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -389,6 +395,72 @@ it("steers or discards an opaque pending ID once and waits for its action acknow
     expect(await result).toEqual(index === 0 ? { ok: true } : { ok: false, code: "pending_not_found", message: "already sent" });
   }
   client.close();
+});
+
+it.each(["queued", "held", "unsupported", "sent"] as const)("keeps Stop's second Escape out of the next turn (%s)", async (mode) => {
+  jest.useFakeTimers();
+  const pane = `stop-send-now-${mode}`;
+  const pending: PendingMessage = { id: "follow-up", request_id: 1, text: "next turn", state: mode === "held" ? "held" : "queued", created_at: "2026-11-05T00:00:00Z" };
+  const client = new HerdrSocket("ws://test/ws");
+  const socketRef = { current: client }, paneRef = { current: pane }, sent: string[] = [];
+  const termRef = { current: { input: (data: string) => { sent.push(data); }, rows: 0 } };
+  let actions: ReturnType<typeof useComposerSends> | undefined;
+  let stop: (() => void) | undefined;
+  function Composer() {
+    const { abortTurn, dropSecondEscape } = useTypedKeys({
+      agent: "devin", agentStatus: "working", paneId: pane, socketRef, termRef, stopKeyRef: { current: false },
+    } as TypedKeysDeps);
+    stop = abortTurn;
+    actions = useComposerSends({
+      agent: "devin", agentStatus: "working", paneId: pane, paneRef, socketRef, queueOwner: pane, machineId: "local",
+      pendingScopeRef: { current: "scope" }, draftHeldForRef: { current: null }, stillOpenRef: { current: null },
+      heldRef: { current: false }, secretRef: { current: null }, observeRef: { current: false }, answering: null, pendingAnswer: null,
+      stillOpenNotedRef: { current: false }, chatNavigation: { current: 0 }, sessionRef: { current: null },
+      answerPending: false, ended: false, heldByOpenQueue: false, queueStore: null, submitRetention: null,
+      answerPanePrompt: async () => {}, setChatLocalSend: () => {}, setPendingAnswer: () => {}, setPromptRefresh: () => {},
+      showSentCommand: () => {}, stillOpenNote: () => "",
+      knownOutcomes: () => [], inputRowNow: () => "ready", settings: { autoSendQueued: mode !== "held" },
+      submitComposerMessage: () => {
+        pendingMessages.accept(pane, pending, "scope");
+        return Promise.resolve({ ok: true, pending } as const);
+      },
+      t: (key: string) => key, dropSecondEscape,
+    });
+    return null;
+  }
+  try {
+    client.connect();
+    const socket = FakeSocket.last;
+    socket.open();
+    socket.receive(snapshot(mode === "unsupported" ? ["submit"] : ["submit", "pending-input"]));
+    renderToStaticMarkup(createElement(Composer));
+    stop?.();
+    expect(sent).toEqual(["\u001b"]);
+    expect(await actions?.composerSend(pending.text, undefined, false, false, false, mode === "held")).toBe(true);
+    if (mode === "sent") {
+      const frame = Promise.withResolvers<number>();
+      socket.addEventListener("sent", (message) => {
+        if (message.type !== "pending-action" || message.action !== "steer") return;
+        sent.push(pending.text, "\r");
+        frame.resolve(message.id);
+      });
+      const dispatch = actions?.actOnPending(pending.id, "steer");
+      const id = await frame.promise;
+      jest.advanceTimersByTime(DOUBLE_ESCAPE_GAP_MS);
+      socket.receive({ type: "pending-result", id, pane_id: pane, pending_id: pending.id, ok: true });
+      await dispatch;
+      expect(sent).toEqual(["\u001b", pending.text, "\r"]);
+    } else {
+      if (mode === "unsupported") await actions?.actOnPending(pending.id, "steer");
+      jest.advanceTimersByTime(DOUBLE_ESCAPE_GAP_MS);
+      expect(socket.sent.filter((message) => message.type === "pending-action")).toEqual([]);
+      expect(sent).toEqual(["\u001b", "\u001b"]);
+    }
+  } finally {
+    client.close();
+    pendingMessages.publish(pane, [], [{ id: pending.id, outcome: "discarded" }], "scope");
+    jest.useRealTimers();
+  }
 });
 
 it("requires acknowledgement kind and target to match, so pending results cannot confirm an immediate submit or secret", async () => {
