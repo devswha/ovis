@@ -27,6 +27,20 @@ it("sends one long input line to the pane's agent as its prompt, not typed raw",
   expect(keys).not.toHaveBeenCalled();
 });
 
+it("withholds the fallback Enter when a menu appears after the paste", async () => {
+  const { prompt, typed, keys } = herdr();
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "devin", agent_status: "idle", cwd: "/tmp", terminal_id: "devin-test" } as Awaited<ReturnType<typeof client.paneGet>>);
+  const composer = readFileSync(new URL("../fixtures/devin-3000.12.43-composer.txt", import.meta.url), "utf8");
+  const menu = readFileSync(new URL("../fixtures/devin-3000.12.43-trust.txt", import.meta.url), "utf8");
+  let screen = composer;
+  spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
+  prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
+  typed.mockImplementation(async () => { screen = menu; });
+  await expect(submitter()("w:p1", "hello devin", "hello devin", Date.now())).rejects.toMatchObject({ code: "submit_partial" });
+  expect(typed).toHaveBeenCalledTimes(1);
+  expect(keys).not.toHaveBeenCalled();
+});
+
 it("still types a short input line, an answer into an open menu included", async () => {
   const { prompt, typed, keys } = herdr();
   await submitter()("w:p1", "2", "2", Date.now(), true);
