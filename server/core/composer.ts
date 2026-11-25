@@ -14,6 +14,7 @@ import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
 import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteCommandEvidence, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "../dialogs/registry.ts";
+import { withoutEchoedDevinDraft } from "../dialogs/fallback.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
 import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
@@ -293,10 +294,12 @@ export const AGENT_PICKER_MESSAGE = "The agent is waiting for an answer to its o
  * herdr reports an agent no reader knows at rest under a picker of its own (Devin's and Copilot's folder trust at start), so agent.prompt would paste
  * the message there and its Enter would pick the row under the cursor ("Yes, trust"), losing the message.
  */
-export async function freeAgentPicker(paneId: string, agent: string): Promise<void> {
-  if (agentPickerWaits(agent, (await paneRead({ paneId, source: "detection", format: "text" })).text)) {
+async function freeAgentPicker(paneId: string, agent: string): Promise<string> {
+  const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
+  if (agentPickerWaits(agent, screen)) {
     throw new HerdrError("agent_blocked", AGENT_PICKER_MESSAGE);
   }
+  return screen;
 }
 
 /**
@@ -717,9 +720,9 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           await freeAgentInput(paneId, boxAgent, identity ?? undefined, boxAgent === "codex");
           inTime();
         } else if (agent === "codex") await freeCodexInput(paneId);
-        if (agent && !SCREEN_READ_AGENTS.has(agent)) {
+        if (agent === "codex" || (agent && !SCREEN_READ_AGENTS.has(agent))) {
           pickerAgent = agent;
-          await freeAgentPicker(paneId, agent);
+          if (agent !== "codex") await freeAgentPicker(paneId, agent);
         }
         // a plain Send queues behind a working Grok's turn, as typing in the terminal does: only Send now goes ahead
         if (sendNow && agent === "grok" && pane) {
@@ -772,14 +775,21 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       }
       inTime();
       const shaped = await mirrorInput(closeMention(payload), async () => await terminalAttach() ? null : await paneAgentOf(paneId));
-      if (pickerAgent !== undefined) await freeAgentPicker(paneId, pickerAgent);
+      const beforePaste = pickerAgent !== undefined && pickerAgent !== "codex" ? await freeAgentPicker(paneId, pickerAgent) : undefined;
       inTime();
       await paneSendText(paneId, shaped, undefined, mayType).catch(firstWriteFailure);
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
       if (pickerAgent !== undefined) {
         try {
-          await freeAgentPicker(paneId, pickerAgent);
+          if (pickerAgent === "codex") await freeCodexInput(paneId);
+          else {
+            const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
+            if (agentPickerWaits(pickerAgent, screen) && (pickerAgent !== "devin" || beforePaste === undefined
+              || agentPickerWaits(pickerAgent, withoutEchoedDevinDraft(beforePaste, screen, sentText)))) {
+              throw new HerdrError("agent_blocked", AGENT_PICKER_MESSAGE);
+            }
+          }
         } catch (error) {
           if (!(error instanceof HerdrError)) throw error;
           throw new HerdrError("submit_partial", FALLBACK_ENTER_WITHHELD_MESSAGE);

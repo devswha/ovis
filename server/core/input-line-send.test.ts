@@ -28,35 +28,39 @@ it("sends one long input line to the pane's agent as its prompt, not typed raw",
   expect(keys).not.toHaveBeenCalled();
 });
 
-it("withholds the fallback Enter when a menu appears after the paste", async () => {
+it.each([
+  ["devin", "../fixtures/devin-3000.12.43-composer.txt", "../fixtures/devin-3000.12.43-trust.txt"],
+  ["codex", "../../src/lib/fixtures-input-rows/codex-0.167.0/composer-empty-100.txt", "../../src/lib/fixtures-input-rows/codex-0.167.0/model-effort-40.txt"],
+])("withholds the fallback Enter when a %s menu appears after the paste", async (agent, composerFile, menuFile) => {
   const { prompt, typed, keys } = herdr();
-  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "devin", agent_status: "idle", cwd: "/tmp", terminal_id: "devin-test" } as Awaited<ReturnType<typeof client.paneGet>>);
-  const composer = readFileSync(new URL("../fixtures/devin-3000.12.43-composer.txt", import.meta.url), "utf8");
-  const menu = readFileSync(new URL("../fixtures/devin-3000.12.43-trust.txt", import.meta.url), "utf8");
-  let screen = composer;
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent, agent_status: "idle", cwd: "/tmp", terminal_id: `${agent}-test` } as Awaited<ReturnType<typeof client.paneGet>>);
+  const menu = readFileSync(new URL(menuFile, import.meta.url), "utf8");
+  let screen = readFileSync(new URL(composerFile, import.meta.url), "utf8");
   spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
   prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
   typed.mockImplementation(async () => { screen = menu; });
-  await expect(submitter()("w:p1", "hello devin", "hello devin", Date.now())).rejects.toMatchObject({
+  await expect(submitter()("w:p1", "hello agent", "hello agent", Date.now())).rejects.toMatchObject({
     code: "submit_partial", message: FALLBACK_ENTER_WITHHELD_MESSAGE,
   });
   expect(typed).toHaveBeenCalledTimes(1);
   expect(keys).not.toHaveBeenCalled();
 });
 
-it("sends ordinary Devin draft text mentioning navigation keys after a fallback paste", async () => {
+it.each(["Up/Down and Enter.", "Up/Down to select a row, Enter to confirm."])("sends a Devin draft ending in %s after a fallback paste", async (ending) => {
   const { prompt, typed, keys } = herdr();
   spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "devin", agent_status: "idle", cwd: "/tmp", terminal_id: "devin-test" } as Awaited<ReturnType<typeof client.paneGet>>);
   const composer = readFileSync(new URL("../fixtures/devin-3000.12.43-composer.txt", import.meta.url), "utf8");
-  const message = "Document these keyboard shortcuts: Up/Down and Enter.";
+  const message = `Document these keyboard shortcuts:\n${ending}`;
   let screen = composer;
   spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
   prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
   typed.mockImplementation(async () => {
-    screen = composer.replace(/^❭ .*$/m, `❭ ${message.replace(": ", ":\n")}`);
+    screen = composer.replace(/^❭ .*$/m, () => `❭ ${message}`);
   });
-  await submitter()("w:p1", message, message, Date.now());
+  await submitter()("w:p1", message, message.replaceAll("\n", "\r"), Date.now());
+  expect(typed).toHaveBeenCalledTimes(1);
   expect(keys).toHaveBeenCalledTimes(1);
+  expect(keys).toHaveBeenCalledWith("w:p1", ["Enter"], undefined, expect.any(Function));
 });
 
 it("still types a short input line, an answer into an open menu included", async () => {
