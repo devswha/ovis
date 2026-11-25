@@ -143,7 +143,7 @@ const BASE: Record<string, string> = {
   "This device's clock is behind. Check its date and time, then make the invite again.": "このデバイスの時計が遅れています。日付と時刻を確認してから、招待をもう一度作成してください。",
   "Waiting for the PC…": "PC の応答を待っています…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "この PC への試行が多すぎます。数分後に PC でやり直してください。",
-  "That number ran out. Press Add for a new one.": "数字の有効期限が切れました。「追加」を押して新しい数字を表示してください。",
+  "That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.": "数字の有効期限が切れました。「追加」を押して新しい数字を表示してください。PC で数字が一致していると答えた後なら、PC でやり直してください。",
   "Too many devices were added just now. Try again in a few minutes.": "デバイスの追加が短時間に多すぎます。数分後にもう一度お試しください。",
   "It could not be added to your account. Try again.": "アカウントに追加できませんでした。もう一度お試しください。",
   "The account service cannot change the list right now. To remove a device, use Revoke on each PC.": "今はアカウントサービスが一覧を変更できません。デバイスを外すには、各PCで取り消してください。",

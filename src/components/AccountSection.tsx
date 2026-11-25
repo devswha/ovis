@@ -9,7 +9,7 @@ import { Check, Plus, X } from "lucide-react";
 
 import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, holdListNumber, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, cancelListAdd, confirmListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
@@ -434,6 +434,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       setListNumber((prior) => prior === null ? null : { ...prior, refused });
     }).finally(() => setAnswering(false));
   };
+  // while this wait shows a run's number, the window's own prompt leaves it to the wait (one place takes the yes)
+  const heldRun = state.kind === "waiting" && listNumber?.until === state.until ? listNumber.run : null;
+  useEffect(() => heldRun === null ? undefined : holdListNumber(heldRun), [heldRun]);
   useEffect(() => {
     if (begun === null) return;
     const until = begun.until;

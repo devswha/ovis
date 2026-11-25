@@ -69,7 +69,7 @@ function askerLine(asker: AccountAsker | undefined, language: string): string | 
 }
 
 /** What the card says when its number ran out: a new one at Add, while the card has tries left. */
-const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one."), signInAgain: false });
+const numberEnded = (t: Translate, tries: number): Problem => ({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC."), signInAgain: false });
 
 /** What a card places, and goes on placing at Try again: the very post the number came from, by the member key it was worked out with. */
 type Placing = {

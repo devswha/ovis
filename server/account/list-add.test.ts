@@ -245,6 +245,14 @@ test("an add started anew in the place of one whose step was due takes its own s
   expect(world.open?.nonce).not.toBeNull();
 });
 
+test("a cancel calls off at once the step the PC was to take by itself", async () => {
+  const { add, world } = await adding();
+  await add.start(ACCOUNT);
+  expect(world.ticks).toHaveLength(1);
+  await add.cancel();
+  expect(world.ticks).toEqual([]);
+});
+
 test("a server that stops leaves nothing of an add to run by itself", async () => {
   const { add, world } = await adding();
   await add.start(ACCOUNT);

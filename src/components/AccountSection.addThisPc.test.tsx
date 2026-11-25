@@ -9,7 +9,7 @@ import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { ListAddState } from "../../shared/machines.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
-import { CLOSE_ANSWER_MS, NAMING_MS } from "../lib/account/addThisPc.ts";
+import { CLOSE_ANSWER_MS, listNumberHeld, NAMING_MS } from "../lib/account/addThisPc.ts";
 import { AccountServiceError, SignedOutError, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -2342,12 +2342,15 @@ describe("AddThisPc", () => {
       await advance(ADDED_POLL_MS);
       expect(words(renderer)).toContain("This PC is being added to your account. Does the device adding it show 482 913?");
       expect(buttons(renderer)).toEqual(["The numbers match", "Cancel", "Stop waiting"]);
+      // the window's own prompt leaves this number to the wait while the wait shows it: one place takes the yes
+      expect(listNumberHeld(RUN)).toBe(true);
       await press(renderer, "The numbers match");
       expect(byList!.calls.filter(({ what }) => what === "POST /api/account/list/add/confirm").map(({ body }) => body)).toEqual([{ run: RUN, digits: "482913" }]);
       // confirmed: the number goes, and the wait goes on until the device's entry adds the PC
       await advance(ADDED_POLL_MS);
       expect(words(renderer)).not.toContain("482 913");
       expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      expect(listNumberHeld(RUN)).toBe(false);
     });
 
     test("Cancel beside the PC's number says the numbers were not the same, and the wait ends", async () => {

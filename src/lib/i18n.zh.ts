@@ -145,7 +145,7 @@ const BASE: Record<string, string> = {
   "This device's clock is behind. Check its date and time, then make the invite again.": "此设备的时钟慢了。请检查日期和时间，然后重新创建邀请。",
   "Waiting for the PC…": "正在等待电脑响应…",
   "Too many tries for this PC. Start again on the PC in a few minutes.": "对这台 PC 的尝试次数过多。请几分钟后在 PC 上重新开始。",
-  "That number ran out. Press Add for a new one.": "这个数字已过期。请点添加获取新的数字。",
+  "That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.": "这个数字已过期。请点添加获取新的数字；如果 PC 上已确认数字一致，请在 PC 上重新开始。",
   "Too many devices were added just now. Try again in a few minutes.": "刚才添加的设备太多。请过几分钟再试。",
   "It could not be added to your account. Try again.": "未能添加到你的账户。请重试。",
   "The account service cannot change the list right now. To remove a device, use Revoke on each PC.": "账户服务现在无法更改列表。要移除设备，请在每台电脑上撤销。",
