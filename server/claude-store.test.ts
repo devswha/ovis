@@ -977,12 +977,51 @@ describe("CLAUDE_CONFIG_DIR", () => {
     );
     const child = sleeper({ ...process.env, CLAUDE_CONFIG_DIR: dir });
     const paneHome = join(dir, "pane-home");
+    mkdirSync(join(paneHome, ".claude"), { recursive: true });
     const bare = sleeper({ PATH: process.env["PATH"] ?? "", HOME: paneHome });
     try {
       for (const process of [child, bare]) await process.stdout.getReader().read();
       expect(await processClaudeConfigDir(child.pid)).toBe(dir);
       expect(await processClaudeConfigDir(bare.pid, [], dir)).toBe(join(paneHome, ".claude"));
     } finally { child.kill(); bare.kill(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects foreign ownership in a pane HOME store (#4618)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-claude-ownership-"));
+    const paneHome = join(home, "pane-home");
+    const store = join(paneHome, ".claude");
+    const cwd = join(home, "project");
+    const folder = join(store, "projects", claudeProjectDir(cwd));
+    const transcript = join(folder, `${SESSION}.jsonl`);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(transcript, '{"type":"user"}\n');
+    const original = fsPromises.lstat;
+    let foreign = store;
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(original, fsPromises, [path, options]);
+      if (path === foreign) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof original);
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: paneHome }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(join(home, ".claude"));
+      foreign = transcript;
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(store);
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+      foreign = "";
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBe(transcript);
+      const outside = join(home, "outside-project");
+      renameSync(folder, outside);
+      symlinkSync(outside, folder, "dir");
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+    } finally {
+      child.kill(); await child.exited;
+      ownership.mockRestore(); forgetClaudeSessions();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
