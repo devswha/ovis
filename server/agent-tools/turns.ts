@@ -1,5 +1,6 @@
 import type { AcpChild, AcpChildren } from "../acp/children.ts";
 import { KeeperRequestError } from "../acp/client.ts";
+import { isFullAccessMode } from "./harnesses.ts";
 import type { Ledger, ToolChild } from "./ledger.ts";
 import { HARNESS_LIMITS, answer, harnessStopReason, refuse } from "../../shared/harness-tool.ts";
 import type { SessionRef, SessionState, Untrusted } from "../../shared/harness-contract.generated.ts";
@@ -40,7 +41,9 @@ export class ChildTurns {
     this.watches.set(child, child.client.onChange(change));
     change();
   }
-  async send(child: AcpChild, row: ToolChild, args: Record<string, unknown>, expectedMode: string) {
+  async send(child: AcpChild, row: ToolChild, args: Record<string, unknown>) {
+    const expectedMode = child.client.initialSessionMode;
+    if (!expectedMode || child.client.sessionMode !== expectedMode || isFullAccessMode(row.harness, expectedMode)) return refuse("not_granted", "Child permission mode is not allowed.");
     const key = typeof args.key === "string" ? args.key : null;
     const accepted = (n: number, duplicate: boolean) => answer("accepted", { session: row.terminal, accepted: true, turn_id: `${row.id}.${n}`, key, duplicate });
     if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this child.");

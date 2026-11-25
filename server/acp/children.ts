@@ -37,8 +37,6 @@ export interface AcpStart {
   sessionMeta?: unknown;
   /** `configOptions` of the keeper's `session/new`, set before the agent answers it */
   configOptions?: readonly unknown[];
-  /** environment variables, each naming a file of that name in the child's private ROOT */
-  privateFiles?: Record<string, string>;
   /** the terminal's environment over the core's */
   env?: Record<string, string>;
   runId?: string;
@@ -209,7 +207,7 @@ export class AcpChildren {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
         labels: { [LABEL]: id, ...(start.runId ? { "ovis.run": start.runId } : {}), ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
-        ...(start.env === undefined && start.privateFiles === undefined ? {} : { env: { ...start.env, ...Object.fromEntries(Object.entries(start.privateFiles ?? {}).map(([name, file]) => [name, join(root, file)])) } }),
+        ...(start.env === undefined ? {} : { env: start.env }),
       }));
     } catch (error) {
       const live = await this.liveTerminals().catch((lookupError: unknown) => {

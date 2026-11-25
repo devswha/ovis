@@ -1,55 +1,65 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { realpathSync } from "node:fs";
+import { parseVersion } from "../../shared/agent-catalog.ts";
 import { isBrowserToolAgent } from "../../shared/browser-tools.ts";
 import type { Capabilities } from "../../shared/harness-contract.generated.ts";
-import { isRecord } from "../../shared/harness-tool.ts";
+import { runVersion, VERSION_TIMEOUT_MS } from "../agent-catalog-detect.ts";
 
 const adapters = {
-  claude: { command: "claude-agent-acp", versions: ["0.110.0", "0.112.0"], pathVar: "CLAUDE_CODE_EXECUTABLE" },
-  codex: { command: "codex-acp", versions: ["2.10.0", "2.11.0"], pathVar: "CODEX_PATH" },
+  claude: { command: "claude-agent-acp", pathVar: "CLAUDE_CODE_EXECUTABLE" },
+  codex: { command: "codex-acp", pathVar: "CODEX_PATH" },
 } as const;
 export interface HarnessCommand {
-  readonly argv: readonly string[]; readonly env?: Record<string, string>;
-  /** Only a launch recipe with a proven permission profile may supply this. ACP's free-form
-   * currentModeId alone proves nothing across harnesses or local user settings. */
-  readonly ceiling?: { readonly profile: string; readonly mode: string };
+  readonly argv: readonly string[];
+  readonly env?: Record<string, string>;
+  readonly sessionMeta?: unknown;
 }
-/** The file a link on PATH names, so the one whose version is checked is the one that runs; null once it is gone. */
+/** The file a link on PATH names, or null once it is gone. */
 const resolved = (path: string | null): string | null => {
   try { return path && realpathSync(path); } catch { return null; }
 };
 export function resolveHarness(kind: string): HarnessCommand | null {
   switch (kind) {
-    case "gjc": case "opencode": case "agy": {
+    case "gjc": case "opencode": case "agy": case "copilot": {
       const path = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
-      return path ? { argv: [path, ...(kind === "gjc" ? ["--mode", "acp"] : ["acp"])] } : null;
-    }
-    case "copilot": {
-      const path = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
-      return path ? { argv: [path, "--acp", "--stdio"] } : null;
+      if (!path) return null;
+      switch (kind) {
+        case "gjc": return { argv: [path, "--mode", "acp"] };
+        case "opencode": return { argv: [path, "acp"] };
+        case "agy": return { argv: [path, "acp", "--disable-telemetry", "--log-file", "/dev/null"], env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" } };
+        case "copilot": return { argv: [path, "--acp", "--stdio", "--no-auto-update"] };
+      }
     }
     case "claude": case "codex": {
       const adapter = adapters[kind];
       const script = resolved(Bun.which(adapter.command, { PATH: process.env["PATH"] })), executable = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
       if (!script || !executable) return null;
-      let dir = dirname(script);
-      while (dir !== dirname(dir)) {
-        const file = join(dir, "package.json");
-        if (existsSync(file)) {
-          try {
-            const pkg: unknown = JSON.parse(readFileSync(file, "utf8"));
-            if (isRecord(pkg) && pkg.name === `@agentclientprotocol/${adapter.command}`) {
-              return (adapter.versions as readonly unknown[]).includes(pkg.version) ? { argv: [script, ...(kind === "claude" ? ["--hide-claude-auth"] : [])], env: { [adapter.pathVar]: executable } } : null;
-            }
-          } catch { return null; }
-        }
-        dir = dirname(dir);
-      }
-      return null;
+      const env = { [adapter.pathVar]: executable };
+      return kind === "claude"
+        ? { argv: [script, "--hide-claude-auth"], env, sessionMeta: { claudeCode: { options: { allowDangerouslySkipPermissions: false } } } }
+        : { argv: [script], env };
     }
     default: return null;
   }
 }
+
+/** Report the harness version, not the adapter version. Version discovery never gates launch. */
+export async function harnessVersion(kind: string, command: HarnessCommand): Promise<string | undefined> {
+  const executable = kind === "claude" || kind === "codex" ? command.env?.[adapters[kind].pathVar] : command.argv[0];
+  if (executable) {
+    const probe = await runVersion(executable, ["--version"], VERSION_TIMEOUT_MS).catch(() => null);
+    if (probe?.exitCode === 0) return parseVersion(probe.stdout) ?? undefined;
+  }
+  return undefined;
+}
+
+// These are ACP mode IDs, not permission settings. Some harnesses can pre-approve actions
+// in their ordinary modes without exposing an all-access mode on the wire.
+const FULL_ACCESS_MODES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["claude", new Set(["bypassPermissions"])],
+  ["codex", new Set(["agent-full-access"])],
+  ["copilot", new Set(["autopilot", "allow-all", "https://agentclientprotocol.com/protocol/session-modes#autopilot", "https://agentclientprotocol.com/protocol/session-modes#allow-all"])],
+]);
+export const isFullAccessMode = (kind: string, mode: string): boolean => FULL_ACCESS_MODES.get(kind)?.has(mode) === true;
 
 /**
  * What `agent_harnesses` announces for one harness on this PC, built in this one place from what Ovis can prove here:

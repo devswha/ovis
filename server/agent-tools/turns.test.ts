@@ -18,7 +18,7 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
   const open = () => {
     acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 1500 });
     hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 2, harnesses: ["test", "mute"] }),
-      resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT], ceiling: { profile: "fixture/ask-v1", mode: "ask" } }) });
+      resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT] }) });
     hub.listen();
   };
   beforeEach(() => {
@@ -34,7 +34,7 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     } };
     open();
     const root = hub.runs.reserve();
-    root.bind({ self: "top", harness: "fixture-parent", depth: 0, root: root.id, started_by: null, ceiling: "fixture/ask-v1" });
+    root.bind({ self: "top", harness: "fixture-parent", depth: 0, root: root.id, started_by: null });
     token = readFileSync(root.tokenFile, "utf8");
   });
   afterEach(async () => {
@@ -120,21 +120,15 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     await call("wait", { session });
     expect(await call("result", { session })).toMatchObject({ model: "m2" });
   });
-  it("refuses an unproven parent before launching and a changed mode before another agent prompt", async () => {
-    const saved = token;
-    const unknown = hub.runs.reserve();
-    unknown.bind({ self: "other", harness: "claude", depth: 0, root: unknown.id, started_by: null });
-    token = readFileSync(unknown.tokenFile, "utf8");
-    expect(await call("start", { harness: "test", cwd: dir })).toMatchObject({ error: { code: "not_granted" } });
-    expect(programs.size).toBe(0);
-    token = saved;
+  it("refuses another agent prompt in a changed mode even after the hub restarts", async () => {
     const session = await start("echo first");
     await call("wait", { session });
     const child = acp.forPane(session);
     if (!child) throw new Error("missing child");
     await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: "code" });
+    hub.close(); acp.close(); open(); await acp.restore();
     expect(await call("send", { session, task: "echo next" })).toMatchObject({ error: { code: "not_granted" } });
-    expect(child.client.turn?.text).toBe("echo bytes=10");
+    expect(acp.forPane(session)?.client.turn?.text).toBe("echo bytes=10");
   });
   it("wait and read show only waiting_human at a card, including after restart", async () => {
     const session = await start("ask");
@@ -157,7 +151,7 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
   it("refuses an unrelated run as not_owner without changing the child or audit", async () => {
     const session = await start();
     const unrelated = hub.runs.reserve();
-    unrelated.bind({ self: "another-parent", root: unrelated.id, started_by: null, depth: 0, harness: "fixture", ceiling: "fixture/ask-v1" });
+    unrelated.bind({ self: "another-parent", root: unrelated.id, started_by: null, depth: 0, harness: "fixture" });
     token = readFileSync(unrelated.tokenFile, "utf8");
     const audit = join(dir, "tools/audit.jsonl"), before = readFileSync(audit, "utf8");
     for (const verb of ["send","stop","result","wait"]) expect(await call(verb, { session, ...(verb === "send" ? { task: "unused" } : {}) })).toMatchObject({ error: { code: "not_owner" } });
@@ -257,22 +251,22 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     expect(readFileSync(join(dir, "tools/audit.jsonl"), "utf8")).not.toContain("fixture annotation");
   });
 
-  it("allow always on one child leaves a wider-mode request on another child waiting for a person", async () => {
+  it("only allows once: another turn on either child still waits for a person", async () => {
     const a = await start("widen");
     const first = acp.forPane(a);
     const awaiting = await call("wait", { session: a });
     expect(awaiting).toMatchObject({ state: { state: "waiting_human" } });
     const asked = first?.client.pending()[0];
     if (!first || !asked) throw new Error("missing approval");
-    expect(await first.client.answer(asked.keeperId, "always")).toBe("won");
+    expect(await first.client.answer(asked.keeperId, "always")).toBe("gone");
+    expect(await first.client.answer(asked.keeperId, "allow")).toBe("won");
     await call("wait", { session: a });
     const previous = await call("result", { session: a });
     const next = await call("send", { session: a, task: "widen" });
     expect(next).toMatchObject({ accepted: true, duplicate: false });
     expect(typeof next.turn_id).toBe("string");
     expect(next.turn_id).not.toBe(previous.turn_id);
-    expect(await call("wait", { session: a, turn: next.turn_id })).toMatchObject({ state: { state: "done", turn: 2 } });
-    expect(await call("result", { session: a, turn: next.turn_id })).toMatchObject({ turn_id: next.turn_id, stop_reason: "end_turn", final_message: { text: "already allowed here" } });
+    expect(await call("wait", { session: a, turn: next.turn_id })).toMatchObject({ state: { state: "waiting_human", turn: 2 } });
     const b = await start("widen");
     expect(await call("wait", { session: b })).toMatchObject({ state: { state: "waiting_human" } });
     expect(acp.forPane(b)?.client.sessionMode).toBe("ask");

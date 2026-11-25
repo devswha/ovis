@@ -12,17 +12,11 @@ import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
 
 const REPLAY = join(import.meta.dir, "replay-agent.fake.ts");
-interface Recorded { harness: string; fixture: string; version: string; mode: string; kinds: readonly string[]; opened?: (sessionNew: Record<string, any>) => void }
-const claudeOpened = (sessionNew: Record<string, any>) => {
-  expect(sessionNew.configOptions).toEqual([{ configId: "mode", value: "default" }]);
-  expect(sessionNew._meta.claudeCode.options).toMatchObject({ settingSources: [], allowDangerouslySkipPermissions: false, tools: expect.not.arrayContaining(["EnterWorktree", "Agent", "Skill"]),
-    settings: { disableAllHooks: true, permissions: { defaultMode: "default", ask: expect.arrayContaining(["Write", "Edit", "Bash", "WebFetch", "WebSearch", "mcp__ovis-agent"]) } } });
-};
-/** Real adapters' side of a child of a parent whose permissions Ovis cannot prove, each in its recipe's launch.
- * `-ask`: no allow rule of the person's, so the write, mkdir, web request and MCP call each came as a card.
- * `-own-rule`: a rule the person set in the harness let some through unasked; the rest still came as cards. */
+interface Recorded { readonly harness: string; readonly fixture: string; readonly version: string; readonly mode: string; readonly kinds: readonly string[] }
+/** Historical permission traces: verify the keeper shows what the adapter asks, regardless of its mode or settings.
+ * These capture the earlier launch recipes, not what a default-mode launch will ask today. */
 const RECORDED: readonly Recorded[] = [
-  ...["0.110.0", "0.112.0"].map(adapter => ({ harness: "claude", fixture: `claude-agent-acp-${adapter}-ask`, version: "2.1.330 (Claude Code)", mode: "default", kinds: ["edit", "execute", "execute", "fetch", "fetch", "other"], opened: claudeOpened })),
+  ...["0.110.0", "0.112.0"].map(adapter => ({ harness: "claude", fixture: `claude-agent-acp-${adapter}-ask`, version: "2.1.330 (Claude Code)", mode: "default", kinds: ["edit", "execute", "execute", "fetch", "fetch", "other"] })),
   ...["2.10.0", "2.11.0"].flatMap(adapter => ["ask", "own-rule"].map(run => ({ harness: "codex", fixture: `codex-acp-${adapter}-${run}`, version: "codex-cli 0.171.0", mode: "read-only",
     // the edit, mkdir, curl and MCP call; the rules allowing mkdir and curl leave the edit and the MCP call
     kinds: run === "ask" ? ["edit", "execute", "execute", "execute"] : ["edit", "execute"] }))),
@@ -35,7 +29,7 @@ const RECORDED: readonly Recorded[] = [
     .map(([run, kind]) => ({ harness: "agy", fixture: `agy-1.5.16-${run}`, version: "1.5.16", mode: "default", kinds: [kind] })),
 ];
 
-describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds, opened }) => {
+describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds }) => {
   const FIXTURE = join(import.meta.dir, "fixtures", `${fixture}.jsonl`);
   const requests = readFileSync(FIXTURE, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>)
     .filter(message => message.method === "session/request_permission");
@@ -51,7 +45,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     writeFileSync(join(dir, "version"), `${version}\n`);
     // the harness's own program: it answers `--version` and otherwise plays the recorded adapter
     const program = join(dir, harness);
-    writeFileSync(program, `#!/bin/sh\n[ "$1" = --version ] && exec cat "${join(dir, "version")}"\nexec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")}"\n`);
+    writeFileSync(program, `#!/bin/sh\n[ "$1" = --version ] && exec cat "${join(dir, "version")}"\nmode="${join(dir, "mode")}"\n[ ! -f "$mode" ] || set -- "$(cat "$mode")"\nexec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")}" "$@"\n`);
     chmodSync(program, 0o755);
     const fake = new FakeHcCore();
     fake.onStart = started => { programs.set(started.address, Bun.spawn([...started.argv], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })); };
@@ -92,18 +86,18 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     expect(await call("wait", { session, timeout_s: 5 })).toMatchObject({ state: { state: "done" } });
   }
 
-  it("opens in the recipe's mode, brings every recorded card to a person with one-time choices only, and keeps asking on the next send", async () => {
+  it("accepts the mode reported at start and routes every recorded card to a person with one-time choices", async () => {
     const started = await call("start", { harness, cwd: dir, task: "do the actions" });
     if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error(JSON.stringify(started));
     const session = started.session.address;
-    opened?.(replayed()[0]!.sessionNew);
+    expect(replayed()[0]?.sessionNew).not.toHaveProperty("configOptions");
     expect(started.session.version).toBe(version.match(/\d+\.\d+\.\d+/)?.[0]);
     expect(acp.forPane(session)?.client.sessionMode).toBe(mode);
     await rejectEveryCard(session);
     expect(await call("send", { session, task: "again" })).toMatchObject({ accepted: true });
     await rejectEveryCard(session);
     expect(acp.forPane(session)?.client.sessionMode).toBe(mode);
-    expect(replayed().slice(1).map(row => [row.answered, row.answer.outcome.optionId])).toEqual([...asked, ...asked].map(id => [id, rejectOf(id)]));
+    expect(replayed().filter(row => row.answered).map(row => [row.answered, row.answer.outcome.optionId])).toEqual([...asked, ...asked].map(id => [id, rejectOf(id)]));
   });
 
   it("takes no new task once the child reports a wider mode", async () => {
@@ -115,7 +109,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     await until(child.client, "the wider mode", () => child.client.sessionMode === "acceptEdits");
     expect(await call("wait", { session, timeout_s: 5 })).toMatchObject({ state: { state: "done" } });
     expect(await call("send", { session, task: "do the actions" })).toMatchObject({ error: { code: "not_granted" } });
-    expect(replayed().filter(row => row.answered)).toEqual([]);
+    expect(replayed().filter(row => row.prompt)).toEqual([expect.objectContaining({ prompt: expect.stringContaining("widen") })]);
   });
 
   it("never hands the child a slash command as a task, which could change its permissions unasked", async () => {
@@ -126,12 +120,31 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     expect(await call("send", { session, task: "/allow-all" })).toMatchObject({ error: { code: "bad_request" } });
     expect(await call("send", { session, task: "  /permissions" })).toMatchObject({ error: { code: "bad_request" } });
     expect(await call("start", { harness, cwd: dir, task: "/allow-all" })).toMatchObject({ error: { code: "bad_request" } });
-    expect(replayed().filter(row => row.answered)).toEqual([]);
+    expect(replayed().filter(row => row.prompt)).toEqual([]);
   });
 
-  it("refuses a version its launch was not run against, and starts nothing", async () => {
-    writeFileSync(join(dir, "version"), version.replace(/\d+(?=\D*$)/, (n: string) => String(Number(n) + 1)));
-    expect(await call("start", { harness, cwd: dir })).toMatchObject({ error: { code: "not_granted" } });
-    expect(programs.size).toBe(0);
+  it("opens and reports an unrecognized version", async () => {
+    writeFileSync(join(dir, "version"), version.replace(/\d+\.\d+\.\d+/, "99.1.2"));
+    const defaultMode = harness === "claude" ? "auto" : harness === "codex" ? "agent" : mode;
+    writeFileSync(join(dir, "mode"), defaultMode);
+    const started = await call("start", { harness, cwd: dir });
+    expect(started).toMatchObject({ kind: "session", session: { version: "99.1.2" } });
+    if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error("No child address");
+    expect(acp.forPane(started.session.address)?.client.sessionMode).toBe(defaultMode);
   });
+
+  const fullAccess = new Map([
+    ["claude-agent-acp-0.110.0-ask", "bypassPermissions"],
+    ["codex-acp-2.10.0-ask", "agent-full-access"],
+    ["copilot-1.0.109-ask", "https://agentclientprotocol.com/protocol/session-modes#autopilot"],
+  ]).get(fixture);
+  if (fullAccess) {
+    it("stops a full-access child before sending its initial task", async () => {
+      writeFileSync(join(dir, "version"), "99.1.2");
+      writeFileSync(join(dir, "mode"), fullAccess);
+      expect(await call("start", { harness, cwd: dir, task: "do the actions" })).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
+      expect(await acp.terminals()).not.toEqual(expect.arrayContaining([expect.objectContaining({ state: "live" })]));
+      expect(replayed()).toEqual([expect.objectContaining({ sessionNew: expect.any(Object) })]);
+    });
+  }
 });

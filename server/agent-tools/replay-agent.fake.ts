@@ -3,13 +3,13 @@
  * `initialize` and `session/new` answers, then on every prompt each recorded permission request in turn,
  * the next only once the client answered the last, and the recorded end of the turn. A prompt that says
  * `widen` instead switches the session to `acceptEdits` the way an agent reports it. What the client
- * sent on `session/new` and each answer it gave go to <log>, one JSON line each.
+ * sent on `session/new`, each prompt and each answer go to <log>, one JSON line each.
  *
- *   bun replay-agent.fake.ts <fixture> <log>
+ *   bun replay-agent.fake.ts <fixture> <log> [start-mode]
  */
 import { appendFileSync, readFileSync } from "node:fs";
 
-const [fixture, log] = process.argv.slice(2);
+const [fixture, log, startMode] = process.argv.slice(2);
 if (!fixture || !log) throw new Error("usage: bun replay-agent.fake.ts <fixture> <log>");
 const recorded = readFileSync(fixture, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>);
 const [initialized, opened] = recorded.filter(m => "result" in m);
@@ -47,8 +47,21 @@ for await (const chunk of Bun.stdin.stream()) {
     if (!line) continue;
     const message = JSON.parse(line) as Record<string, any>;
     if (message.method === "initialize") send({ id: message.id, result: initialized!.result });
-    else if (message.method === "session/new") { note({ sessionNew: message.params }); send({ id: message.id, result: opened!.result }); }
-    else if (message.method === "session/prompt") void turn(message.id, JSON.stringify(message.params.prompt));
+    else if (message.method === "session/new") {
+      note({ sessionNew: message.params });
+      const result = opened!.result;
+      if (startMode !== undefined) {
+        result.modes.currentModeId = startMode;
+        const mode = result.configOptions?.find((option: { category?: string }) => option.category === "mode");
+        if (mode) mode.currentValue = startMode;
+      }
+      send({ id: message.id, result });
+    }
+    else if (message.method === "session/prompt") {
+      const prompt = JSON.stringify(message.params.prompt);
+      note({ prompt });
+      void turn(message.id, prompt);
+    }
     else if (message.method === undefined && waiting.has(String(message.id))) { waiting.get(String(message.id))!(message.result ?? message.error); waiting.delete(String(message.id)); }
     else if (message.id !== undefined && message.method !== undefined) send({ id: message.id, error: { code: -32601, message: "Method not found" } });
   }
