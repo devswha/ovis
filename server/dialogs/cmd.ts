@@ -1,5 +1,6 @@
+import type { InteractivePromptAnswer } from "../../shared/protocol.ts";
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, type CardWords, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, own } from "./shared.ts";
+import { ANSI_RE, KEY, type CardWords, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, isDivider, joinWrapped, keySteps, navigationKeys, own, type PromptDraft } from "./shared.ts";
 
 /**
  * Command Code's permission prompt, as its TUI draws it (ACP `session/request_permission`):
@@ -31,7 +32,202 @@ export function cmdFooterStart(lines: string[]): number {
   return /^↑\/↓navigate·enterselect(?:·ctrl\+[ey]explain)?·Runcmd--yolotobypassallpermissions\(Docs↗\)$/i.test(footer) ? at : -1;
 }
 
+/** Command Code's ask_user_question footer, wrapped by Ink at narrow widths. */
+export function cmdQuestionFooterStart(lines: string[]): number {
+  const at = findLastIndex(lines, (line) => /^\s*Enter to select\s*\|\s*Arrow keys to navigate\s*\|/i.test(cleanLine(line)));
+  if (at < 0) return -1;
+  const footer = lines.slice(at).join("").replace(/\s/g, "");
+  return /^Entertoselect\|Arrowkeystonavigate\|1-9quickselect\|nnotes\|cchat\|Esctocancel$/i.test(footer) ? at : -1;
+}
+
+/** While the inline free-text editor is focused Command Code hides the key footer. */
+export function cmdQuestionPanelActive(lines: string[]): boolean {
+  if (cmdQuestionFooterStart(lines) >= 0) return true;
+  const last = findLastIndex(lines, (line) => cleanLine(line) !== "");
+  if (last < 0) return false;
+  if (/^\s*(?:[❯›>])?\s*\d+\.\s+(?:\[[ xX✔]\]\s*)?Type something\.{3}$/i.test(lines[last]!)) return true;
+  if (!/^\s*(?:[❯›>])?\s*(?:Submit|Next)\s*$/i.test(lines[last]!)) return false;
+  const custom = findLastIndex(lines.slice(0, last), (line) => cleanLine(line) !== "");
+  return custom >= 0 && /^\s*(?:[❯›>])?\s*\d+\.\s+(?:\[[ xX✔]\]\s*)?Type something\.{3}$/i.test(lines[custom]!);
+}
+
+const CMD_TAB_RE = /^[✔●◯]\s+(.+?)(?:\s+\|\s+[✔●◯]\s+.+)+$/;
+const CMD_ROW_RE = /^\s*([❯›>])?\s*(\d+)\.\s+(?:(\[[ xX✔]\])\s*)?(.+?)\s*$/;
+const CMD_REVIEW_BACK_RE = /^←\s+to go back and edit$/i;
+
+interface CmdTab { label: string; marker: "answered" | "current" | "open" }
+
+function commandTabs(lines: string[], before: number): { index: number; tabs: CmdTab[] } | null {
+  for (let index = before - 1; index >= Math.max(0, before - 20); index -= 1) {
+    const line = cleanLine(lines[index]!);
+    if (!CMD_TAB_RE.test(line)) continue;
+    const tabs = line.split("|").map((cell) => {
+      const match = /^\s*([✔●◯])\s+(.+?)\s*$/.exec(cell)!;
+      const marker: CmdTab["marker"] = match[1] === "✔" ? "answered" : match[1] === "●" ? "current" : "open";
+      return { label: match[2]!, marker };
+    });
+    if (tabs.length >= 2 && tabs.at(-1)?.label === "Review") return { index, tabs };
+  }
+  return null;
+}
+
+function cmdSteps(tabs: { tabs: CmdTab[] }, current: number): Pick<PromptDraft, "steps" | "can_step_back" | "can_step_next"> & { nativeSteps: NonNullable<ParsedPrompt["nativeSteps"]> } {
+  const labels = tabs.tabs.map((tab) => tab.label);
+  return {
+    steps: tabs.tabs.map((tab, index) => ({ label: tab.label, answered: tab.marker === "answered", current: index === current, ...(index !== current ? { can_navigate: true } : {}) })),
+    can_step_back: current > 0,
+    can_step_next: current < tabs.tabs.length - 1,
+    nativeSteps: { identity: JSON.stringify(labels), index: current, count: labels.length, next: KEY.right, previous: KEY.left },
+  };
+}
+
+interface CmdRow {
+  number: number;
+  label: string;
+  description: string | null;
+  selected: boolean;
+  checked: boolean;
+  answered: boolean;
+  lineIndex: number;
+}
+
+function commandRows(lines: string[], start: number, end: number): CmdRow[] {
+  const rows: CmdRow[] = [];
+  for (let index = start; index < end; index += 1) {
+    const match = CMD_ROW_RE.exec(lines[index]!);
+    if (!match) continue;
+    const answered = /\s+✔$/.test(match[4]!);
+    const row: CmdRow = {
+      number: Number(match[2]), label: match[4]!.replace(/^\[.\]\s*/, "").replace(/\s+✔$/, "").trim(), description: null,
+      selected: match[1] !== undefined, checked: match[3] === "[✔]", answered, lineIndex: index,
+    };
+    const description: string[] = [];
+    for (let line = index + 1; line < end && !CMD_ROW_RE.test(lines[line]!) && !/^\s*(?:Submit|Next)\s*$/.test(lines[line]!) && lines[line]!.trim() !== ""; line += 1) {
+      if (isDivider(lines[line]!)) break;
+      description.push(cleanLine(lines[line]!));
+    }
+    row.description = description.length > 0 ? joinWrapped(description, Math.max(1, ...lines.map((line) => Bun.stringWidth(line)))) : null;
+    rows.push(row);
+  }
+  return rows;
+}
+
+function questionText(lines: string[], firstRow: number, tabsIndex: number): string | null {
+  for (let index = firstRow - 1; index > tabsIndex; index -= 1) {
+    const line = cleanLine(lines[index]!);
+    if (line && !isDivider(line)) return line;
+  }
+  return null;
+}
+
+function cmdReviewAnswers(lines: string[], from: number, submitRow: number): InteractivePromptAnswer[] | null {
+  const answers: InteractivePromptAnswer[] = [];
+  for (let index = from; index < submitRow; index += 1) {
+    const match = /^\s*(\d+)\.\s+(.+)$/.exec(lines[index]!);
+    if (!match) continue;
+    const answer = lines[index + 1]?.trim();
+    answers.push({ question: match[2]!.trim(), answer: answer && !/^\d+\./.test(answer) ? answer : null });
+  }
+  return answers.length > 0 ? answers : null;
+}
+
+function parseCmdSubmit(screen: string): ParsedPrompt | null {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  if (cmdQuestionFooterStart(lines) >= 0) return null;
+  const back = findLastIndex(lines, (line) => CMD_REVIEW_BACK_RE.test(cleanLine(line)));
+  if (back < 0) return null;
+  const tabs = commandTabs(lines, back);
+  if (!tabs || tabs.tabs.at(-1)?.marker !== "current") return null;
+  const submitRow = findLastIndex(lines, (line, index) => index < back && /^\s*(?:[❯›>])?\s*1\.\s+Submit\s*$/.test(line));
+  if (submitRow < 0 || !/^\s*(?:[❯›>])?\s*2\.\s+Cancel\s*$/.test(lines[submitRow + 1] ?? "")) return null;
+  const selected = [lines[submitRow]!, lines[submitRow + 1]!].filter((line) => /^\s*[❯›>]/.test(line)).length;
+  if (selected !== 1) return null;
+  const current = tabs.tabs.length - 1;
+  const navigation = cmdSteps(tabs, current);
+  return finishPrompt("cmd", {
+    kind: "menu", title: "Review", question: "Review", body: null,
+    options: [{ label: own("Submit"), description: null }, { label: own("Cancel"), description: null }],
+    multi_select: false, custom_option_index: null, answers: cmdReviewAnswers(lines, tabs.index + 1, submitRow) ?? undefined,
+    steps: navigation.steps, can_step_back: true,
+  }, {
+    responder: "cmd-submit", menuLabels: ["Submit", "Cancel"], selectedIndex: lines[submitRow]!.includes("❯") ? 0 : 1,
+    checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null, nativeSteps: navigation.nativeSteps,
+  }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
+}
+
 function parseCmdQuestion(screen: string): ParsedPrompt | null {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  const footer = cmdQuestionFooterStart(lines);
+  const end = footer >= 0 ? footer : findLastIndex(lines, (line) => cleanLine(line) !== "") + 1;
+  if (footer < 0 && !cmdQuestionPanelActive(lines)) return null;
+  const firstRow = lines.findIndex((line, index) => index < end && CMD_ROW_RE.test(line));
+  if (firstRow < 0) return null;
+  const tabs = commandTabs(lines, firstRow);
+  if (footer < 0 && tabs === null) return null;
+  const rows = commandRows(lines, firstRow, end);
+  if (rows.length < 2 || !rows.every((row, index) => row.number === index + 1)) return null;
+  const finish = findLastIndex(lines, (line, index) => index > firstRow && index < end && /^\s*(?:Submit|Next)\s*$/.test(line));
+  const hasFinish = finish >= 0;
+  const customRow = rows.at(-1)!;
+  if (!/^Type something\.{3}$/i.test(customRow.label)) return null;
+  const optionRows = rows.slice(0, -1);
+  const multi = optionRows.some((row) => row.checked || /\[[ xX✔]\]/.test(lines[row.lineIndex]!));
+  if (hasFinish !== multi) return null;
+  const selectedRows = rows.filter((row) => row.selected);
+  const finishSelected = hasFinish && /^\s*[❯›>]/.test(lines[finish]!);
+  if (selectedRows.length + (finishSelected ? 1 : 0) !== 1) return null;
+  const selectedIndex = finishSelected ? optionRows.length + 1 : selectedRows[0]!.number - 1;
+  const tabsInfo = tabs && tabs.tabs.at(-1)?.marker !== "current" ? tabs : null;
+  const current = tabsInfo?.tabs.findIndex((tab) => tab.marker === "current") ?? -1;
+  if (tabsInfo && current < 0 || tabsInfo && current === tabsInfo.tabs.length - 1) return null;
+  const question = questionText(lines, firstRow, tabsInfo?.index ?? -1);
+  if (!question) return null;
+  const navigation = tabsInfo ? cmdSteps(tabsInfo, current) : null;
+  const title: CardWords = navigation && tabsInfo
+    ? own("{label} · {n} of {total}", { label: tabsInfo.tabs[current]!.label, n: current + 1, total: tabsInfo.tabs.length - 1 })
+    : own(multi ? "Multiple choice" : "Question");
+  const draft: PromptDraft = {
+    kind: "question", title, question, body: null,
+    options: optionRows.map((row) => ({ label: row.label, description: row.description })),
+    multi_select: multi, ...(multi ? { checks_with_text: true as const } : {}),
+    custom_option_index: optionRows.length,
+    ...(multi && optionRows.some((row) => row.checked) ? { default_option_indices: optionRows.flatMap((row, index) => row.checked ? [index] : []) } : {}),
+    ...(optionRows.findIndex((row) => row.answered) >= 0 ? { default_option_index: optionRows.findIndex((row) => row.answered) } : {}),
+    ...(navigation ? { steps: navigation.steps, can_step_back: navigation.can_step_back, can_step_next: navigation.can_step_next } : {}),
+  };
+  // Enter ticks a row of a multiple choice, as Space does, but Space ticks only the row Command Code was told is
+  // highlighted, and none is until the cursor first moves: a Space on the row the panel opened on is lost
+  const toggles = (picked: readonly number[]) => {
+    const wanted = new Set(picked);
+    const keys: string[] = [];
+    let cursor = selectedIndex;
+    for (const index of optionRows.keys()) {
+      if (wanted.has(index) === optionRows[index]!.checked) continue;
+      keys.push(...navigationKeys(index - cursor), KEY.enter);
+      cursor = index;
+    }
+    return { keys, cursor };
+  };
+  const internal: Parameters<typeof finishPrompt>[2] = {
+    ...(navigation ? { nativeSteps: navigation.nativeSteps } : {}), responder: "cmd-question",
+    menuLabels: [...optionRows.map((row) => row.label), customRow.label, ...(hasFinish ? [cleanLine(lines[finish]!).trim()] : [])], selectedIndex,
+    checkedOptionIndices: optionRows.flatMap((row, index) => row.checked ? [index] : []), customMenuIndex: optionRows.length,
+    rejectWithEscapeIndex: null,
+    customSteps: (text: string, picked?: number[]) => {
+      const { keys, cursor } = multi && picked !== undefined ? toggles(picked) : { keys: [] as string[], cursor: selectedIndex };
+      keys.push(...navigationKeys(optionRows.length - cursor));
+      return [...keySteps(keys), { text: text.replace(/\s*\r?\n\s*/g, " ").trim() }, ...keySteps(multi ? [KEY.enter, KEY.down, KEY.enter] : [KEY.enter])];
+    },
+    ...(multi ? { multiSteps: (picked: number[]) => {
+      const { keys, cursor } = toggles(picked);
+      keys.push(...navigationKeys(optionRows.length + 1 - cursor), KEY.enter);
+      return keySteps(keys);
+    } } : {}),
+  };
+  return finishPrompt("cmd", draft, internal, { steps: undefined, can_step_back: undefined, can_step_next: undefined, default_option_index: undefined });
+}
+
+function parseCmdPermission(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = cmdFooterStart(lines);
   if (hintIndex < 0) return null;
@@ -124,8 +320,16 @@ export const readers: readonly DialogReader[] = [
     // position the chat never saw
     reread: "before-commit", list: "none",
     parse: (screen) => {
-      const parsed = parseCmdQuestion(screen);
+      const parsed = parseCmdQuestion(screen) ?? parseCmdPermission(screen);
       return parsed?.responder === "cmd-question" ? parsed : null;
+    },
+  },
+  {
+    id: "cmd-submit", agents: ["cmd"], priority: 20,
+    reread: "before-commit", list: "none",
+    parse: (screen) => {
+      const parsed = parseCmdSubmit(screen);
+      return parsed?.responder === "cmd-submit" ? parsed : null;
     },
   },
 ];
