@@ -2083,7 +2083,12 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   Ovis is behind the list the join is marked `list_behind` too, and `ovis approve` says that the
   device was not let in and that Ovis on this PC needs an update. On a PC that joined by an invite,
   which signs for nobody, it is marked `list_not_signer`, and `ovis approve` says that the device was
-  not let in and to allow it on another device of the account. A join into the account on a pinned
+  not let in and to allow it on another device of the account. On a PC that came into the list as its
+  account moved and holds no key of its own in it yet, it is marked `list_needs_keys`, and `ovis approve`
+  says so, and that `ovis add` on this PC gives it its keys. A join of a key this PC itself keeps out (a
+  block here, which closes the PC to every key newer than its target, whatever the list holds) is
+  marked `list_held`, and `ovis approve` says that the device is not let in here until that block is
+  lifted, and where. A join into the account on a pinned
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
@@ -2125,8 +2130,11 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   `list_not_in` (a member allowed it and no entry reached this PC), `list_pc_behind` (Ovis on this
   PC is older than what a member wrote into the list, so the PC signs nobody in until it is
   updated; a device of the account can still allow the newcomer), `list_not_signer` (this PC joined
-  by an invite and signs nobody into the list: a device of the account allows the newcomer), else
-  `list_refused`. One entry
+  by an invite and signs nobody into the list: a device of the account allows the newcomer),
+  `list_needs_keys` (this PC came in as its account moved, with no key of its own in the list yet:
+  the same, and `ovis add` on it gives it its keys), `list_held_here` (this PC itself keeps that key
+  out, by a block here: the device may be in the list and opens the account's other PCs, and opens
+  this one once the block is lifted), else `list_refused`. One entry
   is signed for one place: the same signed entry is sent again while this PC's copy shows the same
   head (a lost answer, a 5xx answer that says nothing of the entry, a read that failed, a service
   that asks to try again or is reading the list again, after the time its `retry-after` names),

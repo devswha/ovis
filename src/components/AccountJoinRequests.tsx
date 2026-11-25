@@ -1,7 +1,6 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { PostedPc } from "../lib/account/listAdd.ts";
-import { pageListAdds, type ListAdds } from "../lib/account/listPcs.ts";
+import { pageListAdds, type ListAdds, type ListedPost } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs, newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
@@ -61,7 +60,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
   const t = useT();
   const [asking, setAsking] = useState<Asking | null>(null);
   // the PC whose number is asked for, on an account that keeps a list
-  const [adding, setAdding] = useState<{ readonly pc: MyPc; readonly post: PostedPc } | null>(null);
+  const [adding, setAdding] = useState<{ readonly pc: MyPc; readonly post: ListedPost } | null>(null);
   // the declined listings, so a new request from the same PC is shown
   const [denied, setDenied] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
@@ -129,8 +128,9 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
     } finally { setBusy(null); }
   };
   const { lists } = asking;
-  // on an account that keeps a list, only a PC that posted for it is asked about, and only by its number
-  const postOf = (pc: MyPc): PostedPc | undefined => lists?.posts.find((post) => post.server_id === pc.server_id);
+  // on an account that keeps a list, only a PC that posted for it is asked about, and only by its number (as My PCs and
+  // Manage account read it: listPcs.ts postedFor; keys another device's entry holds are that device's to finish)
+  const postOf = (pc: MyPc): ListedPost | undefined => lists?.posts.find((post) => post.server_id === pc.server_id && post.for.kind !== "signer");
   const allow = (pc: MyPc): void => {
     if (lists === null) { open(pc.server_id); return; }
     const post = postOf(pc);
@@ -153,7 +153,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
     </div>
     ))}
     {adding !== null && lists !== null && (
-      <AddPcByNumber list={lists.list} account={asking.session.account} post={adding.post} name={adding.pc.name}
+      <AddPcByNumber list={lists.list} account={asking.session.account} post={adding.post} name={adding.pc.name} keys={adding.post.for.kind === "keys"}
         onClose={() => setAdding(null)} onAdded={() => { setAdding(null); window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT)); }} />
     )}
   </>;

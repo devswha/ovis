@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
-import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
-import { pageListReading, pagePcs, readPageList } from "../lib/account/listPcs.ts";
+import { postedPcs } from "../lib/account/listAdd.ts";
+import { pageListReading, pagePcs, postedFor, readPageList, type ListedPost } from "../lib/account/listPcs.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
@@ -160,10 +160,11 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     if (how === "directory" && !byList && inRelayShell()) await (await loadRelayShell()).forgetSavedPc(serverId).catch(() => undefined);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
   });
-  // The PCs that posted their keys for the list, where this device may add one to it: a row the list does not hold
-  // yet offers Add for such a PC, and says to update one that posted nothing. null: not read, so neither is said
-  const [posts, setPosts] = useState<readonly PostedPc[] | null>(null);
-  const [adding, setAdding] = useState<{ readonly pc: DirectoryPc; readonly post: PostedPc } | null>(null);
+  // The PCs that posted their keys for the list, where this device may add one to it, each with what its Add does
+  // (listPcs.ts postedFor): a row the list does not hold yet offers Add for such a PC, and says to update one that posted
+  // nothing; a row the move carried in with no key of its own offers Add for its keys. null: not read, so neither is said
+  const [posts, setPosts] = useState<readonly ListedPost[] | null>(null);
+  const [adding, setAdding] = useState<{ readonly pc: DirectoryPc; readonly post: ListedPost } | null>(null);
   // for a device that is in the account's signed list, the PCs that list holds (listPcs.ts)
   // (a page that has not read its copy of the list yet reads it first: until a read ends, every row is marked)
   // Reads overlap (the list moves while the directory is read): only the newest one draws, so an older answer, or an
@@ -181,12 +182,16 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     setPcs(shown);
     const list = pageAccountList();
     // only a device that may write the list adds a PC to it
-    if (list === null || pageListReading(account) !== "in" || list.writer() === null || !shown.some((pc) => pc.not_in_list === true)) { setPosts(null); return; }
+    const writer = list === null || pageListReading(account) !== "in" ? null : list.writer();
+    if (list === null || writer === null || !shown.some((pc) => pc.not_in_list === true || pc.by_list === true)) { setPosts(null); return; }
     const posted = await postedPcs(list).catch((error: unknown) => {
       console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
       return null;
     });
-    if (mine === reads.current) setPosts(posted);
+    if (mine === reads.current) setPosts(posted === null ? null : posted.flatMap((post) => {
+      const kind = postedFor(writer.state, writer.keys.key, post);
+      return kind === null ? [] : [{ ...post, for: kind }];
+    }));
   }, [service, account]);
   useEffect(() => {
     void read();
@@ -206,13 +211,20 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
           : pcs.map((pc) => {
             // a PC the list holds that the account service gives no way to: off, as far as this device can tell, and removable
             const off = offlinePc(pc, now) || (pc.by_list === true && pc.relay === null);
-            const post = pc.not_in_list === true && !watching ? posts?.find((each) => each.server_id === pc.server_id) : undefined;
+            const listed = watching ? undefined : posts?.find((each) => each.server_id === pc.server_id);
+            // Add here: a PC the list does not hold yet, or one the move carried in, for its keys. Keys the list holds
+            // by another device's entry are taken by the PC from that device alone: its row names it, and offers no Add
+            const post = listed !== undefined && (listed.for.kind === "keys" || (listed.for.kind === "add" && pc.not_in_list === true)) ? listed : undefined;
+            const signer = listed?.for.kind === "signer" ? listed.for.signer : null;
+            const signerName = signer === null ? null : pageAccountList()?.view().devices.find((device) => device.key === signer)?.name?.label ?? t("another device of your account");
             return (
               <li key={pc.server_id} className="account-manage-row" data-pc-id={pc.server_id}>
                 <StatusDot state={off ? "offline" : "ready"} />
                 <span className="visually-hidden">{off ? t("Offline") : t("Online")}</span>
                 {/* no keys posted: not added from that PC yet, or its Ovis is from before lists; both are said */}
-                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first")}` : ""}</span>}</span>
+                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first")}` : ""}</span>}
+                  {pc.needs_keys === true && <span className="settings-hint" data-pc-note=""> · {t("No key of its own in your account's list yet")}{posts !== null && post === undefined && signerName === null && !watching ? ` · ${t("Run ovis add on that PC to give it one, and compare the number with this device")}` : ""}</span>}
+                  {signerName !== null && <span className="settings-hint" data-pc-note=""> · {t("Only {device} can finish giving it its keys: compare the number on {device}", { device: signerName })}</span>}</span>
                 {post !== undefined && <button type="button" className="btn account-head-btn" data-action="add-pc" onClick={() => setAdding({ pc, post })}>{t("Add|account pc")}</button>}
                 {/* On an account with no list, a PC in use lists itself again on its next pull: only an offline one is
                     offered, whatever its age. A PC the account's list holds comes back only as a new PC: on or off */}
@@ -223,7 +235,7 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
       </ul>
       {removal.prompt !== null && <p className="settings-condition">{removal.prompt}</p>}
       {adding !== null && pageAccountList() !== null && (
-        <AddPcByNumber list={pageAccountList()!} account={account} post={adding.post} name={adding.pc.label} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
+        <AddPcByNumber list={pageAccountList()!} account={account} post={adding.post} name={adding.pc.label} keys={adding.post.for.kind === "keys"} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
       )}
       {asked !== null && (
         <ConfirmDialog title={t("Remove {name} from your account?", { name: asked.label })}

@@ -644,7 +644,7 @@ export function lockRefusal(code: "locked" | "strict"): string {
  * them, for the own window's card to show; this terminal never shows them, and asks for them typed all the same.
  */
 /** `list`: the join is let in by the account's signed list, so an approval is only received here: the device is in once its entry is in the list. */
-export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean; readonly list_not_signer?: boolean; readonly list_unknown?: boolean }
+export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean; readonly list_not_signer?: boolean; readonly list_needs_keys?: boolean; readonly list_held?: boolean; readonly list_unknown?: boolean }
 
 /**
  * A join this PC cannot let in (`list_unknown`, server/relay/session.ts): it is pinned to its account's signed list, and
@@ -652,21 +652,31 @@ export interface OwnJoin { readonly id: string; readonly label: string; readonly
  */
 const olderAppWords = (label: string): string => `${label} cannot be let in here: this PC lets devices into your account by its signed list, and ${label} asked without its part of that list, as an Ovis older than 0.5.10 does. Update Ovis on ${label}, then have it ask to join again.\n`;
 
+/** Why this PC lets nobody into its list by an approval here (GET /api/relay/joins), or keeps that one device out. */
+type CannotSign = "behind" | "not_signer" | "needs_keys" | "held";
+
 /**
  * What a terminal says once this PC took the approval of `label`: it is let in at once, or, by the account's list, once
- * its entry is there. `cannot`: why this PC signs nobody into its list (`behind`, or `not_signer` for a PC that joined
- * by an invite), so the approval here lets nobody in.
+ * its entry is there. `cannot`: why the approval here lets nobody in: this PC signs nobody into its list (`behind`;
+ * `not_signer` for a PC that joined by an invite; `needs_keys` for one that came in as its account moved, with no key
+ * of its own in the list yet), or it keeps that very device out (`held`, a block on this PC). `command`: how this
+ * command is typed here.
  */
-const approvedWords = (label: string, list: boolean, cannot: "behind" | "not_signer" | null = null): string => cannot === "behind"
+const approvedWords = (label: string, list: boolean, cannot: CannotSign | null = null, command = "ovis"): string => cannot === "held"
+  ? `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it, whether or not your account's list holds it. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`
+  : cannot === "behind"
   ? `${label} was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have ${label} ask again; or allow it on another device of your account.\n`
+  : cannot === "needs_keys"
+  ? `${label} was not let in: this PC came into your account's list as your account moved, and holds no key of its own in it yet, so it lets nobody into the list itself. Allow ${label} on another device of your account, or run ${command} add on this PC to give it its keys (compare the number with a device of your account), then have ${label} ask again.\n`
   : cannot === "not_signer"
   ? `${label} was not let in: this PC joined your account by an invite, and a PC that did lets nobody into your account's list itself. Allow ${label} on another device of your account.\n`
   : list
   ? `The approval of ${label} was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n`
   : `${label} is let in; it opens this PC in a moment.\n`;
 
-/** Why this PC signs nobody into its list, as GET /api/relay/joins says of a join into it; null when it may. */
-const cannotSign = (join: OwnJoin): "behind" | "not_signer" | null => join.list_behind === true ? "behind" : join.list_not_signer === true ? "not_signer" : null;
+/** Why an approval here lets this join into nobody's list, as GET /api/relay/joins says of it; null when it may. */
+const cannotSign = (join: OwnJoin): CannotSign | null => join.list_held === true ? "held" : join.list_behind === true ? "behind"
+  : join.list_needs_keys === true ? "needs_keys" : join.list_not_signer === true ? "not_signer" : null;
 
 /** What `POST /api/relay/join` made of the six digits typed: `away` when its answer did not come. */
 export type JoinOutcome = "approved" | "wrong_digits" | "gone" | "locked" | "strict" | "away";
@@ -723,7 +733,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
       // a join into the account's list is let in by its entry, first join or not: the approval was received, no more
-      out(outcome === "approved" ? first || join.list === true ? approvedWords(label, join.list === true, cannotSign(join)) : `Approved: ${label} joins your account once it confirms.\n`
+      out(outcome === "approved" ? first || join.list === true ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);
@@ -1603,6 +1613,12 @@ export interface Pressing {
   /** at the end of the wait, asks for the admission once more before the listing is taken off: an Add pressed in its last seconds */
   readonly askBeforeUnlist?: true;
   /**
+   * This PC is in the account already and only takes its keys in the account's signed list (it came in as the account
+   * moved, with no key of its own there): it is done once its add by the list says so, never because it is in the
+   * account, and nothing is taken off the account's list when the run stops.
+   */
+  readonly inAccount?: true;
+  /**
    * Stopped (Ctrl+C), the listing is taken off first, within the ten seconds a stopped run has (plugin.ts stopOnSignals):
    * this PC's account is read with a short bound first, so a PC that just took its admission is not taken off
    */
@@ -1668,6 +1684,8 @@ type ListAddState =
   | { readonly state: "ended"; readonly run?: string; readonly why: string };
 
 /** How `add` says that its account adds this PC by the account's signed list. */
+/** How often a keys run asks this PC whether it holds its own key after its add said added, before it says it does not. */
+const KEYS_LOOKS = 5;
 const LIST_KEPT = "Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.";
 
 /** How often `add` asks this PC where its add by the list stands: the number shows, and a typed yes is taken, within this. */
@@ -1760,7 +1778,7 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
   const stopAt = now() + FIRST_JOIN_MS;
   interface Question { readonly prompt: string; shownAt: number | null }
   const intro: Question = { prompt: `Open ${name} from My PCs on your phone. If the phone shows six digits, type them here (Enter to finish without): `, shownAt: null };
-  let asked: (Question & { readonly id: string; readonly label: string; readonly list: boolean; readonly cannot: "behind" | "not_signer" | null }) | null = null;
+  let asked: (Question & { readonly id: string; readonly label: string; readonly list: boolean; readonly cannot: CannotSign | null }) | null = null;
   const current = (): Question => asked ?? intro;
   const seen = new Set<string>();
   let onScreen: Question | null = null;
@@ -1807,7 +1825,7 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
         if (!SIX_DIGITS.test(typed)) { say(`That line answered nothing: type all six digits ${label} shows, or press Enter by itself to finish without. Answer again.\n`); continue; }
         try {
           await api("POST", "/api/relay/join", { body: { id, digits: typed } });
-          say(approvedWords(label, asked.list, asked.cannot));
+          say(approvedWords(label, asked.list, asked.cannot, cli(options)));
           return true;
         } catch (error) {
           if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
@@ -2080,6 +2098,22 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   };
   const added = async (): Promise<number> => {
     if (atPrompt) say("");
+    if (press.inAccount) {
+      // done only once this PC says so itself: it no longer needs keys (what its add answered says nothing of its key)
+      for (let look = 0; look < KEYS_LOOKS; look++) {
+        let keyed = false;
+        try { keyed = (await api<{ list?: { needs_keys?: boolean } | null }>("GET", "/api/account/status")).list?.needs_keys !== true; } catch (error) {
+          if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
+        }
+        if (keyed) {
+          out(`Done: this PC holds its own keys in your account's list now, so a device that asks to join can be approved here too (${cli(options)} approve).\n`);
+          return ended({ kind: "added", online: true }, 0);
+        }
+        if (look + 1 < KEYS_LOOKS) await wait(PRESS_POLL_MS, signal);
+      }
+      out(`The add ended, but this PC still holds no key of its own in your account's list, so it lets nobody new in. Run ${command} again, and choose Add for ${name} on a device of your account.\n`);
+      return ended({ kind: "not_added", why: "failed", listed: true }, 1);
+    }
     // in the account, which lists it now: its relay pass is asked for again (it was refused while unlisted), and the relay comes online
     await press.named();
     let online = true;
@@ -2119,7 +2153,11 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     }
     if (byList !== false) {
       const got = await takeByList();
+      // a PC that holds its keys by now is refused another add as one in its account: what this run was for is done
+      if (got === "joined" && press.inAccount) { bound = true; return "added"; }
       if (got !== null) return got;
+      // keys are taken by the list alone: an account that names none for this PC now gives it none
+      if (press.inAccount) throw new LocalError("your account's list could not be found just now, so this PC took no keys");
       byList = false;
       // the account keeps no list (or this Ovis adds by none): Add alone adds this PC, and that is said now
       if (deferred) say(words.waiting(name, remaining(stopAt - now())));
@@ -2187,6 +2225,10 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     // the time is up. A bind whose answer was lost is found first; then an Add that landed as it ran out keeps the
     // listing from being taken off, and is taken by one more ask
     await dropRun();
+    if (press.inAccount) {
+      tell(`No device of your account compared a number with this PC within 10 minutes, so it still holds no key of its own in your account's list. Run ${command} again, and choose Add for ${name} on a device of your account.\n`);
+      return ended({ kind: "not_added", why: "timeout", listed: true }, 1);
+    }
     const account = await where();
     if (account === press.signedIn) return await added();
     if (account !== null && account !== undefined) return await elsewhere(account);
@@ -2215,6 +2257,11 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     if (!bound) await dropRun();
     if (!signal.aborted && !(error instanceof LocalError || error instanceof AwayError)) throw error;
     if (atPrompt) { try { say(""); } catch {} }
+    if (press.inAccount) {
+      const why = error instanceof LocalError ? error.reason : error instanceof Error ? error.message : String(error);
+      tell(`${signal.aborted ? "Stopped." : `Could not give this PC its keys: ${why.replace(/[.\s]*$/, ".")}`} This PC is still in your account, and holds no key of its own in its list yet. Run ${command} again to finish.\n`);
+      return ended({ kind: "not_added", why: signal.aborted ? "stopped" : "failed", listed: true }, 1);
+    }
     if (signal.aborted && press.stopFast) {
       const account = bound ? press.signedIn : await where(1_000);
       if (account === press.signedIn) {
@@ -2290,12 +2337,40 @@ function accountQuestion(options: LinkOptions, provider: AccountProvider, accoun
   ];
 }
 
+/**
+ * `ovis add` on a PC in its account that follows the account's signed list with no key of its own in it: it came in as
+ * the account moved, as an endpoint (docs/account-list.md, "Keys for a PC carried in as an endpoint"). A device of the
+ * account chooses Add for it, the two screens show one number, the person here says they are the same, and that device
+ * signs the entry with this PC's keys. Nothing is listed, signed in to or taken off: the PC is in its account all along.
+ */
+async function addKeys(options: LinkOptions, api: Api, account: string): Promise<number> {
+  const name = plainLabel(hostname());
+  const command = `${cli(options)} add`;
+  options.out(`This PC is in your Ovis account (${shortAccount(account)}) and follows its signed list, but holds no key of its own in it yet: it came in as your account moved, so it lets your account's devices in and lets nobody new in itself.\n`);
+  return await addByPress(options, api, {
+    signedIn: account, name, listedAt: null, confirmed: false, inAccount: true,
+    named: async () => {}, signOut: async () => {}, unlist: async () => "kept",
+    words: {
+      command, anew: `Run ${command} to try again.`, chosen: "it is in", closing: "",
+      listed: () => `${step(["Asking your account's list for this PC's keys…"]).join("\n")}\n`,
+      waiting: (pc, lasts) => `${step([`Open Ovis on your phone or another PC and choose Add for ${pc}.`, `Waiting… (up to ${lasts}, Ctrl+C to stop)`]).join("\n")}\n`,
+      byList: (pc, lasts) => [
+        "",
+        "Compare a number with a device of your account",
+        ...step([`Open Ovis on your phone or another PC and choose Add for ${pc} (Manage account → PCs).`, LIST_KEPT, `Waiting… (up to ${lasts}, Ctrl+C to stop)`]),
+        "",
+      ].join("\n"),
+      noneWaiting: `No device of your account chose Add for this PC. Run ${command} again, and choose Add for ${name} on a device of your account.\n`,
+    },
+  });
+}
+
 async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvider | undefined, mode: { readonly approve: boolean; readonly print: boolean; readonly qr: boolean; readonly account?: string }): Promise<number> {
   const { out, signal } = options;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
-  const status = () => api<{ account: string | null; enrolling?: boolean }>("GET", "/api/account/status");
-  let first: { account: string | null; enrolling?: boolean };
+  const status = () => api<{ account: string | null; enrolling?: boolean; list?: { needs_keys?: boolean } }>("GET", "/api/account/status");
+  let first: { account: string | null; enrolling?: boolean; list?: { needs_keys?: boolean } };
   try { first = await status(); } catch (error) {
     if (!(error instanceof LocalError && error.status === 404)) throw error;
     out("The Ovis running on this PC is older than link needs. Update it in Settings → Updates (or reinstall the plugin), then run this again.\n");
@@ -2307,6 +2382,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       out(`${inAnotherAccount(options, first.account, `${cli(options)} add`)}\n`);
       return 1;
     }
+    // in its account, and in the account's list with no key of its own (it came in as the account moved): the number
+    // this PC shows gives it its keys, as any add by the list does
+    if (first.list?.needs_keys === true) return await addKeys(options, api, first.account);
     if (first.enrolling !== true) {
       out(`This PC is already in an Ovis account (${shortAccount(first.account)}).\n`);
       return 0;

@@ -137,6 +137,11 @@ type AddThisPcState =
   /** `enrolling`: the device that added the PC has not let the account's other devices in yet */
   | { kind: "done"; account: string; enrolling: boolean }
   /**
+   * In `account`, and in its list with no key of its own (it came in as the account moved): its add by the list gives
+   * it one, by the number, with nothing listed and no window opened. `run`: that add, under way; `note`: why the last ended
+   */
+  | { kind: "keys"; account: string; run: string | null; note: string | null }
+  /**
    * `again`: the listing was refused for the sign-in itself (an old one with no key to prove): this page's own sign-in
    * again, offered in place for `from` (the sign-in stored then), under way (`link`: the page a browser would not open), and
    * then the same press with the fresh one
@@ -283,9 +288,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   useEffect(() => () => { againRun.current?.abort(); againRun.current = null; }, [waitingUntil]);
   const accountService = useCallback((): AccountService => service?.() ?? indexedAccountService, [service]);
   /** What the screen shows of a PC that has an account: "in your account" only when it is the one signed in to now, else nothing here is true of it. */
-  const joinedAs = useCallback(async (account: string, enrolling: boolean): Promise<AddThisPcState> => {
+  const joinedAs = useCallback(async (account: string, enrolling: boolean, needsKeys = false): Promise<AddThisPcState> => {
     const session = await accountService().session();
-    return session?.account === account ? { kind: "done", account, enrolling } : { kind: "hidden" };
+    if (session?.account !== account) return { kind: "hidden" };
+    return needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling };
   }, [accountService]);
   const afterSignIn = useEffectEvent((fresh: SignedInHere) => { if (fresh.adds) add(fresh.account); else offerAfterSignIn(fresh.account); });
   useEffect(() => {
@@ -307,7 +313,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     const justSignedIn = (): SignedInHere | null => { const signedIn = takeFresh(); return Date.now() < began + SIGNED_IN_RETRY_MS ? signedIn : null; };
     const read = (): void => {
       again = null;
-      within(ANSWER_MS, thisPcMembership()).then(async ({ account, enrolling }) => {
+      within(ANSWER_MS, thisPcMembership()).then(async ({ account, enrolling, needsKeys }) => {
         if (!live) return;
         const signedIn = justSignedIn();
         const stored = readAddPcWaiting();
@@ -317,7 +323,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           if (account !== null) {
             const page = pagePc();
             if (stored !== null && page !== null && page !== stored.serverId) return;
-            const next = await joinedAs(account, enrolling);
+            const next = await joinedAs(account, enrolling, needsKeys);
             if (live) setState(next);
             return;
           }
@@ -670,6 +676,63 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   const dropped = useRef<(() => void) | null>(null);
   useEffect(() => () => { dropped.current?.(); dropped.current = null; }, []);
   /**
+   * A PC in its account and in its list with no key of its own: its add by the list, which gives it one by the number a
+   * device of the account and this PC show. Nothing is listed in the account and no pairing window is opened: the PC
+   * is in the account all along, and only the number lets the key in (docs/account-list.md, "Keys for a PC carried in
+   * as an endpoint").
+   */
+  const addKeys = (account: string): void => {
+    const mine = ++attempt.current;
+    setState({ kind: "keys", account, run: null, note: null });
+    void addByList(account).then(async (byList) => {
+      if (attempt.current !== mine) {
+        if (byList.kind === "run") cancelListAdd(byList.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return;
+      }
+      if (byList.kind === "run") { setState({ kind: "keys", account, run: byList.run, note: null }); return; }
+      // it holds its keys by now (another device gave them, or this add was done already): what it lacked is there
+      if (byList.kind === "added" || (byList.kind === "refused" && byList.why === "in_account")) {
+        const { account: now, enrolling, needsKeys } = await thisPcMembership();
+        if (attempt.current === mine) setState(now === null ? { kind: "offer" } : await joinedAs(now, enrolling, needsKeys));
+        return;
+      }
+      setState({ kind: "keys", account, run: null, note: byList.kind === "none" ? t("Your account's list could not be found just now. Try again.") : listAddRefusal(t, byList.why) });
+    }, (error: unknown) => {
+      warned("Ovis: this PC's add by the account's list was not started")(error);
+      if (attempt.current === mine) setState({ kind: "keys", account, run: null, note: t("Could not reach this PC. Try again.") });
+    });
+  };
+  const keysRun = state.kind === "keys" ? state.run : null;
+  const keysAccount = state.kind === "keys" ? state.account : null;
+  useEffect(() => {
+    if (keysRun === null || keysAccount === null) return;
+    let live = true;
+    let asking = false;
+    const timer = setInterval(() => {
+      if (pageHidden() || asking) return;
+      asking = true;
+      within(ANSWER_MS, fetchListAdd(keysRun)).then(async (now) => {
+        if (!live) return;
+        if (now.state === "added") {
+          const { account, enrolling, needsKeys } = await thisPcMembership();
+          if (live) setState(account === null ? { kind: "offer" } : await joinedAs(account, enrolling, needsKeys));
+          return;
+        }
+        if (now.state === "ended") {
+          setState({ kind: "keys", account: keysAccount, run: null, note: now.why === "timeout" ? t("No device of your account compared a number with this PC in time. Try again.") : listAddRefusal(t, now.why) });
+          return;
+        }
+        if (now.state === "none" || now.state === "replaced") setState({ kind: "keys", account: keysAccount, run: null, note: null });
+      }, warned("Ovis: this PC's add by the account's list could not be read")).finally(() => { asking = false; });
+    }, ADDED_POLL_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [keysRun, keysAccount, joinedAs]);
+  const stopKeys = (account: string, run: string): void => {
+    attempt.current++;
+    cancelListAdd(run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+    setState({ kind: "keys", account, run: null, note: null });
+  };
+  /**
    * Lists this PC and waits, thirty minutes from this press, or from the sign-in that just finished here
    * (`as`, its account): that one says what it is doing, lists under that account alone, is given up after
    * `ADDING_MS` (the button again) or when its screen goes, and a relay that is off is offered with one button,
@@ -1013,6 +1076,22 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
             </>
           ) : <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>}
           {againShown?.step === "failed" && <p className="settings-condition" role="alert">{againShown.message}</p>}
+        </>
+      ) : state.kind === "keys" ? (
+        <>
+          <p className="settings-description">{t("This PC is in your account, but holds no key of its own in your account's list yet: it came in as your account moved, so it cannot let a new device in.")}</p>
+          {state.run === null ? (
+            <>
+              <p className="settings-description">{t("Compare a number with a device of your account to give it one.")}</p>
+              <button type="button" className="btn btn-primary account-add-pc-button" onClick={() => addKeys(state.account)}>{t("Add this PC to my account's list")}</button>
+            </>
+          ) : (
+            <>
+              <p className="settings-description" role="status">{t("On another device of your account, open Manage account → PCs and choose Add for this PC, then compare the number it shows with the one here.")}</p>
+              <button type="button" className="btn" onClick={() => stopKeys(state.account, state.run!)}>{t("Stop waiting")}</button>
+            </>
+          )}
+          {state.note !== null && <p className="settings-condition" role="alert">{state.note}</p>}
         </>
       ) : state.kind === "done" ? (
         state.enrolling

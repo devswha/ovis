@@ -820,6 +820,42 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(await ownJoin(made)).not.toHaveProperty("list_not_signer");
   });
 
+  test("a PC that came in as its account moved, with no key of its own in the list, says that cause, never an invite, here and to the device", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const refusal = spyOn(made.list, "allowRefusal").mockReturnValue("needs_keys");
+    const allowed = spyOn(made.list, "allowDevice").mockResolvedValue({ refused: "needs_keys", detail: null });
+    try {
+      const waiting = await ownJoin(made);
+      expect(waiting).toMatchObject({ list: true, list_needs_keys: true });
+      expect(waiting).not.toHaveProperty("list_not_signer");
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_needs_keys" } });
+    } finally { refusal.mockRestore(); allowed.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("a key this PC itself keeps out (a block here) is marked so before anybody approves it, and the device hears that cause, not that it was not added", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    // the gate a block in force closes for every key that came after its target (devices.ts admissionAllowed)
+    const gate = spyOn(made.services.devices, "admitsFromList").mockImplementation((key) => key !== phone.key);
+    try {
+      const waiting = await ownJoin(made);
+      expect(waiting).toMatchObject({ list: true, list_held: true });
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_held_here" } });
+    } finally { gate.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.list.holdsBack(phone.key)).toBe(false);
+  });
+
   test("the challenge names the list this PC follows, and a refusal says which cause it was", async () => {
     const made = await allowingPc();
     const phone = await listMember();

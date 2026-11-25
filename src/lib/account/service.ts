@@ -242,6 +242,11 @@ export interface DirectoryPc {
    * list does not hold the PC (listPcs.ts). The row is the directory's; nothing opens it by itself.
    */
   readonly not_in_list?: true;
+  /**
+   * Never from the account service: the list holds this PC, carried in by the account's move, with no key of its own
+   * in it, so a person at it lets nobody in (listPcs.ts). `ovis add` there gives it its keys by the number.
+   */
+  readonly needs_keys?: true;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;

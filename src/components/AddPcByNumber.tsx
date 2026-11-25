@@ -21,10 +21,12 @@ import "./RelayShell.css";
  * `waitMs`: how long it waits for the PC's answer before it says the PC did not answer; a test's own. `now`: this
  * device's clock, in ms; a test's own. It asks for NUMBER_TRIES numbers at most (Try again, and Add after one ran out).
  */
-export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.now, onClose, onAdded }: {
+export function AddPcByNumber({ list, account, post, name, keys = false, waitMs, now = Date.now, onClose, onAdded }: {
   readonly list: AccountList; readonly account: string; readonly post: PostedPc;
   /** The PC's name as the account has it. */
   readonly name: string;
+  /** The list holds the PC already, carried in by the account's move with no key of its own: this Add gives it its keys (listPcs.ts postedFor). */
+  readonly keys?: boolean;
   readonly waitMs?: number | undefined;
   readonly now?: () => number;
   readonly onClose: () => void; readonly onAdded: () => void;
@@ -101,7 +103,7 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
     setDiffered(true);
     setProblem(t("The numbers did not match. This PC was not added."));
   };
-  const title = t("Add this PC to your account?");
+  const title = keys ? t("Give this PC its keys in your account's list?") : t("Add this PC to your account?");
   return (
     <div className="modal-scrim">
       <div className="modal account-approval" role="dialog" aria-modal="true" aria-label={title} data-testid="add-pc-number" data-pc-id={post.server_id}>

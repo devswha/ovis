@@ -2,8 +2,7 @@ import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type Reac
 import { ChevronDown, ChevronLeft, ChevronRight, Plus, QrCode } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
-import type { PostedPc } from "../lib/account/listAdd.ts";
-import { pageListAdds, type ListAdds } from "../lib/account/listPcs.ts";
+import { pageListAdds, type ListAdds, type ListedPost } from "../lib/account/listPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
@@ -432,7 +431,7 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   // list is added by the number both screens show (AddPcByNumber), never by the join on its own page, which is the
   // directory's admission alone (docs/account-list.md, "Adding a PC"); one that posted nothing opens as before
   const [listAdds, setListAdds] = useState<ListAdds>(null);
-  const [adding, setAdding] = useState<{ readonly name: string; readonly post: PostedPc } | null>(null);
+  const [adding, setAdding] = useState<{ readonly name: string; readonly post: ListedPost } | null>(null);
   useEffect(() => {
     const account = pageAccountList()?.view().account ?? null;
     if (account === null || !(accountPcs ?? []).some((pc) => !pc.paired && pc.join !== undefined)) { setListAdds(null); return; }
@@ -443,8 +442,9 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     return () => { live = false; };
   }, [accountPcs, listOf]);
   /** the post of an account PC of this row that is added by the number, where it is one */
-  const postOf = (pc: RelayTabPc): PostedPc | undefined => pc.saved ? undefined : listAdds?.posts.find((post) => post.server_id === pc.server_id);
-  const addByNumber = (pc: RelayTabPc, post: PostedPc) => (): void => { open.setError(null); setAdding({ name: pc.name ?? t("Unnamed PC"), post }); };
+  // (keys the list holds for that PC by another device's entry are taken from that device alone: no Add of those here)
+  const postOf = (pc: RelayTabPc): ListedPost | undefined => pc.saved ? undefined : listAdds?.posts.find((post) => post.server_id === pc.server_id && post.for.kind !== "signer");
+  const addByNumber = (pc: RelayTabPc, post: ListedPost) => (): void => { open.setError(null); setAdding({ name: pc.name ?? t("Unnamed PC"), post }); };
   // Forget PCs: the rows this phone can forget have Forget, and the PC in use's asks once more first (`asking`, its key)
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState<string | null>(null);
@@ -557,7 +557,7 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
       {editing ? <div className="my-pcs-add"><button type="button" className="btn btn-primary" data-action="forget-done" onClick={stopEditing}>{t("Done")}</button></div>
         : onAdd && <div className="my-pcs-add"><button ref={addButton} type="button" className="btn btn-primary" data-action="add-pc" onClick={onAdd}><Plus aria-hidden="true" />{t("Add PC")}</button></div>}
       {adding !== null && listAdds !== null && (
-        <AddPcByNumber list={listAdds.list} account={listAdds.account} post={adding.post} name={adding.name} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
+        <AddPcByNumber list={listAdds.list} account={listAdds.account} post={adding.post} name={adding.name} keys={adding.post.for.kind === "keys"} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
       )}
     </div>
   );

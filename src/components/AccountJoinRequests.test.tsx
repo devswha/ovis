@@ -117,7 +117,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
   describe("on an account that keeps a signed list", () => {
     /** this phone's list, as far as the card asks it: a stand-in that the number dialog asks in vain */
     const list = { writer: () => null, view: () => ({ account: ACCOUNT, status: { at: "off" }, reached: false, devices: [], pcs: [] }), subscribe: () => () => {} } as unknown as AccountList;
-    const postOf = (key: Uint8Array) => ({ list: "f".repeat(64), endpoint: Buffer.from(key).toString("hex"), server_id: deriveServerId(key), key: "member-key", enc: "enc-key", card: "card" });
+    const postOf = (key: Uint8Array) => ({ list: "f".repeat(64), endpoint: Buffer.from(key).toString("hex"), server_id: deriveServerId(key), key: "member-key", enc: "enc-key", card: "card", for: { kind: "add" as const } });
 
     it("Allow on a PC that posted its keys for the list asks for the number, and never opens the PC's own page", async () => {
       await listedByItsOwner(mac, "hasang-MacBookPro");
