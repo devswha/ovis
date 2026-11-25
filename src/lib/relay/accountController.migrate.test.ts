@@ -366,6 +366,28 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     } finally { jest.useRealTimers(); }
   });
 
+  it("F9: the list's first round on a page comes before the directory: a PC the device also paired with is still asked through the account, not over the pairing it refuses", async () => {
+    await signIn("acct-first-round");
+    const { pc, store } = await pairedPc("acct-first-round");
+    const waiting = (): AccountListView => ({ account: "acct-first-round", reached: true, status: { at: "none", why: "moving", move: { why: "no_witness", wait: null, asks: [pc.endpoint] } }, devices: [], pcs: [] });
+    const { list, tell } = listIn(waiting);
+    // the round this page's first read of the sign-in starts publishes where the device stands, as a real one does
+    const round = list.sync;
+    Object.assign(list, { sync: async () => { tell(); return round(); } });
+    const said = { account: "acct-first-round", pinned: null, admits: [], removed: [] };
+    const opened: { accountOpensAll: boolean }[] = [];
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const account = controller(list, store, async (_offer, options) => {
+      opened.push({ accountOpensAll: options.accountOpensAll === true });
+      // the PC answers the witness to a session of its account alone (server/account/routes.ts)
+      return sessionOf(options.accountOpensAll === true ? { answers: { "GET /api/account/list/witness": said } } : {}).opened;
+    }, [row], true);
+    await account.refresh(true);
+    await settle();
+    expect(opened).toEqual([{ accountOpensAll: true }]);
+    expect(pageAnswers.get("acct-first-round", pc.endpoint)).toEqual(said);
+  });
+
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
     await signIn("acct-check");
     const one = pcKeys();
