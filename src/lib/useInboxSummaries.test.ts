@@ -44,6 +44,27 @@ describe("summaryTargets", () => {
 });
 
 describe("SummaryReads", () => {
+  it("retries a timed-out row without shrinking the fresh batches queued ahead of it", async () => {
+    const { reads, calls, waits } = harness();
+    const missed = target("missed");
+    const fresh = Array.from({ length: 59 }, (_, index) => target(`fresh${index}`));
+    reads.sync([missed]);
+    calls[0]?.resolve(answer({}));
+    await settled();
+
+    reads.sync([missed, ...fresh]);
+    waits[0]?.run();
+    const first = calls[1];
+    first?.resolve(answer(Object.fromEntries((first?.paneIds ?? []).map((id) => [id, said(id)]))));
+    await settled();
+
+    expect(calls[2]?.paneIds).toEqual([missed.paneId]);
+    calls[2]?.resolve(answer({ [missed.paneId]: said("Recovered") }));
+    await settled();
+    expect(reads.summaries().get(missed.key)?.text).toBe("Recovered");
+    expect(calls[3]?.paneIds).toEqual(fresh.slice(24, 48).map((row) => row.paneId));
+  });
+
   it("fills every row when a large batch runs out of time after making progress", async () => {
     const { reads, calls, waits } = harness();
     const rows = Array.from({ length: 24 }, (_, index) => target(`slow${index}`));
