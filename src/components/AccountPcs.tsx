@@ -151,11 +151,15 @@ export function accountPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string
 
 /**
  * A PC of the account in a PC's own Settings list. That page holds no relay pairing, so it cannot
- * tell whether a listed PC still waits for an approval: it says the PC is in the account, and keeps
+ * tell whether a listed PC still waits for an approval: it says the PC is in the account once it took
+ * its place there (`joined`), that it waits to be added while it is only listed or admitted, and keeps
  * only what the directory itself knows (offline, an update needed).
  */
 export function listedPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string {
-  return pc.state === "needs-approval" && !pc.paired ? t("In your account") : accountPcStateText(pc, t);
+  // the account has a list, and this device does not find the PC in it: that is what there is to say of it
+  if (pc.notInList === true && !pc.paired) return t("Not in your account's list yet");
+  if (pc.state !== "needs-approval" || pc.paired) return accountPcStateText(pc, t);
+  return pc.joined === true ? t("In your account") : t("Waiting to be added");
 }
 
 /**

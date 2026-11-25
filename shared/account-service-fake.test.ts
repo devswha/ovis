@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import nacl from "tweetnacl";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord, type AccountRecord } from "./account-records.ts";
+import { exportAccountKey, newRecordId, pcAddSigningBytes, signAccountRecord, signSafetyRecord, type AccountRecord, type PcAddPurpose } from "./account-records.ts";
 import { assembleSnapshot, parseSnapshotPage, type AccountSnapshotPage } from "./account-snapshot.ts";
-import { SNAPSHOT_PAGE, ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, PC_LEFT_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
+import { SNAPSHOT_PAGE, ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, LISTING_ASKS_MS, MAILBOX_TTL_MS, PC_ADD_CHALLENGE_TTL_MS, PC_LEFT_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
+import { toBase64Url } from "./relay-pair-sas.ts";
 import { answerServerChallenge, deriveServerId, serverChallenge, verifyServerProof, type ProofRoute } from "./relay-server-proof.ts";
+import { signInviteRedeem, type InviteRedeem } from "./account-list-invite.ts";
+import { newInvite, readJoinLine } from "./account-list-join.ts";
+
+/** How a PC on the test service reads a join line: lines for that service only, and none that names a list. */
+const READER = { service: "https://account.test", followsLists: false } as const;
 
 const BASE = "https://account.test";
 
@@ -657,7 +663,8 @@ describe("the fake's first-PC exemption, as the account service has it (account#
     const response = await service.fetch(post(`/v1/pcs/${machine.serverId}/admit`, {}, token));
     return response.ok ? "admitted" : (await response.json() as { error: { code: string } }).error.code;
   };
-  const fresh = () => { const service = new FakeAccountService(); service.opensAll = true; return service; };
+  // the exemption is from the two-step the service asked of a used account's admit until 2026-11-23
+  const fresh = () => { const service = new FakeAccountService(); service.opensAll = true; service.admitAsksTwoStep = true; return service; };
 
   test("a phone signed in first, with no two-step, leaves the first PC's one press exempt", async () => {
     const service = fresh();
@@ -686,6 +693,17 @@ describe("the fake's first-PC exemption, as the account service has it (account#
     const next = pc();
     expect((await put(removed, removing, next)).ok).toBe(true);
     expect(await admit(removed, removing, next)).toBe("two_step_required");
+  });
+
+  test("since 2026-11-23 the admit asks no two-step: a used account's sign-in without it admits, and confirms a device code's listing", async () => {
+    const service = fresh();
+    service.admitAsksTwoStep = false;
+    const owner = service.issueToken("acct_1");
+    expect((await put(service, owner, pc())).ok).toBe(true);
+    const typed = pc();
+    expect((await put(service, service.issueToken("acct_1", { device: true }), typed)).ok).toBe(true);
+    expect(await admit(service, owner, typed)).toBe("admitted");
+    expect(service.pcs("acct_1").find((entry) => entry.server_id === typed.serverId)?.listed_by_device).toBe(false);
   });
 
   test("devices count once the account has a PC, and always for a confirm", async () => {
@@ -757,5 +775,373 @@ describe("a PC's own leave (account#65)", () => {
     expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: other.serverId, account: "acct_1", ...await proofOf(service, other) }))).status).toBe(400);
     expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: machine.serverId, account: "acct_1", ...await proofOf(service, other) }))).status).toBe(401);
     expect(await listed(service, token)).toEqual([machine.serverId]);
+  });
+});
+
+describe("adding a PC with an old sign-in's key proof, and who asks", () => {
+  const DAY = 24 * 60 * 60_000;
+  /** the account service with Step 2 on, its clock, and an own sign-in made now with the key it registered */
+  async function signedIn() {
+    let now = Date.now();
+    const service = new FakeAccountService(() => now);
+    service.opensAll = true;
+    const own = service.issueToken("acct_1");
+    const key = await client();
+    service.registerSessionKey(own, key.spki, "Phone");
+    const send = (method: string, path: string, token: string, body?: unknown) => service.fetch(new Request(BASE + path, {
+      method, headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }));
+    const answer = async (response: Response) => response.ok ? response.status : `${response.status} ${((await response.json()) as { error?: { code?: string } }).error?.code}`;
+    const entry = (machine: ReturnType<typeof pc>, extra: Record<string, unknown> = {}) => ({ label: "desk", public_key: machine.publicKey, relay: "wss://relay.test", ...extra });
+    const listing = (machine: ReturnType<typeof pc>) => service.pcs("acct_1").find((row) => row.server_id === machine.serverId)?.listing_id ?? "";
+    /** a proof by `signer` for this add, over the PC's current listing unless `over` names another */
+    const proof = async (token: string, signer: Awaited<ReturnType<typeof client>>, purpose: PcAddPurpose, machine: ReturnType<typeof pc>, over?: string) => {
+      const { challenge_id, challenge, expires_in } = await (await send("POST", "/v1/pcs/challenge", token, {})).json() as { challenge_id: string; challenge: string; expires_in: number };
+      expect(expires_in * 1000).toBe(PC_ADD_CHALLENGE_TTL_MS);
+      const bytes = pcAddSigningBytes(purpose, "acct_1", machine.serverId, over ?? listing(machine), challenge_id, challenge);
+      return { challenge_id, signature: toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signer.pair.privateKey, bytes))) };
+    };
+    const typedIn = async (machine: ReturnType<typeof pc>, extra: Record<string, unknown> = {}) => expect(await answer(await send("PUT", `/v1/pcs/${machine.serverId}`, service.issueToken("acct_1", { device: true }), entry(machine, extra)))).toBe(200);
+    return { service, own, key, send, answer, entry, proof, typedIn, pass: (ms: number) => { now += ms; } };
+  }
+
+  test("the challenge is an own sign-in's: a device code's is refused, and it does not exist with Step 2 off or before key proofs", async () => {
+    const { service, own, send, answer } = await signedIn();
+    expect(await answer(await send("POST", "/v1/pcs/challenge", own, {}))).toBe(200);
+    expect(await answer(await send("POST", "/v1/pcs/challenge", service.issueToken("acct_1", { device: true }), {}))).toBe("403 own_sign_in_required");
+    service.opensAll = false;
+    expect(await answer(await send("POST", "/v1/pcs/challenge", own, {}))).toBe("404 not_found");
+    service.opensAll = true;
+    service.pcAddProofs = false;
+    expect(await answer(await send("POST", "/v1/pcs/challenge", own, {}))).toBe("404 not_found");
+  });
+
+  test("an old own sign-in admits only with a proof by its own key for that PC's listing; a replay, a bad shape or another key adds nothing", async () => {
+    const { service, own, key, send, answer, proof, typedIn, pass } = await signedIn();
+    const machine = pc();
+    pass(30 * DAY);
+    await typedIn(machine);
+    const admit = (body: unknown) => send("POST", `/v1/pcs/${machine.serverId}/admit`, own, body);
+    expect(await answer(await admit({}))).toBe("403 session_not_fresh");
+    expect(await answer(await admit({ key_proof: { challenge_id: "x", signature: "y" } }))).toBe("400 invalid_request");
+    expect(await answer(await admit({ key_proof: await proof(own, await client(), "admit", machine) }))).toBe("403 session_not_fresh");
+    expect(await answer(await admit({ key_proof: await proof(own, key, "confirm", machine) }))).toBe("403 session_not_fresh");
+    expect(await answer(await admit({ key_proof: await proof(own, key, "admit", machine, "0".repeat(32)) }))).toBe("403 session_not_fresh");
+    const good = await proof(own, key, "admit", machine);
+    expect(await answer(await admit({ key_proof: good }))).toBe(200);
+    expect(await answer(await admit({ key_proof: good }))).toBe("400 challenge_invalid");
+    expect(service.pcs("acct_1")[0]?.listed_by_device).toBe(false);
+  });
+
+  test("a challenge is good for two minutes, and only for the sign-in that asked for it", async () => {
+    const { service, own, key, send, answer, proof, typedIn, pass } = await signedIn();
+    const machine = pc();
+    pass(30 * DAY);
+    await typedIn(machine);
+    const late = await proof(own, key, "admit", machine);
+    pass(PC_ADD_CHALLENGE_TTL_MS + 1);
+    expect(await answer(await send("POST", `/v1/pcs/${machine.serverId}/admit`, own, { key_proof: late }))).toBe("400 challenge_invalid");
+    const other = service.issueToken("acct_1");
+    expect(await answer(await send("POST", `/v1/pcs/${machine.serverId}/admit`, other, { key_proof: await proof(own, key, "admit", machine) }))).toBe("400 challenge_invalid");
+  });
+
+  test("a confirm, and the listing of a PC the account does not list yet, ask the same; upkeep and a device code's listing ask nothing", async () => {
+    const { service, own, key, send, answer, entry, proof, typedIn, pass } = await signedIn();
+    pass(30 * DAY);
+    const [typed, fresh, kept] = [pc(), pc(), pc()];
+    await typedIn(typed);
+    expect(await answer(await send("PUT", `/v1/pcs/${typed.serverId}`, own, entry(typed, { confirm: true })))).toBe("403 session_not_fresh");
+    expect(await answer(await send("PUT", `/v1/pcs/${typed.serverId}`, own, entry(typed, { confirm: true, key_proof: await proof(own, key, "confirm", typed) })))).toBe(200);
+    expect(await answer(await send("PUT", `/v1/pcs/${fresh.serverId}`, own, entry(fresh)))).toBe("403 session_not_fresh");
+    expect(service.pcs("acct_1").map((row) => row.server_id)).not.toContain(fresh.serverId);
+    expect(await answer(await send("PUT", `/v1/pcs/${fresh.serverId}`, own, entry(fresh, { key_proof: await proof(own, key, "list", fresh) })))).toBe(200);
+    expect(service.pcs("acct_1").find((row) => row.server_id === fresh.serverId)?.listed_by_device).toBe(false);
+    // upkeep of a PC the account lists reads no proof, and a device code lists unconfirmed, whatever their age
+    expect(await answer(await send("PUT", `/v1/pcs/${fresh.serverId}`, own, entry(fresh, { label: "renamed" })))).toBe(200);
+    const typedOld = service.issueToken("acct_1", { device: true });
+    pass(30 * DAY);
+    expect(await answer(await send("PUT", `/v1/pcs/${kept.serverId}`, typedOld, entry(kept)))).toBe(200);
+    // with the service's list rule off, as it ships at first, a listing that sends no proof goes through; one sent is judged
+    service.listProofRequired = false;
+    const [quiet, badly] = [pc(), pc()];
+    expect(await answer(await send("PUT", `/v1/pcs/${quiet.serverId}`, own, entry(quiet)))).toBe(200);
+    expect(await answer(await send("PUT", `/v1/pcs/${badly.serverId}`, own, entry(badly, { key_proof: await proof(own, await client(), "list", badly) })))).toBe("403 session_not_fresh");
+    service.listProofRequired = true;
+    // before key proofs an old own sign-in listed a new PC without one, and a confirm was judged by its age alone
+    service.pcAddProofs = false;
+    const [before, typedBefore] = [pc(), pc()];
+    expect(await answer(await send("PUT", `/v1/pcs/${before.serverId}`, own, entry(before)))).toBe(200);
+    await typedIn(typedBefore);
+    expect(await answer(await send("PUT", `/v1/pcs/${typedBefore.serverId}`, own, entry(typedBefore, { confirm: true, key_proof: { challenge_id: "0".repeat(32), signature: "A".repeat(86) } })))).toBe("403 session_not_fresh");
+    expect(await answer(await send("POST", `/v1/pcs/${typedBefore.serverId}/admit`, own, { key_proof: { challenge_id: "0".repeat(32), signature: "A".repeat(86) } }))).toBe("400 invalid_request");
+  });
+
+  test("a listing that asks to join says who asks and until when, is let in only within its ten minutes, and any own sign-in says No to it", async () => {
+    const { service, own, key, send, answer, entry, proof, typedIn, pass } = await signedIn();
+    service.requestPlace = { country: "KR", city: "Seoul" };
+    const [asking, lapsed, member] = [pc(), pc(), pc()];
+    await typedIn(asking, { os: "linux" });
+    const row = async (machine: ReturnType<typeof pc>) => ((await (await send("GET", "/v1/pcs?include=unconfirmed", own)).json()) as { pcs: Record<string, unknown>[] }).pcs.find((each) => each.server_id === machine.serverId);
+    const { asking_os, asking_country, asking_city, asking_until } = (await row(asking))!;
+    expect({ asking_os, asking_country, asking_city }).toEqual({ asking_os: "linux", asking_country: "KR", asking_city: "Seoul" });
+    expect(Date.parse(asking_until as string) - Date.now()).toBeGreaterThan(LISTING_ASKS_MS - 60_000);
+    await typedIn(lapsed);
+    pass(LISTING_ASKS_MS + 1);
+    expect(await answer(await send("POST", `/v1/pcs/${lapsed.serverId}/admit`, own, { key_proof: await proof(own, key, "admit", lapsed) }))).toBe("409 listing_expired");
+    expect(await answer(await send("PUT", `/v1/pcs/${lapsed.serverId}`, own, entry(lapsed, { confirm: true, key_proof: await proof(own, key, "confirm", lapsed) })))).toBe("409 listing_expired");
+    // No needs no new sign-in for a listing that asks; removing a PC that is the account's still does
+    expect(await answer(await send("DELETE", `/v1/pcs/${lapsed.serverId}`, own))).toBe(204);
+    expect(await answer(await send("PUT", `/v1/pcs/${member.serverId}`, own, entry(member, { key_proof: await proof(own, key, "list", member) })))).toBe(200);
+    expect(await answer(await send("DELETE", `/v1/pcs/${member.serverId}`, own))).toBe("403 reauth_required");
+    // the service before key proofs says nothing of who asks, and asks a new sign-in for every No
+    service.pcAddProofs = false;
+    expect(Object.keys((await row(asking))!).filter((name) => name.startsWith("asking_"))).toEqual([]);
+    expect(await answer(await send("DELETE", `/v1/pcs/${asking.serverId}`, own))).toBe("403 reauth_required");
+  });
+});
+
+
+describe("PC invites (POST /v1/pc-invites, /v1/pc-invites/redeem)", () => {
+  async function proofOf(service: FakeAccountService, machine: ReturnType<typeof pc>) {
+    const challenge = await (await service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: machine.publicKey }))).json() as { challenge_id: string; frame: string };
+    return { challenge_id: challenge.challenge_id, proof: answerServerChallenge(challenge.frame, machine.keys.secretKey, { server_id: machine.serverId, role: "account", connection_id: challenge.challenge_id }) };
+  }
+  const answer = async (response: Response) => {
+    const text = await response.text();
+    return { status: response.status, body: (text === "" ? {} : JSON.parse(text)) as Record<string, unknown> & { error?: { code: string; message?: string } } };
+  };
+  const made = async (service: FakeAccountService, token: string, body: unknown) => answer(await service.fetch(post("/v1/pc-invites", body, token)));
+  /** An invite as a device makes one: a fresh key pair, the line it shows, and the public key alone sent to the service. */
+  const invite = async (service: FakeAccountService, account = "acct_1", auto = false): Promise<string> => {
+    const fresh = await newInvite(BASE, account, null);
+    const made_ = await made(service, service.issueToken(account), { invite_key: fresh.key, ...auto ? { auto: true } : {} });
+    expect(made_.status).toBe(200);
+    expect(made_.body.account).toBe(account);
+    return fresh.line;
+  };
+  /** A redeem as the PC holding `line` sends it: its proof, and the line's signature over this account, PC and challenge. */
+  const redeem = async (service: FakeAccountService, line: string, machine: ReturnType<typeof pc>, extra: Record<string, unknown> = {}, signed: Partial<Omit<InviteRedeem, "account">> = {}) => {
+    const read = await readJoinLine(line, READER);
+    const proof = await proofOf(service, machine);
+    const invite_signature = await signInviteRedeem(read, { server_id: machine.serverId, public_key: machine.publicKey, challenge_id: proof.challenge_id, ...signed });
+    return answer(await service.fetch(post("/v1/pc-invites/redeem", { invite_key: read.key, invite_signature, server_id: machine.serverId, public_key: machine.publicKey, relay: "wss://relay.ovis.sh", label: "Desk", os: "linux", ...proof, ...extra })));
+  };
+  const admission = async (service: FakeAccountService, machine: ReturnType<typeof pc>, account = "acct_1") =>
+    answer(await service.fetch(post("/v1/pc/admission", { server_id: machine.serverId, account, with_listing_id: true, ...await proofOf(service, machine) })));
+  const press = async (service: FakeAccountService, machine: ReturnType<typeof pc>) =>
+    (await service.fetch(post(`/v1/pcs/${machine.serverId}/admit`, {}, service.issueToken("acct_1")))).status;
+
+  test("an own, fresh sign-in makes one from the invite's public key alone, a key once, at most five open; a device code's or a stale sign-in makes none, and the body is strict", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    const token = service.issueToken("acct_1");
+    const key = async () => (await newInvite(BASE, "acct_1", null)).key;
+    const first = await newInvite(BASE, "acct_1", null);
+    const answered = await made(service, token, { invite_key: first.key });
+    expect(answered.status).toBe(200);
+    expect(answered.body).toEqual({ id: answered.body.id, account: "acct_1", expires_at: new Date(now + 15 * 60_000).toISOString(), auto: false });
+    expect(answered.body.id).toMatch(/^[0-9a-f]{32}$/);
+    expect((await made(service, token, { invite_key: first.key })).body.error?.code).toBe("invite_key_used");
+    expect((await made(service, service.issueToken("acct_2"), { invite_key: first.key })).body.error?.code).toBe("invite_key_used");
+    expect((await made(service, token, { invite_key: await key(), auto: true })).body.auto).toBe(true);
+    for (const body of [{}, { invite_key: await key(), auto: "yes" }, { invite_key: await key(), other: 1 }, { invite_key: "A".repeat(122) }, { invite_key: await key(), invite: "x" }, []]) {
+      expect((await made(service, token, body)).body.error?.code).toBe("invalid_request");
+    }
+    expect((await made(service, service.issueToken("acct_1", { device: true }), { invite_key: await key() })).body.error?.code).toBe("own_sign_in_required");
+    for (let open = 2; open < 5; open++) expect((await made(service, token, { invite_key: await key() })).status).toBe(200);
+    expect(await made(service, token, { invite_key: await key() })).toMatchObject({ status: 409, body: { error: { code: "invites_full" } } });
+    now += 11 * 60_000;
+    expect(await made(service, token, { invite_key: await key() })).toMatchObject({ status: 403, body: { error: { code: "session_not_fresh" } } });
+    service.pcInvites = false;
+    expect((await made(service, service.issueToken("acct_1"), { invite_key: await key() })).status).toBe(404);
+  });
+
+  test("a plain invite lists the PC once, waiting for Add on its card; the same PC asking again gets the same answer, any other PC the one dead body", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    service.opensAll = true;
+    const line = await invite(service);
+    const machine = pc();
+    const first = await redeem(service, line, machine);
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ account: "acct_1", auto: false });
+    expect(service.pcs("acct_1")).toMatchObject([{ server_id: machine.serverId, label: "Desk", listed_by_device: true, listing_id: first.body.listing_id }]);
+    // a new challenge, so a new signature: the same answer
+    expect(await redeem(service, line, machine)).toEqual(first);
+    const dead = await redeem(service, line, pc());
+    expect(dead).toEqual({ status: 400, body: { error: { code: "invite_invalid", message: "This invite does not work" } } });
+    // nobody pressed Add yet; then a device of the account does, and the PC takes the admission
+    expect((await admission(service, machine)).body.error?.code).toBe("no_admission");
+    expect(await press(service, machine)).toBe(200);
+    expect(await admission(service, machine)).toMatchObject({ status: 200, body: { account: "acct_1", listing_id: first.body.listing_id } });
+    // after the 15 minutes, not even the same PC gets it again
+    now += 15 * 60_000;
+    expect(await redeem(service, line, machine)).toEqual(dead);
+  });
+
+  test("only the line's own signature over this account, this PC and this challenge redeems; an unknown, expired or revoked invite is the same dead body", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    // a PC of its own for each try: one PC is rate limited after ten in a window
+    const line = await invite(service);
+    const dead = { status: 400, body: { error: { code: "invite_invalid", message: "This invite does not work" } } };
+    // a line the service never saw a key of, and signatures for anything but this redeem
+    expect(await redeem(service, (await newInvite(BASE, "acct_1", null)).line, pc())).toEqual(dead);
+    for (const signed of [{ server_id: pc().serverId }, { public_key: pc().publicKey }, { challenge_id: "0".repeat(32) }]) {
+      expect([signed, await redeem(service, line, pc(), {}, signed)]).toEqual([signed, dead]);
+    }
+    // a line whose key acct_1 holds but that names another account: its signature is over that account, not the row's
+    const elsewhere = await newInvite(BASE, "acct_2", null);
+    expect((await made(service, service.issueToken("acct_1"), { invite_key: elsewhere.key })).status).toBe(200);
+    expect(await redeem(service, elsewhere.line, pc())).toEqual(dead);
+    const other = await readJoinLine((await newInvite(BASE, "acct_1", null)).line, READER);
+    expect(await redeem(service, line, pc(), { invite_key: other.key })).toEqual(dead);
+    expect(await redeem(service, line, pc(), { invite_signature: "A".repeat(86) })).toEqual(dead);
+    // a request that carries a secret is refused as a whole, never read past
+    expect((await redeem(service, line, pc(), { invite: line })).body.error?.code).toBe("invalid_request");
+    expect((await redeem(service, line, pc(), { proof: "x".repeat(86) })).body.error?.code).toBe("proof_invalid");
+    expect((await redeem(service, line, pc(), { public_key: pc().publicKey })).body.error?.code).toBe("server_key_mismatch");
+    expect((await redeem(service, line, pc(), { relay: "https://relay.ovis.sh" })).body.error?.code).toBe("invalid_relay");
+    expect((await redeem(service, line, pc(), { label: "a\u0007b" })).body.error?.code).toBe("invalid_label");
+    expect((await redeem(service, line, pc(), { os: "beos" })).body.error?.code).toBe("invalid_request");
+    // none of those spent it
+    expect((await redeem(service, line, pc())).status).toBe(200);
+    const expired = await invite(service);
+    const revoked = await invite(service);
+    const owner = service.issueToken("acct_1");
+    const id = ((await (await service.fetch(new Request(`${BASE}/v1/pc-invites`, { headers: { authorization: `Bearer ${owner}` } }))).json()) as { invites: { id: string }[] }).invites.at(-1)!.id;
+    expect((await service.fetch(new Request(`${BASE}/v1/pc-invites/${id}`, { method: "DELETE", headers: { authorization: `Bearer ${owner}` } }))).status).toBe(204);
+    expect(await redeem(service, revoked, pc())).toEqual(dead);
+    now += 15 * 60_000;
+    expect(await redeem(service, expired, pc())).toEqual(dead);
+  });
+
+  test("an auto invite admits the PC at once, until admission_until; an invite and its admission live with the sign-in that made it", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    service.opensAll = true;
+    const machine = pc();
+    const first = await redeem(service, await invite(service, "acct_1", true), machine);
+    expect(first.body).toEqual({ account: "acct_1", listing_id: first.body.listing_id, auto: true, card_until: null, admission_until: "2026-11-24T00:10:00.000Z" });
+    expect((await admission(service, machine)).status).toBe(200);
+    const signOut = async (token: string) => expect((await service.fetch(post("/v1/signout", {}, token))).status).toBe(204);
+    // made, then its maker signs out before a PC used it: it redeems nothing, and no longer shows as open
+    const owner = service.issueToken("acct_1");
+    const unused = await newInvite(BASE, "acct_1", null);
+    expect((await made(service, owner, { invite_key: unused.key, auto: true })).status).toBe(200);
+    await signOut(owner);
+    expect((await redeem(service, unused.line, pc())).body.error?.code).toBe("invite_invalid");
+    // redeemed, then its maker signs out before the PC took the admission: the admission ends with that sign-in, the
+    // listing stays confirmed, and a rerun by the same PC answers the same listing with no admission to wait for
+    const maker = service.issueToken("acct_1");
+    const used = await newInvite(BASE, "acct_1", null);
+    expect((await made(service, maker, { invite_key: used.key, auto: true })).status).toBe(200);
+    const other = pc();
+    const redeemedOnce = await redeem(service, used.line, other);
+    expect(redeemedOnce.status).toBe(200);
+    await signOut(maker);
+    expect((await admission(service, other)).body.error?.code).toBe("no_admission");
+    expect(service.pcs("acct_1").find((entry) => entry.server_id === other.serverId)?.listed_by_device).toBe(false);
+    expect((await redeem(service, used.line, other)).body).toEqual({ ...redeemedOnce.body, admission_until: null });
+  });
+
+  test("past the account's daily one-press cap an auto invite is refused at making, and one made before answers pc_add_cap at its redeem and stays open", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    service.opensAll = true;
+    expect((await redeem(service, await invite(service, "acct_1", true), pc())).status).toBe(200);
+    const early = await invite(service, "acct_1", true);
+    for (let added = 0; added < 2; added++) expect((await redeem(service, await invite(service, "acct_1", true), pc())).status).toBe(200);
+    // the day's three adds are used: a new auto invite is refused where it is made, a plain one is not
+    const refused = await service.fetch(post("/v1/pc-invites", { invite_key: (await newInvite(BASE, "acct_1", null)).key, auto: true }, service.issueToken("acct_1")));
+    expect([refused.status, ((await refused.clone().json()) as { error: { code: string } }).error.code]).toEqual([429, "pc_add_cap"]);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await invite(service)).toStartWith("ovis-join:1:");
+    const late = pc();
+    const response = await redeem(service, early, late);
+    expect(response.body.error?.code).toBe("pc_add_cap");
+    expect(service.pcs("acct_1").some((entry) => entry.server_id === late.serverId)).toBe(false);
+    // still open: asked again within its 15 minutes, it answers the same; after them it is dead
+    expect((await redeem(service, early, late)).body.error?.code).toBe("pc_add_cap");
+    now += 24 * 60 * 60_000;
+    expect((await redeem(service, early, late)).body.error?.code).toBe("invite_invalid");
+    expect((await redeem(service, await invite(service, "acct_1", true), late)).status).toBe(200);
+  });
+
+  test("an auto admission not taken within its 10 minutes is gone, and a plain invite's redeem names its card's end", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    service.opensAll = true;
+    const slow = pc();
+    expect((await redeem(service, await invite(service, "acct_1", true), slow)).status).toBe(200);
+    now += 10 * 60_000 + 1;
+    expect((await admission(service, slow)).body.error?.code).toBe("no_admission");
+    const plain = await redeem(service, await invite(service), pc());
+    expect(plain.body).toMatchObject({ auto: false, card_until: new Date(now + 10 * 60_000).toISOString(), admission_until: null });
+  });
+
+  test("a plain invite's card offers Add for 10 minutes: then Add and the PC's ask answer listing_expired; the PC's leave ends the listing", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    service.opensAll = true;
+    const machine = pc();
+    expect((await redeem(service, await invite(service), machine)).status).toBe(200);
+    now += 10 * 60_000 + 1;
+    expect((await admission(service, machine)).body.error?.code).toBe("listing_expired");
+    const admit = await service.fetch(post(`/v1/pcs/${machine.serverId}/admit`, {}, service.issueToken("acct_1")));
+    expect([admit.status, ((await admit.json()) as { error: { code: string } }).error.code]).toEqual([409, "listing_expired"]);
+    const left = await service.fetch(post(`/v1/pcs/${machine.serverId}/leave`, { server_id: machine.serverId, account: "acct_1", ...await proofOf(service, machine) }));
+    expect(left.status).toBe(204);
+    expect(service.pcs("acct_1")).toEqual([]);
+    // a new invite lists it again, with a new card
+    expect((await redeem(service, await invite(service), machine)).status).toBe(200);
+    expect((await admission(service, machine)).body.error?.code).toBe("no_admission");
+  });
+
+  test("the account's list of PCs can be full; a PC is rate limited after ten tries in a window", async () => {
+    const service = new FakeAccountService();
+    const token = service.issueToken("acct_1");
+    for (let index = 0; index < DIRECTORY_MAX; index++) {
+      const other = pc();
+      expect((await service.fetch(new Request(`${BASE}/v1/pcs/${other.serverId}`, { method: "PUT", body: JSON.stringify({ label: "pc", public_key: other.publicKey, relay: "wss://relay.ovis.sh" }), headers: { authorization: `Bearer ${token}` } }))).status).toBe(200);
+    }
+    const line = await invite(service);
+    const machine = pc();
+    expect((await redeem(service, line, machine)).body.error?.code).toBe("directory_full");
+    for (let tries = 1; tries < 10; tries++) await redeem(service, line, machine, { label: "" });
+    const limited = await service.fetch(post("/v1/pc-invites/redeem", { invite_key: "x", invite_signature: "y", server_id: machine.serverId, public_key: machine.publicKey, relay: "wss://relay.ovis.sh", label: "Desk", ...await proofOf(service, machine) }));
+    expect([limited.status, limited.headers.get("retry-after")]).toEqual([429, "60"]);
+  });
+
+  test("GET lists open invites and used ones for a day, with no key or line; DELETE revokes an open one and refuses a used one", async () => {
+    let now = Date.parse("2026-11-24T00:00:00Z");
+    const service = new FakeAccountService(() => now);
+    service.requestPlace = { country: "KR", city: "Seoul" };
+    const owner = service.issueToken("acct_1");
+    const key = await client();
+    service.registerSessionKey(owner, key.spki, "Pixel");
+    const usedInvite = await newInvite(BASE, "acct_1", null);
+    const used = (await made(service, owner, { invite_key: usedInvite.key, auto: true })).body;
+    const open = (await made(service, service.issueToken("acct_1"), { invite_key: (await newInvite(BASE, "acct_1", null)).key })).body;
+    const machine = pc();
+    expect((await redeem(service, usedInvite.line, machine)).status).toBe(200);
+    const list = async (token = owner) => answer(await service.fetch(new Request(`${BASE}/v1/pc-invites`, { headers: { authorization: `Bearer ${token}` } })));
+    const listed = await list();
+    expect(JSON.stringify(listed.body)).not.toContain(usedInvite.key);
+    expect(listed.body.invites).toEqual([
+      { id: used.id, made_at: "2026-11-24T00:00:00.000Z", expires_at: "2026-11-24T00:15:00.000Z", auto: true, device_no: 1, device_label: "Pixel", yours: true, used_at: "2026-11-24T00:00:00.000Z",
+        used_by: { server_id: machine.serverId, listing_id: service.pcs("acct_1")[0]!.listing_id, label: "Desk", os: "linux", country: "KR", city: "Seoul" } },
+      { id: open.id, made_at: "2026-11-24T00:00:00.000Z", expires_at: "2026-11-24T00:15:00.000Z", auto: false, device_no: null, device_label: null, yours: false, used_at: null, used_by: null },
+    ]);
+    const remove = async (id: unknown, token = owner) => answer(await service.fetch(new Request(`${BASE}/v1/pc-invites/${String(id)}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } })));
+    expect((await remove(used.id)).body.error?.code).toBe("invite_used");
+    expect((await remove(open.id)).status).toBe(204);
+    expect((await remove(open.id, service.issueToken("acct_2"))).status).toBe(404);
+    expect((await remove("0".repeat(32))).status).toBe(404);
+    expect((await list(service.issueToken("acct_1", { device: true }))).body.error?.code).toBe("own_sign_in_required");
+    // the revoked one is gone from the list; the used one stays a day
+    expect(((await list()).body.invites as { id: string }[]).map((entry) => entry.id)).toEqual([used.id as string]);
+    now += 24 * 60 * 60_000;
+    expect((await list(service.issueToken("acct_1"))).body.invites).toEqual([]);
   });
 });

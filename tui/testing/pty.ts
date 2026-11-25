@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PtySession } from "../../server/pty/session.ts";
+import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
 
 /**
  * Runs a command on a real pseudo-terminal for tests, through server/pty/session.ts: the Rust PTY
@@ -27,6 +28,8 @@ export interface PtyOptions {
   cols?: number;
   rows?: number;
   deadlineMs?: number;
+  /** opt-in: ends the run, through the PTY host, once its output passes this many characters; unset, the transcript is unbounded */
+  maxOutputChars?: number;
   /** called with each piece of output as it arrives */
   onData?: (text: string) => void;
 }
@@ -46,6 +49,66 @@ export interface PtyRun {
   stop(): Promise<void>;
 }
 
+const WASM = join(import.meta.dir, "..", "..", "shared", "ghostty", "ghostty-vt.wasm");
+
+/** Capture the last visible alternate screen, before restoring the caller's original screen. */
+export function screenOutput(output: string): string {
+  const enter = output.lastIndexOf("\x1b[?1049h");
+  if (enter < 0) return output;
+  const leave = output.indexOf("\x1b[?1049l", enter);
+  return output.slice(enter, leave < 0 ? undefined : leave);
+}
+
+/** Answer the host's queries in arrival order, including a query split across reads. */
+export function answerQueries(send: (text: string) => void, answers: ReadonlyArray<readonly [string, string]>): (text: string) => void {
+  let tail = "";
+  const overlap = Math.max(0, ...answers.map(([query]) => query.length - 1));
+  return (text) => {
+    const window = tail + text;
+    const found: [number, string][] = [];
+    for (const [query, answer] of answers) {
+      for (let at = window.indexOf(query); at !== -1; at = window.indexOf(query, at + 1)) {
+        if (at + query.length > tail.length) found.push([at, answer]);
+      }
+    }
+    tail = window.slice(window.length - Math.min(window.length, overlap));
+    for (const [, answer] of found.sort((a, b) => a[0] - b[0])) send(answer);
+  };
+}
+
+/** The cell grid the output leaves on a terminal of this size, one line a row, trailing blanks cut. */
+export async function gridText(output: string, cols: number, rows: number): Promise<string> {
+  const module = new GhosttyModule(new WebAssembly.Instance(new WebAssembly.Module(await Bun.file(WASM).arrayBuffer()), {}));
+  // laid out the way herdr-core lays graphemes out, as the screen's own panes are
+  const engine = new GhosttyEngine(module, cols, rows, { widths: "core", images: false });
+  try {
+    engine.write(new TextEncoder().encode(output));
+    const lines: string[] = Array.from({ length: rows }, () => "");
+    engine.frameAll((y, runs) => { lines[y] = runs.flatMap((run) => run.cells.map((cell) => cell.text)).join("").trimEnd(); });
+    return `${lines.join("\n")}\n`;
+  } finally {
+    engine.dispose();
+  }
+}
+
+/** Ask the emulated host for its cursor position after replaying the captured display bytes. */
+export async function hostCursorReport(output: string, cols: number, rows: number): Promise<string> {
+  const module = new GhosttyModule(new WebAssembly.Instance(new WebAssembly.Module(await Bun.file(WASM).arrayBuffer()), {}));
+  const encoder = new TextEncoder();
+  let reply = "";
+  const engine = new GhosttyEngine(module, cols, rows, {
+    widths: "core", images: false, events: { onReply: (bytes) => { reply = Buffer.from(bytes).toString("latin1"); } },
+  });
+  try {
+    engine.write(encoder.encode(output));
+    reply = "";
+    engine.write(encoder.encode("\x1b[6n"));
+    return reply;
+  } finally {
+    engine.dispose();
+  }
+}
+
 const live = new Set<() => Promise<void>>();
 
 /** Ends every run still going, through each one's PTY host: for afterAll and a test's signal handlers. */
@@ -60,12 +123,23 @@ export function runOnPty(options: PtyOptions): PtyRun {
   let output = "";
   let ended = false;
   let timedOut = false;
+  let overflowed = false;
+  const { maxOutputChars } = options;
   let code: number | null = null;
   const wakers = new Set<() => void>();
   const wake = () => { for (const waker of [...wakers]) waker(); };
   const session = new PtySession({
     command, args, cols: options.cols ?? 80, rows: options.rows ?? 24, env: options.env, inheritEnv: false,
-    onData: (data) => { output += data; options.onData?.(data); wake(); },
+    onData: (data) => {
+      if (overflowed) return;
+      output += data;
+      if (maxOutputChars !== undefined && output.length > maxOutputChars) {
+        overflowed = true;
+        session.kill();
+      }
+      options.onData?.(data);
+      wake();
+    },
     onExit: (exit) => { code = exit; },
   });
   const deadline = setTimeout(() => { timedOut = true; session.kill(); wake(); }, deadlineMs);
@@ -87,12 +161,14 @@ export function runOnPty(options: PtyOptions): PtyRun {
     stop,
     until: (match, what) => new Promise<void>((resolve, reject) => {
       const check = () => {
-        if (typeof match === "string" ? output.includes(match) : match.test(output)) {
+        // a run past its limit never matches: its transcript is incomplete, so a marker in it proves nothing
+        if (!overflowed && (typeof match === "string" ? output.includes(match) : match.test(output))) {
           wakers.delete(check);
           resolve();
-        } else if (timedOut || ended) {
+        } else if (timedOut || ended || overflowed) {
           wakers.delete(check);
-          const why = timedOut ? `the deadline of ${deadlineMs} ms passed` : "the command ended";
+          const why = overflowed ? `the output passed ${maxOutputChars} characters`
+            : timedOut ? `the deadline of ${deadlineMs} ms passed` : "the command ended";
           reject(new Error(`${why} before ${what ?? JSON.stringify(String(match))}; output: ${JSON.stringify(output.slice(-2000))}`));
         }
       };
@@ -125,7 +201,7 @@ export interface EntryEnd {
   stderr: string;
 }
 
-export type EntrySignal = "SIGTERM" | "SIGINT" | "SIGHUP";
+export type EntrySignal = "SIGTERM" | "SIGINT" | "SIGHUP" | "SIGTSTP" | "SIGCONT";
 
 export interface SupervisedRun extends PtyRun {
   /** the supervisor started the entry */
@@ -179,10 +255,13 @@ export function runSupervised(options: Omit<PtyOptions, "command"> & { entry: st
       else waiter?.reject(new Error("stty could not read the pty"));
     } else if (message.t === "ended") {
       reported = true;
-      settleEnded.resolve({
+      const end = {
         code: message.code!, signal: message.signal ?? null, before: parseStty(message.before ?? ""),
         after: message.after ? parseStty(message.after) : null, stderr: message.stderr ?? "",
-      });
+      };
+      // this report comes over the supervisor's socket and can overtake the entry's last output on the pty: the end is
+      // told once the pty has ended too, which is once its output was all read
+      void run.exited.then(() => settleEnded.resolve(end));
     }
   };
 

@@ -7,9 +7,9 @@ import { LEAVE as EXPORTED_LEAVE } from "./guard.ts";
 // contract and are written out here on purpose.
 const ESC = "\x1b";
 const ST = `${ESC}\\`;
-const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[>1u`;
-const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
-const AGAIN = `${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[=1;1u`;
+const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[>1u`;
+const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1003l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
+const AGAIN = `${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[=1;1u`;
 const PROBE = `${ESC}[?u${ESC}[?2026$p${ESC}]10;?${ST}${ESC}]11;?${ST}${ESC}]12;?${ST}${ESC}[16t${ESC}[c`;
 const ANSWER = `${ESC}[?1u${ESC}[?2026;2$y${ESC}]10;rgb:1111/2222/3333${ST}${ESC}]11;rgb:0000/0000/0000${ST}${ESC}]12;rgb:ffff/ffff/ffff${ST}${ESC}[6;18;9t${ESC}[?62;22c`;
 
@@ -34,6 +34,23 @@ describe("enter and leave", () => {
 
   it("exports exactly the bytes leave writes, for a parent that gives the terminal back after the screen died", () => {
     expect(EXPORTED_LEAVE).toBe(LEAVE);
+  });
+
+  it("says what it holds before it turns a mode on and once it has undone it, and at a stop just before it undoes them: enter, the colour-scheme watch, a stop, a continue and leave", () => {
+    const host = new HeadlessHost();
+    expect(host.holds()).toEqual([]);
+    host.enter();
+    host.watchDisplay();
+    host.stop();
+    host.cont();
+    host.leave();
+    expect(host.holds()).toEqual([
+      "modes after raw on",
+      `modes+watch after write ${ENTER}`,
+      `none after write ${ESC}[?2031h`,
+      "modes+watch after raw on",
+      `none after write ${ESC}[?2031l${LEAVE}`,
+    ]);
   });
 
   it("leaves once however often it is asked, and on the process's exit after a leave does nothing more", () => {
@@ -465,6 +482,21 @@ describe("the start probe", () => {
     expect(count(host.output(), PROBE)).toBe(1);
   });
 
+  it("restores display notifications and passes late palette updates, but not late DA1, to the input decoder", async () => {
+    const host = new HeadlessHost();
+    const seen = inputs(host);
+    host.enter();
+    const probed = host.probe();
+    host.advance(500);
+    await probed;
+    host.watchDisplay();
+    host.watchDisplay();
+    const update = `${ESC}]11;#123456\x07`;
+    host.feed(`${update}${ESC}[?62c`);
+    host.leave();
+    expect([seen, count(host.output(), `${ESC}[?2031h`), host.output().endsWith(`${ESC}[?2031l${LEAVE}`)]).toEqual([[update], 1, true]);
+  });
+
   it("ends at leave and keeps its replies out of the input to the last", async () => {
     const host = new HeadlessHost();
     host.enter();
@@ -647,40 +679,55 @@ describe("colour depth", () => {
 });
 
 describe("drain", () => {
-  it("takes what waits instead of handing it to onInput, until nothing arrives for DRAIN_WAIT_MS", async () => {
+  it("reads what waits and hands it to onInput as it comes, then settles once nothing arrives for DRAIN_WAIT_MS", async () => {
     const host = new HeadlessHost({ answer: ANSWER });
     const seen = inputs(host);
     host.enter();
     await host.probe();
     host.queue("typed ahead");
-    let drained = null as string | null;
-    void host.drain().then((bytes) => { drained = text(bytes); });
+    let drained = false;
+    void host.drain().then(() => { drained = true; });
+    expect(seen).toEqual(["typed ahead"]);
     host.advance(30);
     host.feed(" more");
+    expect(seen).toEqual(["typed ahead", " more"]);
     host.advance(49);
     await host.settled();
-    expect(drained).toBeNull();
+    expect(drained).toBe(false);
     host.advance(1);
     await host.settled();
-    expect(drained).toBe("typed ahead more");
-    expect(seen).toEqual([]);
+    expect([drained, host.timers()]).toEqual([true, 0]);
     host.feed("live");
-    expect(seen).toEqual(["live"]);
+    expect(seen).toEqual(["typed ahead", " more", "live"]);
   });
 
-  it("keeps probe replies out of what it returns", async () => {
+  it("keeps probe replies out of onInput while it runs", async () => {
     const host = new HeadlessHost();
+    const seen = inputs(host);
     host.enter();
     void host.probe();
     const drained = host.drain();
     host.feed(`${ESC}[?1u`);
     host.advance(50);
-    expect(text(await drained)).toBe("");
+    await drained;
+    expect(seen).toEqual([]);
   });
 
-  it("returns nothing when not entered", async () => {
+  it("answers its promise when what it reads makes a listener leave at once", async () => {
+    const host = new HeadlessHost({ answer: ANSWER });
+    host.enter();
+    await host.probe();
+    host.onInput(() => { host.leave(); });
+    host.queue("typed ahead");
+    let settled = false;
+    host.drain().then(() => { settled = true; });
+    await host.settled();
+    expect([settled, host.log().at(-1)]).toEqual([true, "raw off"]);
+  });
+
+  it("settles at once when not entered", async () => {
     const host = new HeadlessHost();
-    expect((await host.drain()).length).toBe(0);
+    await host.drain();
     expect(host.timers()).toBe(0);
   });
 });

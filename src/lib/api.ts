@@ -3,6 +3,7 @@ import { CompactAgentsError, expandMachine, type WireMachine } from "../../share
 import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
 import type { AlertWebhookSave, AlertWebhookView } from "../../shared/alert-webhook.ts";
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
+import type { MemoryView } from "../../shared/memory.ts";
 import type { AgentCatalogResponse, AgentTabStarted } from "../../shared/agent-catalog.ts";
 import type { ConversationSearchResponse } from "../../shared/conversation-search.ts";
 import { resumeConnectionTraces } from "./connectionTrace.ts";
@@ -12,7 +13,7 @@ import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllR
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
 import { TAILNET_NODE_ROUTES, type TailnetNodesAnswer } from "../../shared/tailnet-nodes.ts";
-import { machinePath, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type ListAddState, type OwnJoinRequest, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PendingKey, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -99,6 +100,7 @@ import type {
   WorktreeOpened,
   WorktreeRemoved,
   ZoomPaneRequest,
+  AcpHold,
 } from "../../shared/protocol.ts";
 import { SUPPORTED_AGENT_KINDS } from "../../shared/supported-agents.ts";
 import type { PaneScrollInfo } from "../../shared/herdr-api.generated.ts";
@@ -385,6 +387,37 @@ export async function approveOwnJoin(id: string, digits: string): Promise<void> 
   await getJson<{ readonly ok: true }>("/api/relay/join", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, digits }) });
 }
 
+/**
+ * GET /api/account/status, for why this PC lets nobody of its account in by its signed list: the `reason` of the list it
+ * is pinned to, or what a PC that cannot read its own account state says (403 `strict`). Null for none.
+ */
+export async function fetchListReason(): Promise<string | null> {
+  const response = await apiFetch("/api/account/status", { cache: "no-store" });
+  const body = await response.json().catch(() => null) as { list?: { reason?: unknown } | null; error?: { code?: unknown; reason?: unknown } } | null;
+  const said = response.ok ? body?.list?.reason : body?.error?.code === "strict" ? body.error.reason : null;
+  return typeof said === "string" && said !== "" ? said : null;
+}
+
+/** GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). */
+export async function fetchListAdd(): Promise<ListAddState> {
+  return await getJson<ListAddState>("/api/account/list/add", { cache: "no-store" });
+}
+
+/** POST /api/account/list/add/confirm: the person at this PC says the device adding it shows these digits; 409 `wrong_number` confirms nothing. */
+export async function confirmListAdd(run: string, digits: string): Promise<void> {
+  await postListAdd("/api/account/list/add/confirm", { run, digits });
+}
+
+/** POST /api/account/list/add/cancel: the numbers differ, or the person gives the add up; it joins nothing. */
+export async function cancelListAdd(run: string): Promise<void> {
+  await postListAdd("/api/account/list/add/cancel", { run });
+}
+
+async function postListAdd(url: string, body: Record<string, string>): Promise<void> {
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify(body) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 /** POST /api/relay/join: Allow or Decline of a first join on this PC's own window, its digits compared there. */
 export async function decideOwnJoin(id: string, decision: "approve" | "decline"): Promise<void> {
   const url = "/api/relay/join";
@@ -397,6 +430,20 @@ export async function decideRelayPairing(id: string, decision: "approve" | "decl
   const url = "/api/relay/pairing";
   // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(typeof answer === "string" ? { digits: answer } : answer) }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** POST /api/agent-tools/panes/answer: the owner's word on a pane hc started that asked for the agent tool (`agent-tool-panes`). */
+export async function answerAgentToolPane(id: string, decision: "allow" | "deny"): Promise<void> {
+  const url = "/api/agent-tools/panes/answer";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** POST /api/agent-tools/panes/remove: takes the agent tool back from a pane the owner allowed. */
+export async function removeAgentToolPane(id: string): Promise<void> {
+  const url = "/api/agent-tools/panes/remove";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id }) });
   if (!response.ok) throw await errorFrom(url, response);
 }
 
@@ -1055,6 +1102,22 @@ export async function focusPane(paneId: string, machineId = "local"): Promise<vo
   await sendJson(machinePath(machineId, "pane/focus"), "POST", { pane_id: paneId } satisfies FocusPaneRequest);
 }
 
+/** POST /api/pane/turn/cancel: a person's Stop on an ACP child. Its turn is cancelled and the agent that started it gets no new turn until it is handed back. */
+export async function holdAcpChild(paneId: string, machineId = "local"): Promise<void> {
+  await sendJson(machinePath(machineId, "pane/turn/cancel"), "POST", { pane_id: paneId });
+}
+
+/** POST /api/pane/turn/release: hands a stopped ACP child back, for the hold its pane reports (HerdrPane `acp_hold`). */
+export async function releaseAcpChild(paneId: string, hold: AcpHold, machineId = "local"): Promise<void> {
+  await sendJson(machinePath(machineId, "pane/turn/release"), "POST", { pane_id: paneId, ...hold });
+}
+
+/** POST /api/pane/turn/cancel-children: the same Stop on every ACP child the pane started; `failed` names the panes that did not take it. */
+export async function holdAcpChildren(paneId: string, machineId = "local"): Promise<{ failed: string[] }> {
+  const answer = await (await sendJson(machinePath(machineId, "pane/turn/cancel-children"), "POST", { pane_id: paneId })).json() as { failed?: unknown };
+  return { failed: Array.isArray(answer.failed) ? answer.failed.filter((pane): pane is string => typeof pane === "string") : [] };
+}
+
 export async function renamePane(paneId: string, label: string, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "pane/rename"), "POST", { pane_id: paneId, label });
 }
@@ -1519,10 +1582,15 @@ export async function askMachineRetry(id: string): Promise<void> {
 export interface SshCandidate {
   readonly name: string; readonly destination: string; readonly detail: string | null; readonly source: "ssh_config" | "tailscale";
   readonly tailnet?: string;
+  /** the User the config sets (absent: none, so ssh uses the server account's name; null: a Match may set one) and its Port */
+  readonly user?: string | null; readonly port?: number;
 }
 export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
-/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
-export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
+/**
+ * A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older
+ * than 0.5; `server_id`: the relay ID that PC names itself (absent from an older server), for display only.
+ */
+export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean; readonly server_id?: string | null }
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
 /** POST /api/machines/address: pairs with another PC's Ovis at that https address by the six-digit code it shows, and adds it. */
 export const addAddressPc = (address: string, code: string) => machineRequest<{ machine: Machine }>("/address", "POST", { address, code });
@@ -1589,6 +1657,15 @@ export async function removeAlertWebhook(): Promise<void> {
 export async function testAlertWebhook(): Promise<void> {
   const response = await apiFetch("/api/alerts/webhook/test", { method: "POST" });
   if (!response.ok) throw await errorFrom("/api/alerts/webhook/test", response);
+}
+
+/** Settings → Memory (server/memory/routes.ts): the notes, and a person's change to them */
+export function fetchMemory(folder: string | null): Promise<MemoryView> {
+  return getJson<MemoryView>(folder === null ? "/api/memory" : `/api/memory?${new URLSearchParams({ folder }).toString()}`, { cache: "no-store" });
+}
+
+export async function memoryRequest<T>(action: "add" | "edit" | "confirm" | "remove" | "discard" | "discard-run", body: unknown): Promise<T> {
+  return (await (await sendJson(`/api/memory/${action}`, "POST", body)).json()) as T;
 }
 
 /** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from OVIS_OPENAI_API_KEY. */

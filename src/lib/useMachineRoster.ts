@@ -25,6 +25,7 @@ import { paneLifetimes } from "./paneLifetime.ts";
 import { displayPaneTitle } from "../components/Sidebar.tsx";
 import { useHeaderConnection, type HeaderConnection } from "./headerConnection.ts";
 import { CarrierDownError } from "./transport.ts";
+import { heardAgentToolPanes } from "./agentToolPanes.ts";
 import { t } from "./i18n.ts";
 import type { usePreferencesSync } from "./preferencesSync.ts";
 import type { useAlertSignals } from "./useAlertSignals.ts";
@@ -217,6 +218,8 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
     }
     catch (err) {
       if (err instanceof ApiError && err.status === 401) { setLocked(true); return; }
+      // an account-joined device on a PC from before it answered this read: the roster comes over the socket alone
+      if (err instanceof ApiError && err.status === 403 && err.code === "local_only") { carrierBack(); setError(null); return; }
       if (err instanceof CarrierDownError) {
         carrierDown.current ??= { timer: window.setTimeout(() => {
           if (carrierDown.current) carrierDown.current.timer = null;
@@ -345,6 +348,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
       if (payload.type === "remote-pairings") { setRemotePairings(payload.pairings); return; }
       if (payload.type === "device-removed") { setRemovedNotices((list) => withPairedNotice(list, payload)); return; }
       if (payload.type === "pending-redemptions") { setPendingKeys(payload.pending); return; }
+      if (payload.type === "agent-tool-panes") { heardAgentToolPanes(payload); return; }
       const fresh = payload.type === "machines" ? payload.machines.filter((machine) => !kept.has(machine.id)) : [];
       const vouches = payload.type !== "machines" || kept.size === 0 || fresh.length > 0;
       if (vouches) snapshotRequests.current.invalidate();
@@ -425,6 +429,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
         scheduleRefetch(true);
       },
     });
-    return () => { stop(); onRosterStream("closed"); };
+    // the owner's pane list goes with the stream that brought it: a sign-out without a reload must not leave it shown
+    return () => { stop(); onRosterStream("closed"); heardAgentToolPanes({ pending: [], allowed: [] }); };
   }, [machineSessions, locked, scheduleRefetch, dropIn, chime, reorderCoordinator, onRosterStream]);
 }

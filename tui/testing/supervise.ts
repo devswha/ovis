@@ -6,11 +6,18 @@
  * It reads the pty's termios with `stty -a` before the entry starts and after it ended, starts the
  * entry on the same pty (stdin and stdout inherited, stderr kept for the report), and talks to
  * `runSupervised` (pty.ts) over the unix socket: `signal` sends a signal to the entry through the
- * handle of the child this process started, and only while that child is not reaped; `stty` reads
+ * handle of the child this process started, and only while that child is not reaped (a SIGCONT
+ * only once the entry has stopped, as a shell's job control sends it); `stty` reads
  * the termios now; at the end it reports the entry's exit, both termios and its stderr. It signals
  * nothing else.
  */
+import { readFileSync } from "node:fs";
 import { constants } from "node:os";
+import { drainTail } from "./drain.ts";
+
+// the entry's stderr is kept as a bounded tail: a flood is never held whole or sent in one message
+const STDERR_KEEP = 16 * 1024;
+const STDERR_EOF_MS = 2_000;
 
 const [socketPath, ...entry] = process.argv.slice(2);
 if (!socketPath || entry.length === 0) {
@@ -30,11 +37,38 @@ async function stty(): Promise<string | null> {
 // a hang-up of the pty reaches the entry too (the same process group); this process stays to report
 process.on("SIGHUP", () => {});
 
-type Signal = "SIGTERM" | "SIGINT" | "SIGHUP";
+type Signal = "SIGTERM" | "SIGINT" | "SIGHUP" | "SIGTSTP" | "SIGCONT";
 let child: ReturnType<typeof Bun.spawn> | null = null;
 const early: Signal[] = [];
+const running = () => child !== null && child.exitCode === null && child.signalCode === null;
+/** whether the entry is stopped now; null where there is no /proc to tell */
+const stopped = (): boolean | null => {
+  try {
+    // the state follows the last ") ": the command name before it may hold one itself
+    const stat = readFileSync(`/proc/${child!.pid}/stat`, "latin1");
+    return stat.slice(stat.lastIndexOf(") ") + 2).startsWith("T");
+  } catch {
+    return null;
+  }
+};
+// A shell continues a job once it has heard that the job stopped. A continue sent earlier, when the entry has given
+// the terminal back but not yet stopped itself, comes before that stop and is lost: the entry would stay stopped. So a
+// continue asked for before the stop waits for it: this process, the entry's parent, hears SIGCHLD when it stops.
+let continueAtStop = false;
+process.on("SIGCHLD", () => {
+  if (!continueAtStop || !running() || stopped() === false) return;
+  continueAtStop = false;
+  child!.kill("SIGCONT");
+});
 const deliver = (name: Signal) => {
-  if (child && child.exitCode === null && child.signalCode === null) child.kill(name);
+  if (!running()) return;
+  if (name === "SIGCONT" && stopped() === false) {
+    continueAtStop = true;
+    return;
+  }
+  // a continue sent now answers one still held, which must not carry over to a later stop
+  if (name === "SIGCONT") continueAtStop = false;
+  child!.kill(name);
 };
 
 let buffered = "";
@@ -61,14 +95,15 @@ const send = (message: Record<string, unknown>) => { socket.write(`${JSON.string
 
 const before = await stty();
 child = Bun.spawn(entry, { env: process.env, stdin: "inherit", stdout: "inherit", stderr: "pipe" });
-const stderr = new Response(child.stderr as ReadableStream<Uint8Array>).text();
+const stderr = drainTail(child.stderr as ReadableStream<Uint8Array>, STDERR_KEEP);
 send({ t: "started" });
 for (const name of early.splice(0)) deliver(name);
 await child.exited;
 const after = await stty();
 const signal = child.signalCode as NodeJS.Signals | null;
 const code = signal ? 128 + (constants.signals[signal] ?? 0) : child.exitCode ?? 1;
-send({ t: "ended", code, signal, before, after, stderr: await stderr });
+const stderrEnd = await stderr.finish(STDERR_EOF_MS);
+send({ t: "ended", code, signal, before, after, stderr: stderrEnd === "complete" ? stderr.text() : `${stderr.text()}\n[stderr stayed open after the entry exited]` });
 socket.end();
 await closed;
 process.exit(code);

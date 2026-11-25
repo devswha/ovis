@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { EllipsisVertical, LogOut, UserRound, X } from "lucide-react";
+import { EllipsisVertical, LogOut, Trash2, UserRound, X } from "lucide-react";
 
 import { useHostedSignIn, type HostedSignIn } from "../lib/account/hostedSignIn.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
@@ -9,6 +9,9 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AccountManageLists } from "./AccountManage.tsx";
+import { SignOutEverywhereSays } from "./ListDevices.tsx";
+import { otherDevices, shownOf, type EverywhereAsked, type Shown } from "../lib/account/listLeave.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
@@ -42,8 +45,11 @@ export function AccountHead({ provider, plan = null, onManage, onSignOut }: { pr
   );
 }
 
-/** Manage account: the account's ways in, its plan and Delete account, in a sheet over Settings. */
-export function ManageAccountSheet({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+/**
+ * Manage account: the account's ways in, its plan and Delete account, in a sheet over Settings. `account`: its id, whose
+ * start is shown as `ovis status` shows it, for `ovis add --account` on a PC with no screen.
+ */
+export function ManageAccountSheet({ onClose, account, children }: { onClose: () => void; account?: string | undefined; children: ReactNode }) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -67,7 +73,10 @@ export function ManageAccountSheet({ onClose, children }: { onClose: () => void;
           <h2 className="modal-title" id={`${id}-title`}>{t("Manage account")}</h2>
           <button type="button" className="icon-button" aria-label={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
-        <div className="modal-body account-manage-body">{children}</div>
+        <div className="modal-body account-manage-body">
+          {account !== undefined && <div className="settings-row account-plan-row" data-account-id><span className="settings-label">{t("Account ID")}</span><span className="account-plan" translate="no">{account.slice(0, 12)}</span></div>}
+          {children}
+        </div>
       </div>
     </div>,
     document.body,
@@ -86,16 +95,18 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   const [deleting, setDeleting] = useState<"asked" | "out" | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [everywhere, setEverywhere] = useState<"asked" | "out" | null>(null);
+  // Sign out every device's question as it was drawn: the press passes on the devices it named and what it was drawn for
+  const [question, setQuestion] = useState<EverywhereAsked | null>(null);
   const [everywhereError, setEverywhereError] = useState<string | null>(null);
   const [leaveNote, setLeaveNote] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const gone = signIn === null && leaveNote === null && !leaving;
   useEffect(() => { if (gone) onClose(); }, [gone, onClose]);
   if (gone) return null;
-  const leave = async (from: HostedSignIn): Promise<void> => {
+  const leave = async (from: HostedSignIn, shown: Shown): Promise<void> => {
     setLeaving(true);
     try {
-      const { left, message } = await from.leave();
+      const { left, message } = await from.leave(shown);
       if (!left && message !== null) throw new Error(message);
       if (message === null) onClose(); else setLeaveNote(message);
     } finally { setLeaving(false); }
@@ -106,16 +117,23 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
     void from.deleteAccount().then(setDeleteError, () => setDeleteError(t("The account could not be deleted. Try again."))).finally(() => setDeleting(null));
   };
   const signOutEverywhere = (from: HostedSignIn): void => {
-    if (everywhere !== "asked") { setEverywhere("asked"); setEverywhereError(null); return; }
+    if (everywhere !== "asked") {
+      // the other devices the question names as it is drawn: on an account with a signed list, these and no others leave it first
+      const list = pageAccountList();
+      setQuestion({ confirmed: list === null ? [] : otherDevices(list.view(), from.account), shown: shownOf(list, from.account) });
+      setEverywhere("asked");
+      setEverywhereError(null);
+      return;
+    }
     setEverywhere("out");
-    void from.signOutEverywhere().then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
+    void from.signOutEverywhere(question ?? undefined).then(setEverywhereError, () => setEverywhereError(t("Could not sign out every device. Try again."))).finally(() => setEverywhere(null));
   };
   return (
-    <ManageAccountSheet onClose={onClose}>
-      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={() => leave(signIn)} />}
+    <ManageAccountSheet onClose={onClose} account={signIn?.account}>
+      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={(shown) => leave(signIn, shown)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
       {signIn !== null && <div className="settings-item account-sign-out-everywhere">
-        {everywhere === "asked" && <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p>}
+        {everywhere === "asked" && <SignOutEverywhereSays account={signIn.account} named={question?.confirmed ?? []}><p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p></SignOutEverywhereSays>}
         <div className="account-delete-actions">
           <button type="button" className={everywhere === "asked" ? "btn btn-danger" : "btn"} data-action="sign-out-everywhere" data-confirm={everywhere === "asked" ? "sign-out-everywhere" : undefined}
             disabled={everywhere === "out"} aria-busy={everywhere === "out" ? "true" : undefined} onClick={() => signOutEverywhere(signIn)}>{everywhere === "asked" ? t("Sign out every device?") : t("Sign out every device")}</button>
@@ -150,13 +168,15 @@ export function HostedAccountGroup({ signIn, watching = false }: { signIn: Hoste
 }
 
 /**
- * The hosted app's start screen, signed in: its ⋮ menu, who is signed in, Manage account (for an account whose PCs are
- * all off or that has none: remove a dead one, leave, delete the account) and Sign out, acting on the account service
- * with this browser's own sign-in.
+ * The hosted app's start screen's ⋮ menu: Forget PCs where My PCs has a PC to forget (`onForgetPcs`, its edit state),
+ * and signed in (`account`) who is signed in, Manage account (for an account whose PCs are all off or that has none:
+ * remove a dead one, leave, delete the account) and Sign out, acting on the account service with this browser's own
+ * sign-in. With neither, no menu.
  */
-export function StartScreenAccountMenu() {
+export function StartScreenAccountMenu({ account = true, onForgetPcs }: { readonly account?: boolean; readonly onForgetPcs?: (() => void) | undefined }) {
   const t = useT();
-  const signIn = useHostedSignIn();
+  const hosted = useHostedSignIn();
+  const signIn = account ? hosted : null;
   const button = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [managing, setManaging] = useState(false);
@@ -165,18 +185,23 @@ export function StartScreenAccountMenu() {
   const who = signIn === null ? null : (
     <span className="account-who"><ProviderMark provider={signIn.provider} /><span>{t("Signed in with {provider}", { provider: PROVIDER_NAMES[signIn.provider] })}</span></span>
   );
+  const items: RowMenuItem[] = [
+    ...(onForgetPcs ? [{ id: "forget-pcs", label: t("Forget PCs"), icon: Trash2, run: onForgetPcs }] : []),
+    ...(signIn === null ? [] : [
+      { id: "manage-account", label: t("Manage account"), icon: UserRound, divider: onForgetPcs !== undefined, run: () => setManaging(true) },
+      { id: "sign-out", label: t("Sign out"), icon: LogOut, run: signIn.signOut },
+    ]),
+  ];
+  const title = signIn === null ? t("More") : t("Account");
   return (
     <>
-      {signIn !== null && (
-        <button ref={button} type="button" className="icon-button connect-start-menu" data-action="account-menu" aria-label={t("Account")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
+      {items.length > 0 && (
+        <button ref={button} type="button" className="icon-button connect-start-menu" data-action="account-menu" aria-label={title} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((was) => !was)}>
           <EllipsisVertical aria-hidden="true" />
         </button>
       )}
-      {open && signIn !== null && button.current !== null && (
-        <RowMenu anchor={button.current} title={t("Account")} header={who} onClose={closeMenu} items={[
-          { id: "manage-account", label: t("Manage account"), icon: UserRound, run: () => setManaging(true) },
-          { id: "sign-out", label: t("Sign out"), icon: LogOut, run: signIn.signOut },
-        ]} />
+      {open && items.length > 0 && button.current !== null && (
+        <RowMenu anchor={button.current} title={title} header={who} onClose={closeMenu} items={items} />
       )}
       {managing && <HostedManageSheet signIn={signIn} watching={false} pcHere={false} onClose={close} />}
     </>

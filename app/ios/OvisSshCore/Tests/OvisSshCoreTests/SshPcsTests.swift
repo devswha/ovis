@@ -130,13 +130,73 @@ final class SshPcsTests: XCTestCase {
         XCTAssertEqual(store.list().count, 1)
     }
 
+    func testReadsAPagesSshLoginAsTheSetupScreensFields() {
+        // HerdrShell openSshSetup's target, as the hosted app's SSH tab and the app's own page write it (sshOrAddress)
+        let read = { (text: String?) in SshPcs.login(text).map { "\($0.user) \($0.host) \($0.port)" } }
+        XCTAssertEqual(read(" me@studio.lan "), "me studio.lan 22")
+        XCTAssertEqual(read("pi@192.168.0.20:2222"), "pi 192.168.0.20 2222")
+        XCTAssertEqual(read("ssh://dev@nas.tail1e211e.ts.net/"), "dev nas.tail1e211e.ts.net 22")
+        XCTAssertEqual(read("me@[fd7a:115c:a1e0::1]:22"), "me fd7a:115c:a1e0::1 22")
+        // anything else leaves the screen's fields empty
+        for text in ["", "studio.lan", "https://me@studio.lan", "me@host:70000", "me@host/path", "a b@host"] { XCTAssertNil(read(text), text) }
+        XCTAssertNil(read(nil))
+    }
+
+    func testWritesOvisSshAddsFieldsAsALoginTheSetupScreenReadsBack() {
+        // the hosted front page's OvisSsh.add gives user, host and port apart: an IPv6 host goes in brackets
+        let back = SshPcs.login(SshPcs.target(user: "me", host: "fd7a:115c:a1e0::1", port: 2222))
+        XCTAssertEqual(back.map { "\($0.user) \($0.host) \($0.port)" }, "me fd7a:115c:a1e0::1 2222")
+        XCTAssertEqual(SshPcs.target(user: "me", host: "fd7a:115c:a1e0::1", port: 22), "me@[fd7a:115c:a1e0::1]")
+        XCTAssertEqual(SshPcs.target(user: "me", host: "[fd7a:115c:a1e0::1]", port: 2222), "me@[fd7a:115c:a1e0::1]:2222")
+        XCTAssertEqual(SshPcs.target(user: "pi", host: "192.168.0.20", port: 2222), "pi@192.168.0.20:2222")
+        XCTAssertEqual(SshPcs.target(user: "me", host: "studio.lan", port: nil), "me@studio.lan")
+        // without both, nothing to fill in
+        XCTAssertEqual(SshPcs.target(user: nil, host: "studio.lan", port: 22), "")
+        XCTAssertEqual(SshPcs.target(user: "me", host: nil, port: 22), "")
+    }
+
     func testOnlyTheAppsOwnPagesAndTheHostedAppOpenTheSshSetup() {
-        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html")))
-        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://app.ovis.sh/#pcs")))
+        let store = URL(string: "https://app.ovis.sh")
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: store))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://app.ovis.sh/#pcs"), appOrigin: store))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://APP.ovis.sh:443/"), appOrigin: store))
         for page in ["https://app.ovis.sh.evil.example/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/", "http://127.0.0.1:47320/", "https://desk.tail1e211e.ts.net/", "capacitor://other/"] {
-            XCTAssertFalse(SshPcs.setupOpener(URL(string: page)), page)
+            XCTAssertFalse(SshPcs.setupOpener(URL(string: page), appOrigin: store), page)
         }
-        XCTAssertFalse(SshPcs.setupOpener(nil))
+        XCTAssertFalse(SshPcs.setupOpener(nil, appOrigin: store))
+    }
+
+    func testABuildForAnotherHostedOriginLetsThatOriginOpenTheSshSetupAndNotTheStoreOne() {
+        let preview = URL(string: "https://relay-0510.ovis-app.pages.dev")
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://relay-0510.ovis-app.pages.dev/#pcs"), appOrigin: preview))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://relay-0510.ovis-app.pages.dev:443/"), appOrigin: preview))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: preview))
+        for page in ["https://app.ovis.sh/#pcs", "http://relay-0510.ovis-app.pages.dev/", "https://relay-0510.ovis-app.pages.dev:8443/"] {
+            XCTAssertFalse(SshPcs.setupOpener(URL(string: page), appOrigin: preview), page)
+        }
+        let local = URL(string: "https://shell.example.ts.net:8443")
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://shell.example.ts.net:8443/"), appOrigin: local))
+        XCTAssertFalse(SshPcs.setupOpener(URL(string: "https://shell.example.ts.net/"), appOrigin: local))
+        // a build with no hosted origin: the app's own pages alone
+        XCTAssertFalse(SshPcs.setupOpener(URL(string: "https://app.ovis.sh/#pcs"), appOrigin: nil))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: nil))
+    }
+
+    func testABuildThatServesTheShellFromInsideTheAppLetsThatShellOpenTheSshSetup() {
+        let shell = URL(string: "capacitor://app.ovis.sh")
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://app.ovis.sh/#pcs"), appOrigin: shell))
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://app.ovis.sh/s/0123456789abcdef0123456789abcdef/"), appOrigin: shell))
+        // on the app's scheme a host is as it is written, with no port: WebKit keeps another spelling another origin
+        for page in ["capacitor://APP.ovis.sh/#pcs", "capacitor://LOCALHOST/index.html", "capacitor://localhost:8080/index.html", "capacitor://app.ovis.sh:443/"] {
+            XCTAssertFalse(SshPcs.setupOpener(URL(string: page), appOrigin: shell), page)
+        }
+        XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: shell))
+        // the hosted app from the network is no page of such a build, nor is another host on the app's scheme
+        for page in ["https://app.ovis.sh/#pcs", "capacitor://other.example/", "capacitor://app.ovis.sh.evil.example/", "capacitor://app.ovis.sh:8443/", "https://desk.tail1e211e.ts.net/"] {
+            XCTAssertFalse(SshPcs.setupOpener(URL(string: page), appOrigin: shell), page)
+        }
+        // a hosted build never takes the scheme's other hosts for its shell
+        XCTAssertFalse(SshPcs.setupOpener(URL(string: "capacitor://app.ovis.sh/#pcs"), appOrigin: URL(string: "https://app.ovis.sh")))
     }
 
     func testGatesAreLongAndUnguessable() {
