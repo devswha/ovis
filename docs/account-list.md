@@ -2318,8 +2318,11 @@ neither a hand-over nor the pin undoes a removal.
   with the epoch key it holds (the wrap a member gave it when it added the PC), once per entry, and
   writes the rows again when one opened. It asks the account service for a wrap once per epoch in a
   round, outside the follower's turn, so a read (a removal before a session opens) never waits for
-  the names; an entry the service could not be asked about is asked again a minute later. A name it
-  cannot open (no key for that epoch, none sealed) leaves the row named `Device`; a name a person
+  the names; an entry the service could not be asked about is asked again a minute later, and one
+  whose epoch it holds no wrap of for this PC yet (a PC just added gets its wrap a moment later) after
+  the next read of the log, at most once a minute; a PC with no key of its own in the list asks for
+  none. A name it cannot open (a wrap that does not open, none sealed) leaves the
+  row named `Device`; a name a person
   gave a row at the PC is kept, but a row a person named `Device` or cleared takes the list's name,
   since the PC tells it from the placeholder by the label alone. Only the list's commits name rows:
   a PC that follows no list keeps the labels its rows came in with. The names decide nothing, and

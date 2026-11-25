@@ -225,6 +225,27 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     expect(labelOf(tablet.key)).toBe("failed");
   });
 
+  test("a name whose key this PC was not given yet is opened once a later read finds the wrap, with no restart", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let given = false;
+    // the account service holds no wrap of the names' key for this PC yet (a PC just added gets it a moment later)
+    pc.reach.hook = async (request) => !given && new URL(request.url).pathname === "/v2/pc/list/wraps" ? Response.json({ wraps: [] }) : undefined;
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      // the wrap is there now; the list did not move, and a pull a minute later reads it
+      given = true;
+      pc.time.wall(2 * 60_000);
+      await pc.pull();
+      for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    } finally { pc.reach.hook = undefined; }
+  });
+
   test("opening names never holds up a read: with names to open and the wraps route held, then failing, a removal is read before a session opens", async () => {
     const pc = await pinnedPc();
     const victim = await listMember();
