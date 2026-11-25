@@ -93,9 +93,11 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     // its Enter would run the pty's line without the start a held draft keeps
     if (draftHeldForRef.current === pane) return Promise.resolve({ ok: false, code: "held_input", message: "send or discard the held input first" });
     const epoch = session.epoch;
-    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly, commandKey);
+    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly, commandKey,
+      delivery === "immediate" && !holdOnly ? () => {
+        if (paneRef.current === pane && socketRef.current === socket && sessionRef.current?.epoch === epoch) onImmediateSubmit();
+      } : undefined);
     if (sent === null) return null;
-    if (delivery === "immediate" && !holdOnly) onImmediateSubmit();
     const releaseSubmit = submitRetention?.retain(pane);
     const submission = delivery !== "immediate" ? { pane, socket, epoch } : null;
     if (submission) pendingSubmissionsRef.current.add(submission);

@@ -227,6 +227,7 @@ export class PendingInputs<Owner, Lease> {
       throw new PendingInputError("pending_limit", "Too many recent pending-message outcomes are retained; try again later");
     }
     if ([...this.records.values()].some((item) => item.paneId === paneId && item.message.state === "uncertain")) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
+    if (this.closed.has(owner)) fault ??= { code: "input_not_ready", message: "The sending connection closed; review the saved message before sending it" };
     const item: PendingRecord<Owner, Lease> = {
       owner, paneId, lease, identity, inFlight: false,
       message: { id: this.newId(), request_id: requestId, text, state: held || fault ? "held" : "queued", created_at: new Date(this.now()).toISOString(), ...(agentOnly ? { agent_only: true as const } : {}),

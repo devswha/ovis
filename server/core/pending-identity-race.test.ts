@@ -181,7 +181,8 @@ it.each([
 
 it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged", "same-process Pi session changed #4232", "Pi switched during paste #4232",
   "Pi enqueue session unknown", "idle Pi enqueue session unknown", "workspace first message changes Pi session",
-  "workspace first message has no Pi session proof", "foreground changes during Pi proof", "Pi backend session evidence disappears"] as const)(
+   "workspace first message has no Pi session proof", "foreground changes during Pi proof", "Pi backend session evidence disappears",
+   "Pi retry session still unknown", "Pi retry session changes during paste", "Pi owner closed during enqueue proof"] as const)(
   "rechecks queued Pi delivery when capture retries and the pane becomes %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-capture-race-"));
     try {
@@ -213,7 +214,7 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
       spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
       spyOn(client, "paneSendText").mockImplementation(async () => {
         writes.push("paste");
-        if (change === "Pi switched during paste #4232") switchSession();
+        if (change === "Pi switched during paste #4232" || change === "Pi retry session changes during paste") switchSession();
       });
       spyOn(client, "paneSendKeys").mockImplementation(async (_pane, keys, _options, allowed) => {
         if (allowed && !allowed()) throw new client.HerdrError("cancelled", "Input guard refused the key");
@@ -251,17 +252,29 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
         resolved.mockResolvedValue({ path: other, agentDir: null, identity: `${next.dev}:${next.ino}` });
       }
 
-      const unknown = change === "Pi enqueue session unknown" || change === "idle Pi enqueue session unknown"
+      const retry = change === "Pi retry session still unknown" || change === "Pi retry session changes during paste";
+      const unknown = retry || change === "Pi enqueue session unknown" || change === "idle Pi enqueue session unknown"
         || change === "workspace first message has no Pi session proof";
       const first = change === "workspace first message changes Pi session" || change === "workspace first message has no Pi session proof";
       if (unknown) resolved.mockResolvedValueOnce(null);
+      if (change === "Pi owner closed during enqueue proof") {
+        resolved.mockImplementationOnce(async () => {
+          delivery.closeConnection(owner);
+          return { path, agentDir: null, identity: `${written.dev}:${written.ino}` };
+        });
+      }
       if (change === "idle Pi enqueue session unknown") pane.agent_status = "idle";
       if (first) {
         await delivery.queueFirstMessage("p", "FIRST", "pi", owner.data.connectionId, 41001);
       } else {
         await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
       }
-      if (change === "same-process Pi session changed #4232" || unknown || first) switchSession();
+      if (change === "Pi owner closed during enqueue proof") {
+        expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "held" }]);
+        expect(writes).toEqual([]);
+        return;
+      }
+      if (change === "same-process Pi session changed #4232" || (unknown && !retry) || first) switchSession();
       if (change === "Pi backend session evidence disappears") {
         delete pane.agent_session;
         switchSession();
@@ -289,6 +302,15 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
         if (change === "Pi enqueue session unknown") {
           await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: observed!.id, action: "steer" });
           expect(writes).toEqual(["paste", "Enter"]);
+        }
+        if (retry) {
+          if (change === "Pi retry session still unknown") resolved.mockResolvedValue(null);
+          await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: observed!.id, action: "steer" });
+          const switched = change === "Pi retry session changes during paste";
+          expect(writes).toEqual(switched ? ["paste"] : []);
+          expect(delivery.pending.list(owner, "p")).toMatchObject([switched
+            ? { state: "uncertain", error: { code: "submit_changed" } }
+            : { state: "held", error: { code: "input_not_ready" } }]);
         }
         if (change === "workspace first message has no Pi session proof") {
           await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: observed!.id, action: "discard" });

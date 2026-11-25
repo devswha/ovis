@@ -307,8 +307,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (found === null) return undefined;
     return "unwritten" in found ? { path: found.unwritten.path, fileIdentity: null } : { path: found.path, fileIdentity: found.identity };
   };
-  async function pinPiAtEnqueue(paneId: string, identity: PendingIdentity): Promise<typeof PI_SESSION_UNKNOWN | undefined> {
-    if (identity.agent !== "pi" || identity.session !== null) return undefined;
+  async function pinPiSession(paneId: string, identity: PendingIdentity): Promise<typeof PI_SESSION_UNKNOWN | undefined> {
+    if (identity.agent !== "pi" || identity.session !== null || identity.piSession !== undefined) return undefined;
     const pi = await piSession(paneId);
     if (pi === undefined) return PI_SESSION_UNKNOWN;
     identity.piSession = pi;
@@ -1169,7 +1169,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const sessions = identity.agent === kind
         ? { session: identity.session, omoSession: identity.omoSession ?? null, claudeSession: identity.claudeSession ?? null } : { session: null };
       const target: PendingIdentity = { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess };
-      const noPiSession = await pinPiAtEnqueue(paneId, target);
+      const noPiSession = await pinPiSession(paneId, target);
       // After the last await, a pane that ended has nothing left to discard this message later.
       ended();
       const attended = page !== undefined && present(page) && !ask.left;
@@ -1504,7 +1504,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const mark = pending.mark(message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease!);
             if (child && context.identity.session !== `acp:${child.id}:${child.client.session}`) throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
-            const noPiSession = await pinPiAtEnqueue(message.pane_id, context.identity);
+            const noPiSession = await pinPiSession(message.pane_id, context.identity);
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "This pending message waited too long; nothing was typed");
             if (agentOnly && !context.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
             const held = queueHeld(message.pane_id, false);
@@ -1570,7 +1570,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const context = await pendingContext(client, message.pane_id, lease);
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "This message waited too long; nothing was typed");
             const queued = await requestBook(client).run(message.id, fingerprint, async (): Promise<SubmitReply> => {
-              const noPiSession = await pinPiAtEnqueue(message.pane_id, context.identity);
+              const noPiSession = await pinPiSession(message.pane_id, context.identity);
               return { ok: true, pending: pending.enqueue(client, message.pane_id, message.id, pendingText(message.text), lease, context.identity, false, agentOnly, noPiSession).message };
             });
             behind = queued.pending;
@@ -1731,6 +1731,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
                 const bound = await bindLaunched(item);
                 if (bound === "wait") return { ok: false, code: "input_not_ready", message: "The agent started for this message is not up yet" };
                 if (bound === "ended") return { ok: false, ...LAUNCH_GONE };
+                // An explicit Send now may choose the current Pi session for an unpinned
+                // message. Pin it before checking the dispatch and never change that pin.
+                const noPiSession = await pinPiSession(item.paneId, item.identity);
+                if (noPiSession) return { ok: false, ...noPiSession };
                 await pendingContext(client, item.paneId, lease!, item.identity);
                 if (!pending.claim(item, false)) return { ok: false, code: "pending_busy", message: "This message is already being sent" };
                 if (isClient(item.owner)) item.lease = lease!;

@@ -5,18 +5,22 @@ import { useTerminalSends, type TerminalSendsDeps } from "./useTerminalSends.ts"
 import type { SubmitDelivery, SubmitResult } from "./ws.ts";
 
 it.each([
-  ["immediate", true, false, 1],
-  ["queue", true, false, 0],
-  ["hold", true, false, 0],
-  ["immediate", false, false, 0],
-  ["immediate", true, true, 0],
-] as const)("only interrupts a pending Stop on a dispatched immediate submission (%s, available=%s, held=%s)", async (
-  delivery: SubmitDelivery, available: boolean, held: boolean, expected: number,
+  ["immediate", "sent", false, 1],
+  ["queue", "sent", false, 0],
+  ["hold", "sent", false, 0],
+  ["immediate", "offline", false, 0],
+  ["immediate", "sent", true, 0],
+  ["immediate", "refused", false, 0],
+] as const)("only interrupts a pending Stop on a dispatched immediate submission (%s, %s, held=%s)", async (
+  delivery: SubmitDelivery, outcome: "sent" | "offline" | "refused", held: boolean, expected: number,
 ) => {
   const onImmediateSubmit = mock(() => {});
-  const submit = mock((): Promise<SubmitResult> | null => available
-    ? Promise.resolve({ ok: false, code: "agent_blocked", message: "The agent still has work" })
-    : null);
+  const submit = mock((...args: Parameters<NonNullable<TerminalSendsDeps["socketRef"]["current"]>["submit"]>): Promise<SubmitResult> | null =>
+    outcome === "offline" ? null : Promise.resolve().then(() => {
+      if (outcome === "refused") return { ok: false, code: "agent_only_unsupported", message: "Nothing was sent" };
+      args[12]?.();
+      return { ok: false, code: "agent_blocked", message: "The agent still has work" };
+    }));
   const pane = `stop-test-${delivery}`;
   const f = () => {};
   const deps = {
@@ -44,7 +48,9 @@ it.each([
     return null;
   }
   renderToStaticMarkup(createElement(Probe));
-  await send("Follow up", delivery);
+  const result = send("Follow up", delivery);
+  expect(onImmediateSubmit).not.toHaveBeenCalled();
+  await result;
   expect(onImmediateSubmit).toHaveBeenCalledTimes(expected);
   expect(submit).toHaveBeenCalledTimes(held ? 0 : 1);
 });
