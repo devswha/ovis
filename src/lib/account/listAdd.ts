@@ -216,9 +216,10 @@ export async function addPostedPc(list: AccountList, post: PostedPc, names: List
   const writeOptions = rest.expect === undefined || member === undefined ? rest : { ...rest, expect: { ...rest.expect, key: member } };
   const changed = (writer: ListWriter | null): boolean => writer === null || writer.list !== post.list
     || (options.expect !== undefined && writer.account !== options.expect.account) || (member !== undefined && writer.keys.key !== member);
+  // the list holds the PC by this very card: its key and its encryption key (a row's keys never change once set)
   const pcHeld = (writer: ListWriter): boolean => {
     const row = writer.state.pcs[post.endpoint];
-    return row !== undefined && row.removed === null && row.key === post.key;
+    return row !== undefined && row.removed === null && row.key === post.key && row.enc === post.enc;
   };
   // the invite is ended, or (where ending it is only beside a number) no longer open, so nothing is left to end
   const inviteEnded = (writer: ListWriter): boolean => invite === undefined || (writer.state.signers[invite.key]?.ended ?? null) !== null

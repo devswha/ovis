@@ -5,7 +5,7 @@ import { inviteMakeBytes } from "../../../shared/account-list-invite.ts";
 import { JOIN_LINE_PREFIX, readJoinLine } from "../../../shared/account-list-join.ts";
 import { fromBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpers.ts";
-import { INVITE_S, invitesOf, makeInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
+import { endPendingServiceInvites, INVITE_S, invitesOf, makeInvite, pendingInvite, revokeInvite, type MadeInvite } from "./listInvite.ts";
 import { allowDevice } from "./listAllow.ts";
 
 type World = ReturnType<typeof listWorld>;
@@ -196,6 +196,55 @@ describe("a device that is in the list makes an invite", () => {
       if (saved) Object.defineProperty(globalThis, "localStorage", saved); else Reflect.deleteProperty(globalThis, "localStorage");
     }
     expect(routes(second).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toHaveLength(1);
+  });
+
+  it("keeps the line where the write throws after the entry went out (a store that fails at the read after it)", async () => {
+    const { w, first } = await oneDevice();
+    let placed = false;
+    first.wire.answer = async (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")) { const answer = await w.fake.fetch(request); placed = true; return answer; }
+      return null;
+    };
+    // the page's list: its read after the placement fails in its store
+    const page = new Proxy(first.list, { get(target, prop) {
+      if (prop === "sync") return (options?: { readonly read?: boolean }) => placed && options?.read === true ? Promise.reject(new Error("The store failed")) : target.sync(options);
+      const value = Reflect.get(target, prop) as unknown;
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    } });
+    const outcome = await makeInvite(page, { auto: false, ...noWait });
+    expect(outcome).toMatchObject({ made: false, why: "unknown" });
+    expect((outcome as { pending?: { line: string } }).pending?.line.startsWith(JOIN_LINE_PREFIX)).toBe(true);
+    expect(routes(first).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toEqual([]);
+    expect(pendingInvite(first.list)?.key).toBe(listView(w.held().state).invites[0]!.key);
+  });
+
+  it("finds the account service's id of its invite in the page's memory where the browser's storage refuses a write", async () => {
+    const { first } = await oneDevice();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { value: { getItem: () => null, setItem: () => { throw new Error("QuotaExceededError"); }, removeItem: () => {} }, configurable: true });
+    try {
+      const invite = made(await makeInvite(first.list, { auto: false, ...noWait }));
+      expect(await revokeInvite(first.list, invite.key, noWait)).toEqual({ revoked: true });
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "localStorage", saved); else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+    expect(routes(first).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toHaveLength(1);
+  });
+
+  it("keeps the account service's id where ending its invite fails, and ends it at the next look without signing again", async () => {
+    const { first } = await oneDevice();
+    const invite = made(await makeInvite(first.list, { auto: false, ...noWait }));
+    let down = true;
+    first.wire.answer = (request) => down && request.method === "DELETE" && new URL(request.url).pathname.startsWith("/v1/pc-invites/") ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : null;
+    expect(await revokeInvite(first.list, invite.key, noWait)).toEqual({ revoked: true });
+    const placements = first.sent.filter((each) => each.route.endsWith("/entries")).length;
+    down = false;
+    await endPendingServiceInvites(first.list);
+    expect(routes(first).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toHaveLength(2);
+    expect(first.sent.filter((each) => each.route.endsWith("/entries")).length).toBe(placements);
+    // ended at the service: nothing more is asked of it
+    await endPendingServiceInvites(first.list);
+    expect(routes(first).filter((route) => route.startsWith("DELETE /v1/pc-invites/"))).toHaveLength(2);
   });
 
   it("makes none on a device that may not write the list", async () => {

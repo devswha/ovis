@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { signCard } from "../../../shared/account-list.ts";
-import { readJoinLine } from "../../../shared/account-list-join.ts";
+import { readJoinLine, writeJoinLine } from "../../../shared/account-list-join.ts";
 import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { askingPc, listWorld, postPcKeys, type AskingPc, type WorldDevice } from "./accountList.test-helpers.ts";
 import type { ListPost } from "./listAnswers.ts";
@@ -71,6 +71,27 @@ describe("a PC that joined with an invite a device of the account made", () => {
     const redeemed = await line.signRedeem({ server_id: pc.server_id, public_key: pc.endpoint, challenge_id: lineChallenge(list, { key: service.key, enc: service.enc, endpoint: pc.endpoint }) });
     const lie: ListPost = { endpoint: pc.endpoint, server_id: pc.server_id, key: service.key, enc: service.enc, card, attempt: null, invite: invite.key, invite_proof: redeemed };
     expect(await invitedPcs(first.list, [lie], w.clock.now)).toEqual([]);
+  });
+
+  it("is not offered on the line's proof for another list, with this very invite's key", async () => {
+    const { w, first, pc } = await invited();
+    const list = first.list.writer()!.list;
+    // an invite of this list whose private key the test holds, so the same key can sign for another list
+    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const here = await readJoinLine(await writeJoinLine(w.origin, w.account, list, pair.privateKey), { service: w.origin, followsLists: true });
+    const elsewhere = await readJoinLine(await writeJoinLine(w.origin, w.account, "6d".repeat(32), pair.privateKey), { service: w.origin, followsLists: true });
+    expect(elsewhere.key).toBe(here.key);
+    const keys = await first.keys();
+    const at = Math.floor(w.clock.now / 1000);
+    const placed = await signListEntry(w.held().state, { kind: "invite", key: here.key, exp: at + 840, uses: 1, auto: false, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
+    await first.service.placeEntries(w.held().id, [placed.text], []);
+    await first.list.sync();
+    const card = await signCard({ key: pc.key, enc: pc.enc, list, endpoint: pc.endpoint, invite: null }, pc.signs);
+    const post = (proof: string): ListPost => ({ endpoint: pc.endpoint, server_id: pc.server_id, key: pc.key, enc: pc.enc, card, attempt: null, invite: here.key, invite_proof: proof });
+    const signed = (line: typeof here) => line.signLineProof({ server_id: pc.server_id, card: { key: pc.key, enc: pc.enc, endpoint: pc.endpoint } });
+    // the same key's proof for this list is offered; for another list, it is not
+    expect((await invitedPcs(first.list, [post(await signed(here))], w.clock.now)).map((each) => each.invite)).toEqual([here.key]);
+    expect(await invitedPcs(first.list, [post(await signed(elsewhere))], w.clock.now)).toEqual([]);
   });
 
   it("is not offered for an invite that is over, was revoked, or lets a PC join by itself", async () => {

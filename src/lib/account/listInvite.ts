@@ -72,22 +72,22 @@ async function settle(list: AccountList, pending: PendingInvite, options: Pick<W
   return { made: false, why: "unknown", retryAfterMs: null, pending };
 }
 
-/** The account service's id of an invite this page made, by the invite's key: what ends the service's invite at a revoke. */
 /**
  * What this device keeps of the invites it made, per account, beside its pages (no line, no private key): the account
  * service's id of each by the invite's public key, so whichever page ends the invite in the list (a Revoke, the Add of
  * the PC that joined with it) ends the service's invite too, after a reload as well; and the invites it revoked, so the
- * screen says Revoked for them. An hour after an invite's end it is forgotten. Where the browser gives no storage, the
- * page's own memory stands in for it.
+ * screen says Revoked for them. An hour after an invite's end it is forgotten. The page's own memory holds the same,
+ * and stands in where the browser gives no storage or its storage refuses a read or a write.
  */
 interface InviteRecord { readonly id?: string; readonly revoked?: true; readonly until: number }
 const KEEP_MS = 75 * 60_000;
 const memoryRecords = new Map<string, Record<string, InviteRecord>>();
 const storageHere = (): Storage | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
 const recordsKey = (account: string): string => `ovis:invite-ids:${account}`;
-function readRecords(account: string): Record<string, InviteRecord> {
+/** What the browser's storage holds for `account`, or nothing where it has none or refuses the read. */
+function storedRecords(account: string): Record<string, InviteRecord> {
   const storage = storageHere();
-  if (storage === null) return { ...memoryRecords.get(account) };
+  if (storage === null) return {};
   try {
     const kept: unknown = JSON.parse(storage.getItem(recordsKey(account)) ?? "{}");
     if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return {};
@@ -98,13 +98,21 @@ function readRecords(account: string): Record<string, InviteRecord> {
     }));
   } catch { return {}; }
 }
+/** The records of `account`: the stored ones, and this page's own memory over them. */
+function readRecords(account: string): Record<string, InviteRecord> {
+  const now = Date.now();
+  const memory = Object.fromEntries(Object.entries(memoryRecords.get(account) ?? {}).filter(([, row]) => row.until > now));
+  return { ...storedRecords(account), ...memory };
+}
 function keepRecord(account: string, key: string, change: (row: InviteRecord | undefined) => InviteRecord | null): void {
   const rows = readRecords(account);
   const next = change(rows[key]);
   if (next === null) delete rows[key]; else rows[key] = next;
+  // the page's memory always, the browser's storage where it takes the write
+  memoryRecords.set(account, rows);
   const storage = storageHere();
-  if (storage === null) { memoryRecords.set(account, rows); return; }
-  try { storage.setItem(recordsKey(account), JSON.stringify(rows)); } catch { memoryRecords.set(account, rows); }
+  if (storage === null) return;
+  try { storage.setItem(recordsKey(account), JSON.stringify(rows)); } catch { /* the page's memory holds it */ }
 }
 
 /**
@@ -144,11 +152,27 @@ export async function endInviteAtService(list: AccountList, key: string, known?:
   if (writer === null) return;
   const id = known ?? await serviceInviteId(list, key);
   if (id === null) return;
-  keepRecord(writer.account, key, (row) => row === undefined ? null : { until: row.until, ...(row.revoked ? { revoked: true as const } : {}) });
-  await writer.service.endInvite(id).catch((error: unknown) => {
+  // the id is kept until the account service says the invite is over (ended now, gone, or used by a PC): a failure
+  // leaves it for the next look (endPendingServiceInvites), which ends it without signing anything
+  const over = (): void => keepRecord(writer.account, key, (row) => ({ until: row?.until ?? Date.now() + KEEP_MS, ...(row?.revoked ? { revoked: true as const } : {}) }));
+  keepRecord(writer.account, key, (row) => ({ until: row?.until ?? Date.now() + KEEP_MS, ...(row?.revoked ? { revoked: true as const } : {}), id }));
+  await writer.service.endInvite(id).then(over, (error: unknown) => {
     if (error instanceof SignedOutError) return;
+    if (error instanceof AccountServiceError && (error.status === 404 || (error.status === 409 && error.code === "invite_used"))) { over(); return; }
     console.info("Ovis: the account service's invite was not ended", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
   });
+}
+
+/**
+ * Ends at the account service every invite this device kept an id for that the list has ended, where an earlier try
+ * did not reach the service: nothing is signed, only the service's invite is ended. Called as the invites are drawn.
+ */
+export async function endPendingServiceInvites(list: AccountList): Promise<void> {
+  const writer = list.writer();
+  if (writer === null) return;
+  for (const [key, row] of Object.entries(readRecords(writer.account))) {
+    if (row.id !== undefined && (writer.state.signers[key]?.ended ?? null) !== null) await endInviteAtService(list, key, row.id);
+  }
 }
 
 /**
@@ -214,9 +238,21 @@ export async function makeInvite(list: AccountList, options: { readonly auto: bo
   };
   const { pending: _settled, ...writing } = options;
   const named = { ...writing, operation: operationOf(options.auto) };
-  const outcome = options.auto
-    ? await writeNamed<Invite, "service" | "clock_behind">(list, prepare, sign, named)
-    : await writeToList<"service" | "clock_behind">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, named);
+  let outcome: Awaited<ReturnType<typeof writeToList<"service" | "clock_behind">>>;
+  try {
+    outcome = options.auto
+      ? await writeNamed<Invite, "service" | "clock_behind">(list, prepare, sign, named)
+      : await writeToList<"service" | "clock_behind">(list, async (writer) => { const ready = await prepare(writer); return "go" in ready ? { request: await sign(writer, ready.go) } : ready; }, named);
+  } catch (error) {
+    // The write failed after the service's invite was made (a store that failed at the read after a placement, most
+    // of all): the entry may be in the list, and the line is the only copy of its key. It is kept, as for `unknown`.
+    // Only a sign-in that ended throws
+    if (error instanceof SignedOutError || held.invite === null) throw error;
+    console.warn("Ovis: the invite's entry may have gone out; its line is kept until it is settled", error instanceof Error ? error.name : error);
+    const pending: PendingInvite = { ...held.invite, auto: options.auto };
+    if (slot !== null) pendingLines.set(slot, pending);
+    return { made: false, why: "unknown", retryAfterMs: null, pending };
+  }
   if (outcome.written && held.invite !== null) {
     const row = list.writer()?.state.invites[held.invite.key];
     if (row !== undefined) return { made: true, invite: { ...held.invite, exp: row.exp, auto: options.auto } };

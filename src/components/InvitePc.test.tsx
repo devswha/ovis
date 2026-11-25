@@ -100,7 +100,8 @@ describe("invites for a PC, on a device that may write its account's list", () =
     expect(listView(w.held().state).invites.map((row) => [row.key, row.uses, row.auto])).toEqual([[read.key, 1, true]]);
     // the one line an agent runs names the whole account id and never holds the invite
     expect(shown("data-invite-command")).toBe(agentCommand(w.account));
-    expect(agentCommand(w.account)).toBe(`curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ~/ovis-invite.txt --account ${w.account}`);
+    // the installer of this release takes no invite: it installs, and then `ovis join` joins with the file (docs/relay.md)
+    expect(agentCommand(w.account)).toBe(`curl -fsSL https://ovis.sh/install.sh | sh && ~/.local/bin/ovis join --invite-file ~/ovis-invite.txt --account ${w.account}`);
     expect(text()).toContain("For an agent");
     expect(rows()).toEqual([`open: Invite · Expires in ${INVITE_S / 60} minRevoke`]);
     const copies = renderer!.root.findAll((node) => node.type === "button" && textOf(node) === "Copy");
