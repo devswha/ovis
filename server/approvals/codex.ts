@@ -312,6 +312,8 @@ class Connection {
   private readonly calls = new Map<number, (message: Json) => void>();
   private readonly held = new Map<string, () => void>();
   private readonly subscribed = new Set<string>();
+  /** Threads the server answered Ovis's subscription for: it sent any question of theirs still waiting by then. */
+  private readonly resumed = new Set<string>();
   /** Threads that are not the pane's own: subagents, and the ephemeral ones Codex runs aside (it titles a thread in one). */
   private readonly subagents = new Set<string>();
   private readonly changes = new Map<string, FileChange[]>();
@@ -372,6 +374,7 @@ class Connection {
     this.subscribed.add(threadId);
     const answer = await this.call("thread/resume", { threadId, excludeTurns: true });
     if (answer["error"] !== undefined) this.subscribed.delete(threadId);
+    else this.resumed.add(threadId);
     // a thread already running as Ovis connects is known by what the server answers of it
     const thread = isObject(answer["result"]) && isObject(answer["result"]["thread"]) ? answer["result"]["thread"] : null;
     if (thread !== null) this.started(thread, false);
@@ -412,6 +415,11 @@ class Connection {
 
   questions(): CodexAsk[] {
     return [...this.asks.values()].filter((ask) => ask.threadId === this.thread);
+  }
+
+  /** Whether the server is known to wait on no question of the pane's own thread. */
+  waitsOnNone(): boolean {
+    return this.thread !== null && this.resumed.has(this.thread) && this.questions().length === 0;
   }
 
   /** Sends `answers` to question `key` of the pane's own thread, once, while the server still waits on it. */
@@ -624,6 +632,15 @@ export function servedAnswered(paneId: string): CodexAsk[] {
     if (done !== null) return done.filter(({ at }) => Date.now() - at < DONE_MS).map(({ ask }) => ask);
   }
   return [];
+}
+
+/** Whether the Codex server Ovis is connected to in `paneId` is known to wait on no question of the pane's own thread. */
+export function servedWaitsOnNone(paneId: string): boolean {
+  for (const servers of instances) {
+    const connection = servers.connection(paneId);
+    if (connection) return connection.waitsOnNone();
+  }
+  return false;
 }
 
 /** The questions the Codex server Ovis started in `paneId` waits on for the pane's own thread, oldest first. */

@@ -124,8 +124,9 @@ const LOOK_MS = 100;
 export async function recordSettled(paneId: string, agent: string, id: string, settleMs = SETTLE_MS, read = readRecord): Promise<RecordOutcome> {
   const deadline = Date.now() + settleMs;
   for (;;) {
-    const request = await read(paneId, agent);
-    if (request === undefined) return "unread";
+    // a read still under way at the deadline proves nothing
+    const request = await Promise.race([read(paneId, agent), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => "late" as const)]);
+    if (request === "late" || request === undefined) return "unread";
     if (request?.id !== id) return "closed";
     if (Date.now() + LOOK_MS > deadline) return "open";
     await Bun.sleep(LOOK_MS);

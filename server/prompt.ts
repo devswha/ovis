@@ -43,7 +43,7 @@ import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.
 import { withRecord } from "./dialogs/record.ts";
 import { titleStatus } from "./agent-identity.ts";
 import { recordFor, recordRequest, recordSettled, type RecordOutcome, withAgentRecord } from "./record-cards.ts";
-import { answerServed } from "./codex-question.ts";
+import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
@@ -1259,6 +1259,15 @@ async function readKnownPrompt(
     prompt = bound(prompt!);
     rebind = bound;
   }
+  // a Codex question its own server waits on: the card is that request's, and an answer goes to it only (codex-question.ts)
+  if (agent === "codex" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "codex-question") {
+    const bound = (card: InteractivePrompt): InteractivePrompt => {
+      const parsed = parsedByPublicPrompt.get(card);
+      return parsed ? publicPrompt(withServedAsk(paneId, parsed)) : card;
+    };
+    prompt = bound(prompt);
+    rebind = bound;
+  }
   // and every card pi's own dialogs and questionnaires draw, which answer by keys (pi-ask's form answers
   // through the extension and returned above; omo's cards on a pane herdr names pi keep their own checks)
   if (agent === "pi" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder?.startsWith("pi-") && !(await piOwnsInput(paneId))) {
@@ -1701,6 +1710,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // keeps main's keys)
         if (parsedPrompt?.responder === "dsh-question" && !(await dshAsks(paneId, signal))) throw new DshNotAsking();
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
+        // a Codex question its server says is answered (from the terminal, or as data) takes no key, whatever the screen still shows
+        if (keyAgent === "codex" && parsedPrompt !== undefined && questionClosed(paneId, parsedPrompt)) throw new KeyRefused();
       };
       const verifyThenSend = async <T>(look: AbortSignal, guardUntil: number | null, readUntil: number,
         same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly: boolean | "editor" = false): Promise<T> => {
@@ -2078,6 +2089,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (heldId !== null && !options.approvals!.showsOnly(body.pane_id, approvalDialog(prompt)!, heldId)) return promptChanged();
       // a Codex question its own server waits on too: a pick of an option goes as data, by the request's id, with no key;
       // one answered meanwhile takes no key either (codex-question.ts)
+      if (request.signal.aborted) return promptChanged();
       const served = agent === "codex" && parsedPrompt !== undefined ? answerServed(body.pane_id, parsedPrompt, body) : null;
       if (served === "gone") return promptChanged();
       if (served === "sent") {

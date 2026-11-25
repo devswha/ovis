@@ -132,7 +132,10 @@ test("answers a question its Codex server waits on as data, with no key, and onl
   const prompt = await card();
   expect([prompt.question, prompt.options.map((option) => option.label)]).toEqual(["Which color do you choose?", ["Red (Recommended)", "Blue"]]);
   expect(await answer(prompt.id, { option_index: 1 })).toBe(200);
-  expect(await answer(prompt.id, { option_index: 0 })).toBe(409);
+  // the TUI has not drawn the next screen yet: a card read again is the same question, which takes no key
+  const again = await card();
+  expect(await answer(again.id, { option_index: 0 })).toBe(409);
+  expect(await answer(again.id, { custom_text: "green" })).toBe(409);
   await server.read();
   expect(server.answers()).toEqual([{ id: REQUEST.id, result: { answers: { color: { answers: ["Blue"] } } } }]);
   expect(pane.sent).toEqual([]);
@@ -141,12 +144,25 @@ test("answers a question its Codex server waits on as data, with no key, and onl
 test("takes no key for a question the terminal answered, whatever the answer", async () => {
   const pane = await herdr();
   const server = await codex();
-  const prompt = await card();
   server.send({ method: "serverRequest/resolved", params: { threadId: REQUEST.params.threadId, requestId: REQUEST.id } });
   await server.read();
+  const prompt = await card();
   expect(await answer(prompt.id, { option_index: 0 })).toBe(409);
   expect(await answer(prompt.id, { custom_text: "green" })).toBe(409);
   expect([server.answers(), pane.sent]).toEqual([[], []]);
+});
+
+test("answers a card only for the request it was read for, not another asked alike since", async () => {
+  const pane = await herdr();
+  const server = await codex();
+  const before = await card();
+  server.send({ method: "serverRequest/resolved", params: { threadId: REQUEST.params.threadId, requestId: REQUEST.id } });
+  server.send({ ...REQUEST, id: 72 });
+  await server.read();
+  expect(await answer(before.id, { option_index: 0 })).toBe(409);
+  await server.read();
+  expect([server.answers(), pane.sent]).toEqual([[], []]);
+  expect(await answer((await card()).id, { option_index: 0 })).toBe(200);
 });
 
 test("takes no key for a question Ovis answered before its connection to the server was lost", async () => {
@@ -157,7 +173,7 @@ test("takes no key for a question Ovis answered before its connection to the ser
   const lost = new Promise<void>((resolve) => { const stop = onServedStatus(() => { stop(); resolve(); }); });
   server.drop();
   await lost;
-  expect(await answer(prompt.id, { option_index: 0 })).toBe(409);
+  expect(await answer((await card()).id, { option_index: 0 })).toBe(409);
   expect(pane.sent).toEqual([]);
 });
 
