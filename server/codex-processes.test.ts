@@ -3300,6 +3300,8 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
         title = issue === 3491 ? "Older named thread B" : null;
         screen = "";
         expect(await resolve()).toBeNull();
+        screen = ["• ok", "", "› Ask Codex to do anything"].join("\n");
+        expect(await resolve()).toBeNull();
       } finally { started.mockRestore(); }
     });
   }
