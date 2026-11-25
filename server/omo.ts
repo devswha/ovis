@@ -313,22 +313,62 @@ export function earliestStart(starts: readonly (number | null)[]): number | null
   return known.length > 0 ? Math.min(...known) : null;
 }
 
-export function omoCandidates(cwd: string, home: string, exactPaths: string[] = [], agentDirs: readonly string[] = [defaultOmoAgentDir(home)]): { files: OmoCandidate[]; capped: Set<string> } {
+const SESSION_ENTRY_LIMIT = 8192;
+const SESSION_TRANSCRIPT_LIMIT = 4096;
+
+// Bun's Dir eagerly reads the entire folder before readSync yields an entry.
+// Node's Dir is incremental; use the same fixed limit there, with no shell.
+const READ_SESSION_DIR = `
+  if (process.versions.bun) process.exit(1);
+  const dir = require("node:fs").opendirSync(process.argv[1]);
+  const names = [];
+  try {
+    for (let read = 0; read < Number(process.argv[2]); read++) {
+      const entry = dir.readSync();
+      if (entry === null) { process.stdout.write(JSON.stringify(names)); return; }
+      if (entry.name.endsWith(".jsonl")) names.push(entry.name);
+    }
+    process.exitCode = 2;
+  } finally { dir.closeSync(); }
+`;
+
+function sessionListing(dir: string): { transcripts: string[]; capped: boolean } | null {
+  const node = Bun.which("node");
+  if (node === null) return null;
+  try {
+    const read = Bun.spawnSync([node, "-e", `(() => {${READ_SESSION_DIR}})()`, "--", dir, String(SESSION_ENTRY_LIMIT)], {
+      env: { ...process.env, NODE_OPTIONS: "" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000,
+    });
+    if (read.exitCode === 2) return { transcripts: [], capped: true };
+    if (read.exitCode !== 0) return null;
+    const names: unknown = JSON.parse(read.stdout.toString());
+    return Array.isArray(names) && names.length < SESSION_ENTRY_LIMIT && names.every((name): name is string => typeof name === "string")
+      ? { transcripts: names, capped: false } : null;
+  } catch { return null; }
+}
+
+export function omoCandidates(cwd: string, home: string, exactPaths: string[] = [], agentDirs: readonly string[] = [defaultOmoAgentDir(home)]): {
+  files: OmoCandidate[]; capped: Set<string>; listings: ReadonlyMap<string, readonly string[]>;
+} {
   const roots = canonicalRoots(agentDirs.map((agentDir) => join(agentDir, "sessions")));
   const paths = new Set(exactPaths);
   const capped = new Set<string>();
+  const listings = new Map<string, readonly string[]>();
+  const scanned = new Set<string>();
   for (const agentDir of new Set(agentDirs)) {
-    const dir = sessionDir(cwd, agentDir);
-    let names: string[] = [];
-    try { names = readdirSync(dir); } catch { /* only explicit evidence may remain */ }
-    const transcripts: string[] = [];
-    for (const name of names) {
-      if (!name.endsWith(".jsonl")) continue;
-      transcripts.push(name);
-      if (transcripts.length > 4096) break;
+    let dir: string;
+    try { dir = realpathSync(sessionDir(cwd, agentDir)); } catch { continue; }
+    if (scanned.has(dir)) continue;
+    scanned.add(dir);
+    const listing = sessionListing(dir);
+    if (listing === null) {
+      for (const root of canonicalRoots([join(agentDir, "sessions")])) capped.add(root);
+      continue;
     }
+    const { transcripts } = listing;
+    if (!listing.capped) listings.set(dir, transcripts);
     // Bound transcript reads without counting sidecars or guessing from a partial set.
-    if (transcripts.length <= 4096) {
+    if (!listing.capped && transcripts.length <= SESSION_TRANSCRIPT_LIMIT) {
       for (const name of transcripts) paths.add(join(dir, name));
     } else {
       for (const root of canonicalRoots([join(agentDir, "sessions")])) capped.add(root);
@@ -339,7 +379,7 @@ export function omoCandidates(cwd: string, home: string, exactPaths: string[] = 
     const file = candidate(path, roots, cwd);
     if (file) found.set(file.path, file);
   }
-  return { files: [...found.values()], capped };
+  return { files: [...found.values()], capped, listings };
 }
 
 function resumedIds(argv: string[]): string[] {
@@ -546,7 +586,7 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     }
     runtimes.push({ paneId: pane.pane_id, startedAt: starts.every((start) => start !== null) ? Math.min(...(starts as number[])) : null, paths, ids, stores: stores.filter((store): store is string => store !== null), custom, ambiguous: resolved.ambiguous });
   }
-  const { files, capped } = omoCandidates(cwd, home, runtimes.flatMap((runtime) => runtime.paths), [...agentDirs]);
+  const { files, capped, listings } = omoCandidates(cwd, home, runtimes.flatMap((runtime) => runtime.paths), [...agentDirs]);
   // Match canonical candidates even when /proc names a symlink into the store, and drop a
   // path that no store of this pane contains: it is another pane's or a stale report.
   for (const runtime of runtimes) {
@@ -569,9 +609,9 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     const id = entries[0]!.id;
     if (files.some((file) => file.id === id && entries.some((entry) => entry.store !== null && entry.store === file.store))) return null;
     for (const dir of new Set(entries.map((entry) => entry.dir))) {
-      let names: string[];
-      try { names = readdirSync(dir); } catch { return null; }
-      if (names.some((name) => name === `${id}.jsonl` || name.endsWith(`_${id}.jsonl`))) return null;
+      let names: readonly string[] | undefined;
+      try { names = listings.get(realpathSync(dir)); } catch { return null; }
+      if (names === undefined || names.some((name) => name === `${id}.jsonl` || name.endsWith(`_${id}.jsonl`))) return null;
     }
     return id;
   };
