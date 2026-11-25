@@ -622,6 +622,15 @@ describe("ovis join: what the account service says", () => {
   const answered = (code: string, status: number, headers: Record<string, string> = {}) => (path: string) =>
     path === "/v1/pc-invites/redeem" ? Response.json({ error: { code, message: `the service's own words ${code}` } }, { status, headers }) : undefined;
 
+  it("an invite the account's signed list does not hold as open (revoked, used, run out, or made before the list) is invite_invalid, in words of its own", async () => {
+    const run = await plainly({ serviceAnswer: answered("invite_not_in_list", 409) });
+    expect(run.code).toBe(JOIN_EXIT.invite_invalid);
+    expect(JSON.parse(run.out)).toEqual({ ok: false, error: "invite_invalid", message: "This invite does not work: your account's signed list does not hold it as open (it was revoked, used or ran out, or made before the account had its list). Ask for a new one." });
+    expect(run.err).not.toContain("invite_not_in_list");
+    expect(run.listed()).toEqual([]);
+    expectNoInvite(run);
+  });
+
   it("an invite another PC used is the one invite_invalid, in its own words", async () => {
     const time = clock();
     const service = new FakeAccountService(time.now);

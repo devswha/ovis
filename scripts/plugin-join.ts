@@ -139,6 +139,8 @@ const USAGE_HINT = (command: string): string => `Run ${command} --invite-file <p
 const NOT_AN_INVITE = "That is not an Ovis invite: an invite is one line that starts with ovis-join:1:, made on a device signed in to your account. Nothing was sent.";
 
 const INVITE_DEAD = "This invite does not work: it is mistyped, used or expired (an invite works once, for 15 minutes). Ask for a new one.";
+/** An account that keeps a signed list redeems only an invite its list holds as open (`invite_not_in_list`). */
+const INVITE_NOT_IN_LIST = "This invite does not work: your account's signed list does not hold it as open (it was revoked, used or ran out, or made before the account had its list). Ask for a new one.";
 
 /** Seconds from a retry-after header, as a person reads them. */
 function inTime(seconds: number | null): string {
@@ -579,6 +581,7 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
       const header = response.headers.get("retry-after")?.trim() ?? "";
       const retryAfter = /^[0-9]{1,9}$/.test(header) ? Number(header) : null;
       if (response.status === 400 && code === "invite_invalid") return failed("invite_invalid", INVITE_DEAD);
+      if (response.status === 409 && code === "invite_not_in_list") return failed("invite_invalid", INVITE_NOT_IN_LIST);
       if (response.status === 429 && code === "pc_add_cap") return failed("pc_add_cap", `Your Ovis account has added as many PCs as it may for now: try again in ${inTime(retryAfter)}. The invite was not used.`, { retry_after: retryAfter });
       if (response.status === 429) return failed("rate_limited", `The account service asks this PC to wait: try again in ${inTime(retryAfter)}.`, { retry_after: retryAfter });
       if (response.status === 409 && code === "directory_full") return failed("directory_full", `Your account holds as many PCs as it can. Remove one in the Ovis app, then run ${command} again (with a new invite once this one ran out).`);

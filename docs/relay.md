@@ -761,9 +761,9 @@ for it before they show or ask anything.
   it does once a device of the account chose **Add**. With an **auto** invite the PC builds its own entry,
   the command signs it with the line's key and hands it back, and the PC places it and joins
   (`…/join/prepare`, `…/join/body`, `…/join/place`); a list that moved meanwhile is tried again, a
-  few times. A line that names no list, for an account that keeps one, ends the run with the PC's
-  refusal (**This account keeps a signed list of its devices, and takes a PC only by that list**):
-  ask for a new invite.
+  few times. A line that names no list, for an account that keeps one, is
+  refused by the account service (`invite_invalid`: the list does not hold that invite as open, as
+  for one that was revoked, used or ran out): ask for a new invite.
 
   A run that ends with this PC in no account (Ctrl+C, the card's time, an auto admission that is not
   there, a refusal, an error of its own) takes this PC off that account's list by its own proof
@@ -796,7 +796,7 @@ for it before they show or ask anything.
   | 0 | | Added, or in that account already |
   | 1 | `not_added`, `stopped` | Not added: the PC or the account service refused, or Ctrl+C |
   | 2 | `usage` | No invite, two ways at once, an unknown flag, a file that could not be read |
-  | 3 | `invite_invalid` | Not an invite line, one for another account service, or one the service does not take: mistyped, used or expired |
+  | 3 | `invite_invalid` | Not an invite line, one for another account service, or one the service does not take: mistyped, used or expired, or one an account's signed list does not hold as open (revoked, used, run out, or made before the list) |
   | 4 | `not_confirmed` | Not `yes` at the question, or nobody to ask (no terminal, `--json`) and no `--account` |
   | 5 | `account_mismatch` | `--account` names another account than the invite's |
   | 6 | `other_account` | This PC is in another account (`ovis logout` first) |
