@@ -44,14 +44,25 @@ import { activePluginScript } from "./plugin-runtime.ts";
 import { isBareTui, runBareTui, runTui } from "./plugin-tui.ts";
 import { parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
 import { discardTyped } from "./libc.ts";
-import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
+import { ENV_FILES, LEGACY_PLUGIN_ID, ownDir, PLUGIN_ID, pluginConfigDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
 
+const desktopRecord = process.env["OVIS_DESKTOP_COMMAND"] === "1" ? process.env["OVIS_DESKTOP_COMMAND_RECORD"] : undefined;
+let desktopPort: number | null = null;
+if (desktopRecord !== undefined) {
+  const { desktopCommandPort } = await import("../app/electron/src/children.ts");
+  desktopPort = await desktopCommandPort(desktopRecord);
+  if (desktopPort === null || String(desktopPort) !== process.env["PORT"]) {
+    process.stderr.write("ovis: open the Ovis app first, then run this again\n");
+    process.exit(1);
+  }
+}
+
 // `ovis tui` comes first: the screen needs nothing of this install's state, so it starts before the work below reads the
-// state and config dirs, asks herdr for its config dir, or copies an old install's settings (adoptLegacyConfig). Its
+// state dirs or copies an old install's settings (adoptLegacyConfig). Its
 // --help is no run of it: runPlugin answers that with every other command's.
 const early = parseCommand(process.argv.slice(2), { account: false, tui: true });
 if (early.kind === "run" && early.command === "agent") process.exit(await (await import("./plugin-agent.ts")).runAgent(early.args));
@@ -63,8 +74,6 @@ if (import.meta.main || COMPILED) {
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
-const PLUGIN_ID = "devswha.ovis";
-const LEGACY_PLUGIN_ID = "devswha.herdr-web-ui";
 const HERDR_PLUGIN_STATE = join(herdrStateDir(process.env, platform(), homedir()), "plugins");
 const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_PLUGIN_STATE, id)).find((dir) => existsSync(dir)) ?? join(HERDR_PLUGIN_STATE, PLUGIN_ID);
 // run by hand, without herdr's HERDR_PLUGIN_STATE_DIR: a server started from a checkout keeps its
@@ -72,7 +81,7 @@ const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_P
 const REQUESTED_STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"]
   ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR);
 let STATE_DIR = runningStateDir(REQUESTED_STATE_DIR);
-const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? ownDir(join(homedir(), ".config"));
+const CONFIG_DIR = pluginConfigDir(process.env, homedir());
 adoptLegacyConfig(CONFIG_DIR);
 let PID_FILE = join(STATE_DIR, "server.pid");
 let LOG_FILE = join(STATE_DIR, "server.log");
@@ -105,25 +114,6 @@ const PHONE_AGAIN = platform() === "win32"
   : "curl -fsSL https://ovis.sh/install.sh | sh";
 
 /**
- * Run by hand (`pair` on a headless PC), herdr's env is not there to name the config dir:
- * ask herdr for it, so the PORT, HOST and token the plugin runs with are the ones used.
- */
-function herdrConfigDir(): string | null {
-  const herdr = Bun.which("herdr");
-  if (herdr === null) return null;
-  for (const id of [PLUGIN_ID, LEGACY_PLUGIN_ID]) {
-    try {
-      const result = Bun.spawnSync([herdr, "plugin", "config-dir", id], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
-      const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
-      if (dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name)))) return dir;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
  * herdr keeps a plugin's config dir by its id (`plugins/config/<id>`), so the settings and token
  * an install wrote under the old id are copied to the new id's dir the first time it has none.
  * The old dir stays: the plugin under the old id, still installed until the installer removes
@@ -147,6 +137,10 @@ const CONFIG_FILES = ENV_FILES.map((name) => join(CONFIG_DIR, name)).filter((fil
 const fileVars = CONFIG_FILES.map(readEnvFile);
 const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) => key in fileVars[1]! && fileVars[0]![key] !== fileVars[1]![key]) : [];
 const env = mergeEnvLayers([process.env, ...fileVars]);
+if (desktopPort !== null) {
+  env["PORT"] = String(desktopPort);
+  env["HOST"] = "127.0.0.1";
+}
 /**
  * The OVIS_STATE_DIR this command was run with, which a settings file may set over (stateDirWayOut). A command handed on
  * to the release Settings installed (handOn) is told it apart: its own environment is the merged one.

@@ -35,6 +35,7 @@ export function layout(root: string, platform: NodeJS.Platform = process.platfor
 
 /** hc's session for the app's own core, apart from the `default` one another hc client may run. */
 export const HC_SESSION = "ovis";
+export const coreSession = (env: Env): string => env["HC_SESSION"]?.trim() || HC_SESSION;
 
 /** the lists an AppImage's AppRun puts its own folders in front of */
 const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"];
@@ -47,7 +48,7 @@ const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_S
  * AppImage's settings the app was merely started under stay, as for any other program.
  */
 export function coreEnv(base: Env, execPath: string = process.execPath): Env {
-  const env: Env = { ...base, HC_SESSION: base["HC_SESSION"]?.trim() || HC_SESSION };
+  const env: Env = { ...base, HC_SESSION: coreSession(base) };
   // the app's own core: never one another client named with HC_SOCKET
   delete env["HC_SOCKET"];
   delete env["ELECTRON_RUN_AS_NODE"];
@@ -257,7 +258,7 @@ export interface Saved {
    * the server it ran last, so a run after a crash can end one left behind; `started` is its start time (`ps -o lstart=`).
    * `bun` is the program it ran: the server's binary, or the bundled Bun of an app from before the binary.
    */
-  server: { pid: number; bun: string; started: string | null } | null;
+  server: { pid: number; bun: string; started: string | null; ready?: true } | null;
 }
 
 export function readSaved(path: string): Saved {
@@ -265,7 +266,11 @@ export function readSaved(path: string): Saved {
     const value = JSON.parse(readFileSync(path, "utf8")) as Partial<Saved>;
     const port = typeof value.port === "number" ? value.port : null;
     const server = value.server && typeof value.server.pid === "number" && typeof value.server.bun === "string"
-      ? { pid: value.server.pid, bun: value.server.bun, started: typeof value.server.started === "string" ? value.server.started : null }
+      ? {
+        pid: value.server.pid, bun: value.server.bun,
+        started: typeof value.server.started === "string" ? value.server.started : null,
+        ...(value.server.ready === true ? { ready: true as const } : {}),
+      }
       : null;
     return { port, server };
   } catch {
@@ -277,6 +282,14 @@ export function writeSaved(path: string, saved: Saved): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(`${path}.tmp`, JSON.stringify(saved));
   renameSync(`${path}.tmp`, path);
+}
+
+/** A port remembered for the next start isn't an address the CLI can use. */
+export async function desktopCommandPort(path: string): Promise<number | null> {
+  const { port, server } = readSaved(path);
+  if (port === null || !Number.isInteger(port) || port < 1 || port > 65535
+    || server?.ready !== true || !Number.isSafeInteger(server.pid) || server.pid <= 0 || server.started === null) return null;
+  return await processStart(server.pid) === server.started ? port : null;
 }
 
 export interface ProcessProbe {
