@@ -624,9 +624,12 @@ for it before they show or ask anything.
   waits for the relay first, which Ovis's own account service lets come online for such a listing only
   once a device of the account pressed **Add** on its card. On a device
   already signed in to this account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the
-  terminal shows the request with its six digits
-  (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to
-  approve, or press Enter to decline**). Only the request's own digits approve it: all six, with
+  terminal shows the request with its six digits, which that device asks you to type there
+  (**… wants to add this PC to your account. Type 123 456 on that device, or check that it shows
+  the same number, then type 456 here to approve, or press Enter to decline**). A request that
+  did not come from that add screen is asked as before (**… wants to join your account. Approve
+  it only if its screen shows 123 456. Type 456 to approve, or press Enter to decline**). Only
+  the request's own digits approve it: all six, with
   or without the space, or the last three, so a line begun for another request, or typed ahead of
   any, cannot approve this one. Full-width digits, as an input method types them, are the same
   digits. When the last three are also those of another request (one asked about earlier in the

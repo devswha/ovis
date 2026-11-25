@@ -278,20 +278,28 @@ export const plainLabel = (label: string): string => label.replace(/[\u0000-\u00
 
 const SIX_DIGITS = /^[0-9]{6}$/;
 
-export interface AskingDevice { readonly label: string; readonly digits: string; readonly intent?: string }
+/** `local_only`: asked under this PC's own add screen (GET /api/relay/pairings), by the device that adds this PC to the account. */
+export interface AskingDevice { readonly label: string; readonly digits: string; readonly intent?: string; readonly local_only?: boolean }
 
 /**
  * The question a terminal asks about a device that wants in: its six digits, to compare with that device's screen,
  * and what to type. The answer that approves carries the request's own digits (`answerOf`), so it names the request
  * it is for. `whole`: its last three digits are another request's too, so they name neither, and all six are asked for.
+ * A device that adds this PC from its add screen shows an input for them instead (AddPcSheet): its person types them
+ * there, as this PC's own window asks (RelayPairingPrompt).
  */
 export function approvalPrompt(device: AskingDevice, whole = false): string {
-  const what = device.intent === "account" ? "join your account" : "pair with this PC";
+  const what = device.local_only === true ? "add this PC to your account" : device.intent === "account" ? "join your account" : "pair with this PC";
   // digits that are not six digits approve nothing (`answerOf`): the question does not ask for them
   if (!SIX_DIGITS.test(device.digits)) return `${plainLabel(device.label)} wants to ${what}, but its request came without six digits to compare, so it cannot be approved here. Press Enter to decline: `;
-  const shows = `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}.`;
-  return whole ? `${shows} Another request's digits end in ${device.digits.slice(3)} too, so type all six (${device.digits}) to approve, or press Enter to decline: `
-    : `${shows} Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
+  const digits = `${device.digits.slice(0, 3)} ${device.digits.slice(3)}`;
+  const adding = device.local_only === true;
+  const here = adding ? " here" : "";
+  const all = `Another request's digits end in ${device.digits.slice(3)} too, so type all six (${device.digits})${here} to approve, or press Enter to decline: `;
+  const three = `${device.digits.slice(3)}${here} to approve, or press Enter to decline: `;
+  const shows = adding ? `${plainLabel(device.label)} wants to ${what}. Type ${digits} on that device, or check that it shows the same number`
+    : `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${digits}`;
+  return whole ? `${shows}. ${all}` : adding ? `${shows}, then type ${three}` : `${shows}. Type ${three}`;
 }
 
 /**

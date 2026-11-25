@@ -762,7 +762,7 @@ describe("ovis link, on the PC itself", () => {
    * `said` hears every line, to `type` a line at that very moment or to `answer` after the next wait (two seconds: the
    * time a person takes to compare the digits), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string; local_only?: true }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
@@ -948,6 +948,31 @@ describe("ovis link, on the PC itself", () => {
       expect(out).not.toContain(NOT_AN_ANSWER);
     }
   }, 30_000);
+
+  it("asks about a device that adds this PC from its own add screen as that device shows it: the number is typed there, or compared", async () => {
+    // the device that adds this PC (AddPcSheet, "Add this PC") shows an input for this PC's number, not digits of its own
+    const ADDING = "Phone p1 wants to add this PC to your account. Type 111 222 on that device, or check that it shows the same number, then type 222 here to approve, or press Enter to decline: ";
+    const { code, out, decisions } = await prompting({
+      pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+      request: () => ({ local_only: true }),
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer("222"); },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toEqual([ADDING]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+  });
+
+  it("asks for all six digits of such a device as of any other, when another request ends in the same three", async () => {
+    const shown: string[] = [];
+    await prompting({
+      pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1", "p2"],
+      request: (id) => ({ digits: id === "p1" ? "111456" : "222456", local_only: true }),
+      said: (said, _type, answer) => { if (said.includes("Enter to decline")) { shown.push(said); answer(""); } },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(shown[0]).toBe("Phone p1 wants to add this PC to your account. Type 111 456 on that device, or check that it shows the same number. Another request's digits end in 456 too, so type all six (111456) here to approve, or press Enter to decline: ");
+  });
 
   it("approves with the digits as an input method types them: full-width digits and its wide space are the same digits", async () => {
     for (const line of ["２２２", "１１１２２２", "１１１　２２２", "１１１ ２２２", "2２2", "　222　"]) {
