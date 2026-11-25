@@ -89,8 +89,12 @@ it("pauses a pane whose output waits behind a large frame queued after its attac
   }
 });
 
-for (const peers of [0, 1]) {
-  it(`${peers ? "stops a slow viewer that holds a peer's pty paused" : "keeps a slow phone that is the pane's only viewer paused, not stopped,"} past ${OUTPUT_PAUSE_MAX_MS} ms while it acknowledges`, async () => {
+for (const [peers, core, name] of [
+  [0, true, "keeps a slow phone that is a herdr-core pane's only viewer paused, not stopped,"],
+  [1, true, "stops a slow viewer that holds a peer's herdr-core attach paused"],
+  [0, false, "stops a slow only viewer of a herdr attach, whose PTY host drops an exited attach's held output at 15 s,"],
+] as const) {
+  it(`${name} past ${OUTPUT_PAUSE_MAX_MS} ms while it acknowledges`, async () => {
     const ended: string[] = [];
     const flow: string[] = [];
     const viewer = () => ({
@@ -100,7 +104,7 @@ for (const peers of [0, 1]) {
     const slow = viewer();
     attachment = {
       kind: "pty", ready: true, cols: 80, rows: 24, clients: new Set(), grids: new Map(), stalled: new Map(), replay: new ReplayBuffer(1024),
-      process: { exited: Promise.resolve(), pause() { flow.push("pause"); }, resume() { flow.push("resume"); }, resize() {}, winch() {}, kill() {}, write() {} } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
+      process: Object.assign(Object.create(core ? coreAttach.CoreAttachSession.prototype : Object.prototype), { exited: Promise.resolve(), pause() { flow.push("pause"); }, resume() { flow.push("resume"); }, resize() {}, winch() {}, kill() {}, write() {} }) as Extract<PaneAttachment, { kind: "pty" }>["process"],
     };
     const clients = new Set([slow, ...Array.from({ length: peers }, viewer)]);
     const registry = createTerminalRegistry({
@@ -118,8 +122,9 @@ for (const peers of [0, 1]) {
         setSystemTime(start + at);
         await registry.terminalFrames["pty-ack"](slow, { type: "pty-ack", pane_id: "p", stream_id: window.id, offset: acknowledged += 1024 });
       }
-      expect(ended).toEqual(peers ? ["stalled"] : []);
-      if (!peers) expect(flow.at(-1)).toBe("pause");
+      const kept = core && !peers;
+      expect(ended).toEqual(kept ? [] : ["stalled"]);
+      if (kept) expect(flow.at(-1)).toBe("pause");
     } finally {
       setSystemTime();
       registry.closeAttachment("p");
