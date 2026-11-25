@@ -672,9 +672,8 @@ export function PaneTerminal({
     socketRef.current?.setMode(role);
   }, [role]);
 
-  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, consumeModifiers, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
-
   const { pressKey, toggleModifier, abortTurn: abortTyped, dropSecondEscape } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
+  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, consumeModifiers, onChatSuggestion, onImmediateSubmit: dropSecondEscape, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
   // an ACP child's Stop is a person's hold (server/dispatch.ts): its turn is cancelled and the agent that called it gets no new turn
   // a PC whose Ovis has no hold yet, or a child whose real TUI has the conversation, takes the Stop key instead
   const [acpError, setAcpError] = useState<string | null>(null);
@@ -1266,7 +1265,7 @@ export function PaneTerminal({
         blocked={held || secretActive || ended || heldByOpenQueue || answering !== null}
         unsaved={pendingMessages.isUnsaved(queueOwner)}
         isBusy={(id) => pendingMessages.isBusy(queueOwner, id)}
-        onSendNow={(id) => { dropSecondEscape(); return actOnPending(id, "steer"); }}
+        onSendNow={(id) => actOnPending(id, "steer")}
         onEdit={(id) => actOnPending(id, "edit")}
         onDiscard={(id, displayOnly) => actOnPending(id, displayOnly ? "dismiss" : "discard")}
       />}
@@ -1305,7 +1304,7 @@ export function PaneTerminal({
             </div>
           ) : null}
           waitingAnswer={waitingAnswer}
-          onSend={(...args) => { dropSecondEscape(); return composerSend(...args); }}
+          onSend={composerSend}
           onClaim={onSendClaim}
           onAbort={abortTurn}
           onUploadImage={uploadImage}
