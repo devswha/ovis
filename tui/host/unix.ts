@@ -18,6 +18,8 @@ const openSignal = () => openLibc({
   signal: { args: [FFIType.i32, FFIType.u64_fast], returns: FFIType.u64_fast },
   pthread_sigmask: { args: [FFIType.i32, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   raise: { args: [FFIType.i32], returns: FFIType.i32 },
+  getpgrp: { args: [], returns: FFIType.i32 },
+  getsid: { args: [FFIType.i32], returns: FFIType.i32 },
 });
 
 /**
@@ -164,8 +166,10 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
   const write = parts.writeSync ?? writeSync;
   const pause = parts.pause ?? pauseSync;
   const signalLibc = openSignal();
+  // A process group that leads its session (a pty's entry run on its own, with no job-control shell above it) is
+  // orphaned: the system drops SIGTSTP's default stop there, and only SIGSTOP stops it. No shell's `fg` comes there.
   const stop = parts.stop ?? ((continuedAlready, giveBack) => {
-    if (signalLibc === null) {
+    if (signalLibc === null || signalLibc.symbols.getpgrp() === signalLibc.symbols.getsid(0)) {
       giveBack();
       proc.kill(proc.pid, "SIGSTOP");
     } else stopOnceGivenBack(signalLibc, continuedAlready, giveBack);
@@ -240,7 +244,7 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
     // hold file), the job's first process is that launcher, which stopped at the shell's SIGTSTP at once: when it runs
     // again, the shell continued the job before this handler ran, and this process gives the terminal back without
     // stopping, to enter again at that continue. Without the C library, this process stops by the one stop no handler
-    // can catch, as it did before.
+    // can catch, as it did before, and so does a screen whose group leads its session.
     suspend: (giveBack) => {
       stop(() => launched && !isStopping(proc.ppid), () => { giveBack(); stdin.ref?.(); });
     },
