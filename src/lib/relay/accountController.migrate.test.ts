@@ -431,6 +431,67 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     } finally { jest.useRealTimers(); }
   });
 
+  /** A device that waits on its PCs, asked once in the background; the fake clock is the test's to move. */
+  const waitingAsked = async (name: string, inApp = false) => {
+    await signIn(name);
+    const { store } = await pairedPc(name);
+    const { list, tell } = listIn(() => ({ account: name, reached: true, status: { at: "none", why: "moving", move: { why: "no_witness", wait: null, asks: [] } }, devices: [], pcs: [] }));
+    const opened: unknown[] = [];
+    const made = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ answers: { "GET /api/account/list/witness": { account: name, pinned: null, admits: [], removed: [] } } }).opened; }, [], inApp);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toHaveLength(1);
+    return { made, opened };
+  };
+
+  it("#4713 M3: a disposed controller asks no PC again on its clock", async () => {
+    jest.useFakeTimers();
+    try {
+      const { made, opened } = await waitingAsked("acct-disposed");
+      made.dispose();
+      jest.advanceTimersByTime(3_600_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4713 M2: once the device signs out, its clock asks none of the old account's PCs, even while its list still shows the move", async () => {
+    jest.useFakeTimers();
+    try {
+      const { made, opened } = await waitingAsked("acct-signed-out");
+      made.signOut();
+      jest.advanceTimersByTime(3_600_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4713 M3: on a hidden page the clock asks nothing, and asks once the page is shown again", async () => {
+    jest.useFakeTimers();
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    let state: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    try {
+      const { opened } = await waitingAsked("acct-hidden");
+      state = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      jest.advanceTimersByTime(30 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+      // shown again: the page reads its account again, and the PC, due long since, is asked at once
+      state = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await settle();
+      expect(opened).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+      if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+      else Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
     await signIn("acct-check");
     const one = pcKeys();
