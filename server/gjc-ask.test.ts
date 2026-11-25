@@ -104,6 +104,20 @@ describe("gjc ask cards in the agent's own Markdown", () => {
       args.questions[0]!.question = QUESTION.replace("GJC ask", "GJCask");
     });
     expect(gjcAskPrompt(card(shortLineBreak), mergedCalls).text_format).toBeUndefined();
+
+    // Six ZWJ emoji clusters occupy 12 cells, not 24 code-point cells: in a 25-column frame they must not tight-join the next row
+    const emojiRow = "👩‍💻".repeat(6);
+    const emojiScreen = cjkScreen.replace(" 接続方法をどれにするか", ` ${emojiRow}`).replace(" 教えてください？", " 続ける？");
+    const tightEmojiCalls = withArgs(open(), (args) => {
+      args.questions[0]!.question = `${emojiRow}続ける？`;
+      args.questions[0]!.options[0]!.label = "Keep";
+    });
+    expect(gjcAskPrompt(card(emojiScreen), tightEmojiCalls).text_format).toBeUndefined();
+    const spacedEmojiCalls = withArgs(open(), (args) => {
+      args.questions[0]!.question = `${emojiRow} 続ける？`;
+      args.questions[0]!.options[0]!.label = "Keep";
+    });
+    expect(gjcAskPrompt(card(emojiScreen), spacedEmojiCalls).text_format).toBe("markdown");
   });
 
   it("does not bind a truncated title (▼ more or ▲ more), since another call can share its visible prefix", () => {
@@ -267,6 +281,127 @@ describe("gjc ask cards in the agent's own Markdown", () => {
       expect(sentKeys).toEqual([["enter"]]);
       // POST answer reads prompt once (readPrompt -> 1) and verifies once before commit (verifyThenSend -> 1) = 2 total, never 4
       expect(lookup.mock.calls.length).toBeLessThanOrEqual(2);
+    });
+
+    it("refuses a bound gjc card when paneTranscript fails during POST instead of falling back to an unbound screen match", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "gjc-ask-unbound-"));
+      cleanupDirs.push(dir);
+      const sessionPath = join(dir, "session.jsonl");
+      writeFileSync(sessionPath, readFileSync(fixture("open.jsonl"), "utf8"));
+
+      const paneId = "w1:p-gjc-unbound";
+      const sentKeys: string[][] = [];
+      spies.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+        panes: [{ pane_id: paneId, agent: "gjc", agent_status: "blocked", cwd: dir }],
+        workspaces: [],
+        tabs: [],
+      } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>));
+      spies.push(spyOn(herdr, "paneRead").mockResolvedValue({ text: SCREEN } as Awaited<ReturnType<typeof herdr.paneRead>>));
+      spies.push(spyOn(herdr, "paneSendKeys").mockImplementation(async (_id, keys) => { sentKeys.push([...keys]); }));
+      const lookup = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "gjc-transcript", path: sessionPath });
+      spies.push(lookup);
+
+      const getRes = await handlePromptRequest(new Request(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`), new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`));
+      const body = await getRes!.json() as { prompt: { id: string; text_format?: string } };
+      expect(body.prompt.text_format).toBe("markdown");
+
+      lookup.mockRejectedValue(new conversation.ConversationUnavailable("no_session_path"));
+      const postRes = await handlePromptRequest(new Request("http://127.0.0.1/api/pane/prompt/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: paneId, prompt_id: body.prompt.id, option_index: 0 }),
+      }), new URL("http://127.0.0.1/api/pane/prompt/answer"));
+      expect(postRes?.status).toBe(409);
+      expect(sentKeys).toEqual([]);
+    });
+
+    it("refuses to paste custom text into a replacement gjc ask editor and refuses final Enter if the editor closed while checking the call", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "gjc-ask-custom-"));
+      cleanupDirs.push(dir);
+      const sessionPath = join(dir, "session.jsonl");
+      const openText = readFileSync(fixture("open.jsonl"), "utf8");
+      const originalId = open()[0]!.id;
+      const otherSelected = SCREEN.replace(/│❯ Keep/u, "│  Keep").replace("│  Other (type your own)", "│❯ Other (type your own)");
+      const emptyEditor = otherSelected.replace(/ ↑\/↓ select .*\n/u, " > \n\n enter submit  esc back to options  ctrl+g external editor  PgUp/PgDn: question · Wheel: transcript\n");
+      const typedEditor = otherSelected.replace(/ ↑\/↓ select .*\n/u, " > mine\n\n enter submit  esc back to options  ctrl+g external editor  PgUp/PgDn: question · Wheel: transcript\n");
+
+      // Case A: replacement ask arrives right after Enter opens Other — must not paste custom text
+      writeFileSync(sessionPath, openText);
+      let screen = otherSelected;
+      const paneIdA = "w1:p-gjc-custom-replace";
+      const sentTextsA: string[] = [];
+      spies.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+        panes: [{ pane_id: paneIdA, agent: "gjc", agent_status: "blocked", cwd: dir }],
+        workspaces: [],
+        tabs: [],
+      } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>));
+      spies.push(spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen } as Awaited<ReturnType<typeof herdr.paneRead>>)));
+      spies.push(spyOn(herdr, "paneSendKeys").mockImplementation(async (_id, keys) => {
+        if (keys.includes("enter")) {
+          screen = emptyEditor;
+          const toolCallLine = openText.trimEnd().split("\n").at(-1)!;
+          const closeLine = JSON.stringify({
+            type: "message",
+            id: "m_close_custom",
+            timestamp: "2026-11-25T00:00:02.000Z",
+            message: { role: "toolResult", toolCallId: originalId, toolName: "ask", content: [{ type: "text", text: "ok" }] },
+          });
+          const replacementLine = toolCallLine.replaceAll(originalId, `${originalId}_replacement`);
+          writeFileSync(sessionPath, `${openText.trimEnd()}\n${closeLine}\n${replacementLine}\n`);
+        }
+      }));
+      spies.push(spyOn(herdr, "paneSendText").mockImplementation(async (_id, text) => { sentTextsA.push(text); }));
+      const lookupA = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "gjc-transcript", path: sessionPath });
+      spies.push(lookupA);
+
+      const getA = await handlePromptRequest(new Request(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneIdA)}`), new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneIdA)}`));
+      const bodyA = await getA!.json() as { prompt: { id: string } };
+      const postA = await handlePromptRequest(new Request("http://127.0.0.1/api/pane/prompt/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: paneIdA, prompt_id: bodyA.prompt.id, custom_text: "mine" }),
+      }), new URL("http://127.0.0.1/api/pane/prompt/answer"));
+      expect(postA?.status).toBe(409);
+      expect(sentTextsA).toEqual([]);
+
+      // Case B: editor returns to options while final gjcCallStillOpen is pending — must not send final Enter
+      while (spies.length > 0) spies.pop()!.mockRestore();
+      const sessionPathB = join(dir, "session-b.jsonl");
+      writeFileSync(sessionPathB, openText);
+      const paneIdB = "w1:p-gjc-custom-closed";
+      let screenB = otherSelected;
+      const sentKeysB: string[][] = [];
+      let pastedB = false;
+      spies.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+        panes: [{ pane_id: paneIdB, agent: "gjc", agent_status: "blocked", cwd: dir }],
+        workspaces: [],
+        tabs: [],
+      } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>));
+      spies.push(spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screenB } as Awaited<ReturnType<typeof herdr.paneRead>>)));
+      spies.push(spyOn(herdr, "paneSendKeys").mockImplementation(async (_id, keys) => {
+        sentKeysB.push([...keys]);
+        if (keys.includes("enter") && !pastedB) screenB = emptyEditor;
+      }));
+      spies.push(spyOn(herdr, "paneSendText").mockImplementation(async () => {
+        pastedB = true;
+        screenB = typedEditor;
+      }));
+      spies.push(spyOn(conversation, "paneTranscript").mockImplementation(async () => {
+        // When verifying final submit after paste, simulate the user pressing Esc back to options during the lookup
+        if (pastedB) screenB = otherSelected;
+        return { source: "gjc-transcript", path: sessionPathB };
+      }));
+
+      const getB = await handlePromptRequest(new Request(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneIdB)}`), new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneIdB)}`));
+      const bodyB = await getB!.json() as { prompt: { id: string } };
+      const postB = await handlePromptRequest(new Request("http://127.0.0.1/api/pane/prompt/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: paneIdB, prompt_id: bodyB.prompt.id, custom_text: "mine" }),
+      }), new URL("http://127.0.0.1/api/pane/prompt/answer"));
+      expect(postB?.status).toBe(409);
+      // Only the first Enter (to open Other) was sent; final Enter was refused because the editor closed
+      expect(sentKeysB).toEqual([["enter"]]);
     });
   });
 });

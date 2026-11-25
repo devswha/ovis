@@ -21,23 +21,24 @@ const MORE_BELOW = "▼ more";
 
 const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
-const COMBINING_RE = /\p{Mark}|\p{Cf}/u;
-const WIDE_RE = /[\u1100-\u115F\u2329\u232A\u2E80-\u303E\u3040-\u33FF\u3400-\u4DBF\u4E00-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u;
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const COMBINING_RE = /^[\p{Mark}\p{Cf}]+$/u;
+const WIDE_GRAPHEME_RE = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|\p{Regional_Indicator}{2}|[\u1100-\u115F\u2329\u232A\u2E80-\u303E\u3040-\u33FF\u3400-\u4DBF\u4E00-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u;
 
-function charCells(ch: string): number {
-  if (COMBINING_RE.test(ch)) return 0;
-  return WIDE_RE.test(ch) ? 2 : 1;
+function graphemeCells(grapheme: string): number {
+  if (COMBINING_RE.test(grapheme)) return 0;
+  return WIDE_GRAPHEME_RE.test(grapheme) ? 2 : 1;
 }
 
 function cellWidth(text: string): number {
   let width = 0;
-  for (const ch of text) width += charCells(ch);
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) width += graphemeCells(segment);
   return width;
 }
 
 function firstCharWidth(text: string): number {
-  for (const ch of text) {
-    const w = charCells(ch);
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    const w = graphemeCells(segment);
     if (w > 0) return w;
   }
   return 1;
