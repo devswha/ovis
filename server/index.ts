@@ -60,6 +60,7 @@ import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
 import { noteHookCommand, OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
+import { readToldModes } from "./conversation.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -503,6 +504,8 @@ export function createServer(
     join: (given) => accountList.joinList(given),
     joined: () => accountMailbox.joinedByList(),
     joinedTo: (account, list) => { const status = accountList.status(); return status.pinned && status.account === account && status.pinned_list === list && status.standing === "in"; },
+    inAccount: () => devices.account() !== null,
+    needsKeys: () => accountList.needsKeys(),
     now: () => Date.now(),
     pollMs: options.accountListAddPollMs,
   });
@@ -608,6 +611,7 @@ export function createServer(
   const catalogPlatformHere = catalogPlatform(process.platform);
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
   readHeldApprovals(approvals);
+  readToldModes((paneId) => approvals.toldMode(paneId));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
     return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;
@@ -984,6 +988,7 @@ export function createServer(
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
+      listAdd?.stop();
       accountWitness?.stop();
       accountRows?.stop();
       accountCatchUp.stop();
