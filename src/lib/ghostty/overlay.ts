@@ -15,7 +15,7 @@ import { requestShownFrame } from "../shownFrame.ts";
 import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
 import { controlsWriter, withoutQuestions } from "./controls.ts";
 import { itermPictureWriter } from "./itermPictureWriter.ts";
-import { holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
+import { type ScreenLine, holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
 import { holdSelection } from "./selection.ts";
 import { ghosttyRows } from "./screenRows.ts";
 import { GhosttyVt, rgb, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
@@ -701,10 +701,15 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     if (disposed) return null;
     try {
       const rows = ghosttyRows(vt);
+      // xterm's line, read into xterm's own cells: a reader may hold one of libghostty's cells as its scratch
+      const xtermLine = (y: number): ScreenLine | undefined => {
+        const line = term.buffer.active.getLine(y);
+        return line && { isWrapped: line.isWrapped, length: line.length, translateToString: (trimRight?: boolean, start?: number, end?: number) => line.translateToString(trimRight, start, end), getCell: (x: number) => line.getCell(x) };
+      };
       return {
         ...rows,
         getLine: (y) => {
-          if (disposed) return term.buffer.active.getLine(y);
+          if (disposed) return xtermLine(y);
           try {
             const line = rows.getLine(y);
             if (!line) return line;
@@ -715,13 +720,12 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
                 if (!disposed) {
                   try { return line.getCell(x, cell); } catch (error) { readFailed(error); }
                 }
-                // xterm reads into its own cells, not one of libghostty's a reader holds
-                return term.buffer.active.getLine(y)?.getCell(x);
+                return xtermLine(y)?.getCell(x);
               },
             };
           } catch (error) {
             readFailed(error);
-            return term.buffer.active.getLine(y);
+            return xtermLine(y);
           }
         },
       };
