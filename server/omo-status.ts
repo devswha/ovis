@@ -20,6 +20,12 @@
  * that does not wait lets the turn go on or end (RUN or DONE until now) with the question still
  * open over the input box.
  *
+ * An OmO Ovis started tells, through its extension (approvals/omo.ts), when a run began and when it
+ * ended for good, which is how a failure OmO retries is told from one it gave up on: while a run it
+ * told began has not ended, the file's rest is not the turn's end. Only the rest is held, and for at
+ * most a minute of it (RUN_HOLD_MS), so a run whose end is never told (the relay failed, OmO was
+ * killed) is still over by the file's word: the file stays the status's source.
+ *
  * The status replaces herdr's for the pane before CompletionTracker sees it, in status events and
  * in snapshots alike, under the one identity `omo`: herdr has named such a pane `pi` and `claude`
  * by turns, and a finish is matched by identity.
@@ -168,10 +174,14 @@ const FILES: OmoFile = {
 };
 
 const STALE_TURN_MS = 2000;
+/** The longest the file's rest is held for a run told began: OmO's retries came 2 to 9 s apart (approvals/omo.ts). */
+const RUN_HOLD_MS = 60_000;
 
 export class OmoStatus {
   private readonly panes = new Map<string, Tracked>();
   private readonly last = new Map<string, { status: OmoPaneStatus; failed: boolean; failedAt: number | null; background: number; path: string; startedAt: number | null }>();
+  /** panes whose OmO's extension told a run began and not yet that it ended, with when the file first read rest since */
+  private readonly running = new Map<string, number | null>();
   private refreshedAt = -Infinity;
   private refreshedFor = "";
   private refreshing: Promise<void> | null = null;
@@ -305,6 +315,7 @@ export class OmoStatus {
 
   named(paneId: string, agent: string | null): boolean {
     if (agent === null || agent === this.agent || this.aliases.includes(agent)) return false;
+    this.running.delete(paneId);
     const held = this.panes.delete(paneId);
     const remembered = this.last.delete(paneId);
     if (!held && !remembered) return false;
@@ -313,7 +324,23 @@ export class OmoStatus {
     return true;
   }
 
+  /** What the extension of an OmO Ovis started in `paneId` told of its run. */
+  told(paneId: string, turn: "began" | "ended"): void {
+    if (turn === "began") this.running.set(paneId, null);
+    else this.running.delete(paneId);
+  }
+
+  /** Whether the file's rest is held for a run told began: for RUN_HOLD_MS from the first read of it. */
+  private holds(paneId: string): boolean {
+    if (!this.running.has(paneId)) return false;
+    const since = this.running.get(paneId) ?? this.now();
+    if (this.now() - since >= RUN_HOLD_MS) { this.running.delete(paneId); return false; }
+    this.running.set(paneId, since);
+    return true;
+  }
+
   ended(paneId: string): void {
+    this.running.delete(paneId);
     this.panes.delete(paneId);
     this.last.delete(paneId);
     this.generation += 1;
@@ -384,7 +411,9 @@ export class OmoStatus {
     if (tracked.turn.status === null && tracked.offset < tracked.size) { this.noteAuthority(tracked); return; }
     const stale = tracked.turn.status === "working" && tracked.turn.at !== null && tracked.startedAt !== null && tracked.turn.at < tracked.startedAt - STALE_TURN_MS;
     if (this.staleIsFailure && stale && tracked.turn.asks.length > 0) tracked.turn = { ...tracked.turn, asks: [] };
-    const status: OmoPaneStatus = tracked.turn.asks.length > 0 ? "blocked" : tracked.turn.status === "working" && !stale ? "working" : "idle";
+    const read: OmoPaneStatus = tracked.turn.asks.length > 0 ? "blocked" : tracked.turn.status === "working" && !stale ? "working" : "idle";
+    if (read !== "idle" && this.running.has(paneId)) this.running.set(paneId, null);
+    const status: OmoPaneStatus = read === "idle" && this.holds(paneId) ? "working" : read;
     const sessionId = tracked.path === null ? null : omoSessionId(tracked.path);
     const cwd = tracked.sessionCwd ?? tracked.cwd;
     if (!counts.has(cwd)) counts.set(cwd, cwd ? this.background(cwd) : new Map());

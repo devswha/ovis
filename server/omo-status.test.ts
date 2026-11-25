@@ -408,6 +408,52 @@ describe("OmO panes' status in place of herdr's", () => {
     expect(shown.slice(5)).toEqual(["working", "done"]);
   });
 
+  it("keeps running a turn whose run OmO's extension told began, through the errors OmO retries, until it told the run ended", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    expect(told).toEqual([["omo", "working", 0, true]]);
+    // OmO 5.1.81 retried a refused request five times over 33 s and then gave up (fixtures/omo-agent-runs-5.1.81.json)
+    omo.told("omo", "began");
+    for (let retry = 0; retry < 5; retry++) {
+      append(failure("Connection error."), bookkeeping("senpi.hooks.stop-state"));
+      state.clock += 9_000;
+      omo.poll();
+    }
+    expect(told).toHaveLength(1);
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told.at(-1)).toEqual(["omo", "idle", 0, true, "failed"]);
+    // a retry that answers: no failure is told at all
+    append(message("user"));
+    omo.told("omo", "began");
+    omo.poll();
+    append(failure("Connection error."));
+    omo.poll();
+    append(message("assistant", "stop", LATER));
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told.slice(2)).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
+  });
+
+  it("lets the session file's rest stand a minute after it, when the end of the run is never told", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(message("assistant", "stop"));
+    omo.poll();
+    state.clock += 59_000;
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true]]);
+    state.clock += 1_000;
+    omo.poll();
+    expect(told.at(-1)).toEqual(["omo", "idle", 0, true]);
+    // nor does a pane that ended keep what its extension told
+    omo.told("omo", "began");
+    omo.ended("omo");
+    await omo.refresh(herdr().panes);
+    expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/idle");
+  });
+
   it("drops a DONE kept from before when the turn after it ended on a model error (#687)", async () => {
     const { omo, told, append } = setup(lines(message("user")));
     const completions = new CompletionTracker(null);
