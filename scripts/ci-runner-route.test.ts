@@ -441,6 +441,12 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(both({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(1, 180, ["self-hosted-ovis-p620"]) } }) })).toEqual({ fast: ovis, integration: ovis });
     });
 
+    it("do not take a pool job for the machine's own when the labels also name the pool's", () => {
+      const mixed = JSON.stringify([...ovis, "self-hosted-ovis-p620"]);
+      const env = { ...pr, FAST_LABELS: mixed, INTEGRATION_LABELS: mixed };
+      expect(both({ ...env, FAKE_GH: actions({ in_progress: { 1: running(1) }, queued: { 2: waiting(1, 90, JSON.parse(mixed)) } }) })).toEqual({ fast: ovis, integration: ovis });
+    });
+
     it("change nothing while unset, empty or naming the Linux jobs' own labels, and read no API then", () => {
       for (const value of [undefined, "", " ", JSON.stringify(ovis)]) {
         const state = actions({ queued: { 1: waiting(1, 150, p620) } });

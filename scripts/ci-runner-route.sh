@@ -108,7 +108,7 @@ pool_jobs() {
       def age(t): if t == null then 0 else now - (t | fromdateiso8601) end;
       # the longest wait and the live count of the jobs that ask for a label of $want other than self-hosted: the
       # label of that machine alone, which only its runners carry
-      def preferred($all; $want): ([$want[] | ascii_downcase] - ["self-hosted"]) as $own | if ($own | length) == 0 then "0 0" else
+      def preferred($all; $want): ([$want[] | ascii_downcase] - ["self-hosted"] - $pool) as $own | if ($own | length) == 0 then "0 0" else
         [$all[] | select([.labels[] | ascii_downcase] as $has | any($own[]; . as $x | $has | index($x) != null))] as $mine
         | "\([$mine[] | select(.status == "queued") | age(.created_at) | select(. < 86400)] | max // 0 | floor) \([$mine[] | select(.status == "in_progress" and age(.started_at) < $live)] | length)" end;
       [.[].jobs[]] as $all
