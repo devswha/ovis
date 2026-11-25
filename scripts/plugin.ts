@@ -67,6 +67,11 @@ if (import.meta.main || COMPILED) {
 
 let desktopPort: number | null = null;
 if (process.env["OVIS_DESKTOP_COMMAND"] === "1") {
+  // The app owns its server; these commands only explain how to start or stop it.
+  if (early.kind === "run" && (early.command === "start" || early.command === "stop")) {
+    process.stderr.write(early.command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
+    process.exit(1);
+  }
   const config = process.env["HERDR_PLUGIN_CONFIG_DIR"];
   // An installed launcher from before the app's first start after an upgrade has only cli-settings.
   const record = process.env["OVIS_DESKTOP_COMMAND_RECORD"] ?? (config && join(dirname(config), "desktop.json"));
@@ -1561,11 +1566,6 @@ export async function runPlugin(): Promise<void> {
     process.exit(2);
   }
   const { command, args } = parsed;
-  // the desktop app's ovis command (app/electron/src/terminalCommand.ts): the app runs its server, with no server.pid here
-  if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && (command === "start" || command === "stop")) {
-    process.stderr.write(command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
-    process.exit(1);
-  }
   switch (command) {
     case "agent": process.exit(await (await import("./plugin-agent.ts")).runAgent(args));
     case "start": process.exit(await start());
