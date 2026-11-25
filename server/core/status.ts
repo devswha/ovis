@@ -159,7 +159,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
   const lettaTitled = new Map<string, AgentStatus>();
-  const lettaRests = new Map<string, OmoRest>();
+  const lettaRests = new Map<string, { path: string; rest: OmoRest }>();
   let titleReads = 0;
   let titleApplied = 0;
   const letta = createLettaStatus({
@@ -167,7 +167,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     snapshot: omoSnapshot,
     onChange: (paneId, derived, _background, turn, rest) => {
       if (lettaTitled.get(paneId) !== "blocked") { gjcChanged(paneId, derived, turn, rest, "letta"); return; }
-      if (turn && rest !== undefined && derived !== "working") lettaRests.set(paneId, rest); else if (turn) lettaRests.delete(paneId);
+      if (turn) {
+        const path = letta.pathOf(paneId);
+        if (path !== null && rest !== undefined && derived !== "working") lettaRests.set(paneId, { path, rest });
+        else lettaRests.delete(paneId);
+      }
     },
     onFound: (paneId) => completions.adopt(paneId, "letta", []),
   });
@@ -470,12 +474,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     if (newest) notePaneFolders(named.panes.flatMap((pane) => [pane.cwd, pane.foreground_cwd]));
     if (capabilities().agents === "reported") for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) {
-      const rest = status === "idle" ? lettaRests.get(paneId) : undefined;
+      const saved = lettaRests.get(paneId);
+      const rest = status === "idle" && saved?.path === letta.pathOf(paneId) ? saved.rest : undefined;
       if (status !== "blocked") lettaRests.delete(paneId);
       gjcChanged(paneId, status, true, rest, "letta");
     }
-    if (newest) for (const paneId of lettaRests.keys()) {
-      if (lettaTitled.get(paneId) !== "blocked") lettaRests.delete(paneId);
+    if (newest) for (const [paneId, saved] of lettaRests) {
+      if (lettaTitled.get(paneId) !== "blocked" || letta.pathOf(paneId) !== saved.path) lettaRests.delete(paneId);
     }
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;

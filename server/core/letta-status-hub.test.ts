@@ -200,7 +200,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     expect(failed).toEqual(["w1:p1"]);
   });
 
-  it("does not report an abandoned approval as the failure of a later title-only wait", async () => {
+  it.each(["a live status", "an unbound conversation"] as const)("does not carry an abandoned approval failure through %s", async (replacement) => {
     core();
     const store = join(root, "letta-store-abandoned");
     const agent = "agent-local-g";
@@ -222,11 +222,11 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     appendFileSync(messages, `${JSON.stringify(aborted)}\n`);
     await h.status.letta.poll();
 
-    handlers.onStatus("w1:p1", "idle", "letta");
     resolve.mockResolvedValue(null);
-    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    if (replacement === "a live status") handlers.onStatus("w1:p1", "idle", "letta");
+    h.herdrSays(letta("[ ! ] Action Required | Remote"));
     expect((await h.snapshot()).panes[0]?.agent_status).toBe("blocked");
-    h.herdrSays(letta("Tutor"));
+    h.herdrSays(letta("Remote"));
     await h.snapshot();
 
     expect(failed).toEqual([]);
