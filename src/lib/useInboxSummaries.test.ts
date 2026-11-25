@@ -44,6 +44,19 @@ describe("summaryTargets", () => {
 });
 
 describe("SummaryReads", () => {
+  it("fills every row when a large batch runs out of time after making progress", async () => {
+    const { reads, calls, waits } = harness();
+    const rows = Array.from({ length: 24 }, (_, index) => target(`slow${index}`));
+    reads.sync(rows);
+    for (let turn = 0, next = 0; turn < rows.length && (next < calls.length || waits.length > 0); turn++) {
+      for (const wait of waits.splice(0)) if (!wait.cancelled) wait.run();
+      const call = calls[next++];
+      if (!call) break;
+      call.resolve(answer(Object.fromEntries(call.paneIds.slice(0, 5).map((id) => [id, said(id)]))));
+      await settled();
+    }
+    expect(reads.summaries().size).toBe(rows.length);
+  });
   it("asks each PC in batches of at most 24, one request in flight per PC", async () => {
     const { reads, calls } = harness();
     const many = Array.from({ length: 30 }, (_, index) => target(`a${index}`));

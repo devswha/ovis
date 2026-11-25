@@ -2,7 +2,7 @@
  * Nothing is stored past the page; a row that leaves the list leaves its summary behind.
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus } from "./agentInbox.ts";
 import type { AgentRow } from "./agentRoster.ts";
@@ -12,6 +12,7 @@ import type { SidebarActivity } from "./sidebarActivity.tsx";
 export const SUMMARY_ROWS = 60;
 export const SUMMARY_RETRY_MS = 2000;
 export const SUMMARY_RETRIES = 3;
+const RETRY_BATCH = Math.max(1, Math.floor(PANE_SUMMARY_DEADLINE_MS / PANE_SUMMARY_PANE_MS));
 
 export interface RowSummary {
   role: "assistant" | "user";
@@ -142,7 +143,9 @@ export class SummaryReads {
   private pump(machineId: string): void {
     if (this.busy.has(machineId) || this.missing.has(machineId)) return;
     const queue = (this.queues.get(machineId) ?? []).filter((target) => this.isCurrent(target));
-    const batch = queue.splice(0, PANE_SUMMARY_MAX_IDS);
+    // A partial answer may not have started its tail. Give those retries room inside the server's batch deadline.
+    const limit = queue.some((target) => this.retries.has(readOf(target))) ? RETRY_BATCH : PANE_SUMMARY_MAX_IDS;
+    const batch = queue.splice(0, limit);
     this.queues.set(machineId, queue);
     if (batch.length === 0) return;
     this.busy.add(machineId);
