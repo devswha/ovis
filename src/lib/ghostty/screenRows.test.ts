@@ -64,3 +64,12 @@ test("libghostty's rows read as xterm's on the alternate screen", async () => {
   const { xterm, ghostty } = await both(10, 3, 100, ["before\r\n", "\x1b[?1049h\x1b[2;3Halt \x1b[1mscreen\x1b[0m", "\x1b[3;1H$ "]);
   expect(ghostty).toEqual(xterm);
 });
+
+test("libghostty's rows read as xterm's after an erase from a wrapped row's first column ends its wrap", async () => {
+  const { xterm, ghostty } = await both(10, 6, 0, [
+    `${"a".repeat(12)}\x1b[2;1H\x1b[K`,
+    `\r\n${"b".repeat(12)}\x1b[4;1H\x1b[2Kc`,
+    `\r\n${"d".repeat(12)}\x1b[6;1H\x1b[J`,
+  ]);
+  expect(ghostty).toEqual(xterm);
+});

@@ -59,7 +59,8 @@ function screenLine(vt: GhosttyVt, y: number, row: EngineRowText): ScreenLine {
 }
 
 /**
- * libghostty's kept rows as the app reads xterm's (terminalScreen.ts ScreenRows), held as they are when this is called.
+ * libghostty's kept rows as the app reads xterm's (terminalScreen.ts ScreenRows), as they are when this is called;
+ * a line's styled cells are read when first asked, so a reader is done with them before the terminal is written again.
  * History past the lines asked for (vt.scrollback), which libghostty has not freed yet, is left out, as xterm drops it.
  */
 export function ghosttyRows(vt: GhosttyVt): ScreenRows {

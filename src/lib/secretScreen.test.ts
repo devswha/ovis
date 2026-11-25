@@ -274,6 +274,38 @@ describe.each(["xterm", "libghostty"] as const)("read off %s's screen", (engine)
     } finally { edge.dispose(); }
   });
 
+  test("on a stream of the program's own bytes, a prompt whose wrapped row is erased is answered", async () => {
+    // the trailing space of `Password: ` wraps onto a row of its own; erasing that row from its first column ends the wrap
+    const term = await terminal(9);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, "Password: ");
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, "\r\x1b[K");
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
+
+  test("on a stream of the program's own bytes, a prompt printed over an erased wrapped row asks", async () => {
+    // a line editor redraws its line: the row the long line wrapped onto is erased whole and the prompt printed there
+    const term = await terminal(20);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, `${"x".repeat(20)}more\r\x1b[2KPassword: `);
+      expect(screen.read("a")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
+
+  test("a program's switch to 132 columns leaves the pane as wide as it is, as xterm does", async () => {
+    const term = await terminal(40);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      const long = "Password for 'https://alice@git.example.com':";
+      await parse(term, `\x1b[?40h\x1b[?3h$ git push\r\n${long} `);
+      expect(screen.read("a")).toBe(long);
+    } finally { term.dispose(); }
+  });
+
   test("a pane whose cursor is not known keeps its prompt while it is the last text", async () => {
     const term = await attached(80);
     const screen = createSecretScreen(term, () => false);
@@ -284,4 +316,19 @@ describe.each(["xterm", "libghostty"] as const)("read off %s's screen", (engine)
       expect(screen.read("a")).toBe(GIT);
     } finally { term.dispose(); }
   });
+});
+
+test("the prompt is read off the screen libghostty holds while it holds one, and off xterm's once it gives it back", async () => {
+  const term = new Terminal({ cols: 40, rows: 4, scrollback: 0, allowProposedApi: true });
+  const vt = await GhosttyVt.create(40, 4);
+  const screen = createSecretScreen(term, () => false);
+  try {
+    // only libghostty was given the prompt: the reader that answers it is libghostty's
+    vt.write("$ sudo true\r\n[sudo] password for alice: ");
+    await parse(term, "$ ls\r\n");
+    holdScreenRows(term, () => ghosttyRows(vt));
+    expect(screen.read("a")).toBe("[sudo] password for alice:");
+    holdScreenRows(term, null);
+    expect(screen.read("a")).toBeNull();
+  } finally { vt.dispose(); term.dispose(); }
 });

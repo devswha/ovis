@@ -577,13 +577,30 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
 
   host.dataset["renderer"] = "ghostty";
   // libghostty has every byte xterm was given by now, and each later one before xterm parses it
+  // A read that fails gives the terminal back to xterm, which has every byte too: a reader runs in xterm's write
+  // callback, where a throw would leave the output behind it queued
+  const readFailed = (error: unknown): void => {
+    console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
+    overlay.dispose();
+  };
   holdScreenRows(term, () => {
     if (disposed) return null;
     try {
-      return ghosttyRows(vt);
+      const rows = ghosttyRows(vt);
+      return {
+        ...rows,
+        getLine: (y) => {
+          if (disposed) return term.buffer.active.getLine(y);
+          try {
+            return rows.getLine(y);
+          } catch (error) {
+            readFailed(error);
+            return term.buffer.active.getLine(y);
+          }
+        },
+      };
     } catch (error) {
-      console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
-      overlay.dispose();
+      readFailed(error);
       return null;
     }
   });
