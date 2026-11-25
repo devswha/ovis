@@ -159,7 +159,7 @@ export class AgentToolHub {
     const privilegedRead = verb === "read" && (args.what === "result" || args.what === "screen");
     if (privilegedRead && !this.verbs(run).includes("result")) return deny();
     if (isView(verb)) {
-      const result = await this.view.query(verb, args, this.turns);
+      const result = await this.view.query(verb, args, this.turns, run.id);
       return auth() && (!privilegedRead || this.verbs(run).includes("result")) ? result : deny();
     }
     const allowed = () => !!auth() && (verb === "stop" || this.verbs(run).includes(verb));
@@ -205,6 +205,7 @@ export class AgentToolHub {
       if (this.options.acp.forPane(session) !== child) return refuse("unknown_session", "The child has ended.");
       if (verb === "send") return this.turns.send(child, row, args);
       if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
+      if (verb === "answer") return this.turns.answerQuestion(child, row, args);
       try {
         const receipt = await child.client.request("_keeper/tool_stop", {}, signal);
         if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");

@@ -66,7 +66,7 @@ export class Ledger {
   begin(intent: Launch): void { this.launches.set(intent.run, intent); this.saveLaunches(); }
   finish(run: string): void { if (this.launches.delete(run)) this.saveLaunches(); }
   private saveLaunches(): void { writePrivate(join(this.dir, "launches.json"), JSON.stringify([...this.launches.values()])); }
-  audit(row: ToolChild, verb: "start" | "stop" | "send" | "turn", turn: number | null, end: string | null = null): void {
+  audit(row: ToolChild, verb: "start" | "stop" | "send" | "answer" | "turn", turn: number | null, end: string | null = null): void {
     const file = join(this.dir, "audit.jsonl");
     if ((statSync(file, { throwIfNoEntry: false })?.size ?? 0) >= 10 * 1024 * 1024) renameSync(file, join(this.dir, "audit.1.jsonl"));
     const record: AuditRecord = { at: new Date().toISOString(), run: row.starter, parent: row.parent, child: row.terminal, machine: "local", harness: row.harness, verb, turn_id: turn === null ? null : `${row.id}.${turn}`, stop_reason: end };

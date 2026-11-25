@@ -10,11 +10,18 @@ export function untrusted(from: string, text: string): Untrusted {
   return { untrusted: true as const, from, text: bytes.subarray(0, 65536).toString("utf8"), ...(bytes.length > 65536 ? { truncated: true as const } : {}) };
 }
 export const childRef = (row: ToolChild, child: AcpChild): SessionRef => ({ address: row.terminal, drive: "acp", machine: "local", harness: row.harness, ...(row.version && { version: row.version }), agent_session_id: child.client.session, parent: row.parent, started_by: "agent" });
-export function childState(child: AcpChild, row?: ToolChild): SessionState {
+export function childState(child: AcpChild, row?: ToolChild, parent = false): SessionState {
   const { client } = child;
   const turn = row?.turns.at(-1)?.n ?? null;
   if (client.agentGone || client.keeperGone) return { state: "gone", turn };
   if (client.pending().length) return { state: "waiting_human", turn, on: "approval" };
+  const q = client.questions.current;
+  if (q) {
+    if (!q.parent || !q.field || row?.held || client.holdGeneration !== null) return { state: "waiting_human", turn, on: "question" };
+    const { field } = q;
+    return { state: "waiting_parent", turn, on: "question", ...(parent ? { question: { id: q.id, prompt: untrusted(child.terminal, field.prompt),
+      choices: field.choices.map(c => untrusted(child.terminal, c.description ? `${c.label}\n${c.description}` : c.label)), multiple: field.multiple, accepts_text: field.custom !== null } } : {}) };
+  }
   return { state: !client.connected || client.turn?.running ? "working" : client.turn ? "done" : "idle", turn };
 }
 export function delegatedMode(harness: string, client: KeeperClient): string | null {
@@ -93,14 +100,31 @@ export class ChildTurns {
     end.addEventListener("abort", close, { once: true });
     try { if (end.aborted) close(); else check(); await promise; }
     finally { off(); clearTimeout(timer); end.removeEventListener("abort", close); }
-    return row.held || child.client.terminalReady ? refuse("taken_over", "A person holds this child.") : answer("state", { session: row.terminal, state: childState(child, row) });
+    return row.held || child.client.terminalReady ? refuse("taken_over", "A person holds this child.") : answer("state", { session: row.terminal, state: childState(child, row, true) });
   }
-  result(child: AcpChild, row: ToolChild, id: unknown) {
+  async answerQuestion(child: AcpChild, row: ToolChild, args: Record<string, unknown>) {
+    const client = child.client, session = row.terminal;
+    if (client.pending().length) return refuse("waiting_human", "Only a person can answer a permission request.");
+    if (client.holdGeneration !== null || client.status === "unknown") return refuse("taken_over", "ACP does not own this conversation.");
+    const q = client.questions.current;
+    if (!q?.parent || q.id !== args.question_id) return refuse("waiting_human", "This question is not waiting for you.");
+    if (args.choice === undefined && args.choices === undefined && args.text === undefined) {
+      if (client.questions.handoff(q.id)) this.ledger.audit(row, "answer", row.turns.at(-1)?.n ?? null);
+      return answer("state", { session, state: childState(child, row) });
+    }
+    if (args.choices !== undefined && args.choice !== undefined) return refuse("bad_request", "Supply choice or choices, not both.");
+    const indices = Array.isArray(args.choices) ? args.choices : typeof args.choice === "number" ? [args.choice] : [];
+    const result = await client.questions.respond(q.id, true, { indices, ...(typeof args.text === "string" ? { text: args.text } : {}) });
+    if (result !== "answered") return refuse(result === "invalid" ? "bad_request" : "unavailable", "The answer was not accepted.");
+    this.ledger.audit(row, "answer", row.turns.at(-1)?.n ?? null);
+    return answer("answered", { session, question_id: q.id });
+  }
+  result(child: AcpChild, row: ToolChild, id: unknown, parent = true) {
     if (child.client.status === "unknown") return refuse("taken_over", "ACP does not own this conversation.");
-    const state = childState(child, row);
+    const state = childState(child, row, parent);
     const turn = id === undefined ? row.turns.at(-1) : row.turns.find(t => `${row.id}.${t.n}` === id);
     if (id !== undefined && !turn) return refuse("unknown_session", "Unknown turn.");
-    if (!turn || state.state === "waiting_human" || turn.end === null || !child.client.connected) return answer("state", { session: row.terminal, state });
+    if (!turn || state.on || turn.end === null || !child.client.connected) return answer("state", { session: row.terminal, state });
     const latest = turn.seq === child.client.turnSequence ? child.client.turn : null;
     return answer("result", { session: row.terminal, turn_id: `${row.id}.${turn.n}`, stop_reason: harnessStopReason(turn.end), end_from: "acp", answer_from: latest ? "acp" : null,
       final_message: latest?.text ? untrusted(row.terminal, latest.text) : null, error: latest?.error ? untrusted(row.terminal, latest.error) : null, usage: latest ? child.client.usage : null,

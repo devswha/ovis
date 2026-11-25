@@ -43,6 +43,12 @@ The owner decided the four questions H0 waited on (2026-11-24, in the Dori sessi
 | D21 | What shape is the contract? | (a): one schema generates the types, and the commands' `--json` output is the stable surface. It survives a Rust port of the inside unchanged (plan 11.3). | [Schema](#schema-draft) |
 | D23 | Default limits of the harness tool | Depth 1, settable up to 3. No limit on running children per parent (owner decision 2026-11-24). 60 minutes per child. 30 calls per minute per run. Cost is shown wherever the harness reports it. No further limit. | `Limits`; rules G4, G5 and G7 |
 
+**D19 clarification (2026-11-25):** An agent may answer its own child's structured question, never
+its permission request. `agent_answer` takes a session and question ID, not a card's permission
+option ID. A successful answer or pass is audited without the question or answer text (G6).
+No answer within 30 seconds, or an explicit pass, hands the question to the person. See
+[question support by harness](harness-tool.md#when-the-child-asks-a-question). G8 is unchanged.
+
 **How agents are run (owner, 2026-11-24).**
 
 - An agent a person opens is a real TUI in a herdr-core terminal. Where the harness allows it,
@@ -186,8 +192,17 @@ interface Capabilities {
 // ---- state, turns and results ---------------------------------------------
 type SessionState =
   | { state: "idle" | "working" | "done" | "gone"; turn: number | null }
+  | { state: "waiting_parent"; turn: number | null; on: "question"; question?: ChildQuestion }
   | { state: "waiting_human"; turn: number | null; on: "approval" | "question" };
   // A parent learns only that the child waits for a person, never the card itself (G8).
+
+interface ChildQuestion {
+  id: string;                 // opaque, for this request and field only
+  prompt: Untrusted;
+  choices: Untrusted[];       // zero-based indices for answer
+  multiple: boolean;
+  accepts_text: boolean;
+}
 
 interface SendAccepted {           // `send` answers "received", never the result (rule 1)
   accepted: true;

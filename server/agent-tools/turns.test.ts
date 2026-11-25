@@ -11,13 +11,14 @@ import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
 import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
 import { KeeperClient, KeeperRequestError } from "../acp/client.ts";
+import { acpPrompt, answerAcpPrompt } from "../approvals/acp.ts";
 
 describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keepers", () => {
   let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection, hc: AcpHc, now: number;
   const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
   const open = () => {
     acp = new AcpChildren(join(dir, "acp"), { hc, keeperBin: () => KEEPER_BUILD, sessionMs: 1500 });
-    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 2, harnesses: ["test", "mute"] }),
+    hub = new AgentToolHub({ dir: join(dir, "tools"), acp, now: () => now, setting: () => ({ level: "start", depth: 2, harnesses: ["test", "mute", "opencode"] }),
       resolve: kind => ({ argv: kind === "mute" ? ["/bin/sleep", "600"] : [FAKE_AGENT] }) });
     hub.listen();
   };
@@ -144,9 +145,54 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     const child = acp.forPane(session);
     const approval = child?.client.pending()[0];
     if (!child || !approval) throw new Error("missing card");
+    expect(await call("answer", { session, question_id: approval.keeperId, choice: 0 })).toMatchObject({ error: { code: "waiting_human" } });
     expect(await child.client.answer(approval.keeperId, "reject")).toBe("won");
     expect(await call("wait", { session })).toMatchObject({ state: { state: "done" } });
     expect(await call("result", { session })).toMatchObject({ final_message: { text: "answered reject", untrusted: true } });
+  });
+  it.each(["parent", "pass", "timeout"] as const)("routes a native question to its parent before the person's card (%s)", async path => {
+    const started = await call("start", { harness: "opencode", cwd: dir, task: "question" });
+    if (!isRecord(started.session) || typeof started.session.address !== "string") throw new Error("no child");
+    const session = started.session.address;
+    const child = acp.forPane(session);
+    if (!child) throw new Error("no keeper");
+    const wait = await call("wait", { session, timeout_s: 1 });
+    expect(wait).toMatchObject({ state: { state: "waiting_parent", on: "question", question: {
+      prompt: { untrusted: true, from: session, text: "Which color?" }, choices: [{ text: "Red", untrusted: true }, { text: "Blue", untrusted: true }],
+    } } });
+    if (!isRecord(wait.state) || !isRecord(wait.state.question)) throw new Error("no question");
+    const args = { session, question_id: wait.state.question.id };
+    expect((await call("result", { session })).state).toEqual(wait.state);
+    expect((await call("read", { session, what: "transcript" })).state).toEqual(wait.state);
+    expect(acpPrompt(child)).toBeNull();
+    if (path === "parent") {
+      const parent = token, other = hub.runs.reserve();
+      other.bind({ self: "other", root: other.id, started_by: null, depth: 0, harness: "fixture" });
+      token = readFileSync(other.tokenFile, "utf8");
+      expect((await call("read", { session, what: "state" })).state).not.toHaveProperty("question");
+      expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "not_owner" } });
+      token = parent;
+    }
+    const clock = spyOn(Date, "now");
+    try {
+      if (path === "parent") {
+        expect(await call("answer", { ...args, choice: 1 })).toMatchObject({ kind: "answered" });
+      } else {
+        if (path === "pass") expect(await call("answer", args)).toMatchObject({ kind: "state", state: { state: "waiting_human" } });
+        else clock.mockReturnValue(Date.now() + 60_000);
+        expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "waiting_human" } });
+        const card = acpPrompt(child);
+        expect(card).toMatchObject({ kind: "question", question: "Which color?" });
+        if (!card) throw new Error("no card");
+        expect(await answerAcpPrompt(child, { pane_id: session, prompt_id: card.id, option_index: 1 })).toBe("answered");
+      }
+    } finally { clock.mockRestore(); }
+    await call("wait", { session });
+    expect(await call("result", { session })).toMatchObject({ final_message: { text: JSON.stringify({ action: "accept", content: { q0: "blue" } }) } });
+    expect((await call("answer", { ...args, choice: 0 })).kind).toBe("refusal");
+    const audit = readFileSync(join(dir, "tools/audit.jsonl"), "utf8");
+    expect(audit.split("\n").filter(line => line.includes('"verb":"answer"'))).toHaveLength(path === "timeout" ? 0 : 1);
+    expect(audit).not.toContain("Which color?");
   });
   it("refuses an unrelated run as not_owner without changing the child or audit", async () => {
     const session = await start();

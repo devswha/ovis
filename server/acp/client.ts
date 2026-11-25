@@ -12,6 +12,7 @@ import { keeperRunning } from "./keeper-process.ts";
 import { AcpHistory } from "./history.ts";
 import { KeeperRequests } from "./requests.ts";
 import { KeeperAnswers, type AnswerOutcome } from "./answers.ts";
+import { KeeperQuestions } from "./questions.ts";
 
 import { KeeperDisconnected, approval, parseLine, record, text, type AcpApproval, type AcpTurn, type Message, type Row } from "./messages.ts";
 
@@ -20,6 +21,7 @@ export type { AcpApproval, AcpOption, AcpTurn } from "./messages.ts";
 export type { AnswerOutcome } from "./answers.ts";
 
 export interface KeeperClientOptions {
+  questionHarness?: string;
   /** how the socket is opened (default node:net) */
   connect?: (path: string) => Socket;
 }
@@ -50,7 +52,8 @@ export class KeeperClient {
 
   get status(): "working" | "blocked" | "idle" | "done" | "unknown" {
     if (!this.connected || this.agentGone || this.mode !== "acp" || !this.session) return "unknown";
-    return this.approvals.size ? "blocked" : this.turn?.running ? "working" : this.turn?.stopReason ? "done" : "idle";
+    const question = this.questions.current;
+    return this.approvals.size || question && !question.parent ? "blocked" : question || this.turn?.running ? "working" : this.turn?.stopReason ? "done" : "idle";
   }
   /** the keeper ended and no connection could be made again */
   keeperGone = false;
@@ -63,6 +66,13 @@ export class KeeperClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private readonly approvals = new Map<string, AcpApproval>();
   private readonly answers = new KeeperAnswers();
+  readonly questions = new KeeperQuestions(() => this.changed(), (id, result) => {
+    if (this.client === null || this.status === "unknown") return Promise.resolve("gone");
+    return this.answers.reserve({ id, optionId: null }, send => this.onChange(send), reservation => {
+      reservation.by = `client-${this.client}`;
+      this.write({ jsonrpc: "2.0", id, result });
+    });
+  });
   private readonly requests = new KeeperRequests(message => this.write(message));
   /** the keeper's ids of the `session/prompt` requests the agent has not answered yet */
   private readonly prompts = new Set<string>();
@@ -70,7 +80,7 @@ export class KeeperClient {
   private readonly waiting = new Set<() => void>();
   private readonly connectTo: (path: string) => Socket;
 
-  constructor(readonly root: string, options: KeeperClientOptions = {}) {
+  constructor(readonly root: string, private readonly options: KeeperClientOptions = {}) {
     this.history = new AcpHistory(root);
     this.connectTo = options.connect ?? ((path) => createConnection(path));
     this.open();
@@ -157,6 +167,7 @@ export class KeeperClient {
     this.socket?.end();
     this.dropped();
     this.answers.close();
+    this.questions.clear();
     this.changed();
   }
 
@@ -194,6 +205,7 @@ export class KeeperClient {
     if (!wasConnected && !keeperRunning(this.root)) {
       this.keeperGone = true;
       this.approvals.clear();
+      this.questions.clear();
       this.answers.close();
       this.changed();
       return;
@@ -239,6 +251,7 @@ export class KeeperClient {
     this.history.observe(entry, Buffer.byteLength(line) + 1);
     if (previousSession !== this.history.session) {
       this.approvals.clear();
+      this.questions.clear();
       this.answers.close();
       this.prompts.clear();
       this.turn = null;
@@ -253,7 +266,7 @@ export class KeeperClient {
   private row(row: Row, message: Message): boolean {
     const method = text(message.method);
     const params = record(message.params) ?? {};
-    if ((method === "session/update" || method === "session/request_permission" || method === "session/prompt")
+    if ((method === "session/update" || method === "session/request_permission" || method === "session/prompt" || method === "elicitation/create")
       && (!this.history.session || params.sessionId !== this.history.session)) return false;
     switch (row.dir) {
       case "to-client":
@@ -292,6 +305,10 @@ export class KeeperClient {
     }
     if (method === "session/request_permission" && typeof message.id === "string") {
       this.approvals.set(message.id, approval(row, message.id, params));
+      return true;
+    }
+    if (method === "elicitation/create" && typeof message.id === "string" && this.options.questionHarness) {
+      this.questions.add(this.options.questionHarness, row, message.id, params, this.connected && this.turn?.running === true && this.holdGeneration === null);
       return true;
     }
     if (method === "session/update") {
@@ -352,6 +369,7 @@ export class KeeperClient {
       case "_keeper/resolved": {
         if (id === null) return false;
         this.approvals.delete(id);
+        this.questions.remove(id);
         this.answers.acknowledge(id, text(params["by"]), text(params["optionId"]));
         return true;
       }
@@ -359,8 +377,10 @@ export class KeeperClient {
         if (id !== null) this.answers.dropped(id, text(params["by"]), params["answering"] === true);
         return false;
       case "_keeper/expired":
+      case "_keeper/auto_answered":
         if (id === null) return false;
         this.approvals.delete(id);
+        this.questions.remove(id);
         this.answers.settle(id, "gone");
         return true;
       default:

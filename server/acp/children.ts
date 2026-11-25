@@ -14,6 +14,7 @@ import { PANE_NAME_LABEL, TAB_NAME_LABEL } from "../herdr-core/snapshot.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { KeeperClient } from "./client.ts";
+import { hasQuestionForms } from "./question-form.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
 
@@ -141,11 +142,13 @@ function owned(path: string, kind: "directory" | "file"): boolean {
   return stat !== undefined && (process.getuid === undefined || stat.uid === process.getuid()) && (kind === "directory" ? stat.isDirectory() : stat.isFile());
 }
 
-function harnessOf(root: string): string | null {
+function childInfo(root: string): { harness: string; questionHarness?: string } | null {
   try {
     if (!owned(root, "directory") || !owned(join(root, CHILD_FILE), "file")) return null;
-    const harness = (JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8")) as { harness?: unknown }).harness;
-    return typeof harness === "string" && harness !== "" ? harness : null;
+    const info: unknown = JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8"));
+    if (!info || typeof info !== "object" || !("harness" in info)) return null;
+    const harness = info.harness, questionForms = "questionForms" in info && info.questionForms === true;
+    return typeof harness === "string" && harness !== "" ? { harness, ...(questionForms === true ? { questionHarness: harness } : {}) } : null;
   } catch {
     return null;
   }
@@ -190,7 +193,8 @@ export class AcpChildren {
     this.folder();
     mkdirSync(root, { mode: 0o700 });
     chmodSync(root, 0o700);
-    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness }), { mode: 0o600 });
+    const questionForms = !!start.runId && hasQuestionForms(start.harness);
+    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}) }), { mode: 0o600 });
     const argv = [
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
@@ -198,6 +202,7 @@ export class AcpChildren {
       ...(start.configOptions === undefined ? [] : ["--config-options", JSON.stringify(start.configOptions)]),
       ...(start.announceSubagents ? ["--announce-subagents"] : []),
       ...(start.askEveryTime ? ["--ask-every-time"] : []),
+      ...(questionForms ? ["--question-forms"] : []),
       "--", ...start.argv,
     ];
     const displayName = start.name?.trim();
@@ -227,7 +232,7 @@ export class AcpChildren {
       throw new AcpStartFailed(reason, message, client?.sessionError?.code);
     };
     if (!(await socketAppears(root, this.options.socketMs ?? SOCKET_MS))) return failed("no_socket", "the ACP keeper did not open its socket");
-    const client = new KeeperClient(root);
+    const client = new KeeperClient(root, { questionHarness: questionForms ? start.harness : undefined });
     const opened = await sessionOpens(client, this.options.sessionMs ?? SESSION_MS);
     if (opened === "refused") return failed("refused", "the agent refused to open the ACP session", client);
     if (opened === "late") return failed("no_session", "the agent did not open a session (no answer to initialize or session/new)", client);
@@ -344,12 +349,12 @@ export class AcpChildren {
     for (const id of readdirSync(this.dir)) {
       const root = join(this.dir, id);
       if (!/^[a-f0-9]{12}$/.test(id)) continue;
-      const harness = harnessOf(root);
-      if (harness === null) continue;
+      const info = childInfo(root);
+      if (info === null) continue;
       const terminal = live.get(id);
       if (terminal === null) continue;
       if (terminal !== undefined) {
-        if (!this.children.has(id)) this.add({ id, harness, root, terminal, client: new KeeperClient(root) });
+        if (!this.children.has(id)) this.add({ id, harness: info.harness, root, terminal, client: new KeeperClient(root, info) });
       } else if (!keeperRunning(root)) {
         rmSync(root, { recursive: true, force: true });
       }

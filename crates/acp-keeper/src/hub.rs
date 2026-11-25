@@ -334,6 +334,9 @@ impl Hub {
         if self.opts.announce_subagents {
             capabilities["subagents"] = json!({});
         }
+        if self.opts.question_forms {
+            capabilities["elicitation"] = json!({"form": {}});
+        }
         self.request(
             "initialize",
             json!({"protocolVersion": 1, "clientCapabilities": capabilities, "clientInfo": {"name": "acp-keeper", "version": env!("CARGO_PKG_VERSION")}}),
@@ -459,14 +462,28 @@ impl Hub {
                     self.note_row("_keeper/auto_answered", json!({"id": ours, "method": method}));
                     return;
                 }
+                if self.opts.question_forms && method == "elicitation/create" {
+                    let params = msg.get("params");
+                    let session = params.and_then(|p| p.get("sessionId")).and_then(Value::as_str);
+                    if session.is_none() || session != self.model.session.as_deref() || params.and_then(|p| p.get("mode")).and_then(Value::as_str) != Some("form") {
+                        self.forward(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"Only current-session question forms are supported"}}).to_string());
+                        self.note_row("_keeper/auto_answered", json!({"id":ours,"method":method}));
+                        return;
+                    }
+                }
                 self.agent_ids.insert(key_of(&ours), id);
                 self.model.request(key_of(&ours), ours, seq, &msg);
-                if self.stop.is_some() && method == "session/request_permission" {
+                if self.stop.is_some() && matches!(method.as_str(), "session/request_permission" | "elicitation/create") {
                     self.cancel_pending(None, "tool-stop");
                 }
             }
             (Some(method), None) => {
                 self.archive.append("from-agent", &text);
+                if method == "$/cancel_request" {
+                    if let Some(id) = msg.get("params").and_then(|p| p.get("requestId")) {
+                        self.withdraw_question(id);
+                    }
+                }
                 if method == "session/update" {
                     let params = msg.get("params").unwrap_or(&Value::Null);
                     self.model.update(params);
@@ -810,18 +827,36 @@ impl Hub {
     }
 
     fn cancel_pending(&mut self, session: Option<&str>, by: &str) {
-        let keys: Vec<(String, Value)> = self
+        let keys: Vec<(String, Value, bool)> = self
             .model
             .pending
             .iter()
-            .filter(|p| p.method == "session/request_permission" && (self.stop.is_some() || p.session.as_deref() == session) && !self.answering.contains(&p.key))
-            .map(|p| (p.key.clone(), p.id.clone()))
+            .filter(|p| matches!(p.method.as_str(), "session/request_permission" | "elicitation/create") && (self.stop.is_some() || p.session.as_deref() == session) && !self.answering.contains(&p.key))
+            .map(|p| (p.key.clone(), p.id.clone(), p.method == "elicitation/create"))
             .collect();
-        for (key, id) in keys {
-            let raw = json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}}).to_string();
+        for (key, id, form) in keys {
+            let result = if form { json!({"action":"cancel"}) } else { json!({"outcome":{"outcome":"cancelled"}}) };
+            let raw = json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
             self.answer(&key, &raw, "keeper-cancel");
         }
         self.model.note(format!("취소 보냄 ({by})"));
+    }
+
+    /// The adapter withdrew its own elicitation (e.g. Codex's auto-resolution deadline).
+    /// Its JSON-RPC id is in the agent's namespace, not the id on the person's card.
+    fn withdraw_question(&mut self, wire_id: &Value) {
+        let key = self
+            .model
+            .pending
+            .iter()
+            .find(|p| p.method == "elicitation/create" && self.agent_ids.get(&p.key) == Some(wire_id))
+            .map(|p| p.key.clone());
+        let Some(key) = key.filter(|k| !self.answering.contains(k)) else { return };
+        if let Some(pending) = self.model.resolve(&key) {
+            self.agent_ids.remove(&key);
+            self.forward(&json!({"jsonrpc":"2.0","id":wire_id,"result":{"action":"cancel"}}).to_string());
+            self.note_row("_keeper/expired", json!({"id":pending.id,"seq":pending.seq,"reason":"question withdrawn"}));
+        }
     }
 }
 
@@ -837,6 +872,31 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
         (Hub::new(Arc::new(archive), tx, opts, false, false), rx)
+    }
+
+    #[test]
+    fn a_withdrawn_question_no_longer_accepts_an_answer_and_other_requests_stay_open() {
+        let dir = std::env::temp_dir().join(format!("ak-question-{}", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        hub.opts.question_forms = true;
+        for (id, method) in [(7, "elicitation/create"), (8, "session/request_permission")] {
+            hub.handle(Ev::Agent(0, json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"sessionId":"s","mode":"form"}}).to_string()));
+        }
+        let question = hub.model.pending[0].id.clone();
+        hub.handle(Ev::Agent(0, json!({"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":7}}).to_string()));
+        assert_eq!(hub.model.pending.len(), 1);
+        assert_eq!(hub.model.pending[0].method, "session/request_permission");
+        hub.handle(Ev::Client {
+            conn: 1,
+            line: json!({"jsonrpc":"2.0","id":question,"result":{"action":"accept"}}).to_string(),
+        });
+        assert!(!hub.answering.contains(&key_of(&question)));
+        let cancelled: Value = serde_json::from_slice(&sent.try_recv().unwrap().bytes).unwrap();
+        assert_eq!(cancelled["id"], 7);
+        assert_eq!(cancelled["result"]["action"], "cancel");
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
