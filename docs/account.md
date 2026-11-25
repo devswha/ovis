@@ -609,7 +609,9 @@ gives, as any member answers a read: its own entries up to its last signed one, 
 alarm. It answers the read only to a key its list lets in at that moment: any other signed-in row
 (a pairing of this PC's own) gets the plain exchange, as if it had sent no read. A read is left out
 when there is none; `asks: null` is out of form. `asks` in the answer is there when the device stands further, or at another entry:
-`{ "list", "after" }`, the place the PC wants the device's entries after. For another list than the
+`{ "list", "after" }`, the place the PC wants the device's entries after: never past the footing it
+states beside it (an entry no member signed above its footing, which the service may have shown it,
+is not counted as held). For another list than the
 PC's, in `list` or in the device's `asks`: the PC's own `list` and `place` and nothing else. `POST /api/account/list/page` `{ "list", "after", "entries", "head" }`: the device hands
 the PC entries, 256 at most, with the head they lead to; the PC takes them as it takes the account
 service's pages, each entry on its own signature, and answers `{ "verdict", "asks"?, "list",

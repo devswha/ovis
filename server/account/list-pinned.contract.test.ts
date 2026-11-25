@@ -628,6 +628,27 @@ describe("a removal the PC has seen is final", () => {
     }
   });
 
+  test("the place the PC asks a device for is its footing: an entry no member signed above it is not counted as held", async () => {
+    const pc = await pinnedPc();
+    const held = pc.list.status().head!;
+    // the service withholds what follows from the PC and shows it one entry of a key that is no member (loose)
+    const stranger = await listMember();
+    const loose = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, stranger, held);
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq, inject: [loose] });
+    await pc.pull();
+    expect(pc.list.status().head).toEqual(held);
+    // a member removes the laptop at the place the loose entry stands, and tells the PC where it stands
+    const removal = await pc.account.remove(pc.laptop.key);
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const heads = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: pc.account.place } });
+    // the PC states its footing and asks for what follows it, not for what follows the loose entry
+    expect(heads.body).toEqual({ list: pc.account.id, place: held, asks: { list: pc.account.id, after: held.seq } });
+    const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+    expect(handed.body).toMatchObject({ verdict: "caught_up", place: pc.account.place });
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+  });
+
   test("the PC answers a device's own read only for a key its list holds: a pairing of its own keeps the plain exchange", async () => {
     const pc = await pinnedPc();
     const head = pc.list.status().head!;

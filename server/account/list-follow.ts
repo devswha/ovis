@@ -133,6 +133,16 @@ const PEER_SESSIONS_MAX = 64;
 export type PeerCaller = string;
 
 /**
+ * The place this PC asks a member's entries after, as it states it to that member: never past its footing, the last
+ * entry a member signed in its copy. An entry no member signed above it (one the account service showed it) is not
+ * counted as held, so a member hands the entries that take its place.
+ */
+function footingAsk(copy: FollowerCopy, after: number | null): number | null {
+  const footing = copy.state?.footing.seq ?? null;
+  return after === null || footing === null || after <= footing ? after : footing;
+}
+
+/**
  * `account-list.json`. `save` is the follower's own text (writeSave), which carries its sum; null while a list is
  * named and nothing is read. `want` is the list a person at this PC named.
  */
@@ -1606,7 +1616,7 @@ export class ListFollow implements ListAuthority {
         }
         // acted on at once; said as taken only once it is on disk
         const saved = this.keep(result.copy, scope, changed(copy, result.copy));
-        return { verdict: saved ? result.verdict : "not_saved", asks: result.read === null ? null : { list: result.read.list, after: result.read.after } };
+        return { verdict: saved ? result.verdict : "not_saved", asks: result.read === null ? null : { list: result.read.list, after: footingAsk(result.copy, result.read.after) } };
       }
       return null;
     });
@@ -1641,7 +1651,8 @@ export class ListFollow implements ListAuthority {
       this.peerReads.set(session, compared.read);
       while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
     }
-    return { ...answered, asks: { list: compared.read.list, after: compared.read.after } };
+    // asked from the footing the PC states beside it: an entry no member signed above it is not counted as held
+    return { ...answered, asks: { list: compared.read.list, after: footingAsk(copy, compared.read.after) } };
   }
 
   /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Charged before its body is read. */
