@@ -262,7 +262,7 @@ async function width(px: number, pane: string, act: "Send" | "Discard", replaced
     await insert("한");
     for (const char of late) await insert(char);
     await shown.keyboard.press("Enter");
-    const lateHeld = page.locator(".terminal-banner-draft .draft-text, .composer-notice code", { hasText: late });
+    const lateHeld = page.locator(".terminal-banner-draft .draft-text, .composer-notice code", { hasText: `한${late}` });
     if (!(await frames(page, async () => await lateHeld.count() > 0, 20_000))) faults.push(`${px}: a composition begun before the outage and let out after it was not held`);
     if ((await paneRead({ paneId: pane })).text.includes(late)) faults.push(`${px}: a composition begun before the outage and let out after it reached the pane`);
     await cdp.detach();
