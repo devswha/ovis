@@ -40,6 +40,7 @@ import {
 export const AGY_ASK_HINT_RE = /↑\/↓\s+Navigate\b[\s\S]*?\benter\s+(?:Submit(?:\s+All)?|Select|Write-in)\b[\s\S]*?\besc\s+Skip\b/i;
 
 const AGY_WRITE_IN_HINT_RE = /\benter\s+Submit(?:\s+All)?\s*·\s*esc\s+Back\b/i;
+const AGY_FOOTER_RE = /^(?:esc to cancel {2,}| {20,})(?:[a-z][\w-]* · )?[\p{L}\p{N}][\p{L}\p{N} ._()+/-]* · [a-z-]+ *$/u;
 
 /**
  * Whether the key hint found at `hintIndex` ends the screen: under it Antigravity draws one row at most, its status row
@@ -54,8 +55,8 @@ function agyHintEndsScreen(lines: string[], hintIndex: number, hint: RegExp): bo
   if (below.length === 0) return true;
   if (below.length !== 1) return false;
   const row = below[0]!.replace(ANSI_RE, "");
-  return /^esc to cancel\b/.test(row)
-    || (/^\s{20,}\S/.test(row) && startScreenMetadata("agy-transcript", row).model !== null);
+  return /^esc to cancel *$/.test(row)
+    || (AGY_FOOTER_RE.test(row) && startScreenMetadata("agy-transcript", row).model !== null);
 }
 const AGY_QUESTION_RE = /^Question\s+(\d+)\/(\d+):\s*(.+)$/;
 const AGY_ROW_RE = /^\s*([▸❯›>])?\s*(\d+)\.\s+(.+)$/;
@@ -82,11 +83,14 @@ function agyWriteInEditor(screen: string): { lines: string[]; answerIndex: numbe
   if (hintIndex < 0 || !agyHintEndsScreen(lines, hintIndex, AGY_WRITE_IN_HINT_RE)) return null;
   const answerIndex = findLastIndex(lines.slice(0, hintIndex), (line) => cleanLine(line) === "Your answer:");
   if (answerIndex < 0) return null;
-  const rows = lines.slice(answerIndex + 1, hintIndex).map((line) => line.trimEnd());
-  while (rows.at(-1) === "") rows.pop();
+  const rows = lines.slice(answerIndex + 1, hintIndex);
+  while (rows.at(-1)?.match(/^ *$/)) rows.pop();
   const first = rows[0];
   if (first === undefined || !/^\s*>/.test(first)) return null;
   rows[0] = first.replace(/^\s*> ?/, "");
+  // The last row can be padded with spaces. A row that wraps still carries its trailing text.
+  const last = rows.at(-1);
+  if (last !== undefined) rows[rows.length - 1] = last.replace(/ +$/, "");
   return { lines, answerIndex, rows };
 }
 

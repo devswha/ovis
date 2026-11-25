@@ -5029,6 +5029,8 @@ ${omoRule}
     ["editor redraws a read late", "notes.txt", "", true],
     ["editor redraws a prefix first", "notes.txt", "not", true],
     ["editor changes whitespace", "notes.txt", "notes .txt", false],
+    ["editor adds a nonbreaking space at a wrap", "notes.txt", "notes.\u00a0\ntxt", false],
+    ["editor adds plain spaces at a wrap", "notes.txt", "notes.  \ntxt", false],
     ["editor wraps at a word", "new notes.txt", "new\nnotes.txt", true],
     ["editor wraps inside a word", "notes.txt", "notes.\ntxt", true],
   ] as const)("Antigravity write-in: %s", async (state, draft, drawn, submits) => {
