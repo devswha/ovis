@@ -22,6 +22,7 @@ import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { NotMeButton } from "./BlockOutcomes.tsx";
+import { useNotMe } from "./ListDevices.tsx";
 
 /** The view of `list`, redrawn as it changes. */
 function useView(list: AccountList | null): AccountListView | null {
@@ -237,7 +238,12 @@ export function ListJoinRefusal({ list = pageAccountList(), pcName, scrim = fals
   return scrim ? createPortal(<div className="modal-scrim">{card}</div>, document.body) : card;
 }
 
-/** Both, where nothing else draws them: over the start screen and over an opened PC, each over a scrim of its own in the page's body while it is drawn. */
-export function ListMoveNotices() {
-  return <><ListMoveNotice scrim /><ListJoinRefusal scrim /></>;
+/**
+ * Both, where nothing else draws them: over the start screen and over an opened PC, each over a scrim of its own in the
+ * page's body while it is drawn. A carried device's Not me, and that of the device that made the list, is the devices
+ * list's Remove, asked with everything ticked.
+ */
+export function ListMoveNotices({ list = pageAccountList() }: { readonly list?: AccountList | null }) {
+  const { notMe, dialog } = useNotMe(list);
+  return <><ListMoveNotice list={list} scrim notMeDevice={notMe} />{dialog}<ListJoinRefusal list={list} scrim /></>;
 }
