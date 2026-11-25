@@ -143,6 +143,18 @@ it("presses nothing in minimal mode, where herdr says done during a turn, and sa
   expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
 });
 
+it("does not claim a minimal-mode send is done before the pending count is drawn (#3977)", async () => {
+  const { state, prompt, read } = grok({ minimal: true });
+  const draw = read.getMockImplementation()!;
+  read.mockImplementation(async (...args) => {
+    if (prompt.mock.calls.length === 0 || state.queue.length === 0) return await draw(...args);
+    return { text: grokScreen({ ...state, queue: [] }) } as Awaited<ReturnType<typeof client.paneRead>>;
+  });
+  const failed = await failure(sendNow());
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(failed?.code).toBe("submit_changed");
+});
+
 it("presses nothing while Grok's prompt holds text typed in the terminal", async () => {
   const { state, keys } = grok({ onQueued: (grok) => { grok.prompt = "git push --force origin ma"; } });
   const failed = await failure(sendNow());
