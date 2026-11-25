@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PairedDevice } from "../../shared/protocol.ts";
 import { removeFromAccount } from "../lib/account/leave.ts";
 import { postedPcs } from "../lib/account/listAdd.ts";
-import { pageListReading, pagePcs, postedFor, readPageList, type ListedPost } from "../lib/account/listPcs.ts";
+import { classified, pageListReading, pagePcs, readPageList, type ListedPost } from "../lib/account/listPcs.ts";
 import { holdsList } from "../lib/account/listWrite.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, OFFLINE_AFTER_MS } from "../lib/account/myPcs.ts";
@@ -182,16 +182,13 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
     setPcs(shown);
     const list = pageAccountList();
     // only a device that may write the list adds a PC to it
-    const writer = list === null || pageListReading(account) !== "in" ? null : list.writer();
-    if (list === null || writer === null || !shown.some((pc) => pc.not_in_list === true || pc.by_list === true)) { setPosts(null); return; }
+    if (list === null || pageListReading(account) !== "in" || list.writer() === null || !shown.some((pc) => pc.not_in_list === true || pc.by_list === true)) { setPosts(null); return; }
     const posted = await postedPcs(list).catch((error: unknown) => {
       console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
       return null;
     });
-    if (mine === reads.current) setPosts(posted === null ? null : posted.flatMap((post) => {
-      const kind = postedFor(writer.state, writer.keys.key, post);
-      return kind === null ? [] : [{ ...post, for: kind }];
-    }));
+    // classified by the list as it stands once they are read (listPcs.ts classified)
+    if (mine === reads.current) setPosts(posted === null ? null : classified(list, posted));
   }, [service, account]);
   useEffect(() => {
     void read();
