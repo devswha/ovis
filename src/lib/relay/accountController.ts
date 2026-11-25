@@ -418,7 +418,8 @@ export function createAccountController(mount: RelayShellMount, view: {
    * app holds was opened before the device waited on its PCs, or is a pairing's, which a PC answers nothing.
    */
   const askPcs = async (): Promise<void> => {
-    if (lists === null || askingPcs) return;
+    // a read that ends after a dispose asks nobody: a disposed controller opens no session
+    if (lists === null || askingPcs || disposed) return;
     try { await askDuePcs(); } finally { armAsk(); }
   };
   const askDuePcs = async (): Promise<void> => {

@@ -14,6 +14,7 @@ const SERVICE = "https://account.ovis.sh";
 const DAY = 86400;
 const session = (account: string): AccountSession => ({ service: SERVICE, account, provider: "github", access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: `sign-in-${account}`, signed_in_at: Date.now() });
 const settle = async (): Promise<void> => { for (let turn = 0; turn < 30; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); };
+const deferred = <T>() => Promise.withResolvers<T>();
 
 /** A PC: its relay key as a relay offer carries it, and as a list names it (64 hex). */
 function pcKeys() {
@@ -61,11 +62,12 @@ describe("the shell's sessions and the move of an account onto its list", () => 
   afterEach(() => { for (const each of made.splice(0)) each.dispose(); browser.dispose(); });
 
   /** `inApp`: a PC's app is open in the shell (its front page is not up), as `frontUp` says it */
-  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] = [], inApp = false) => {
+  /** `pcs`: the account's directory, or what answers its read (one the test holds, say) */
+  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] | (() => Promise<unknown[]>) = [], inApp = false) => {
     const made_ = createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE, accountList: list,
       ...(open === undefined ? {} : { open: open as never }),
-      accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
+      accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs: typeof pcs === "function" ? await pcs() : pcs }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
       renderApp: () => ({ render() {}, unmount() {} }),
     }, { active: () => !inApp, changed: async () => {}, outdated: () => new Set() });
     made.push(made_);
@@ -386,6 +388,23 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     await settle();
     expect(opened).toEqual([{ accountOpensAll: true }]);
     expect(pageAnswers.get("acct-first-round", pc.endpoint)).toEqual(said);
+  });
+
+  it("#4723 review T8: a controller disposed while its read of the directory is under way asks no PC when that read ends", async () => {
+    await signIn("acct-disposed-read");
+    const { store } = await pairedPc("acct-disposed-read");
+    const waiting = (): AccountListView => ({ account: "acct-disposed-read", reached: true, status: { at: "none", why: "moving", move: { why: "pcs_silent", wait: 60, asks: [] } }, devices: [], pcs: [] });
+    const { list } = listIn(waiting);
+    const directory = deferred<unknown[]>();
+    const opened: unknown[] = [];
+    const account = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({}).opened; }, () => directory.promise);
+    const read = account.refresh(true);
+    await settle();
+    account.dispose();
+    directory.resolve([]);
+    await read;
+    await settle();
+    expect(opened).toEqual([]);
   });
 
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
