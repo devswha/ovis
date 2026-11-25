@@ -360,7 +360,7 @@ const BASE: Record<string, string> = {
   "Tailscale isn't installed.": "Tailscale が入っていません。",
   "Check again": "再確認",
   "The block did not go through yet.": "ブロックはまだ届いていません。",
-  "The block was refused. Block it again from this device.": "ブロックは拒否されました。この端末からもう一度ブロックしてください。",
+  "The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.": "アカウントサービスがこのブロックを受け付けませんでした。オフだったPCは、まだその端末を入れることがあります。先に使っていた端末からブロックするか、「すべてのデバイスからサインアウト」を使ってください。",
   "OK": "OK",
   "The block was not sent. Try again.": "ブロックを送信できませんでした。もう一度お試しください。",
   "Other PCs": "ほかの PC",

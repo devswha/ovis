@@ -1718,7 +1718,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
             <div className="settings-item" role="status">
               <p className="settings-hint">{unsentAsked.state === "unknown" ? t("Could not check whether a block still waits to reach the account.")
                 : unsentAsked.state === "waiting" ? t("A block has not reached the account yet.")
-                : unsentAsked.state === "refused" ? t("The block was refused. Block it again from this device.") : t("The block did not go through yet.")}</p>
+                : unsentAsked.state === "refused" ? t("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.") : t("The block did not go through yet.")}</p>
               {unsentAsked.state === "unknown" && <button type="button" className="btn" onClick={() => { void checkAgain(); }}>{t("Check again")}</button>}
               {unsentAsked.state === "waiting" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Send it now")}</button>}
               {unsentAsked.state === "retry" && <button type="button" className="btn" onClick={() => { void sendUnsentThenSignOut(); }}>{t("Try again")}</button>}
