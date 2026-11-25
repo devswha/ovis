@@ -149,15 +149,18 @@ describe("the account's PCs in the sidebar", () => {
     expect(groups()).toEqual([["PC Desk", "ready", ""], ["PC Old box", "outdated", ""], ["PC Away", "offline", ""]]);
     expect(admitted).toEqual([DESK.server_id]);
     expect(text(row("Desk"))).toContain("Connecting…");
-    expect(text(row("Away"))).toContain("Switched off");
+    // nothing answered through the relay in time: that is all the check knows, so it never says the PC is switched off
+    expect(text(row("Away"))).toContain("Can't reach the PC: it may be off");
+    expect(text(row("Away"))).not.toContain("Switched off");
     expect(renderer!.root.findAll((node) => node.type === "button")).toHaveLength(0);
   });
 
-  it("says Switched off only where the relay said no PC answered, and that it cannot reach a PC whose answer was kept away otherwise", async () => {
+  it("says the PC may be off only where nothing answered in time, and only that it cannot reach a PC whose answer was kept away otherwise", async () => {
     awayAnswers = ["unreachable"];
     await mount();
     expect(groups()[2]).toEqual(["PC Away", "unreachable", ""]);
     expect(text(row("Away"))).toContain("Can't reach the PC");
+    expect(text(row("Away"))).not.toContain("may be off");
     expect(text(row("Away"))).not.toContain("Switched off");
   });
 
@@ -170,7 +173,9 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
     expect(groups().map(([label]) => label)).toEqual(["PC Desk", "PC Away"]);
     expect(text(row("Desk"))).toContain("Not in your account's list yet");
+    // the account service gives no way to it: it keeps saying only that it cannot be reached
     expect(text(row("Away"))).toContain("Can't reach the PC");
+    expect(text(row("Away"))).not.toContain("may be off");
     // nothing was admitted or paired, and the PC with no way to it was asked nothing
     expect(admitted).toEqual([]);
     expect(requests.filter(({ path, body }) => path === "/api/machines/relay/account/check" && (body as { pcs: AccountPcEntry[] }).pcs.some((pc) => pc.server_id === AWAY.server_id))).toEqual([]);

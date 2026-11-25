@@ -567,9 +567,10 @@ function vouchedPairing(pairing: { identity: RelayIdentity; waiting(): void; sig
 
 /**
  * What another PC of the account answers when asked to pair with this one: nothing is sent to pair, and nothing counted
- * there. `offline` only on the relay's own word: it assigned the connection and no PC answered in time. `unreachable`:
- * anything else that kept the answer away (the relay unreachable from here or turning this PC away, a PC that began
- * and did not finish), of which nothing says the PC is off.
+ * there. `offline`: the relay took the connection and nothing answered within the wait (RelayPcOfflineError, this side's
+ * own timer). The relay says nothing of the PC, so a PC that is off, not on that relay, or busy all look so: it is shown
+ * as one that cannot be reached and may be off, never as one known to be off. `unreachable`: anything else that kept the
+ * answer away (the relay unreachable from here or turning this PC away, a PC that began and did not finish).
  */
 export type VouchedSupport = "ready" | "outdated" | "offline" | "unreachable";
 
