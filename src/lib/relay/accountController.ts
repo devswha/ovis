@@ -27,7 +27,7 @@ import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import type { PcAnswer } from "../../../shared/account-list-migrate.ts";
-import { askWitness, asksAgain, nameListTo, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs, type NamingAnswer } from "../account/listMigrate.ts";
+import { asksAgain, nameListTo, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs, witnessOf, type NamingAnswer } from "../account/listMigrate.ts";
 import { callNative, hasNativeMethod } from "../nativeApp.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
@@ -57,7 +57,7 @@ export const LINK_RETRY_MAX_MS = 15_000;
 /** A PC this device asks in the background for the move of its account onto its list is asked again after this long at the soonest. */
 const ASK_AGAIN_MS = 10 * 60_000;
 /** A PC's refusal of a naming that no wait changes (docs/account-list.md, "Naming the list to a PC"): it is named nothing more in this run of the page. */
-const NAMING_FINAL: ReadonlySet<string> = new Set(["stopped", "other_account", "other_list", "carried_off_curve", "removed", "session_unknown", "not_member",
+const NAMING_FINAL: ReadonlySet<string> = new Set(["stopped", "other_account", "other_list", "carried_off_curve", "removed", "not_member",
   "session_other_device", "first_signer_removed", "first_signer_unknown", "naming_invalid", "named_here", "lists_full"]);
 /** However far the QA twin turns the move's waits down (pageScale), a PC is asked again no sooner than this. */
 const ASK_AGAIN_MIN_MS = 30_000;
@@ -449,12 +449,15 @@ export function createAccountController(mount: RelayShellMount, view: {
   /**
    * What the device does next about naming its list to a PC, by what that PC said in this run: nothing more where no wait
    * changes it (it follows another list, it holds a removal, it does not know who started the list, it wants another
-   * list, ...; or it answers no witness), not before the wait it named where it named one, else on the gap.
+   * list, ...; or it has no witness to give this session), not before the wait it named where it named one, else on the
+   * gap (a witness that did not answer now is asked again then).
    */
-  const namingAnswered = (account: string, endpoint: string, list: string, said: PcAnswer | null, answer: NamingAnswer | null | "unasked"): void => {
+  const namingAnswered = (account: string, endpoint: string, list: string, said: PcAnswer | "final" | null, answer: NamingAnswer | null | "unasked"): void => {
     const key = namingKey(account, endpoint);
-    const never = said === null || said.account !== account || (said.pinned !== null && said.pinned !== list)
-      || (answer !== null && answer !== "unasked" && (answer.pinned ? answer.list !== list : NAMING_FINAL.has(answer.why)));
+    if (said === null) return;
+    const never = said === "final" || said.account !== account || (said.pinned !== null && said.pinned !== list)
+      // a PC that says it follows a list, this one or another, is done with
+      || (answer !== null && answer !== "unasked" && (answer.pinned || NAMING_FINAL.has(answer.why)));
     if (never) namingNotBefore.set(key, Infinity);
     else if (answer !== null && answer !== "unasked" && !answer.pinned && answer.wait !== null) namingNotBefore.set(key, Date.now() + answer.wait * 1000);
   };
@@ -512,14 +515,15 @@ export function createAccountController(mount: RelayShellMount, view: {
             opened = await openBy({ store: withAccountDevice(store, accountDevice(way.offer, held)), accountListKey: true });
           }
           const fetch = (path: string, init?: RequestInit): Promise<Response> => opened!.fetch(path, init);
-          const said = await askWitness(fetch);
+          const witness = await witnessOf(fetch);
+          const said = witness === "final" ? null : witness;
           // no answer here takes no answer heard meanwhile (a session of this page's own may have heard one)
           if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);
           heard ||= said !== null && naming === null;
           // a PC of this account that follows no list is named the list, over this session through the account alone
           if (named !== null && status.at === "following") {
             const answer = said !== null && said.account === session.account && said.pinned === null && opened.deviceKey === openKey?.key.public_spki ? await nameListTo(fetch, named) : "unasked";
-            namingAnswered(session.account, endpoint, status.list, said, answer);
+            namingAnswered(session.account, endpoint, status.list, witness, answer);
           }
         } catch (error) {
           console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);
