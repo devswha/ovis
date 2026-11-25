@@ -68,6 +68,7 @@ export type RosterSource = { kind: "load"; started: number } | { kind: "event" }
 export type SourceProofQuery = (machineId: string, signal: AbortSignal) => Promise<{ machines: OrderRosterEntry[]; boot_id: string } | null>;
 
 interface Evidence { epoch: string; seq: number }
+interface OrderRead { ids: string[]; evidence: Evidence | null }
 const evidenceOf = (snapshot: OrderRosterEntry["snapshot"]): Evidence | null =>
   snapshot && typeof snapshot.order_epoch === "string" && snapshot.order_epoch !== "" && Number.isSafeInteger(snapshot.read_seq) && snapshot.read_seq! >= 0
     ? { epoch: snapshot.order_epoch, seq: snapshot.read_seq! } : null;
@@ -79,10 +80,12 @@ interface Hold {
   settleMark: number | null;
   /** the last roster's evidence when the newest move with a receipt since the hold last settled was sent; undefined until one */
   sent?: Evidence | null;
+  /** A recovered batch can have a different set of workspaces from what later drags saw. */
+  rebased?: string[];
 }
 interface PcOrder {
   shown: string[] | null;
-  last: { ids: string[]; evidence: Evidence | null } | null;
+  last: OrderRead | null;
   generation: number;
   pending: Set<number>;
   desired: string[] | null;
@@ -96,7 +99,7 @@ interface PcOrder {
   failed: boolean;
   waiters: { generation: number; resolve: (ids: string[]) => void; reject: (error: Error) => void }[];
   gone: boolean;
-  check: { key: string; abort: AbortController } | null;
+  check: { key: string; abort: AbortController; candidate: OrderRead | null; updated: boolean } | null;
   /** the server lifetime the last answered verification was asked about: asking again would spend the PC's interval for nothing */
   answered: string | null;
 }
@@ -164,7 +167,7 @@ export class ReorderCoordinator {
     if (evidence && pc.retired.has(evidence.epoch)) return;
     if (evidence && pc.last?.evidence?.epoch === evidence.epoch && pc.last.evidence.seq > evidence.seq) return;
     pc.last = { ids, evidence };
-    if (pc.waiters.length > 0 && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
+    if (!pc.check && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
     if (pc.pending.size > 0 || pc.hold) {
       if (pc.pending.size === 0 && this.releases(pc, evidence, source)) { pc.hold = null; pc.desired = null; pc.shown = ids; return; }
       if (this.qualifies(pc, evidence)) pc.shown = ids;
@@ -190,16 +193,23 @@ export class ReorderCoordinator {
     const verify = this.options.verify;
     if (!verify || !evidence || pc.protectedEpoch === null || evidence.epoch === pc.protectedEpoch) return;
     const key = `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.protectedEpoch}`;
-    if (pc.check?.key === key) return;
+    if (pc.check?.key === key) {
+      const previous = pc.check.candidate?.evidence;
+      if (previous?.epoch === evidence.epoch && evidence.seq >= previous.seq) {
+        pc.check.candidate = pc.last;
+        pc.check.updated = true;
+      }
+      return;
+    }
     pc.check?.abort.abort();
-    const check = { key, abort: new AbortController() };
+    const check = { key, abort: new AbortController(), candidate: pc.last, updated: false };
     pc.check = check;
     const finish = (answer: Awaited<ReturnType<SourceProofQuery>>) => {
       if (pc.check !== check) return;
       pc.check = null;
       if (answer && !check.abort.signal.aborted) {
         pc.answered = evidence.epoch;
-        this.proved(id, pc, answer);
+        this.proved(id, pc, answer, check.candidate, check.updated);
       }
       for (const waiter of pc.waiters.splice(0)) waiter.reject(new Error("Could not confirm the PC's workspace order"));
     };
@@ -211,26 +221,34 @@ export class ReorderCoordinator {
     pc.check = null;
   }
 
-  private proved(id: string, pc: PcOrder, answer: { machines: OrderRosterEntry[]; boot_id: string }): void {
+  private proved(id: string, pc: PcOrder, answer: { machines: OrderRosterEntry[]; boot_id: string }, candidate: OrderRead | null, updated: boolean): void {
     const boot = answer.boot_id;
     const old = pc.protectedEpoch;
-    if (old === null || boot === old || pc.retired.has(boot)) return;
-    pc.retired.add(old);
-    pc.floors.delete(old);
-    if (pc.hold?.epoch === old) {
-      if (pc.pending.size === 0) { pc.shown = pc.desired ?? pc.shown; pc.hold = null; pc.desired = null; }
-      else pc.hold.epoch = null;
-    }
-    pc.guard = { epoch: boot, version: (pc.guard?.version ?? 0) + 1 };
-    pc.protectedEpoch = boot;
-    const entry = answer.machines.find((machine) => machine.id === id);
-    const evidence = entry?.snapshot ? evidenceOf(entry.snapshot) : null;
-    if (entry?.snapshot && evidence?.epoch === boot) {
-      if (pc.last?.evidence?.epoch !== boot || pc.last.evidence.seq <= evidence.seq) {
-        pc.last = { ids: entry.snapshot.workspaces.map((workspace) => workspace.workspace_id), evidence };
+    if (old === null || pc.retired.has(boot)) return;
+    if (boot !== old) {
+      pc.retired.add(old);
+      pc.floors.delete(old);
+      if (pc.hold?.epoch === old) {
+        if (pc.pending.size === 0) { pc.shown = pc.desired ?? pc.shown; pc.hold = null; pc.desired = null; }
+        else pc.hold.epoch = null;
       }
-      pc.shown = pc.last.ids;
-      for (const waiter of pc.waiters.splice(0)) waiter.resolve(pc.last.ids);
+      pc.guard = { epoch: boot, version: (pc.guard?.version ?? 0) + 1 };
+      pc.protectedEpoch = boot;
+    } else if (pc.waiters.length === 0) {
+      return;
+    }
+    const snapshot = answer.machines.find((machine) => machine.id === id)?.snapshot;
+    const evidence = snapshot ? evidenceOf(snapshot) : null;
+    const cached = pc.last?.evidence?.epoch === boot && (candidate?.evidence?.epoch !== boot || pc.last.evidence.seq > candidate.evidence.seq) ? pc.last : candidate;
+    let chosen: OrderRead | null = snapshot && evidence?.epoch === boot
+      ? { ids: snapshot.workspaces.map((workspace) => workspace.workspace_id), evidence } : null;
+    if (cached?.evidence?.epoch === boot && (chosen
+      ? (cached.evidence.seq > (evidence?.seq ?? -1) || (updated && cached.evidence.seq === evidence?.seq))
+      : pc.waiters.length > 0)) chosen = cached;
+    if (chosen && this.qualifies(pc, chosen.evidence)) {
+      pc.shown = chosen.ids;
+      pc.last = chosen;
+      for (const waiter of pc.waiters.splice(0)) waiter.resolve(chosen.ids);
     }
     this.notify();
   }
@@ -251,19 +269,22 @@ export class ReorderCoordinator {
     }
     this.notify();
     const run = pc.chain.then(async () => {
-      const base = pc.failed ? await this.qualifiedBase(machineId, pc, generation) : [...current];
+      const recover = pc.failed || pc.hold?.rebased !== undefined;
+      const base = pc.failed ? await this.qualifiedBase(machineId, pc, generation) : pc.hold?.rebased ?? [...current];
       pc.failed = false;
-      for (const step of workspaceMoves(base, mergeOrder(next, base))) {
+      const target = mergeOrder(next, base);
+      for (const step of workspaceMoves(base, target)) {
         const sent = pc.last?.evidence ?? null;
         this.acknowledge(pc, await move(step), sent);
       }
+      if (recover && pc.hold) pc.hold.rebased = target;
     });
     pc.chain = run.catch(() => { pc.failed = true; });
     return run.then(() => this.settle(machineId, pc, generation, null), (error: unknown) => this.settle(machineId, pc, generation, error));
   }
 
   private qualifiedBase(machineId: string, pc: PcOrder, generation: number): Promise<string[]> {
-    if (pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
+    if (!pc.check && pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
     if (pc.gone) return Promise.reject(new Error("This PC was removed"));
     return new Promise((resolve, reject) => {
       pc.waiters.push({ generation, resolve, reject });
@@ -292,6 +313,7 @@ export class ReorderCoordinator {
     const latest = generation === pc.generation;
     if (error !== null && latest) pc.desired = null;
     const hold = pc.hold;
+    if (pc.pending.size === 0 && hold) hold.rebased = undefined;
     if (pc.pending.size === 0 && hold && pc.gone) { pc.hold = null; pc.desired = null; }
     else if (pc.pending.size === 0 && hold) {
       if (hold.receipts === 0 || (hold.epoch === null && !hold.legacy)) {
