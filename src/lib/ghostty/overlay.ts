@@ -13,7 +13,7 @@ import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
 import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
-import { controlsWriter, fallbackOutput, type RetainedOutput } from "./controls.ts";
+import { controlsWriter, currentQuestions, fallbackOutput, type DeferredQuestions, type RetainedOutput } from "./controls.ts";
 import { itermPictureWriter } from "./itermPictureWriter.ts";
 import { type ScreenLine, holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
 import { holdSelection } from "./selection.ts";
@@ -136,11 +136,15 @@ function themeColors(term: Terminal): GhosttyColors {
 const KEPT_BYTES_MAX = 8 * 1024 * 1024;
 
 /**
- * After startup, `only` makes libghostty the sole parser of screen output. xterm parses only the sequences its
+ * In `only` mode libghostty is the sole parser of screen output. xterm parses only the sequences its
  * input side reads, with its cursor kept on libghostty's (controls.ts). The history libghostty keeps is scrolled here, and every
  * reader takes libghostty's rows (terminalScreen.ts viewRows).
  */
-export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, takeBacklog: () => (string | Uint8Array)[] | null, only = false): Promise<GhosttyOverlay | null> {
+export async function attachGhosttyOverlay(
+  term: Terminal, host: HTMLElement, takeBacklog: () => (string | Uint8Array)[] | null,
+  startup?: { readonly questions: readonly DeferredQuestions[] },
+): Promise<GhosttyOverlay | null> {
+  const only = startup !== undefined;
   const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
   if (!screen) throw new Error("ghostty overlay: the terminal is not open");
   const vt = await GhosttyVt.create(term.cols, term.rows);
@@ -252,6 +256,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
 
   let grid = "";
   let replayRemaining = backlog.length;
+  const heldQuestions = [...(startup?.questions ?? [])];
   const fit = (): void => {
     metrics();
     const now = `${term.cols}x${term.rows}@${cellW}x${cellH}`;
@@ -533,10 +538,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // libghostty doesn't expose the current SGR background; use the terminal's default.
     () => rgb(themeColors(term).background) ?? [0, 0, 0],
   ) : null;
-  const emitOnly = (frame: RetainedOutput) => (data: string | Uint8Array, picture: boolean, end: number): void => {
+  const finishStartup = (): void => {
+    if (writeOnly.syncCursor(currentQuestions(heldQuestions))) heldQuestions.length = 0;
+  };
+  const emitOnly = (frame: RetainedOutput, captured = false) => (data: string | Uint8Array, picture: boolean, end: number): void => {
     if (disposed) return;
     try {
-      const send = frame.sent === Infinity ? writeOnly.replay : writeOnly;
+      const send = captured ? writeOnly.seed : writeOnly;
       if (picture) {
         const { x } = vt.screenCursor();
         send(data);
@@ -545,7 +553,10 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
         // This follows the default, not xterm's fixed-position DECSDM mode.
         if (vt.screenCursor().x !== x) send(`\x1b[${x + 1}G`);
       } else send(data);
-      if (frame.sent !== Infinity) frame.sent = end;
+      if (!captured) {
+        frame.sent = end;
+        if (replayRemaining === 0 && heldQuestions.length) finishStartup();
+      }
       written = true;
     } catch (error) { readFailed(error); }
   };
@@ -629,6 +640,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     kept.length = 0;
     keptBytes = 0;
+    heldQuestions.length = 0;
     writeOnly.reset();
     reset();
     pictures?.reset();
@@ -755,9 +767,10 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       restoreTerm();
       // Reset in parse order, behind the last controls xterm was sent and ahead of any discarded frame's callback.
       // CAN aborts an unfinished OSC before RIS; ESC alone would dispatch the OSC.
-      if (only && handOver) write("\x18\x1bc" + fallbackOutput(kept));
+      if (only && handOver) write("\x18\x1bc" + fallbackOutput(kept, currentQuestions(heldQuestions)));
       pictures?.reset();
       kept.length = 0;
+      heldQuestions.length = 0;
       for (const subscription of subscriptions) subscription.dispose();
       if (renderService && handleSelectionChanged) renderService.handleSelectionChanged = handleSelectionChanged;
       screenResize.disconnect();
@@ -769,14 +782,14 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     },
   };
   if (pictures) {
-    const frames = backlog.map((data) => ({ data, sent: Infinity }));
+    const frames = backlog.map((data) => ({ data, sent: data.length }));
     for (const frame of frames) keep(frame);
     for (const frame of frames) {
       if (disposed) break;
-      pictures.write(frame.data, emitOnly(frame), () => {
+      pictures.write(frame.data, emitOnly(frame, true), () => {
         replayRemaining--;
         if (!disposed) {
-          if (replayRemaining === 0) writeOnly.syncCursor();
+          if (replayRemaining === 0) finishStartup();
           schedule();
         }
       });

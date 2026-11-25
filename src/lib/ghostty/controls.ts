@@ -36,7 +36,7 @@ function csiKind(body: string): "mode" | "question" | null {
 /** A stretch of the stream up to `end` (an index in the text), with what xterm takes of it; `question` ends it. */
 interface ControlPiece { readonly end: number; readonly controls: string; readonly question: string | null }
 
-type SpanKind = "query" | "clipboard" | "statusString";
+type SpanKind = "query" | "clipboard";
 
 /** the sequences xterm takes from each piece of text, the state carried from one call to the next */
 export function controlScanner(span?: (kind: SpanKind, start: number, end: number) => void) {
@@ -48,7 +48,6 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
   let oscId = -1;
   let oscPayload = false;
   let streaming = false;
-  let dcs = false;
   const control = /[\x1b\u0090\u0098\u009b\u009d-\u009f]/g;
   const scanner = (text: string): ControlPiece[] => {
     const pieces: ControlPiece[] = [];
@@ -76,10 +75,6 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
       streaming = false;
       state = GROUND;
     };
-    const endString = (end: number): void => {
-      if (dcs && seq === "$q") span?.("statusString", start, position + end);
-      state = GROUND;
-    };
     while (at < length) {
       if (state === GROUND) {
         control.lastIndex = at;
@@ -101,14 +96,14 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
         if (code === 0x1b) state = ESC;
         else if (code === 0x9b) { state = CSI; intro = ch; }
         else if (code === 0x9d) openOsc();
-        else { state = STRING; dcs = code === 0x90; }
+        else state = STRING;
         continue;
       }
       switch (state) {
         case ESC:
           if (ch === "[") { state = CSI; intro = "\x1b["; }
           else if (ch === "]") openOsc();
-          else if (ch === "P" || ch === "_" || ch === "^" || ch === "X") { state = STRING; dcs = ch === "P"; }
+          else if (ch === "P" || ch === "_" || ch === "^" || ch === "X") state = STRING;
           else if (ch === "c") { out += "\x1bc"; state = GROUND; }
           // the keypad's application and numeric modes (DECKPAM, DECKPNM), which xterm keeps for its keys
           else if (ch === "=" || ch === ">") { out += `\x1b${ch}`; state = GROUND; }
@@ -150,13 +145,11 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
           break;
         }
         case STRING:
-          if (code === 0x9c) endString(at);
-          else if (code === 0x18 || code === 0x1a) state = GROUND;
-          else if (dcs && seq.length < 2 && code >= 0x20 && code !== 0x7f) seq += ch;
+          if (code === 0x9c || code === 0x18 || code === 0x1a) state = GROUND;
           break;
         case STRING_ESC:
-          if (ch === "\\") endString(at);
-          else { endString(at - 2); start = position + at - 2; state = ESC; seq = ""; at--; }
+          if (ch === "\\") state = GROUND;
+          else { start = position + at - 2; state = ESC; seq = ""; at--; }
           break;
       }
     }
@@ -166,7 +159,7 @@ export function controlScanner(span?: (kind: SpanKind, start: number, end: numbe
   };
   return Object.assign(scanner, {
     streaming: () => streaming,
-    pendingClipboard: () => streaming ? { start, escaped: state === OSC_ESC } : null,
+    pending: () => state === GROUND ? null : { start, clipboard: streaming, escaped: state === OSC_ESC },
   });
 }
 
@@ -207,38 +200,47 @@ export function controlsWriter(engine: ControlsEngine, xterm: (data: string, cal
     // xterm's cursor follows libghostty's, unless an OSC 52 it was given is still open (a CUP would end it)
     xterm(scan.streaming() ? out : out + cursorAt(), callback);
   };
-  // xterm already parsed the full startup stream. Restore scanner and UTF-8 decoder state without
-  // sending the controls again, then put its cursor where the replay left libghostty's.
+  // xterm already parsed the startup controls. Seed the engine and scanner without sending them again.
   return Object.assign(write, {
-    replay(data: string | Uint8Array): void {
+    seed(data: string | Uint8Array): void {
       const text = typeof data === "string" ? data : decoder.decode(data, { stream: true });
       scan(text);
       writeEngine(text);
     },
-    syncCursor(): void { if (!scan.streaming()) xterm(cursorAt()); },
+    syncCursor(questions = ""): boolean {
+      if (scan.streaming()) return false;
+      xterm(cursorAt() + questions);
+      return true;
+    },
     reset(): void { decoder = new TextDecoder(); scan = controlScanner(); },
   });
 }
 
 export interface RetainedOutput {
   readonly data: string | Uint8Array;
-  /** Raw prefix sent to xterm's control parser, or Infinity for full startup parsing. */
+  /** Raw prefix whose questions were either sent to xterm or deferred for startup. */
   sent: number;
 }
 
+export interface DeferredQuestions {
+  readonly data: string;
+  readonly isCurrent: () => boolean;
+}
+
+export const currentQuestions = (deferred: readonly DeferredQuestions[]): string =>
+  deferred.filter(({ isCurrent }) => isCurrent()).map(({ data }) => data).join("");
+
 /** Rebuild the screen without repeating clipboard writes or sending replies twice. */
-export function fallbackOutput(chunks: readonly RetainedOutput[]): string {
+export function fallbackOutput(chunks: readonly RetainedOutput[], questions = ""): string {
   const decoder = new TextDecoder();
   const segments: string[] = [];
   const ranges: { readonly start: number; readonly end: number }[] = [];
   let sentThrough = 0;
   let total = 0;
-  let startup = false;
   const scan = controlScanner((kind, start, end) => {
-    if (kind === "clipboard" || (end <= sentThrough && (kind === "query" || startup))) ranges.push({ start, end });
+    if (kind === "clipboard" || end <= sentThrough) ranges.push({ start, end });
   });
   for (const { data, sent } of chunks) {
-    startup = sent === Infinity;
     const prefix = data.slice(0, sent);
     const suffix = data.slice(sent);
     const seen = typeof prefix === "string" ? prefix : decoder.decode(prefix, { stream: true });
@@ -255,10 +257,12 @@ export function fallbackOutput(chunks: readonly RetainedOutput[]): string {
     output.push(text.slice(from, start));
     from = end;
   }
-  const pending = scan.pendingClipboard();
+  const pending = scan.pending();
   if (pending) {
-    // Keep an unfinished clipboard payload nonprinting without giving it a clipboard handler.
-    output.push(text.slice(from, pending.start), "\x1b]9999;", pending.escaped ? "\x1b" : "");
-  } else output.push(text.slice(from));
+    // Put the questions before a partial sequence so they cannot cancel it. A partial
+    // clipboard payload must remain nonprinting, but must not reach a clipboard handler.
+    const tail = pending.clipboard ? "\x1b]9999;" + (pending.escaped ? "\x1b" : "") : text.slice(pending.start);
+    output.push(text.slice(from, pending.start), questions, tail);
+  } else output.push(text.slice(from), questions);
   return output.join("");
 }

@@ -12,6 +12,7 @@ const stub: any = new Proxy(function () {}, { get: (_t, key) => (key === Symbol.
 let vtCalls = 0;
 let failing = new Set(["write"]);
 const answers: Record<string, unknown> = { history: { scrollback: 0, total: 3, viewportTop: 0 }, screenCursor: { x: 0, y: 0 } };
+const createEngine = GhosttyVt.create.bind(GhosttyVt);
 const create = spyOn(GhosttyVt, "create").mockImplementation(async () => new Proxy({}, { get: (_t, key) => key === "then" ? undefined : key === "scrollback" ? 0 : (...args: unknown[]) => {
     vtCalls++;
     if (failing.has(String(key))) throw new Error("trap");
@@ -63,6 +64,7 @@ test("a screen read libghostty fails gives the reads back to xterm, which answer
 });
 
 const parse = (term: Terminal, data: string): Promise<void> => new Promise((done) => term.write(data, done));
+const onlyMode = { questions: [] };
 
 function terminal() {
   const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
@@ -78,7 +80,7 @@ test.each([false, true])("capture sends and acknowledges the crossing frame in p
   const sent: string[] = [];
   let parsed: (() => void) | undefined;
   const write = spyOn(term, "write").mockImplementation((data, callback) => {
-    if (typeof data === "string" && data.length < 16) sent.push(data);
+    if (typeof data === "string") sent.push(data.slice(-8));
     parsed = callback;
   });
   const release = captureForGhostty(term, socket, stub);
@@ -87,14 +89,14 @@ test.each([false, true])("capture sends and acknowledges the crossing frame in p
     term.write("x".repeat(32 * 1024 * 1024 - 2));
     term.write("\x1b[");
     term.write("6n\x1b[5n", () => { acknowledged = true; });
-    expect(sent).toEqual(["\x1b[", "6n\x1b[5n"]);
+    expect(sent.slice(-2)).toEqual(only ? ["", "\x1b[6n\x1b[5n"] : ["\x1b[", "6n\x1b[5n"]);
     expect(acknowledged).toBe(false);
     parsed?.();
     expect(acknowledged).toBe(true);
   } finally { release(); write.mockRestore(); setting.mockRestore(); features.mockRestore(); term.dispose(); }
 });
 
-test("startup answers CPR from full xterm output before Ghostty can attach", async () => {
+test.each([true, false])("startup keeps text and CPR out of xterm until the renderer is ready (Ghostty: %s)", async (attached) => {
   const term = terminal();
   const socket = new HerdrSocket("ws://localhost");
   const features = spyOn(socket, "featuresListed").mockReturnValue(true);
@@ -103,15 +105,24 @@ test("startup answers CPR from full xterm output before Ghostty can attach", asy
   const started = Promise.withResolvers<void>();
   create.mockImplementationOnce(() => { started.resolve(); return loading.promise; });
   const replies: string[] = [];
-  term.onData((reply) => replies.push(reply));
+  const answered = Promise.withResolvers<void>();
+  term.onData((reply) => { replies.push(reply); answered.resolve(); });
   const release = captureForGhostty(term, socket, stub);
   try {
     await started.promise;
-    await parse(term, "abc\x1b[6n");
-    expect(replies).toEqual(["\x1b[1;4R"]);
+    await parse(term, "abc\x1b[");
+    await parse(term, "6n\r\nlast");
+    expect(replies).toEqual([]);
+    expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe("");
+    if (attached) loading.resolve(await createEngine(80, 24));
+    else loading.reject(new Error("fixture: module unavailable"));
+    await answered.promise;
+    await parse(term, "");
+    expect(replies).toEqual(["\x1b[2;5R"]);
+    expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe(attached ? "" : "abc");
+    expect(screenRows(term).getLine(1)?.translateToString(true)).toBe("last");
   } finally {
     release(); setting.mockRestore(); features.mockRestore();
-    loading.resolve(await GhosttyVt.create(80, 24));
     term.dispose();
   }
 });
@@ -124,7 +135,7 @@ test("resizing and attaching leave a pending clipboard OSC intact", async () => 
   try {
     const first = "\x1b]52;c;YWJj";
     await parse(term, first);
-    const overlay = await attachGhosttyOverlay(term, stub, () => [first], true);
+    const overlay = await attachGhosttyOverlay(term, stub, () => [first], onlyMode);
     term.resize(81, 24);
     await parse(term, "ZGVm\x07");
     expect(copied).toEqual(["c;YWJjZGVm"]);
@@ -138,7 +149,7 @@ test.each([false, true])("fallback keeps previously copied text out of xterm and
   const copied: string[] = [];
   term.parser.registerOscHandler(52, (payload) => { copied.push(payload); return true; });
   try {
-    const overlay = await attachGhosttyOverlay(term, stub, () => [], true);
+    const overlay = await attachGhosttyOverlay(term, stub, () => [], onlyMode);
     if (reset) {
       await parse(term, "erased output");
       term.reset();
@@ -164,7 +175,7 @@ test("a wheel that pans the mirror grid does not scroll Ghostty history too", as
     drag: () => false, adopted: () => true, mirrored: () => true, pan: () => true, scroll: () => {},
   });
   try {
-    const overlay = await attachGhosttyOverlay(term, host as unknown as HTMLElement, () => [], true);
+    const overlay = await attachGhosttyOverlay(term, host as unknown as HTMLElement, () => [], onlyMode);
     const scroll = spyOn(term, "scrollLines");
     const wheel = Object.assign(new Event("wheel"), { deltaY: -1, deltaMode: 1 }) as WheelEvent;
     custom.mock.calls[0]?.[0](wheel);
@@ -184,7 +195,7 @@ test("fallback sends a query still behind an image without repeating a query alr
   const replies: string[] = [];
   term.onData((reply) => replies.push(reply));
   try {
-    const overlay = await attachGhosttyOverlay(term, stub, () => [], true);
+    const overlay = await attachGhosttyOverlay(term, stub, () => [], onlyMode);
     const frame = parse(term, "\x1b[5n\x1bPq@\x1b\\after\x1b[6n").then(() => {
       expect(term.buffer.active.getLine(0)?.translateToString(true)).toBe("after");
     });
@@ -200,7 +211,7 @@ test.each(["", "5", "52;c;YWJj"])("overlay forwards the partial clipboard introd
   const term = terminal();
   const write = spyOn(term, "write");
   try {
-    const overlay = await attachGhosttyOverlay(term, stub, () => [], true);
+    const overlay = await attachGhosttyOverlay(term, stub, () => [], onlyMode);
     await parse(term, "\x1b]" + partial);
     expect(write.mock.calls.map(([data]) => data).join("").endsWith("\x1b]" + partial)).toBe(true);
     overlay?.dispose(false);
@@ -213,7 +224,7 @@ test("fallback silences an unfinished past clipboard write without exposing its 
   const copied: string[] = [];
   term.parser.registerOscHandler(52, (payload) => { copied.push(payload); return true; });
   try {
-    const overlay = await attachGhosttyOverlay(term, stub, () => [], true);
+    const overlay = await attachGhosttyOverlay(term, stub, () => [], onlyMode);
     await parse(term, "before\x1b]5");
     overlay?.dispose();
     await parse(term, "2;c;YWJj\x07after");

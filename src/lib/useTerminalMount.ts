@@ -1128,7 +1128,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       pendingScopeRef.current = session.scope;
       pendingEpochRef.current = session.epoch;
       socketRef.current = socket;
-      const releaseGhostty = captureForGhostty(term, socket, host);
+      const releaseGhostty = captureForGhostty(term, socket, host, () => {
+        const owner = outputOwner;
+        const view = parsingView;
+        return () => !view && owner === outputOwner;
+      });
       let adjustingFaint = false;
       const clampGhosttyFaint = (): void => {
         if (adjustingFaint) return;
