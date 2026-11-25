@@ -16,8 +16,12 @@ export interface SidecarRuntime {
   pty: () => boolean;
 }
 
-/** a node that hangs must not hold the server: no answer in this long counts as no Node */
-const PROBE_TIMEOUT_MS = 3000;
+/**
+ * a node that hangs must not hold the server: no answer in this long counts as no Node. A real Node's
+ * first start from a cold disk can pass 3 s (a fresh CI runner, a PC just booted), and the answer is
+ * kept, so the bound is the one the app's own hc gets for its first answer.
+ */
+const PROBE_TIMEOUT_MS = 10_000;
 
 /** the oldest Node pty-host.mjs runs on (top-level await, its syntax) */
 const MIN_NODE_MAJOR = 18;
