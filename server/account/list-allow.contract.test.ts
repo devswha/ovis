@@ -718,6 +718,22 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(entriesPlaced(made)).toBe(0);
   });
 
+  test("a PC that joined by an invite, approved at itself, tells the device that cause: it lets nobody into the list itself", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const waiting = await ownJoin(made);
+    // as the PC that joined by an invite answers the allow: it is in the list and signs for nobody
+    const refusal = spyOn(made.list, "allowDevice").mockResolvedValue({ refused: "not_signer", detail: null });
+    try {
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_not_signer" } });
+    } finally { refusal.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
   test("the person's Decline at this PC of a waiting join drops what this PC kept signed for that device", async () => {
     const made = await allowingPc();
     const phone = await listMember();

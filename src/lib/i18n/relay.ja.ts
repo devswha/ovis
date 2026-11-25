@@ -206,6 +206,8 @@ export const RELAY_JA: Record<string, string> = {
   "It was approved, and {name} did not see it in your account's list in time. Ask to join again, and approve it on a device of your account or on {name} itself.": "承認されましたが、{name} は時間内にアカウントの名簿でこの端末を確認できませんでした。もう一度参加をリクエストし、アカウントの端末か {name} 自体で承認してください。",
   "{name} runs an older Ovis than your account's other devices, so it cannot add a device by itself. Update Ovis on {name}, or approve this device on another device of your account.": "{name} の Ovis はアカウントの他の端末より古いため、単独では端末を追加できません。{name} の Ovis を更新するか、アカウントの別の端末でこの端末を承認してください。",
   "{name} could not add it. Ask to join again.": "{name} は追加できませんでした。もう一度参加をリクエストしてください。",
+  "{name} cannot add this device itself": "{name} はこの端末を自分では追加できません",
+  "{name} joined your account by an invite, so it lets nobody into your account's list itself. Ask to join again, and approve it on another device of your account.": "{name} は招待でアカウントに参加したため、アカウントのリストに誰も自分では追加できません。もう一度参加をリクエストし、アカウントの別の端末で承認してください。",
   "{name} belongs to another account's list": "{name} は別のアカウントの名簿に入っています",
   "{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.": "{name} が従っている名簿はあなたのアカウントのものではありません。{name} とこの端末で同じアカウントにサインインしてから、もう一度お試しください。",
   "{name} was removed from your account": "{name} はアカウントから削除されました",

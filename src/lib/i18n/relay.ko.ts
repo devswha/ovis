@@ -206,6 +206,8 @@ export const RELAY_KO: Record<string, string> = {
   "It was approved, and {name} did not see it in your account's list in time. Ask to join again, and approve it on a device of your account or on {name} itself.": "승인했지만 {name} PC가 제때 계정 명단에서 이 기기를 확인하지 못했어요. 다시 참여를 요청하고, 계정의 기기나 {name} PC에서 직접 승인하세요.",
   "{name} runs an older Ovis than your account's other devices, so it cannot add a device by itself. Update Ovis on {name}, or approve this device on another device of your account.": "{name} PC의 Ovis가 계정의 다른 기기보다 오래돼서 혼자서는 기기를 추가할 수 없어요. {name} PC의 Ovis를 업데이트하거나 계정의 다른 기기에서 이 기기를 승인하세요.",
   "{name} could not add it. Ask to join again.": "{name} PC가 추가하지 못했어요. 다시 참여를 요청하세요.",
+  "{name} cannot add this device itself": "{name} PC는 이 기기를 직접 추가할 수 없어요",
+  "{name} joined your account by an invite, so it lets nobody into your account's list itself. Ask to join again, and approve it on another device of your account.": "{name} PC는 초대로 계정에 들어와서 계정 명단에 아무도 직접 넣을 수 없어요. 다시 참여를 요청한 뒤 계정의 다른 기기에서 승인하세요.",
   "{name} belongs to another account's list": "{name} PC는 다른 계정의 명단에 있어요",
   "{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.": "{name} PC가 따르는 명단은 내 계정의 것이 아니에요. {name} PC와 이 기기에서 같은 계정으로 로그인한 뒤 다시 시도하세요.",
   "{name} was removed from your account": "{name} PC가 계정에서 제거됐어요",

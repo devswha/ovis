@@ -27,3 +27,16 @@ describe.each(["en", "ko", "ja", "zh"] as const)("a PC that could not be opened 
     expect((["pc-offline", "pc-unresponsive"] as const).map((failure) => relayFailureText(t, failure, "pc-a").copy.includes("pc-a"))).toEqual([true, true]);
   });
 });
+
+describe("a join into the list that a PC which joined by an invite was asked to sign", () => {
+  const t = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
+  it("says that PC lets nobody in itself, and points to another device of the account", () => {
+    const text = relayFailureText(t, "list-pc-invited", "pc-a");
+    expect([text.title, text.copy, text.retry]).toEqual([
+      "pc-a cannot add this device itself",
+      "pc-a joined your account by an invite, so it lets nobody into your account's list itself. Ask to join again, and approve it on another device of your account.",
+      true,
+    ]);
+    expect(text.copy).not.toContain("Settings");
+  });
+});

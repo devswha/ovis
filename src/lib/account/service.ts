@@ -566,6 +566,18 @@ export class AccountService {
    * registered no key; else pcAddProof over the listing `listing` names, read only then (null: this call adds nothing, and
    * proves nothing). One proof per call.
    */
+  /**
+   * Whether an add with the sign-in this service acts for is refused as too old before it is sent (`session_not_fresh`):
+   * one made more than PC_ADD_FRESH_MS ago, with no registered key to prove it by (addProof). False where its age is not
+   * known: the service decides. A caller asks this first, so the person is asked to sign in again before any call.
+   */
+  async addAsksSignIn(): Promise<boolean> {
+    const session = await this.bound();
+    if (session.signed_in_at === undefined) return false;
+    const age = this.now() - session.signed_in_at;
+    return !(age >= 0 && age <= PC_ADD_FRESH_MS) && await this.registeredKey(session) === null;
+  }
+
   private async addProof(purpose: PcAddPurpose, serverId: string, listing: () => Promise<string | null>, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
     const session = await this.bound();
     const age = session.signed_in_at === undefined ? Number.NaN : this.now() - session.signed_in_at;
