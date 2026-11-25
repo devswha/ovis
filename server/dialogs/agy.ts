@@ -90,10 +90,14 @@ function agyWriteInEditor(screen: string): { lines: string[]; answerIndex: numbe
   return { lines, answerIndex, rows };
 }
 
-export function agyCustomEditorMatches(screen: string, expected: ParsedPrompt, checked: ReadonlySet<number>, draft: string, partial = false): boolean {
+/** The text a write-in types: Antigravity's one-line field takes each line break as a space (customSteps). */
+const agyTypedWriteIn = (text: string): string => text.replace(/\s*\r?\n\s*/g, " ").trim();
+
+export function agyCustomEditorMatches(screen: string, expected: ParsedPrompt, checked: ReadonlySet<number>, answer: string, partial = false): boolean {
   if (expected.responder !== "agy-question" || expected.customMenuIndex === null) return false;
   const editor = agyWriteInEditor(screen);
   if (!editor) return false;
+  const draft = agyTypedWriteIn(answer);
   // A soft wrap can split a word or hide one separating space; whitespace within a row is still exact.
   let positions = new Set([0]);
   for (const [index, row] of editor.rows.entries()) {
@@ -231,7 +235,7 @@ export function parseAgyQuestion(screen: string): ParsedPrompt | null {
     customMenuIndex: choices.length,
     rejectWithEscapeIndex: null,
     customSteps: (text: string, picked?: number[]) => {
-      const normalized = text.replace(/\s*\r?\n\s*/g, " ").trim();
+      const normalized = agyTypedWriteIn(text);
       const keys: string[] = [];
       let cursor = selectedIndex;
       if (multi && picked !== undefined) {
