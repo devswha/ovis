@@ -67,7 +67,7 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
     "# The Ovis desktop app's command line (ovis login, ovis status, ovis approve). The app writes this file each time it starts.",
     `port=$(sed -n 's/.*"port":\\([0-9][0-9]*\\).*/\\1/p' ${shQuote(places.desktopJson)} 2>/dev/null)`,
     // an AppImage's server is in its mount, which is there only while the app runs
-    `if [ -z "$port" ] || [ ! -x ${shQuote(places.serverBinary)} ]; then echo ${shQuote(NOT_RUNNING)} >&2; exit 1; fi`,
+    `if [ ! -x ${shQuote(places.serverBinary)} ]; then echo ${shQuote(NOT_RUNNING)} >&2; exit 1; fi`,
     // a herdr pane's or another core's settings must not turn the command to them
     "unset HC_SOCKET HERDR_PLUGIN_ROOT HERDR_PLUGIN_STATE_DIR",
     `OVIS_STATE_DIR=${shQuote(places.stateDir)}`,
