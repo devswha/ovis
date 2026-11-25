@@ -211,19 +211,24 @@ export interface ListStatus {
   readonly behind: boolean;
 }
 
-/** What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the PC stands in it, and ListStatus.reason. */
-export interface ListSummary { readonly pinned_list: string; readonly standing: Standing | null; readonly reason: string | null }
+/**
+ * What `GET /api/account/status` says of the list on a pinned PC (`ovis status --json` reads it): the list id, where the
+ * PC stands in it, and ListStatus.reason. `needs_keys`: the PC came into the list as its account moved and holds no key
+ * of its own in it to sign with; `ovis add` on it gives it one by the number.
+ */
+export interface ListSummary { readonly pinned_list: string; readonly standing: Standing | null; readonly reason: string | null; readonly needs_keys?: true }
 
 /**
  * Why this PC did not let a device into its list. `not_pinned`, `not_signer` (it joined by an invite, or its key no
- * longer signs), `alarm`, `stopped`, `unavailable` (its keys or its copy): the PC cannot allow anyone now.
+ * longer signs), `needs_keys` (it came in as its account moved, and holds no key of its own in the list yet: `ovis add`
+ * here gives it one), `alarm`, `stopped`, `unavailable` (its keys or its copy): the PC cannot allow anyone now.
  * `held_here`: this PC itself keeps that key out. `not_written`: the entry would not count (a card that is not that
  * key's for this list, a key that was a signer before). `refused`: the account service refused it (no claim of the
  * key by a sign-in of the account, a budget). `list_stopped`: the service changes this list for nobody now.
  * `service_away`, `head_lost`: it could not be placed in LIST_ALLOW_TRIES tries. `not_in_list`: nobody at this PC
  * decided, and no entry lets the device in.
  */
-export type AllowRefusal = "not_pinned" | "not_signer" | "alarm" | "stopped" | "behind" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
+export type AllowRefusal = "not_pinned" | "not_signer" | "needs_keys" | "alarm" | "stopped" | "behind" | "unavailable" | "held_here" | "not_written" | "refused" | "not_claimed" | "list_stopped" | "service_away" | "head_lost" | "not_in_list";
 
 /** The device a PC is asked to let into its list: its member key, its encryption key, its card for the list, and the name it gave. */
 export interface AllowedDevice { readonly key: string; readonly enc: string; readonly card: string; readonly label: string }
@@ -909,7 +914,7 @@ export class ListFollow implements ListAuthority {
   summary(): ListSummary | null {
     const scope = this.sync();
     if (scope === null || scope.list === null || !this.isPinned) return null;
-    return { pinned_list: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy) };
+    return { pinned_list: scope.list, standing: this.copy === null ? null : standing(this.copy), reason: this.reason(this.copy), ...(this.copy !== null && this.keyless(this.copy) ? { needs_keys: true as const } : {}) };
   }
 
   /** ListStatus.reason: each case in which a pinned PC is closed to its account's devices, or to new ones, with what ends it. */
@@ -934,6 +939,7 @@ export class ListFollow implements ListAuthority {
     }
     if (copy.pin.how === "migrated" && own !== null && own.key !== null && own.key !== copy.me.key) return "Your account's list holds another key for this PC, so it lets your account's devices in but cannot let a new one in. Remove this PC from your account and add it again, or run `ovis add` on this PC after its relay identity is reset.";
     if (copy.pin.how === "migrated" && own?.key === copy.me.key && !this.keysTaken(copy)) return "Your account's list holds this PC's keys by an entry of a device that did not ask this PC for them, so it lets your account's devices in but cannot let a new one in. Run `ovis add` on this PC and compare the number with the device that added this PC to the list.";
+    if (copy.pin.how === "migrated" && stands === "in" && (own === null || own.key === null)) return "This PC came into your account's list as your account moved, with no key of its own in it yet, so it lets your account's devices in but cannot let a new one in. Run `ovis add` on this PC and compare the number with a device of your account.";
     return null;
   }
 
@@ -1595,8 +1601,27 @@ export class ListFollow implements ListAuthority {
    */
   private cannotSign(copy: FollowerCopy): AllowRefusal | null {
     const cannot = cannotAllow(copy);
+    if (cannot !== null && cannot !== "not_signer") return cannot;
+    // one that joined by an invite holds its key and signs for nobody; one with no key of its own gets one by `ovis add`
+    if (this.keyless(copy)) return "needs_keys";
     if (cannot !== null || copy.pin.how !== "migrated") return cannot;
     return this.keysTaken(copy) ? null : "not_signer";
+  }
+
+  /**
+   * Whether this PC is in its list with no key of its own in it to sign with: the list holds no key at its relay key
+   * (a move carried it in as an endpoint), or holds its key by an entry of a device that did not ask this PC for it.
+   * `ovis add` here gives it its keys by the number (needsKeys). Not one whose relay key the list holds another key at.
+   */
+  private keyless(copy: FollowerCopy): boolean {
+    if (copy.state === null || copy.pin.how !== "migrated" || standing(copy) === "out") return false;
+    const own = ownPcRow(copy);
+    return own === null || own.key === null || (own.key === copy.me.key && !this.keysTaken(copy));
+  }
+
+  /** Whether this PC itself keeps `key` out now (a block or a removal here, its own holds): no entry of the list lets it in here then. */
+  holdsBack(key: string): boolean {
+    return this.deps.mayAdmit?.(key) === false;
   }
 
   /** Whether this migrated PC took the `pc` entry its list holds for its own key (cannotSign). */

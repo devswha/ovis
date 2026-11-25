@@ -44,10 +44,18 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     setRequestRoute("/api/relay/joins");
     if (!own) return fail("own_window_required", "Only this PC's own window lists account joins.", 403);
     // a join into the list that this PC cannot sign says why before anybody approves it here: its Ovis is behind the
-    // list, or it joined by an invite and signs for nobody (a device of the account allows it then)
-    const refusal = context.services.accountList?.allowRefusal();
-    const why = refusal === "behind" ? { list_behind: true as const } : refusal === "not_signer" ? { list_not_signer: true as const } : null;
-    return reply({ joins: service.approvals.ownJoins().map((join) => why !== null && join.list === true ? { ...join, ...why } : join) });
+    // list, it joined by an invite and signs for nobody, or it came in as its account moved with no key of its own
+    // (a device of the account allows it then); and one whose key this PC itself keeps out says that
+    const list = context.services.accountList;
+    const refusal = list?.allowRefusal();
+    const why = refusal === "behind" ? { list_behind: true as const } : refusal === "not_signer" ? { list_not_signer: true as const }
+      : refusal === "needs_keys" ? { list_needs_keys: true as const } : null;
+    return reply({ joins: service.approvals.ownJoins().map((join) => {
+      if (join.list !== true) return join;
+      const key = service.approvals.keyOf(join.id);
+      const held = key !== null && list?.holdsBack(key) === true ? { list_held: true as const } : {};
+      return { ...join, ...why ?? {}, ...held };
+    }) });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
   if (pathname === RELAY_CONTROLS.pairing && peer.kind === "relay") {

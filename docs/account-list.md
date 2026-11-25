@@ -2362,7 +2362,11 @@ neither a hand-over nor the pin undoes a removal.
   question only when it did something itself for that PC (`addedItself`). With nobody's evidence,
   `ovis add` at the PC gives it its keys by the number, from the adder the person confirmed. An entry
   with its keys that another device signed, and another key at its relay key, give it nothing to
-  sign with, and it says so.
+  sign with, and it says so. Such a PC (with no key at all, or keys from an entry another device
+  signed) says `needs_keys` in the list of `GET /api/account/status`, and `ovis add` there goes on to
+  that add instead of saying the PC is in an account already: it lists nothing and signs in to
+  nothing, and ends once the PC holds its keys. Asked to approve a join, it says that it came in as its
+  account moved, never that it joined by an invite.
 
 ### What is left
 

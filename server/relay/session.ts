@@ -87,13 +87,18 @@ function listSignInRequired(): Response {
  * Why the list did not take a join that brought its card, as SESSION_ERROR `auth_failed` says it in its message
  * (docs/account.md, "A PC allows a device into the list"). `list_not_claimed`: no sign-in of the account claimed the
  * key, so the device signs in again. `list_service_away`, `list_head_lost`: the entry could not be placed in time, and
- * asking again may work. `list_not_in`: a member allowed the device and no entry for it reached this PC. Anything
- * else is `list_refused`.
+ * asking again may work. `list_not_in`: a member allowed the device and no entry for it reached this PC.
+ * `list_needs_keys`: this PC came in as its account moved and has no key of its own in the list. `list_held_here`:
+ * this PC itself keeps that key out, whatever the list holds. Anything else is `list_refused`.
  */
 const LIST_ALLOW_CAUSES: Partial<Record<AllowRefusal, string>> = {
   not_claimed: "list_not_claimed", service_away: "list_service_away", head_lost: "list_head_lost", not_in_list: "list_not_in", behind: "list_pc_behind",
   // a PC that joined by an invite signs nobody into the list: the device is pointed to another device of the account
   not_signer: "list_not_signer",
+  // a PC the account's move carried in with no key of its own: the same, and `ovis add` there gives it its keys
+  needs_keys: "list_needs_keys",
+  // this PC itself keeps the key out (a block here): the list may hold the device, and this PC lets it in once that ends
+  held_here: "list_held_here",
 };
 
 export interface RelaySessionOptions {

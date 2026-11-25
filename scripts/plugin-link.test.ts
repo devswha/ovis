@@ -678,6 +678,59 @@ describe("ovis link, on the PC itself", () => {
     expect(local.calls.map((call) => call.path).every((path) => path === "/api/account/status")).toBe(true);
   });
 
+  describe("on a PC in its account that the account's move left with no key of its own in the list", () => {
+    const LIST = "a".repeat(64);
+    const until = "2026-11-06T12:10:00Z";
+    const run = async (states: readonly Record<string, unknown>[], start: Response = Response.json({ state: "waiting", run: "r1", account: "acct_1", list: LIST, until })) => {
+      const time = clock();
+      const calls: { call: string; body: unknown }[] = [];
+      const left = [...states];
+      const local = localPc(async (request, path) => {
+        if (path === "/api/account/status") return Response.json({ account: "acct_1", enrolling: false, unlinked: [], removals: [], adds: [], blocked: [], list: { pinned_list: LIST, standing: "in", reason: "no key of its own", needs_keys: true } });
+        if (path === "/api/relay/link/close") return Response.json({ ok: true });
+        if (!path.startsWith("/api/account/list/add")) return undefined;
+        calls.push({ call: `${request.method} ${path}`, body: request.method === "GET" ? new URL(request.url).search : await request.json() });
+        if (request.method === "POST" && path === "/api/account/list/add") return start;
+        if (path === "/api/account/list/add/cancel") return Response.json({ state: "ended", run: "r1", account: "acct_1", why: "cancelled" });
+        return Response.json(left.shift() ?? { state: "waiting", run: "r1", account: "acct_1", list: LIST, until });
+      });
+      const out: string[] = [];
+      const code = await link([], { origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: async (ms, signal) => { time.pass(ms); await time.wait(ms, signal); },
+        signal: new AbortController().signal, accountService: SERVICE, lines: answers(), terminal: false, isTty: false, out: (text) => out.push(text),
+        serviceFetch: async () => { throw new Error("a PC in its account signs in to nothing for its keys"); } });
+      return { code, text: out.join(""), calls };
+    };
+
+    it("goes on to the add by the account's list, and is done once the device whose number was confirmed gave it its keys", async () => {
+      const { code, text, calls } = await run([
+        { state: "number", run: "r1", account: "acct_1", list: LIST, digits: "123456", until },
+        { state: "confirmed", run: "r1", account: "acct_1", list: LIST, until },
+        { state: "added", run: "r1", account: "acct_1", list: LIST },
+      ]);
+      expect(code).toBe(0);
+      expect(text).toContain("This PC is in your Ovis account (acct_1) and follows its signed list, but holds no key of its own in it yet: it came in as your account moved, so it lets your account's devices in and lets nobody new in itself.\n");
+      expect(text).toContain("This PC shows 123 456. If the device that adds it shows the same number, run ovis add --confirm 123456 on this PC within 2 minutes");
+      expect(text).toContain("Done: this PC holds its own keys in your account's list now, so a device that asks to join can be approved here too (ovis approve).\n");
+      expect(text).not.toContain("already in an Ovis account");
+      expect(calls[0]).toEqual({ call: "POST /api/account/list/add", body: { account: "acct_1" } });
+      expect(calls.slice(1).every((call) => call.call === "GET /api/account/list/add" && call.body === "?run=r1")).toBe(true);
+    });
+
+    it("says it still has no key of its own when nobody compared a number in time, and takes nothing off the account", async () => {
+      const { code, text, calls } = await run([]);
+      expect(code).toBe(1);
+      expect(text).toContain("No device of your account compared a number with this PC within 10 minutes, so it still holds no key of its own in your account's list. Run ovis add again");
+      expect(text).not.toMatch(/Added|taken off|Done/);
+      expect(calls.at(-1)?.call).toBe("POST /api/account/list/add/cancel");
+    });
+
+    it("says why where this PC takes no keys by the list, and that it is still in its account", async () => {
+      const { code, text } = await run([], Response.json({ error: { code: "account_mismatch", message: "This PC was set up for another account. Sign in to that one, or add this PC again." } }, { status: 409 }));
+      expect(code).toBe(1);
+      expect(text).toContain("Could not give this PC its keys: This PC was set up for another account. Sign in to that one, or add this PC again. This PC is still in your account, and holds no key of its own in its list yet. Run ovis add again to finish.\n");
+    });
+  });
+
   it("does not sign in when this PC is already in an account, or when the account service is off", async () => {
     let account: string | null = "acct_1";
     const local = localPc((_request, path) => path === "/api/account/status" ? Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] }) : undefined);
@@ -4417,6 +4470,26 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       expect(code).toBe(0);
       expect(out.at(-1)).toBe("Pixel was not let in: this PC joined your account by an invite, and a PC that did lets nobody into your account's list itself. Allow Pixel on another device of your account.\n");
       expect(out.join("")).not.toMatch(/is let in|was received/);
+    });
+
+    it("says that this PC came in as its account moved and has no key of its own in the list, never an invite, and how it gets one", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_needs_keys: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in: this PC came into your account's list as your account moved, and holds no key of its own in it yet, so it lets nobody into the list itself. Allow Pixel on another device of your account, or run ovis add on this PC to give it its keys (compare the number with a device of your account), then have Pixel ask again.\n");
+      expect(out.join("")).not.toMatch(/invite|is let in|was received/);
+    });
+
+    it("says that this PC keeps that device out by a block here, whatever the list holds, and where the block is lifted", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_held: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it, whether or not your account's list holds it. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ovis recover on this PC, which lists the block with the command that lifts it. Pixel can open this PC after that.\n");
+      expect(out.join("")).not.toMatch(/is let in;|was received|not added/);
     });
 
     it("approves nothing for a join this PC cannot let in, from an app older than its account's list, and says to update that app", async () => {
