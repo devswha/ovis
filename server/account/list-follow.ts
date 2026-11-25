@@ -119,6 +119,11 @@ const LIST_MEMBER_READ_MS = 3_000;
 const LIST_MEMBER_LOOK_MS = 100;
 /** The longest one try waits because the account service asked it to (its `retry-after`). */
 const LIST_ALLOW_RETRY_MAX_MS = 10_000;
+/**
+ * The longest one try waits for a PC that spent its list calls (429 `rate_limited`): the service counts them by the
+ * minute, so the next minute takes the entry. Under LIST_ALLOW_MS.
+ */
+const LIST_ALLOW_LIMITED_MAX_MS = 60_000;
 /** How long after a round of naming the account service could not answer the next one may start (nameDevices). */
 const NAMES_RETRY_MS = 60_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
@@ -1858,6 +1863,13 @@ export class ListFollow implements ListAuthority {
           }
           if (error.status === 409 && error.code === "try_again") { last = "head_lost"; wait = asked; continue; }
           if (error.status === 503 && error.code === "list_rebuilding") { last = "service_away"; wait = asked; continue; }
+          // a PC that spent its calls of the minute (a number check waited on reads every few seconds): the service
+          // counted the request before it read it, so nothing was placed, and the same entry goes again when it says
+          if (error.status === 429 && error.code === "rate_limited") {
+            last = "service_away";
+            wait = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_LIMITED_MAX_MS);
+            continue;
+          }
           // the service's own word that it did not place the entry: nothing is kept of it
           this.dropAllow();
           request = null;
