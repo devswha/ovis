@@ -24,13 +24,13 @@ import { dirname, join } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { verifyLineProof } from "../../shared/account-list-invite.ts";
 import { entryFromText, entryHash, isListHash, isListKeyEncoding, readBody, writeBody } from "../../shared/account-list-entry.ts";
-import { openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
+import { openSealed, openWrap, sealFields, wrapEpochKey, wrapFromText, wrapToText, type EpochKey } from "../../shared/account-list-seal.ts";
 import { signerPower, type ListPlace } from "../../shared/account-list-signers.ts";
 import {
   admitsSession, admittedDevices, compareHeads, followStep, gossipHead, heardHead, nextUntil, pinList, readSave, servePage, shownPcs, standing, startRead, takePage, withClock, writeSave, PC_BUSY_READ_SECONDS, READ_PAGES_MAX,
   type FollowerCopy, type FollowRead, type FollowVerdict, type ListHead, type ListPage, type PeerAsk, type SessionRefusal, type Standing,
 } from "../../shared/account-list-follower.ts";
-import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
+import { inviteRefusal, isListLabel, joinEntry, listClock, listView, ListKindError, ListWriteError, namesFields, readKind, readNames, sealEpoch, signCard, signListEntry, type InviteCode, type ListRole, type ListState, type Sealed } from "../../shared/account-list.ts";
 import { heirOf, heldNaming, heldOut, heldVouches, pinVerdict, standsFor, type LetIn, type PinRefusal, type SignedNaming, type SignedVouch } from "../../shared/account-list-migrate.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { SnapshotDevice, SnapshotRemoved } from "../../shared/account-snapshot.ts";
@@ -440,6 +440,11 @@ export class ListFollow implements ListAuthority {
   private dirty = false;
   /** The keys to the list's names this PC opened, by list and epoch. */
   private readonly epochKeys = new Map<string, EpochKey>();
+  /**
+   * The names of the list's devices this PC opened, by key, for the list they are of: what its rows are named by
+   * (listCommit). `tried`: the entries asked once, opened or not; one that does not open is not asked again.
+   */
+  private deviceNames: { readonly list: string; readonly byKey: Map<string, string>; readonly tried: Set<number> } | null = null;
   /** The list a person at this PC confirmed for an account the PC is not in yet, as far as it has read it. In memory only. */
   private candidate: { readonly account: string; readonly copy: FollowerCopy } | null = null;
   /** The PC has just joined by its list: the devices the list holds come in with no join hold, as at any pin. */
@@ -1878,7 +1883,7 @@ export class ListFollow implements ListAuthority {
    * The key to the list's names of `epoch`, when the account service holds a wrap of it for this PC that gives the
    * commitment the list holds; null otherwise. A key that does not give it is the service's doing, and is said.
    */
-  private async epochKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | null> {
+  private async epochKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys, quiet = false): Promise<EpochKey | null> {
     const id = `${copy.list} ${epoch}`;
     const kept = this.epochKeys.get(id);
     if (kept !== undefined) return kept;
@@ -1886,7 +1891,8 @@ export class ListFollow implements ListAuthority {
     if (opens === undefined) return null;
     let wraps: unknown;
     try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) {
-      this.error = this.words(error);
+      // naming the rows (`quiet`) is no step the PC owes anybody: a service that does not answer leaves them unnamed
+      if (!quiet) this.error = this.words(error);
       return null;
     }
     const mine = Array.isArray(wraps) ? wraps.find((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null && (wrap as { epoch?: unknown }).epoch === epoch && typeof (wrap as { wrap?: unknown }).wrap === "string") : undefined;
@@ -2555,7 +2561,7 @@ export class ListFollow implements ListAuthority {
     try {
       // what the list put out first, so that nothing the commit lets in stands beside a key that is out
       this.keepRemovals(copy);
-      const rows = listCommit(copy, now);
+      const rows = listCommit(copy, now, this.namesOf(copy));
       // nobody while the copy does not show whom the PC lets in (a lost alarm, a removal it has not read again), and never a key the mark names
       const closed = this.alarmLost || this.mustRead;
       const out = this.keptOut(copy, false);
@@ -2570,6 +2576,54 @@ export class ListFollow implements ListAuthority {
     this.untilAt = nextUntil(copy, now);
     this.armUntil(now);
     try { this.deps.recheck?.(); } catch { /* the rows say it again at their next use */ }
+    this.nameDevices(scope, copy);
+  }
+
+  /** The names this PC opened for the devices of `copy`'s list, by key (deviceNames). */
+  private namesOf(copy: FollowerCopy): ReadonlyMap<string, string> {
+    return this.deviceNames?.list === copy.list ? this.deviceNames.byKey : new Map();
+  }
+
+  /**
+   * Opens, in turn and once each, the names the list sealed for its devices that this PC has not asked yet, with the
+   * key to the names it was given (epochKey); the rows are written again when one opened. A name that does not open (no
+   * key for its epoch, none sealed) leaves its row as it is. Names decide nothing: whom the PC lets in is the list's.
+   */
+  private nameDevices(scope: Scope, copy: FollowerCopy): void {
+    const state = copy.state;
+    if (state === null || this.stopped) return;
+    if (this.deviceNames?.list !== copy.list) this.deviceNames = { list: copy.list, byKey: new Map(), tried: new Set() };
+    const names = this.deviceNames;
+    const asked = listView(state).devices.filter((row) => row.ended === null && !names.tried.has(row.seq));
+    if (asked.length === 0) return;
+    for (const row of asked) names.tried.add(row.seq);
+    void this.enqueue(async () => {
+      const keys = await this.keysOf(scope);
+      if (keys === null || this.copy !== copy) return;
+      let opened = false;
+      for (const row of asked) {
+        const label = await this.nameAt(copy, state, row.seq, keys);
+        if (label !== null && names.byKey.get(row.key) !== label) { names.byKey.set(row.key, label); opened = true; }
+      }
+      if (opened && this.copy === copy) this.settle();
+    }).catch(() => undefined);
+  }
+
+  /** The label the entry at `seq` seals, opened with the key to its epoch's names this PC holds; null for none it can open. */
+  private async nameAt(copy: FollowerCopy, state: ListState, seq: number, keys: PcListKeys): Promise<string | null> {
+    const text = copy.entries[seq];
+    if (text === undefined) return null;
+    let sealed: Sealed | null;
+    try {
+      const kind = readKind(readBody(entryFromText(text).body));
+      sealed = kind !== null && "sealed" in kind ? kind.sealed : null;
+    } catch { return null; }
+    if (sealed === null) return null;
+    const epoch = await this.epochKey(copy, state, sealed.epoch, keys, true);
+    if (epoch === null) return null;
+    const opened = await openSealed({ place: { list: seq === 0 ? "" : copy.list, seq }, epoch, sealed: sealed.bytes });
+    const label = opened.open ? readNames(opened.value)?.label ?? null : null;
+    return label !== null && isListLabel(label) ? label : null;
   }
 
   /**
@@ -2757,9 +2811,10 @@ function changed(before: FollowerCopy, after: FollowerCopy): boolean {
 
 /**
  * What a pinned PC's account rows are made from: every device the list lets in now, and every device it put out. A
- * device's place is that of the entry that let it in, so an older device is one the list let in before.
+ * device's place is that of the entry that let it in, so an older device is one the list let in before. `names`: the
+ * names this PC opened for them, by key; a device with none is named LIST_DEVICE_LABEL.
  */
-export function listCommit(copy: FollowerCopy, now: number): ListCommit {
+export function listCommit(copy: FollowerCopy, now: number, names: ReadonlyMap<string, string> = new Map()): ListCommit {
   const state = copy.state;
   const devices: SnapshotDevice[] = [];
   const removed: SnapshotRemoved[] = [];
@@ -2767,7 +2822,7 @@ export function listCommit(copy: FollowerCopy, now: number): ListCommit {
   for (const row of state === null ? [] : listView(state).devices) {
     const no = row.seq + 1;
     if (row.ended !== null) removed.push({ key: row.key, no });
-    else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: LIST_DEVICE_LABEL });
+    else devices.push({ key: row.key, no, eligible: admitted.has(row.key), label: names.get(row.key) ?? LIST_DEVICE_LABEL });
   }
   // a device that handed its place on keeps its row under the key it is in by now
   const moved = state === null ? [] : Object.keys(state.signers).flatMap((from) => {

@@ -194,6 +194,24 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     expect(pc.services.devices.sessionRow(pc.idOf(watcher).id)?.role).toBe("watch");
   });
 
+  test("its rows are named as the list seals each device's name, which this PC opens with the key it was given; one it cannot open stays Device", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    const unnamed = await listMember();
+    await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+    await pc.account.addDevice(unnamed);
+    await pc.pull();
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+    expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    expect(labelOf(unnamed.key)).toBe("Device");
+    // what a person at this PC named a row stays: only the list's placeholder is replaced
+    const renamed = pc.services.accountRows!.rows().find((row) => row.key === unnamed.key)!;
+    pc.services.accountRows!.store()!.rename(renamed.id, "My laptop");
+    await pc.pull();
+    expect(labelOf(unnamed.key)).toBe("My laptop");
+  });
+
   test("a device the snapshot let in and the list does not hold goes at the pin, its session closed", async () => {
     const pc = await listedPc();
     const tablet = await listMember();
