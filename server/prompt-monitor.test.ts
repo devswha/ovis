@@ -146,6 +146,40 @@ describe("PromptMonitor", () => {
     expect(monitor.size).toBe(0);
   });
 
+  it("reads a woken pane at once and only that pane, and once more after a tick that was under way, never two reads at once", async () => {
+    const { herdr, changes, monitor } = setup();
+    herdr.panes.set("p1", "blocked");
+    herdr.panes.set("p2", "idle");
+    monitor.watch("p1");
+    monitor.watch("p2");
+    await monitor.tick();
+    await monitor.tick();
+    expect(changes).toHaveLength(2);
+    const reads = herdr.reads;
+    herdr.screens.set("p1", "permission");
+    monitor.wake("p1");
+    await monitor.tick();
+    expect(changes).toHaveLength(3);
+    expect(herdr.reads).toBe(reads + 1);
+
+    herdr.held = Promise.withResolvers<void>();
+    const under = monitor.tick();
+    await until(() => herdr.readsUnderWay === 2);
+    herdr.screens.set("p1", null);
+    monitor.wake("p1");
+    monitor.wake("p1");
+    monitor.wake("unwatched");
+    expect(herdr.readsUnderWay).toBe(2);
+    const held = herdr.held;
+    herdr.held = null;
+    held.resolve();
+    await under;
+    await until(() => changes.length === 4);
+    expect(herdr.reads).toBe(reads + 4);
+    expect(herdr.mostReadsAtOnce).toBe(2);
+    expect(changes.map(([paneId]) => paneId)).toEqual(["p1", "p2", "p1", "p1"]);
+  });
+
   it("counts no failed read of a watch that ended against the pane's new watch", async () => {
     const { herdr, ended, monitor } = setup();
     herdr.panes.set("p1", "idle");

@@ -17,10 +17,12 @@ interface WatchedPrompt { shown?: string; signature?: string; failures: number }
  * 500 ms, however many connections watch it, and the watchers are told when what its prompt says changes. A pane
  * herdr reports blocked is read too: a form of several steps moves to its next one while the pane stays blocked, with
  * no pane-status to say so. A working pane is read: Codex asks the questions in its queue while it works. A snapshot
- * herdr does not answer (a restart) skips the tick and ends no watch; only reads of the pane itself count.
+ * herdr does not answer (a restart) skips the tick and ends no watch; only reads of the pane itself count. A pane whose
+ * agent says its prompt changed (`wake`) is read at once, without waiting for the next tick.
  */
 export class PromptMonitor {
   private readonly panes = new Map<string, WatchedPrompt>();
+  private readonly woken = new Set<string>();
   private readonly salt = randomUUID();
   private timer?: ReturnType<typeof setInterval>;
   private ticking: Promise<void> | null = null;
@@ -58,21 +60,41 @@ export class PromptMonitor {
     }
   }
 
+  /**
+   * Reads a watched pane now. A tick under way may have read it before the change, so a wake during one reads the
+   * pane again once it ends; reads of one pane still never run at once.
+   */
+  wake(paneId: string): void {
+    if (!this.panes.has(paneId)) return;
+    this.woken.add(paneId);
+    if (!this.ticking) void this.tick(this.takeWoken());
+  }
+
   stop(): void {
     this.stopped = true;
     this.panes.clear();
+    this.woken.clear();
     clearInterval(this.timer);
     this.timer = undefined;
   }
 
   /** One read of every watched pane, never two at once: a slow herdr skips ticks rather than piling reads up. */
-  tick(): Promise<void> {
-    this.ticking ??= this.readAll().finally(() => { this.ticking = null; });
+  tick(only?: ReadonlySet<string>): Promise<void> {
+    this.ticking ??= this.readAll(only).finally(() => {
+      this.ticking = null;
+      if (this.woken.size > 0) void this.tick(this.takeWoken());
+    });
     return this.ticking;
   }
 
-  private async readAll(): Promise<void> {
-    const watched = [...this.panes];
+  private takeWoken(): Set<string> {
+    const woken = new Set(this.woken);
+    this.woken.clear();
+    return woken;
+  }
+
+  private async readAll(only?: ReadonlySet<string>): Promise<void> {
+    const watched = [...this.panes].filter(([paneId]) => !only || only.has(paneId));
     if (watched.length === 0) return;
     let snapshot: SessionSnapshot;
     try {
