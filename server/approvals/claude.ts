@@ -129,6 +129,8 @@ export const claudeApprovals: ApprovalAdapter = {
     }
   },
 
+  mode: (event) => text((event as { permission_mode?: unknown } | null)?.permission_mode),
+
   decision: permissionDecision,
 
   toAnswer(decision) {

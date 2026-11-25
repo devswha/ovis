@@ -392,6 +392,9 @@ const BASE: Record<string, string> = {
 
   "Browse": "浏览",
   "Cancel": "取消",
+  "Accept edits": "自动接受编辑",
+  "Don't ask": "不询问",
+  "Bypass permissions": "跳过权限检查",
   "Install": "安装",
   "Installed": "已安装",
   "Not installed": "未安装",

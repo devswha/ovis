@@ -205,7 +205,8 @@
 }
 
 .composer-status[data-model="out"] .composer-model-info,
-.composer-status[data-model="no-effort"] .composer-reasoning {
+.composer-status[data-model="no-effort"] .composer-reasoning,
+.composer-status[data-model="no-effort"] .composer-mode {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -244,6 +245,15 @@
 
 .composer-reasoning {
   flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Claude Code's permission mode beside the level: it gives way first */
+.composer-mode {
+  flex: 0 200 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

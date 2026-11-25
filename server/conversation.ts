@@ -128,6 +128,12 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 
 const writtenSessions = new Set<string>();
 
+/** The permission mode the hook of a Claude Ovis started in a pane last told (the approval hub's), or null. */
+let toldMode: (paneId: string) => string | null = () => null;
+export function readToldModes(read: ((paneId: string) => string | null) | null): void {
+  toldMode = read ?? (() => null);
+}
+
 const cache = new Map<string, { source: RecognizedConversation["source"]; signature: string; turns: ConversationTurn[]; metadata: ConversationMetadata; cursor: string | null; abandoned?: { count: number; branches: number; summary: string | null } }>();
 
 const PROCESS_VERSION = randomUUID();
@@ -2437,6 +2443,11 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   // this conversation, nor the model its screen shows now, and nothing is recorded for it.
   if (agyScreen !== null && (!live() || rebound(paneId, transcript))) throw new ConversationUnavailable("no_session_id");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
+  // a Claude Ovis started tells its permission mode with each hook, also between the prompts its transcript records it with
+  const told = resolved.source === "claude-transcript" ? toldMode(paneId) : null;
+  if (told !== null && told !== answer.metadata.permission_mode) {
+    answer = { ...answer, metadata: { ...answer.metadata, permission_mode: told }, version: answerVersion(answer.version, told) };
+  }
   if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
     const window = readStatuslineContext(userHome(), identity, answer.metadata.model, resolved.path);
     if (window !== null) return {

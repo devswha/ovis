@@ -624,4 +624,21 @@ describe("Claude's other tools on a card from the hook's request", () => {
     for (const source of ["startup", "resume", "compact"]) expect(claudeApprovals.command!({ hook_event_name: "SessionStart", source }), source).toBeNull();
     expect(claudeApprovals.command!({ hook_event_name: "UserPromptExpansion", command_name: "" })).toBeNull();
   });
+
+  it("keeps the permission mode each hook was sent under, for the pane its agent was started in alone", async () => {
+    // Claude Code 2.1.330 as recorded: the hooks of the prompts under auto, default (after Shift+Tab) and acceptEdits
+    const events = readFileSync(new URL("../fixtures/claude-permission-mode-hooks-2.1.330.jsonl", import.meta.url), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const { hooks } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const told: (string | null)[] = [];
+    for (const event of events) {
+      await ask(hook, event).answer();
+      told.push(hooks.toldMode("p1"));
+    }
+    expect(told).toEqual(["auto", "auto", "default", "default", "acceptEdits", "acceptEdits"]);
+    expect(hooks.toldMode("p2")).toBeNull();
+    // another agent started in the pane has told nothing yet
+    launch(hooks, "p1", undefined);
+    expect(hooks.toldMode("p1")).toBeNull();
+  });
 });

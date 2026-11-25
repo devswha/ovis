@@ -1070,7 +1070,12 @@ export function Composer({
   useEffect(() => { if (dictating) tally(() => usageCounters.paneUse("composer_voice", machineId)); }, [dictating, machineId]);
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
   const model = metadata?.model ? modelLabel(metadata.model) : null;
-  const modelShown = Boolean(metadata?.model || metadata?.reasoning_effort);
+  // Claude Code's permission mode, drawn only when it is not its default
+  const mode = metadata?.permission_mode;
+  const modeShown = mode === undefined || mode === "default" ? null
+    : mode === "plan" ? t("Plan mode") : mode === "acceptEdits" ? t("Accept edits") : mode === "auto" ? t("Auto mode")
+    : mode === "bypassPermissions" ? t("Bypass permissions") : mode === "dontAsk" ? t("Don't ask") : mode;
+  const modelShown = Boolean(metadata?.model || metadata?.reasoning_effort || modeShown);
   const usageDetail = usageWindows.map((window) => {
     const reset = formatResetIn(window.resets_at, Date.now());
     return `${windowLabel(window)} ${meterText(window, settings.usageCount)}${reset ? ` · ${t("Resets in {time}", { time: reset })}` : ""}`;
@@ -1108,7 +1113,7 @@ export function Composer({
     observer.observe(stripElement);
     return () => observer.disconnect();
   }, [strip?.branch, strip?.folder, strip?.path, worktree, facesLoaded, t]);
-  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort,
+  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort, metadata?.permission_mode,
     metadata?.context?.window, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
     plan?.done, plan?.total, plan?.current, statusCompact, facesLoaded, t]);
   const menuId = `composer-menu-${paneId}`;
@@ -1463,6 +1468,11 @@ export function Composer({
                     <span className="composer-reasoning-short" aria-hidden="true">{metadata.reasoning_effort}</span>
                   </>}
                 </span>
+                {modeShown && <span className="composer-mode" title={t("Permission mode: {mode}", { mode: modeShown })}>
+                  <span className="composer-reasoning-dot" aria-hidden="true">·</span>
+                  <span className="visually-hidden">{t("Permission mode: {mode}", { mode: modeShown })}</span>
+                  <span aria-hidden="true">{modeShown}</span>
+                </span>}
               </span>}
               {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
