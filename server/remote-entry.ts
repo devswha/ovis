@@ -17,6 +17,7 @@ import { chosenHerdrSocketStatus, discoverHerdrSessions, validHerdrSocket } from
 // `bun -e` could import, so the answers come from this entry, and nothing below runs for them
 const [request, socketArgument, ...extra] = process.argv.slice(2);
 const REMOTE_USAGE = "usage: ovis-server remote [--discover | --socket-status <herdr socket>]\n  with no argument: the bridge for the herdr session HERDR_REMOTE_SESSION names, started over SSH";
+const DRAIN_MS = 10_000;
 if (request === "--help") {
   console.log(REMOTE_USAGE);
   process.exit(0);
@@ -155,13 +156,27 @@ try {
     throw new Error(`This bridge stopped because it was not registered (descriptor ${descriptor})`);
   }
   server.warmAgentCatalog();
-  const close = async () => {
-    registration.close();
-    await server.stop();
-    process.exit(0);
+  let stopping = false;
+  const close = () => {
+    if (stopping) return;
+    stopping = true;
+    // A live descriptor keeps a replacement out of this state directory. On timeout,
+    // exit without releasing it: the next bridge can replace it once this PID is gone.
+    const deadline = setTimeout(() => {
+      console.error("SSH bridge shutdown timed out while saving read receipts");
+      process.exit(1);
+    }, DRAIN_MS);
+    void server.stop().then(() => {
+      registration.close();
+      clearTimeout(deadline);
+      process.exit(0);
+    }, (error: unknown) => {
+      console.error("SSH bridge shutdown failed:", error);
+      process.exit(1);
+    });
   };
-  process.on("SIGTERM", () => { void close(); });
-  process.on("SIGINT", () => { void close(); });
+  process.on("SIGTERM", close);
+  process.on("SIGINT", close);
   }
 } finally { lock.release(); }
 }

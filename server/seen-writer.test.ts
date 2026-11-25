@@ -109,3 +109,23 @@ it("carries a pane's read receipt even when the acknowledgement queue is full", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it("persists the last destination when more than 500 pane moves are pending", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "seen-writer-"));
+  const store = new SeenStore(dir);
+  const finish = { pc: "local", epoch: "e", pane: "a", id: 1 };
+  try {
+    await store.record(finish);
+    const moves = Array.from({ length: 500 }, (_, index) => index % 2 === 0
+      ? store.moved("local", "a", "b")
+      : store.moved("local", "b", "a"));
+    moves.push(store.moved("local", "a", "final"));
+    const results = await Promise.allSettled(moves);
+    await store.close();
+    expect(new SeenStore(dir).list()).toContainEqual({ ...finish, pane: "final" });
+    expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+  } finally {
+    await store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

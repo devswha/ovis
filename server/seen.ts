@@ -12,7 +12,7 @@ export class SeenStore {
   private readonly presentations = new Set<(finish: SeenFinish) => void>();
   private unsettled = true;
   private tail: Promise<void> = Promise.resolve();
-  private readonly pending = { record: 0, move: 0 };
+  private pendingRecords = 0;
   private closed = false;
 
   /**
@@ -49,16 +49,13 @@ export class SeenStore {
     return [...this.finishes.values()].filter((finish) => !this.over(finish));
   }
 
-  private enqueue<T>(kind: "record" | "move", operation: () => Promise<T>): Promise<T> {
+  private enqueue<T>(operation: () => Promise<T>, record = false): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Seen store is closed"));
-    // Acknowledgements can retry; pane-moved notifications cannot. Give each a fixed budget
-    // so an acknowledgement backlog cannot crowd out a move, without losing write ordering.
-    if (this.pending[kind] >= MAX_SEEN) return Promise.reject(new Error(
-      kind === "record" ? "Seen writer queue is full; retry the acknowledgement" : "Seen pane move queue is full",
-    ));
-    this.pending[kind]++;
+    if (record && this.pendingRecords >= MAX_SEEN) return Promise.reject(new Error("Seen writer queue is full; retry the acknowledgement"));
+    if (record) this.pendingRecords++;
     const result = this.tail.then(operation);
-    this.tail = result.then(() => { this.pending[kind]--; }, () => { this.pending[kind]--; });
+    const finished = () => { if (record) this.pendingRecords--; };
+    this.tail = result.then(finished, finished);
     return result;
   }
 
@@ -70,12 +67,12 @@ export class SeenStore {
   }
 
   record(finish: SeenFinish, presented?: SeenPresentation): Promise<SeenFinish> {
-    return this.enqueue("record", async () => {
+    return this.enqueue(async () => {
       if (this.over(finish)) return finish;
       const kept = await this.keep(finish, presented);
       if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
       return kept;
-    });
+    }, true);
   }
 
   private async keep(finish: SeenFinish, presented: SeenPresentation | undefined): Promise<SeenFinish> {
@@ -113,7 +110,8 @@ export class SeenStore {
    */
   moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): Promise<void> {
     if (from === to) return Promise.resolve();
-    return this.enqueue("move", async () => {
+    // A move is a one-shot topology event, not a browser request that can be retried.
+    return this.enqueue(async () => {
       for (const finish of this.list()) {
         if (finish.pc !== pc || finish.pane !== from) continue;
         await this.keep({ ...finish, pane: to, id: renumber(finish.id) }, undefined);
