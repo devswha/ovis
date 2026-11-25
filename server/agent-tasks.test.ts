@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AgentTaskStatus, readTaskLine, taskCount, type SessionTasks, type TaskCount } from "./agent-tasks.ts";
+import { AgentTaskStatus, SCAN_BYTES, readTaskLine, taskCount, type SessionTasks, type TaskCount } from "./agent-tasks.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 
 const T0 = Date.parse("2026-11-09T04:00:00Z");
@@ -42,7 +43,7 @@ describe("agy background tasks", () => {
     expect(taskCount(state, null, T0 + 60 * 60_000)).toEqual(count(2, 2, T0, false));
     expect(taskCount(state, null, T0 + 94 * 60_000)).toEqual(count(1, 1, T0, false));
     readTaskLine("agy", state, JSON.stringify(agy.start(5, 2)));
-    expect(taskCount(state, null, T0 + 3 * 60_000).capped).toBe(true);
+    expect(taskCount(state, null, T0 + 3 * 60_000).capped).toBe(false);
     expect(taskCount(state, T0 + 10 * 60_000, T0 + 11 * 60_000)).toEqual(count(0, 0, T0));
   });
 });
@@ -122,6 +123,47 @@ describe("AgentTaskStatus", () => {
     now += 30_000;
     await status.track(pane("agy"));
     expect(resets).toEqual(["p1"]);
+  });
+
+  it("reads a long session file a bounded part per poll and tells its count only once it has read all of it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    const filler = `${JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: iso(0), content: "x".repeat(64 * 1024) })}\n`;
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n${filler.repeat(Math.ceil(2.5 * SCAN_BYTES / filler.length))}${JSON.stringify(agy.notice(3, 2))}\n`);
+    const told: TaskCount[] = [];
+    const status = new AgentTaskStatus({ resolve: async () => ({ path, started: null, owner: null }), onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => T0 + 3 * 60_000 });
+    const reads = spyOn(fs, "readSync");
+    try {
+      await status.track(pane("agy"));
+      const bytes = () => reads.mock.results.reduce((sum, result) => sum + Number(result.value), 0);
+      expect(bytes()).toBeLessThanOrEqual(SCAN_BYTES);
+      expect(told).toEqual([]);
+      reads.mockClear();
+      status.poll();
+      expect(bytes()).toBeLessThanOrEqual(SCAN_BYTES);
+      expect(told).toEqual([]);
+      status.poll();
+      expect(told).toEqual([count(0, 0, T0)]);
+    } finally { reads.mockRestore(); }
+  });
+
+  it("takes no agy lookup for a pane that runs grok by the time it finishes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n`);
+    const lookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    const told: TaskCount[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent); return looked.agent === "agy" ? lookup.promise : Promise.resolve(null); }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    const tracking = status.track(pane("agy"));
+    await status.refresh([pane("grok")]);
+    lookup.resolve({ path, started: null, owner: null });
+    await tracking;
+    expect(asked).toEqual(["agy", "grok"]);
+    expect(told).toEqual([]);
+    expect(status.countOf("p1")).toBe(0);
   });
 
   it("drops a lookup that finishes after the pane was let go", async () => {
@@ -639,8 +681,14 @@ describe("agy timers", () => {
     const state = read("agy", [agy.prompt(0), agy.start(3, 1, "Timer: 9999h, Prompt: x")]);
     expect(taskCount(state, null, T0 + 2 * 60_000)).toEqual(count(1, 1, T0, true));
     readTaskLine("agy", state, JSON.stringify(agy.start(4, 1, "Timer: 24h, Prompt: x")));
-    expect(taskCount(state, null, T0 + 2 * 60_000)).toEqual(count(2, 2, T0, true));
+    expect(taskCount(state, null, T0 + 2 * 60_000)).toEqual(count(2, 2, T0, false));
     readTaskLine("agy", state, JSON.stringify(agy.notice(3, 2)));
     expect(taskCount(state, null, T0 + 3 * 60_000)).toEqual(count(1, 1, T0, false));
+  });
+
+  it("holds a timer until it is due with a command running beside it, and the command alone to the hold's limit", () => {
+    const state = read("agy", [agy.prompt(0), agy.start(3, 1, "Timer: 2h, Prompt: check the backup"), agy.start(4, 1)]);
+    expect(taskCount(state, null, T0 + 60 * 60_000)).toEqual(count(2, 2, T0, false));
+    expect(taskCount(state, null, T0 + 124 * 60_000)).toEqual(count(1, 1, T0, true));
   });
 });

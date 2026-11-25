@@ -25,7 +25,9 @@ import type { HerdrPane } from "../shared/protocol.ts";
  * server. Only its process fires it, so while one is held its pane is looked up again each RESOLVE_MS,
  * and a pane whose session can no longer be looked up holds nothing: not on one lookup that failed,
  * which herdr being busy or a process read timing out gives too, but on the next, which the poll asks
- * RETRY_MS later whatever the pane holds. Each file is read on from where the last read stopped.
+ * RETRY_MS later whatever the pane holds. Each file is read on from where the last read stopped,
+ * at most SCAN_BYTES a poll, and its count is told only once all of it is read: a long session's
+ * first read would otherwise hold the server's thread, and a part of it can count a task that ended.
  */
 const POLL_MS = 2000;
 const RESOLVE_MS = 30_000;
@@ -35,6 +37,7 @@ const START_SLACK_MS = 60_000;
 const DUE_GRACE_MS = 120_000;
 const TIMER_LIMIT_MS = 24 * 3_600_000;
 const READ_CHUNK = 1024 * 1024;
+export const SCAN_BYTES = 4 * 1024 * 1024;
 /** O_NONBLOCK: a FIFO put there is opened without waiting for a writer, and refused as no plain file */
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
 
@@ -106,7 +109,8 @@ export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string
 export function taskCount(state: SessionTasks, started: number | null, now: number): TaskCount {
   const live = [...state.tasks.values()].filter((task) => (started === null || task.at >= started - START_SLACK_MS) && (task.due === null || now < task.due + DUE_GRACE_MS));
   const turn = live.filter((task) => state.promptAt === null || task.at >= state.promptAt);
-  return { running: live.length, turnRunning: turn.length, promptAt: state.promptAt, capped: turn.length === 0 || turn.some((task) => task.due === null) };
+  // a timer surely resumes the turn when it is due, whatever runs beside it; commands alone are held to the limit
+  return { running: live.length, turnRunning: turn.length, promptAt: state.promptAt, capped: !turn.some((task) => task.due !== null) };
 }
 
 interface Tracked extends SessionTasks {
@@ -114,24 +118,27 @@ interface Tracked extends SessionTasks {
   ino: number; offset: number; decoder: StringDecoder; partial: string; told: string | null; running: number;
 }
 
-function readOn(tracked: Tracked): void {
+/** False while the file holds more than this read reached. */
+function readOn(tracked: Tracked): boolean {
   let fd: number;
-  try { fd = openSync(tracked.path, READ_FLAGS); } catch { return; }
+  try { fd = openSync(tracked.path, READ_FLAGS); } catch { return true; }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) return;
+    if (!stat.isFile()) return true;
     const { ino, size } = stat;
     if (ino !== tracked.ino || size < tracked.offset) Object.assign(tracked, { ino, offset: 0, decoder: new StringDecoder("utf8"), partial: "", promptAt: null, tasks: new Map() });
-    const buffer = Buffer.alloc(Math.min(READ_CHUNK, Math.max(0, size - tracked.offset)));
-    while (tracked.offset < size) {
-      const read = readSync(fd, buffer, 0, Math.min(buffer.length, size - tracked.offset), tracked.offset);
+    const end = Math.min(size, tracked.offset + SCAN_BYTES);
+    const buffer = Buffer.alloc(Math.min(READ_CHUNK, Math.max(0, end - tracked.offset)));
+    while (tracked.offset < end) {
+      const read = readSync(fd, buffer, 0, Math.min(buffer.length, end - tracked.offset), tracked.offset);
       if (read <= 0) break;
       tracked.offset += read;
       const lines = (tracked.partial + tracked.decoder.write(buffer.subarray(0, read))).split("\n");
       tracked.partial = lines.pop()!;
       for (const line of lines) readTaskLine(tracked.agent, tracked, line);
     }
-  } catch {} finally { closeSync(fd); }
+    return tracked.offset >= size;
+  } catch { return true; } finally { closeSync(fd); }
 }
 
 export interface AgentTaskDeps {
@@ -149,7 +156,8 @@ const sessionOf = (pane: HerdrPane): string | null => pane.agent === "grok" ? pa
 
 export class AgentTaskStatus {
   private readonly panes = new Map<string, Tracked>();
-  private readonly resolving = new Set<string>();
+  /** the agent and session each lookup in flight is for */
+  private readonly resolving = new Map<string, string>();
   private readonly asked = new Map<string, HerdrPane>();
   private readonly lifetimes = new Map<string, number>();
   private readonly failed = new Map<string, { agent: TaskAgent; at: Map<string | null, number> }>();
@@ -201,11 +209,13 @@ export class AgentTaskStatus {
     const session = sessionOf(pane);
     const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent, session) : known.agent === agent && sessionOf(known.pane) === session && !this.stale(pane.pane_id);
     if (recent) return;
+    const lookingFor = `${agent}\0${session}`;
     if (this.resolving.has(pane.pane_id)) {
-      if (!spaced) this.asked.set(pane.pane_id, reported);
+      // a snapshot naming what is in flight already asks nothing new; one naming another agent or session does
+      if (!spaced || this.resolving.get(pane.pane_id) !== lookingFor) this.asked.set(pane.pane_id, reported);
       return;
     }
-    this.resolving.add(pane.pane_id);
+    this.resolving.set(pane.pane_id, lookingFor);
     const lifetime = this.lifetimes.get(pane.pane_id);
     let found: { path: string; started: number | null; owner: string | null } | null;
     try { found = await this.deps.resolve({ ...pane, agent }); } catch { found = null; } finally { this.resolving.delete(pane.pane_id); }
@@ -225,6 +235,11 @@ export class AgentTaskStatus {
       if (asked !== undefined) await this.track(asked);
       return;
     }
+    // the pane runs another agent or session by now: what was found is not what it runs
+    if (asked !== undefined && (asked.agent !== agent || sessionOf(asked) !== session)) {
+      await this.track(asked);
+      return;
+    }
     this.failed.delete(pane.pane_id);
     if (current !== undefined && current.agent === agent && current.path === found.path && current.owner === found.owner) {
       current.resolvedAt = this.now();
@@ -240,7 +255,7 @@ export class AgentTaskStatus {
   poll(only?: string): void {
     for (const [paneId, tracked] of this.panes) {
       if (only !== undefined && paneId !== only) continue;
-      readOn(tracked);
+      if (!readOn(tracked)) continue;
       const count = taskCount(tracked, tracked.started, this.now());
       // a timer is held past the hold's limit only while its process lasts: no event tells that of a pane at rest.
       // Nor does any bring the lookup after one that failed, which keeps what the pane holds or lets it go
