@@ -18,7 +18,7 @@ import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
-import { heldBody, type ApprovalDialog, type ApprovalHub } from "./approvals/hub.ts";
+import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
@@ -292,6 +292,18 @@ export function noteCommandEvidence(paneId: string, id: string, evidence: NonNul
   const sent = commands[index];
   if (!sent) return;
   sent.outcome = commandOutcome(paneId, sent, { now: Date.now(), evidence, nextAt: commands[index + 1]?.at });
+}
+
+/**
+ * A command the agent's own hook said it ran (server/approvals/hub.ts): the result of the oldest open send of it, sent to
+ * that agent before the hook told, even when another send followed it (a `/compact` takes a while). A builtin `/clear`
+ * and a skill named clear are not each other.
+ */
+export function noteHookCommand(paneId: string, agent: string, { name, builtin }: CommandEvent, at = Date.now()): void {
+  const sent = (chatSent.get(paneId)?.commands ?? []).find((sent) => sent.agent === agent && sent.at < at
+    && sent.outcome?.state !== "result-observed" && sent.invocations[0]?.name === name
+    && (name !== "clear" || builtin === (sent.sessionChange !== undefined)));
+  if (sent) noteCommandEvidence(paneId, sent.id, { kind: "native", at, named: true });
 }
 
 async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: InteractivePrompt | null, screen: string | undefined, readSendId: string | undefined, codexHome?: string, snapshot?: SessionSnapshot): Promise<NonNullable<PanePromptResponse["outcomes"]>> {

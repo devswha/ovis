@@ -19,7 +19,7 @@
  * permission dialog, dialogs/claude.ts; OmO's permission dialog and the one Ovis's pi extension draws like it, dialogs/pi.ts)
  * only says whether the request is still open: one the screen shows no dialog for, or a dialog showing another request's
  * subject whole, was answered in the terminal. An adapter may also read the turns its agent's hook tells of
- * (`onTurn`), which ask nothing and get no answer. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
+ * (`onTurn`) and the commands it says the agent ran (`onCommand`), which ask nothing and get no answer. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
  *
  * Codex asks no hook: Ovis is a client of its own app server (codex.ts), whose requests are held with `hold` and
  * released when Codex says they were answered, never by a read of the screen.
@@ -62,6 +62,12 @@ export interface TurnEvent {
   prompt: string | null;
 }
 
+/** A command the agent's hook told it ran: one of its own (`builtin`), or a skill or custom command it expanded. */
+export interface CommandEvent {
+  name: string;
+  builtin: boolean;
+}
+
 export interface HeldApproval extends ApprovalRequest {
   /** what a card built on this request carries in its id, so that its answer settles this request and no other */
   id: string;
@@ -84,6 +90,8 @@ export interface ApprovalAdapter {
   toCard(event: unknown): ApprovalRequest | null;
   /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop), else null. */
   turn?(event: unknown): TurnEvent | null;
+  /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
+  command?(event: unknown): CommandEvent | null;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
   decision(label: string): ApprovalDecision | null;
   /** What the hook prints for a decision, or for none (null), after which the agent's own dialog stands. */
@@ -189,6 +197,8 @@ export class ApprovalHub {
     now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void; onSettled?: (paneId: string) => void; platform?: string;
     /** a turn of the agent started in `paneId` began or ended, as its hook told */
     onTurn?: (paneId: string, kind: string, turn: TurnEvent) => void;
+    /** the agent started in `paneId` ran a command, as its hook told */
+    onCommand?: (paneId: string, kind: string, command: CommandEvent) => void;
     /** what the hook runs, before its own arguments */
     relay?: readonly string[];
   } = {}) {
@@ -307,9 +317,11 @@ export class ApprovalHub {
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
     // told, not asked: the hook prints nothing, so the agent goes on as it would without it
     const turn = launch.adapter.turn?.(parsed) ?? null;
-    if (turn !== null) {
+    const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
+    if (turn !== null || command !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
-      this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
+      if (turn !== null) this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
+      else this.options.onCommand?.(launch.paneId, launch.adapter.kind, command!);
       return;
     }
     const card = launch.adapter.toCard(parsed);
