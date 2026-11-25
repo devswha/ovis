@@ -2294,7 +2294,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             if (!move) committed = true;
             // asked again right before herdr writes: a question known to have ended since the last read takes no committing
             // key (a move keeps its own cancellation boundaries)
-            const asked = (): boolean => asks() && !request.signal.aborted;
+            const asked = (): boolean => asks() && !request.signal.aborted
+              && (parsed.gjcCall === undefined || gjcCallStillOpenInFile(parsed.gjcCall));
             const guard = move ? undefined : asked;
             try {
               if (step.keys) await paneSendKeys(body.pane_id, step.keys, undefined, guard);
