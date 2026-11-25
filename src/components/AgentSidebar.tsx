@@ -347,9 +347,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // what stands above the resting line is held by family: a helper leaving or ending keeps its agent in place
     held.current = { readerKey, order: people.map(rowKey), active: new Set(agentFamilies(people).filter((family) => family.some(busy)).flat().map(rowKey)) };
   });
-  const heldOrder = holding ? held.current?.order ?? [] : [];
-  const shownPeople = (() => {
-    if (!holding) return people;
+  const heldOrder = holding ? held.current?.order : undefined;
+  // the order drawn, which the tree lines below are read from too
+  const shownPeople = useMemo(() => {
+    if (heldOrder === undefined) return people;
     // a row that came during the hold takes the place of its nearest held ancestor, so a new helper stands with its agent
     const byKey = new Map(people.map((row) => [rowKey(row), row]));
     const at = (row: AgentRow): number => {
@@ -362,8 +363,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       return Number.MAX_SAFE_INTEGER;
     };
     const places = new Map(people.map((row) => [row, at(row)]));
-    return [...people].sort((a, b) => places.get(a)! - places.get(b)!);
-  })();
+    const sorted = [...people].sort((a, b) => places.get(a)! - places.get(b)!);
+    // the same order is the same list: the tree lines and folds below are not drawn again for a hold alone
+    return sorted.every((row, index) => row === people[index]) ? people : sorted;
+  }, [people, heldOrder]);
   useEffect(() => {
     if (foldRequest === null || foldRequest.folded === folded) return;
     if (filter.active) { setFilterFold(foldRequest.folded); return; }
@@ -472,7 +475,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const restLines = new Map<AgentRow, { more: boolean; through: boolean }>();
     const helpersOf = new Map<AgentRow, AgentRow[]>();
     const foldedHelpers = new Set<AgentRow>();
-    for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [people], parts.background]) {
+    for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [shownPeople], parts.background]) {
       const listDepths = depths(list);
       for (const [row, depth] of listDepths) restDepths.set(row, depth);
       if (foldHelpers) {
@@ -490,7 +493,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       for (const [row, line] of treeLines(shown, listDepths)) restLines.set(row, line);
     }
     return { restDepths, restLines, helpersOf, foldedHelpers };
-  }, [parts, people, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
+  }, [parts, shownPeople, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
   useLayoutEffect(() => {
     const active = document.activeElement;
     const inList = Boolean(active && sectionRef.current?.contains(active));
