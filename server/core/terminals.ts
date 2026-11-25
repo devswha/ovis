@@ -84,7 +84,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       const window = client.data.output.get(paneId);
       const buffered = backlog(client);
       if (window) {
-        const verdict = window.check(buffered, Date.now(), client.getBufferedAmount() - buffered);
+        const verdict = window.check(buffered, Date.now(), client.getBufferedAmount() - buffered, attachment.clients.size === 1);
         if (verdict === "stop") end(client, "stalled");
         else if (verdict === "pause") paused = true;
         continue;
