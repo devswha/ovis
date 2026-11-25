@@ -965,7 +965,7 @@ describe("CLAUDE_CONFIG_DIR", () => {
     try {
       for (const process of [child, bare]) await process.stdout.getReader().read();
       expect(await processClaudeConfigDir(child.pid)).toBe(dir);
-      expect(await processClaudeConfigDir(bare.pid)).toBeNull();
+      expect(await processClaudeConfigDir(bare.pid, [], dir)).toBe(join(dir, ".claude"));
     } finally { child.kill(); bare.kill(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -497,6 +497,8 @@ export async function processClaudeConfigDir(
 ): Promise<string | null> {
   const read = await processRead(pid, argv, home, platform, table);
   if (read.source.state === "ambiguous") throw new AmbiguousClaudeStore(pid);
+  // A complete read without an override is proof of Claude's own default, not the server's.
+  if (read.source.state === "absent") return join(home, ".claude");
   return read.legacy;
 }
 
