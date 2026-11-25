@@ -296,7 +296,7 @@ async function namedDirectory(dir: string | null): Promise<string | null> {
   try { return (await stat(dir)).isDirectory() ? dir : null; } catch { return null; }
 }
 
-interface SourceRead { source: ClaudeSource; legacy: string | null }
+interface SourceRead { source: ClaudeSource; legacy: string | null; home?: string }
 
 async function overrideSource(value: string): Promise<ClaudeSource> {
   if (value === "") return { state: "override", dir: "" };
@@ -312,7 +312,10 @@ async function environSource(environ: string): Promise<SourceRead> {
   const named = entries.filter((entry) => entry.startsWith("CLAUDE_CONFIG_DIR=")).map((entry) => entry.slice(18));
   const legacy = await namedDirectory(named[0] || null);
   if (named.length > 1) return { source: { state: "unreadable" }, legacy };
-  return { source: named.length === 0 ? { state: "absent" } : await overrideSource(named[0]!), legacy };
+  if (named.length === 1) return { source: await overrideSource(named[0]!), legacy };
+  const homes = entries.flatMap((entry) => entry.startsWith("HOME=") ? [entry.slice(5)] : []);
+  const home = homes.length === 1 && isAbsolute(homes[0]!) ? homes[0] : undefined;
+  return { source: { state: "absent" }, legacy, home };
 }
 
 async function readClaudeSource(pid: number, home: string, platform: string, table: () => Promise<ProcessRow[]>): Promise<SourceRead> {
@@ -327,7 +330,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
     if (platform === "linux") return await environSource(await readFile(`/proc/${pid}/environ`, "utf8"));
     if (platform === "darwin") {
       const environ = darwinProcess.environment(pid);
-      const source: ClaudeSource = environ === null ? { state: "unreadable" } : (await environSource(environ)).source;
+      const read = environ === null ? unreadable : await environSource(environ);
       const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
       const timer = setTimeout(() => child.kill(), 3000);
       let text: string;
@@ -335,7 +338,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
         text = await new Response(child.stdout).text();
         await child.exited;
       } finally { clearTimeout(timer); }
-      return { source, legacy: await namedDirectory(configDirInPsLine(text)) };
+      return { ...read, legacy: await namedDirectory(configDirInPsLine(text)) };
     }
     return unreadable;
   } catch (error) {
@@ -498,7 +501,7 @@ export async function processClaudeConfigDir(
   const read = await processRead(pid, argv, home, platform, table);
   if (read.source.state === "ambiguous") throw new AmbiguousClaudeStore(pid);
   // A complete read without an override is proof of Claude's own default, not the server's.
-  if (read.source.state === "absent") return join(home, ".claude");
+  if (read.source.state === "absent") return join(read.home ?? home, ".claude");
   return read.legacy;
 }
 
