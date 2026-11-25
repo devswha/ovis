@@ -86,6 +86,7 @@ export async function windowsProcessTable(timeoutMs = 10_000, command: string[] 
 
 const SHARED_TABLE_RECENT_MS = 5_000;
 let sharedReads = 0;
+let sharedRecentFloor = 0;
 let sharedRecent: { at: number; started: number; settled: boolean; rows: Promise<ProcessRow[] | null> } | null = null;
 let sharedFresh: { started: number; rows: Promise<ProcessRow[] | null> } | null = null;
 
@@ -96,25 +97,60 @@ export function windowsTableWatermark(): number {
 export function forgetWindowsProcessTable(): void {
   sharedRecent = null;
   sharedFresh = null;
+  sharedRecentFloor = 0;
 }
 
 export function recentWindowsProcessTable(
   read: () => Promise<ProcessRow[] | null>,
   now = Date.now(),
   shared = true,
-): { rows: Promise<ProcessRow[] | null>; cached: boolean } {
+): { rows: Promise<ProcessRow[] | null>; cached: boolean; started: number } {
   if (shared && sharedRecent && now - sharedRecent.at < SHARED_TABLE_RECENT_MS) {
-    return { rows: sharedRecent.rows, cached: sharedRecent.settled };
+    return { rows: sharedRecent.rows, cached: sharedRecent.settled, started: sharedRecent.started };
   }
   const entry = { at: now, started: ++sharedReads, settled: false, rows: Promise.resolve().then(read) };
   if (shared) {
     sharedRecent = entry;
     void entry.rows.then((rows) => {
       entry.settled = true;
-      if ((rows === null || rows.length === 0) && sharedRecent === entry) sharedRecent = null;
-    }, () => { if (sharedRecent === entry) sharedRecent = null; });
+      if (rows === null || rows.length === 0) {
+        sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+        if (sharedRecent === entry) sharedRecent = null;
+      }
+    }, () => {
+      sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+      if (sharedRecent === entry) sharedRecent = null;
+    });
   }
-  return { rows: entry.rows, cached: false };
+  return { rows: entry.rows, cached: false, started: entry.started };
+}
+
+export function freshWindowsProcessTableEntry(
+  read: () => Promise<ProcessRow[] | null>,
+  after = -1,
+  shared = true,
+): { rows: Promise<ProcessRow[] | null>; started: number } {
+  if (shared && sharedFresh && sharedFresh.started > after) return sharedFresh;
+  const entry = { started: ++sharedReads, rows: Promise.resolve().then(read) };
+  if (shared) {
+    sharedFresh = entry;
+    const clear = () => { if (sharedFresh === entry) sharedFresh = null; };
+    void entry.rows.then((rows) => {
+      clear();
+      if (rows !== null && rows.length > 0) {
+        if (entry.started >= sharedRecentFloor && (!sharedRecent || entry.started >= sharedRecent.started)) {
+          sharedRecent = { at: Date.now(), started: entry.started, settled: true, rows: Promise.resolve(rows) };
+        }
+      } else {
+        sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+        if (sharedRecent && entry.started >= sharedRecent.started) sharedRecent = null;
+      }
+    }, () => {
+      clear();
+      sharedRecentFloor = Math.max(sharedRecentFloor, entry.started);
+    });
+  }
+  return entry;
 }
 
 export function freshWindowsProcessTable(
@@ -122,17 +158,5 @@ export function freshWindowsProcessTable(
   after = -1,
   shared = true,
 ): Promise<ProcessRow[] | null> {
-  if (shared && sharedFresh && sharedFresh.started > after) return sharedFresh.rows;
-  const entry = { started: ++sharedReads, rows: Promise.resolve().then(read) };
-  if (shared) {
-    sharedFresh = entry;
-    const clear = () => { if (sharedFresh === entry) sharedFresh = null; };
-    void entry.rows.then((rows) => {
-      clear();
-      if (rows !== null && rows.length > 0 && (!sharedRecent || entry.started >= sharedRecent.started)) {
-        sharedRecent = { at: Date.now(), started: entry.started, settled: true, rows: Promise.resolve(rows) };
-      }
-    }, clear);
-  }
-  return entry.rows;
+  return freshWindowsProcessTableEntry(read, after, shared).rows;
 }
