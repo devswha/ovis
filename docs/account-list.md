@@ -2307,9 +2307,14 @@ neither a hand-over nor the pin undoes a removal.
 - **The names of its rows.** A pinned PC makes its account rows from the list's devices, and names
   each as the list sealed its name: it opens the `sealed` field of the entry that let the device in
   with the epoch key it holds (the wrap a member gave it when it added the PC), once per entry, and
-  writes the rows again when one opened. A name it cannot open (no key for that epoch, none sealed)
-  leaves the row named `Device`; a name a person gave a row at the PC is kept. The names decide
-  nothing, and stay on the PC.
+  writes the rows again when one opened. It asks the account service for a wrap once per epoch in a
+  round, outside the follower's turn, so a read (a removal before a session opens) never waits for
+  the names; an entry the service could not be asked about is asked again a minute later. A name it
+  cannot open (no key for that epoch, none sealed) leaves the row named `Device`; a name a person
+  gave a row at the PC is kept, but a row a person named `Device` or cleared takes the list's name,
+  since the PC tells it from the placeholder by the label alone. Only the list's commits name rows:
+  a PC that follows no list keeps the labels its rows came in with. The names decide nothing, and
+  stay on the PC.
 - **The witness.** A device asks each PC it knows `GET /api/account/list/witness` in its own
   session and gets the PC's `{ account, pinned, admits, removed }` (docs/account.md, "How long a key
   has been let in").

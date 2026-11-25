@@ -301,7 +301,8 @@ export class AccountDeviceStore implements AccountRowSource {
 
     // rows admitted from here on belong to this read's account and snapshot. A row still named by the list's placeholder
     // (its name was not open to this PC when it came in) takes the name the list gives it now; one a person named stays
-    const named = new Map(list.devices.filter((entry) => entry.label !== PLACEHOLDER_LABEL).map((entry) => [entry.key, entry.label]));
+    // (the list's commits alone: a PC that follows no list keeps the labels its rows came in with)
+    const named = new Map(list.names === true ? list.devices.filter((entry) => entry.label !== PLACEHOLDER_LABEL).map((entry) => [entry.key, entry.label]) : []);
     const devices = this.file.devices.map((row) => row.label === PLACEHOLDER_LABEL && named.has(row.key) ? { ...row, label: named.get(row.key)! } : row);
     this.write({ ...this.file, devices, account: list.account, snapshot: list.snapshot, version: list.version });
 

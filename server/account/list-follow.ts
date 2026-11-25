@@ -2875,7 +2875,7 @@ export function listCommit(copy: FollowerCopy, now: number, names: ReadonlyMap<s
     const to = heirOf(state, from) === null ? null : standsFor(state, from);
     return to === null ? [] : [{ from, to }];
   });
-  return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed, moved };
+  return { account: copy.account, snapshot: copy.list.slice(0, 32), version: (state?.footing.seq ?? 0) + 1, devices, removed, moved, names: true };
 }
 
 /** Removes the file: a reset relay identity is a new PC, which follows no list yet. Never throws. */
