@@ -21,12 +21,23 @@ const ESCAPE_REFUSAL_ROW_RE: Readonly<Record<string, RegExp>> = {
 
 /**
  * Grok's permission panel row that refuses, its number the key that picks it (Grok 1.0.92): "┃  4 (○) No, reject (type
- * to add feedback)". Esc moves Grok's focus to its scrollback and leaves the panel up (#4571). Only a panel that also
- * opens on the call it asks about ("┃  ›  Run …") and offers "Yes, proceed" is one: a question's answer may read alike.
+ * to add feedback)", its hint cut on a narrow pane. Esc moves Grok's focus to its scrollback and leaves the panel up
+ * (#4571). The row is read only inside the panel that ends the screen: from the call it asks about ("┃  ›  Run …") down
+ * to its footer ("2/4:select  │  Tab:next option  │ …"; a question's says "Tab:next answer"), every row on its bar.
  */
-const GROK_REJECT_ROW_RE = /^┃\s+(\d) \([○●]\) (No, reject) \(type to add feedback\)$/u;
+const GROK_REJECT_ROW_RE = /^┃\s+(\d) \([○●]\) (No, reject) \(type to add feedback/u;
 const GROK_PROCEED_ROW_RE = /^┃\s+\d \([○●]\) Yes, proceed$/u;
 const GROK_PANEL_CALL_RE = /^┃\s+›\s/u;
+const GROK_PANEL_FOOTER_RE = /^\d+\/\d+:select\s+│\s+Tab:next option(?:\s+│|$)/u;
+
+/** The rows of Grok's permission panel when it ends the screen (Grok 1.0.92), its call's row first; null otherwise. */
+function grokPermissionPanel(rows: string[]): string[] | null {
+  if (!GROK_PANEL_FOOTER_RE.test(rows.at(-1) ?? "")) return null;
+  for (let start = rows.length - 2; start >= 0 && rows[start]!.startsWith("┃"); start -= 1) {
+    if (GROK_PANEL_CALL_RE.test(rows[start]!)) return rows.slice(start, -1);
+  }
+  return null;
+}
 
 /**
  * what a menu's hint line says to do with it: a way to choose ("Enter to select", "↵ choose",
@@ -249,9 +260,10 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
   // screen (the agent's composer owns the keys then) or for a line of quoted output
   const hints = NOT_PROMPT_TEXT_RE.test(last.at(-1) ?? "") ? [] : last.slice(-2).filter((line) => !NOT_PROMPT_TEXT_RE.test(line));
   const question = [...last].reverse().find((line) => ASKED_RE.test(line)) ?? last.at(-1);
-  const grokPanel = agent === "grok" && last.some((line) => GROK_PANEL_CALL_RE.test(line)) && last.some((line) => GROK_PROCEED_ROW_RE.test(line));
-  const grokRejects = grokPanel ? last.filter((line) => GROK_REJECT_ROW_RE.test(line)) : [];
-  const grokReject = grokRejects.length === 1 ? GROK_REJECT_ROW_RE.exec(grokRejects[0]!) : null;
+  const panel = agent === "grok" ? grokPermissionPanel(shown.map((index) => cleanLine(lines[index]!))) : null;
+  const grokRejects = panel?.filter((line) => GROK_REJECT_ROW_RE.test(line)) ?? [];
+  const grokReject = grokRejects.length === 1 && panel!.filter((line) => GROK_PROCEED_ROW_RE.test(line)).length === 1
+    ? GROK_REJECT_ROW_RE.exec(grokRejects[0]!) : null;
   // a (y/n) letter is offered only for the prompt at the screen's end, never for a mention
   // above it; it is typed without an Enter: a program reading a whole line still waits for
   // one, and the card that follows offers it
