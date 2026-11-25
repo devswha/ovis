@@ -178,9 +178,9 @@ function AccountPcRow({ pc, hidden, declined, failedWith, opens, pcs: { stateOf,
   const refused = !adding && !failed && declined;
   // a PC the account's list does not hold is added by nothing here, and one with no way to it cannot be: each says so
   const outside = pc.outside === true && !adding && !failed && state === "ready";
-  const away = state === "offline" || state === "outdated" || failed || refused || outside;
+  const away = state === "offline" || state === "unreachable" || state === "outdated" || failed || refused || outside;
   // where it is, beside its name only: the words are the dot's tooltip and what a screen reader hears
-  const words = failed ? failedWith : refused ? t("Not approved") : pc.unreachable === true ? t("Can't reach the PC") : outside ? t("Not in your account's list yet")
+  const words = failed ? failedWith : refused ? t("Not approved") : pc.unreachable === true || state === "unreachable" ? t("Can't reach the PC") : outside ? t("Not in your account's list yet")
     : state === undefined ? t("Checking…") : state === "offline" ? t("Switched off") : state === "outdated" ? t("Update Ovis on that PC") : t("Connecting…");
   return (
     <section hidden={hidden && !adding} className={`machine-group account-pc-group${away ? " is-offline" : ""}`} aria-label={t("PC {name}", { name: pc.name })} data-pc-state={state ?? "checking"}>

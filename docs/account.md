@@ -1263,7 +1263,10 @@ A's page cannot reach a relay (its `connect-src` is itself and the account servi
 does the relay work, and the page only vouches for it:
 
 1. `POST /api/machines/relay/account/check` `{ "pcs": [{ "server_id", "server_public_key", "relay", "name" }] }`
-   (at most 32) answers each PC's `state`: `ready`, `outdated` or `offline`. A's server opens a relay
+   (at most 32) answers each PC's `state`: `ready`, `outdated`, `offline` (the relay assigned the
+   connection and no PC answered in time) or `unreachable` (anything else kept the answer away: the
+   relay unreachable from A or turning A away, a PC that began and did not finish; the page says
+   **Can't reach the PC**, never that it is switched off). A's server opens a relay
    channel to each, offers `pair-sas` with `pair-intent-pc-vouched` and `pair-pc-proof`, reads the PC's answer to `HELLO`
    and closes before `PAIR_REQUEST`: nothing is counted there and no key is kept.
 2. **Add**: `POST /api/machines/relay/account/start` `{ "pc" }` checks the entry (its `server_id`

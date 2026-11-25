@@ -153,6 +153,14 @@ describe("the account's PCs in the sidebar", () => {
     expect(renderer!.root.findAll((node) => node.type === "button")).toHaveLength(0);
   });
 
+  it("says Switched off only where the relay said no PC answered, and that it cannot reach a PC whose answer was kept away otherwise", async () => {
+    awayAnswers = ["unreachable"];
+    await mount();
+    expect(groups()[2]).toEqual(["PC Away", "unreachable", ""]);
+    expect(text(row("Away"))).toContain("Can't reach the PC");
+    expect(text(row("Away"))).not.toContain("Switched off");
+  });
+
   it("adds no PC by itself that the account's list does not hold, asks nothing of one it has no way to, and says which is which", async () => {
     source.list = async () => ({ account: "acct", pcs: [
       { ...DESK, outside: true as const },
@@ -456,10 +464,12 @@ describe("the account's PCs in the sidebar", () => {
     expect(pairSignal?.aborted).toBe(false);
   });
 
-  it("shows a PC whose first check failed as not answering, keeps the others, and asks it again when the window comes back", async () => {
+  it("shows a PC whose first check failed as one it cannot reach, never as switched off, keeps the others, and asks it again when the window comes back", async () => {
     failAwayCheck = true;
     await mount();
-    expect(groups()).toEqual([["PC Desk", "ready", ""], ["PC Old box", "outdated", ""], ["PC Away", "offline", ""]]);
+    expect(groups()).toEqual([["PC Desk", "ready", ""], ["PC Old box", "outdated", ""], ["PC Away", "unreachable", ""]]);
+    expect(text(row("Away"))).toContain("Can't reach the PC");
+    expect(text(row("Away"))).not.toContain("Switched off");
     failAwayCheck = false;
     awayAnswers = ["ready"];
     await comeBack();
@@ -474,7 +484,7 @@ describe("the account's PCs in the sidebar", () => {
     await mount();
     await act(async () => { releaseAway(); });
     await settle();
-    expect(groups()[2]).toEqual(["PC Away", "offline", ""]);
+    expect(groups()[2]).toEqual(["PC Away", "unreachable", ""]);
     expect(pairSignal?.aborted).toBe(false);
   });
 
@@ -509,7 +519,7 @@ describe("the account's PCs in the sidebar", () => {
       await settle();
     }
     expect(checks()).toBe(before);
-    expect(groups()[2]).toEqual(["PC Away", "offline", ""]);
+    expect(groups()[2]).toEqual(["PC Away", "unreachable", ""]);
   });
 
   it("keeps a pairing under way when the roster changes", async () => {

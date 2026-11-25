@@ -170,10 +170,10 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
         setPcs(null);
         return;
       }
-      // anything else is that PC not answering: its row says so, and the others stay. It is asked again on the next
-      // refresh, never because the roster changed
+      // anything else kept that PC's answer away (nothing says it is off): its row says so, and the others stay. It is
+      // asked again on the next refresh, never because the roster changed
       round.failed.add(pc.server_id);
-      setStates((current) => new Map(current).set(pc.server_id, "offline"));
+      setStates((current) => new Map(current).set(pc.server_id, "unreachable"));
     });
   };
   useEffect(() => {

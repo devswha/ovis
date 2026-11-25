@@ -1596,7 +1596,8 @@ export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailn
 export const addAddressPc = (address: string, code: string) => machineRequest<{ machine: Machine }>("/address", "POST", { address, code });
 /** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */
 export interface AccountPcEntry { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }
-export type AccountPcState = "ready" | "outdated" | "offline";
+/** `offline`: the relay said no PC answered; `unreachable`: anything else kept its answer away (server/relay-pc.ts VouchedSupport). */
+export type AccountPcState = "ready" | "outdated" | "offline" | "unreachable";
 export const checkAccountPcs = (pcs: readonly AccountPcEntry[]) => machineRequest<{ pcs: { server_id: string; state: AccountPcState }[] }>("/relay/account/check", "POST", { pcs });
 /** POST /api/machines/relay/account/start: the key this PC would hold for that PC, for the admission to name; ApiError `account_pc_outdated` for an older one. */
 export const startAccountPc = (pc: AccountPcEntry) => machineRequest<{ ticket: string; key: string; label: string }>("/relay/account/start", "POST", { pc });
