@@ -2533,7 +2533,10 @@ its directory entry. A PC the directory does not list gets no [relay pass](relay
 Devices and PCs → Manage account, as **Remove**, only for a PC the directory has not heard from for
 15 minutes (`offlinePc` in [`src/components/AccountManage.tsx`](../src/components/AccountManage.tsx)),
 on any page that has the sheet: a PC's own page, the hosted app and the phone apps. A confirm says
-the PC leaves the account once it is online again and is added again at the PC.
+the PC leaves the account once it is online again and is added again at the PC. A PC the account's
+signed list holds has **Remove** whether it is on or off, through the same confirm and the same
+fresh sign-in: once its removal is in the list it does not come back by itself, so the confirm says
+it comes back to the account only as a new PC, added again on that PC.
 
 Push (the doorbell), per signed-in device:
 
