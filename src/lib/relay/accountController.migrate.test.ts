@@ -4,7 +4,7 @@ import { pageAnswers } from "../account/listMigrate.ts";
 import { memoryAccountStore, newKey, type AccountSession, type AccountStore } from "../account/store.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import { ACCOUNT_LIST_FEATURE } from "../../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_FEATURE, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { createAccountController } from "./accountController.ts";
 import type { RelayDevice, ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -316,5 +316,37 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     tell();
     await settle();
     expect(opened.map((offer) => offer.server_public_key)).toEqual([two.offerKey]);
+  });
+
+  it("a PC that lets the account's devices in by the list alone is asked again in the background with the list key (#4652)", async () => {
+    await signIn("acct-listed");
+    const pc = pcKeys();
+    const list = "5c".repeat(32);
+    const at = Math.floor(Date.now() / 1000) - 40 * DAY;
+    globalThis.localStorage.setItem("ovis:seen-pcs:acct-listed", JSON.stringify({ v: 1, account: "acct-listed", pcs: { [pc.endpoint]: { since: at, last: at, how: "paired" } } }));
+    const member = (await accountStore.key()).public_spki;
+    // a carried device after its hand-over: in its list by its account key, still asking the PC that has not agreed
+    const following = (): AccountListView => ({
+      account: "acct-listed", reached: true, status: { at: "following", list, standing: "in", head: 4, read_at: 1, trouble: null, asks: [pc.endpoint] },
+      devices: [{ key: member, self: true, power: "full", role: "drive", until: null, carried: true, name: null }], pcs: [],
+    });
+    const { list: held, tell } = listIn(following);
+    const said = { account: "acct-listed", pinned: list, admits: [], removed: [] };
+    const opened: { listKey: boolean; key: string | undefined }[] = [];
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const account = controller(held, empty, async (offer, options) => {
+      const store = options.store as ShellDeviceStore;
+      opened.push({ listKey: options.accountListKey === true, key: (await store.get((offer as { server_id: string }).server_id))?.public_spki });
+      // the PC follows the list: a sign-in key the list no longer holds is refused for it
+      if (options.accountListKey !== true) throw new MuxProtocolError("account_list_required", "the PC lets the account's devices in by its list");
+      return sessionOf({ answers: { "GET /api/account/list/witness": said } }).opened;
+    }, [row]);
+    await account.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened.map((one) => one.listKey)).toEqual([false, true]);
+    expect(opened[1]!.key).toBe(member);
+    expect(pageAnswers.get("acct-listed", pc.endpoint)).toEqual(said);
   });
 });

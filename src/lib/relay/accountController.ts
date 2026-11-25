@@ -1,4 +1,4 @@
-import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE } from "../../../shared/relay-mux.ts";
+import { ACCOUNT_FEATURE, ACCOUNT_LIST_FEATURE, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { exportPublicKey, importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { newRecordId } from "../../../shared/account-records.ts";
@@ -42,7 +42,7 @@ import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
 import { AdmissionRefusedError, firstLinkRefusal, listRemovedLink, refusalOf } from "./firstLink.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { accountOpenablePcs } from "./pcPick.ts";
-import { openRelayTransport, type RelayTransport } from "./transport.ts";
+import { openRelayTransport, type RelayTransport, type RelayTransportOptions } from "./transport.ts";
 import { sendAgainWhenBack } from "./networkRetry.ts";
 
 const INTRODUCTION_WAIT_MS = 60_000;
@@ -423,8 +423,17 @@ export function createAccountController(mount: RelayShellMount, view: {
         })() : paired !== undefined ? { offer: offerOf(paired), options: { store } } : null;
         if (way === null) continue;
         let opened: RelayTransport | null = null;
+        const openBy = (options: RelayTransportOptions) => open(way.offer, { ...options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
         try {
-          opened = await open(way.offer, { ...way.options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
+          try {
+            opened = await openBy(way.options);
+          } catch (error) {
+            // a PC that lets its account's devices in by the list alone refuses a key the list does not hold: once more,
+            // with the key the list holds for this device, as the shell does
+            const held = error instanceof MuxProtocolError && error.code === "account_list_required" ? listKey() : null;
+            if (held === null) throw error;
+            opened = await openBy({ store: withAccountDevice(store, accountDevice(way.offer, held)), accountListKey: true });
+          }
           const said = await askWitness((path, init) => opened!.fetch(path, init));
           // no answer here takes no answer heard meanwhile (a session of this page's own may have heard one)
           if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);

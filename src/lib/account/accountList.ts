@@ -1093,7 +1093,7 @@ export function accountList(options: AccountListOptions): AccountList {
   /**
    * The first device's move of an account that was in use onto its list (Part F, F1 to F4): a birth it kept is sent
    * again, while the account service opens the move for the account (`migrate`; with the switch withdrawn it is kept as
-   * it is, `paused`); otherwise, an hour after a final refusal at the soonest, it plans from the account service's
+   * it is, `paused`) and has answered every block of this device's own on a key the birth carries; otherwise, an hour after a final refusal at the soonest, it plans from the account service's
    * devices and PCs, its own record of its PCs and what they answered in this run, signs the birth once and keeps it,
    * over the very record it read (one birth per account on this device, whatever its tabs do), and sends the birth the
    * record holds: its own, or the one another tab kept first.
@@ -1102,7 +1102,14 @@ export function accountList(options: AccountListOptions): AccountList {
     const { account } = session;
     const slot = await store.get("birth", account);
     const kept = readBirth(slot);
-    if (kept !== null) return migrate ? await sendBirth(bound, account, kept, signal) : { why: "paused", wait: null, asks: [] };
+    if (kept !== null) {
+      if (!migrate) return { why: "paused", wait: null, asks: [] };
+      // a block of this device's own on a key the birth carries goes to the account service first: once it is answered,
+      // the service judges the birth by it (a frozen sign-in is not carried), and the birth goes as it is (X5)
+      const blocks = Object.values(await accountStore.get("unsent_blocks") ?? {}).filter((entry) => entry.account === account && entry.refused !== true);
+      if (blocks.some((entry) => entry.records.some((record) => kept.carried.devices.includes(record.target)))) return { why: "sending", wait: null, asks: [] };
+      return await sendBirth(bound, account, kept, signal);
+    }
     const signIn = await signInOf(session);
     if (signIn === null) return { why: "self_unlisted", wait: null, asks: [] };
     const at = seconds();
@@ -1310,8 +1317,11 @@ export function accountList(options: AccountListOptions): AccountList {
       if (hint === null) {
         // a birth this device kept goes first: sent again as it is, whatever else is said now
         let started: "placed" | "exists" | NoGenesis | MoveState = readBirth(await store.get("birth", account)) === null ? await start(bound, session, keys, signal) : "moving";
-        // an account that was in use, on the account service's migrate switch: the first device moves it onto its list
-        if (started === "moving" || (migrate && (started === "not_new" || started === "not_first_device" || started === "has_pcs"))) {
+        // an account that was in use, on the account service's migrate switch: the first device moves it onto its list.
+        // A new birth is signed only on storage that lasts, as a genesis is; one kept already is sent whatever.
+        const newBirth = migrate && (started === "not_new" || started === "not_first_device" || started === "has_pcs");
+        if (newBirth && !await (options.durable ?? storageLasts)()) started = "storage";
+        else if (started === "moving" || newBirth) {
           const moved = await move(bound, session, keys, migrate, signal);
           started = moved === "placed" || moved === "other" ? "exists" : moved;
         }
@@ -1412,9 +1422,9 @@ export function accountList(options: AccountListOptions): AccountList {
     }
     if (fresh && carriedFrom !== null && copy.state !== null) await keepNotice(account, copy.state, carriedFrom);
     // a carried device that follows its list checks it against its PCs, and hands its place on to its member key only
-    // while none of them says against it
+    // while none of them says against it, and its copy holds no alarm of another history
     const check = await checkJoined(account, copy);
-    if (copy.pin.how === "carried" && copy.state !== null && (check?.doubt ?? null) === null) await handOver(bound, session, keys, copy, signal);
+    if (copy.pin.how === "carried" && copy.state !== null && copy.alarm === null && (check?.doubt ?? null) === null) await handOver(bound, session, keys, copy, signal);
     return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}), ...(check === undefined ? {} : { check }) };
   };
 

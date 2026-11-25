@@ -91,7 +91,8 @@ export function listWorld(account = "acct_owner", start = 1_795_000_000_000) {
   fake.listAccounts = "*";
   const origin = "https://account.example";
   /** `skew`: how far this device's own clock runs apart from the account service's, in ms. */
-  const device = async (given: { readonly label?: string; readonly genesis?: GenesisMode; readonly register?: boolean; readonly skew?: number; readonly migration?: MigrationOptions } = {}): Promise<WorldDevice> => {
+  /** `durable`: whether this device's storage lasts (accountList's `durable`), true unless it says otherwise. */
+  const device = async (given: { readonly label?: string; readonly genesis?: GenesisMode; readonly register?: boolean; readonly skew?: number; readonly migration?: MigrationOptions; readonly durable?: () => boolean } = {}): Promise<WorldDevice> => {
     const label = given.label ?? "Phone";
     const own = (): number => clock.now + (given.skew ?? 0);
     const store = memoryAccountStore();
@@ -117,7 +118,7 @@ export function listWorld(account = "acct_owner", start = 1_795_000_000_000) {
     const service = new AccountService({ store, fetch, lock: memoryLock(), now: own });
     const list = accountList({
       service, accountStore: store, listStore: lists, lock: memoryListLock(), now: own,
-      names: () => ({ label, os: "ios" }), linkedPcs: async () => 0, genesis: () => given.genesis ?? "first-device", durable: async () => true,
+      names: () => ({ label, os: "ios" }), linkedPcs: async () => 0, genesis: () => given.genesis ?? "first-device", durable: async () => given.durable?.() ?? true,
       // a device's record of its PCs stays out of this page's storage: none, unless the test gives one
       migration: given.migration ?? { storage: null },
     });

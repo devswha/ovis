@@ -29,10 +29,10 @@ export function movingWorld() {
   const json = (body: unknown, bearer: string): RequestInit => ({ headers: { "content-type": "application/json", authorization: `Bearer ${bearer}` }, body: JSON.stringify(body) });
   const seconds = () => Math.floor(world.clock.now / 1000);
   /** A device of the account, signed in long ago (no new account's genesis is its to make), with its record and its answers. */
-  const member = async (label: string, scale = 1, removed: () => readonly string[] = () => []) => {
+  const member = async (label: string, scale = 1, removed: () => readonly string[] = () => [], durable?: () => boolean) => {
     const storage = memoryStorage();
     const answers = pcAnswers();
-    const device = await world.device({ label, migration: { answers, storage, scale: () => scale, removed: async () => removed() } });
+    const device = await world.device({ label, migration: { answers, storage, scale: () => scale, removed: async () => removed() }, ...(durable === undefined ? {} : { durable }) });
     const signIn = (await device.store.get("signin_key"))!.key.public_spki;
     const member = (await device.store.key()).public_spki;
     const record = (pcs: SeenPcs["pcs"], tried?: number) => storage.setItem(`ovis:seen-pcs:${world.account}`, JSON.stringify({ v: 1, account: world.account, pcs, ...(tried === undefined ? {} : { tried }) }));
@@ -65,8 +65,8 @@ export type Member = Awaited<ReturnType<Moving["member"]>>;
  * A phone and a laptop of the account, both let in for a month by one PC each knows by its own pairing. `silent`: a
  * second PC both know as well, listed as let in, that answers nobody in this run.
  */
-export async function inUse(moving: Moving = movingWorld(), given: { readonly silent?: boolean } = {}) {
-  const phone = await moving.member("Phone");
+export async function inUse(moving: Moving = movingWorld(), given: { readonly silent?: boolean; readonly durable?: () => boolean } = {}) {
+  const phone = await moving.member("Phone", 1, () => [], given.durable);
   const laptop = await moving.member("Laptop");
   const pc = await moving.pcOf(phone.device);
   const silent = given.silent === true ? await moving.pcOf(phone.device) : null;

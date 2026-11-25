@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, type KnownPc, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
 import { listView } from "../../../shared/account-list.ts";
+import { readSave, writeSave } from "../../../shared/account-list-follower.ts";
 import { askingPc, listWorld, postPcKeys } from "./accountList.test-helpers.ts";
 import { inUse, moved, movingWorld } from "./listMigrate.test-helpers.ts";
 import { keysForCarriedPc } from "./listCarriedPc.ts";
 import type { ListStore } from "./listStore.ts";
 import { newKey } from "./store.ts";
+import { keepUnsent, postKept } from "./unsentBlocks.ts";
 import { joinedRecord, listDoubt, MOVE_AGAIN_SECONDS, pcAgrees, readBirth, readJoined, readNotice } from "./listMigrate.ts";
 
 const DAY = 86400;
@@ -428,6 +430,44 @@ describe("one birth per account on a device, whatever happens to its answer (ast
     }
   });
 
+  test("a device whose storage may be cleared signs no new birth, and says why; a birth it kept already is still sent (#4652)", async () => {
+    let lasts = false;
+    const { phone, world, birthsSent } = await inUse(undefined, { durable: () => lasts });
+    expect((await phone.device.list.sync()).status).toEqual({ at: "none", why: "storage" });
+    expect(birthsSent(phone.device)).toEqual([]);
+    // signed and kept while its storage lasted, the request lost; then the storage may be cleared
+    lasts = true;
+    phone.device.wire.answer = (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname === "/v2/lists") throw new TypeError("the request never arrived");
+      return null;
+    };
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+    phone.device.wire.answer = null;
+    lasts = false;
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "following", standing: "in", list: world.held().id });
+    expect(new Set(birthsSent(phone.device).map((sent) => JSON.stringify(sent.body))).size).toBe(1);
+  });
+
+  test("a kept birth that carries a key this device has since blocked waits for the service's answer to the block, then goes as it is (#4652)", async () => {
+    const { phone, laptop, world, birthsSent } = await inUse();
+    phone.device.wire.answer = (request) => {
+      if (request.method === "POST" && new URL(request.url).pathname === "/v2/lists") throw new TypeError("the request never arrived");
+      return null;
+    };
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+    phone.device.wire.answer = null;
+    const first = birthsSent(phone.device).map((sent) => JSON.stringify(sent.body));
+    // Not me on the laptop: its block is kept before it goes to the account service, which has not answered yet
+    const block = { v: 1, kind: "block", id: "e".repeat(64), account: world.account, target: laptop.signIn, target_no: 2, signer: phone.signIn, signer_no: 1, signed_at: "2026-11-25T00:00:00Z", nonce: "n", signature: "s" } as never;
+    expect(await keepUnsent(phone.device.store, phone.device.session, [block])).toBe(true);
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+    expect(birthsSent(phone.device).map((sent) => JSON.stringify(sent.body))).toEqual(first);
+    // the service answered the block: the birth goes, byte for byte
+    await postKept(phone.device.store, phone.device.session, [block], async () => {});
+    await phone.device.list.sync();
+    expect(birthsSent(phone.device).map((sent) => JSON.stringify(sent.body))).toEqual([...first, first[0]!]);
+  });
+
   test("4: with the migrate switch withdrawn, a kept birth is kept as it is and not sent", async () => {
     const { phone, world, birthsSent } = await inUse();
     let dropped = false;
@@ -559,6 +599,27 @@ describe("a carried device's hand-over across a sign-in or a key that changed (a
     const held = listView(world.held().state).devices.filter((row) => row.ended === null).map((row) => row.key);
     expect(held).not.toContain(laptop.member);
     expect(held).toContain(renewed);
+  });
+});
+
+describe("a carried device whose copy holds a fork alarm (#4652)", () => {
+  test("signs and sends no hand-over while the alarm stands", async () => {
+    const { laptop, world } = await moved();
+    const handOvers = () => laptop.device.sent.filter((one) => one.route === `POST /v2/lists/${world.held().id}/entries`).length;
+    // the join's hand-over gets no answer: it is kept, to be sent again at the next round
+    laptop.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 }) : null;
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    laptop.device.wire.answer = null;
+    const tried = handOvers();
+    // the copy holds the alarm another history a member signed leaves (read by a page of its own, as after a reload)
+    const saved = await readSave(await laptop.device.lists.get("copy", world.account) as string);
+    if (!saved.read || saved.copy.state === null) throw new Error("the laptop saved no copy");
+    const alarm = { code: "fork" as const, source: "service" as const, seq: saved.copy.state.footing.seq, by: saved.copy.me.key, at: Math.floor(world.clock.now / 1000), devices: [], pcs: [] };
+    await laptop.device.lists.set("copy", world.account, writeSave({ ...saved.copy, alarm }));
+    const page = laptop.tab();
+    expect((await page.sync()).status).toMatchObject({ at: "following", trouble: "fork" });
+    expect(handOvers()).toBe(tried);
   });
 });
 
