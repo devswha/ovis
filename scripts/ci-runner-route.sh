@@ -90,15 +90,17 @@ pool_jobs() {
   done) || return 1
   for id in $ids; do
     jobs=$(api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
-    counts=$(jq -s -r -e --argjson pool "$pool_labels" --argjson live "$live_job" --arg rust "$rust_label" '[.[].jobs[]] as $all
+    counts=$(jq -s -r -e --argjson pool "$pool_labels" --argjson live "$live_job" --arg rust "$rust_label" '# a missing time counts as now: no wait, and a running job that is live
+      def age(t): if t == null then 0 else now - (t | fromdateiso8601) end;
+      [.[].jobs[]] as $all
       | [$all[] | select([.labels[] | ascii_downcase] | length > 0 and all(.[]; . as $x | $pool | index($x) != null))] as $ours
-      | ([$ours[] | select(.status == "queued") | now - (.created_at | fromdateiso8601) | select(. < 86400)] | max // 0 | floor) as $wait
+      | ([$ours[] | select(.status == "queued") | age(.created_at) | select(. < 86400)] | max // 0 | floor) as $wait
       | ([$ours[] | select(.status == "in_progress" and ([.labels[] | ascii_downcase] | index("self-hosted-ovis") != null)
-          and now - (.started_at | fromdateiso8601) < $live)] | length) as $running
+          and age(.started_at) < $live)] | length) as $running
       | ([$all[] | select(.status == "queued" and ([.labels[] | ascii_downcase] | index($rust) != null))
-          | now - (.created_at | fromdateiso8601) | select(. < 86400)] | max // 0 | floor) as $rust_wait
+          | age(.created_at) | select(. < 86400)] | max // 0 | floor) as $rust_wait
       | ([$all[] | select([.labels[] | ascii_downcase] | index("self-hosted-ovis-win") != null)
-          | select(.status == "queued" or (.status == "in_progress" and now - (.started_at | fromdateiso8601) < $live))] | length) as $win
+          | select(.status == "queued" or (.status == "in_progress" and age(.started_at) < $live))] | length) as $win
       | "\($wait) \($running) \($rust_wait) \($win)"' <<<"$jobs") || return 1
     read -r wait live rust win <<<"$counts"
     if (( wait > longest )); then longest=$wait; fi
@@ -120,7 +122,10 @@ trap '[ -z "$pool_file" ] || rm -f "$pool_file"' EXIT
 pool_counts() {
   [ -n "$pool_file" ] || { pool_jobs; return; }
   if [ ! -s "$pool_file" ]; then pool_jobs > "$pool_file" || echo failed > "$pool_file"; fi
-  [ "$(cat "$pool_file")" != failed ] && cat "$pool_file"
+  # only a whole answer counts: a cache the disk would not take (empty, cut short) is a failed read
+  local counts
+  counts=$(cat "$pool_file")
+  [[ "$counts" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]] && echo "$counts"
 }
 
 route_pull_request() {
@@ -276,7 +281,11 @@ if [[ -n "$winvm_why" ]]; then
 elif ! counts=$(pool_counts); then
   why="could not read the jobs of winvm's label"
 elif read -r _ _ _ taken <<<"$counts"; (( taken > 0 )); then
+  # the read stops at the first run that settles every route, so this is how many it saw, at least one
   why="$taken job(s) of winvm's label already queued or running"
+# the read may have taken minutes: the mark is checked again against the clock now
+elif now=$(date +%s); (( now - ready > 180 || ready - now > 60 )); then
+  why="winvm's runner last said it was waiting $((now - ready))s ago"
 else
   echo "Windows: self-hosted $windows_labels (winvm's runner said it was waiting $((now - ready))s ago)" >&2
   echo "windows=$windows_labels"
