@@ -889,9 +889,14 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
       labels.label("t1", "", ["ses_first"]);
       await started.promise;
       labels.label("t1", "", ["ses_first", "ses_second"]);
-      const stopping = labels.stop({ drain: true });
-      jest.advanceTimersByTime(500);
-      await stopping;
+      let stopped = false;
+      void Promise.resolve(labels.stop({ drain: true })).then(() => { stopped = true; });
+      jest.advanceTimersByTime(499);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      jest.advanceTimersByTime(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(true);
       first.resolve();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(written).toEqual(["ses_first"]);
