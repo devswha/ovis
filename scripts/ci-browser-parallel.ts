@@ -44,8 +44,13 @@ export function selectBrowserScripts(all: string[], include?: string, exclude?: 
 }
 
 const isFile = (path: string): boolean => existsSync(path) && statSync(path).isFile();
-/** import() or require() of anything but one plain string or a data: URL (code it carries, no file), or import.meta.glob: a name worked out as the file runs. */
-const COMPUTED_IMPORT = /\b(?:import|require)\(\s*(?!["'][^"'\n]*["']\s*[),]|`data:)[^\s)]|import\.meta\.glob/;
+/**
+ * import() or require() (spaces or a comment may come before the parenthesis) of anything but one
+ * plain string or a data: URL (code it carries, no file), import.meta.glob, or a
+ * `new URL(…, import.meta.url)` whose first argument is not one plain string: a name worked out as
+ * the file runs.
+ */
+const COMPUTED_IMPORT = /\b(?:import|require)\s*(?:\/\*[\s\S]*?\*\/\s*)*\(\s*(?!["'][^"'\n]*["']\s*[),]|`data:)[^\s)]|import\.meta\.glob|new URL\(\s*(?!["'`][^"'`$\n]+["'`]\s*,\s*import\.meta\.url)[^;]*?,\s*import\.meta\.url\s*\)/;
 const CODE = /\.(?:[cm]?[jt]sx?)$/;
 
 /**
@@ -54,7 +59,7 @@ const CODE = /\.(?:[cm]?[jt]sx?)$/;
  * through relative and root paths (scripts/conventions.test.ts allows no alias); a package is not
  * followed. `unresolved` is true when an import names a file that is not there, a code file
  * does not parse, or a file loads one whose name it works out as it runs (import() or require() of
- * anything but a plain string, import.meta.glob): no caller may take the set as proof of what the
+ * anything but a plain string, import.meta.glob, a `new URL` entry that is not a plain string): no caller may take the set as proof of what the
  * entry does not load then.
  */
 export function importClosure(root: string, entry: string, cache = new Map<string, string[] | null>()): { files: Set<string>; unresolved: boolean } {

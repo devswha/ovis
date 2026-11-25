@@ -621,6 +621,7 @@ describe("the scripts a change to the server alone leaves out", () => {
       "scripts/path-demo-regression.ts": "const fixture = readFileSync('server/fixtures/a.json');",
       "scripts/missing-demo-regression.ts": "import './lib/gone';",
       "scripts/computed-demo-regression.ts": "const helper = './lib/page.ts'; await import(helper);",
+      "scripts/spaced-demo-regression.ts": "const helper = './lib/page.ts'; await import /* loader */ (helper);",
       "scripts/template-demo-regression.ts": "const access = readFileSync(`${process.cwd()}/server/access.ts`);",
       "scripts/rooted-demo-regression.ts": "import { x } from '/server/http.ts';",
       "scripts/glob-demo-regression.ts": "const all = import.meta.glob('../src/*.ts');",
@@ -630,7 +631,7 @@ describe("the scripts a change to the server alone leaves out", () => {
       "scripts/pure-regression.ts": "",
       "server/http.ts": "", "server/index.ts": "",
     }, (root) => {
-      const all = ["pure-demo", "deep-demo", "direct-demo", "spawn-demo", "path-demo", "missing-demo", "computed-demo", "template-demo", "rooted-demo", "glob-demo", "shell-demo", "broken-demo", "typed-demo", "pure"].map((name) => `scripts/${name}-regression.ts`);
+      const all = ["pure-demo", "deep-demo", "direct-demo", "spawn-demo", "path-demo", "missing-demo", "computed-demo", "spaced-demo", "template-demo", "rooted-demo", "glob-demo", "shell-demo", "broken-demo", "typed-demo", "pure"].map((name) => `scripts/${name}-regression.ts`);
       expect(demoOnlyScripts(all, root)).toEqual(["scripts/pure-demo-regression.ts", "scripts/typed-demo-regression.ts"]);
     });
   });
@@ -644,6 +645,9 @@ describe("the scripts a change to the server alone leaves out", () => {
     });
     // an entry vite.config.ts's plugin bundles, and a config that reads a server file as it builds
     withRepo({ "scripts/pure-demo-regression.ts": "", "scripts/plugin.ts": "const entry = new URL('../src/boot.ts', import.meta.url);", "src/boot.ts": "import { on } from '../server/flags';", "server/flags.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "scripts/plugin.ts": "const name = '../src/boot.ts'; const entry = new URL(name, import.meta.url);", "src/boot.ts": "" }, (root) => {
       expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
     });
     withRepo({ "scripts/pure-demo-regression.ts": "", "vite.config.ts": "const revision = readFileSync('server/app-revision.ts', 'utf8');" }, (root) => {
