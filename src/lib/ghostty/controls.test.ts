@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { matchHerdrWidths } from "../terminalWidths.ts";
-import { controlScanner, controlsWriter, withoutQuestions } from "./controls.ts";
+import { controlScanner, controlsWriter, fallbackOutput } from "./controls.ts";
 import { GhosttyVt } from "./vt.ts";
 
 const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
+const parsedOutput = (chunks: readonly string[]) => fallbackOutput(chunks.map((data) => ({ data, sent: data.length })));
 
 const SESSION = "\x1b=\x1b[4h\x1b[?66$p\x1b[4$p\x1b>\x1b[4l" + "\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[?1000h\x1b[?1006h\x1b[>4;2m\x1b]0;a title\x07\x1b]8;;https://x.test\x1b\\link\x1b]8;;\x1b\\"
   + "\x1b[2J\x1b[H\x1b[1;31m한글 prompt\x1b[0m $ \x1b[6n" + "x".repeat(70) + "\x1b[3;5H\x1b]52;c;aGVsbG8=\x07\x1b[?6n\x1b[c\x1b[>c\x1b[5n"
@@ -74,5 +75,31 @@ test("an OSC 52 split across frames reaches xterm whole, nothing written into it
 });
 
 test("a stream handed to xterm whole keeps everything but the questions it already answered", () => {
-  expect(withoutQuestions(["a\x1b[6nb", "\x1b[?2004h c\x1b[c", "d"])).toBe("ab\x1b[?2004h cd");
+  expect(parsedOutput(["a\x1b[6nb", "\x1b[?2004h c\x1b[c", "d"])).toBe("ab\x1b[?2004h cd");
+});
+
+test.each([
+  ["a\x1b[", "6nb"],
+  ["a\u009b", "6nb"],
+  ["a\x1b]11;", "?\x07b"],
+])("removes an answered query across frames (%j, %j)", (left, right) => {
+  expect(parsedOutput([left, right])).toBe("ab");
+});
+
+test.each(["\x1b[", "\u009b"])("answers a cursor query before a later open clipboard OSC (%j)", async (csi) => {
+  const term = new Terminal({ cols: 20, rows: 4, allowProposedApi: true });
+  const vt = await GhosttyVt.create(20, 4);
+  const replies: string[] = [];
+  term.onData((data) => replies.push(data));
+  const write = controlsWriter(vt, term.write.bind(term));
+  try {
+    await new Promise<void>((done) => write(`abc${csi}6n\x1b]52;c;`, done));
+    expect(replies).toEqual(["\x1b[1;4R"]);
+  } finally { term.dispose(); vt.dispose(); }
+});
+
+test("the replay frame gives xterm the clipboard OSC before the live frame completes its id", () => {
+  const scan = controlScanner();
+  expect(scan("\x1b]5").map((piece) => piece.controls).join("")).toBe("\x1b]5");
+  expect(scan("2;c;YWJj\x07").map((piece) => piece.controls).join("")).toBe("2;c;YWJj\x07");
 });

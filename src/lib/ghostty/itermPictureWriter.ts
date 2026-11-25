@@ -7,9 +7,10 @@ type Chunk = string | Uint8Array;
 type Rgb = readonly [number, number, number];
 interface SixelPayload { readonly body: string; readonly transparent: boolean }
 type Segment = Chunk | PicturePayload | SixelPayload;
+interface LocatedSegment { readonly data: Segment; readonly end: number }
 
-const OSC = "\x1b]1337;";
-const DCS = "\x1bP";
+const OSC = "\x1b]1337;", DCS = "\x1bP";
+const CANCEL = "\x18";
 const HEADS = ITERM_PICTURE_COMMANDS.map((command) => OSC + command);
 const latin1 = new TextDecoder("latin1");
 const ascii = new TextEncoder();
@@ -19,6 +20,7 @@ const DCS_HEAD_MAX = 128;
 function pictureScanner(limits: () => PictureLimits | null) {
   let state: "text" | "head" | "string" | "picture" = "text";
   let head = "";
+  let streamedHead = false;
   let byteHead = false;
   let stringEscape = false;
   let stringDcs = false;
@@ -31,8 +33,9 @@ function pictureScanner(limits: () => PictureLimits | null) {
   let size = 0;
   let limit = 0;
   const multipart = itermMultipart((args, base64) => ({ args, base64 }), () => limits() ?? { sizeLimit: 0, pixelLimit: 0 });
+  const startHead = (): void => { head = "\x1b"; streamedHead = false; state = "head"; };
 
-  function* scan(data: Chunk): Generator<Segment, void> {
+  function* scan(data: Chunk): Generator<LocatedSegment, void> {
     const text = typeof data === "string" ? data : latin1.decode(data);
     const slice = (start: number, end: number): Chunk => typeof data === "string" ? text.slice(start, end) : data.subarray(start, end);
     const oscBoundary = /[\x07\x18\x1a\x1b]/g;
@@ -50,7 +53,7 @@ function pictureScanner(limits: () => PictureLimits | null) {
           head = next;
           at++;
         } else if (head.startsWith(DCS) && ch === "q") {
-          if (escapeAt > from) yield slice(from, escapeAt);
+          if (escapeAt > from) yield { data: slice(from, escapeAt), end: escapeAt };
           state = "picture";
           sixel = true;
           transparent = Number(head.slice(DCS.length).split(";")[1]) === 1;
@@ -58,11 +61,12 @@ function pictureScanner(limits: () => PictureLimits | null) {
           limit = caps?.sixelSizeLimit ?? 0;
           size = 0;
           at++;
+          yield { data: CANCEL, end: at };
         } else if (HEADS.some((prefix) => prefix.startsWith(next))) {
           head = next;
           at++;
           if (HEADS.includes(head)) {
-            if (escapeAt > from) yield slice(from, escapeAt);
+            if (escapeAt > from) yield { data: slice(from, escapeAt), end: escapeAt };
             state = "picture";
             sixel = false;
             single = head.endsWith(";File=");
@@ -70,6 +74,8 @@ function pictureScanner(limits: () => PictureLimits | null) {
             limit = caps ? ITERM_ARGS_ROOM + base64Length(caps.sizeLimit) : 0;
             size = head.length - OSC.length;
             if (limit) recent.push(head.slice(OSC.length));
+            // The original picture's ESC cancelled any unfinished VT sequence, even if no image is drawn.
+            yield { data: CANCEL, end: at };
           }
         } else {
           state = head.length > 1 || "P_^X".includes(ch) ? "string" : "text";
@@ -77,7 +83,8 @@ function pictureScanner(limits: () => PictureLimits | null) {
           // ESC plus a string introducer is not part of that string's payload.
           if (head.length === 1 && state === "string") { head += ch; at++; }
           if (escapeAt < 0) {
-            yield byteHead ? ascii.encode(head) : head;
+            const held = streamedHead ? head.slice(2) : head;
+            if (held) yield { data: byteHead ? ascii.encode(held) : held, end: at };
             from = at;
           }
         }
@@ -88,19 +95,18 @@ function pictureScanner(limits: () => PictureLimits | null) {
         if (text.charAt(at) !== "\\") {
           if (!sixel && !single) multipart.reset();
           parts = []; recent = [];
-          head = "\x1b";
+          startHead();
           from = Math.max(escapeAt, 0);
-          state = "head";
           continue;
         }
         st = true;
       } else if (state === "string" && stringEscape) {
         stringEscape = false;
         if (text.charAt(at) === "\\") {
-          if (escapeAt < 0) { yield byteHead ? ascii.encode("\x1b\\") : "\x1b\\"; from = at + 1; }
+          if (escapeAt < 0) { yield { data: byteHead ? ascii.encode("\x1b\\") : "\x1b\\", end: at + 1 }; from = at + 1; }
           at++;
         }
-        else { head = "\x1b"; state = "head"; continue; }
+        else { startHead(); continue; }
         state = "text";
         continue;
       }
@@ -108,10 +114,9 @@ function pictureScanner(limits: () => PictureLimits | null) {
       if (state === "text") {
         const esc = text.indexOf("\x1b", at);
         if (esc < 0) { at = text.length; break; }
-        head = "\x1b";
+        startHead();
         escapeAt = esc;
         byteHead = typeof data !== "string";
-        state = "head";
         at = esc + 1;
         continue;
       }
@@ -147,14 +152,20 @@ function pictureScanner(limits: () => PictureLimits | null) {
           parts = []; recent = [];
           if (!payload && !sixel && !single) multipart.reset();
           const picture = payload ? (sixel ? { body: payload, transparent } : single ? itermFile(payload) : multipart.handle(payload)) : null;
-          if (picture) yield picture;
+          if (picture) yield { data: picture, end: from };
         }
       }
       at = end + 1;
     }
     if (state === "picture") return;
     const safeEnd = state === "head" || stringEscape ? escapeAt : at;
-    if (safeEnd > from) yield slice(from, safeEnd);
+    if (safeEnd > from) yield { data: slice(from, safeEnd), end: safeEnd };
+    // `ESC ]` might be the start of an image or a clipboard copy. xterm must see the
+    // introducer in this frame for its clipboard replay guard, whichever ID comes next.
+    if (state === "head" && head === "\x1b]" && !streamedHead) {
+      streamedHead = true;
+      yield { data: head, end: at };
+    }
   }
   return {
     scan,
@@ -167,9 +178,9 @@ function pictureScanner(limits: () => PictureLimits | null) {
   };
 }
 
-type Emit = (data: Chunk, picture?: boolean) => void;
+type Emit = (data: Chunk, picture: boolean, end: number) => void;
 interface Job {
-  readonly input: Generator<Segment, void>;
+  readonly input: Generator<LocatedSegment, void>;
   readonly weight: number;
   readonly emit: Emit;
   readonly done?: () => void;
@@ -209,8 +220,8 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
           job.done?.();
           continue;
         }
-        const part = next.value;
-        if (typeof part === "string" || part instanceof Uint8Array) { job.emit(part); continue; }
+        const { data: part, end } = next.value;
+        if (typeof part === "string" || part instanceof Uint8Array) { job.emit(part, false, end); continue; }
         const caps = limits();
         if (!caps) continue;
         const image = "base64" in part ? itermKitty(part, caps, grid) : async () => {
@@ -220,7 +231,7 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
           const png = await encodePng(decoded.width, decoded.height, decoded.rgba);
           return png.length <= MAX_PICTURE_BYTES ? kittyPng(toBase64(png)) : "";
         };
-        if (typeof image === "string") { if (image) job.emit(image, true); continue; }
+        if (typeof image === "string") { if (image) job.emit(image, true, end); continue; }
         if (decoding || job.weight > MAX_ACTIVE || weight - job.weight > MAX_PENDING) continue;
         decoding = true;
         const conversion = image();
@@ -229,7 +240,7 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
           decoding = false;
           if (pending !== conversion) return;
           pending = null;
-          if (output && limits()) job.emit(output, true);
+          if (output && limits()) job.emit(output, true, end);
           drain();
         };
         void conversion.then(finish, () => finish(""));

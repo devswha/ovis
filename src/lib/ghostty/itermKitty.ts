@@ -9,14 +9,62 @@ export const MAX_PICTURE_PIXELS = 4096 * 4096;
 const CHUNK = 4096;
 const PNG_PREFIX = "iVBORw0KGgo";
 
-interface PngSize { readonly width: number; readonly height: number }
+interface ImageSize { readonly width: number; readonly height: number }
 
-function pngSize(bytes: Uint8Array): PngSize | null {
+function pngSize(bytes: Uint8Array): ImageSize | null {
   if (bytes.length < 24) return null;
   const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (header.getUint32(0) !== 0x89504e47 || header.getUint32(4) !== 0x0d0a1a0a
     || header.getUint32(8) !== 13 || header.getUint32(12) !== 0x49484452) return null;
   return { width: header.getUint32(16), height: header.getUint32(20) };
+}
+
+function jpegSize(header: DataView): ImageSize | null {
+  const end = header.byteLength;
+  let at = 2;
+  while (at + 4 <= end && header.getUint8(at++) === 0xff) {
+    while (at < end && header.getUint8(at) === 0xff) at++;
+    if (at + 3 > end) break;
+    const marker = header.getUint8(at++);
+    if (marker === 0xd9 || marker === 0xda) break;
+    const length = header.getUint16(at);
+    if (length < 2 || at + length > end) break;
+    // SOF markers, excluding DHT, JPG, and DAC.
+    if (marker >= 0xc0 && marker <= 0xcf && (marker === 0xc0 || (marker & 3) !== 0)) {
+      return length >= 8 ? { width: header.getUint16(at + 5), height: header.getUint16(at + 3) } : null;
+    }
+    at += length;
+  }
+  return null;
+}
+
+function gifFits(header: DataView, pixelLimit: number): boolean {
+  const end = header.byteLength;
+  if (end < 13 || header.getUint32(0) !== 0x47494638 || ![0x3761, 0x3961].includes(header.getUint16(4))) return false;
+  const width = header.getUint16(6, true);
+  const height = header.getUint16(8, true);
+  const tableSize = (flags: number): number => flags & 0x80 ? 3 << ((flags & 7) + 1) : 0;
+  if (!width || !height || width * height >= pixelLimit) return false;
+  let at = 13 + tableSize(header.getUint8(10));
+  let image = false;
+  while (at < end) {
+    const block = header.getUint8(at++);
+    if (block === 0x3b) return image;
+    if (block === 0x2c && at + 9 <= end) {
+      const frameW = header.getUint16(at + 4, true);
+      const frameH = header.getUint16(at + 6, true);
+      if (!frameW || !frameH || header.getUint16(at, true) + frameW > width || header.getUint16(at + 2, true) + frameH > height) return false;
+      image = true;
+      at += 10 + tableSize(header.getUint8(at + 8)); // descriptor, local colors, LZW code size
+    } else if (block === 0x21 && at < end) at++; // extension label
+    else return false;
+    while (at < end) {
+      const length = header.getUint8(at++);
+      if (length === 0) break;
+      at += length;
+    }
+  }
+  return false;
 }
 
 function cells(value: string | undefined, cell: number, count: number): number | null {
@@ -26,7 +74,7 @@ function cells(value: string | undefined, cell: number, count: number): number |
   return result > 0 ? result : null;
 }
 
-function kittyPlacement(args: ReadonlyMap<string, string>, grid: PictureGrid, image: PngSize): { readonly keys: string; readonly pixels: number } {
+function kittyPlacement(args: ReadonlyMap<string, string>, grid: PictureGrid, image: ImageSize): { readonly keys: string; readonly pixels: number } {
   const cols = cells(args.get("width"), grid.cellW, grid.cols);
   const rows = cols && args.get("preserveAspectRatio") !== "0" ? null : cells(args.get("height"), grid.cellH, grid.rows);
   const width = cols === null ? null : cols * grid.cellW;
@@ -50,6 +98,12 @@ export function kittyPng(base64: string, placement = ""): string {
 
 async function browserPng(bytes: Uint8Array<ArrayBuffer>, limits: PictureLimits): Promise<Uint8Array | null> {
   if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas !== "function") return null;
+  // Use only the formats whose decoded dimensions can be bounded before the browser allocates a bitmap.
+  const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (header.byteLength >= 2 && header.getUint16(0) === 0xffd8) {
+    const size = jpegSize(header);
+    if (!size || !size.width || !size.height || size.width * size.height >= limits.pixelLimit) return null;
+  } else if (!gifFits(header, limits.pixelLimit)) return null;
   const bitmap = await createImageBitmap(new Blob([bytes]));
   try {
     if (bitmap.width * bitmap.height >= limits.pixelLimit) return null;
@@ -81,7 +135,7 @@ export function itermKitty({ args, base64 }: PicturePayload, limits: PictureLimi
   if (fields.get("inline") !== "1" || (sizeOf(args) ?? 0) > limits.sizeLimit
     || decodedLength(base64) > limits.sizeLimit || !validBase64(base64)) return "";
 
-  const place = (png: PngSize | null, payload: () => string): string => {
+  const place = (png: ImageSize | null, payload: () => string): string => {
     if (!png || png.width === 0 || png.height === 0 || png.width * png.height >= limits.pixelLimit) return "";
     const placement = kittyPlacement(fields, grid(), png);
     return placement.pixels < limits.pixelLimit ? kittyPng(payload(), placement.keys) : "";

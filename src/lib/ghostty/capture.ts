@@ -1,6 +1,5 @@
 import type { Terminal } from "@xterm/xterm";
 import type { HerdrSocket } from "../ws.ts";
-import { controlScanner, withoutQuestions } from "./controls.ts";
 import type { GhosttyOverlay } from "./overlay.ts";
 
 /** bytes held for libghostty while its module loads: a herdr-core history replay fits many times over */
@@ -18,13 +17,6 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   let heldBytes = 0;
   let overlay: GhosttyOverlay | null = null;
   let stopped = false;
-  // with `only` (decided when the server says what it is), xterm takes the controls of what libghostty is to draw
-  // (controls.ts); libghostty also draws the pictures (overlay.ts)
-  let only = false;
-  const scan = controlScanner();
-  const decoder = new TextDecoder();
-  const controlsOf = (data: string | Uint8Array): string =>
-    scan(typeof data === "string" ? data : decoder.decode(data, { stream: true })).map((piece) => piece.controls + (piece.question ?? "")).join("");
   const write = term.write.bind(term);
   const reset = term.reset.bind(term);
   const unwrap = (): void => {
@@ -32,26 +24,19 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     term.write = write;
     term.reset = reset;
   };
-  // xterm saw only the controls of `chunks`: it parses them whole after all, from a reset (their modes come again)
-  // and without the questions it already answered
-  const parseWhole = (chunks: (string | Uint8Array)[]): void => {
-    reset();
-    write(withoutQuestions(chunks));
-  };
   const giveUp = (): void => {
-    if (only && held) parseWhole(held);
     held = null;
     unwrap();
   };
-  const holdingWrite = ((data: string | Uint8Array, callback?: () => void) => {
+  const holdingWrite: Terminal["write"] = (data, callback) => {
     if (held) {
-      held.push(data);
       heldBytes += data.length;
-      // the chunk that crosses the limit is in what xterm takes whole
-      if (heldBytes > HELD_BYTES_MAX) { giveUp(); callback?.(); return; }
+      if (heldBytes > HELD_BYTES_MAX) giveUp();
+      else held.push(data);
     }
-    write(only && held ? controlsOf(data) : data, callback);
-  }) as Terminal["write"];
+    // xterm owns the screen and answers queries until there is a Ghostty cursor to use.
+    write(data, callback);
+  };
   term.write = holdingWrite;
   term.reset = () => {
     if (held) { held.length = 0; heldBytes = 0; }
@@ -62,29 +47,21 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   const decide = (): void => {
     if (decided || stopped || !socket.featuresListed()) return;
     decided = true;
-    only = ghosttyOnly();
-    let taken: (string | Uint8Array)[] | null = null;
+    const only = ghosttyOnly();
     const takeBacklog = (): (string | Uint8Array)[] | null => {
       if (stopped || !held) return null;
-      taken = held;
+      const taken = held;
       held = null;
       unwrap();
       return taken;
     };
-    // libghostty took the backlog and does not draw after all: xterm, which saw only its controls, parses it whole
-    const handBack = (): void => {
-      if (only && taken && !stopped) parseWhole(taken);
-      taken = null;
-    };
     void import("./overlay.ts")
-      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, host, takeBacklog, only))
+      .then(({ attachGhosttyOverlay }) => held ? attachGhosttyOverlay(term, host, takeBacklog, only) : null)
       .then((attached) => {
-        if (!attached) { handBack(); return; }
-        taken = null;
+        if (!attached) return;
         if (stopped) { attached.dispose(false); return; }
         overlay = attached;
       }, (error: unknown) => {
-        handBack();
         giveUp();
         console.warn("libghostty could not draw this terminal; xterm draws it", error);
       });

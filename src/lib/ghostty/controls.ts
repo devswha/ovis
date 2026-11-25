@@ -19,13 +19,10 @@
  */
 
 const GROUND = 0, ESC = 1, CSI = 2, OSC = 3, STRING = 4, STRING_ESC = 5, OSC_ESC = 6;
-/** an OSC longer than this that is not OSC 52 is skipped unread (a title, a hyperlink, a picture) */
-const OSC_HEAD = 8;
-
 /** what xterm takes of a CSI sequence (`body` is everything after `ESC [`): "mode", "question", or nothing */
 function csiKind(body: string): "mode" | "question" | null {
-  const final = body[body.length - 1]!;
-  const prefix = body[0]!;
+  const final = body.at(-1);
+  const prefix = body[0];
   if (final === "p") return body === "!p" ? "mode" : body.endsWith("$p") ? "question" : null;
   // DEC private modes and ANSI ones (insert mode 4, new-line mode 20): xterm keeps both, and reports them
   if ((final === "h" || final === "l") && (prefix === "?" || /^[\d;]+[hl]$/.test(body))) return "mode";
@@ -36,101 +33,141 @@ function csiKind(body: string): "mode" | "question" | null {
   return null;
 }
 
-const forwardsOsc = (body: string): boolean => {
-  const semi = body.indexOf(";");
-  const id = semi === -1 ? body : body.slice(0, semi);
-  if (id === "52") return true;
-  return (id === "10" || id === "11" || id === "12") && body.slice(semi + 1) === "?";
-};
-
 /** A stretch of the stream up to `end` (an index in the text), with what xterm takes of it; `question` ends it. */
-export interface ControlPiece { end: number; controls: string; question: string | null }
+interface ControlPiece { readonly end: number; readonly controls: string; readonly question: string | null }
 
-/** `streaming()`: an OSC 52 is open in what xterm was given, so nothing else may go to xterm before it ends */
-export type ControlScanner = ((text: string) => ControlPiece[]) & { streaming(): boolean };
+type SpanKind = "query" | "clipboard" | "statusString";
 
 /** the sequences xterm takes from each piece of text, the state carried from one call to the next */
-export function controlScanner(): ControlScanner {
+export function controlScanner(span?: (kind: SpanKind, start: number, end: number) => void) {
   let state = GROUND;
   let seq = "";
-  let keep = true;
-  // an OSC 52 goes to xterm as it comes, not once whole: a frame that opens it and one that ends it are each seen
-  // owning it, as they are when xterm parses everything (the clipboard's replay guard reads xterm's OSC state)
+  let intro = "";
+  let position = 0;
+  let start = 0;
+  let oscId = -1;
+  let oscPayload = false;
   let streaming = false;
+  let dcs = false;
+  const control = /[\x1b\u0090\u0098\u009b\u009d-\u009f]/g;
   const scanner = (text: string): ControlPiece[] => {
     const pieces: ControlPiece[] = [];
     let out = "";
     let at = 0;
     const length = text.length;
+    const question = (data: string, end: number): void => {
+      span?.("query", start, position + end);
+      pieces.push({ end: Math.max(0, end), controls: out, question: data });
+      out = "";
+    };
+    const openOsc = (): void => {
+      state = OSC;
+      oscId = -1;
+      oscPayload = false;
+      seq = "";
+      // xterm's replay guard must see a candidate OSC even before its ID is complete.
+      streaming = true;
+      out += "\x1b]";
+    };
+    const endOsc = (end: number, terminator: string): void => {
+      if (streaming) out += terminator;
+      if (oscId === 52) span?.("clipboard", start, position + end);
+      else if (oscPayload && oscId >= 10 && oscId <= 12 && seq === "?") question(`\x1b]${oscId};?\x07`, end);
+      streaming = false;
+      state = GROUND;
+    };
+    const endString = (end: number): void => {
+      if (dcs && seq === "$q") span?.("statusString", start, position + end);
+      state = GROUND;
+    };
     while (at < length) {
       if (state === GROUND) {
-        const next = text.indexOf("\x1b", at);
-        if (next === -1) break;
-        state = ESC;
-        at = next + 1;
-        continue;
+        control.lastIndex = at;
+        const next = control.exec(text);
+        if (!next) break;
+        at = next.index;
       }
-      const ch = text[at]!;
+      const ch = text.charAt(at);
       const code = ch.charCodeAt(0);
       at++;
+      if (state !== OSC_ESC && state !== STRING_ESC && (code === 0x1b || code === 0x90 || code === 0x98
+        || code === 0x9b || code === 0x9d || code === 0x9e || code === 0x9f)) {
+        if (state === OSC && code === 0x1b) { state = OSC_ESC; continue; }
+        if (state === STRING && code === 0x1b) { state = STRING_ESC; continue; }
+        if (state === OSC && streaming) out += "\x18";
+        streaming = false;
+        start = position + at - 1;
+        seq = "";
+        if (code === 0x1b) state = ESC;
+        else if (code === 0x9b) { state = CSI; intro = ch; }
+        else if (code === 0x9d) openOsc();
+        else { state = STRING; dcs = code === 0x90; }
+        continue;
+      }
       switch (state) {
         case ESC:
-          if (ch === "[") { state = CSI; seq = ""; }
-          else if (ch === "]") { state = OSC; seq = ""; keep = true; streaming = false; }
-          else if (ch === "P" || ch === "_" || ch === "^" || ch === "X") state = STRING;
+          if (ch === "[") { state = CSI; intro = "\x1b["; }
+          else if (ch === "]") openOsc();
+          else if (ch === "P" || ch === "_" || ch === "^" || ch === "X") { state = STRING; dcs = ch === "P"; }
           else if (ch === "c") { out += "\x1bc"; state = GROUND; }
           // the keypad's application and numeric modes (DECKPAM, DECKPNM), which xterm keeps for its keys
           else if (ch === "=" || ch === ">") { out += `\x1b${ch}`; state = GROUND; }
-          else if (ch === "\x1b") state = ESC;
-          else state = GROUND;
+          else if ((code >= 0x20 && code !== 0x7f) || code === 0x18 || code === 0x1a) state = GROUND;
           break;
         case CSI:
-          if (code === 0x1b) { state = ESC; break; }
-          if (code === 0x18 || code === 0x1a) { state = GROUND; break; }
-          if (code < 0x20) break;
+          if (code === 0x18 || code === 0x1a || (code >= 0x80 && code < 0xa0)) { state = GROUND; break; }
+          if (code < 0x20 || code === 0x7f) break;
           seq += ch;
           if (code >= 0x40 && code <= 0x7e) {
             const kind = csiKind(seq);
-            if (kind === "mode") out += `\x1b[${seq}`;
-            else if (kind === "question") { pieces.push({ end: at, controls: out, question: `\x1b[${seq}` }); out = ""; }
+            if (kind === "mode") out += intro + seq;
+            else if (kind === "question") question(intro + seq, at);
             state = GROUND;
           }
           break;
         case OSC:
-          if (code === 0x07) {
-            if (streaming) out += "\x07";
-            else if (keep && forwardsOsc(seq)) out += `\x1b]${seq}\x07`;
+          if (code === 0x07 || code === 0x9c) endOsc(at, ch);
+          else if (code === 0x18 || code === 0x1a) {
+            if (streaming) out += ch;
+            if (oscId === 52) span?.("clipboard", start, position + at);
+            streaming = false;
             state = GROUND;
-          } else if (code === 0x1b) state = OSC_ESC;
-          else if (code === 0x18 || code === 0x1a) { if (streaming) out += ch; state = GROUND; }
-          else if (streaming) out += ch;
-          else if (keep) {
-            seq += ch;
-            if (seq === "52;") { streaming = true; out += "\x1b]52;"; }
-            else if (seq.length === OSC_HEAD && !seq.startsWith("52;")) { keep = false; seq = ""; }
+          } else if (code >= 0x20) {
+            if (oscPayload) {
+              if (seq.length < 2) seq += ch;
+            } else if (ch === ";") oscPayload = true;
+            else oscId = code >= 0x30 && code <= 0x39 ? Math.max(0, oscId) * 10 + code - 0x30 : NaN;
+            if (streaming) {
+              if (oscId === 52 || (!oscPayload && (oscId === 0 || oscId === 5))) out += ch;
+              else { out += "\x18"; streaming = false; }
+            }
           }
           break;
-        case OSC_ESC:
-          if (streaming) out += ch === "\\" ? "\x1b\\" : "\x1b";
-          else if (ch === "\\" && keep && forwardsOsc(seq)) out += `\x1b]${seq}\x1b\\`;
-          // ESC ends the string either way; anything but `\` starts a new sequence
-          if (ch === "\\") state = GROUND;
-          else { state = ESC; at--; }
+        case OSC_ESC: {
+          const st = ch === "\\";
+          endOsc(st ? at : at - 2, st ? "\x1b\\" : "\x1b");
+          if (!st) { start = position + at - 2; state = ESC; seq = ""; at--; }
           break;
+        }
         case STRING:
-          if (code === 0x07 || code === 0x18 || code === 0x1a) state = GROUND;
-          else if (code === 0x1b) state = STRING_ESC;
+          if (code === 0x9c) endString(at);
+          else if (code === 0x18 || code === 0x1a) state = GROUND;
+          else if (dcs && seq.length < 2 && code >= 0x20 && code !== 0x7f) seq += ch;
           break;
         case STRING_ESC:
-          if (ch === "\\") state = GROUND;
-          else { state = ESC; at--; }
+          if (ch === "\\") endString(at);
+          else { endString(at - 2); start = position + at - 2; state = ESC; seq = ""; at--; }
           break;
       }
     }
+    position += length;
     pieces.push({ end: length, controls: out, question: null });
     return pieces;
   };
-  return Object.assign(scanner, { streaming: () => streaming && state !== GROUND });
+  return Object.assign(scanner, {
+    streaming: () => streaming,
+    pendingClipboard: () => streaming ? { start, escaped: state === OSC_ESC } : null,
+  });
 }
 
 export interface ControlsEngine {
@@ -144,8 +181,10 @@ export interface ControlsEngine {
  * engine's is.
  */
 export function controlsWriter(engine: ControlsEngine, xterm: (data: string, callback?: () => void) => void) {
-  const decoder = new TextDecoder();
-  const scan = controlScanner();
+  let decoder = new TextDecoder();
+  let scan = controlScanner();
+  // libghostty accepts the 7-bit introducer, not the UTF-8 encoding of C1 CSI.
+  const writeEngine = (text: string): void => engine.write(text.replaceAll("\u009b", "\x1b["));
   const cursorAt = (): string => { const { x, y } = engine.screenCursor(); return `\x1b[${y + 1};${x + 1}H`; };
   const write = (data: string | Uint8Array, callback?: () => void): void => {
     const text = typeof data === "string" ? data : decoder.decode(data, { stream: true });
@@ -153,49 +192,73 @@ export function controlsWriter(engine: ControlsEngine, xterm: (data: string, cal
     let out = "";
     // bytes are fed as the text decoded from them, so a character split between two writes reaches the engine once
     if (pieces.length === 1 && typeof data === "string") {
-      engine.write(data);
+      writeEngine(data);
       out = pieces[0]!.controls;
     } else {
       // a question is answered from the cursor where the program asked it: the engine takes the text up to it first
       let from = 0;
       for (const piece of pieces) {
-        engine.write(text.slice(from, piece.end));
+        writeEngine(text.slice(from, piece.end));
         from = piece.end;
         out += piece.controls;
-        if (piece.question !== null) out += (scan.streaming() ? "" : cursorAt()) + piece.question;
+        if (piece.question !== null) out += cursorAt() + piece.question;
       }
     }
     // xterm's cursor follows libghostty's, unless an OSC 52 it was given is still open (a CUP would end it)
     xterm(scan.streaming() ? out : out + cursorAt(), callback);
   };
-  // xterm already parsed the captured controls. Restore the scanner and UTF-8 decoder state without
+  // xterm already parsed the full startup stream. Restore scanner and UTF-8 decoder state without
   // sending the controls again, then put its cursor where the replay left libghostty's.
   return Object.assign(write, {
     replay(data: string | Uint8Array): void {
       const text = typeof data === "string" ? data : decoder.decode(data, { stream: true });
       scan(text);
-      engine.write(text);
+      writeEngine(text);
     },
     syncCursor(): void { if (!scan.streaming()) xterm(cursorAt()); },
+    reset(): void { decoder = new TextDecoder(); scan = controlScanner(); },
   });
 }
 
-/**
- * A stream to hand xterm whole after it took only its controls (libghostty gave up): every byte but the questions it
- * already answered, so the program gets no second reply. The caller resets xterm first, so its modes come again.
- */
-export function withoutQuestions(chunks: readonly (string | Uint8Array)[]): string {
-  const scan = controlScanner();
+export interface RetainedOutput {
+  readonly data: string | Uint8Array;
+  /** Raw prefix sent to xterm's control parser, or Infinity for full startup parsing. */
+  sent: number;
+}
+
+/** Rebuild the screen without repeating clipboard writes or sending replies twice. */
+export function fallbackOutput(chunks: readonly RetainedOutput[]): string {
   const decoder = new TextDecoder();
-  let out = "";
-  for (const chunk of chunks) {
-    const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
-    let from = 0;
-    for (const piece of scan(text)) {
-      if (piece.question === null) { out += text.slice(from); break; }
-      out += text.slice(from, Math.max(from, piece.end - piece.question.length));
-      from = piece.end;
-    }
+  const segments: string[] = [];
+  const ranges: { readonly start: number; readonly end: number }[] = [];
+  let sentThrough = 0;
+  let total = 0;
+  let startup = false;
+  const scan = controlScanner((kind, start, end) => {
+    if (kind === "clipboard" || (end <= sentThrough && (kind === "query" || startup))) ranges.push({ start, end });
+  });
+  for (const { data, sent } of chunks) {
+    startup = sent === Infinity;
+    const prefix = data.slice(0, sent);
+    const suffix = data.slice(sent);
+    const seen = typeof prefix === "string" ? prefix : decoder.decode(prefix, { stream: true });
+    const unseen = typeof suffix === "string" ? suffix : decoder.decode(suffix, { stream: true });
+    sentThrough = total + seen.length;
+    segments.push(seen, unseen);
+    scan(seen + unseen);
+    total += seen.length + unseen.length;
   }
-  return out;
+  const text = segments.join("");
+  const output: string[] = [];
+  let from = 0;
+  for (const { start, end } of ranges) {
+    output.push(text.slice(from, start));
+    from = end;
+  }
+  const pending = scan.pendingClipboard();
+  if (pending) {
+    // Keep an unfinished clipboard payload nonprinting without giving it a clipboard handler.
+    output.push(text.slice(from, pending.start), "\x1b]9999;", pending.escaped ? "\x1b" : "");
+  } else output.push(text.slice(from));
+  return output.join("");
 }

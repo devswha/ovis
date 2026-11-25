@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { encodePng } from "../itermPictures.ts";
 import { itermPictureWriter } from "./itermPictureWriter.ts";
+import { ghosttyRows } from "./screenRows.ts";
 import { GhosttyVt } from "./vt.ts";
 
 const CAPS = { sizeLimit: 20_000_000, pixelLimit: 4096 * 4096 };
@@ -8,6 +9,7 @@ const GRID = { cols: 20, rows: 10, cellW: 8, cellH: 16 };
 const png = Buffer.from(await encodePng(2, 2, new Uint8Array(16).fill(255))).toString("base64");
 const osc = (body: string, end = "\x07") => `\x1b]1337;${body}${end}`;
 const file = (args: string, base64 = png, end?: string) => osc(`File=${args}:${base64}`, end);
+const cancel = "\x18";
 const kitty = (base64: string, placement = "") => `\x1b_Gf=100,a=T,q=2${placement},m=0;${base64}\x1b\\`;
 
 function rewrite(chunks: readonly (string | Uint8Array)[], caps: typeof CAPS | null = CAPS): Buffer {
@@ -21,10 +23,14 @@ test("rewrites a picture at every byte boundary without touching other bytes", (
   const before = Buffer.concat([Buffer.from("前\x1b[31m\x1b]0;title\x1b\\\x1b]1337;SetMark\x07"), Buffer.from([0xff])]);
   const after = Buffer.from("\x1b_Ga=d\x1b\\\x1bP$qm\x1b\\後\x1b[0m");
   const input = Buffer.concat([before, Buffer.from(file("inline=1;width=3;height=2;preserveAspectRatio=0", png, "\x1b\\")), after]);
-  const expected = Buffer.concat([before, Buffer.from(kitty(png, ",c=3,r=2")), after]);
+  const expected = Buffer.concat([before, Buffer.from(cancel + kitty(png, ",c=3,r=2")), after]);
+  const splitAtOsc = before.length + 2;
+  const expectedSplit = Buffer.concat([before, Buffer.from("\x1b]" + cancel + kitty(png, ",c=3,r=2")), after]);
   expect(rewrite([input])).toEqual(expected);
-  for (let i = 1; i < input.length; i++) expect(rewrite([input.subarray(0, i), input.subarray(i)])).toEqual(expected);
-  expect(rewrite(Array.from(input, (byte) => Uint8Array.of(byte)))).toEqual(expected);
+  for (let i = 1; i < input.length; i++) {
+    expect(rewrite([input.subarray(0, i), input.subarray(i)])).toEqual(i === splitAtOsc ? expectedSplit : expected);
+  }
+  expect(rewrite(Array.from(input, (byte) => Uint8Array.of(byte)))).toEqual(expectedSplit);
 });
 
 async function rewriteAll(chunks: readonly (string | Uint8Array)[], caps: Parameters<typeof itermPictureWriter>[0] = () => CAPS): Promise<Buffer> {
@@ -41,7 +47,7 @@ test("holds split sixels and emits their PNG before same-write and later text at
   const after = Buffer.from("\x1bP$qm\x1b\\後\x1b[0m");
   const input = Buffer.concat([before, Buffer.from(dcs), after]);
   const converted = Buffer.from(await encodePng(2, 1, Uint8Array.of(51, 51, 204, 255, 0, 0, 0, 0))).toString("base64");
-  const expected = Buffer.concat([before, Buffer.from(kitty(converted)), after]);
+  const expected = Buffer.concat([before, Buffer.from(cancel + kitty(converted)), after]);
   expect(await rewriteAll([input])).toEqual(expected);
   for (let i = 1; i < input.length; i++) {
     expect(await rewriteAll([input.subarray(0, i), input.subarray(i)])).toEqual(expected);
@@ -51,7 +57,7 @@ test("holds split sixels and emits their PNG before same-write and later text at
 
 test("uses opaque background when P2 is omitted", async () => {
   const converted = Buffer.from(await encodePng(2, 1, Uint8Array.of(255, 255, 255, 255, 12, 34, 56, 255))).toString("base64");
-  expect((await rewriteAll(['\x1bPq"1;1;2;1@\x1b\\'])).toString()).toBe(kitty(converted));
+  expect((await rewriteAll(['\x1bPq"1;1;2;1@\x1b\\'])).toString()).toBe(cancel + kitty(converted));
 });
 
 test.each([
@@ -61,28 +67,38 @@ test.each([
   { body: "!20000~", caps: { ...CAPS, pixelLimit: Infinity }, name: "hard side cap" },
   { body: "!2", caps: CAPS, name: "malformed repeat" },
 ])("drops sixels without losing following text ($name)", async ({ body, caps }) => {
-  expect((await rewriteAll(`a\x1bP0;1q${body}\x1b\\b`.split(""), () => caps)).toString()).toBe("ab");
+  expect((await rewriteAll(`a\x1bP0;1q${body}\x1b\\b`.split(""), () => caps)).toString()).toBe(`a${cancel}b`);
 });
 
 test("joins imgcat parts and places the picture at FileEnd", () => {
   const input = `a${osc("MultipartFile=inline=1")}${osc(`FilePart=${png.slice(0, 7)}`)}b${osc(`FilePart=${png.slice(7)}`)}c${osc("FileEnd", "\x1b\\")}d`;
-  expect(rewrite(input.split("")).toString()).toBe(`abc${kitty(png)}d`);
+  const boundary = "\x1b]" + cancel;
+  expect(rewrite(input.split("")).toString()).toBe(`a${boundary}${boundary}b${boundary}c${boundary}${kitty(png)}d`);
 });
 
 test("swallows downloads, disabled, invalid and over-limit pictures without losing following text", () => {
-  expect(rewrite([file("inline=0"), "download", file("inline=1", "bad!"), "invalid"]).toString()).toBe("downloadinvalid");
-  expect(rewrite([file("inline=1"), "off"], null).toString()).toBe("off");
-  expect(rewrite([file("inline=1"), "bytes"], { ...CAPS, sizeLimit: 8 }).toString()).toBe("bytes");
-  expect(rewrite([file("inline=1"), "pixels"], { ...CAPS, pixelLimit: 4 }).toString()).toBe("pixels");
-  expect(rewrite([file("inline=1;width=4294967295"), "oversized placement"]).toString()).toBe("oversized placement");
+  expect(rewrite([file("inline=0"), "download", file("inline=1", "bad!"), "invalid"]).toString()).toBe(`${cancel}download${cancel}invalid`);
+  expect(rewrite([file("inline=1"), "off"], null).toString()).toBe(`${cancel}off`);
+  expect(rewrite([file("inline=1"), "bytes"], { ...CAPS, sizeLimit: 8 }).toString()).toBe(`${cancel}bytes`);
+  expect(rewrite([file("inline=1"), "pixels"], { ...CAPS, pixelLimit: 4 }).toString()).toBe(`${cancel}pixels`);
+  expect(rewrite([file("inline=1;width=4294967295"), "oversized placement"]).toString()).toBe(`${cancel}oversized placement`);
   const overflowingPart = osc(`FilePart=${"A".repeat(70_000)}`);
-  expect(rewrite([osc("MultipartFile=inline=1"), overflowingPart, osc(`FilePart=${png}`), osc("FileEnd"), "tail"], { ...CAPS, sizeLimit: 100 }).toString()).toBe("tail");
+  expect(rewrite([osc("MultipartFile=inline=1"), overflowingPart, osc(`FilePart=${png}`), osc("FileEnd"), "tail"], { ...CAPS, sizeLimit: 100 }).toString()).toBe(`${cancel.repeat(4)}tail`);
+});
+
+test.each([false, true])("a disabled picture cancels a preceding partial CSI (split: %s)", async (split) => {
+  const chunks = split ? ["\x1b[31", file("inline=1"), "mvisible"] : [`\x1b[31${file("inline=1")}mvisible`];
+  const vt = await GhosttyVt.create(GRID.cols, GRID.rows);
+  try {
+    vt.write(rewrite(chunks, null));
+    expect(ghosttyRows(vt).getLine(0)?.translateToString(true)).toBe("mvisible");
+  } finally { vt.dispose(); }
 });
 
 test("translates dimensions and keeps the aspect ratio unless explicitly disabled", () => {
-  expect(rewrite([file("inline=1;width=25%;height=32px")]).toString()).toBe(kitty(png, ",c=5"));
-  expect(rewrite([file("inline=1;width=auto;height=17px")]).toString()).toBe(kitty(png, ",r=2"));
-  expect(rewrite([file("inline=1;width=17px;height=20%;preserveAspectRatio=0")]).toString()).toBe(kitty(png, ",c=3,r=2"));
+  expect(rewrite([file("inline=1;width=25%;height=32px")]).toString()).toBe(cancel + kitty(png, ",c=5"));
+  expect(rewrite([file("inline=1;width=auto;height=17px")]).toString()).toBe(cancel + kitty(png, ",r=2"));
+  expect(rewrite([file("inline=1;width=17px;height=20%;preserveAspectRatio=0")]).toString()).toBe(cancel + kitty(png, ",c=3,r=2"));
 });
 
 test("sends a chunked PNG to libghostty and places it before subsequent text", async () => {
@@ -133,10 +149,10 @@ test("waits for TIFF conversion before same-write and later text", async () => {
   const emit = (data: string | Uint8Array) => { output.push(data.toString()); };
   writer.write(`head${file("inline=1", greyTiff())}same`, emit);
   const finished = new Promise<void>((resolve) => writer.write("later", emit, resolve));
-  expect(output).toEqual(["head"]);
+  expect(output).toEqual(["head", cancel]);
   await finished;
   const converted = Buffer.from(await encodePng(1, 1, Uint8Array.of(123, 123, 123, 255))).toString("base64");
-  expect(output.join("")).toBe(`head${kitty(converted)}samelater`);
+  expect(output.join("")).toBe(`head${cancel}${kitty(converted)}samelater`);
 });
 
 test("drops the pending image on queue overflow but still emits every later byte", () => {
@@ -147,5 +163,5 @@ test("drops the pending image on queue overflow but still emits every later byte
   writer.write(`${file("inline=1", greyTiff())}same`, emit);
   writer.write("later", emit);
   writer.write(large, emit);
-  expect(output).toEqual(["same", "later", large]);
+  expect(output).toEqual([cancel, "same", "later", large]);
 });

@@ -10,6 +10,13 @@ test("paints VT340 colours and RGB and DEC HLS register definitions", () => {
   ) });
 });
 
+test("preloads the ANSI cube and grayscale and lets an explicit register override them", () => {
+  const image = decodeSixel("#16@#196@#232@#255@#196;2;0;100;0@", options);
+  expect(image?.rgba).toEqual(Uint8Array.of(
+    0, 0, 0, 255, 255, 0, 0, 255, 8, 8, 8, 255, 238, 238, 238, 255, 0, 255, 0, 255,
+  ));
+});
+
 test("uses repeats, overlays colour after carriage return and advances in six-pixel bands", () => {
   const image = decodeSixel('"1;1;3;8#2!3@$#3A-@', options);
   expect([image?.width, image?.height]).toEqual([3, 8]);

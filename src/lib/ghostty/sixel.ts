@@ -31,6 +31,17 @@ const VT340 = [
   [60, 33, 60], [33, 60, 60], [60, 60, 33], [80, 80, 80],
 ].map(([r = 0, g = 0, b = 0]) => rgbPercent(r, g, b));
 
+const cubeLevel = (step: number): number => step === 0 ? 0 : 55 + 40 * step;
+const DEFAULT_PALETTE = new Uint32Array(256);
+DEFAULT_PALETTE.set(VT340);
+DEFAULT_PALETTE.set(Uint32Array.from({ length: 240 }, (_, i) => {
+  if (i < 216) {
+    return opaque([cubeLevel(Math.floor(i / 36)), cubeLevel(Math.floor(i / 6) % 6), cubeLevel(i % 6)]);
+  }
+  const gray = 8 + (i - 216) * 10;
+  return opaque([gray, gray, gray]);
+}), 16);
+
 function hls(hue: number, lightness: number, saturation: number): number {
   // DEC puts blue, not red, at 0 degrees.
   const h = ((hue + 240) % 360) / 30;
@@ -59,7 +70,7 @@ export function decodeSixel(body: string, options: {
     let work = 0;
     let color = opaque([255, 255, 255]);
     const palette = pixels && new Uint32Array(REGISTERS);
-    palette?.set(VT340);
+    palette?.set(DEFAULT_PALETTE);
     const params = /\d{0,8}(?:;\d{0,8}){0,4}/y;
     for (let at = 0; at < body.length;) {
       let ch = body.charCodeAt(at++);
