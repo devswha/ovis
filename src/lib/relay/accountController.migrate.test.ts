@@ -492,6 +492,73 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     }
   });
 
+  /**
+   * F10 (staging): the device that moved the account is paired with its PC too, and the shell opens a PC it is paired
+   * with by that pairing, whose naming the PC does not take (a pairing is no key it let in through the account). So the
+   * device names its list over a session of its own through the account, the one way its naming counts.
+   */
+  const movedWithPairing = async (account: string, answers: { pinned: string | null }[]) => {
+    const signedIn = await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const LIST = "5c".repeat(32);
+    const named: unknown[] = [];
+    const following = (): AccountListView => ({ account, reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async (given) => { named.push(given); return { naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }; });
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const opened: { accountOpensAll: boolean; asked: () => string[] }[] = [];
+    const made = controller(list, store, async (_offer, options) => {
+      const said = answers[Math.min(opened.length, answers.length - 1)]!;
+      const one = sessionOf({ key: signedIn, answers: { "GET /api/account/list/witness": { account, pinned: said.pinned, admits: [], removed: [] }, "POST /api/account/list/name": { pinned: false, why: "session_new", wait: 60 } } });
+      opened.push({ accountOpensAll: options.accountOpensAll === true, asked: () => one.asked.map((call) => `${call.method} ${call.path}`) });
+      return one.opened;
+    }, [row], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    return { pc, signedIn, LIST, named, opened };
+  };
+
+  it("F10: after its move, a device names its list over a session through the account to a PC it is paired with, never over the pairing", async () => {
+    const { pc, signedIn, named, opened } = await movedWithPairing("acct-name-way", [{ pinned: null }]);
+    expect(opened.map((one) => one.accountOpensAll)).toEqual([true]);
+    expect(opened[0]!.asked()).toEqual(["GET /api/account/list/witness", "POST /api/account/list/name"]);
+    // signed for that session's key, the sign-in key the PC lets in through the account, which vouches for itself
+    expect(named).toEqual([{ account: "acct-name-way", session: signedIn, endpoint: pc.endpoint, signIn: signedIn }]);
+  });
+
+  it("F10: a PC that says it follows the list is named nothing more, and asked again only on the gap", async () => {
+    jest.useFakeTimers();
+    try {
+      const { LIST, opened } = await movedWithPairing("acct-name-done", [{ pinned: null }, { pinned: "5c".repeat(32) }]);
+      expect(opened).toHaveLength(1);
+      jest.advanceTimersByTime(11 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+      expect(opened[1]!.asked()).toEqual(["GET /api/account/list/witness"]);
+      expect(LIST).toBe("5c".repeat(32));
+      // it follows the list now: nothing more on the clock
+      jest.advanceTimersByTime(60 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("F10: a PC the directory gives no way through the account is named nothing over its pairing", async () => {
+    const signedIn = await signIn("acct-name-paired-only");
+    const { store } = await pairedPc("acct-name-paired-only");
+    const LIST = "5c".repeat(32);
+    const following = (): AccountListView => ({ account: "acct-name-paired-only", reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async () => ({ naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }));
+    const opened: unknown[] = [];
+    const made = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ key: signedIn }).opened; }, [], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toEqual([]);
+  });
+
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
     await signIn("acct-check");
     const one = pcKeys();
