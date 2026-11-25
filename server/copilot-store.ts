@@ -102,7 +102,7 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
  * one is still there is that moment, so only the open log can decide this lookup; without a
  * lifecycle line there, the next one compares with the same bytes read.
  */
-function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: bigint, pid: number): ForegroundState | typeof LOG_READ_CHANGED | typeof ROTATION_GAP | null {
+function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: bigint, pid: number): { selection: ForegroundState; continued: boolean } | typeof LOG_READ_CHANGED | typeof ROTATION_GAP | null {
   const archives: { fd: number; size: number; dev: bigint; ino: bigint }[] = [];
   try {
     const consumed = cached.hash.copy().digest("hex");
@@ -132,7 +132,8 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
     }
     // No copy carries on from the bytes read (an older one could revive a session left since):
     // what was logged in between is unknown, so the rejection stands.
-    if (continued < 0) return cached.selection.kind === "unregistered" ? { kind: "unregistered", binding: null } : null;
+    if (continued < 0) return cached.selection.kind === "unregistered"
+      ? { selection: { kind: "unregistered", binding: null }, continued: false } : null;
     let replayed = 0;
     for (let index = continued; index >= 0; index--) replayed += archives[index]!.size;
     if (replayed > LOG_HASH_BYTES) return null;
@@ -149,7 +150,7 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
       if (next === null) return null;
       selected = next;
     }
-    return selected;
+    return { selection: selected, continued: true };
   } finally { for (const { fd } of archives) closeSync(fd); }
 }
 
@@ -409,10 +410,10 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
           const previous: ForegroundState = same ? cached.selection
             : fromCopies ? chain
             : initialLog ? legacy
-            : rotated ?? unavailable(changed ?? owner.denial?.diagnostic ?? (start > 0 ? "copilot_log_gap" : "copilot_log_read_raced"));
+            : rotated?.selection ?? unavailable(changed ?? owner.denial?.diagnostic ?? (start > 0 ? "copilot_log_gap" : "copilot_log_read_raced"));
           const position = start + Buffer.byteLength(text.slice(0, skip));
           // A same-inode cut that loses complete bytes without a continuing copy can leave an older registration behind.
-          const lostCompleteLines = cached !== undefined && changed === "copilot_log_truncated" && size < cached.size && rotation === null;
+          const lostCompleteLines = cached !== undefined && changed === "copilot_log_truncated" && size < cached.size && rotated?.continued !== true;
           const selected = lostCompleteLines ? previous : applyLifecycle(previous, complete, position, (at) => `${pid}:${stat.dev}:${stat.ino}:${epoch}:${at}`);
           if (selected === null) return deny("copilot_log_unreadable");
           if (rotation === ROTATION_GAP && selected === previous) {
@@ -436,7 +437,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, selection: selected,
             newestCopy: newest,
           };
-          if ((rotated === null && !fromCopies) || checkpoint.size > 0) owner.checkpoint = checkpoint;
+          if (lostCompleteLines || (rotated === null && !fromCopies) || checkpoint.size > 0) owner.checkpoint = checkpoint;
           if (selected.kind === "unavailable") owner.denial = selected;
           else if (selected.kind === "selected" || selected.kind === "legacy") delete owner.denial;
           delete owner.initialRead;

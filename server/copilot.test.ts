@@ -157,10 +157,11 @@ it.skipIf(process.platform !== "linux")("never reuses cached handoff unregister 
   try {
     appendFileSync(log, register(session) + register(session, "Unregistering"));
     expect(read()?.sessionId).toBe(session);
-    writeFileSync(log, register(other));
+    fs.truncateSync(log, 0);
     const missing = spyOn(processOwner, "readProcessBirth").mockImplementation((current) => current === pid ? { state: "unknown" } : realBirth(current));
     try { expect(read()).toBeNull(); } finally { missing.mockRestore(); }
     expect(read()).toBeNull();
+    appendFileSync(log, register(other));
     expect(copilotProcessSession(environment, ["copilot"], pid)?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
@@ -604,6 +605,30 @@ it.skipIf(process.platform !== "linux")("does not replay an older registration a
     expect(fixture.binding()?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
+
+for (const variant of ["release", "rotation gap"] as const) {
+  it.skipIf(process.platform !== "linux")(`does not replay an older registration after a cut with a ${variant}`, async () => {
+    const fixture = await logFixture([session]);
+    const { log, environment, pid } = fixture;
+    const read = () => readCopilotProcessSession(environment, ["copilot"], pid);
+    try {
+      const old = register(session);
+      appendFileSync(log, old + register(other));
+      expect(read().session?.sessionId).toBe(other);
+      if (variant === "release") {
+        appendFileSync(log, register(other, "Unregistering"));
+        expect(read().diagnostic).toBe("copilot_session_unregistered");
+      } else {
+        writeFileSync(log.replace(/\.log$/, ".2.log"), "older archive\n");
+      }
+      writeFileSync(log, old);
+      expect(read().session).toBeNull();
+      if (variant === "rotation gap") fs.unlinkSync(log.replace(/\.log$/, ".2.log"));
+      appendFileSync(log, register(other));
+      expect(read().session?.sessionId).toBe(other);
+    } finally { await fixture.close(); }
+  });
+}
 
 it.skipIf(process.platform !== "linux")("proves the copies again while the open log is empty, so two rotations never leave the earlier session", async () => {
   const fixture = await logFixture([]);
