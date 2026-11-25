@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILinkProvider } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { HerdrSocket, markTyped } from "./ws.ts";
@@ -39,7 +39,8 @@ import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
-import { terminalScreen } from "./terminalScreen.ts";
+import { terminalScreen, viewRows } from "./terminalScreen.ts";
+import { hyperlinkProvider } from "./ghostty/hyperlinks.ts";
 import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
@@ -265,12 +266,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       term.loadAddon(fit);
       matchHerdrWidths(term);
-      // the same policy as the linkHandler above: an http(s) address or nothing (S10)
-      term.loadAddon(new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); }));
+      // the same policy as the linkHandler above: an http(s) address or nothing (S10). The addon reads the rows a link is
+      // in through the terminal it is given: the rows drawn (viewRows), libghostty's while it holds the screen
+      new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); })
+        .activate({ registerLinkProvider: (provider: ILinkProvider) => term.registerLinkProvider(provider), buffer: { get active() { return viewRows(term); } } } as unknown as Terminal);
+      term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), openHyperlink));
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
-      term.registerLinkProvider(terminalFileLinkProvider(() => terminalScreen(term).active(), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
+      term.registerLinkProvider(terminalFileLinkProvider(() => viewRows(term), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
       term.open(host);
       // xterm turns autocorrect, autocapitalize and spellcheck off on its helper textarea; an Android
       // keyboard still shows its word strip there unless the field also says autocomplete="off",
@@ -465,7 +469,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (!shouldOpenInPanel(event, target.url)) openExternal(target.url, "link", reuseTab(event));
             return true;
           }
-          const buffer = terminalScreen(term).active();
+          const buffer = viewRows(term);
           const uri = terminalScreen(term).hyperlinkAt(buffer.viewportY + target.row, target.col);
           if (uri !== null && (isWebLink(uri) || fileUriPath(uri) !== null)) {
             openHyperlink(event, uri);
