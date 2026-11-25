@@ -2203,6 +2203,17 @@ describe("AddThisPc", () => {
       expect(words(renderer)).toContain(WAIT);
     });
 
+    test("an add whose ten minutes ran out is not started again once the address answers for another PC: the wait ends", async () => {
+      const renderer = await waitingFrom();
+      pc.healthId = OTHER_SERVER;
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = running(NEXT);
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(1);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
     test("the PC joins by its list: the wait says Added", async () => {
       const renderer = await waitingFrom();
       pc.account = ACCOUNT;

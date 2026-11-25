@@ -506,6 +506,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (expired()) return;
       if (!await stillSignedIn()) { if (live) stopped(); return; }
       if (!live || withdrawn()) return;
+      // asked before the add, as before a reopen: the address may answer for another PC now, and nothing is started on it
+      if (!await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
+      if (!live || withdrawn() || mark === null) return;
       const again = await addByList(mark.account);
       if (!live || withdrawn() || mark === null) {
         // the wait ended (Stop waiting gave up the run it knew) while this one started: nobody waits for it, unless a
