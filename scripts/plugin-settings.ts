@@ -38,7 +38,8 @@ export function readEnvFile(file: string): Record<string, string> {
 export function pluginConfigDir(env: Record<string, string | undefined>, home: string): string {
   const explicit = env["HERDR_PLUGIN_CONFIG_DIR"];
   if (explicit !== undefined) return explicit;
-  const herdr = Bun.which("herdr", { PATH: env["PATH"] ?? "" });
+  const pathName = process.platform === "win32" ? Object.keys(env).find((name) => name.toUpperCase() === "PATH") : "PATH";
+  const herdr = Bun.which("herdr", { PATH: env[pathName ?? "PATH"] ?? "" });
   if (herdr !== null) {
     for (const id of [PLUGIN_ID, LEGACY_PLUGIN_ID]) {
       try {
