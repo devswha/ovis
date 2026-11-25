@@ -679,13 +679,15 @@ export function accountList(options: AccountListOptions): AccountList {
   };
 
   /**
-   * `saved` with what `verified` holds of the same list and it lacks: the entries after its own place, taken as a peer's
-   * pages (the follower judges them as it judged them first), and the alarm `verified` raised, when `saved` has none.
-   * `saved` itself where neither adds anything.
+   * `saved` with what `verified` holds of the same list and it lacks: the entries after the last one a member signed in
+   * `saved`, taken as a peer's pages (the follower judges them as it judged them first, and they take the place of
+   * entries no member signed above it), and the alarm `verified` raised, when `saved` has none. `saved` itself where
+   * neither adds anything.
    */
   const reconcile = async (saved: FollowerCopy, verified: FollowerCopy): Promise<FollowerCopy> => {
     let copy = saved;
-    let read: FollowRead | null = startRead(copy, "peer");
+    const begun = startRead(copy, "peer");
+    let read: FollowRead | null = copy.state === null ? begun : { ...begun, after: copy.state.footing.seq };
     for (let pages = 0; read !== null && pages < READ_PAGES_MAX; pages += 1) {
       const page = verified.state === null ? null : servePage(verified, { list: verified.list, after: read.after }, PAGE_ENTRIES_MAX);
       if (page === null || page.entries.length === 0) break;
@@ -1177,11 +1179,16 @@ export function accountList(options: AccountListOptions): AccountList {
   let lives: { readonly account: string; readonly list: string; readonly live: () => Promise<boolean> } | null = null;
   const liveFor = (account: string, list: string): (() => Promise<boolean>) => {
     if (lives === null || lives.account !== account || lives.list !== list) {
-      lives = { account, list, live: async () => {
+      const mine = (): boolean => {
         const now = held?.copy ?? null;
-        if (held === null || held.account !== account || now === null || now.list !== list || now.alarm !== null) return false;
+        return held !== null && held.account === account && now !== null && now.list === list && now.alarm === null;
+      };
+      lives = { account, list, live: async () => {
+        if (!mine()) return false;
         // and what the pages of this device saved: another page may have saved an alarm this page has not read yet
         const saved = await store.get("copy", account);
+        // and this page's own copy again: an alarm it raised while that was read, and could not save, ends the write too
+        if (!mine()) return false;
         if (typeof saved !== "string") return true;
         try {
           const read = JSON.parse(saved) as { list?: unknown; alarm?: unknown };

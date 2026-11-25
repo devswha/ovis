@@ -1986,11 +1986,16 @@ and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account
   footing, which the service may have shown it), the device hands from that footing, so a stranger's
   entry keeps no removal from the PC. Entries are handed only to a PC this device's copy holds or
   held; one that merely names the list's id is told where the device stands and handed nothing;
-- the session belongs to the account, the list and the member key of its first exchange: while the
-  page's list is another one (another account signed in on this browser in another tab, or this
-  device back with another key), the PC is told nothing of it, the app says nothing of that PC by it
-  (no "removed from the account"), and once that list is back the exchanges go on. The PC, for its
-  part, asks for entries from its footing, never from an entry no member signed above it;
+- the session belongs to the account, the list and the member key its list key was taken for (a
+  session opened with the list key), or else of its first exchange: while the page's list is
+  another one (another account signed in on this browser in another tab, or this device back with
+  another key), the PC is told nothing of it, the app says nothing of that PC by it (no "removed
+  from the account"), and once that list is back the exchanges go on. This is looked at before
+  every call and after every answer: an exchange under way when the page's list changes stops
+  there, and takes or hands nothing more. So does one under way when its session is no longer the
+  app's, when the device stops comparing with that PC, or when a new carrier comes up: its call is
+  called off, and what a late answer brings is neither taken nor followed. The PC, for its part,
+  asks for entries from its footing, never from an entry no member signed above it;
 - where the device needs the PC's entries after another place (the PC holds more, another entry at
   a place the device holds, or the device looks for where two histories part), it asks for them in
   the head call (`asks`), and judges what comes back. The PC answers that read only to a key its
@@ -2000,22 +2005,28 @@ and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account
   `429`'s wait, kept for that PC and key in the browser's storage, so every tab and every
   reopening of the PC draws on the same budget (the PC counts 30 by that key, in memory); a wait
   lasts no longer than the PC asked for, whatever the wall clock does, and is armed in pieces of
-  five minutes at most. What a minute's calls did not finish (the
-  device's read, or the PC's next asked place) goes on as soon as the budget has room again, from
-  where it got to, while the device stands where it stood;
+  five minutes at most. Where the browser's storage takes no write, the page goes by its own record
+  until it does. What a minute's calls or a `429` did not finish (the device's read, or the PC's
+  next asked place) goes on as soon as the budget has room again, from where it got to, while the
+  device stands where it stood;
 - one answer is read up to 512 KiB and for 10 seconds, an error's body included; a longer or a
   slower one ends the exchange;
 - a page whose save fails is acted on from memory all the same (a removal stands at once), is not
   said to be taken, and the next round writes it first. Where another tab saved meanwhile, what this
-  tab verified (the entries, an alarm) is taken into what that tab saved before anything is shown.
+  tab verified (the entries, an alarm) is taken into what that tab saved before anything is shown,
+  from the last entry a member signed in it: entries no member signed above it, which the service may
+  have shown that tab, give way to what this tab verified.
 
 **A PC the list puts out while it is open.** The device ends its own use of it at once (the PC's
-pages go, the session is no longer the app's), and over the session it still has makes one
-exchange of three seconds at most that hands that PC its removal, then closes the session: it waits
-within those seconds for a carrier that is down, draws on what is left of the PC's own 30 calls of
-the minute, takes nothing from that PC (a PC known to be out raises no alarm here), and hands
-nothing where the page's list never held that PC. So the PC knows itself out even where the account
-service withholds it.
+pages go, the session is no longer the app's, and an exchange of that use under way stops), and
+over the session it still has makes one attempt of three seconds at most to hand that PC its
+removal, then closes the session: it waits within those seconds for a carrier that is down, draws
+on what is left of the PC's own 30 calls of the minute, takes nothing from that PC (a PC known to be
+out raises no alarm here), and hands nothing where the page's list never held that PC, or stands
+for another account, list or member key by the time the carrier is back. The attempt can fail: the
+carrier stays down, the PC does not answer in time, or the minute's calls are spent. The PC then
+learns of its removal only from the account service, or from a member that hands it over at a later
+session; where the service withholds it too, the PC does not know it is out until then.
 
 **An alarm ends every write.** From the moment the device's copy holds an alarm, in this tab or as
 another tab of the device saved it, nothing it signs is kept or sent: an Allow that was waiting for

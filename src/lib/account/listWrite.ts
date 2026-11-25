@@ -415,6 +415,8 @@ export async function writeToList<Why extends string = never>(list: AccountList,
       }
       // nothing is sent after an alarm, a request kept from before it neither
       if (!await writer.live()) return refused("blocked");
+      // nor once called off while that was read
+      options.signal?.throwIfAborted();
       try {
         await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal, request.invite));
         // a write over once the service took it is over for its own request only, never for the clean-up's it sent first

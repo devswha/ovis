@@ -9,7 +9,7 @@ import { addListPc, listWorld, type WorldDevice } from "./accountList.test-helpe
 import { accountList, type AccountList } from "./accountList.ts";
 import { memoryListLock } from "./listStore.ts";
 import { allowDevice } from "./listAllow.ts";
-import { GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipBudget, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
+import { deliverOnce, GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipBudget, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
 import { removeListPc } from "./listRemove.ts";
 import { signedOn, writeToList } from "./listWrite.ts";
 import { handListToPc, type PcFetch } from "./join.ts";
@@ -151,6 +151,39 @@ async function until(done: () => boolean, ms = 5_000): Promise<void> {
   }
 }
 
+/** Lets what an answer already in leads to run its course: no more than a few turns of the event loop, no timer. */
+async function settle(turns = 20): Promise<void> {
+  for (let turn = 0; turn < turns; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * The page's list as it is until `other.on`: from then on it stands for another account's list, of another list and
+ * member, as the page shows it once another tab signed this browser in to another account. Counts the pages a PC
+ * handed it (`took`).
+ */
+function pageOf(list: AccountList) {
+  const other = { on: false, took: 0 };
+  const page: AccountList = new Proxy(list, { get: (target, name, receiver) => {
+    if (name === "takeFromPeer") return (...args: Parameters<AccountList["takeFromPeer"]>) => { other.took += 1; return target.takeFromPeer(...args); };
+    if (!other.on) return Reflect.get(target, name, receiver);
+    if (name === "view") return () => ({ ...target.view(), account: "acct_other", devices: target.view().devices.map((row) => row.self ? { ...row, key: "another member key" } : row) });
+    if (name === "gossip") return () => { const head = target.gossip(); return head === null ? null : { ...head, list: "6d".repeat(32) }; };
+    if (name === "knowsPc") return () => false;
+    return Reflect.get(target, name, receiver);
+  } });
+  return { page, other };
+}
+
+/** A PC that holds a removal of a PC of the list the account service withholds from `second`: it stands ahead of that device. */
+async function aheadOf(w: World, first: WorldDevice, second: WorldDevice, endpoint: string) {
+  w.fake.tamperList(w.held().id, { reader: { token: second.session.access_token }, withholdAfter: w.held().head.seq });
+  expect(await removeListPc(first.list, endpoint, noWait)).toEqual({ removed: true });
+  w.clock.now += 30_000;
+  await second.list.sync();
+  expect(second.list.holdsPc(endpoint)).toBe(true);
+  return memoryPc(w, w.held().entries);
+}
+
 describe("a device and the PC it has a session with say where the list stands", () => {
   it("in one call where both stand at one entry, and hand nothing", async () => {
     const { w, first } = await account();
@@ -286,6 +319,45 @@ describe("what a PC's page leaves in this page, and in the other tabs", () => {
     // and the account service shows this device that shorter copy
     w.fake.untamperList(w.held().id);
     w.fake.tamperList(w.held().id, { reader: { token: second.session.access_token }, withholdAfter: held + 1 });
+    w.clock.now += 30_000;
+    await second.list.sync();
+    expect(second.list.holdsPc(desk.endpoint)).toBe(false);
+    const saved = await readSave(String(await second.lists.get("copy", w.account)));
+    expect(saved.read && shownPcs(saved.copy).map((row) => row.endpoint)).not.toContain(desk.endpoint);
+  });
+
+  it("keeps a removal it could not save over a copy another tab saved since with an entry no member signed at that place", async () => {
+    const { w, first, second, desk } = await account();
+    const { id, head } = w.held();
+    // the account service shows the other tab an entry of a key that is no member where the removal stands
+    const stranger = await w.device({ label: "nobody", register: false });
+    const keys = await stranger.keys();
+    // as many as the removal's entries: the copy that tab saves reaches as far as the one this tab verified
+    const loose: string[] = [];
+    for (let at = head; loose.length < 2;) {
+      const text = entryToText(await signEntry(kindBody({ issued_at: seconds(w), list: id, prev: at.hash, seq: at.seq + 1, signer: keys.key }, { kind: "remove", ends: (await first.keys()).key }), keys.signs));
+      loose.push(text);
+      at = { seq: at.seq + 1, hash: hashOf(text) };
+    }
+    w.fake.tamperList(id, { reader: { token: second.session.access_token }, withholdAfter: head.seq });
+    expect(await removeListPc(first.list, desk.endpoint, noWait)).toEqual({ removed: true });
+    expect(w.held().head.seq).toBe(head.seq + loose.length);
+    const pc = await memoryPc(w, w.held().entries);
+    const tab = otherTab(w, second);
+    await tab.sync();
+    const ask = second.list.compare(gossipHead(pc.copy()))!;
+    const failing = failingSaves(second);
+    try {
+      expect(await second.list.takeFromPeer(servePage(pc.copy(), { list: ask.read!.list, after: ask.read!.after }, 256)!, ask.read)).toMatchObject({ saved: false });
+    } finally { failing.mockRestore(); }
+    expect(second.list.holdsPc(desk.endpoint)).toBe(false);
+    // the other tab reads the account service again and saves the loose entry above the footing
+    w.fake.untamperList(id);
+    w.fake.tamperList(id, { reader: { token: second.session.access_token }, withholdAfter: head.seq, inject: loose });
+    w.clock.now += 30_000;
+    await tab.sync({ read: true });
+    const other = await readSave(String(await second.lists.get("copy", w.account)));
+    expect(other.read && other.copy.entries.slice(head.seq + 1)).toEqual(loose);
     w.clock.now += 30_000;
     await second.list.sync();
     expect(second.list.holdsPc(desk.endpoint)).toBe(false);
@@ -435,6 +507,157 @@ describe("the account, list and member key a session was compared for", () => {
       timers.shift()!();
       await until(() => pc.calls.length === 2);
     } finally { stop(); }
+  });
+});
+
+describe("an exchange the page's list, the keeper or the carrier left behind", () => {
+  it("takes nothing of an answer that came once the page's list stood for another account", async () => {
+    const { w, first, second, desk } = await account();
+    const pc = await aheadOf(w, first, second, desk.endpoint);
+    const { page, other } = pageOf(second.list);
+    // another tab signs this browser in to another account while the PC's answer is on its way
+    const fetch: PcFetch = async (path, init) => { other.on = true; return pc.fetch(path, init); };
+    expect((await gossipWithPc(fetch, page, null, always, handing)).end).toBe("stopped");
+    expect([other.took, pc.calls.length]).toEqual([0, 1]);
+    expect(second.list.holdsPc(desk.endpoint)).toBe(true);
+  });
+
+  it("hands nothing more once the page's list stood for another account during a hand-over", async () => {
+    const { w, first, second, desk } = await account();
+    const pc = await memoryPc(w, w.held().entries, { takeAtMost: 1 });
+    await addListPc(w, first, "Laptop");
+    await removeDevice(first, (await second.keys()).key);
+    await removeListPc(first.list, desk.endpoint, noWait);
+    const { page, other } = pageOf(first.list);
+    const fetch: PcFetch = async (path, init) => { const answer = await pc.fetch(path, init); if (path === "/api/account/list/page") other.on = true; return answer; };
+    expect((await gossipWithPc(fetch, page, null, always, handing)).end).toBe("stopped");
+    expect(pc.calls.map((call) => call.path)).toEqual(["/api/account/list/head", "/api/account/list/page"]);
+  });
+
+  it("keeps a fork search a 429 cut, and goes on with it after the wait", async () => {
+    const { w, first, second } = await account();
+    const fork = await otherHistory(w, first);
+    await addListPc(w, second, "Laptop");
+    await first.list.sync();
+    const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
+    let calls = 0;
+    const limited: PcFetch = async (path, init) => (calls += 1) === 2 ? json({ error: { code: "rate_limited" } }, 429, { "retry-after": "5" }) : pc.fetch(path, init);
+    const cut = await gossipWithPc(limited, first.list, null, always, handing);
+    expect([cut.end, cut.retryAfterMs]).toEqual(["limited", 5_000]);
+    expect(cut.carry).not.toBeNull();
+    // what the cut exchange had narrowed is where the next one begins
+    const before = pc.calls.length;
+    expect((await gossipWithPc(pc.fetch, first.list, cut.carry, always, handing)).end).toBe("alarm");
+    // its first call is the page the PC asked for, or the device's own read with the place it got to
+    const resumed = pc.calls[before]!;
+    expect(resumed.path === "/api/account/list/page" || "asks" in resumed.body).toBe(true);
+  });
+
+  it("keeps the place a PC asked for when a 429 cut the hand-over", async () => {
+    const { w, first, second, desk } = await account();
+    const pc = await memoryPc(w, w.held().entries, { takeAtMost: 1 });
+    await removeDevice(first, (await second.keys()).key);
+    await removeListPc(first.list, desk.endpoint, noWait);
+    let pages = 0;
+    const limited: PcFetch = async (path, init) => path === "/api/account/list/page" && (pages += 1) === 2 ? json({ error: { code: "rate_limited" } }, 429, { "retry-after": "5" }) : pc.fetch(path, init);
+    const cut = await gossipWithPc(limited, first.list, null, always, handing);
+    expect(cut.end).toBe("limited");
+    expect(cut.carry?.asks).not.toBeNull();
+    const before = pc.calls.length;
+    expect((await gossipWithPc(pc.fetch, first.list, cut.carry, always, handing)).end).toBe("done");
+    expect(gossipHead(pc.copy())).toEqual(first.list.gossip()!);
+    // the second exchange began with the page the PC asked for, before it said anything else
+    expect(pc.calls[before]).toMatchObject({ path: "/api/account/list/page", body: { after: cut.carry!.asks!.after } });
+  });
+
+  it("goes by its own record of the minute while the browser's storage takes no write", () => {
+    let clock = 5_000_000;
+    // storage that still reads an earlier record, and writes nothing
+    const earlier = JSON.stringify({ calls: [], until: 0, pause: 0 });
+    const storage = { getItem: () => earlier, setItem: () => { throw new DOMException("The disk is full", "QuotaExceededError"); } };
+    const budget = gossipBudget(`full:${Math.random()}`, { perMinute: 2, storage, now: () => clock });
+    expect([budget.spend(), budget.spend(), budget.spend()]).toEqual([true, true, false]);
+    clock += 61_000;
+    budget.pause(30_000);
+    expect(budget.wait()).toBe(30_000);
+    expect(budget.spend()).toBe(false);
+  });
+
+  it("hands a PC that is out nothing when the page's list stood for another account by the time the carrier came back", async () => {
+    const { w, first } = await account();
+    const pc = await memoryPc(w, w.held().entries);
+    const session = sessionOf(pc);
+    session.up(false);
+    const { page, other } = pageOf(first.list);
+    const delivered = deliverOnce(session, page, gossipBudget(`out:${Math.random()}`, { storage: null }), 3_000, knownPc(first.list));
+    other.on = true;
+    session.up(true);
+    await delivered;
+    expect(pc.calls).toEqual([]);
+  });
+
+  it("stops an exchange in flight when the keeper stops: its call is called off, and a late answer is neither taken nor followed", async () => {
+    const { w, first, second, desk } = await account();
+    const pc = await aheadOf(w, first, second, desk.endpoint);
+    const held = Promise.withResolvers<void>();
+    let signal: AbortSignal | null | undefined;
+    const session = sessionOf({ followsList: true, fetch: async (path, init) => { signal = init?.signal; await held.promise; return pc.fetch(path, init); } });
+    const { page, other } = pageOf(second.list);
+    const stop = keepListGossip(session, { list: () => page, pc: knownPc(second.list) });
+    await until(() => signal !== undefined);
+    stop();
+    expect(signal?.aborted).toBe(true);
+    held.resolve();
+    await until(() => pc.calls.length === 1);
+    await settle();
+    expect([other.took, pc.calls.length]).toEqual([0, 1]);
+    expect(second.list.holdsPc(desk.endpoint)).toBe(true);
+  });
+
+  it("drops what an exchange of an earlier carrier found: a stale 'another list' does not end the new carrier's exchanges", async () => {
+    const { w, first } = await account();
+    const pc = await memoryPc(w, w.held().entries);
+    const held = Promise.withResolvers<void>();
+    let stale = 0;
+    const session = sessionOf({ followsList: true, fetch: async (path, init) => {
+      if (stale > 0) return pc.fetch(path, init);
+      stale += 1;
+      await held.promise;
+      return json({ list: "6d".repeat(32), place: null });
+    } });
+    const stop = keepListGossip(session, { list: () => first.list, pc: knownPc(first.list) });
+    try {
+      await until(() => stale === 1);
+      session.up(false);
+      session.up(true);
+      held.resolve();
+      // the new carrier's exchange goes on, whatever the earlier one was told
+      await until(() => pc.calls.length === 1);
+    } finally { stop(); }
+  });
+
+  it("reads its own alarm again after it read the saved copy: one raised meanwhile and not saved ends the write", async () => {
+    const { w, first, second } = await account();
+    const fork = await otherHistory(w, first);
+    await addListPc(w, second, "Laptop");
+    await first.list.sync();
+    const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
+    const writer = first.list.writer()!;
+    const get = first.lists.get.bind(first.lists);
+    const gate = Promise.withResolvers<void>();
+    let gated = false;
+    const hold = spyOn(first.lists, "get").mockImplementation(async (...args: Parameters<typeof get>) => {
+      if (!gated && args[0] === "copy") { gated = true; await gate.promise; }
+      return get(...args);
+    });
+    const failing = failingSaves(first);
+    try {
+      const live = writer.live();
+      await until(() => gated);
+      expect((await gossipWithPc(pc.fetch, first.list, null, always, handing)).end).toBe("alarm");
+      gate.resolve();
+      expect(await live).toBe(false);
+    } finally { hold.mockRestore(); failing.mockRestore(); }
   });
 });
 

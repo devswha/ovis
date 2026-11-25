@@ -1371,7 +1371,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     const view = lists?.view();
     return copyUnread !== null || (view !== undefined && view.account !== null && view.status.at !== "off");
   };
-  return { dispose, get state() { return accountView; }, /** this page's copy of its account's list, or null */ get list() { return lists; }, get directory() { return directory; }, get listKey() { return listKey(); }, listHolds, listSays, listTimeOver, readList, takePlace, get knowsList() { return knowsList(); },
+  return { dispose, get state() { return accountView; }, /** this page's copy of its account's list, or null */ get list() { return lists; }, get directory() { return directory; }, get listKey() { return listKey(); }, /** the account, list and key in it that listKey is this device's for: read with it */ get listScope() { return listKey() === null || lists === null ? null : scopeOf(lists.view()); }, listHolds, listSays, listTimeOver, readList, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh };
 }
