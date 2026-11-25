@@ -362,7 +362,7 @@ const BASE: Record<string, string> = {
   "Tailscale isn't installed.": "没有安装 Tailscale。",
   "Check again": "重新检查",
   "The block did not go through yet.": "阻止请求尚未送达。",
-  "The block was refused. Block it again from this device.": "阻止请求被拒绝了。请在此设备上再次阻止。",
+  "The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.": "账户服务没有接受此阻止请求，因此之前关机的 PC 仍可能让该设备进入。请在更早使用的设备上阻止它，或使用“在所有设备上退出登录”。",
   "OK": "确定",
   "The block was not sent. Try again.": "阻止未能发送。请重试。",
   "Other PCs": "其他电脑",
