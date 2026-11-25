@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HARNESS_CONTRACT, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { HARNESS_CONTRACT, isRecord, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { lineCall } from "../line-call.ts";
 import * as herdr from "../herdr/client.ts";
 import { AcpChildren } from "../acp/children.ts";
+import { KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
+import { HcConnection } from "../herdr-core/connection.ts";
+import { FakeHcCore } from "../herdr-core/core.fake.ts";
+import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { AgentToolHub } from "./hub.ts";
-import { useAgentToolHub } from "./launch.ts";
-import { handleAgentPanesRequest } from "./pane-routes.ts";
 import { procLink, stillIn, type PaneTerminal } from "./pane-proof.ts";
 
 const CLI = join(import.meta.dir, "../../scripts/plugin-agent.ts");
@@ -16,19 +18,33 @@ const START: HarnessToolSetting = { level: "start", depth: 1, harnesses: ["openc
 let state: string, hub: AgentToolHub, setting: HarnessToolSetting, terminals: PaneTerminal[];
 let snapshot: ReturnType<typeof spyOn>;
 
+function paneHub() {
+  return new AgentToolHub({ dir: join(state, "agent-tools"), setting: () => setting, acp: new AcpChildren(join(state, "acp")),
+    panes: { list: async () => terminals, get: async address => terminals.find(t => t.address === address) ?? null } });
+}
+
+const paneRegistry = () => join(state, "agent-tools", "pane-runs.json");
+function paneRuns() {
+  const rows: unknown = JSON.parse(readFileSync(paneRegistry(), "utf8"));
+  if (!Array.isArray(rows)) throw new Error("missing pane runs");
+  return rows.map((row: unknown) => {
+    if (!isRecord(row) || !isRecord(row.run) || typeof row.run.id !== "string" || typeof row.run.self !== "string" || !Array.isArray(row.calls)) throw new Error("invalid pane run");
+    return { id: row.run.id, self: row.run.self, calls: row.calls.length };
+  });
+}
+
 beforeEach(() => {
   state = mkdtempSync(join(tmpdir(), "athp-"));
   setting = START;
   terminals = [];
-  hub = new AgentToolHub({ dir: join(state, "agent-tools"), setting: () => setting, acp: new AcpChildren(join(state, "acp")),
-    panes: { list: async () => terminals, get: async address => terminals.find(t => t.address === address) ?? null } });
+  hub = paneHub();
   hub.listen();
   snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ protocol: 22, version: "fixture", agents: [], workspaces: [], tabs: [], layouts: [], panes: [] });
 });
 afterEach(() => { snapshot.mockRestore(); hub.close(); rmSync(state, { recursive: true, force: true }); });
 
 const callerEnv = (hint?: string) => {
-  const env: Record<string, string> = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", OVIS_STATE_DIR: state };
+  const env: Record<string, string> = { PATH: process.env["PATH"] ?? "", HOME: state, OVIS_STATE_DIR: state };
   if (hint) env["HC_TERMINAL_ID"] = hint;
   return env;
 };
@@ -51,51 +67,83 @@ const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 const code = (reply: Record<string, unknown>) => (reply["error"] as { code?: string } | undefined)?.code;
 
 describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started", () => {
-  it("asks the owner once, and does nothing until he allows the pane", async () => {
+  it("accepts concurrent first calls from one proven pane without asking for consent", async () => {
     const shell = await holdPane("t7");
     try {
       const line = callerArgv(["ls", "--json"]).map(quote).join(" ");
-      expect((await shell.run(`${line} & ${line}; wait`, 2)).map(code)).toEqual(["approval_required", "approval_required"]);
-      const card = hub.grants.view().pending;
-      expect(card.map(p => p.pane)).toEqual(["t7"]);
-      expect(code(await shell.call(["ls", "--json"]))).toBe("approval_required");
-      expect(hub.grants.view().pending).toEqual(card);
-      expect(existsSync(join(state, "agent-tools", "pane-runs.json"))).toBe(false);
+      expect((await shell.run(`${line} & ${line}; wait`, 2)).map(reply => reply.kind)).toEqual(["sessions", "sessions"]);
     } finally { await shell.close(); }
-    expect((await inPane("t8", ["ls", "--json"])).code).toBe(1);
   });
 
-  it("after the owner allows it, every later process of the pane calls as that pane's one run", async () => {
+  it.skipIf(!keeperBuilt)("starts work on the first call from a proven pane and only asks a person for the child's own approval", async () => {
+    hub.close();
+    serveRuntime(HERDR_CORE);
+    const program = join(state, "agy");
+    const replay = join(import.meta.dir, "replay-agent.fake.ts");
+    const recording = join(import.meta.dir, "fixtures/agy-1.5.16-ask-write.jsonl");
+    writeFileSync(program, `#!/bin/sh\n[ "$1" = --version ] && { echo 1.5.16; exit; }\nexec ${quote(process.execPath)} ${quote(replay)} ${quote(recording)} ${quote(join(state, "replay.jsonl"))}\n`);
+    chmodSync(program, 0o755);
+    const programs: ReturnType<typeof Bun.spawn>[] = [];
+    const fake = new FakeHcCore();
+    fake.onStart = started => { programs.push(Bun.spawn([...started.argv], { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: callerEnv() })); };
+    const hc = new HcConnection(() => fake.transport());
+    const acp = new AcpChildren(join(state, "acp"), { hc, keeperBin: () => KEEPER_BUILD });
+    setting = { ...START, harnesses: ["agy"] };
+    hub = new AgentToolHub({ dir: join(state, "agent-tools"), acp, setting: () => setting, resolve: () => ({ argv: [program] }),
+      panes: { list: async () => terminals, get: async address => terminals.find(t => t.address === address) ?? null } });
+    hub.listen();
+    const shell = await holdPane("t7");
+    try {
+      const started = await shell.call(["start", "--harness", "agy", "--cwd", state, "--task", "write a file", "--json"]);
+      expect(started).toMatchObject({ kind: "session", sent: { accepted: true } });
+      const session = started.session;
+      if (!session || typeof session !== "object" || !("address" in session) || typeof session.address !== "string") throw new Error("missing child address");
+      expect(await shell.call(["wait", session.address, "--timeout-s", "5", "--json"])).toMatchObject({ state: { state: "waiting_human" } });
+      expect(acp.forPane(session.address)?.client.pending()).toHaveLength(1);
+    } finally {
+      await shell.close();
+      acp.close();
+      for (const proc of programs) { proc.kill(); await proc.exited; }
+      hc.close();
+      serveRuntime(null);
+    }
+  });
+
+  it("shares one pane run and its call count across processes and an Ovis restart", async () => {
     const shell = await holdPane("t7", "t7");
     try {
-      expect(code(await shell.call(["ls", "--json"]))).toBe("approval_required");
-      expect(await hub.answerPane(hub.grants.view().pending[0]!.id, true)).toBe("ok");
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      const [first] = paneRuns();
+      if (!first) throw new Error("missing first pane run");
+      hub.close();
+      hub = paneHub();
+      await hub.reconcilePanes();
+      hub.listen();
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      expect(hub.grants.view().allowed.map(p => p.pane)).toEqual(["t7"]);
-      // one run for the pane, charged for both calls: its children, keys and limit are the pane's, not each process's
-      const runs = JSON.parse(readFileSync(join(state, "agent-tools", "pane-runs.json"), "utf8")) as { run: { self: string; harness: string }; calls: number[] }[];
-      expect(runs.map(r => [r.run.self, r.run.harness, r.calls.length])).toEqual([["t7", "hc-pane", 2]]);
+      expect(paneRuns()).toEqual([{ id: first.id, self: "t7", calls: 2 }]);
     } finally { await shell.close(); }
   });
 
-  it("refuses a card that Ovis's own launch in the pane has since taken over", async () => {
-    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("approval_required");
+  it("refuses tokenless calls in a pane Ovis already manages", async () => {
     hub.runs.reserve().bind({ self: "t7", root: "0123456789abcdef", depth: 0, started_by: null, harness: "omo" });
-    expect(await hub.answerPane(hub.grants.view().pending[0]!.id, true)).toBe("gone");
-    expect(hub.grants.view().allowed).toEqual([]);
+    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("not_granted");
   });
 
-  it("turning back to look-only forgets every grant even when a revoke fails", async () => {
-    await allowWhileRunning("t7");
-    await allowWhileRunning("t8");
-    const revoke = spyOn(hub.runs, "revoke").mockImplementationOnce(() => { throw new Error("disk full"); });
-    setting = { ...START, level: "view" };
-    expect(() => hub.settingsChanged()).toThrow("disk full");
-    revoke.mockRestore();
-    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
-    setting = START;
-    expect(code((await inPane("t8", ["ls", "--json"])).reply)).toBe("approval_required");
+  it("ends every pane run when switching to look-only even if the registry write fails", async () => {
+    const first = await holdPane("t7"), second = await holdPane("t8");
+    try {
+      for (const shell of [first, second]) expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      const previous = paneRuns().map(row => row.id);
+      rmSync(paneRegistry());
+      mkdirSync(paneRegistry());
+      setting = { ...START, level: "view" };
+      expect(() => hub.settingsChanged()).toThrow();
+      rmSync(paneRegistry(), { recursive: true });
+      setting = START;
+      hub.settingsChanged();
+      for (const shell of [first, second]) expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      expect(paneRuns().filter(row => previous.includes(row.id))).toEqual([]);
+    } finally { await first.close(); await second.close(); }
   });
 
   it("a pane registry that cannot be written does not stop a token run", async () => {
@@ -106,94 +154,75 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
     expect(reply).toMatchObject({ kind: "scope" });
   });
 
-  it("a card answered after its pane closed grants nothing", async () => {
-    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("approval_required");
-    const id = hub.grants.view().pending[0]!.id;
-    terminals = [];
-    expect(await hub.answerPane(id, true)).toBe("gone");
-    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
-  });
-
-  it("refuses a process outside every pane without raising a card", async () => {
+  it("refuses a process outside every pane", async () => {
     terminals = [{ address: "t7", state: "live", pid: 999_999_999, created_ms: 1, labels: {} }];
     const reply = await outside(["ls", "--json"]);
     expect(reply.code).toBe(1);
     expect(code(reply.reply)).toBe("not_granted");
-    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
   });
 
   it("refuses another pane's process that claims to be pane X, and never grants it X's run", async () => {
-    await allowWhileRunning("t7");
-    const posing = await inPane("t9", ["ls", "--json"], { hint: "t7" });
-    expect(code(posing.reply)).toBe("not_granted");
-    const own = await inPane("t9", ["ls", "--json"]);
-    expect(code(own.reply)).toBe("approval_required");
-    expect(hub.grants.view().allowed.map(p => p.pane)).toEqual(["t7"]);
-    expect(hub.grants.view().pending.map(p => p.pane)).toEqual(["t9"]);
-  });
-
-  it("a denied or removed pane stays refused while it lives", async () => {
     const shell = await holdPane("t7");
     try {
-      expect(code(await shell.call(["ls", "--json"]))).toBe("approval_required");
-      expect(await hub.answerPane(hub.grants.view().pending[0]!.id, false)).toBe("ok");
-      expect(code(await shell.call(["ls", "--json"]))).toBe("approval_denied");
-    } finally { await shell.close(); }
-    const allowed = await holdPane("t8");
-    try {
-      await allowed.call(["ls", "--json"]);
-      expect(await hub.answerPane(hub.grants.view().pending[0]!.id, true)).toBe("ok");
-      expect(await allowed.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      expect(hub.grants.remove(hub.grants.view().allowed[0]!.id)).toBe(true);
-      expect(code(await allowed.call(["ls", "--json"]))).toBe("approval_denied");
-    } finally { await allowed.close(); }
-  });
-
-  it("a closed pane's grant ends, and a new pane at the same address is asked again", async () => {
-    const shell = await holdPane("t7");
-    try {
-      await shell.call(["ls", "--json"]);
-      await hub.answerPane(hub.grants.view().pending[0]!.id, true);
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      const posing = await inPane("t9", ["ls", "--json"], { hint: "t7" });
+      expect(code(posing.reply)).toBe("not_granted");
+      expect(paneRuns()).toEqual([expect.objectContaining({ self: "t7", calls: 1 })]);
+      expect((await inPane("t9", ["ls", "--json"])).reply).toMatchObject({ kind: "sessions" });
+    } finally { await shell.close(); }
+  });
+
+  it("ends a closed pane's run and starts a new one at the same address", async () => {
+    const shell = await holdPane("t7");
+    let previous: string | undefined;
+    try {
+      expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      previous = paneRuns()[0]?.id;
     } finally { await shell.close(); }
     terminals = [];
     await hub.reconcilePanes();
-    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
-    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("approval_required");
+    expect(paneRuns()).toEqual([]);
+    expect((await inPane("t7", ["ls", "--json"])).reply).toMatchObject({ kind: "sessions" });
+    expect(paneRuns()[0]?.id).not.toBe(previous);
   });
 
-  it("is refused without a card at look-only or off, and turning it back to look-only forgets every grant", async () => {
-    await allowWhileRunning("t7");
-    setting = { ...START, level: "view" };
-    hub.settingsChanged();
-    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
-    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("not_granted");
-    setting = { ...START, level: "off" };
-    hub.settingsChanged();
-    expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("tools_off");
-    expect(hub.grants.view()).toEqual({ pending: [], allowed: [] });
-  });
-
-  it("only this PC's owner lists, answers or removes panes", async () => {
-    useAgentToolHub(hub);
+  it("ends the old run when hc reports a different root for a pane that is still open", async () => {
+    const previous = await holdPane("t7");
     try {
-      expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("approval_required");
-      const id = hub.grants.view().pending[0]!.id;
-      const post = (path: string, body: object, owner: boolean) => handleAgentPanesRequest(new Request(`http://x${path}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }), path, owner);
-      expect((await handleAgentPanesRequest(new Request("http://x/api/agent-tools/panes"), "/api/agent-tools/panes", false)).status).toBe(403);
-      expect((await post("/api/agent-tools/panes/answer", { id, decision: "allow" }, false)).status).toBe(403);
-      expect(await (await handleAgentPanesRequest(new Request("http://x/api/agent-tools/panes"), "/api/agent-tools/panes", true)).json()).toEqual({ pending: [{ id, pane: "t7", label: "pane t7" }], allowed: [] });
-      expect(hub.grants.view().pending).toHaveLength(1);
-    } finally { useAgentToolHub(null); }
+      expect(await previous.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      const prior = terminals.find(t => t.address === "t7");
+      const replacement = await holdPane("t7");
+      try {
+        terminals = terminals.map(t => t.address === "t7" && prior ? { ...t, created_ms: prior.created_ms } : t);
+        await hub.reconcilePanes();
+        expect(paneRuns()).toEqual([]);
+        expect(code(await previous.call(["ls", "--json"]))).toBe("not_granted");
+        expect(await replacement.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      } finally { await replacement.close(); }
+    } finally { await previous.close(); }
+  });
+
+  it.each([["view", "not_granted"], ["off", "tools_off"]] as const)("refuses a proved pane and ends its run at %s", async (level, reason) => {
+    const shell = await holdPane("t7");
+    try {
+      expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      setting = { ...START, level };
+      hub.settingsChanged();
+      expect(code(await shell.call(["ls", "--json"]))).toBe(reason);
+      expect(paneRuns()).toEqual([]);
+    } finally { await shell.close(); }
   });
 
   it("keeps the hub's limits: an unticked harness is not started for a pane", async () => {
     const shell = await holdPane("t7");
     try {
-      await shell.call(["ls", "--json"]);
-      await hub.answerPane(hub.grants.view().pending[0]!.id, true);
       expect(code(await shell.call(["start", "--harness", "gjc", "--json"]))).toBe("not_granted");
     } finally { await shell.close(); }
+  });
+
+  it("still refuses starts on other machines for a proved local pane", async () => {
+    const reply = await inPane("t7", ["start", "--harness", "opencode", "--on", "other", "--json"]);
+    expect(reply.reply).toMatchObject({ error: { code: "approval_required", message: expect.stringContaining("another machine") } });
   });
 });
 
@@ -225,16 +254,6 @@ async function holdPane(address: string, hint?: string) {
     close: async () => { await shell.stdin.end(); await shell.exited; },
   };
 }
-async function allowWhileRunning(address: string) {
-  const shell = await holdPane(address);
-  try {
-    await shell.call(["ls", "--json"]);
-    const pending = hub.grants.view().pending.find(p => p.pane === address);
-    if (!pending || await hub.answerPane(pending.id, true) !== "ok") throw new Error("could not allow the pane");
-    return { reply: await shell.call(["ls", "--json"]) };
-  } finally { await shell.close(); }
-}
-
 describe.skipIf(process.platform !== "linux")("a call's caller stays a process of its pane", () => {
   it("is in the pane while the pane's root, born when proved, is among its parents, and out once it is not", () => {
     const parent = procLink(process.ppid)!;
