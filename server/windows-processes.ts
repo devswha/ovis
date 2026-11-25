@@ -83,3 +83,54 @@ export async function tryWindowsProcessTable(timeoutMs = 10_000, command: string
 export async function windowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[]> {
   return await tryWindowsProcessTable(timeoutMs, command) ?? [];
 }
+
+const SHARED_TABLE_RECENT_MS = 5_000;
+let sharedRecent: { at: number; settled: boolean; rows: Promise<ProcessRow[] | null> } | null = null;
+let sharedFreshReads = 0;
+let sharedFresh: { started: number; rows: Promise<ProcessRow[] | null> } | null = null;
+
+export function windowsTableWatermark(): number {
+  return sharedFreshReads;
+}
+
+export function forgetWindowsProcessTable(): void {
+  sharedRecent = null;
+  sharedFresh = null;
+}
+
+export function recentWindowsProcessTable(
+  read: () => Promise<ProcessRow[] | null>,
+  now = Date.now(),
+  shared = true,
+): { rows: Promise<ProcessRow[] | null>; cached: boolean } {
+  if (shared && sharedRecent && now - sharedRecent.at < SHARED_TABLE_RECENT_MS) {
+    return { rows: sharedRecent.rows, cached: sharedRecent.settled };
+  }
+  const entry = { at: now, settled: false, rows: Promise.resolve().then(read) };
+  if (shared) {
+    sharedRecent = entry;
+    void entry.rows.then((rows) => {
+      entry.settled = true;
+      if ((rows === null || rows.length === 0) && sharedRecent === entry) sharedRecent = null;
+    }, () => { if (sharedRecent === entry) sharedRecent = null; });
+  }
+  return { rows: entry.rows, cached: false };
+}
+
+export function freshWindowsProcessTable(
+  read: () => Promise<ProcessRow[] | null>,
+  after = -1,
+  shared = true,
+): Promise<ProcessRow[] | null> {
+  if (shared && sharedFresh && sharedFresh.started > after) return sharedFresh.rows;
+  const entry = { started: ++sharedFreshReads, rows: Promise.resolve().then(read) };
+  if (shared) {
+    sharedFresh = entry;
+    const clear = () => { if (sharedFresh === entry) sharedFresh = null; };
+    void entry.rows.then((rows) => {
+      clear();
+      if (rows !== null && rows.length > 0) sharedRecent = { at: Date.now(), settled: true, rows: Promise.resolve(rows) };
+    }, clear);
+  }
+  return entry.rows;
+}

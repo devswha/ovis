@@ -20,7 +20,7 @@ import { runsAgent } from "./gjc-runtime.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
 import { processAlive, processStartedAt, processStartUpperBound } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
-import { descendantProcesses, tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
+import { descendantProcesses, forgetWindowsProcessTable, freshWindowsProcessTable, recentWindowsProcessTable, tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
 function wireLogsHeld(pid: number, sessions: string): string[] {
   let dir: ReturnType<typeof opendirSync>;
@@ -121,6 +121,8 @@ interface ProcessIdentity {
   startUpperBound(pid: number): number | null;
   /** Process program identity: string when known, null when dead/changed, undefined when snapshot omitted start time. */
   program(pid: number): string | null | undefined;
+  /** True when a previously bound PID is still an in-pane descendant in an incomplete snapshot (missing start time or executable metadata). */
+  inconclusive?(pid: number, expectedProgram: string): boolean;
 }
 
 const nativeProcessIdentity: ProcessIdentity = { startUpperBound: processStartUpperBound, program: programOf };
@@ -226,7 +228,12 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
   }
   const last = proven.get(paneId);
   proven.delete(paneId);
-  if (proof !== "none" || last === undefined || !own.has(last.pid) || !processAlive(last.pid)) return null;
+  if (proof !== "none" || last === undefined || !processAlive(last.pid)) return null;
+  if (identity.inconclusive?.(last.pid, last.program)) {
+    proven.set(paneId, last);
+    return null;
+  }
+  if (!own.has(last.pid)) return null;
   const currentProgram = identity.program(last.pid);
   if (currentProgram === undefined) {
     proven.set(paneId, last);
@@ -248,48 +255,28 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
 }
 
 const KIMI_EXECUTABLE = /(^|[\\/])kimi(?:-code)?(?:\.exe|\.[cm]?js)?$/i;
-const CONSOLE_HOST = /(^|[\\/])conhost\.exe$/i;
-const windowsPath = (value: string): string => value.trim().replace(/^"(.*)"$/, "$1");
-
-const WINDOWS_TABLE_RECENT_MS = 5_000;
-let recentWindowsTable: { at: number; rows: Promise<ProcessRow[] | null> } | null = null;
-let freshWindowsReads = 0;
-let freshWindowsTable: { started: number; rows: Promise<ProcessRow[] | null> } | null = null;
+const CONSOLE_HOST = /(^|[\\/"])(conhost|openconsole)(?:\.exe)?(?="|\s|$)/i;
+const windowsPath = (value: string): string => value.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
 
 export function forgetKimiWindowsTable(): void {
-  recentWindowsTable = null;
-  freshWindowsTable = null;
+  forgetWindowsProcessTable();
 }
 
-function readRecentWindowsTable(now = Date.now()): Promise<ProcessRow[] | null> {
-  if (recentWindowsTable && now - recentWindowsTable.at < WINDOWS_TABLE_RECENT_MS) return recentWindowsTable.rows;
-  const entry = { at: now, rows: Promise.resolve().then(() => tryWindowsProcessTable()) };
-  recentWindowsTable = entry;
-  void entry.rows.then((rows) => { if (rows === null && recentWindowsTable === entry) recentWindowsTable = null; });
-  return entry.rows;
-}
-
-function readFreshWindowsTable(after = -1): Promise<ProcessRow[] | null> {
-  if (freshWindowsTable && freshWindowsTable.started > after) return freshWindowsTable.rows;
-  const entry = { started: ++freshWindowsReads, rows: Promise.resolve().then(() => tryWindowsProcessTable()) };
-  freshWindowsTable = entry;
-  const clear = () => { if (freshWindowsTable === entry) freshWindowsTable = null; };
-  void entry.rows.then((rows) => {
-    clear();
-    if (rows !== null) recentWindowsTable = { at: Date.now(), rows: Promise.resolve(rows) };
-  }, clear);
-  return entry.rows;
+export function kimiWireOwner(paneId: string): string | null {
+  const entry = proven.get(paneId);
+  return entry === undefined ? null : `${entry.pid}:${entry.program}`;
 }
 
 export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, rows: ProcessRow[] | null, home = homedir()): string | null {
   if (rows === null) return null;
   const startedOf = new Map<number, number | undefined>(rows.map((row) => [row.pid, row.started]));
   const parentOf = new Map<number, number>(rows.map((row) => [row.pid, row.parent]));
-  const present = new Set<number>(rows.map((row) => row.pid));
-  // A process started in its own console (`Start-Process kimi`) owns a conhost.exe child;
-  // an in-pane process shares herdr's console (same rule as server/omo.ts).
+  const rowByPid = new Map<number, ProcessRow>(rows.map((row) => [row.pid, row]));
+  // A process started in its own console (`Start-Process kimi`) owns a conhost.exe/OpenConsole.exe child;
+  // an in-pane process shares herdr's console (matching server/omo.ts).
   const ownConsole = new Set(rows.filter((row) => {
-    if (!CONSOLE_HOST.test(windowsPath(row.path ?? row.commandLine ?? ""))) return false;
+    const candidate = windowsPath(row.path ?? row.commandLine ?? "");
+    if (!CONSOLE_HOST.test(candidate)) return false;
     const parentStarted = startedOf.get(row.parent);
     return row.started === undefined || parentStarted === undefined || row.started >= parentStarted;
   }).map((row) => row.parent));
@@ -300,8 +287,10 @@ export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, ro
     }
     return true;
   };
-  const pids = descendantProcesses(rows, shellPid)
-    .filter((process) => runsAgent(process.argv, KIMI_EXECUTABLE) && inPaneConsole(process.pid))
+  const inPaneDescendants = descendantProcesses(rows, shellPid).filter((process) => inPaneConsole(process.pid));
+  const inPaneDescendantPids = new Set(inPaneDescendants.map((process) => process.pid));
+  const pids = inPaneDescendants
+    .filter((process) => runsAgent(process.argv, KIMI_EXECUTABLE))
     .map((process) => process.pid);
   const starts = new Map<number, number>();
   for (const row of rows) if (typeof row.started === "number") starts.set(row.pid, row.started);
@@ -310,22 +299,50 @@ export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, ro
     program: (pid) => {
       const started = starts.get(pid);
       if (started !== undefined) return String(started);
-      return present.has(pid) ? undefined : null;
+      return rowByPid.has(pid) ? undefined : null;
+    },
+    inconclusive: (pid, expectedProgram) => {
+      if (pid !== shellPid && !inPaneDescendantPids.has(pid)) return false;
+      const row = rowByPid.get(pid);
+      if (row === undefined) return false;
+      if (row.started === undefined) return true;
+      return row.path === null && row.commandLine === null && String(row.started) === expectedProgram;
     },
   };
   return kimiWireForPane(paneId, [shellPid, ...pids], home, identity);
 }
 
-export async function kimiTranscriptPathForPane(pane: HerdrPane, home = homedir(), options: { fresh?: boolean; freshAfter?: number } = {}): Promise<string | null> {
+export async function kimiTranscriptForPane(
+  pane: HerdrPane,
+  home = homedir(),
+  options: { fresh?: boolean; freshAfter?: number } = {},
+): Promise<{ path: string; owner: string | null } | null> {
   const info = await paneProcessInfo(pane.pane_id).catch(() => null);
   if (!info) return null;
   if (process.platform === "win32") {
     if (typeof info.shell_pid !== "number") return null;
-    const rows = options.fresh === false ? await readRecentWindowsTable() : await readFreshWindowsTable(options.freshAfter);
-    return kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, rows, home);
+    if (options.fresh === false) {
+      const recent = recentWindowsProcessTable(() => tryWindowsProcessTable());
+      const rows = await recent.rows;
+      const found = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, rows, home);
+      if (found !== null) return { path: found, owner: kimiWireOwner(pane.pane_id) };
+      if (!recent.cached) return null;
+      // A cached discovery miss must not hide a newly started Kimi for the cache TTL.
+      const freshRows = await freshWindowsProcessTable(() => tryWindowsProcessTable(), options.freshAfter);
+      const retried = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, freshRows, home);
+      return retried === null ? null : { path: retried, owner: kimiWireOwner(pane.pane_id) };
+    }
+    const rows = await freshWindowsProcessTable(() => tryWindowsProcessTable(), options.freshAfter);
+    const found = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, rows, home);
+    return found === null ? null : { path: found, owner: kimiWireOwner(pane.pane_id) };
   }
   const pids = [info.shell_pid, ...(info.foreground_processes ?? []).map((process) => process.pid)];
-  return kimiWireForPane(pane.pane_id, pids.filter((pid): pid is number => typeof pid === "number"), home);
+  const found = kimiWireForPane(pane.pane_id, pids.filter((pid): pid is number => typeof pid === "number"), home);
+  return found === null ? null : { path: found, owner: kimiWireOwner(pane.pane_id) };
+}
+
+export async function kimiTranscriptPathForPane(pane: HerdrPane, home = homedir(), options: { fresh?: boolean; freshAfter?: number } = {}): Promise<string | null> {
+  return (await kimiTranscriptForPane(pane, home, options))?.path ?? null;
 }
 
 /** The text of a user message: Kimi stores content as parts, older ones as a plain string. */

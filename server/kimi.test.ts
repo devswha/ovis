@@ -5,11 +5,12 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { forgetTranscriptState, MAX_PAGE_PROMPTS, TRANSCRIPT_WINDOW_BYTES, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { recentProcessTable } from "./gjc-runtime.ts";
 import * as herdr from "./herdr/client.ts";
-import { kimiTranscriptPathForPane, kimiWireForPane, kimiWireForWindowsProcesses, parseKimiTranscript } from "./kimi.ts";
+import { kimiTranscriptForPane, kimiTranscriptPathForPane, kimiWireForPane, kimiWireForWindowsProcesses, parseKimiTranscript } from "./kimi.ts";
 import { processStartedAt } from "./process-start.ts";
 import * as windowsProcesses from "./windows-processes.ts";
-import { tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
+import { tryWindowsProcessTable, windowsTableWatermark, type ProcessRow } from "./windows-processes.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { TOOL_OUTPUT_CHARS } from "./tool-output.ts";
 import { turnStarts } from "./transcript-turns.ts";
@@ -191,27 +192,40 @@ it("refuses a Windows lock from before the process started and a pane without Ki
   expect(kimiWireForWindowsProcesses("win:p3", SHELL_PID, [rows[0]!], home)).toBeNull();
 });
 
-it("excludes a Windows Kimi launched in a separate console (own conhost.exe child)", () => {
+it("excludes a Windows Kimi launched in a separate console (own conhost.exe or OpenConsole.exe child)", () => {
   const { home, lock } = kimiHome("session_sep");
   const started = Date.now() - 10_000;
-  const rows: ProcessRow[] = [
-    { pid: SHELL_PID, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 2_000 },
-    { pid: process.pid, parent: SHELL_PID, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
-    { pid: SHELL_PID + 50, parent: process.pid, path: "C:\\Windows\\System32\\conhost.exe", commandLine: "conhost.exe 0x4", started: started + 5 },
-  ];
+  const hostPid = [SHELL_PID + 50, SHELL_PID + 51].find((pid) => pid !== process.pid)!;
   lock("session_sep", { ...liveLock(process.pid), startedAt: started + 10 });
-  expect(kimiWireForWindowsProcesses("win:sep-console", SHELL_PID, rows, home)).toBeNull();
+  const cases: { path: string | null; commandLine: string | null }[] = [
+    { path: "C:\\Windows\\System32\\conhost.exe", commandLine: "conhost.exe 0x4" },
+    { path: null, commandLine: "\\??\\C:\\Windows\\System32\\conhost.exe 0x4" },
+    { path: null, commandLine: "\"C:\\Windows\\System32\\conhost.exe\" 0x4" },
+    { path: "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal\\OpenConsole.exe", commandLine: "OpenConsole.exe --headless" },
+    { path: null, commandLine: "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal\\OpenConsole.exe\" --headless" },
+  ];
+  for (const [index, host] of cases.entries()) {
+    const rows: ProcessRow[] = [
+      { pid: SHELL_PID, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 2_000 },
+      { pid: process.pid, parent: SHELL_PID, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
+      { pid: hostPid, parent: process.pid, path: host.path, commandLine: host.commandLine, started: started + 5 },
+    ];
+    expect(kimiWireForWindowsProcesses(`win:sep-console-${index}`, SHELL_PID, rows, home)).toBeNull();
+  }
 });
 
-it("withholds but preserves an idle Windows Kimi binding when a snapshot omits the process start time", () => {
+it("withholds but preserves an idle Windows Kimi binding when a snapshot omits start time or executable metadata", () => {
   const { home, wire, lock } = kimiHome("session_a");
   const rows = windowsKimiRows();
   const started = rows[1]!.started!;
   lock("session_a", { ...liveLock(), startedAt: started + 1 });
   expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, rows, home)).toBe(wire("session_a"));
   rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
-  const incomplete: ProcessRow[] = [rows[0]!, { pid: rows[1]!.pid, parent: rows[1]!.parent, path: rows[1]!.path, commandLine: rows[1]!.commandLine }];
-  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, incomplete, home)).toBeNull();
+  const missingStart: ProcessRow[] = [rows[0]!, { pid: rows[1]!.pid, parent: rows[1]!.parent, path: rows[1]!.path, commandLine: rows[1]!.commandLine }];
+  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, missingStart, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, rows, home)).toBe(wire("session_a"));
+  const missingExec: ProcessRow[] = [rows[0]!, { pid: rows[1]!.pid, parent: rows[1]!.parent, path: null, commandLine: null, started }];
+  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, missingExec, home)).toBeNull();
   expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, rows, home)).toBe(wire("session_a"));
 });
 
@@ -284,6 +298,59 @@ it("coalesces concurrent Windows process table probes instead of spawning one pe
     // Discovery (fresh: false) reuses the recent snapshot populated by the probe above without spawning another PowerShell.
     expect(await kimiTranscriptPathForPane({ pane_id: "win:conc-1" } as HerdrPane, home, { fresh: false })).toBe(wire("session_a"));
     expect(probe).toHaveBeenCalledTimes(1);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    info.mockRestore();
+    probe.mockRestore();
+  }
+});
+
+it("shares the recent Windows table with OmO/GJC, retries a cached discovery miss, and honors the freshAfter watermark", async () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const shellOnly: ProcessRow[] = [{ pid: SHELL_PID, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: Date.now() - 20_000 }];
+  const started1 = Date.now() - 10_000;
+  const rows1 = windowsKimiRows(process.pid, started1);
+  const rows2 = windowsKimiRows(process.pid, started1 + 500);
+  let table: ProcessRow[] = shellOnly;
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => ({ pane_id: paneId, shell_pid: SHELL_PID, foreground_processes: [{ pid: SHELL_PID, name: "powershell.exe", argv: ["powershell.exe"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  const probe = spyOn(windowsProcesses, "tryWindowsProcessTable").mockImplementation(async () => table);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    // 1. Prime the shared recent snapshot via recentProcessTable (as OmO/GJC detection does) before Kimi starts.
+    expect(await recentProcessTable()).toEqual(shellOnly);
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    // 2. Kimi starts and takes a lock while the 5s cache is warm; cached miss retries fresh and finds Kimi immediately.
+    table = rows1;
+    lock("session_a", { ...liveLock(), startedAt: started1 + 1 });
+    const first = await kimiTranscriptForPane({ pane_id: "win:shared" } as HerdrPane, home, { fresh: false });
+    expect(first).toEqual({ path: wire("session_a"), owner: `${process.pid}:${started1}` });
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    // 3. Another pane reading discovery hits the warm shared cache without another probe.
+    expect(await kimiTranscriptForPane({ pane_id: "win:shared-2" } as HerdrPane, home, { fresh: false })).toEqual({ path: wire("session_a"), owner: `${process.pid}:${started1}` });
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    // 4. Watermark prevents a final verification check from joining an older in-flight probe, and owner detects changed start time.
+    let releaseOld!: (value: ProcessRow[] | null) => void;
+    const oldProbe = new Promise<ProcessRow[] | null>((resolve) => { releaseOld = resolve; });
+    let call = 0;
+    probe.mockImplementation(() => {
+      call++;
+      return call === 1 ? oldProbe : Promise.resolve(rows2);
+    });
+    lock("session_a", { ...liveLock(), startedAt: started1 + 501 });
+    const older = kimiTranscriptForPane({ pane_id: "win:older" } as HerdrPane, home, { fresh: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    const watermark = windowsTableWatermark();
+    const newer = await kimiTranscriptForPane({ pane_id: "win:shared" } as HerdrPane, home, { fresh: true, freshAfter: watermark });
+    expect(newer).toEqual({ path: wire("session_a"), owner: `${process.pid}:${started1 + 500}` });
+    expect(newer?.owner).not.toBe(first?.owner);
+    releaseOld(rows1);
+    await older;
+    expect(call).toBe(2);
   } finally {
     Object.defineProperty(process, "platform", platform);
     info.mockRestore();
