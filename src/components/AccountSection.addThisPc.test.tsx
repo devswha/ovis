@@ -2177,6 +2177,20 @@ describe("AddThisPc", () => {
         expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
       });
 
+      test("a wait for this PC's add that finds it in the account with no key of its own in the list offers its keys, never Added", async () => {
+        pc.account = null;
+        pc.needsKeys = false;
+        const renderer = await waitingFrom();
+        expect(words(renderer)).toContain("On another device of your account, choose Add on desk.");
+        // the PC came into the account by a move of its list meanwhile, with no key of its own there
+        pc.account = ACCOUNT;
+        pc.needsKeys = true;
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).not.toContain("Added");
+        expect(words(renderer)).toContain(KEYS);
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+      });
+
       test("never says Added while this PC still says it needs keys, whatever its add answered: the offer stays", async () => {
         const renderer = await mount();
         await press(renderer, "Add this PC to my account's list");

@@ -355,7 +355,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           const added = kept.account === account && session?.account === account && await within(ANSWER_MS, pcAnswers(kept.serverId));
           if (!live) return;
           keepAddPcWaiting(null);
-          if (added) setState({ kind: "done", account, enrolling });
+          if (added) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling });
           return;
         }
         const now = readAddPcWaiting();
@@ -497,10 +497,11 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     /** Whether the sign-in stored now is the one the press was made under: another tab may have signed out, or in as someone else. */
     const stillSignedIn = async (): Promise<boolean> => mark === null || (await accountService().session())?.account === mark.account;
     /** The PC has an account: the screen says so, or shows nothing when it is not the one signed in to. */
-    const joined = async (account: string, enrolling: boolean): Promise<void> => {
+    const joined = async (account: string, enrolling: boolean, needsKeys = false): Promise<void> => {
       // believed only of the PC that waited: this address may answer for another PC now, one that has an account
-      // already, and of that one the screen says nothing, as on a page that kept no wait
-      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling) : { kind: "hidden" };
+      // already, and of that one the screen says nothing, as on a page that kept no wait. One in the account with no
+      // key of its own in its list (it came in as the account moved) is offered its keys, never said to be added
+      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling, needsKeys) : { kind: "hidden" };
       if (!live) return;
       joinedWait = true;
       keepAddPcWaiting(null);
@@ -573,9 +574,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, (async (): Promise<void> => {
-        const { account, enrolling } = await thisPcMembership();
+        const { account, enrolling, needsKeys } = await thisPcMembership();
         if (!live) return;
-        if (account !== null) await joined(account, enrolling);
+        if (account !== null) await joined(account, enrolling, needsKeys);
         else if (withdrawn()) left();
         else await followList().catch(warned("Ovis: this PC's add by the account's list could not be read"));
       })()).catch(warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
@@ -595,9 +596,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       let windowId: string | undefined;
       const closeAsked = (): void => { if (windowId !== undefined && closeLate(windowId)) windowId = undefined; };
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
-        const { account, enrolling } = await thisPcMembership();
+        const { account, enrolling, needsKeys } = await thisPcMembership();
         if (!live) return true;
-        if (account !== null) { await joined(account, enrolling); return true; }
+        if (account !== null) { await joined(account, enrolling, needsKeys); return true; }
         if (withdrawn()) { left(); return true; }
         // listed only under the account the press was made in: another sign-in since then ends the wait
         if (!await stillSignedIn()) { if (live) stopped(); return true; }
@@ -630,7 +631,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (!live) return true;
         // another copy stopped the wait while the PC was being listed: what it forgot is not kept again
         if (withdrawn()) { left(); return true; }
-        if (membership !== undefined) { await joined(membership.account, membership.enrolling); return true; }
+        if (membership !== undefined) { await joined(membership.account, membership.enrolling, membership.needsKeys === true); return true; }
         if (mark !== null) {
           // the add by the list it follows is the one the tab keeps for this wait: another copy may have started it again
           // since (followList), and this copy's older run is never written back over it, so Stop gives up the one that runs
@@ -682,11 +683,11 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     const timer = setInterval(() => {
       if (pageHidden() || asking) return;
       asking = true;
-      within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling }) => {
+      within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling, needsKeys }) => {
         if (!live) return;
         // its first member left before enrolling it: the PC is in no account again
         if (account !== settling) setState(account === null ? { kind: "offer" } : { kind: "hidden" });
-        else if (!enrolling) setState({ kind: "done", account, enrolling: false });
+        else if (!enrolling) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling: false });
       }, warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
     }, ADDED_POLL_MS);
     return () => { live = false; clearInterval(timer); };
@@ -780,9 +781,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     const over = (): void => { if (dropped.current === drop) dropped.current = null; };
     const listing = (async (): Promise<AddThisPcState | null> => {
       // the window outlives a wait that stopped by up to ten minutes: a device may have added this PC through it, and then nothing is listed again
-      const { account: joined, enrolling } = await thisPcMembership();
+      const { account: joined, enrolling, needsKeys } = await thisPcMembership();
       if (!current()) return null;
-      if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling); }
+      if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling, needsKeys); }
       const { name, serverId, account, membership } = await listThisPc(accountService(), {
         relistMs: RELIST_MS,
         opened: (id) => { windowId = id; },
@@ -792,7 +793,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (membership !== undefined) {
         closeOpened();
         keepAddPcWaiting(null);
-        return await joinedAs(membership.account, membership.enrolling);
+        return await joinedAs(membership.account, membership.enrolling, membership.needsKeys === true);
       }
       // an account that keeps a signed list takes this PC by that list alone: the PC is asked to start that add first,
       // as `ovis add` asks it, and the one press below is tried only where it says the account keeps none
@@ -823,7 +824,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (byList.why === "in_account") {
           const now = await thisPcMembership();
           if (!current()) return null;
-          if (now.account !== null) { keepAddPcWaiting(null); return await joinedAs(now.account, now.enrolling); }
+          if (now.account !== null) { keepAddPcWaiting(null); return await joinedAs(now.account, now.enrolling, now.needsKeys); }
         }
         return { kind: "error", message: listAddRefusal(t, byList.why) };
       }
@@ -945,7 +946,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       const membership = await thisPcMembership();
       if (!current()) return;
       if (membership.account !== null) {
-        const next = await joinedAs(membership.account, membership.enrolling);
+        const next = await joinedAs(membership.account, membership.enrolling, membership.needsKeys);
         if (current()) setState(next);
         return;
       }
