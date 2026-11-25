@@ -133,8 +133,7 @@ export function coreModel({ firstTurn, host, observeSeen, noteSession }: CoreMod
         reported.set(paneId, facts);
         const changes = facts !== before ? [changed("updated", paneId)] : [];
         const status = statusOf(report);
-        // A status event has no label read of its own.
-        noteSession?.(paneId, status, event.data?.["records"], undefined);
+        noteSession?.(paneId, status, event.data?.["records"], known.get(paneId)?.labels);
         const entry = known.get(paneId);
         if (!entry) return [...changes, told(paneId, status, agentStatusOf(status))];
         const was = entry.status?.state;

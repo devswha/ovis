@@ -792,13 +792,9 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     const writes = (count: number) => new Promise<void>((resolve) => { if (written.length >= count) resolve(); else waits.push({ count, resolve }); });
     const { socket } = await setup(terminals, {
       "terminal.label": (params) => {
-        const item = terminals.find((entry) => entry.address === params["terminal"]);
-        if (!item) throw new Error("terminal not found");
-        const labels = params["labels"] as Record<string, string>;
-        item.labels = { ...item.labels, ...labels };
         written.push(params);
         for (const wait of waits) if (written.length >= wait.count) wait.resolve();
-        return item;
+        return terminals.find((entry) => entry.address === params["terminal"])!;
       },
     });
     const sessions = async () => (await sessionSnapshot(socket)).panes.map((pane) => pane.agent_session ?? null);
@@ -878,32 +874,31 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     expect(written).toEqual(["ses_first", "ses_first ses_second"]);
   });
 
-  it("recovers a missing OpenCode session from a peer label and repairs a later overwrite", async () => {
-    const opencode = (state: string) => ({ app: "opencode", state });
-    const t1 = terminal("t1", { title: "OC | first", status: opencode("working"), records: { ses_first: opencode("working") } });
-    const wrote = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-    const writes: string[] = [];
-    const { socket } = await setup([t1], {
-      "terminal.label": (params) => {
-        const value = (params["labels"] as Record<string, string>)["ovis.opencode"] ?? "";
-        t1.labels = { "ovis.opencode": value };
-        writes.push(value);
-        wrote[writes.length - 1]?.resolve();
-        return t1;
-      },
-    });
-    await sessionSnapshot(socket);
-    await wrote[0]?.promise;
-    t1.status = opencode("idle");
-    t1.records = {};
-    t1.title = "OC | second";
-    t1.labels = { "ovis.opencode": "ses_first ses_second" }; // a peer saw the short turn we missed
-    const session = async () => (await sessionSnapshot(socket)).panes[0]?.agent_session?.value;
-    expect(await session()).toBe("ses_second");
-    t1.labels = { "ovis.opencode": "ses_first" }; // stale peer writes again
-    expect(await session()).toBe("ses_second");
-    await wrote[1]?.promise;
-    expect(writes).toEqual(["ses_first", "ses_first ses_second"]);
+  it("stops draining after its deadline without sending the next queued OpenCode label", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      started.resolve();
+      await first.promise;
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    jest.useFakeTimers();
+    try {
+      labels.label("t1", "", ["ses_first"]);
+      await started.promise;
+      labels.label("t1", "", ["ses_first", "ses_second"]);
+      const stopping = labels.stop({ drain: true });
+      jest.advanceTimersByTime(500);
+      await stopping;
+      first.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(written).toEqual(["ses_first"]);
+    } finally {
+      first.resolve();
+      jest.useRealTimers();
+    }
   });
 
   it("remembers an OpenCode session a status event named, for a turn that ended before any snapshot", async () => {
