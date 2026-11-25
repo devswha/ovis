@@ -25,6 +25,7 @@ import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
 import { ListAlarmLine } from "./ListAlarmNotice.tsx";
 import { ListWaitingNotice } from "./ListChangeNotice.tsx";
+import { ListMoveNotices } from "./ListMoveNotice.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
@@ -346,6 +347,8 @@ export function RelayShell(props: RelayShellProps) {
           {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} /><ListAlarmLine />{listUnread}{directoryError}</>, true)}
           {/* a change here (a Remove) that was refused because an earlier one still waits: that one's card, to try it again or cancel it */}
           <ListWaitingNotice />
+          {/* the one-time notice of the move of an account that was in use onto its list, or why this device did not join it */}
+          <ListMoveNotices />
           {!myPcsShown && listUnread}
           {!myPcsShown && directoryError}
         </div>

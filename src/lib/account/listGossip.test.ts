@@ -11,6 +11,7 @@ import { memoryListLock } from "./listStore.ts";
 import { allowDevice } from "./listAllow.ts";
 import { deliverOnce, GOSSIP_CALLS_PER_MINUTE, GOSSIP_SECONDS, gossipBudget, gossipWithPc, keepListGossip, type GossipSession } from "./listGossip.ts";
 import { removeListPc } from "./listRemove.ts";
+import { moved } from "./listMigrate.test-helpers.ts";
 import { signedOn, writeToList } from "./listWrite.ts";
 import { handListToPc, type PcFetch } from "./join.ts";
 
@@ -844,5 +845,27 @@ describe("a session keeps the list compared", () => {
     const done = await gossipWithPc(pc.fetch, first.list, cut.carry, always, handing);
     expect(done.end).toBe("alarm");
     expect(first.list.view().status).toMatchObject({ trouble: "fork" });
+  });
+});
+
+describe("a device its account's move onto the list carried in", () => {
+  it("takes a PC's page into its copy, still pinned to its sign-in key before its hand-over is placed, and keeps that copy", async () => {
+    const { laptop, phone, world, pc: carried } = await moved();
+    // the account service takes no entry from the laptop: its hand-over to its member key waits
+    laptop.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries") ? Response.json({ error: { code: "try_again" } }, { status: 409 }) : null;
+    expect((await laptop.device.list.sync()).status).toMatchObject({ at: "following", standing: "in" });
+    const before = await readSave(String(await laptop.device.lists.get("copy", world.account)));
+    expect(before.read && before.copy.me.key).toBe(laptop.signIn);
+    expect(laptop.device.list.holdsPc(carried.endpoint)).toBe(true);
+    // the phone puts the PC the move carried in out, and a PC that holds that removal hands it over
+    expect(await removeListPc(phone.device.list, carried.endpoint, noWait)).toEqual({ removed: true });
+    const pc = await memoryPc(world, world.held().entries);
+    const ask = laptop.device.list.compare(gossipHead(pc.copy()))!;
+    expect(ask.read).not.toBeNull();
+    const took = await laptop.device.list.takeFromPeer(servePage(pc.copy(), { list: ask.read!.list, after: ask.read!.after }, 256)!, ask.read);
+    expect(took).toMatchObject({ saved: true });
+    expect(laptop.device.list.holdsPc(carried.endpoint)).toBe(false);
+    const after = await readSave(String(await laptop.device.lists.get("copy", world.account)));
+    expect(after.read && [after.copy.me.key, shownPcs(after.copy).map((row) => row.endpoint).includes(carried.endpoint)]).toEqual([laptop.signIn, false]);
   });
 });
