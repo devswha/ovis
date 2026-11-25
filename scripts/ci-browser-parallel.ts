@@ -44,12 +44,18 @@ export function selectBrowserScripts(all: string[], include?: string, exclude?: 
 }
 
 const isFile = (path: string): boolean => existsSync(path) && statSync(path).isFile();
+/** import() or require() of anything but one plain string or a data: URL (code it carries, no file), or import.meta.glob: a name worked out as the file runs. */
+const COMPUTED_IMPORT = /\b(?:import|require)\(\s*(?!["'][^"'\n]*["']\s*[),]|`data:)[^\s)]|import\.meta\.glob/;
+const CODE = /\.(?:[cm]?[jt]sx?)$/;
 
 /**
- * The repository files `entry` loads, itself included, by its static and dynamic imports followed
- * through relative paths and the @shared alias (vite.config.ts, tsconfig.json); a package is not
- * followed. `unresolved` is true when an import names a file that is not there, which no caller
- * may take as proof of what the entry does not load.
+ * The repository files `entry` loads, itself included, by its static and dynamic imports and the
+ * files it names with `new URL("…", import.meta.url)` (a worker, an entry it bundles), followed
+ * through relative and root paths (scripts/conventions.test.ts allows no alias); a package is not
+ * followed. `unresolved` is true when an import names a file that is not there, a code file
+ * does not parse, or a file loads one whose name it works out as it runs (import() or require() of
+ * anything but a plain string, import.meta.glob): no caller may take the set as proof of what the
+ * entry does not load then.
  */
 export function importClosure(root: string, entry: string, cache = new Map<string, string[] | null>()): { files: Set<string>; unresolved: boolean } {
   const files = new Set([entry]);
@@ -60,13 +66,20 @@ export function importClosure(root: string, entry: string, cache = new Map<strin
     let found = cache.get(file);
     if (found === undefined) {
       found = [];
+      const text = readFileSync(join(root, file), "utf8");
       let imports: { path: string }[] = [];
-      try { imports = new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).scanImports(readFileSync(join(root, file), "utf8")); } catch { /* not code (JSON, HTML): it imports nothing */ }
-      for (const { path } of imports) {
-        const base = path === "@shared" || path.startsWith("@shared/") ? join(root, "shared", path.slice("@shared".length))
-          : path.startsWith(".") ? resolve(root, dirname(file), path) : null;
+      if (CODE.test(file)) {
+        try { imports = new Bun.Transpiler({ loader: /\.[jt]sx$/.test(file) ? "tsx" : "ts" }).scanImports(text); } catch { imports = []; found = null; }
+      }
+      if (found === null || COMPUTED_IMPORT.test(text)) { cache.set(file, null); unresolved = true; continue; }
+      const urls = [...text.matchAll(/new URL\(\s*["'`]([^"'`$]+)["'`]\s*,\s*import\.meta\.url\s*\)/g)].map((match) => ({ path: match[1]! }));
+      for (const { path: written } of [...imports, ...urls]) {
+        const path = written.replace(/[?#].*$/, "");
+        const base = path.startsWith(".") ? resolve(root, dirname(file), path) : path.startsWith("/") ? join(root, path) : null;
         if (base === null) continue;
         const target = [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx"), base.replace(/\.js$/, ".ts")].find(isFile);
+        // a URL may name a folder (vite.config.ts's own, the shared folder's), which loads nothing by itself
+        if (target === undefined && urls.some((url) => url.path === written) && existsSync(base) && statSync(base).isDirectory()) continue;
         if (target === undefined) { found = null; break; }
         found.push(relative(root, target));
       }
@@ -80,20 +93,21 @@ export function importClosure(root: string, entry: string, cache = new Map<strin
 
 /** What scripts/demo-build.ts builds the demo from: the client's entries and the demo transport. */
 const DEMO_APP = ["scripts/demo-build.ts", "vite.config.ts", "src/main.tsx", "src/pwa.ts", "site/demo/transport.ts"];
-/** A string that is a path into server/: "server", "server/…", "../server/…". */
-const NAMES_SERVER = /["'`](?:\.{1,2}\/)*server(?:\/[^"'`\s]*)?["'`]/;
+/** A string with server as one of its path's names: "server", "server/…", `${root}/server/…`, "cat server/x", "//server/share". */
+const NAMES_SERVER = /(["'`])(?:(?:[^"'`\n]*\/)?server|(?:[^"'`\n]*[\s/])?server\/[^"'`\n]*)\1/;
 
 /**
  * The scripts of `scripts` that check the static demo alone (named *-demo-regression.ts) and load
  * no file of server/: none of the files they import, through any chain, is under server/, none of
- * those under scripts/ names a server path, and every import resolves. A change to server/ alone
+ * those outside the client and the demo names a server path, and every import resolves. A change to server/ alone
  * cannot reach them. None at all when the demo app itself loads a file of server/.
  */
 export function demoOnlyScripts(scripts: string[], root = repo): string[] {
   const cache = new Map<string, string[] | null>();
   const loadsServer = (entry: string): boolean => {
     const { files, unresolved } = importClosure(root, entry, cache);
-    return unresolved || [...files].some((file) => file.startsWith("server/") || (file.startsWith("scripts/") && NAMES_SERVER.test(readFileSync(join(root, file), "utf8"))));
+    // the client and the demo run in the browser, where a server path names no file; anything else may read one
+    return unresolved || [...files].some((file) => file.startsWith("server/") || (!/^(src|shared|site)\//.test(file) && NAMES_SERVER.test(readFileSync(join(root, file), "utf8"))));
   };
   if (DEMO_APP.some((entry) => !isFile(join(root, entry)) || loadsServer(entry))) return [];
   return scripts.filter((script) => script.endsWith("-demo-regression.ts") && isFile(join(root, script)) && !loadsServer(script));
@@ -466,7 +480,8 @@ async function main(): Promise<void> {
   if (demoOnly.size > 0) console.log(`[setup] Only the server changed: ${demoOnly.size} scripts that check the static demo alone are left out`);
   const scripts = shardScripts(selected.filter((script) => !demoOnly.has(script)), timings, shard);
   if (scripts.length === 0) {
-    if (demoOnly.size === 0) throw new Error(`No browser scripts selected${shard ? ` for shard ${shard}` : ""}`);
+    // only a part the demo-only scripts alone would have filled passes empty
+    if (shardScripts(selected, timings, shard).length === 0) throw new Error(`No browser scripts selected${shard ? ` for shard ${shard}` : ""}`);
     console.log(`Browser lane: no script left for this part${shard ? ` (shard ${shard})` : ""} once the demo-only ones are left out`);
     return;
   }

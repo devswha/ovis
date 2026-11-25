@@ -601,8 +601,9 @@ jobs:
           BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
           # a pull request that changed the server alone (scripts/ci-browser-reach.sh): the scripts that check the
-          # static demo alone and load no file of the server are left out (scripts/ci-browser-parallel.ts)
-          BROWSER_LIVE_ONLY: ${{ needs.changes.outputs.browser == 'live' }}
+          # static demo alone and load no file of the server are left out (scripts/ci-browser-parallel.ts); in ci.yml's
+          # own runs only, so no workflow that calls it from a pull request leaves any out
+          BROWSER_LIVE_ONLY: ${{ github.workflow == 'CI' && needs.changes.outputs.browser == 'live' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       # About 2,000 screenshots of a green run cost ~50 s to upload on the job that ends a run last,
       # so they go up only when the job failed; the report and every script's log always do.

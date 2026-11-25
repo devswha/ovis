@@ -144,7 +144,7 @@ describe("ci.yml and the browser jobs a change cannot reach", () => {
 
   it("leaves the demo-only scripts out of the other scripts' jobs alone, and only for a change to the server alone", () => {
     const env = (job: string) => ci.jobs[job]!.steps!.filter((step) => step.run?.includes("scripts/ci-browser-parallel.ts")).map((step) => step.env?.["BROWSER_LIVE_ONLY"]);
-    expect(env("browser-other")).toEqual(["${{ needs.changes.outputs.browser == 'live' }}"]);
+    expect(env("browser-other")).toEqual(["${{ github.workflow == 'CI' && needs.changes.outputs.browser == 'live' }}"]);
     expect(env("browser-main")).toEqual([undefined]);
   });
 
