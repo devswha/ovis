@@ -157,6 +157,7 @@ sets that hold and **Hand back** releases it; the sidebar marks a held child **S
 `POST /api/pane/turn/cancel-children {"pane_id":"t7"}` holds every ACP child pane `t7` started
 (its menu's **Stop agents it called**) and answers `held` (pane, `child_id`, `generation`) and
 `failed` (panes that did not take the hold).
+With a valid run token, a parent can stop its own child even after its start/send grant shrinks; a driving device can cancel with agent tools off.
 
 The token travels only over the private Unix socket, not HTTP. A same-account program can read
 the token file: this is run attribution, not isolation from other programs of the same OS user.
