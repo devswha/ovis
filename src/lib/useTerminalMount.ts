@@ -266,11 +266,14 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       term.loadAddon(fit);
       matchHerdrWidths(term);
+      // libghostty's OSC 8 hyperlinks, first: where a hyperlink's label is an address too, its target is what opens, as with
+      // xterm's own provider
+      term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), (uri) => isWebLink(uri) || fileUriPath(uri) !== null, openHyperlink));
       // the same policy as the linkHandler above: an http(s) address or nothing (S10). The addon reads the rows a link is
-      // in through the terminal it is given: the rows drawn (viewRows), libghostty's while it holds the screen
-      new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); })
-        .activate({ registerLinkProvider: (provider: ILinkProvider) => term.registerLinkProvider(provider), buffer: { get active() { return viewRows(term); } } } as unknown as Terminal);
-      term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), openHyperlink));
+      // in through the terminal it is given: the rows drawn (viewRows), libghostty's while it holds the screen. It is not
+      // loaded through the terminal (that would read xterm's buffer), so it is disposed with it below
+      const webLinks = new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); });
+      webLinks.activate({ registerLinkProvider: (provider: ILinkProvider) => term.registerLinkProvider(provider), buffer: { get active() { return viewRows(term); } } } as unknown as Terminal);
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
@@ -477,7 +480,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           const y = buffer.viewportY + target.row + 1;
           const x = target.col + 1;
-          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined)
+          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined, () => viewRows(term))
             .find(({ range: { start, end } }) => (y > start.y || (y === start.y && x >= start.x)) && (y < end.y || (y === end.y && x <= end.x)));
           if (!link) return false;
           link.activate(event);
@@ -2598,6 +2601,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         for (const handler of queryReplies) handler.dispose();
         for (const handler of arrowModeWitnesses) handler.dispose();
         osc8.dispose();
+        webLinks.dispose();
         modifyOtherKeysSet.dispose();
         modifyOtherKeysOff.dispose();
         if (clipboardTimerRef.current !== null) window.clearTimeout(clipboardTimerRef.current);

@@ -3,7 +3,7 @@ import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { matchHerdrWidths } from "../terminalWidths.ts";
 import type { ScreenRows } from "../terminalScreen.ts";
-import { terminalFileLinks } from "../terminalFileLinks.ts";
+import { terminalFileLinkProvider, terminalFileLinks } from "../terminalFileLinks.ts";
 import { hyperlinkProvider } from "./hyperlinks.ts";
 import { ghosttyRows } from "./screenRows.ts";
 import { GhosttyVt } from "./vt.ts";
@@ -47,7 +47,7 @@ test("libghostty's OSC 8 hyperlinks are links over their cells that open their t
   const { term, vt, done } = await both(40, 8, LINKS);
   try {
     const opened: string[] = [];
-    const ghostty = hyperlinkProvider(() => ghosttyRows(vt), (_event, uri) => opened.push(uri));
+    const ghostty = hyperlinkProvider(() => ghosttyRows(vt), () => true, (_event, uri) => opened.push(uri));
     const row = [1, 2, 3, 4, 5, 6].find((y) => ghosttyRows(vt).getLine(y - 1)?.translateToString(true).startsWith("label"))!;
     const links = await provided(ghostty, row);
     expect(ranges(links)).toEqual([
@@ -56,6 +56,27 @@ test("libghostty's OSC 8 hyperlinks are links over their cells that open their t
     ]);
     links![1]!.activate({} as MouseEvent, links![1]!.text);
     expect(opened).toEqual(["file:///tmp/x.txt"]);
-    expect(await provided(hyperlinkProvider(() => term.buffer.active, () => {}), row)).toBeUndefined();
+    expect(await provided(hyperlinkProvider(() => term.buffer.active, () => true, () => {}), row)).toBeUndefined();
+  } finally { done(); }
+});
+
+test("an OSC 8 target the app does not open is no link, and a file link under it is still found", async () => {
+  // herdr's OmO panel links its rows to omo-panel: targets, which xterm's own provider leaves alone (#739)
+  const { vt, done } = await both(40, 4, "\x1b]8;;omo-panel:file/main\x1b\\see src/main.ts\x1b]8;;\x1b\\\r\n");
+  try {
+    const opens = (uri: string): boolean => uri.startsWith("https://") || uri.startsWith("file:");
+    expect(await provided(hyperlinkProvider(() => ghosttyRows(vt), opens, () => {}), 1)).toBeUndefined();
+    expect(ranges(terminalFileLinks(ghosttyRows(vt), 1, () => {})).map((link) => link.text)).toEqual(["src/main.ts"]);
+  } finally { done(); }
+});
+
+test("a file link found in libghostty's rows opens only if the row still shows it when clicked", async () => {
+  const { vt, done } = await both(40, 4, "open src/main.ts");
+  try {
+    const opened: string[] = [];
+    const links = await provided(terminalFileLinkProvider(() => ghosttyRows(vt), (path) => opened.push(path)), 1);
+    vt.write("x");
+    links!.find((link) => link.text === "src/main.ts")!.activate({} as MouseEvent, "src/main.ts");
+    expect(opened).toEqual([]);
   } finally { done(); }
 });

@@ -104,6 +104,7 @@ export function viewRows(term: Terminal): ScreenRows {
   const offset = rows.viewportY - own.viewportY;
   if (offset === 0) return rows;
   return {
+    ...("alternate" in rows ? { alternate: rows.alternate } : {}),
     length: rows.length - offset, baseY: rows.baseY - offset, viewportY: rows.viewportY - offset, cursorX: rows.cursorX, cursorY: rows.cursorY,
     getNullCell: () => rows.getNullCell(),
     getLine: (y) => rows.getLine(y + offset),
@@ -128,8 +129,6 @@ export function terminalScreen(term: Terminal): TerminalScreen {
     // xterm (5.5 and 6.0) keeps OSC 8 targets in its own link service with no public way to read them: this reads
     // its internals and finds nothing where they are not there; the caller applies its own link policy to the uri
     hyperlinkAt: (y, x) => {
-      const held = viewRows(term).getLine(y);
-      if (held?.hyperlink) return held.hyperlink(x);
       const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
       const id = cell?.extended?.urlId;
       if (!id) return null;

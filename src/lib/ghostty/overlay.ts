@@ -602,7 +602,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
                 if (!disposed) {
                   try { return line.getCell(x, cell); } catch (error) { readFailed(error); }
                 }
-                return term.buffer.active.getLine(y)?.getCell(x, cell as never);
+                // xterm reads into its own cells, not one of libghostty's a reader holds
+                return term.buffer.active.getLine(y)?.getCell(x);
               },
             };
           } catch (error) {

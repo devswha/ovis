@@ -562,6 +562,8 @@ function bitField(lo: number, hi: number, b: Bits): number {
   return ((lo >>> b.lsb) | (hi << (32 - b.lsb))) & mask;
 }
 
+const UTF8 = new TextDecoder();
+
 /** a blank cell in the default style, shared: rowCells hands out many */
 const BLANK_CELL: EngineCell = Object.freeze({ text: "", width: 1, flags: 0, fg: null, bg: null });
 
@@ -1511,7 +1513,8 @@ export class GhosttyEngine {
         const lo = dv.getUint32(raw, true), hi = dv.getUint32(raw + 4, true);
         const wide = bitField(lo, hi, wideB), tag = bitField(lo, hi, tagB);
         row.widths[col] = wide === wides.WIDE ? 2 : wide === wides.SPACER_TAIL ? 0 : 1;
-        if (bitField(lo, hi, linkB) !== 0) {
+        // the blank a wide glyph left at the end of the row it did not fit on is no part of its link
+        if (bitField(lo, hi, linkB) !== 0 && wide !== wides.SPACER_HEAD) {
           const uri = this.refHyperlink(ref);
           dv = this.view();
           if (uri !== null) row.hyperlinks.set(col, uri);
@@ -1578,7 +1581,7 @@ export class GhosttyEngine {
   private refHyperlink(ref: number): string | null {
     const x = this.x;
     const out = this.scratch + AT.graphemeOut, buf = this.scratch + AT.grapheme, cap = AT.scroll - AT.grapheme;
-    const read = (at: number, len: number): string => new TextDecoder().decode(new Uint8Array(x.memory.buffer, at, len).slice());
+    const read = (at: number, len: number): string => UTF8.decode(new Uint8Array(x.memory.buffer, at, len).slice());
     const result = x.ghostty_grid_ref_hyperlink_uri(ref, buf, cap, out);
     if (result === this.e.GhosttyResult.NO_VALUE) return null;
     if (result === 0) return read(buf, this.view().getUint32(out, true)) || null;
