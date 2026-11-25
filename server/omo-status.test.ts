@@ -435,6 +435,77 @@ describe("OmO panes' status in place of herdr's", () => {
     expect(told.slice(2)).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
   });
 
+  it("holds the rest until a read of the file covers what it held when the run's end was told", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(failure("Connection error."));
+    omo.poll();
+    // the retry answered; the read after its end was told fails, and sees only the error
+    append(message("assistant", "stop", LATER));
+    state.failing = true;
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true]]);
+    state.failing = false;
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
+  });
+
+  it("holds no rest the file published before a run's start was told, until the file reads a turn running", async () => {
+    const { omo, told, append } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    append(message("assistant", "stop"));
+    omo.poll();
+    omo.told("omo", "began");
+    omo.poll();
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
+    // a start told late in a turn that went on: its rest is held
+    omo.told("omo", "began");
+    append(message("user"));
+    omo.poll();
+    append(failure("Connection error."));
+    omo.poll();
+    expect(told.slice(2)).toEqual([["omo", "working", 0, true]]);
+  });
+
+  it("counts the minute of rest from the start of OmO's latest retry, which may write nothing while it runs", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(failure("Connection error."));
+    omo.poll();
+    for (let retry = 0; retry < 5; retry++) {
+      state.clock += 11_000;
+      omo.told("omo", "began");
+      omo.poll();
+    }
+    state.clock += 59_000;
+    omo.poll();
+    expect(told).toHaveLength(1);
+    state.clock += 1_000;
+    omo.poll();
+    expect(told.at(-1)).toEqual(["omo", "idle", 0, true, "failed"]);
+  });
+
+  it("holds nothing of a run told for another session file than the pane's now", async () => {
+    const { omo, told, append, state, files } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(failure("Connection error."));
+    omo.poll();
+    expect(told).toHaveLength(1);
+    // OmO started anew in the pane, on another session file, which reads a turn that ran and ended
+    const other = "/s/2026_01a0f88b-0000-7139-8125-c9cd453b9e17.jsonl";
+    files[other] = lines(message("user"), message("assistant", "stop", LATER));
+    state.discovered.set("omo", { path: other, startedAt: null });
+    state.clock += 10_000;
+    await omo.refresh(herdr().panes);
+    expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/idle");
+  });
+
   it("lets the session file's rest stand a minute after it, when the end of the run is never told", async () => {
     const { omo, told, append, state } = setup(lines(message("user")));
     await omo.refresh(herdr().panes);

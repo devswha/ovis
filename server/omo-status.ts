@@ -174,14 +174,18 @@ const FILES: OmoFile = {
 };
 
 const STALE_TURN_MS = 2000;
-/** The longest the file's rest is held for a run told began: OmO's retries came 2 to 9 s apart (approvals/omo.ts). */
+/** The longest the file's rest is held after a run told began: OmO's retries came 2 to 9 s apart (approvals/omo.ts). */
 const RUN_HOLD_MS = 60_000;
 
 export class OmoStatus {
   private readonly panes = new Map<string, Tracked>();
   private readonly last = new Map<string, { status: OmoPaneStatus; failed: boolean; failedAt: number | null; background: number; path: string; startedAt: number | null }>();
-  /** panes whose OmO's extension told a run began and not yet that it ended, with when the file first read rest since */
-  private readonly running = new Map<string, number | null>();
+  /**
+   * Panes whose OmO's extension told a run began (approvals/omo.ts): the session file it was told for, whether that file
+   * has read the turn running since, when it first read rest since the latest run began, and where the file was when the
+   * run's end was told.
+   */
+  private readonly running = new Map<string, { path: string | null; ran: boolean; restSince: number | null; endedAt: { id: string; size: number } | null }>();
   private refreshedAt = -Infinity;
   private refreshedFor = "";
   private refreshing: Promise<void> | null = null;
@@ -326,17 +330,38 @@ export class OmoStatus {
 
   /** What the extension of an OmO Ovis started in `paneId` told of its run. */
   told(paneId: string, turn: "began" | "ended"): void {
-    if (turn === "began") this.running.set(paneId, null);
-    else this.running.delete(paneId);
+    const run = this.running.get(paneId);
+    const tracked = this.panes.get(paneId);
+    if (turn === "began") {
+      // a retry's run goes on with the turn as it is, its minute of rest counted from its start. One told after the
+      // file published the turn's rest, the file not written since (its relay was late), holds nothing until the file
+      // reads a turn running
+      if (run !== undefined && run.endedAt === null && run.path === (tracked?.path ?? null)) { run.restSince = null; return; }
+      const file = tracked?.path == null ? null : this.file.stat(tracked.path);
+      const written = file !== null && (file.id !== tracked!.id || file.size > tracked!.offset);
+      this.running.set(paneId, { path: tracked?.path ?? null, ran: tracked !== undefined && (tracked.status !== "idle" || written), restSince: null, endedAt: null });
+      return;
+    }
+    // held until a read of the file covers what it held when the end was told: a read begun before has not seen it
+    const file = tracked?.path == null ? null : this.file.stat(tracked.path);
+    if (run === undefined || file === null) this.running.delete(paneId);
+    else run.endedAt = file;
   }
 
-  /** Whether the file's rest is held for a run told began: for RUN_HOLD_MS from the first read of it. */
-  private holds(paneId: string): boolean {
-    if (!this.running.has(paneId)) return false;
-    const since = this.running.get(paneId) ?? this.now();
-    if (this.now() - since >= RUN_HOLD_MS) { this.running.delete(paneId); return false; }
-    this.running.set(paneId, since);
-    return true;
+  /**
+   * Whether the file's rest is held for a run told began, which the file read running: until a read covers the file
+   * as it was when its end was told, and for RUN_HOLD_MS of rest since the latest run began at most. A run told for
+   * another session file (OmO started anew in the pane) holds nothing.
+   */
+  private holds(paneId: string, tracked: Tracked): boolean {
+    const run = this.running.get(paneId);
+    if (run === undefined) return false;
+    if (run.path !== null && run.path !== tracked.path) { this.running.delete(paneId); return false; }
+    run.path ??= tracked.path;
+    const read = run.endedAt !== null && (tracked.id !== run.endedAt.id || tracked.offset >= run.endedAt.size);
+    run.restSince ??= this.now();
+    if (read || this.now() - run.restSince >= RUN_HOLD_MS) { this.running.delete(paneId); return false; }
+    return run.ran;
   }
 
   ended(paneId: string): void {
@@ -412,8 +437,9 @@ export class OmoStatus {
     const stale = tracked.turn.status === "working" && tracked.turn.at !== null && tracked.startedAt !== null && tracked.turn.at < tracked.startedAt - STALE_TURN_MS;
     if (this.staleIsFailure && stale && tracked.turn.asks.length > 0) tracked.turn = { ...tracked.turn, asks: [] };
     const read: OmoPaneStatus = tracked.turn.asks.length > 0 ? "blocked" : tracked.turn.status === "working" && !stale ? "working" : "idle";
-    if (read !== "idle" && this.running.has(paneId)) this.running.set(paneId, null);
-    const status: OmoPaneStatus = read === "idle" && this.holds(paneId) ? "working" : read;
+    const run = this.running.get(paneId);
+    if (read !== "idle" && run !== undefined) { run.ran = true; run.restSince = null; }
+    const status: OmoPaneStatus = read === "idle" && this.holds(paneId, tracked) ? "working" : read;
     const sessionId = tracked.path === null ? null : omoSessionId(tracked.path);
     const cwd = tracked.sessionCwd ?? tracked.cwd;
     if (!counts.has(cwd)) counts.set(cwd, cwd ? this.background(cwd) : new Map());

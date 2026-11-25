@@ -149,6 +149,13 @@ describe.skipIf(!posix)("OmO's approval hook", () => {
     for (const event of runs["tui"]!) omo.run(event);
     await told(6);
     expect(turns).toEqual(["p1 omo began", "p1 omo ended", "p1 omo began", "p1 omo ended", "p1 omo began", "p1 omo ended"]);
+    turns.length = 0;
+    // stopped (Esc) while it waited to retry: that retry never starts, and no agent_end tells its end
+    for (const type of ["agent_start", "agent_end", "session_abort", "agent_settled"]) omo.run({ type, ...(type === "agent_end" ? { willRetry: true } : {}) });
+    // the start of a turn after it shows that nothing else was queued before
+    omo.run({ type: "agent_start" });
+    await told(3);
+    expect(turns).toEqual(["p1 omo began", "p1 omo ended", "p1 omo began"]);
   });
 
   it("reads the command of OmO's permission dialog on a pane herdr-core names omo and herdr names pi", () => {

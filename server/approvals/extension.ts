@@ -80,13 +80,19 @@ let telling = Promise.resolve();
 
 /**
  * Tells the hub what asks nothing (a run of the agent's began or ended): one relay run, its answer not read, each after
- * the one told before it, so that the hub hears them in their order. One that fails is not told again.
+ * the one told before it, so that the hub hears them in their order. One that fails, or takes longer than TELL_MS, is not
+ * told again; nor does one keep the agent from exiting.
  */
+const TELL_MS = 5000;
 function tell(event) {
   telling = telling.then(() => new Promise((resolve) => {
     const child = spawn(HOOK.command, HOOK.args, { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
-    child.on("error", resolve);
-    child.on("close", resolve);
+    const timer = setTimeout(() => child.kill(), TELL_MS);
+    timer.unref?.();
+    child.unref();
+    const done = () => { clearTimeout(timer); resolve(); };
+    child.on("error", done);
+    child.on("close", done);
     child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(event));
   }));
