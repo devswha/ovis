@@ -33,7 +33,8 @@ export interface MachineBridge {
 const CORE_ENV = /^(?:HC_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_RUNTIME_DIR|XDG_CONFIG_HOME|XDG_STATE_HOME)$/;
 const PROGRAM_ENV = /^(?:PATH|PATHEXT|LANG|LC_.*|TMPDIR|TEMP|TMP|SystemRoot|SYSTEMROOT|WINDIR|ComSpec|COMSPEC)$/;
 const READY_MS = 30_000;
-const DRAIN_MS = 10_000;
+// EOF lets the child drain its label writes and read receipts; one that does not stop is killed at this deadline
+const STOP_MS = 10_000;
 
 /**
  * Starts a machine's server: this server's own code, in a process of its own, serving herdr's API from
@@ -65,12 +66,19 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
       if (message?.type === "ready" && Number.isInteger(message.port) && typeof message.token === "string") ready.resolve({ port: message.port, token: message.token });
     },
   });
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
-    try { child.stdin.end(); } catch {}
-    const deadline = setTimeout(() => child.kill("SIGKILL"), DRAIN_MS);
-    return child.exited.then(() => undefined).finally(() => clearTimeout(deadline));
+    if (stopTimer === undefined && child.exitCode === null && child.signalCode === null) {
+      stopTimer = setTimeout(() => child.kill(), STOP_MS);
+      stopTimer.unref();
+      try { child.stdin.end(); } catch { child.kill(); }
+    }
+    return child.exited.then(() => undefined);
   };
-  void child.exited.then((code) => ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`)));
+  void child.exited.then((code) => {
+    clearTimeout(stopTimer);
+    ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`));
+  });
   const timer = setTimeout(() => ready.reject(new Error(`The server for ${machine.name} did not start within ${READY_MS / 1000}s`)), READY_MS);
   try {
     const { port, token } = await ready.promise;

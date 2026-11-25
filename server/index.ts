@@ -14,6 +14,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { OrderSequence } from "./order-sequence.ts";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
 import { accessSync, chmodSync, constants, mkdirSync, rmSync, statSync } from "node:fs";
+import { recordDesktopListener } from "./desktop-listener.ts";
 import { version } from "../package.json";
 import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
@@ -661,7 +662,7 @@ export function createServer(
     seen.subscribe((finish, presented) => { if (presented !== "new") markSeen(finish, false); });
     seen.onPresented((finish) => markSeen(finish, true));
   }
-  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
+  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 10 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
   const bridgeToken = options.bridgeToken ?? randomBytes(32).toString("hex");
@@ -1166,18 +1167,26 @@ export async function serve(): Promise<void> {
     herdrCore?.stop();
     process.exit(1);
   }
+  let clearDesktopListener: (() => void) | undefined;
+  const desktopRecord = process.env["OVIS_DESKTOP_APP"] === "1" ? process.env["OVIS_DESKTOP_COMMAND_RECORD"] : undefined;
+  if (desktopRecord !== undefined) {
+    try { clearDesktopListener = recordDesktopListener(desktopRecord, process.pid); }
+    catch (error) { console.error("Cannot record the desktop listener:", error); }
+  }
   telemetry.start();
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
+    try { clearDesktopListener?.(); }
+    catch (error) { console.error("Cannot clear the desktop listener record:", error); }
     telemetry.stop();
     const seenDrained = instance.stop();
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
     // its relay, and the pipes it logs to must outlive it
     // herdr-core's adapter answers what the stopping server still asks meanwhile
-    void Promise.all([seenDrained, Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(() => {
-      herdrCore?.stop();
+    void Promise.all([seenDrained, Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(async () => {
+      await herdrCore?.stop({ drain: true });
       process.exit(0);
     });
   };
