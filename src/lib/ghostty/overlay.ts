@@ -682,7 +682,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       return null;
     }
   };
-  holdScreenRows(term, heldRows);
+  holdScreenRows(term, heldRows, only);
   const releaseSelection = holdSelection(term);
   const overlay: GhosttyOverlay = {
     dispose: () => {
