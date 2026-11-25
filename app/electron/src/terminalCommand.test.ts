@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { processStartSync } from "./children.ts";
 import { commandState, installCommand, launcherText, PROFILE_LINE, shellPath, writeLauncher, type CommandHost, type LauncherPlaces } from "./terminalCommand.ts";
 
 // these run the launcher with sh and make POSIX links in a real folder: a Windows host has neither, and runs the Windows cases
@@ -30,7 +31,7 @@ function fakeServer(dir: string): string {
 }
 
 function places(dir: string, accountService: string | null): LauncherPlaces {
-  return { serverBinary: fakeServer(dir), desktopJson: join(dir, "desktop.json"), stateDir: join(dir, "server state"), configDir: join(dir, "cli-settings"), accountService };
+  return { serverBinary: fakeServer(dir), desktopJson: join(dir, "desktop.json"), stateDir: join(dir, "server state"), configDir: join(dir, "cli-settings"), coreSession: "ovis", accountService };
 }
 
 async function runLauncher(file: string, args: string[], env: Record<string, string> = {}): Promise<{ code: number; out: string; err: string }> {
@@ -40,6 +41,62 @@ async function runLauncher(file: string, args: string[], env: Record<string, str
 }
 
 describe.skipIf(WINDOWS_HOST)("the launcher on a Mac or Linux", () => {
+  it("does not query an unrelated Ovis at the remembered desktop port after the desktop server stops", async () => {
+    const dir = folder();
+    const at = places(dir, null);
+    const plugin = join(import.meta.dir, "../../../scripts/plugin.ts");
+    writeFileSync(at.serverBinary, '#!/bin/sh\nshift\nexec "$TEST_BUN" "$TEST_PLUGIN" "$@"\n', { mode: 0o755 });
+    let requests = 0;
+    using other = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => {
+        requests++;
+        return Response.json({ ok: true, auth: { required: false, authenticated: true }, herdr: {} });
+      },
+    });
+    writeFileSync(at.desktopJson, JSON.stringify({ port: other.port, server: null }));
+    const launcher = writeLauncher(join(dir, "cli"), "linux", at);
+    const result = await runLauncher(launcher, ["status"], {
+      HOME: dir, TMPDIR: dir, TEST_BUN: process.execPath, TEST_PLUGIN: plugin,
+      XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state"),
+    });
+    expect({ code: result.code, out: result.out, requests }).toEqual({ code: 1, out: "", requests: 0 });
+    expect(result.err).toContain("open the Ovis app first");
+  });
+
+  it("uses the desktop port only after the recorded server is ready and still has the recorded start time", async () => {
+    const dir = folder();
+    const at = places(dir, null);
+    const plugin = join(import.meta.dir, "../../../scripts/plugin.ts");
+    writeFileSync(at.serverBinary, '#!/bin/sh\nshift\nexec "$TEST_BUN" "$TEST_PLUGIN" "$@"\n', { mode: 0o755 });
+    using server = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => Response.json({ ok: true, auth: { required: false, authenticated: true }, herdr: {} }),
+    });
+    const env = { HOME: dir, TMPDIR: dir, TEST_BUN: process.execPath, TEST_PLUGIN: plugin, XDG_STATE_HOME: join(dir, "state") };
+    const launcher = writeLauncher(join(dir, "cli"), "linux", at);
+    const record = { pid: process.pid, bun: at.serverBinary, started: processStartSync(process.pid) };
+    expect(record.started).not.toBeNull();
+    for (const serverRecord of [record, { ...record, ready: true, started: "other process" }]) {
+      writeFileSync(at.desktopJson, JSON.stringify({ port: server.port, server: serverRecord }));
+      expect((await runLauncher(launcher, ["status"], env)).code).toBe(1);
+    }
+    writeFileSync(at.desktopJson, JSON.stringify({ port: server.port, server: { ...record, ready: true } }));
+    const result = await runLauncher(launcher, ["status"], env);
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain(`running http://127.0.0.1:${server.port}\n`);
+  });
+
+  it("passes the desktop app's chosen core session to ovis tui, not the shell's", async () => {
+    const dir = folder();
+    const at = { ...places(dir, null), coreSession: "desktop-work" };
+    writeFileSync(at.desktopJson, JSON.stringify({ port: 49152, server: null }));
+    const file = writeLauncher(join(dir, "cli"), "linux", at);
+    const { code, out } = await runLauncher(file, ["tui"], { HC_SESSION: "shell-work" });
+    expect(code).toBe(0);
+    expect(out).toContain("HC_SESSION=desktop-work\n");
+  });
+
   it("runs the app's server as the command line, on the port desktop.json names and the app's own state", async () => {
     const dir = folder();
     const at = places(dir, "https://account-staging.example");
@@ -95,6 +152,7 @@ describe("the launcher on Windows", () => {
     desktopJson: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis\\desktop.json",
     stateDir: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis 100%\\server",
     configDir: "C:\\Users\\Ann\\AppData\\Roaming\\Ovis\\cli-settings",
+    coreSession: "ovis",
     accountService: "https://account-staging.example/?a=1&b=2",
   };
 
@@ -106,6 +164,7 @@ describe("the launcher on Windows", () => {
     expect(lines).toContain('set "OVIS_STATE_DIR=C:\\Users\\Ann\\AppData\\Roaming\\Ovis 100%%\\server"');
     expect(lines).toContain('set "HC_SESSION=ovis"');
     expect(lines).toContain('set "OVIS_DESKTOP_COMMAND=1"');
+    expect(lines).toContain(`set "OVIS_DESKTOP_COMMAND_RECORD=${at.desktopJson}"`);
     expect(lines).toContain(`set "HERDR_PLUGIN_CONFIG_DIR=${at.configDir}"`);
     expect(lines).toContain('set "OVIS_ACCOUNT_SERVICE_URL=https://account-staging.example/?a=1&b=2"');
     expect(lines).toContain(`"${at.serverBinary}" plugin %*`);
