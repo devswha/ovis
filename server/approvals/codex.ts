@@ -329,7 +329,12 @@ class Connection {
   private rerouted: { turnId: string; model: string } | null = null;
   closed = false;
 
-  constructor(path: string, private readonly paneId: string, private readonly hub: ApprovalHub, private readonly onClose: () => void) {
+  /**
+   * `done`: the questions of this pane answered lately, by Ovis or the terminal, and when, newest last (at most
+   * DONE_KEPT); the pane's, so they outlast this connection.
+   */
+  constructor(path: string, private readonly paneId: string, private readonly hub: ApprovalHub, private readonly onClose: () => void,
+    private readonly done: Done[] = []) {
     this.socket = new WebSocket(`ws+unix://${path}:/`);
     this.socket.onopen = () => void this.start();
     this.socket.onmessage = (event) => this.receive(String(event.data));
@@ -407,6 +412,24 @@ class Connection {
 
   questions(): CodexAsk[] {
     return [...this.asks.values()].filter((ask) => ask.threadId === this.thread);
+  }
+
+  /** Sends `answers` to question `key` of the pane's own thread, once, while the server still waits on it. */
+  answer(key: string, answers: Record<string, { answers: string[] }>): boolean {
+    const ask = this.asks.get(key);
+    if (ask === undefined || ask.threadId !== this.thread || this.closed) return false;
+    this.finish(key);
+    this.send({ id: JSON.parse(key) as unknown, result: { answers } });
+    return true;
+  }
+
+  /** Question `key` takes no answer any more. */
+  private finish(key: string): void {
+    const ask = this.asks.get(key);
+    if (ask === undefined) return;
+    this.asks.delete(key);
+    this.done.push({ ask, at: Date.now() });
+    this.done.splice(0, this.done.length - DONE_KEPT);
   }
 
   private receive(data: string): void {
@@ -494,7 +517,7 @@ class Connection {
         const key = JSON.stringify(params["requestId"]);
         this.held.get(key)?.();
         this.held.delete(key);
-        this.asks.delete(key);
+        this.finish(key);
         break;
       }
     }
@@ -541,7 +564,16 @@ class Connection {
   }
 }
 
-interface Served { dir: string; connection: Connection | null; stopWaiting: () => void }
+/**
+ * How many answered questions a pane keeps, and for how long, so a card of one its TUI still draws is not answered
+ * again (codex-question.ts).
+ */
+const DONE_KEPT = 16;
+const DONE_MS = 10_000;
+
+interface Done { ask: CodexAsk; at: number }
+
+interface Served { dir: string; connection: Connection | null; stopWaiting: () => void; done: Done[] }
 
 const instances = new Set<CodexServers>();
 
@@ -567,6 +599,31 @@ export function servedStatus(paneId: string): ServedStatus | null {
     if (status !== null) return status;
   }
   return null;
+}
+
+/**
+ * Answers question `key` the Codex server Ovis started in `paneId` waits on, as data, once: false where it waits on
+ * it no more (answered from the terminal, or by Ovis already) or Ovis has no connection there. Codex takes the first
+ * answer and ignores a later one (serverRequest/resolved tells every client).
+ */
+export function answerServedQuestion(paneId: string, key: string, answers: Record<string, { answers: string[] }>): boolean {
+  for (const servers of instances) {
+    const connection = servers.connection(paneId);
+    if (connection) return connection.answer(key, answers);
+  }
+  return false;
+}
+
+/**
+ * The questions of the Codex Ovis started in `paneId` answered in the last DONE_MS, by Ovis or from the terminal, also
+ * where Ovis lost its connection to the server since; oldest first.
+ */
+export function servedAnswered(paneId: string): CodexAsk[] {
+  for (const servers of instances) {
+    const done = servers.answered(paneId);
+    if (done !== null) return done.filter(({ at }) => Date.now() - at < DONE_MS).map(({ ask }) => ask);
+  }
+  return [];
 }
 
 /** The questions the Codex server Ovis started in `paneId` waits on for the pane's own thread, oldest first. */
@@ -629,7 +686,7 @@ export class CodexServers {
       rmSync(dir, { recursive: true, force: true });
       return null;
     }
-    const served: Served = { dir, connection: null, stopWaiting: () => {} };
+    const served: Served = { dir, connection: null, stopWaiting: () => {}, done: [] };
     this.panes.set(paneId, served);
     this.await(paneId, served, socket);
     return program;
@@ -645,7 +702,7 @@ export class CodexServers {
       watcher?.close();
       clearTimeout(timer);
       clearTimeout(look);
-      if (connect && this.panes.get(paneId) === served) served.connection = new Connection(socket, paneId, this.hub, () => { if (served.connection?.closed) served.connection = null; });
+      if (connect && this.panes.get(paneId) === served) served.connection = new Connection(socket, paneId, this.hub, () => { if (served.connection?.closed) served.connection = null; }, served.done);
     };
     // the link can come before the socket it names is up
     const check = () => {
@@ -666,6 +723,10 @@ export class CodexServers {
 
   turnEnd(paneId: string): TurnEnd | null {
     return this.panes.get(paneId)?.connection?.turn ?? null;
+  }
+
+  answered(paneId: string): readonly Done[] | null {
+    return this.panes.get(paneId)?.done ?? null;
   }
 
   connection(paneId: string): Connection | null {
