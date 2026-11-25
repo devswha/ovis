@@ -408,7 +408,7 @@ it.each(["queued", "held", "unsupported", "sent"] as const)("keeps Stop's second
   let stop: (() => void) | undefined;
   function Composer() {
     const { abortTurn, dropSecondEscape } = useTypedKeys({
-      agent: "devin", agentStatus: "working", paneId: pane, socketRef, termRef, stopKeyRef: { current: false },
+      agent: "devin", agentStatus: "working", paneId: pane, socketRef, termRef, stopKeyRef: { current: null },
     } as TypedKeysDeps);
     stop = abortTurn;
     actions = useComposerSends({
