@@ -3467,6 +3467,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   }
   finally { db?.close(); }
   if (reported !== null && !paths.includes(reported)) paths.push(reported);
+  if (resumedPath !== null && !paths.includes(resumedPath)) paths.push(resumedPath);
   if (boundHere?.titled === true && titledElsewhere !== boundHere.path) {
     boundRollouts.delete(paneId);
     boundHere = undefined;
@@ -3509,20 +3510,38 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     }
   }
   const unsure = [...new Set([...boundNewer, ...(resumedPath !== null ? resumedNewer : [])])];
-  let claimed: ReadonlySet<string> = new Set();
   if (unsure.length > 0) {
     const own = [boundHere?.path, resumedPath].filter((path): path is string => typeof path === "string");
-    claimed = await claimedByOtherPanes(paneId, cwd, unsure, own, firsts, home, panes);
+    const claimed = await claimedByOtherPanes(paneId, cwd, unsure, own, firsts, home, panes);
     boundNewer = theirs(boundNewer, paneId, claimed);
     resumedNewer = theirs(resumedNewer, paneId, claimed);
   }
   // The picker can switch to a thread older than both the process and the binding.
   // Without a current match, neither the launch argv nor the old screen breaks that tie.
-  const unclaimed = theirs(paths, paneId, claimed);
-  const onlyPlausible = (path: string) => listed && unclaimed.every((candidate) => candidate === path);
+  const local = codexProcesses.length > 0 && open.size === 0
+    && !codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")));
+  const loaded = local && (boundHere !== undefined || resumedPath !== null) ? await loadedRollouts(home) : null;
+  if (screen !== null && loaded !== null && [...loaded.keys()].some((path) => !paths.includes(path))) {
+    const found = await loadedConversation(screen.text, paths, home);
+    if (found !== null) return found;
+  }
+  // A different pane's cached binding does not prove it still holds the thread.
+  const plausible = [...new Set([...paths, ...(loaded?.keys() ?? [])])];
+  const onlyPlausible = (path: string) => listed && plausible.every((candidate) => candidate === path);
+  const compatible = (path: string) => {
+    if (!listed || screen === null || screen.text.trim() === "" || [...(loaded?.keys() ?? [])].some((other) => other !== path)) return false;
+    const current = candidates.find((candidate) => candidate.path === path);
+    if (current === undefined) return false;
+    const shortTurn = (candidate: typeof current) =>
+      footedShortTranscript(screen.text, [candidate], new Set([candidate.path]), readWhole) !== null
+      || footedTailTranscript(screen.text, [candidate], new Set([candidate.path]), readWhole) !== null;
+    const visible = candidates.filter(shortTurn);
+    // A rendering that also fits another complete exchange cannot verify the launch hint.
+    return visible.every((candidate) => candidate.path === path);
+  };
   if (boundHere !== undefined && boundNewer.length === 0 && codexRolloutPath(boundHere.path, home) !== null
-    && (onlyPlausible(boundHere.path) || (listed && screen !== null && boundHere.screen === bindingScreen(screen.text)
-      && unclaimed.every((path) => {
+    && (onlyPlausible(boundHere.path) || compatible(boundHere.path) || (listed && screen !== null && boundHere.screen === bindingScreen(screen.text)
+      && plausible.every((path) => {
         const candidate = candidates.find((entry) => entry.path === path);
         return path === boundHere?.path || (candidate !== undefined && readWhole(path) && turnless(candidate));
       })))) {
@@ -3534,20 +3553,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
   if (resumed !== null) {
     if (resumedPath === null || resumedNewer.length > 0) return null;
-    if (onlyPlausible(resumedPath)) return resumedPath;
-    // A resume from another folder can show the same finished turn as a local thread.
-    // Keep the launch hint only when the screen still shows that resume's own turn.
-    if (!listed || screen === null || folderRollouts.has(resumedPath)) return null;
-    try {
-      const resumedCandidate = { path: resumedPath, text: codexHistoryTail(resumedPath, 1024 * 1024, home) };
-      const owners = new Set([resumedPath]);
-      const whole = (path: string) => readWhole(path);
-      return footedShortTranscript(screen.text, [resumedCandidate], owners, whole)
-        ?? footedTailTranscript(screen.text, [resumedCandidate], owners, whole);
-    } catch { return null; }
+    if (onlyPlausible(resumedPath) || compatible(resumedPath)) return resumedPath;
   }
   if (agent.nestedTerminal || agent.unlabelled) return null;
-  if (boundHere !== undefined) return null;
   const short = screen === null ? null : await (async () => {
     if (!listed || candidates.length !== paths.length) return null;
     let cut: boolean[];
@@ -3555,14 +3563,13 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       cut = candidates.map((candidate) => Object.keys(record(rolloutHeader(candidate.path)?.history_base)).length > 0 || statSync(candidate.path).size > 1024 * 1024);
     } catch { return null; }
     const found = matchShortCodexAnswers(screen.text, candidates.map((candidate, index) => ({ ...candidate, cut: cut[index] })));
-    if (found !== null) return found;
-    if (titledElsewhere !== null) return null;
+    if (found !== null && (boundHere === undefined || found === boundHere.path)) return found;
+    if (boundHere !== undefined || resumed !== null || titledElsewhere !== null) return null;
     return shortThreadFromProcess(paneId, cwd, home, screen.text, codexProcesses, panes);
   })();
   if (short !== null) return short;
   // Not for a TUI of an app server elsewhere (--remote), which has
   // its conversation loaded there, nor for one holding rollouts open itself.
-  if (codexProcesses.length === 0 || open.size > 0
-    || codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
+  if (!local) return null;
   return loadedConversation((screen ?? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true })).text, paths, home);
 }

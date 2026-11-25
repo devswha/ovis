@@ -2768,17 +2768,21 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(await resolve()).toBeNull();
   });
 
-  it("answers the thread the command line resumed, of another folder, when this folder's ended on the same answer", async () => {
+  it("requires a distinguishing screen for a cross-folder resume with the same finished exchange nearby", async () => {
     finishedRollout(path, thread, [[fencedPrompt, fenced]]);
     const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f79";
     const fileX = elsewhereThread(elsewhere, finishedRecords(fencedPrompt, fenced));
     foreground = [{ pid: 2147483523, argv: ["codex", "resume", elsewhere] }];
     screen = fencedScreen();
+    expect(await resolve()).toBeNull();
+    finishedRollout(path, thread, [["A different local prompt", "An unrelated local answer."]]);
     expect(await resolve()).toBe(fileX);
     finishedRollout(path, thread, [["thanks", "You're welcome!"]]);
     writeFileSync(fileX, `${[{ type: "session_meta", payload: { id: elsewhere, cwd: join(root, `elsewhere-${elsewhere.slice(-4)}`), source: "cli" } }, ...finishedRecords("thanks", "You're welcome!")].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     foreground = [{ pid: 2147483524, argv: ["codex", "resume", elsewhere] }];
     screen = [...header(), "› thanks", "", "", "• You're welcome!", "", footer, ...idle].join("\n");
+    expect(await resolve()).toBeNull();
+    finishedRollout(path, thread, [["A different local prompt", "An unrelated local answer."]]);
     expect(await resolve()).toBe(fileX);
   });
 
