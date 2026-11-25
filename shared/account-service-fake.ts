@@ -312,7 +312,7 @@ interface FakeList {
   /** by member key: the registered sign-in key its link names (D11.2); one per member key, and one per registered key */
   readonly links: Map<string, string>;
   /** every link taken, oldest first, with its two signatures, kept when it gives way (POST /v2/pc/list/links serves them) */
-  linkLog?: { readonly key: string; readonly device: string; readonly link: { readonly member: string; readonly device: string }; readonly linked_at: string }[];
+  linkLog?: { readonly key: string; readonly device: string; readonly link: { readonly member: string; readonly device: string }; readonly linked_at: number }[];
   readonly tamper: { readonly rule: ListTamper; readonly family: string | null; readonly server_id: string | null }[];
 }
 
@@ -1646,7 +1646,7 @@ export class FakeAccountService {
   private logLink(list: FakeList, key: string, own: string): void {
     const link = this.linkProofs.get(`${list.id} ${key} ${own}`);
     if (link === undefined) return;
-    (list.linkLog ??= []).push({ key, device: own, link, linked_at: new Date(this.now()).toISOString() });
+    (list.linkLog ??= []).push({ key, device: own, link, linked_at: Math.floor(this.now() / 1000) });
   }
 
   /**
