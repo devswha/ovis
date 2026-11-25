@@ -112,7 +112,13 @@ function sendNowStep(seen: { status: string; screen: string }, before: GrokBefor
   if (queue === null) throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
   switch (queue.mode) {
     case "minimal": {
-      if (queue.count === 0) return "done";
+      if (queue.count === 0) {
+        // The count can lag a paste. While a turn is active, no count is not proof that the send left.
+        if ((before.working || seen.status === "working") && !echoesMessage(seen.screen, before.echo, message)) {
+          throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
+        }
+        return "done";
+      }
       const earlier = before.queue?.mode === "minimal" ? before.queue.count : null;
       if (earlier === null || queue.count !== earlier + 1) throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
       throw changed(earlier > 0 ? grokQueuedBehindMessage(earlier) : GROK_QUEUED_MESSAGE);
