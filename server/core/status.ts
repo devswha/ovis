@@ -474,6 +474,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (status !== "blocked") lettaRests.delete(paneId);
       gjcChanged(paneId, status, true, rest, "letta");
     }
+    if (newest) for (const paneId of lettaRests.keys()) {
+      if (lettaTitled.get(paneId) !== "blocked") lettaRests.delete(paneId);
+    }
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
       agentNow.delete(paneId);
@@ -685,7 +688,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       hearClaude(paneId, agent, read, replay === undefined);
       if (agent === "claude") claudeAgents.poll(paneId);
     } finally { settling = was; }
-    if (agent === "letta" && read !== "unknown" && replay === undefined) lettaTitled.delete(paneId);
+    if (replay === undefined && (agent !== "letta" || read !== "unknown")) {
+      lettaTitled.delete(paneId);
+      lettaRests.delete(paneId);
+    }
     const titled = agent === "letta" && read === "unknown" && capabilities().agents === "reported" && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, titled ?? read));
     gjc.poll();
