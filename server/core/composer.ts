@@ -324,7 +324,13 @@ export async function claudeBoxReads(paneId: string): Promise<[string, string | 
   const colors = (await paneRead({ paneId, source: "visible", format: "ansi" })).text;
   const scrollAfter = await paneScrollInfo(paneId);
   const live = (await paneRead({ paneId, source: "detection", format: "text" })).text;
-  return [live, viewportShowsLive(scrollBefore, scrollAfter, colors, before, live, claudeBoxRows(live)) ? colors : null];
+  if (viewportShowsLive(scrollBefore, scrollAfter, colors, before, live)) return [live, colors];
+  // the colored and the plain reads lay out the rows above the box apart (#4321): its colors count from its top rule
+  // down, and only if a colored read taken last, after the live one, is the same, colors included: a suggestion
+  // accepted with Tab keeps its words and changes only its colors
+  if (!viewportShowsLive(scrollBefore, scrollAfter, colors, before, live, claudeBoxRows(live))) return [live, null];
+  const colorsAfter = (await paneRead({ paneId, source: "visible", format: "ansi" })).text;
+  return [live, colorsAfter === colors ? colors : null];
 }
 
 /**

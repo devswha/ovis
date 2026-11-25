@@ -2641,6 +2641,11 @@ describe("Claude's suggested next prompt", () => {
     // a different height is another view, and a different box is another box
     expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live, claudeBoxRows(live))).toBe(false);
     expect(viewportShowsLive(null, null, colors.replace("run the tests", "run the test"), live, live, claudeBoxRows(live))).toBe(false);
+    // the box's top rule is compared too: a named session's rule on one read only is another box
+    const rule = "\u2500".repeat(10);
+    const named = colors.replace(rule, "\u2500\u2500 main " + "\u2500".repeat(4));
+    expect(named).not.toBe(colors);
+    expect(viewportShowsLive(null, null, named, live, live, claudeBoxRows(live))).toBe(false);
   });
 
   test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
