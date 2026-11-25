@@ -205,6 +205,8 @@ export class RelaySession {
   /** The row went before it linked (leave): set while the answers on their way go out, to what calls off their deadline; then the session ends. */
   private leaving: (() => void) | undefined;
   private chosen = false;
+  /** The channel under this session closed: the device's side went away (a reload, the app put away, the network gone). */
+  private carrierGone = false;
 
   constructor(private readonly options: RelaySessionOptions) {
     if (!options.channel.isOpen() || options.channel.securityMode() !== "protected") {
@@ -229,7 +231,9 @@ export class RelaySession {
       filterRequestHeaders: true,
       close: (code) => options.channel.close(code),
       onClose: (error) => {
-        logAccess({ event: "relay.session.closed", reason: this.closingReason ?? this.mux.failureCode ?? error.code });
+        // a session nobody ended, whose channel went away, is no error of this PC's: logged as `carrier_lost`, never as the
+        // `internal_error` the mux stands in with for it (MuxEngine.carrierLost)
+        logAccess({ event: "relay.session.closed", reason: this.closingReason ?? this.mux.failureCode ?? (this.carrierGone ? "carrier_lost" : error.code) });
         this.state = "closed";
         this.leaveKeyProof();
         this.endPairing(false);
@@ -280,7 +284,8 @@ export class RelaySession {
         else void this.websocket(stream, exchange);
       },
     });
-    options.channel.onClose(() => this.mux.carrierLost());
+    // only while the session stands: an end the device or this PC made closes the carrier too, and keeps its own reason
+    options.channel.onClose(() => { if (this.mux.active) this.carrierGone = true; this.mux.carrierLost(); });
     // A WELCOME with no feature rides right behind the protected handshake's answer, so a phone signing in
     // gets its nonce one round trip sooner. It is provisional: HELLO is still required, and checked, before
     // AUTH or PAIR, and a HELLO that offers pairing by comparing digits gets the final WELCOME. Only while no
@@ -514,6 +519,18 @@ export class RelaySession {
         }
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
           const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
+          if (!this.mux.active) return;
+          // A sign-in this PC refuses with no receipt, on a PC that follows no list and does not fail closed, while no read
+          // of the account that began after its id first asked here has finished (the read its sign-in started was slow,
+          // failed, or could not start yet): it may be a device the account let in that this PC has not read. A client that
+          // knows the account codes is told to wait, and asks again; it gets in only by the row a read brings. An id with a
+          // row and a proof that does not hold is answered the same, so the answer tells nobody which ids have a row here
+          if (receipts.length === 0 && !devices.failsClosed && devices.accountError === null && !devices.listFollowed()
+            && this.options.services.accountMailbox.unreadKey(frame.payload.device_id)) {
+            const refusal = accountSignInRefusal({ refused: "catching_up" }, null, true);
+            this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
+            return;
+          }
           this.close("auth_failed", receipts.slice(-AUTH_RECEIPTS_MAX));
           return;
         }
