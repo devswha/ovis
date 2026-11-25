@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
 import { lstat, open, readFile, readdir, readlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import nodePath, { basename, dirname, isAbsolute, join, type PlatformPath } from "node:path";
+import nodePath, { basename, dirname, isAbsolute, join, normalize, type PlatformPath } from "node:path";
 import { directoryKey, withoutVerbatimPrefix } from "./codex.ts";
 import { darwinStartTime, sysctlCall } from "./darwin-process.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
@@ -502,13 +502,12 @@ export async function processClaudeConfigDir(
   if (read.source.state === "ambiguous") throw new AmbiguousClaudeStore(pid);
   // A complete read without an override is proof of Claude's own default, not the server's.
   if (read.source.state === "absent") {
-    if (read.home !== undefined && read.home !== home) {
-      const store = join(read.home, ".claude");
-      try {
-        if (await ownedClaudeDirectory(read.home) && await ownedClaudeDirectory(store)) return store;
-      } catch { /* keep the server user's default if the other store cannot be verified */ }
-    }
-    return join(home, ".claude");
+    const paneHome = normalize(read.home ?? home);
+    const store = join(paneHome, ".claude");
+    try {
+      if (await trustedClaudeHomeAncestors(paneHome) && await ownedClaudeDirectory(paneHome) && await ownedClaudeDirectory(store)) return store;
+    } catch { /* an unverified pane store falls back to the server's configured store */ }
+    return defaultClaudeConfigDir(home);
   }
   return read.legacy;
 }
@@ -561,6 +560,19 @@ const ownUid = (uid: number | bigint): boolean => {
 async function ownedClaudeDirectory(path: string): Promise<boolean> {
   const info = await lstat(path);
   return info.isDirectory() && ownUid(info.uid);
+}
+
+async function trustedClaudeHomeAncestors(home: string): Promise<boolean> {
+  const ancestors: string[] = [];
+  for (let dir = dirname(home); ; dir = dirname(dir)) {
+    ancestors.push(dir);
+    if (dir === dirname(dir)) break;
+  }
+  for (const dir of ancestors.reverse()) {
+    const info = await lstat(dir);
+    if (info.isSymbolicLink() && info.uid !== 0 && !ownUid(info.uid)) return false;
+  }
+  return true;
 }
 
 async function ownedClaudeFile(path: string): Promise<boolean> {

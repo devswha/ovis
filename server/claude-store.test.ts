@@ -1043,6 +1043,42 @@ describe("a Claude process's store source", () => {
   };
   const tempDir = () => { const dir = mkdtempSync(join(tmpdir(), "herdr-claude-source-")); roots.push(dir); return dir; };
 
+  it.skipIf(!NATIVE)("rejects an untrusted symlink above the pane HOME", async () => {
+    const home = tempDir();
+    const target = join(home, "target");
+    const ancestor = join(home, "ancestor");
+    const paneHome = join(ancestor, "pane");
+    mkdirSync(join(target, "pane", ".claude"), { recursive: true });
+    symlinkSync(target, ancestor, "dir");
+    const lstat = fsPromises.lstat;
+    let foreign = false;
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(lstat, fsPromises, [path, options]);
+      if (foreign && path === ancestor) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof lstat);
+    try {
+      const pid = await standIn({ HOME: paneHome });
+      expect(await processClaudeConfigDir(pid, [], home)).toBe(join(paneHome, ".claude"));
+      foreign = true;
+      expect(await processClaudeConfigDir(pid, [], home)).not.toBe(join(paneHome, ".claude"));
+    } finally { ownership.mockRestore(); }
+  });
+
+  it.skipIf(!NATIVE)("uses the server's override when the pane HOME store cannot be used", async () => {
+    const home = tempDir();
+    const override = tempDir();
+    const saved = process.env["CLAUDE_CONFIG_DIR"];
+    process.env["CLAUDE_CONFIG_DIR"] = override;
+    try {
+      const pid = await standIn({ HOME: join(home, "missing-pane-home") });
+      expect(await processClaudeConfigDir(pid, [], home)).toBe(override);
+    } finally {
+      if (saved === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+      else process.env["CLAUDE_CONFIG_DIR"] = saved;
+    }
+  });
+
   it.skipIf(!NATIVE)("reads an exported store, an empty export and none exported as three sources", async () => {
     const store = tempDir();
     expect(await processClaudeSource(await standIn({ CLAUDE_CONFIG_DIR: store }))).toEqual({ state: "override", dir: store });
