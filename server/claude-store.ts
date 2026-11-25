@@ -501,7 +501,15 @@ export async function processClaudeConfigDir(
   const read = await processRead(pid, argv, home, platform, table);
   if (read.source.state === "ambiguous") throw new AmbiguousClaudeStore(pid);
   // A complete read without an override is proof of Claude's own default, not the server's.
-  if (read.source.state === "absent") return join(read.home ?? home, ".claude");
+  if (read.source.state === "absent") {
+    if (read.home !== undefined && read.home !== home) {
+      const store = join(read.home, ".claude");
+      try {
+        if (await ownedClaudeDirectory(read.home) && await ownedClaudeDirectory(store)) return store;
+      } catch { /* keep the server user's default if the other store cannot be verified */ }
+    }
+    return join(home, ".claude");
+  }
   return read.legacy;
 }
 
@@ -545,8 +553,31 @@ function absent(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+const ownUid = (uid: number | bigint): boolean => {
+  const own = process.getuid?.();
+  return own === undefined || (typeof uid === "bigint" ? BigInt(own) === uid : own === uid);
+};
+
+async function ownedClaudeDirectory(path: string): Promise<boolean> {
+  const info = await lstat(path);
+  return info.isDirectory() && ownUid(info.uid);
+}
+
+async function ownedClaudeFile(path: string): Promise<boolean> {
+  // Inspect the implicit store and each directory beneath it without following links.
+  const parents: string[] = [];
+  for (let parent = dirname(path); dirname(parent) !== parent; parent = dirname(parent)) {
+    parents.push(parent);
+    if (basename(parent) !== ".claude") continue;
+    for (const dir of parents.reverse()) if (!await ownedClaudeDirectory(dir)) return false;
+    break;
+  }
+  const info = await lstat(path);
+  return info.isFile() && ownUid(info.uid);
+}
+
 async function isFile(path: string): Promise<boolean> {
-  try { return (await stat(path)).isFile(); } catch (error) { if (absent(error)) return false; throw error; }
+  try { return await ownedClaudeFile(path); } catch (error) { if (absent(error)) return false; throw error; }
 }
 
 const found = new Map<string, string>();
@@ -556,11 +587,12 @@ const CONTINUED_TAIL_BYTES = 64 * 1024;
 
 async function transcriptTail(path: string): Promise<{ text: string; identity: string } | null> {
   try {
+    if (!await ownedClaudeFile(path)) return null;
     // no links and no blocking: a FIFO in its place must not hold the lookup (as branchedFrom)
     const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     try {
       const info = await file.stat({ bigint: true });
-      if (!info.isFile()) return null;
+      if (!info.isFile() || !ownUid(info.uid)) return null;
       const size = Number(info.size);
       const start = Math.max(0, size - CONTINUED_TAIL_BYTES);
       const buffer = Buffer.alloc(size - start);
@@ -653,10 +685,13 @@ const headDigest = (bytes: Uint8Array): string => createHash("sha256").update(by
  */
 async function branchedFrom(path: string): Promise<string | null> {
   let file;
-  try { file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    if (!await ownedClaudeFile(path)) return null;
+    file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch { return null; }
   try {
     const info = await file.stat();
-    if (!info.isFile()) return null;
+    if (!info.isFile() || !ownUid(info.uid)) return null;
     const known = branchParents.get(path);
     if (known && known.dev === info.dev && known.ino === info.ino && info.size >= known.length) {
       const head = Buffer.alloc(known.length);
@@ -781,9 +816,12 @@ export async function claudeProcessSession(
  * hang the read. The cap holds on the read itself, which a file growing after its stat cannot pass.
  */
 async function readSmallFile(path: string, max: number): Promise<string | null> {
+  const unsafe = () => Object.assign(new Error("Unverified Claude record"), { code: "EACCES" });
+  if (!await ownedClaudeFile(path)) throw unsafe();
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
-    if (!(await file.stat()).isFile()) return null;
+    const info = await file.stat();
+    if (!info.isFile() || !ownUid(info.uid)) throw unsafe();
     const bytes = Buffer.alloc(max + 1);
     let length = 0;
     // One read may return less than the file holds; only a read of nothing is its end.
@@ -1256,10 +1294,13 @@ const ENTRYPOINT_TAIL_BYTES = 256 * 1024;
  */
 async function lastEntrypoint(path: string): Promise<string | null> {
   let file;
-  try { file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    if (!await ownedClaudeFile(path)) return null;
+    file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch { return null; }
   try {
     const info = await file.stat();
-    if (!info.isFile()) return null;
+    if (!info.isFile() || !ownUid(info.uid)) return null;
     const length = Math.min(info.size, ENTRYPOINT_TAIL_BYTES);
     const bytes = Buffer.alloc(length);
     let read = 0;
