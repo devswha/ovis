@@ -331,6 +331,25 @@ describe("a join from an app that knows no signed list, on a pinned PC", () => {
     await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
     expect(await ownJoin(made)).not.toHaveProperty("list_unknown");
   });
+
+  test("is approved by nothing on this PC's own window: neither its Allow nor its digits let it in, and it still waits", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
+    const waiting = await ownJoin(made);
+    const base = `http://127.0.0.1:${made.pc.app.port}`;
+    const answer = async (body: unknown) => {
+      const response = await fetch(`${base}/api/relay/join`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...own }, body: JSON.stringify(body) });
+      return [response.status, ((await response.json()) as { error?: { code?: string } }).error?.code];
+    };
+    expect(await answer({ id: waiting.id, decision: "approve" })).toEqual([409, "list_unknown"]);
+    expect(await answer({ id: waiting.id, digits: asked.digits })).toEqual([409, "list_unknown"]);
+    // nothing was written for it, and the join waits until it ends by itself or is declined
+    expect(made.pc.devices.hasKey(phone.key)).toBe(false);
+    expect(made.services.relay.approvals.ownJoins().map((each) => each.id)).toEqual([waiting.id]);
+    expect(await decide(made, { id: waiting.id, decision: "decline" })).toBe(200);
+    expect(made.services.relay.approvals.ownJoins()).toEqual([]);
+  });
 });
 
 describe("what the PC does when the entry does not go in", () => {
@@ -686,9 +705,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("on a pinned PC a join that brings no card records a pairing that opens nothing: the list holds no entry for it, and its session ends", async () => {
     const made = await allowingPc();
     const phone = await listMember();
-    const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
-    // a join that takes no card is told no list
-    expect(asked.list).toBeUndefined();
+    // an app that knows joins into a list and sent no card (one that knows none is approved by nothing: list_unknown)
+    const asked = await join(made, phone);
     const waiting = await ownJoin(made);
     expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
     asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });

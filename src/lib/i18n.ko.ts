@@ -48,6 +48,7 @@ const BASE: Record<string, string> = {
   "A device of your account asks to join": "계정의 기기가 참여를 요청합니다",
   "That is not the number {name} shows. It was not let in; it can ask again.": "{name}에 보이는 번호가 아닙니다. 들여보내지 않았습니다. 다시 요청할 수 있습니다.",
   "{name} is no longer waiting.": "{name}은 더 이상 기다리고 있지 않습니다.",
+  "{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.": "{name}은(는) 여기서 들여보낼 수 없습니다: 이 PC는 계정의 서명된 목록으로 기기를 계정에 들이는데, {name}은(는) 0.5.10보다 오래된 Ovis처럼 요청했습니다. {name}에서 Ovis를 업데이트한 다음 다시 참여를 요청하게 하세요.",
   "Adding it to your account. Keep this open until it is done.": "계정에 추가하는 중입니다. 끝날 때까지 열어 두세요.",
   "Signed in. Close this tab and go back to Ovis.": "로그인했습니다. 이 탭을 닫고 Ovis로 돌아가세요.",
   "Could not reach this PC. Try again.": "이 PC에 연결하지 못했습니다. 다시 시도하세요.",

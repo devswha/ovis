@@ -2085,6 +2085,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
+  The PC's own window shows it with the same words and no Allow or number field, and
+  `POST /api/relay/join` answers an approval of it `409 list_unknown` and leaves it waiting (a
+  decline still ends it).
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.

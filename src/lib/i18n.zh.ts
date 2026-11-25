@@ -52,6 +52,7 @@ const BASE: Record<string, string> = {
   "A device of your account asks to join": "你账号中的一台设备请求加入",
   "That is not the number {name} shows. It was not let in; it can ask again.": "这不是 {name} 显示的号码。未允许其加入；它可以再次请求。",
   "{name} is no longer waiting.": "{name} 已不再等待。",
+  "{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.": "无法在这里允许 {name} 加入：这台电脑通过账户的签名列表让设备加入你的账户，而 {name} 是以早于 0.5.10 的 Ovis 的方式请求的。请在 {name} 上更新 Ovis，然后让它再次请求加入。",
   "Adding it to your account. Keep this open until it is done.": "正在添加到你的账号。请保持打开，直到完成。",
   "Signed in. Close this tab and go back to Ovis.": "已登录。请关闭此标签页并返回 Ovis。",
   "Could not reach this PC. Try again.": "无法连接这台电脑。请重试。",

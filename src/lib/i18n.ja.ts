@@ -50,6 +50,7 @@ const BASE: Record<string, string> = {
   "A device of your account asks to join": "アカウントの端末が参加を求めています",
   "That is not the number {name} shows. It was not let in; it can ask again.": "{name} に表示された番号ではありません。参加させていません。もう一度リクエストできます。",
   "{name} is no longer waiting.": "{name} はもう待っていません。",
+  "{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.": "{name} はここでは参加させられません: この PC はアカウントの署名付きリストでデバイスをアカウントに入れますが、{name} は 0.5.10 より古い Ovis と同じ方法でリクエストしました。{name} の Ovis を更新してから、もう一度参加をリクエストしてもらってください。",
   "Adding it to your account. Keep this open until it is done.": "アカウントに追加しています。終わるまで開いたままにしてください。",
   "Signed in. Close this tab and go back to Ovis.": "サインインしました。このタブを閉じて Ovis に戻ってください。",
   "Could not reach this PC. Try again.": "この PC に接続できませんでした。もう一度試してください。",
