@@ -1,6 +1,6 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
 import { wireMachine, wireMachineEvent, type WireMachine } from "../shared/compact-agents.ts";
-import { LOCAL_MACHINE, type DevicePairedEvent, type DevicePairedSeenEvent, type DeviceRemovedEvent, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateStarted, type PendingRedemptionsEvent, type RelayPairingsEvent, type RemotePairingsEvent, type SetupAction, type SetupRequest } from "../shared/machines.ts";
+import { LOCAL_MACHINE, type AgentToolPanesEvent, type DevicePairedEvent, type DevicePairedSeenEvent, type DeviceRemovedEvent, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateStarted, type PendingRedemptionsEvent, type RelayPairingsEvent, type RemotePairingsEvent, type SetupAction, type SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
@@ -107,7 +107,7 @@ export const slowMachinePath = (path: string): boolean => path === "worktree/cre
  * forwards, so such a path must be no route at all rather than "some other route".
  */
 export const nonCanonicalPath = (pathname: string): boolean => pathname.includes("//") || (pathname.length > 1 && pathname.endsWith("/")) || /%2f|%5c/i.test(pathname);
-export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|summary|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
+export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|summary|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|turn\/(?:cancel(?:-children)?|release)|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
 
 
 function transportFailure(id: string, path: string, error: unknown): Response {
@@ -133,7 +133,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   herdrSidebar?: { get(): AgentRowTokens | null; subscribe(listener: (agents: AgentRowTokens | null) => void): () => void },
   seen?: { list(): SeenFinish[]; subscribe(listener: (finish: SeenFinish) => void): () => void },
   /** durable device enrollments (server/devices.ts), already without the ones this stream's own device made, and relay pairings waiting for approval */
-  pairings?: { subscribe(listener: (event: DevicePairedEvent | DevicePairedSeenEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent | PendingRedemptionsEvent) => void): () => void },
+  pairings?: { subscribe(listener: (event: DevicePairedEvent | DevicePairedSeenEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent | PendingRedemptionsEvent | AgentToolPanesEvent) => void): () => void },
   relayBudget?: EventStreamBudget,
   /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
   owner = false,

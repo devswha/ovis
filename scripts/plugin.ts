@@ -38,11 +38,11 @@ import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 // install was cut off, so a server that runs from it can be stopped.
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
-import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
+import { canServe, FALLBACK_PORTS, freePort, originOf, savedPort, settledPort } from "./plugin-port.ts";
 import type { OwnJoin, WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
-import { runTui } from "./plugin-tui.ts";
-import { mainHelp, parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
+import { isBareTui, runBareTui, runTui } from "./plugin-tui.ts";
+import { parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
 import { discardTyped } from "./libc.ts";
 import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
@@ -54,7 +54,12 @@ import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server
 // state and config dirs, asks herdr for its config dir, or copies an old install's settings (adoptLegacyConfig). Its
 // --help is no run of it: runPlugin answers that with every other command's.
 const early = parseCommand(process.argv.slice(2), { account: false, tui: true });
+if (early.kind === "run" && early.command === "agent") process.exit(await (await import("./plugin-agent.ts")).runAgent(early.args));
 if (early.kind === "run" && early.command === "tui") process.exit(await runTui(early.args));
+if (import.meta.main || COMPILED) {
+  const opened = await runBareTui(process.argv.slice(2));
+  if (opened !== null) process.exit(opened);
+}
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
@@ -157,11 +162,10 @@ const PATH_KEY = platform() === "win32" ? Object.keys(env).sort().find(key => ke
 const APP_STATE_DIR = defaultStateDir(env);
 const PORT_FILE = join(APP_STATE_DIR, "plugin-port");
 const portSet = (env["PORT"] ?? "") !== "";
-let port = portSet ? Number(env["PORT"]) : savedPort(PORT_FILE) ?? DEFAULT_PORT;
+let port = settledPort(env, PORT_FILE);
 const host = env["HOST"] ?? "127.0.0.1";
 const ipv6Loopback = env["OVIS_IPV6_LOOPBACK"] === "1";
-const originOf = (value: number): string => `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${value}`;
-let origin = originOf(port);
+let origin = originOf(host, port);
 
 const machineProfile = fleetPreview(env) && env["OVIS_PROFILE"] === "machine";
 const RECORD_MAX_BYTES = 4096;
@@ -317,7 +321,7 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
  * null and nothing is sent, since the profile answers its TCP port with liveness only. `devices`: the groups the
  * answer lists to its owner (accountDevicesOf); `tokenRequired`: the app let the request in only with its token.
  */
-async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean; readonly relay: string | null } | null> {
+async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean; readonly strict: boolean; readonly relay: string | null } | null> {
   const door = serverDoor();
   if (machineProfile && door === null) return null;
   try {
@@ -334,6 +338,8 @@ async function appHealth(): Promise<{ readonly engineDown: string | null; readon
     return {
       engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null,
       devices: accountDevicesOf(body), tokenRequired: (body.auth as { reason?: unknown }).reason === "token_required",
+      // the PC cannot read its own account state and lets only itself in: this command is then no owner to it either
+      strict: (body.auth as { reason?: unknown }).reason === "strict",
       relay: typeof body.relay?.phase === "string" ? body.relay.phase : null,
     };
   } catch {
@@ -535,7 +541,7 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
     const kept = portSet ? port : savedPort(PORT_FILE) ?? DEFAULT_PORT;
     if (kept !== port) {
       port = kept;
-      origin = originOf(port);
+      origin = originOf(host, port);
     }
     if (await health()) return "running";
     await Bun.sleep(250);
@@ -565,7 +571,7 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
   }
   process.stdout.write(`${blocked} Using port ${free} instead; to choose one yourself, put PORT=<port> in ${settings}\n`);
   port = free;
-  origin = originOf(port);
+  origin = originOf(host, port);
   return "ready";
 }
 
@@ -595,7 +601,7 @@ async function startInTurn(): Promise<number> {
     const kept = savedPort(PORT_FILE) ?? DEFAULT_PORT;
     if (kept !== port) {
       port = kept;
-      origin = originOf(port);
+      origin = originOf(host, port);
     }
   }
   if (await health()) {
@@ -1351,16 +1357,37 @@ const deviceLine = (title: string, devices: readonly ShownDevice[]): string => {
   return `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${plain(device.label)} (${plain(device.id)})`).join(", ")}\n`;
 };
 
-/** This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. */
-async function accountOf(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null } | null> {
+/** What a PC pinned to its account's signed list says of it (GET /api/account/status `list`): the list, where the PC stands in it, and why it lets nobody in when it does not. */
+interface ListSummary { readonly pinned_list: string; readonly standing: string | null; readonly reason: string | null }
+
+const listSummaryOf = (value: unknown): ListSummary | null => {
+  const { pinned_list, standing, reason } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  return typeof pinned_list === "string" && (standing === null || typeof standing === "string") && (reason === null || typeof reason === "string") ? { pinned_list, standing, reason } : null;
+};
+
+/**
+ * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
+ * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
+ */
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
   try {
     const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return null;
-    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown };
+    if (!response.ok) {
+      const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
+      return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
+    }
+    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown; migrate_time_scale?: unknown };
     if (!(typeof body.account === "string" || body.account === null) || !Number.isSafeInteger(body.members)) return null;
     // null from a server from before the field
-    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null };
+    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list),
+      scale: Number.isSafeInteger(body.migrate_time_scale) && (body.migrate_time_scale as number) > 1 ? body.migrate_time_scale as number : null };
   } catch { return null; }
+}
+
+/** This PC's account as its owner is told it; null where that does not answer, or the PC cannot read its account state. */
+async function accountOf() {
+  const told = await accountTold();
+  return told !== null && "problem" in told ? null : told;
 }
 
 /**
@@ -1370,7 +1397,9 @@ async function accountOf(): Promise<{ readonly account: string | null; readonly 
  */
 async function statusJson(): Promise<number> {
   const answer = await appHealth();
-  const account = answer?.devices == null ? null : await accountOf();
+  // a PC that cannot read its account state tells no owner anything, and says what it could not read to its own CLI
+  const told = answer !== null && (answer.devices != null || answer.strict) ? await accountTold() : null;
+  const account = told !== null && "problem" in told ? null : told;
   let serverId: string | null = null;
   if (answer !== null) {
     try {
@@ -1388,6 +1417,12 @@ async function statusJson(): Promise<number> {
     account: account?.account ?? null,
     account_known: account !== null,
     waiting_for_add: account?.waiting ?? null,
+    // a PC pinned to its account's signed list: the list, where the PC stands in it, and why it lets nobody in when it does not
+    list: account?.list ?? null,
+    // the PC cannot read its own account state, and lets only itself in: what it cannot read
+    problem: told !== null && "problem" in told ? told.problem : null,
+    // a staging run that turned the waits of a move onto the account's list down (OVIS_LIST_MIGRATE_TIME_SCALE)
+    ...(account?.scale ? { migrate_time_scale: account.scale } : {}),
   })}\n`);
   return 0;
 }
@@ -1500,17 +1535,12 @@ async function confirm(): Promise<number> {
 const cliContext = (): CliContext => ({ account: accountOpensAll(), tui: platform() !== "win32" });
 
 /** Plain `ovis`: the help where a person sits at a terminal. A script or a pipe gets `status`, as every release gave it. */
-async function bare(): Promise<number> {
-  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) return await status();
-  process.stdout.write(mainHelp(cliContext()));
-  return 0;
-}
 
 // install.sh's launcher greps this file for COMMAND_ALIASES (scripts/plugin-runtime.ts), "link" and "tui" to tell a
 // checkout that knows a command from one that predates it: keep each of them named here
 export async function runPlugin(): Promise<void> {
   const words = process.argv.slice(2);
-  if (words.length === 0) process.exit(await bare());
+  if (isBareTui(words)) process.exit(await status());
   const parsed = parseCommand(words, cliContext());
   if (parsed.kind === "help") {
     process.stdout.write(parsed.text);
@@ -1537,6 +1567,7 @@ export async function runPlugin(): Promise<void> {
     process.exit(1);
   }
   switch (command) {
+    case "agent": process.exit(await (await import("./plugin-agent.ts")).runAgent(args));
     case "start": process.exit(await start());
     case "stop": process.exit(await stop());
     case "status": process.exit(await status(args));

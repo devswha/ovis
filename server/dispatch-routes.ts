@@ -19,11 +19,13 @@ export const LOCAL_DRIVE_POSTS: readonly string[] = [
   "pane/input", "pane/keys", "pane/find", "pane/scroll", "pane/rename", "pane/close", "pane/image",
   "pane/split", "pane/zoom", "pane/swap", "pane/move", "pane/resize", "pane/clear", "pane/focus",
   "pane/prompt/answer", "layout/ratio", "workspace/create", "workspace/rename", "workspace/close",
+  "pane/turn/cancel", "pane/turn/release", "pane/turn/cancel-children",
   "workspace/move", "workspace/directories", "workspace/pr/merge", "worktree/create", "worktree/open",
   "worktree/remove", "tab/create", "tab/rename", "tab/close", "tab/move", "tab/move-to-workspace",
   "agent/rename", "sessions/resume", "plugin/action", "seen", "connection-diagnostics",
   "agent-catalog/install", "agent-catalog/sign-in", "usage/statusline", "usage/login", "usage/login/code",
   "usage/login/cancel", "usage/accounts", "cliproxy/login", "cliproxy/callback", "voice/transcribe", "telemetry",
+  "agent-tools/panes/answer", "agent-tools/panes/remove",
 ].map(path => `/api/${path}`);
 
 /** Settings → Memory's changes (server/memory/routes.ts): a person driving this PC makes them, an account's phone too. */
@@ -35,6 +37,7 @@ export const DISPATCH_MUTATIONS = {
     "/api/devices/pair", "/api/devices/pair/start", "/api/devices/pair/cancel", "/api/devices/revoke-all", "/api/devices/joins/seen",
     "/api/devices/tailnet-nodes/block", "/api/devices/tailnet-nodes/answer",
     "/api/account/link", "/api/account/enroll", "/api/account/introduce", "/api/account/records",
+    "/api/account/list/head", "/api/account/list/page", "/api/account/list/name", "/api/account/list/card",
     "/api/account/relay-account", "/api/account/one-press", "/api/account/pc-proof", "/api/account/ssh-add", "/api/alerts/webhook", "/api/alerts/webhook/test",
     "/api/push/subscribe", "/api/push/status", "/api/push/test", "/api/runtime",
     "/api/runtime/move", "/api/runtime/move/install", "/api/runtime/move/stop", "/api/runtime/move/stop-all",
@@ -57,9 +60,9 @@ export function dispatchMutationRegistered(method: string, pathname: string): bo
 
 export const DISPATCH_READS: ReadonlySet<string> = new Set([
   "machines", "preferences", "seen", "session", "sessions/history", "health", "system", "herdr-ui", "devices", "access",
-  "account/introduction", "account/status", "push", "relay", "updates", "updates/notes", "updates/installed", "runtime/move",
+  "account/introduction", "account/status", "account/list/witness", "push", "relay", "updates", "updates/notes", "updates/installed", "runtime/move",
   "usage", "usage/statusline", "usage/login", "usage/login/prompt", "voice", "fonts", "cliproxy", "cliproxy/login", "telemetry",
-  "agents", "agent-catalog", "integrations", "memory", "plugins/actions", "plugin/action", "agent/commands",
+  "agents", "agent-catalog", "integrations", "memory", "agent-tools/panes", "plugins/actions", "plugin/action", "agent/commands",
   "pane/read", "pane/scroll", "pane/selection", "pane/commands", "pane/files", "pane/docs",
   "pane/conversation", "pane/conversation/search", "pane/conversation/image", "pane/conversation/tool-output",
   "pane/summary", "pane/omo-tasks", "pane/background-agent", "pane/plan", "pane/artifacts", "pane/btw", "pane/prompt",
