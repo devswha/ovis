@@ -2191,6 +2191,21 @@ describe("AddThisPc", () => {
         expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
       });
 
+      test("a second press while the first start of its add is on its way starts nothing and gives up nothing", async () => {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        byList!.started = () => held;
+        const renderer = await mount();
+        await press(renderer, "Add this PC to my account's list");
+        await press(renderer, "Add this PC to my account's list");
+        release();
+        await settle();
+        expect(starts()).toBe(1);
+        expect(cancels()).toEqual([]);
+        expect(words(renderer)).toContain(KEYS_WAIT);
+        expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      });
+
       test("never says Added while this PC still says it needs keys, whatever its add answered: the offer stays", async () => {
         const renderer = await mount();
         await press(renderer, "Add this PC to my account's list");

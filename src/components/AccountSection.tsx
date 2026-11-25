@@ -142,7 +142,7 @@ type AddThisPcState =
    * In `account`, and in its list with no key of its own (it came in as the account moved): its add by the list gives
    * it one, by the number, with nothing listed and no window opened. `run`: that add, under way; `note`: why the last ended
    */
-  | { kind: "keys"; account: string; run: string | null; note: string | null }
+  | { kind: "keys"; account: string; run: string | null; note: string | null; starting?: true }
   /**
    * `again`: the listing was refused for the sign-in itself (an old one with no key to prove): this page's own sign-in
    * again, offered in place for `from` (the sign-in stored then), under way (`link`: the page a browser would not open), and
@@ -706,10 +706,14 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * is in the account all along, and only the number lets the key in (docs/account-list.md, "Keys for a PC carried in
    * as an endpoint").
    */
+  const keysStarting = useRef(false);
   const addKeys = (account: string): void => {
+    // one start at a time: a second press would join the same run on the PC, and the first's end would give it up
+    if (keysStarting.current) return;
+    keysStarting.current = true;
     const mine = ++attempt.current;
-    setState({ kind: "keys", account, run: null, note: null });
-    void addByList(account).then(async (byList) => {
+    setState({ kind: "keys", account, run: null, note: null, starting: true });
+    void addByList(account).finally(() => { keysStarting.current = false; }).then(async (byList) => {
       if (attempt.current !== mine) {
         if (byList.kind === "run") cancelListAdd(byList.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
         return;
@@ -1123,7 +1127,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
           {state.run === null ? (
             <>
               <p className="settings-description">{t("Compare a number with a device of your account to give it one.")}</p>
-              <button type="button" className="btn btn-primary account-add-pc-button" onClick={() => addKeys(state.account)}>{t("Add this PC to my account's list")}</button>
+              <button type="button" className="btn btn-primary account-add-pc-button" disabled={state.starting === true} onClick={() => addKeys(state.account)}>{t("Add this PC to my account's list")}</button>
             </>
           ) : (
             <>
