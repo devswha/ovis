@@ -480,7 +480,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
         if (await deniedElsewhere()) { if (live && !withdrawn()) declined(); return; }
-        if (!live || withdrawn()) return;
+        // a wait whose PC is added by the account's list opens no window: nobody comes in the old way beside the number
+        if (!live || withdrawn() || mark?.run !== undefined) return;
         const { serverId: pc, windowId } = await reopenAddWindow();
         const closed = windowId !== undefined && closeLate(windowId);
         // it changed PC between that question and the window: the wait is not this one's
@@ -578,7 +579,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         const { membership } = await listed;
         // Only the caller that opened the window has its ID, even when another screen shares the result.
-        if (membership !== undefined && windowId !== undefined) {
+        // and a wait whose PC is added by the account's list closes at once the window its listing had to open
+        if ((membership !== undefined || mark?.run !== undefined) && windowId !== undefined) {
           closeWindow(windowId);
           windowId = undefined;
         }
@@ -702,6 +704,9 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       }
       if (account !== null && byList !== null && byList.kind !== "none") {
         if (byList.kind === "run") {
+          // the PC is added by the list alone: the pairing window the listing opened is closed, as `ovis add` closes it,
+          // so nobody is let in the old way (the digits a device types, approved here) beside the number
+          closeOpened();
           const now = Date.now();
           const mark = { name, until: now + WAITING_MS, serverId, account, listedAt: now, run: byList.run };
           pressedUntil.current = mark.until;

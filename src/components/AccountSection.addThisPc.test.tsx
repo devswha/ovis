@@ -2214,6 +2214,24 @@ describe("AddThisPc", () => {
       expect(tab.has(MARKER)).toBe(false);
     });
 
+    test("the old way stays shut while the add by the list runs: the window the listing opened is closed, and the wait opens none", async () => {
+      await waitingFrom();
+      const closes = (): number => asked.filter(({ path }) => path === "/api/relay/link/close").length;
+      const paths = (): string[] => asked.map(({ path }) => path);
+      // the listing asked for the window (the PC's relay key comes with it), and the press closed it once the PC said its add runs
+      expect(links()).toBe(1);
+      expect(closes()).toBe(1);
+      expect(paths().lastIndexOf("/api/relay/link/close")).toBeGreaterThan(paths().indexOf("/api/account/list/add"));
+      // no reopening every 30 seconds while it waits
+      await advance(3 * REOPEN_MS);
+      expect(links()).toBe(1);
+      // the relist keeps the listing in the account, and closes at once the window it had to open for it
+      await advance(RELIST_MS - 3 * REOPEN_MS);
+      expect(directory).toEqual(["putPc", "putPc"]);
+      expect(links()).toBe(2);
+      expect(closes()).toBe(2);
+    });
+
     test("a relist keeps the run the tab holds for the wait (another copy started it again), and Stop waiting gives that run up", async () => {
       const renderer = await waitingFrom();
       // another copy of the screen started the add again: the tab holds its new run for the same wait
