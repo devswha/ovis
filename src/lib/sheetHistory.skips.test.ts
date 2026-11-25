@@ -149,13 +149,40 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     expect(fake.at()).toBe(start);
   });
 
-  it("steps off the confirmation after widening restores the sidebar preference in its URL", async () => {
+  it.each(["/?", "/#"])("steps off the confirmation after widening restores the sidebar preference in its %s URL", async (base) => {
+    const start = fake.at();
+    const history = fake.window.history;
+    const before = fake.window.location.href;
+    const document = Object.getOwnPropertyDescriptor(globalThis, "document");
+    if (base === "/#") Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: () => ({ getAttribute: () => "relay" }) } });
+    try {
+      history.replaceState(history.state, "", `${base}pane=a&settings=devices`);
+      fake.tap();
+      const leave = enter(() => {});
+      history.replaceState(history.state, "", `${fake.window.location.href}&sidebar=hidden`);
+      leave(); await settled();
+      expect(fake.at()).toBe(start);
+    } finally {
+      history.replaceState(history.state, "", before);
+      if (document) Object.defineProperty(globalThis, "document", document); else Reflect.deleteProperty(globalThis, "document");
+    }
+  });
+
+  it("rebuilds Settings levels when dismissing a confirmation lands without a popstate", async () => {
+    const settingsPath = "./settingsHistory.ts?sheet-history-skips-test";
+    const settings: typeof import("./settingsHistory.ts") = await import(settingsPath);
     const start = fake.at();
     fake.tap();
+    settings.recordSettings(settings.settingsLevels(true, "devices", false));
     const leave = enter(() => {});
-    const history = fake.window.history;
-    history.replaceState(history.state, "", `${fake.window.location.href}&sidebar=hidden`);
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    fake.muteNextBack();
     leave(); await settled();
+    jest.advanceTimersByTime(1000);
+    await settled();
+    expect(settings.settingsEntry(h.state)).toEqual({ page: "devices", keyBar: false, depth: 1 });
+    settings.recordSettings([]);
+    await settled();
     expect(fake.at()).toBe(start);
   });
 

@@ -17,8 +17,9 @@
  * and has none (before 102), the ones this module keeps in each entry's state (`places`).
  */
 import { useEffect, useRef } from "react";
-import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
+import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep, silentSheetLandings } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";
+import { shellMode } from "./shellMode.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
 const KEY = SHEET_HISTORY_KEY;
@@ -108,6 +109,7 @@ function settleUnheardBack(): void {
   stepOnto = null;
   here = at;
   seen = sheetOf(window.history.state);
+  for (const listener of silentSheetLandings) listener();
 }
 let ahead: string | null = null;
 let climbing: { key: string; owner: string; state: unknown; href: string } | null = null;
@@ -216,6 +218,10 @@ function stepBack(): void {
   stepOnto = api && at ? api.entries().find((entry) => entry.index === at.index - 1)?.key ?? null : null;
   stepping = new Set();
   window.history.back();
+  if (stepOnto !== null) {
+    const step = stepping;
+    setTimeout(() => { if (stepping === step) settleUnheardBack(); }, LANDING_MS);
+  }
 }
 
 function sheetOf(state: unknown): string | null {
@@ -244,6 +250,13 @@ function sheetAddress(href: string): string {
   const url = new URL(href, "https://ovis.invalid");
   // Folding the sidebar changes its presentation, not the place covered by the sheet.
   url.searchParams.delete("sidebar");
+  if (shellMode() === "relay" && !url.hash.startsWith("#offer=")) {
+    const fields = new URLSearchParams(url.hash.slice(1));
+    if (fields.has("sidebar")) {
+      fields.delete("sidebar");
+      url.hash = fields.toString();
+    }
+  }
   return url.href;
 }
 

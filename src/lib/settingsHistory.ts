@@ -4,7 +4,7 @@
  * instead of the page.
  */
 
-import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, sheetStep } from "./historyKeys.ts";
+import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, sheetStep, silentSheetLandings } from "./historyKeys.ts";
 
 const KEY = "ovis:settings";
 const BASE_KEY = "ovis:settings-base";
@@ -176,6 +176,15 @@ export function onSettingsHistory(listener: Listener): () => void {
 }
 
 if (typeof window !== "undefined") {
+  const deferredHere = (state: unknown): boolean => {
+    const top = wanted.at(-1);
+    const current: unknown = window.history.state;
+    return deferredForSheet && top !== undefined && same(settingsEntry(state), top)
+      && fieldOf(state, BASE_KEY) === opening && fieldOf(current, SHEET_HISTORY_KEY) === undefined && sameEntry(state, current);
+  };
+  silentSheetLandings.add(() => {
+    if (deferredHere(window.history.state)) reconcile();
+  });
   for (const method of ["pushState", "replaceState"] as const) {
     const history = window.history;
     const write = history[method].bind(history);
@@ -217,10 +226,7 @@ if (typeof window !== "undefined") {
     const ontoUnder = anchor === undefined || fieldOf(event.state, SHEET_UNDER_KEY) === anchor;
     steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || (baseLost && ontoUnder));
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
-    const top = wanted.at(-1);
-    const rebuild = deferredForSheet && entry !== null && top !== undefined && same(entry, top)
-      && fieldOf(event.state, BASE_KEY) === opening && fieldOf(window.history.state, SHEET_HISTORY_KEY) === undefined
-      && sameEntry(event.state, window.history.state);
+    const rebuild = entry !== null && deferredHere(event.state);
     for (const listener of [...listeners]) listener(entry, own || rebuild);
     if (own || rebuild) reconcile();
   });

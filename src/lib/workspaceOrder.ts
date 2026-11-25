@@ -223,7 +223,11 @@ export class ReorderCoordinator {
         pc.answered = evidence.epoch;
         this.proved(id, pc, answer, check.candidate, check.updated);
       }
-      for (const waiter of pc.waiters.splice(0)) waiter.reject(new Error("Could not confirm the PC's workspace order"));
+      const cached = pc.last;
+      for (const waiter of pc.waiters.splice(0)) {
+        if (cached && this.qualifies(pc, cached.evidence)) waiter.resolve(cached.ids);
+        else waiter.reject(new Error("Could not confirm the PC's workspace order"));
+      }
     };
     void verify(id, check.abort.signal).then(finish, () => finish(null));
   }
@@ -246,8 +250,6 @@ export class ReorderCoordinator {
       }
       pc.guard = { epoch: boot, version: (pc.guard?.version ?? 0) + 1 };
       pc.protectedEpoch = boot;
-    } else if (pc.waiters.length === 0) {
-      return;
     }
     const snapshot = answer.machines.find((machine) => machine.id === id)?.snapshot;
     const evidence = snapshot ? evidenceOf(snapshot) : null;

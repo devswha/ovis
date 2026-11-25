@@ -211,6 +211,39 @@ describe("ReorderCoordinator", () => {
     expect(serverOrder).toEqual(A);
   });
 
+  test.each([false, true])("recovers a queued drag from a qualified same-boot snapshot (from roster: %s)", async (fromRoster) => {
+    const checks = verifier(), moves = mover();
+    const coordinator = new ReorderCoordinator({ verify: checks.verify });
+    const reversed = ["c", "b", "a"];
+    coordinator.roster([entry("remote", O, "E1", 0)], event);
+    const first = coordinator.reorder("remote", O, reversed, moves.move);
+    (await moves.next()).resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    const second = await moves.next();
+    let serverOrder = B;
+    const queued = coordinator.reorder("remote", reversed, A, async ({ workspaceId, insertIndex }) => {
+      serverOrder = movedTabOrder(serverOrder, workspaceId, insertIndex) ?? serverOrder;
+      return { ok: true, order_epoch: "E1", moved_seq: 2 };
+    });
+    const result = queued.then(() => "applied", () => "rejected");
+    coordinator.roster([entry("remote", O, "old-boot", 0)], event);
+    const check = await checks.next();
+    if (fromRoster) {
+      second.reject(new Error("second move refused"));
+      await first;
+      await drain();
+      coordinator.roster([entry("remote", B, "E1", 1)], event);
+      check.resolve(null);
+    } else {
+      check.resolve({ boot_id: "E1", machines: [entry("remote", B, "E1", 1)] });
+      await drain();
+      expect(coordinator.order("remote", O)).toEqual(A);
+      second.reject(new Error("second move refused"));
+      await first;
+    }
+    expect(await Promise.race([result, drain().then(() => "pending")])).toBe("applied");
+    expect(serverOrder).toEqual(A);
+  });
+
   test("uses the recovered workspace set for drags queued before a close", async () => {
     const checks = verifier(), moves = mover();
     const coordinator = new ReorderCoordinator({ verify: checks.verify });
