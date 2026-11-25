@@ -187,7 +187,8 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
     const oldest = archives.at(-1);
     if (oldest === undefined || !Number.isSafeInteger(started)) return null;
     let selected: ForegroundState = legacy;
-    let proven = true;
+    let startsAtLaunch = true;
+    let startsAfterLaunch = false;
     for (let index = archives.length - 1; index >= 0; index--) {
       const { fd, size, dev, ino, mtimeNs, ctimeNs } = archives[index]!;
       const bytes = Buffer.alloc(size);
@@ -196,8 +197,9 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       if (after.size !== BigInt(size) || after.mtimeNs !== mtimeNs || after.ctimeNs !== ctimeNs) return LOG_READ_CHANGED;
       if (index === archives.length - 1) {
         const first = Date.parse(LOG_LINE_TIME.exec(bytes.subarray(0, 64).toString("utf8"))?.[1] ?? "");
-        proven = first >= started && first - started <= LOG_START_MARGIN_MS;
-        if (!proven) selected = unavailable("copilot_log_gap");
+        startsAtLaunch = first >= started && first - started <= LOG_START_MARGIN_MS;
+        startsAfterLaunch = first - started > LOG_START_MARGIN_MS;
+        if (!startsAtLaunch) selected = unavailable("copilot_log_gap");
       }
       // Copilot renames each copy into place whole: one ending inside a line is not its copy.
       if (size > 0 && bytes[size - 1] !== 0x0a) return null;
@@ -211,7 +213,8 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       if (now?.dev !== dev || now.ino !== ino) return LOG_READ_CHANGED;
     }
     if (lstatSync(`${base}.${archives.length + 1}.log`, { throwIfNoEntry: false })) return LOG_READ_CHANGED;
-    return proven || selected.kind !== "unavailable" ? selected : null;
+    // A copy that starts after launch may have lost a session switch. A held marker cannot fill that gap.
+    return startsAtLaunch || startsAfterLaunch || selected.kind !== "unavailable" ? selected : null;
   } finally { for (const { fd } of archives) closeSync(fd); }
 }
 
@@ -408,7 +411,9 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
             : initialLog ? legacy
             : rotated ?? unavailable(changed ?? owner.denial?.diagnostic ?? (start > 0 ? "copilot_log_gap" : "copilot_log_read_raced"));
           const position = start + Buffer.byteLength(text.slice(0, skip));
-          const selected = applyLifecycle(previous, complete, position, (at) => `${pid}:${stat.dev}:${stat.ino}:${epoch}:${at}`);
+          // A same-inode cut that loses complete bytes without a continuing copy can leave an older registration behind.
+          const lostCompleteLines = cached !== undefined && changed === "copilot_log_truncated" && size < cached.size && rotation === null;
+          const selected = lostCompleteLines ? previous : applyLifecycle(previous, complete, position, (at) => `${pid}:${stat.dev}:${stat.ino}:${epoch}:${at}`);
           if (selected === null) return deny("copilot_log_unreadable");
           if (rotation === ROTATION_GAP && selected === previous) {
             cached!.readConflict = true;

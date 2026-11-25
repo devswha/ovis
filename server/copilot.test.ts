@@ -575,6 +575,36 @@ it.skipIf(process.platform !== "linux")("lets a pruned log's latest copied regis
   } finally { await fixture.close(); }
 });
 
+it.skipIf(process.platform !== "linux")("does not take a lone held marker when the log starts after launch and records no session", async () => {
+  const fixture = await logFixture([session]);
+  const { log, environment, pid } = fixture;
+  try {
+    for (let index = 1; index <= 4; index++) {
+      writeFileSync(log.replace(/\.log$/, `.${index}.log`), "1970-01-01T00:00:06.000Z [INFO] later output\n");
+    }
+    appendFileSync(log, "ordinary output\n");
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_gap" });
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("does not replay an older registration after a shorter same-inode log loses an observed switch", async () => {
+  const fixture = await logFixture([session]);
+  const { log, environment, pid } = fixture;
+  try {
+    const old = register(session);
+    appendFileSync(log, old);
+    expect(fixture.binding()?.sessionId).toBe(session);
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+    writeFileSync(log, old);
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_truncated" });
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
 it.skipIf(process.platform !== "linux")("proves the copies again while the open log is empty, so two rotations never leave the earlier session", async () => {
   const fixture = await logFixture([]);
   const { log } = fixture;
