@@ -179,7 +179,7 @@ test("a removal the account service withholds from the PC reaches it from the de
   expect(before.followsList).toBe(true);
   before.close();
   made.account.tamperList(account.id, { reader: { server_id: serverId }, withholdAfter: held.seq });
-  const stop = keepListGossip(session, { list: () => member });
+  const stop = keepListGossip(session, { list: () => member, pc: serverId });
   closes.push(stop);
   await until(() => sent.length >= 1);
   // the device puts the laptop out; the account service shows the PC nothing of it
@@ -210,7 +210,7 @@ test("two histories that members signed raise the alarm on the device and on the
   expect(list.status()).toMatchObject({ alarm: null, head: { seq: at.seq + 1 } });
   expect(list.status().head).not.toEqual(member.gossip()!.place);
   expect(member.view().status).toMatchObject({ trouble: null });
-  const stop = keepListGossip(session, { list: () => member });
+  const stop = keepListGossip(session, { list: () => member, pc: serverId });
   closes.push(stop);
   await until(() => member.view().status.at === "following" && (member.view().status as { trouble: string | null }).trouble === "fork" && list.status().alarm === "fork");
   // the device signs nothing from now on; the PC lets nobody new in and signs no Allow
@@ -220,10 +220,10 @@ test("two histories that members signed raise the alarm on the device and on the
 }, 40_000);
 
 test("a PC that follows no list is asked nothing over the session, and neither is a PC by a device that follows none", async () => {
-  const { member, session, sent } = await rig({ pin: false });
+  const { member, serverId, session, sent } = await rig({ pin: false });
   expect(session.followsList).toBe(false);
   expect(member.gossip()).not.toBeNull();
-  const stop = keepListGossip(session, { list: () => member });
+  const stop = keepListGossip(session, { list: () => member, pc: serverId });
   // an exchange makes its first call before keepListGossip returns: none was made
   stop();
   expect(sent).toEqual([]);

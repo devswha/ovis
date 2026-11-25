@@ -262,7 +262,7 @@ export async function writeNamed<With, Why extends string = never>(
       const ready = await prepare(writer);
       if (!("go" in ready)) return ready;
       // an alarm that rose while this waited (for a claim) ends it: nothing is signed after it
-      if (!writer.live()) return { refused: "blocked" };
+      if (!await writer.live()) return { refused: "blocked" };
       if (writer.epochs.has(writer.state.epoch) && sealEpoch(writer.state, writer.clock) === null && lapsedCount(writer) > room) {
         tidied = true;
         return { request: await signedOn(writer, tidyUp(writer, 0)) };
@@ -359,7 +359,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         if ("done" in next) return { written: true, list: writer.list, place: next.done };
         if ("refused" in next) return refused(next.refused);
         // an alarm that rose while the request was signed ends it: it is never kept or sent
-        if (!writer.live()) return refused("blocked");
+        if (!await writer.live()) return refused("blocked");
         signed = next.request;
       } catch (error) {
         if (error instanceof SignedOutError) throw error;
@@ -412,7 +412,7 @@ export async function writeToList<Why extends string = never>(list: AccountList,
         }
       }
       // nothing is sent after an alarm, a request kept from before it neither
-      if (!writer.live()) return refused("blocked");
+      if (!await writer.live()) return refused("blocked");
       try {
         await within(options.placeMs ?? PLACE_MS, (signal) => writer.service.placeEntries(writer.list, request.entries, request.wraps, signal));
         // a write over once the service took it is over for its own request only, never for the clean-up's it sent first

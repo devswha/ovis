@@ -1803,7 +1803,14 @@ and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account
   account's lock as a round saves, and installed only while the sign-in it was begun under is the
   stored one); what the PC asks for (`asks`) is handed over, once an exchange, following every
   place the PC asks for next: a later one where it took a page in part, an earlier one where it
-  looks for where two histories part, until it asks for a place it was handed already;
+  looks for where two histories part, until it asks for a place it was handed already. Where the PC
+  asks for a place past the footing it names beside it (an entry no member signed stands above its
+  footing, which the service may have shown it), the device hands from that footing, so a stranger's
+  entry keeps no removal from the PC. Entries are handed only to a PC this device's copy holds or
+  held; one that merely names the list's id is told where the device stands and handed nothing;
+- the session belongs to the account and the list of its first exchange: while the page's list is
+  another one (another account signed in on this browser in another tab), the PC is told nothing of
+  it, and once that list is back the exchanges go on;
 - where the device needs the PC's entries after another place (the PC holds more, another entry at
   a place the device holds, or the device looks for where two histories part), it asks for them in
   the head call (`asks`), and judges what comes back. The PC answers that read only to a key its
@@ -1811,8 +1818,9 @@ and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account
   only what its writer left behind raises it on the side that is shown the other;
 - at most 24 of the two calls a minute of one PC and the key it let the device in by, and a
   `429`'s wait, kept for that PC and key in the browser's storage, so every tab and every
-  reopening of the PC draws on the same budget (the PC counts 30 by that key, in memory); a long
-  wait is armed in pieces of five minutes at most. What a minute's calls did not finish (the
+  reopening of the PC draws on the same budget (the PC counts 30 by that key, in memory); a wait
+  lasts no longer than the PC asked for, whatever the wall clock does, and is armed in pieces of
+  five minutes at most. What a minute's calls did not finish (the
   device's read, or the PC's next asked place) goes on as soon as the budget has room again, from
   where it got to, while the device stands where it stood;
 - one answer is read up to 512 KiB and for 10 seconds, an error's body included; a longer or a
@@ -1823,12 +1831,15 @@ and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account
 
 **A PC the list puts out while it is open.** The device ends its own use of it at once (the PC's
 pages go, the session is no longer the app's), and over the session it still has makes one
-exchange of three seconds at most that hands that PC its removal, then closes the session. So the
-PC knows itself out even where the account service withholds it.
+exchange of three seconds at most that hands that PC its removal, then closes the session: it waits
+within those seconds for a carrier that is down, draws on what is left of the PC's own 30 calls of
+the minute, takes nothing from that PC (a PC known to be out raises no alarm here), and hands
+nothing where the page's list never held that PC. So the PC knows itself out even where the account
+service withholds it.
 
-**An alarm ends every write.** From the moment the device's copy holds an alarm nothing it signs is
-kept or sent: an Allow that was waiting for a claim, a change that was waiting for an answer, a
-request kept from before.
+**An alarm ends every write.** From the moment the device's copy holds an alarm, in this tab or as
+another tab of the device saved it, nothing it signs is kept or sent: an Allow that was waiting for
+a claim, a change that was waiting for an answer, a request kept from before.
 
 Nothing is asked of a PC that follows no list (it did not select the list for the session), and
 nothing by a device that follows none: an account with no list sends no request and no frame it

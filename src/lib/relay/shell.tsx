@@ -267,7 +267,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (gossipFor === opened) return;
     stopGossip?.();
     gossipFor = opened;
-    stopGossip = keepListGossip(opened, { list: () => account.list, live: () => transport === opened, budget: budgetOf(opened, serverId) });
+    stopGossip = keepListGossip(opened, { list: () => account.list, pc: serverId, live: () => transport === opened, budget: budgetOf(opened, serverId) });
   };
   let last: Attempt | null = null, opening: AbortController | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
@@ -388,7 +388,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the list put the PC out: this device's own use of it ends here, and over the session it still has it hands that
     // PC the removal once, for a few seconds at most, before it closes it (a PC the service withholds it from knows)
     if (says === "pc-out") {
-      void deliverOnce(open, account.list, budgetOf(open, attempt.offer.server_id)).finally(() => { open.close(); });
+      void deliverOnce(open, account.list, budgetOf(open, attempt.offer.server_id), undefined, attempt.offer.server_id).finally(() => { open.close(); });
       show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id });
       return;
     }

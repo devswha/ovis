@@ -435,10 +435,11 @@ export interface ListWriter {
   readonly service: AccountService;
   /**
    * Whether this writer may still sign and send: false from the moment this page's copy of its list holds an alarm,
-   * or holds another account's or list's copy. Every signing and every sending looks again, so an alarm that rises
-   * while a write waits (for a claim, for an answer) ends it with nothing signed or sent after it.
+   * or holds another account's or list's copy, and from the moment another page of this device saved the list with an
+   * alarm. Every signing and every sending looks again, so an alarm that rises while a write waits (for a claim, for an
+   * answer), in this page or another, ends it with nothing signed or sent after it.
    */
-  readonly live: () => boolean;
+  readonly live: () => boolean | Promise<boolean>;
 }
 
 /**
@@ -574,6 +575,11 @@ export interface AccountList {
   pageAfter(after: number | null, limit: number): PeerPage | null;
   /** How this device's copy stands against where a PC says it stands (compareHeads), and what to ask that PC for; null while it follows none. */
   compare(theirs: ListHead): { readonly verdict: HeadsVerdict; readonly read: FollowRead | null } | null;
+  /**
+   * Whether the PC with this id (the one its relay key gives) is one this device's copy holds or held: a `pc` or `join`
+   * entry named it, whether or not it is out since. A PC it never held is handed none of its entries.
+   */
+  knowsPc(serverId: string): boolean;
   /**
    * A page of the list a PC handed this device over a session (listGossip.ts), taken as a page of the account service
    * is, since entries prove themselves, and never as a full read: so a removal the service withholds from this device
@@ -1165,15 +1171,22 @@ export function accountList(options: AccountListOptions): AccountList {
 
   /** AccountList.takeFromPeer, under the account's lock: one page at a time among this page's rounds and the other pages'. */
   /** ListWriter.live for writers of `account`'s `list`: one function for all of them, read from this page's copy at each call. */
-  let lives: { readonly account: string; readonly list: string; readonly live: () => boolean } | null = null;
-  const liveFor = (account: string, list: string): (() => boolean) => {
+  let lives: { readonly account: string; readonly list: string; readonly live: () => Promise<boolean> } | null = null;
+  const liveFor = (account: string, list: string): (() => Promise<boolean>) => {
     if (lives === null || lives.account !== account || lives.list !== list) {
-      lives = { account, list, live: () => {
+      lives = { account, list, live: async () => {
         const now = held?.copy ?? null;
-        return held !== null && held.account === account && now !== null && now.list === list && now.alarm === null;
+        if (held === null || held.account !== account || now === null || now.list !== list || now.alarm !== null) return false;
+        // and what the pages of this device saved: another page may have saved an alarm this page has not read yet
+        const saved = await store.get("copy", account);
+        if (typeof saved !== "string") return true;
+        try {
+          const read = JSON.parse(saved) as { list?: unknown; alarm?: unknown };
+          return !(read.list === list && read.alarm !== null && read.alarm !== undefined);
+        } catch { return false; }
       } };
     }
-    return lives.live;
+    return lives!.live;
   };
 
   const takeFromPeer = async (page: PeerPage, asked: FollowRead | null): Promise<PeerTake | null> => {
@@ -1407,6 +1420,10 @@ export function accountList(options: AccountListOptions): AccountList {
     compare(theirs) {
       const copy = held?.copy ?? null;
       return copy === null || copy.state === null ? null : compareHeads(copy, theirs);
+    },
+    knowsPc(serverId) {
+      const state = held?.copy?.state ?? null;
+      return state !== null && Object.keys(state.pcs).some((endpoint) => /^[0-9a-f]{64}$/.test(endpoint) && deriveServerId(hexToBytes(endpoint)) === serverId);
     },
     takeFromPeer,
     async forget(account, member) {

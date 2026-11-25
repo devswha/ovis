@@ -96,7 +96,7 @@ let open: { readonly transport: RelayTransport; readonly stop: () => void } | nu
 export async function meet(offer: RelayOffer): Promise<boolean> {
   leave();
   const transport = await session(offer);
-  open = { transport, stop: keepListGossip(transport, { list: () => list }) };
+  open = { transport, stop: keepListGossip(transport, { list: () => list, pc: offer.server_id }) };
   return transport.followsList;
 }
 

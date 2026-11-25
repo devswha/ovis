@@ -20,6 +20,10 @@ const noWait = { wait: async () => {} };
 const seconds = (w: World): number => Math.floor(w.clock.now / 1000);
 const hashOf = (text: string): string => entryHash(entryFromText(text).body);
 /** Every call may be made: the budget of a minute is the session's (keepListGossip), not one exchange's. */
+/** An exchange with a PC this device's copy holds: what it lacks is handed to it. */
+const handing = { hands: true } as const;
+/** The id of a PC the list holds, as the session with it names it: the fake PCs here stand in for it. */
+const knownPc = (list: AccountList): string => list.view().pcs[0]?.server_id ?? "no PC";
 const always = (): boolean => true;
 
 /** An account with two devices in its list and a PC the first one added. */
@@ -149,7 +153,7 @@ describe("a device and the PC it has a session with say where the list stands", 
   it("in one call where both stand at one entry, and hand nothing", async () => {
     const { w, first } = await account();
     const pc = await memoryPc(w, w.held().entries);
-    expect(await gossipWithPc(pc.fetch, first.list, null, always)).toEqual({ end: "done", carry: null, retryAfterMs: null });
+    expect(await gossipWithPc(pc.fetch, first.list, null, always, handing)).toEqual({ end: "done", carry: null, retryAfterMs: null });
     expect(pc.calls.map((call) => call.path)).toEqual(["/api/account/list/head"]);
     expect(pc.calls[0]!.body).toEqual(gossipHead(pc.copy()) as unknown as Record<string, unknown>);
   });
@@ -160,7 +164,7 @@ describe("a device and the PC it has a session with say where the list stands", 
     const removed = (await second.keys()).key;
     expect(admitsSession(pc.copy(), removed, seconds(w)).why).toBeNull();
     await removeDevice(first, removed);
-    expect(await gossipWithPc(pc.fetch, first.list, null, always)).toMatchObject({ end: "done" });
+    expect(await gossipWithPc(pc.fetch, first.list, null, always, handing)).toMatchObject({ end: "done" });
     expect(pc.calls.map((call) => call.path)).toEqual(["/api/account/list/head", "/api/account/list/page"]);
     expect(admitsSession(pc.copy(), removed, seconds(w)).why).toBe("removed");
     expect(gossipHead(pc.copy())).toEqual(first.list.gossip()!);
@@ -174,7 +178,7 @@ describe("a device and the PC it has a session with say where the list stands", 
     await second.list.sync();
     expect(second.list.holdsPc(desk.endpoint)).toBe(true);
     const pc = await memoryPc(w, w.held().entries);
-    expect(await gossipWithPc(pc.fetch, second.list, null, always)).toMatchObject({ end: "done" });
+    expect(await gossipWithPc(pc.fetch, second.list, null, always, handing)).toMatchObject({ end: "done" });
     expect(second.list.holdsPc(desk.endpoint)).toBe(false);
     expect(second.list.gossip()).toEqual(gossipHead(pc.copy()));
     // kept: what the device saved holds the removal, and the account service's withholding takes nothing back
@@ -195,7 +199,7 @@ describe("a device and the PC it has a session with say where the list stands", 
     await first.list.sync();
     const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
     const before = first.list.view();
-    const result = await gossipWithPc(pc.fetch, first.list, null, always);
+    const result = await gossipWithPc(pc.fetch, first.list, null, always, handing);
     expect(result.end).toBe("alarm");
     expect(first.list.view().status).toMatchObject({ at: "following", standing: "in", trouble: "fork" });
     // nobody of the other history is let in or shown, whom the device held stays, and it signs nothing from now on
@@ -295,7 +299,7 @@ describe("what a PC's page leaves in this page, and in the other tabs", () => {
     const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
     const failing = failingSaves(first);
     try {
-      expect((await gossipWithPc(pc.fetch, first.list, null, always)).end).toBe("alarm");
+      expect((await gossipWithPc(pc.fetch, first.list, null, always, handing)).end).toBe("alarm");
     } finally { failing.mockRestore(); }
     expect(first.list.view().status).toMatchObject({ trouble: "fork" });
     // another tab saves what the account service shows next: a copy with no alarm
@@ -345,7 +349,7 @@ describe("what a PC's page leaves in this page, and in the other tabs", () => {
     const allow = allowDevice(first.list, { key: (await newcomer.keys()).key, label: "Dana's laptop", os: "macos" }, noWait);
     await asked.promise;
     // the alarm rises while the Allow waits for the account service's claims
-    expect((await gossipWithPc(pc.fetch, first.list, null, always)).end).toBe("alarm");
+    expect((await gossipWithPc(pc.fetch, first.list, null, always, handing)).end).toBe("alarm");
     const placed = first.sent.filter((each) => each.route.endsWith("/entries")).length;
     claims.resolve();
     expect(await allow).toMatchObject({ allowed: false });
@@ -362,7 +366,7 @@ describe("what one exchange hands over, and what it reads of the PC", () => {
     await addListPc(w, first, "Laptop");
     await removeDevice(first, (await second.keys()).key);
     await removeListPc(first.list, desk.endpoint, noWait);
-    const result = await gossipWithPc(pc.fetch, first.list, null, always);
+    const result = await gossipWithPc(pc.fetch, first.list, null, always, handing);
     expect(result.end).toBe("done");
     // a page at a time, each asked for by the PC: it stands where the device does
     expect(gossipHead(pc.copy())).toEqual(first.list.gossip()!);
@@ -375,10 +379,10 @@ describe("what one exchange hands over, and what it reads of the PC", () => {
     await removeDevice(first, (await second.keys()).key);
     await removeListPc(first.list, desk.endpoint, noWait);
     let left = 2;
-    const cut = await gossipWithPc(pc.fetch, first.list, null, () => left-- > 0);
+    const cut = await gossipWithPc(pc.fetch, first.list, null, () => left-- > 0, handing);
     expect(cut.end).toBe("spent");
     expect(cut.carry?.asks).not.toBeNull();
-    const rest = await gossipWithPc(pc.fetch, first.list, cut.carry, always);
+    const rest = await gossipWithPc(pc.fetch, first.list, cut.carry, always, handing);
     expect(rest.end).toBe("done");
     expect(gossipHead(pc.copy())).toEqual(first.list.gossip()!);
     // what was handed in the second exchange began where the PC asked: no page went twice
@@ -392,19 +396,19 @@ describe("what one exchange hands over, and what it reads of the PC", () => {
     const flood: PcFetch = async () => new Response(new ReadableStream<Uint8Array>({
       pull(controller) { const chunk = new Uint8Array(64 * 1024).fill(0x20); pulled += chunk.byteLength; controller.enqueue(chunk); },
     }), { status: 200, headers: { "content-type": "application/json" } });
-    expect((await gossipWithPc(flood, first.list, null, always)).end).toBe("unreached");
+    expect((await gossipWithPc(flood, first.list, null, always, handing)).end).toBe("unreached");
     expect(pulled).toBeLessThanOrEqual(512 * 1024 + 128 * 1024);
     // an error body is held to the same bound
     pulled = 0;
     const failing: PcFetch = async () => new Response(new ReadableStream<Uint8Array>({
       pull(controller) { const chunk = new Uint8Array(64 * 1024).fill(0x20); pulled += chunk.byteLength; controller.enqueue(chunk); },
     }), { status: 500 });
-    expect((await gossipWithPc(failing, first.list, null, always)).end).toBe("unreached");
+    expect((await gossipWithPc(failing, first.list, null, always, handing)).end).toBe("unreached");
     expect(pulled).toBeLessThanOrEqual(512 * 1024 + 128 * 1024);
     // an answer that never ends ends the exchange at its deadline
     const silent: PcFetch = async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode("{")); } }));
     const began = performance.now();
-    expect((await gossipWithPc(silent, first.list, null, always, { ms: 50 })).end).toBe("unreached");
+    expect((await gossipWithPc(silent, first.list, null, always, { limits: { ms: 50 }, hands: true })).end).toBe("unreached");
     expect(performance.now() - began).toBeLessThan(5_000);
   });
 });
@@ -434,7 +438,7 @@ describe("a session keeps the list compared", () => {
     const { w, first, second, desk } = await account();
     const pc = await memoryPc(w, w.held().entries);
     const session = sessionOf(pc);
-    const stop = keepListGossip(session, { list: () => first.list });
+    const stop = keepListGossip(session, { list: () => first.list, pc: knownPc(first.list) });
     try {
       await until(() => pc.calls.length === 1);
       const removed = (await second.keys()).key;
@@ -459,7 +463,7 @@ describe("a session keeps the list compared", () => {
     let clock = 0;
     const timers: { run: () => void; at: number }[] = [];
     const options = {
-      list: () => first.list, mono: () => clock,
+      list: () => first.list, pc: knownPc(first.list), mono: () => clock,
       setTimer: (run: () => void, ms: number) => { const timer = { run, at: clock + ms }; timers.push(timer); return timer; },
       clearTimer: (timer: unknown) => { timers.splice(timers.indexOf(timer as never), 1); },
     };
@@ -482,7 +486,7 @@ describe("a session keeps the list compared", () => {
     } finally { stop(); }
     // one exchange spends no more than the minute's calls, and says where its read got to
     let spent = 0;
-    const result = await gossipWithPc(pc.fetch, first.list, null, () => ++spent <= 0);
+    const result = await gossipWithPc(pc.fetch, first.list, null, () => ++spent <= 0, handing);
     expect([result.end, spent]).toEqual(["spent", 1]);
     expect(GOSSIP_CALLS_PER_MINUTE).toBeLessThan(30);
   });
@@ -494,7 +498,7 @@ describe("a session keeps the list compared", () => {
     const timers: { run: () => void; at: number }[] = [];
     const session = sessionOf(pc);
     const stop = keepListGossip(session, {
-      list: () => first.list, mono: () => clock, callsPerMinute: 1,
+      list: () => first.list, pc: knownPc(first.list), mono: () => clock, callsPerMinute: 1,
       setTimer: (run: () => void, ms: number) => { const timer = { run, at: clock + ms }; timers.push(timer); return timer; },
       clearTimer: (timer: unknown) => { timers.splice(timers.indexOf(timer as never), 1); },
     });
@@ -520,7 +524,7 @@ describe("a session keeps the list compared", () => {
     let clock = 1_000_000;
     const timers: { run: () => void; at: number }[] = [];
     const keep = (budgetKey: string) => keepListGossip(sessionOf(pc), {
-      list: () => first.list, mono: () => clock, budget: gossipBudget(budgetKey, { perMinute: 1, storage, now: () => clock }),
+      list: () => first.list, pc: knownPc(first.list), mono: () => clock, budget: gossipBudget(budgetKey, { perMinute: 1, storage, now: () => clock }),
       setTimer: (run: () => void, ms: number) => { const timer = { run, at: clock + ms }; timers.push(timer); return timer; },
       clearTimer: (timer: unknown) => { timers.splice(timers.indexOf(timer as never), 1); },
     });
@@ -565,10 +569,10 @@ describe("a session keeps the list compared", () => {
     const fork = await otherHistory(w, first);
     const pc = await memoryPc(w, [w.held().entries[0]!, ...fork]);
     let left = 2;
-    const cut = await gossipWithPc(pc.fetch, first.list, null, () => left-- > 0);
+    const cut = await gossipWithPc(pc.fetch, first.list, null, () => left-- > 0, handing);
     expect(cut.end).toBe("spent");
     expect(cut.carry).not.toBeNull();
-    const done = await gossipWithPc(pc.fetch, first.list, cut.carry, always);
+    const done = await gossipWithPc(pc.fetch, first.list, cut.carry, always, handing);
     expect(done.end).toBe("alarm");
     expect(first.list.view().status).toMatchObject({ trouble: "fork" });
   });
