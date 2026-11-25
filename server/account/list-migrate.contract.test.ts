@@ -569,6 +569,27 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     expect(pc.list.allowRefusal()).toBeNull();
   }, SLOW);
 
+  test("a confirmed add for its keys whose entry never comes ends as a timeout at its ten minutes, never added: the PC still lets nobody in", async () => {
+    const pc = await followsByMove();
+    expect(pc.services.relay.setRelayAccount(ACCOUNT)).toBe(true);
+    const started = await pc.local("/api/account/list/add", { account: ACCOUNT });
+    expect(started).toMatchObject({ status: 200, body: { state: "waiting", list: pc.born.id } });
+    const number = await pc.born.compare(pc.endpoint, pc.phone.member);
+    await number.commit();
+    await pc.local("/api/account/list/add");
+    const digits = await number.reveal();
+    expect((await pc.local("/api/account/list/add")).body).toMatchObject({ state: "number", digits });
+    expect((await pc.local("/api/account/list/add/confirm", { digits })).body).toMatchObject({ state: "confirmed" });
+    // the phone never signs the entry (its write failed, its person gave up); the add's ten minutes run out
+    const real = performance.now.bind(performance);
+    const later = spyOn(performance, "now").mockImplementation(() => real() + 11 * 60_000);
+    let state: unknown;
+    try { state = (await pc.local("/api/account/list/add")).body; } finally { later.mockRestore(); }
+    expect(state).toMatchObject({ state: "ended", why: "timeout" });
+    expect(pc.list.allowRefusal()).toBe("needs_keys");
+    expect(pc.list.summary()).toMatchObject({ needs_keys: true });
+  }, SLOW);
+
   test("a PC that follows its list with no key of its own and lost its copy lets nobody in, and says to run ovis add", async () => {
     const pc = await followsByMove();
     pc.fixture.app.stop();

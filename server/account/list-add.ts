@@ -69,6 +69,10 @@ export interface ListAddDeps {
   joined?(account: string): void;
   /** Whether this PC is in `account` pinned to `list` now (its follower's own word): an add that ends finds out how it ended. */
   joinedTo?(account: string, list: string): boolean;
+  /** Whether this PC is in an account now: an add it starts then is for its keys (it came into the list as the account moved). */
+  inAccount?(): boolean;
+  /** Whether this PC follows its list with no key of its own in it to sign with (ListFollow.needsKeys): an add for its keys is done only once it has one. */
+  needsKeys?(): boolean;
   now(): number;
   /** A clock that only moves forward, in milliseconds, which every lifetime here is counted by (performance.now when unset): setting the PC's clock back gives a number, or an add, no more time. */
   mono?(): number;
@@ -88,6 +92,8 @@ interface Run {
   readonly keys: PcListKeys;
   readonly card: string;
   readonly binding: Uint8Array;
+  /** the PC was in an account when this add began: it adds only its keys, and is in only once it holds them */
+  readonly forKeys: boolean;
   /** by the clock that only moves forward */
   readonly startedAt: number;
   /** when the add ends, by the PC's own clock: only for showing */
@@ -135,7 +141,7 @@ export class ListAdd {
       const { keys } = identity;
       const card = { key: keys.key, enc: keys.enc, list, endpoint: identity.endpoint, invite: null };
       const run: Run = {
-        id, account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card),
+        id, account, list, serverId: identity.serverId, endpoint: identity.endpoint, keys, card: await signCard(card, keys.privateKey), binding: cardBinding(card), forKeys: this.deps.inAccount?.() === true,
         startedAt: this.mono(), until: this.deps.now() + ADD_WINDOW_MS, postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: null, cancelled: false, end: null,
       };
       this.run = run;
@@ -202,12 +208,20 @@ export class ListAdd {
 
   private mono(): number { return this.deps.mono?.() ?? performance.now(); }
 
-  /** A confirmed run whose PC is in its account by its list now ends `added` (told once, as a join is); null otherwise. */
+  /**
+   * A confirmed run whose PC is in its account by its list now ends `added` (told once, as a join is); null otherwise.
+   * A PC in its account at the run's start is in it all along: its run is added only once it holds its own key.
+   */
   private inBy(run: Run): AddState | null {
-    if (run.confirmed === null || run.cancelled || this.deps.joinedTo?.(run.account, run.list) !== true) return null;
+    if (run.confirmed === null || run.cancelled || this.deps.joinedTo?.(run.account, run.list) !== true || !this.keyed(run)) return null;
     run.end = { state: "added", run: run.id, account: run.account, list: run.list };
     this.deps.joined?.(run.account);
     return run.end;
+  }
+
+  /** For a run for this PC's keys, whether it holds them now; true for any other run. */
+  private keyed(run: Run): boolean {
+    return !run.forKeys || this.deps.needsKeys?.() === false;
   }
 
   private inTurn<T>(work: () => Promise<T>): Promise<T> {
@@ -260,7 +274,7 @@ export class ListAdd {
         if (run.cancelled) return ended("cancelled");
         if (this.mono() - run.startedAt >= ADD_WINDOW_MS) return this.inBy(run) ?? ended("timeout");
       }
-      if ("joined" in joined) {
+      if ("joined" in joined && this.keyed(run)) {
         run.end = { state: "added", run: run.id, account: run.account, list: run.list };
         this.deps.joined?.(run.account);
         return run.end;

@@ -2170,6 +2170,16 @@ describe("AddThisPc", () => {
         expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
       });
 
+      test("never says Added while this PC still says it needs keys, whatever its add answered: the offer stays", async () => {
+        const renderer = await mount();
+        await press(renderer, "Add this PC to my account's list");
+        byList!.now = { state: "added", run: RUN, account: ACCOUNT, list: LIST };
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).not.toContain("Added");
+        expect(words(renderer)).toContain(KEYS);
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+      });
+
       test("Stop waiting gives that add up by its run and offers it again; an add the PC ends says why", async () => {
         const renderer = await mount();
         await press(renderer, "Add this PC to my account's list");

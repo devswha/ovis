@@ -1684,6 +1684,8 @@ type ListAddState =
   | { readonly state: "ended"; readonly run?: string; readonly why: string };
 
 /** How `add` says that its account adds this PC by the account's signed list. */
+/** How often a keys run asks this PC whether it holds its own key after its add said added, before it says it does not. */
+const KEYS_LOOKS = 5;
 const LIST_KEPT = "Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.";
 
 /** How often `add` asks this PC where its add by the list stands: the number shows, and a typed yes is taken, within this. */
@@ -2097,8 +2099,20 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   const added = async (): Promise<number> => {
     if (atPrompt) say("");
     if (press.inAccount) {
-      out(`Done: this PC holds its own keys in your account's list now, so a device that asks to join can be approved here too (${cli(options)} approve).\n`);
-      return ended({ kind: "added", online: true }, 0);
+      // done only once this PC says so itself: it no longer needs keys (what its add answered says nothing of its key)
+      for (let look = 0; look < KEYS_LOOKS; look++) {
+        let keyed = false;
+        try { keyed = (await api<{ list?: { needs_keys?: boolean } | null }>("GET", "/api/account/status")).list?.needs_keys !== true; } catch (error) {
+          if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
+        }
+        if (keyed) {
+          out(`Done: this PC holds its own keys in your account's list now, so a device that asks to join can be approved here too (${cli(options)} approve).\n`);
+          return ended({ kind: "added", online: true }, 0);
+        }
+        if (look + 1 < KEYS_LOOKS) await wait(PRESS_POLL_MS, signal);
+      }
+      out(`The add ended, but this PC still holds no key of its own in your account's list, so it lets nobody new in. Run ${command} again, and choose Add for ${name} on a device of your account.\n`);
+      return ended({ kind: "not_added", why: "failed", listed: true }, 1);
     }
     // in the account, which lists it now: its relay pass is asked for again (it was refused while unlisted), and the relay comes online
     await press.named();
