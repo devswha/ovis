@@ -21,12 +21,12 @@ interface Launch { source: RecognizedConversation["source"]; serial: number; at:
 
 export class LaunchedAgents {
   private readonly panes = new Map<string, Launch>();
-  /** every pane this server started an agent in, of any kind, for as long as an agent runs there (`startedPanes`) */
-  private readonly started = new Set<string>();
+  /** every pane this server started an agent in, with the kind it started, for as long as that agent runs there (`startedPanes`) */
+  private readonly started = new Map<string, string>();
   private serial = 0;
 
   launched(paneId: string, kind: string, now = Date.now()): void {
-    this.started.add(paneId);
+    this.started.set(paneId, kind);
     const source = Object.hasOwn(SOURCES, kind) ? SOURCES[kind] : undefined;
     if (source === undefined) { this.panes.delete(paneId); return; }
     this.serial += 1;
@@ -54,13 +54,16 @@ export class LaunchedAgents {
 
   /**
    * Of these panes, the ones whose agent this server started (for the anonymous usage counts). A pane seen with no agent,
-   * or no longer listed, is forgotten: an agent started there later by hand is not this server's. Not kept across a
-   * restart, so an agent started before it counts as another's.
+   * with another kind than the one started (or one of its `aliases`, the names herdr may give it), or no longer listed,
+   * is forgotten: an agent started there later by hand is not this server's. Not kept across a restart, so an agent
+   * started before it counts as another's.
    */
-  startedPanes(panes: readonly { pane_id: string; agent: string | null | undefined }[]): Set<string> {
-    const listed = new Set(panes.map((pane) => pane.pane_id));
-    for (const paneId of this.started) if (!listed.has(paneId)) this.started.delete(paneId);
-    for (const pane of panes) if (!pane.agent) this.started.delete(pane.pane_id);
+  startedPanes(panes: readonly { pane_id: string; agent: string | null | undefined }[], aliases: Readonly<Record<string, readonly string[]>> = {}): Set<string> {
+    const listed = new Map(panes.map((pane) => [pane.pane_id, pane.agent]));
+    for (const [paneId, kind] of this.started) {
+      const agent = listed.get(paneId);
+      if (!agent || (agent !== kind && !(aliases[kind] ?? []).includes(agent))) this.started.delete(paneId);
+    }
     return new Set(panes.filter((pane) => this.started.has(pane.pane_id)).map((pane) => pane.pane_id));
   }
 

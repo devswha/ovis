@@ -2110,6 +2110,28 @@ describe("agents and answers", () => {
     expect(savedFile(stateDir).active[0].answer_counts).toEqual({ terminal: 2, record: 1 });
   });
 
+  test("an answer begun before the agent's wait was reported is that wait's: one answer, no terminal", () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    const ended = telemetry.answering("w1:p1");
+    telemetry.paneStatus("w1:p1", "blocked");
+    telemetry.paneStatus("w1:p1", "working");
+    ended("native");
+    expect(telemetry.status().active.usage.answers).toEqual({ native: 1 });
+  });
+
+  test("a wait or an answer begun while the counts were off is not counted when it ends after they are on again", () => {
+    const { telemetry } = setup();
+    seen(telemetry);
+    telemetry.change({ enabled: false });
+    telemetry.paneStatus("w1:p1", "blocked");
+    const ended = telemetry.answering("w1:p2");
+    telemetry.change({ enabled: true });
+    telemetry.paneStatus("w1:p1", "idle");
+    ended("screen");
+    expect(telemetry.status().active.usage.answers).toEqual({});
+  });
+
   test("nothing of agents or answers is kept while the counts are off", async () => {
     const { telemetry } = setup();
     seen(telemetry);

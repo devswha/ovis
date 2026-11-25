@@ -167,8 +167,11 @@ function withKind<T extends string>(list: readonly T[], item: T | null | undefin
 
 interface Timer { clear(): void }
 
-/** a pane's agent waiting for its user: answers from Ovis under way, whether one was delivered, and whether the wait is over */
-interface PaneWait { answering: number; answered: boolean; ended: boolean }
+/**
+ * a pane's agent waiting for its user: whether an answer from Ovis was delivered to it, whether it is over (and waits only
+ * for the pane's answers under way), and the counting generation it began under (null: begun while nothing was counted)
+ */
+interface PaneWait { answered: boolean; ended: boolean; generation: number | null }
 /** the most waits kept: one per pane, so more are of panes long closed */
 const MAX_WAITS = 256;
 
@@ -462,6 +465,8 @@ export class Telemetry {
   private writable = true;
   /** each pane whose agent waits for its user (`paneStatus`), in memory only */
   private readonly waits = new Map<string, PaneWait>();
+  /** each pane's answers from Ovis under way (`answering`) */
+  private readonly inFlight = new Map<string, number>();
 
   constructor(private readonly options: {
     stateDir: string;
@@ -784,8 +789,12 @@ export class Telemetry {
     }, () => { this.skipped(what); return false; });
   }
 
+  /** the counting generation now, or null while nothing is counted: what began under another is not counted when it ends */
+  private generation(): number | null { return this.countingUsage() ? this.saved.forgotten : null; }
+
   /** One answer that went the given way: counted under its way, and as a prompt answer when it went from Ovis. */
-  private tallyAnswer(way: TelemetryAnswerWay): void {
+  private tallyAnswer(way: TelemetryAnswerWay, generation: number | null): void {
+    if (generation === null || generation !== this.saved.forgotten) return;
     this.countToday(`the ${way} answer count`, (entry) => {
       const count = Math.min((entry.answer_counts[way] ?? 0) + 1, TELEMETRY_COUNT_MAX);
       entry.answer_counts = { ...entry.answer_counts, [way]: count };
@@ -802,14 +811,17 @@ export class Telemetry {
    * (`paneStatus`) is that wait's: a wait that ends with none counts as answered at the `terminal`.
    */
   answering(paneId: string): (way: Exclude<TelemetryAnswerWay, "terminal"> | null) => void {
-    const wait = this.waits.get(paneId);
-    if (wait) wait.answering += 1;
+    const generation = this.generation();
+    this.inFlight.set(paneId, (this.inFlight.get(paneId) ?? 0) + 1);
     return (way) => {
-      if (way !== null) this.tallyAnswer(way);
+      const left = (this.inFlight.get(paneId) ?? 1) - 1;
+      if (left > 0) this.inFlight.set(paneId, left); else this.inFlight.delete(paneId);
+      if (way !== null) this.tallyAnswer(way, generation);
+      // the pane's wait now, whenever it began: a blocked report can arrive after the answer did
+      const wait = this.waits.get(paneId);
       if (!wait) return;
-      wait.answering -= 1;
       if (way !== null) wait.answered = true;
-      if (wait.ended && wait.answering === 0) this.waitEnded(paneId, wait);
+      if (wait.ended && left === 0) this.waitEnded(paneId, wait);
     };
   }
 
@@ -821,18 +833,20 @@ export class Telemetry {
     const wait = this.waits.get(paneId);
     if (status === "blocked") {
       if (wait && !wait.ended) return;
+      // a wait that ended while an answer was under way is that answer's, which is not known to have missed it: no terminal
+      if (wait) this.waits.delete(paneId);
       if (this.waits.size >= MAX_WAITS) this.waits.delete(this.waits.keys().next().value!);
-      this.waits.set(paneId, { answering: 0, answered: false, ended: false });
+      this.waits.set(paneId, { answered: false, ended: false, generation: this.generation() });
       return;
     }
     if (!wait || wait.ended) return;
     wait.ended = true;
-    if (wait.answering === 0) this.waitEnded(paneId, wait);
+    if (!this.inFlight.get(paneId)) this.waitEnded(paneId, wait);
   }
 
   private waitEnded(paneId: string, wait: PaneWait): void {
     if (this.waits.get(paneId) === wait) this.waits.delete(paneId);
-    if (!wait.answered) this.tallyAnswer("terminal");
+    if (!wait.answered) this.tallyAnswer("terminal", wait.generation);
   }
 
   /**

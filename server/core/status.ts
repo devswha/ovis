@@ -58,6 +58,8 @@ import { type Client, send } from "./connections.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 const VISIT_READ_MS = 10 * 60_000;
+/** how long a pane whose session named no version waits before it is read again for the usage counts */
+const VERSION_RETRY_MS = 60 * 60_000;
 /**
  * How often a herdr-core server reads its agents' screens for an asking they did not report (server/card-waits.ts).
  * One read of one terminal costs four hc requests, not one: a `terminal.read`, plus the `terminal.list` and two
@@ -545,23 +547,26 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     void telemetry.active(agents, visit)
       .catch((error) => console.error(`telemetry: the visit was not counted (${error instanceof Error ? error.message : String(error)})`));
   }
-  /** each pane's agent version as its session names it, by the pane, agent and session it was read for */
-  const visitVersions = new Map<string, { session: string; version: string }>();
+  /**
+   * each pane's agent version as its session names it, by the agent and session it was read for; a read that found none
+   * is tried again only after VERSION_RETRY_MS, and a pane seen with no agent forgets it
+   */
+  const visitVersions = new Map<string, { session: string; version: string | null; at: number }>();
   async function visitVersion(pane: HerdrPane, agent: string | null, read: SessionSnapshot): Promise<string | null> {
     if (agent !== "claude" && agent !== "codex" && agent !== "opencode") return null;
     const session = `${agent}\0${JSON.stringify(pane.agent_session ?? null)}`;
     const known = visitVersions.get(pane.pane_id);
-    if (known?.session === session) return known.version;
+    if (known?.session === session && (known.version !== null || Date.now() - known.at < VERSION_RETRY_MS)) return known.version;
     const source = await paneTranscript(pane.pane_id, options.codexHome, read, undefined, options.opencodeDb).then(versionSourceOf, () => null);
     const version = storeAgentVersion(agent, source);
-    if (version !== null) visitVersions.set(pane.pane_id, { session, version });
+    visitVersions.set(pane.pane_id, { session, version, at: Date.now() });
     return version;
   }
   /** what a visit tells the usage counts of each pane: its agent, whether this server started it, and its version */
   async function visitPanes(read: SessionSnapshot): Promise<VisitPane[]> {
     const agents = read.panes.map((pane) => ({ pane_id: pane.pane_id, agent: resolveAgent(pane).agent }));
-    for (const paneId of visitVersions.keys()) if (!agents.some((pane) => pane.pane_id === paneId)) visitVersions.delete(paneId);
-    const started = launchedAgents.startedPanes(agents);
+    for (const paneId of visitVersions.keys()) if (!agents.some((pane) => pane.pane_id === paneId && pane.agent)) visitVersions.delete(paneId);
+    const started = launchedAgents.startedPanes(agents, { omo: OMO_ALIASES });
     return Promise.all(read.panes.map(async (pane, index) => {
       const agent = agents[index]!.agent;
       return { agent, ovis: started.has(pane.pane_id), version: await visitVersion(pane, agent, read).catch(() => null) };
@@ -594,6 +599,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   function omoChanged(paneId: string, derived: AgentStatus, background: number, turn: boolean, rest: OmoRest | undefined): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
+    if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, "omo", rest) : completions.current(paneId) ?? completions.observe(paneId, derived, "omo");
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     const held = waits.waiting(paneId);
@@ -606,6 +612,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
+    if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     broadcastAll(paneStatus(paneId, status));
@@ -993,6 +1000,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       for (const pane of projected) {
         // herdr told the pane's status after this snapshot was read: the queue has the newer reading
         if (newer.has(pane.pane_id)) continue;
+        // a pane already waiting for its user when the server started (or reconnected) begins its wait for the usage counts
+        if (!(omo.tracks(pane.pane_id) || gjc.tracks(pane.pane_id) || letta.tracks(pane.pane_id))) options.telemetry?.paneStatus(pane.pane_id, pane.agent_status);
         // A fast mirrored client may queue before the collector's first baseline. A
         // known ready baseline can schedule a fresh guarded check even when the tracker
         // still remembers working; an unknown baseline never supplies that permission.

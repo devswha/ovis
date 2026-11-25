@@ -1370,9 +1370,9 @@ function claudeStepStill(answered: ParsedPrompt): (prompt: InteractivePrompt | n
 /** How an answer from a card went to its agent (shared/telemetry.ts TelemetryAnswerWay, but `terminal`, which is no answer from here). */
 export type AnswerWay = "native" | "record" | "screen";
 
-/** A card whose text was read from the call the agent's session record says it waits on (omo's, omp's, pi's questionnaire), not off the screen alone. */
+/** A card whose text was read from the agent's session record (the call it waits on: omo's, omp's, pi's questionnaire, or a recorded request), not off the screen alone. */
 const readFromRecord = (parsed: ParsedPrompt): boolean =>
-  parsed.omoQuestion !== undefined || parsed.ompCall !== undefined || parsed.responder.startsWith("pi-questionnaire-");
+  parsed.omoQuestion !== undefined || parsed.ompCall !== undefined || parsed.record !== undefined || parsed.responder.startsWith("pi-questionnaire-");
 
 function promptChanged(): Response {
   return jsonResponse({ error: { code: "prompt_changed", message: "The interactive prompt changed; reopen it and try again." } }, 409);
@@ -2411,7 +2411,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     await logAnswer(log, response);
     return response;
   } catch (error) {
-    endAnswer(null);
+    // keys that reached the pane are an answer even when something after them failed
+    endAnswer(delivered ? way : null);
     for (const told of answering.splice(0)) told(waitedOn && delivered);
     const response = errorResponse(error);
     if (answerLog !== null) await logAnswer(answerLog, response);
