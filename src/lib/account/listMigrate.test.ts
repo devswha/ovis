@@ -578,6 +578,7 @@ describe("one birth per account on a device, whatever happens to its answer (ast
     let refusedAt: number | null = null;
     const faulty: ListStore = {
       get: (record, account) => lists.get(record, account),
+      accounts: () => lists.accounts(),
       drop: (account, copy) => lists.drop(account, copy),
       async set(record, account, value) {
         if (refusedAt !== null) throw new Error("the page went");
