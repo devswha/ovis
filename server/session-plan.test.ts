@@ -352,20 +352,25 @@ describe("SessionPlans", () => {
   });
 
   it("tells a Codex pane's context its server says at once, for the thread its rollout is, and the rollout's again without it", async () => {
-    const f = file("rollout-2026-11-25T12-00-00-t1.jsonl");
+    const thread = "01a210a7-62bd-79a2-9c7b-0c09d625d336";
+    const f = file(`rollout-2026-11-25T12-00-00-${thread}_01a210a7-a189-7bb0-9115-c46322038d80.jsonl`);
     f.add({ timestamp: at(1), type: "event_msg", payload: { type: "token_count", info: { model_context_window: 475_000, last_token_usage: { total_tokens: 12_000 } } } });
     let served: ServedStatus | null = null;
-    const changes: (PaneContext | null)[] = [];
-    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => f.path, codexServed: () => served, onChange: () => {}, onContext: (_id, context) => changes.push(context) });
+    const plans = new SessionPlans({ claudePath: () => null, codexPath: async () => f.path, codexServed: () => served, onChange: () => {} });
     await plans.refresh([pane("p2", "codex")]);
     plans.poll();
-    served = { threadId: "t1", context: { used: 12_955, window: 475_000 }, model: null };
+    expect(plans.contextOf("p2")).toEqual({ used: 12_000, window: 475_000 });
+    served = { threadId: thread, context: { used: 12_955, window: 475_000 }, model: null };
     plans.servedChanged("p2");
-    served = { threadId: "t2", context: { used: 99, window: 475_000 }, model: null };
+    expect(plans.contextOf("p2")).toEqual({ used: 12_955, window: 475_000 });
+    served = { threadId: "01a210a7-aa30-7f42-9a96-97d456dfe544", context: { used: 99, window: 475_000 }, model: null };
+    plans.servedChanged("p2");
+    expect(plans.contextOf("p2")).toEqual({ used: 12_000, window: 475_000 });
+    served = { threadId: thread, context: { used: 12_955, window: 475_000 }, model: null };
     plans.servedChanged("p2");
     served = null;
     plans.servedChanged("p2");
-    expect(changes).toEqual([{ used: 12_000, window: 475_000 }, { used: 12_955, window: 475_000 }, { used: 12_000, window: 475_000 }]);
+    expect(plans.contextOf("p2")).toEqual({ used: 12_000, window: 475_000 });
   });
 
   it("tells a pane's summary as its plan moves, reads nothing while its transcript is as it was, and clears it when the pane runs something else", async () => {

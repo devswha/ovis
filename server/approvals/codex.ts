@@ -317,10 +317,16 @@ class Connection {
   private readonly changes = new Map<string, FileChange[]>();
   private readonly asks = new Map<string, CodexAsk>();
   turn: TurnEnd | null = null;
-  /** The pane's own thread, the last one Codex started or ran a turn in that is no subagent's. */
+  /**
+   * The pane's own thread, the last one Codex started or ran a turn in that is no subagent's; `sure` once Codex said so,
+   * not when only guessed from the threads loaded as Ovis connected.
+   */
   private thread: string | null = null;
+  private sure = false;
+  /** The turn the pane's own thread runs or ran last. */
+  private turnId: string | null = null;
   private context: PaneContext | null = null;
-  private rerouted: string | null = null;
+  private rerouted: { turnId: string; model: string } | null = null;
   closed = false;
 
   constructor(path: string, private readonly paneId: string, private readonly hub: ApprovalHub, private readonly onClose: () => void) {
@@ -366,28 +372,41 @@ class Connection {
     if (thread !== null) this.started(thread, false);
   }
 
-  /** A thread Codex started (`announced`) or Ovis subscribed to: one started anew becomes the pane's own. */
+  /**
+   * A thread Codex started (`announced`) or Ovis subscribed to. One started anew becomes the pane's own; of the threads
+   * loaded as Ovis connected, the first, or one that runs over one only guessed.
+   */
   private started(thread: Json, announced: boolean): void {
     if (typeof thread["id"] !== "string") return;
     if (typeof thread["parentThreadId"] === "string" || thread["ephemeral"] === true) this.subagents.add(thread["id"]);
-    else if (announced || this.thread === null) this.own(thread["id"]);
+    else if (announced) this.own(thread["id"], true);
+    else if (this.thread === null || (!this.sure && isObject(thread["status"]) && thread["status"]["type"] === "active")) this.own(thread["id"], false);
   }
 
-  /** `threadId` is the pane's own thread: what was known of another goes. */
-  private own(threadId: string): void {
-    if (this.subagents.has(threadId) || this.thread === threadId) return;
+  /** `threadId` is the pane's own thread: what was known of another, its turn's end too, goes. */
+  private own(threadId: string, sure: boolean): void {
+    if (this.subagents.has(threadId)) return;
+    if (this.thread === threadId) { this.sure ||= sure; return; }
     this.thread = threadId;
+    this.sure = sure;
+    this.turn = null;
+    this.turnId = null;
     this.context = null;
     this.rerouted = null;
     changed(this.paneId);
   }
 
+  /** Whether a turn of `threadId` is the pane's: its own thread's, or any but a subagent's before Codex named one. */
+  private ownTurn(threadId: string | null): threadId is string {
+    return threadId !== null && !this.subagents.has(threadId) && (this.thread === null || threadId === this.thread);
+  }
+
   status(): ServedStatus | null {
-    return this.thread === null ? null : { threadId: this.thread, context: this.context, model: this.rerouted };
+    return this.thread === null ? null : { threadId: this.thread, context: this.context, model: this.rerouted?.model ?? null };
   }
 
   questions(): CodexAsk[] {
-    return [...this.asks.values()];
+    return [...this.asks.values()].filter((ask) => ask.threadId === this.thread);
   }
 
   private receive(data: string): void {
@@ -413,16 +432,21 @@ class Connection {
       case "thread/status/changed": {
         const status = isObject(params["status"]) ? params["status"] : {};
         if (threadId === null || status["type"] !== "active") break;
-        if (!this.subagents.has(threadId) && this.turn !== "running") this.turn = "running";
+        if (this.ownTurn(threadId) && this.turn !== "running") this.turn = "running";
         void this.subscribe(threadId);
         break;
       }
-      case "turn/started":
+      case "turn/started": {
+        const turn = isObject(params["turn"]) ? params["turn"] : {};
+        // a subagent's turn names the parent's turn it runs under as its root (0.171.0)
+        if (threadId !== null && typeof turn["rootTurnId"] === "string" && turn["rootTurnId"] !== turn["id"]) this.subagents.add(threadId);
         if (threadId === null || this.subagents.has(threadId)) break;
+        this.own(threadId, true);
         this.turn = "running";
-        this.own(threadId);
-        if (this.rerouted !== null) { this.rerouted = null; changed(this.paneId); }
+        this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
+        if (this.rerouted !== null && this.rerouted.turnId !== this.turnId) { this.rerouted = null; changed(this.paneId); }
         break;
+      }
       case "thread/tokenUsage/updated": {
         const context = threadId === this.thread ? tokenContext(params) : null;
         if (context === null || JSON.stringify(context) === JSON.stringify(this.context)) break;
@@ -431,20 +455,26 @@ class Connection {
         break;
       }
       case "model/rerouted":
-        if (threadId !== this.thread || typeof params["toModel"] !== "string" || params["toModel"].trim() === "") break;
-        this.rerouted = params["toModel"];
+        // only the turn the pane's thread runs now: a late one for a turn before it names no model of this one
+        if (threadId !== this.thread || typeof params["turnId"] !== "string" || (this.turnId !== null && params["turnId"] !== this.turnId)
+          || typeof params["toModel"] !== "string" || params["toModel"].trim() === "") break;
+        this.rerouted = { turnId: params["turnId"], model: params["toModel"] };
         changed(this.paneId);
         break;
       case "turn/completed": {
         const turn = isObject(params["turn"]) ? params["turn"] : {};
-        if (threadId !== null && !this.subagents.has(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
+        if (this.ownTurn(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
         break;
       }
       case "item/started": {
         const item = isObject(params["item"]) ? params["item"] : {};
         // a subagent Codex starts is told on the parent's thread before its own thread runs; a client that did not
         // start it gets no thread/started for it (0.171.0)
-        if (item["type"] === "subAgentActivity" && typeof item["agentThreadId"] === "string" && item["agentThreadId"] !== this.thread) this.subagents.add(item["agentThreadId"]);
+        if (item["type"] === "subAgentActivity" && typeof item["agentThreadId"] === "string" && item["agentThreadId"] !== threadId) {
+          this.subagents.add(item["agentThreadId"]);
+          // its turn came first and was taken for the pane's: the parent, which runs a turn now, is
+          if (this.thread === item["agentThreadId"] && threadId !== null) { this.own(threadId, true); this.turn = "running"; }
+        }
         if (item["type"] !== "fileChange" || typeof item["id"] !== "string" || !Array.isArray(item["changes"])) break;
         const edits = item["changes"].flatMap((change): FileChange[] => {
           if (!isObject(change) || typeof change["path"] !== "string" || typeof change["diff"] !== "string") return [];

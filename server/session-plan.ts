@@ -1,6 +1,6 @@
-import { basename } from "node:path";
 import type { ConversationMetadata, HerdrPane, PaneContext, PlanStep, PlanSummary } from "../shared/protocol.ts";
 import type { ServedStatus } from "./approvals/codex-status.ts";
+import { rolloutThread } from "./codex.ts";
 import { planSummary } from "../shared/plans.ts";
 import { plain } from "./claude-subagents.ts";
 import { PLAN_BUDGET, planState, readPlan, type PlanSource } from "./session-plan-reader.ts";
@@ -164,11 +164,11 @@ export class SessionPlans {
     this.deps.onContext?.(paneId, context);
   }
 
-  /** The context the pane's Codex server said, while the rollout read is that thread's (Codex names it by the thread). */
+  /** The context the pane's Codex server said, while the rollout read is that thread's (its name carries the thread). */
   private servedContext(paneId: string, tracked: Tracked): PaneContext | null {
     if (tracked.where?.source !== "codex-transcript") return null;
     const served = this.deps.codexServed?.(paneId) ?? null;
-    return served !== null && basename(tracked.where.path).endsWith(`-${served.threadId}.jsonl`) ? served.context : null;
+    return served !== null && rolloutThread(tracked.where.path) === served.threadId.toLowerCase() ? served.context : null;
   }
 }
 

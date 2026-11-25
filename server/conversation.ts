@@ -41,7 +41,7 @@ import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot
 import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { servedStatus } from "./approvals/codex.ts";
-import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, paneCodexProcess, parseCodexTranscript, readRange } from "./codex.ts";
+import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, paneCodexProcess, parseCodexTranscript, readRange, rolloutThread } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, hintedClaudeConfigDir, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
@@ -2448,7 +2448,7 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   if (resolved.source === "codex-transcript") {
     // Codex writes the model it was asked for; a turn it moved to another model is said only by its server
     const served = servedStatus(paneId);
-    if (served?.model && nodePath.basename(resolved.path).endsWith(`-${served.threadId}.jsonl`) && served.model !== answer.metadata.model) return {
+    if (served?.model && rolloutThread(resolved.path) === served.threadId.toLowerCase() && served.model !== answer.metadata.model) return {
       ...answer,
       metadata: { ...answer.metadata, model: served.model },
       version: answerVersion(answer.version, served.model),
