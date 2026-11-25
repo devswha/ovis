@@ -56,6 +56,9 @@ export const SIGN_IN_PULL_MS = 60_000;
 /** The same after such a pull could not read the mailbox (the service was down, or did not answer): it found nothing out. */
 export const SIGN_IN_PULL_RETRY_MS = ASKED_PULL_MS;
 export const SIGN_IN_WAIT_MS = 5_000;
+/** How long an id with no row here is remembered as first asking to sign in (AccountMailbox.unreadKey), and how many. */
+const UNREAD_KEY_MS = 10 * 60_000;
+const UNREAD_KEYS = 512;
 /** How long the account service's word on whether an account keeps a signed list is kept (AccountMailbox.listNamed). */
 const LIST_NAMED_MS = 30_000;
 /** The least time between two reads of an account's admissions for links (vouch): a 429 may name a longer one. */
@@ -350,13 +353,44 @@ export class AccountMailbox {
 
   pull(readmission?: Readmission): Promise<number> {
     this.pulling ??= this.exclusively(async () => {
+      const began = Date.now();
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
       const adds = applied + (await this.readSnapshotNow(readmission, this.drainedListing)).adds;
+      // the mailbox and the account's rows were read whole: every key the account let in by then has its row here
+      if (this.error === null) this.readBegan = began;
       await this.sendCompletion();
       return adds;
     }).finally(() => { this.pulling = undefined; });
     return this.pulling;
+  }
+
+  /** When the last pull that read the mailbox and the account's rows without an error began (Date.now()); null before one. */
+  private readBegan: number | null = null;
+  /** When each id this PC holds no row for first asked to sign in here (unreadKey): bounded, the oldest dropped first. */
+  private readonly firstAsked = new Map<string, number>();
+
+  /**
+   * An id this PC holds no row for asks to sign in now (relay/refused-signin.ts, before the read that ask starts): when
+   * it first asked, now unless it asked within UNREAD_KEY_MS. At most UNREAD_KEYS ids are kept, the oldest dropped first.
+   */
+  askedFirst(deviceId: string, now = Date.now()): number {
+    const first = this.firstAsked.get(deviceId);
+    if (first !== undefined && now - first >= 0 && now - first <= UNREAD_KEY_MS) return first;
+    this.firstAsked.delete(deviceId);
+    this.firstAsked.set(deviceId, now);
+    while (this.firstAsked.size > UNREAD_KEYS) this.firstAsked.delete(this.firstAsked.keys().next().value!);
+    return now;
+  }
+
+  /**
+   * A sign-in by an id this PC holds no row for: whether no pull that began after that id first asked here has read the
+   * account whole yet. While so, the key may be one the account let in that this PC has not read: the sign-in is told
+   * the PC is catching up (relay/session.ts). Once such a read finished without it, it is refused as any unknown key.
+   */
+  unreadKey(deviceId: string, now = Date.now()): boolean {
+    const first = this.askedFirst(deviceId, now);
+    return this.readBegan === null || this.readBegan < first;
   }
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
