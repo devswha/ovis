@@ -161,6 +161,33 @@ describe("ReorderCoordinator", () => {
     expect(movedSeq).toBe(thirdDrag ? 3 : 2);
   });
 
+  test.each([0, 1])("applies a queued drag despite an old-boot read before verification (seq %i)", async (seq) => {
+    const moves = mover();
+    let serverOrder = B;
+    const coordinator = new ReorderCoordinator({
+      verify: async () => ({ boot_id: "E2", machines: [] }),
+    });
+    const reversed = ["c", "b", "a"];
+    const oldOrder = ["a", "c", "b"];
+    const target = seq === 0 ? A : oldOrder;
+    coordinator.roster([entry("remote", O, "E1", 0)], event);
+    const first = coordinator.reorder("remote", O, reversed, moves.move);
+    const step = await moves.next();
+    let movedSeq = 0;
+    const queued = coordinator.reorder("remote", reversed, target, async ({ workspaceId, insertIndex }) => {
+      serverOrder = movedTabOrder(serverOrder, workspaceId, insertIndex) ?? serverOrder;
+      return { ok: true, order_epoch: "E2", moved_seq: ++movedSeq };
+    });
+    coordinator.roster([entry("remote", B, "E2", 0)], { kind: "load", started: coordinator.loadStarted() });
+    step.resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    const second = await moves.next();
+    coordinator.roster([entry("remote", seq === 0 ? O : oldOrder, "E1", seq)], event);
+    second.reject(new Error("second move refused"));
+    await first;
+    const outcome = await Promise.race([queued.then(() => "applied"), drain().then(() => "pending")]);
+    expect({ outcome, serverOrder }).toEqual({ outcome: "applied", serverOrder: target });
+  });
+
   test("uses a newer proven snapshot when another drag follows a failed batch", async () => {
     const checks = verifier(), moves = mover();
     const coordinator = new ReorderCoordinator({ verify: checks.verify });

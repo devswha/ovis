@@ -80,6 +80,9 @@ interface Hold {
   settleMark: number | null;
   /** the last roster's evidence when the newest move with a receipt since the hold last settled was sent; undefined until one */
   sent?: Evidence | null;
+  inFlight?: Evidence | null;
+  /** Keep a possible restart read even if the old boot sends another roster before recovery. */
+  restart?: OrderRead;
   /** A recovered batch can have a different set of workspaces from what later drags saw. */
   rebased?: string[];
 }
@@ -151,6 +154,7 @@ export class ReorderCoordinator {
     if (pc.gone) return;
     pc.gone = true;
     this.invalidateCheck(pc);
+    if (pc.hold) pc.hold.restart = undefined;
     for (const waiter of pc.waiters.splice(0)) { pc.pending.delete(waiter.generation); waiter.reject(new Error("This PC was removed")); }
     if (pc.pending.size === 0) { pc.hold = null; pc.desired = null; }
   }
@@ -166,19 +170,26 @@ export class ReorderCoordinator {
     const evidence = evidenceOf(snapshot);
     if (evidence && pc.retired.has(evidence.epoch)) return;
     if (evidence && pc.last?.evidence?.epoch === evidence.epoch && pc.last.evidence.seq > evidence.seq) return;
-    pc.last = { ids, evidence };
+    const read = { ids, evidence };
+    pc.last = read;
+    const hold = pc.hold;
+    if (hold && pc.pending.size > 0 && evidence && evidence.epoch !== (pc.protectedEpoch ?? hold.inFlight?.epoch)
+      && (pc.protectedEpoch !== null || hold.inFlight !== undefined)) {
+      const previous = hold.restart?.evidence;
+      if (previous?.epoch !== evidence.epoch || previous.seq <= evidence.seq) hold.restart = read;
+    }
     if (!pc.check && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
     if (pc.pending.size > 0 || pc.hold) {
       if (pc.pending.size === 0 && this.releases(pc, evidence, source)) { pc.hold = null; pc.desired = null; pc.shown = ids; return; }
       if (this.qualifies(pc, evidence)) pc.shown = ids;
-      else this.mismatch(id, pc, evidence);
+      else this.mismatch(id, pc, read);
       return;
     }
     if (pc.protectedEpoch === null || (evidence && evidence.epoch === pc.protectedEpoch)) {
       if (this.qualifies(pc, evidence)) pc.shown = ids;
       return;
     }
-    this.mismatch(id, pc, evidence);
+    this.mismatch(id, pc, read);
   }
 
   private releases(pc: PcOrder, evidence: Evidence | null, source: RosterSource): boolean {
@@ -189,20 +200,21 @@ export class ReorderCoordinator {
       && (pc.protectedEpoch === null || this.qualifies(pc, evidence)));
   }
 
-  private mismatch(id: string, pc: PcOrder, evidence: Evidence | null): void {
+  private mismatch(id: string, pc: PcOrder, read: OrderRead): void {
+    const { evidence } = read;
     const verify = this.options.verify;
     if (!verify || !evidence || pc.protectedEpoch === null || evidence.epoch === pc.protectedEpoch) return;
     const key = `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.protectedEpoch}`;
     if (pc.check?.key === key) {
       const previous = pc.check.candidate?.evidence;
       if (previous?.epoch === evidence.epoch && evidence.seq >= previous.seq) {
-        pc.check.candidate = pc.last;
+        pc.check.candidate = read;
         pc.check.updated = true;
       }
       return;
     }
     pc.check?.abort.abort();
-    const check = { key, abort: new AbortController(), candidate: pc.last, updated: false };
+    const check = { key, abort: new AbortController(), candidate: read, updated: false };
     pc.check = check;
     const finish = (answer: Awaited<ReturnType<SourceProofQuery>>) => {
       if (pc.check !== check) return;
@@ -275,7 +287,13 @@ export class ReorderCoordinator {
       const target = mergeOrder(next, base);
       for (const step of workspaceMoves(base, target)) {
         const sent = pc.last?.evidence ?? null;
-        this.acknowledge(pc, await move(step), sent);
+        const hold = pc.hold;
+        if (hold) hold.inFlight = sent;
+        try {
+          this.acknowledge(pc, await move(step), sent);
+        } finally {
+          if (hold) hold.inFlight = undefined;
+        }
       }
       if (recover && pc.hold) pc.hold.rebased = target;
     });
@@ -284,12 +302,12 @@ export class ReorderCoordinator {
   }
 
   private qualifiedBase(machineId: string, pc: PcOrder, generation: number): Promise<string[]> {
-    if (!pc.check && pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
     if (pc.gone) return Promise.reject(new Error("This PC was removed"));
+    const sent = pc.hold?.sent;
+    if (sent !== undefined) this.recheck(machineId, pc, sent);
+    if (!pc.check && pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
     return new Promise((resolve, reject) => {
       pc.waiters.push({ generation, resolve, reject });
-      const sent = pc.hold?.sent;
-      if (sent !== undefined) this.recheck(machineId, pc, sent);
     });
   }
 
@@ -325,6 +343,7 @@ export class ReorderCoordinator {
         const sent = hold.sent;
         hold.sent = undefined;
         if (sent !== undefined) this.recheck(machineId, pc, sent);
+        hold.restart = undefined;
       }
     }
     this.notify();
@@ -338,9 +357,15 @@ export class ReorderCoordinator {
    * since; also a repeated or delayed older read), nor of one a verification already answered about.
    */
   private recheck(machineId: string, pc: PcOrder, sent: Evidence | null): void {
-    const last = pc.last?.evidence;
-    if (!last || pc.retired.has(last.epoch) || last.epoch === sent?.epoch || last.epoch === pc.answered) return;
-    this.mismatch(machineId, pc, last);
+    if (pc.check) return;
+    const eligible = (read: OrderRead | null | undefined): read is OrderRead => {
+      const evidence = read?.evidence;
+      return !!evidence && !pc.retired.has(evidence.epoch) && evidence.epoch !== pc.protectedEpoch
+        && evidence.epoch !== sent?.epoch && evidence.epoch !== pc.answered;
+    };
+    const restart = pc.hold?.restart;
+    if (eligible(restart)) this.mismatch(machineId, pc, restart);
+    else if (eligible(pc.last)) this.mismatch(machineId, pc, pc.last);
   }
 }
 
