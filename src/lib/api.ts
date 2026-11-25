@@ -456,20 +456,6 @@ export async function decideRelayPairing(id: string, decision: "approve" | "decl
   if (!response.ok) throw await errorFrom(url, response);
 }
 
-/** POST /api/agent-tools/panes/answer: the owner's word on a pane hc started that asked for the agent tool (`agent-tool-panes`). */
-export async function answerAgentToolPane(id: string, decision: "allow" | "deny"): Promise<void> {
-  const url = "/api/agent-tools/panes/answer";
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision }) });
-  if (!response.ok) throw await errorFrom(url, response);
-}
-
-/** POST /api/agent-tools/panes/remove: takes the agent tool back from a pane the owner allowed. */
-export async function removeAgentToolPane(id: string): Promise<void> {
-  const url = "/api/agent-tools/panes/remove";
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id }) });
-  if (!response.ok) throw await errorFrom(url, response);
-}
-
 /** POST /api/account/confirm-page: opens this PC's confirm page on its own desktop (own window only; 409 when it cannot). */
 export async function openConfirmPage(): Promise<void> {
   const url = "/api/account/confirm-page";
@@ -542,14 +528,16 @@ export class ApiError extends Error {
   readonly code: string | null;
   readonly detail: string;
   readonly retryAfterMs: number | null;
+  readonly fromStatusText: boolean;
 
-  constructor(url: string, status: number, detail: string, code: string | null, retryAfterMs: number | null = null) {
+  constructor(url: string, status: number, detail: string, code: string | null, retryAfterMs: number | null = null, fromStatusText = false) {
     super(`${url} failed (${status}): ${detail}`);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.detail = detail;
     this.retryAfterMs = retryAfterMs;
+    this.fromStatusText = fromStatusText;
   }
 }
 
@@ -565,17 +553,18 @@ const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
 
 export async function errorFrom(url: string, response: Response): Promise<ApiError> {
   let detail = response.statusText;
+  let fromStatusText = true;
   let code: string | null = null;
   try {
     const body = (await response.json()) as { error?: { code?: string; message?: string } };
-    if (body.error?.message) detail = body.error.message;
+    if (body.error?.message) { detail = body.error.message; fromStatusText = false; }
     if (body.error?.code) code = body.error.code;
   } catch {
   }
-  if (code !== null && Object.hasOwn(LOCALIZED_ERRORS, code)) detail = LOCALIZED_ERRORS[code]!();
+  if (code !== null && Object.hasOwn(LOCALIZED_ERRORS, code)) { detail = LOCALIZED_ERRORS[code]!(); fromStatusText = false; }
   const retryAfter = response.headers.get("retry-after");
   const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
-  return new ApiError(url, response.status, detail, code, seconds === null ? null : seconds * 1000);
+  return new ApiError(url, response.status, detail, code, seconds === null ? null : seconds * 1000, fromStatusText);
 }
 
 async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
