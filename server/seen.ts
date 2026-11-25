@@ -12,7 +12,7 @@ export class SeenStore {
   private readonly presentations = new Set<(finish: SeenFinish) => void>();
   private unsettled = true;
   private tail: Promise<void> = Promise.resolve();
-  private pending = 0;
+  private readonly pending = { record: 0, move: 0 };
   private closed = false;
 
   /**
@@ -49,12 +49,16 @@ export class SeenStore {
     return [...this.finishes.values()].filter((finish) => !this.over(finish));
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  private enqueue<T>(kind: "record" | "move", operation: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Seen store is closed"));
-    if (this.pending >= MAX_SEEN) return Promise.reject(new Error("Seen writer queue is full; retry the acknowledgement"));
-    this.pending++;
+    // Acknowledgements can retry; pane-moved notifications cannot. Give each a fixed budget
+    // so an acknowledgement backlog cannot crowd out a move, without losing write ordering.
+    if (this.pending[kind] >= MAX_SEEN) return Promise.reject(new Error(
+      kind === "record" ? "Seen writer queue is full; retry the acknowledgement" : "Seen pane move queue is full",
+    ));
+    this.pending[kind]++;
     const result = this.tail.then(operation);
-    this.tail = result.then(() => { this.pending--; }, () => { this.pending--; });
+    this.tail = result.then(() => { this.pending[kind]--; }, () => { this.pending[kind]--; });
     return result;
   }
 
@@ -66,7 +70,7 @@ export class SeenStore {
   }
 
   record(finish: SeenFinish, presented?: SeenPresentation): Promise<SeenFinish> {
-    return this.enqueue(async () => {
+    return this.enqueue("record", async () => {
       if (this.over(finish)) return finish;
       const kept = await this.keep(finish, presented);
       if (presented === "new") for (const listener of [...this.presentations]) listener(finish);
@@ -108,8 +112,8 @@ export class SeenStore {
    * browser is told.
    */
   moved(pc: string, from: string, to: string, renumber: (id: number) => number = (id) => id): Promise<void> {
-    return this.enqueue(async () => {
-      if (from === to) return;
+    if (from === to) return Promise.resolve();
+    return this.enqueue("move", async () => {
       for (const finish of this.list()) {
         if (finish.pc !== pc || finish.pane !== from) continue;
         await this.keep({ ...finish, pane: to, id: renumber(finish.id) }, undefined);

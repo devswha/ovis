@@ -381,6 +381,7 @@ export class MachineManager {
   private jobs = new Map<string, JobState>();
   private listeners = new Set<(event: MachineEvent) => void>();
   private stopped = false;
+  private readonly bridgeWork = new Map<string, Promise<void>>();
   private localBusy = false;
   private localRefreshQueued = false;
   private localRevision = 0;
@@ -2260,12 +2261,18 @@ export class MachineManager {
     const generation = runtime.generation;
     if (runtime.hc) {
       const hc = runtime.hc;
+      const current = () => generation === runtime.generation && !this.stopped && runtime.hc === hc;
       try {
         delete runtime.machine.herdr;
-        const bridge = await this.hcStart!(hc);
-        if (generation !== runtime.generation || this.stopped || runtime.hc !== hc) { await bridge.stop(); return; }
-        hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
-        void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
+        const prior = this.bridgeWork.get(hc.id) ?? Promise.resolve();
+        await this.trackBridgeWork(hc.id, prior.catch(() => undefined).then(async () => {
+          if (!current()) return;
+          const bridge = await this.hcStart!(hc);
+          if (!current()) { await bridge.stop(); return; }
+          hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
+          void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
+        }));
+        if (!current()) return;
         await this.observe(runtime); this.emit();
       } catch (e) { this.lost(runtime, generation, e); }
       return;
@@ -2319,6 +2326,13 @@ export class MachineManager {
     }).catch((e) => { console.error("Automatic bridge update failed:", e instanceof Error ? e.message : String(e)); })
       .finally(() => { this.autoQueued.delete(id); });
   }
+  private trackBridgeWork(id: string, work: Promise<void>): Promise<void> {
+    const tracked = work.finally(() => {
+      if (this.bridgeWork.get(id) === tracked) this.bridgeWork.delete(id);
+    });
+    this.bridgeWork.set(id, tracked);
+    return tracked;
+  }
   private disconnect(runtime: Runtime): void {
     runtime.generation++;
     runtime.refreshQueued = false;
@@ -2330,7 +2344,11 @@ export class MachineManager {
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
     runtime.forward?.close(); runtime.forward = undefined;
-    if (runtime.hc?.bridge) { void runtime.hc.bridge.stop(); runtime.hc.bridge = undefined; }
+    if (runtime.hc?.bridge) {
+      const drain = runtime.hc.bridge.stop().catch((error) => console.warn("Could not stop the machine bridge:", error));
+      void this.trackBridgeWork(runtime.hc.id, drain);
+      runtime.hc.bridge = undefined;
+    }
     runtime.verification?.abort.abort(); runtime.verification = undefined;
     runtime.acceptedEpoch = undefined; runtime.candidate = undefined; runtime.candidateRun = undefined; delete runtime.machine.source_boot_id;
     runtime.move = undefined;
@@ -2724,8 +2742,8 @@ export class MachineManager {
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }
-    await Promise.all([...this.machines.values()].flatMap(({ hc }) => hc?.bridge ? [hc.bridge.stop()] : []));
     this.listeners.clear();
+    await Promise.allSettled(this.bridgeWork.values());
   }
 }
 

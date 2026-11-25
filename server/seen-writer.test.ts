@@ -85,3 +85,27 @@ it("queues pane moves behind accepted records and ahead of subsequent records", 
     expect(new SeenStore(dir).list()).toEqual(store.list());
   } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+it("carries a pane's read receipt even when the acknowledgement queue is full", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "seen-writer-"));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const store = new SeenStore(dir, undefined, async (path, text, damaged) => {
+    entered.resolve();
+    await release.promise;
+    writeStateDocument(path, text, damaged);
+  });
+  const finish = { pc: "local", epoch: "e", pane: "old", id: 2 };
+  try {
+    const records = Promise.all(Array.from({ length: 500 }, () => store.record(finish)));
+    await entered.promise;
+    const moved = store.moved("local", "old", "new");
+    release.resolve();
+    await Promise.all([records, moved]);
+    expect(new SeenStore(dir).list()).toContainEqual({ ...finish, pane: "new" });
+  } finally {
+    release.resolve();
+    await store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

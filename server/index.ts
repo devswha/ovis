@@ -990,8 +990,7 @@ export function createServer(
       accountCatchUp.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
-      const stoppingMachines = machines?.stop();
-      core.stop(() => {
+      const stoppingMachines = core.stop(() => {
         clearInterval(draftTimer);
         openCodeState.clear();
         void options.portal?.shutdown();
