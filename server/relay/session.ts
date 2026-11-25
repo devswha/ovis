@@ -825,7 +825,7 @@ export class RelaySession {
    * join, which this PC's own window alone allows; a PC vouched for still needs a member.
    */
   private async accountJoin(key: string): Promise<"members" | "first" | "unanswered" | null> {
-    const { devices, relay } = this.options.services;
+    const { devices, relay, accountMailbox } = this.options.services;
     const allowed = (): "members" | "first" | null => {
       if ((this.intent !== "account" && this.intent !== "vouched") || devices.account() === null) return null;
       if (devices.hasAccountApprover()) return "members";
@@ -833,7 +833,8 @@ export class RelaySession {
     };
     if (allowed() === null) return null;
     this.mux.extendSetup(PAIR_APPROVAL_MS + 1_000);
-    const admitted = await this.joinAdmission(key);
+    // only a client that can hear why (account-listing-errors-1) is cut off at the bound; any other waits as it always did
+    const admitted = this.listingErrors ? await this.joinAdmission(key) : await accountMailbox.admitted(key);
     if (admitted !== true) return admitted === "unanswered" ? "unanswered" : null;
     // decided again once admitted: a member who joined meanwhile approves it as ever
     const joined = allowed();
@@ -841,11 +842,17 @@ export class RelaySession {
     return joined !== null && (this.intent === "vouched" || relay.approvals.takeAccountJoin()) ? joined : null;
   }
 
-  /** The account's word on the join of `key`, within JOIN_ADMISSION_WAIT_MS: an answer that comes later serves the next try. */
+  /**
+   * The account's word on the join of `key`, within JOIN_ADMISSION_WAIT_MS: an answer that comes later serves the next try.
+   * At the bound it answers by what the PC has read so far: the mailbox records the admission before the rest of its read.
+   */
   private async joinAdmission(key: string): Promise<boolean | "unanswered"> {
+    const { accountMailbox } = this.options.services;
     let cancel = (): void => {};
-    const late = new Promise<"unanswered">((resolve) => { cancel = this.clock.setTimeout(() => resolve("unanswered"), JOIN_ADMISSION_WAIT_MS); });
-    try { return await Promise.race([this.options.services.accountMailbox.joinAdmitted(key), late]); }
+    const late = new Promise<boolean | "unanswered">((resolve) => {
+      cancel = this.clock.setTimeout(() => resolve(accountMailbox.currentAdmission(key) ? true : "unanswered"), JOIN_ADMISSION_WAIT_MS);
+    });
+    try { return await Promise.race([accountMailbox.joinAdmitted(key), late]); }
     finally { cancel(); }
   }
 

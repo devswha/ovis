@@ -258,7 +258,12 @@ export class AccountMailbox {
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private pulling: Promise<number> | undefined;
-  /** The last read of the mailbox got no answer from the account service: its calls failed on the way or ran out of time. */
+  /**
+   * The last read of the mailbox got no answer from the account service: its calls failed on the way or ran out of time.
+   * Only the last drain sets it (a join that starts no read sees an earlier one's, and a drain that stops early leaves
+   * it); a TypeError can also be a fault of this PC's, and a 503 or 429 counts as answered. It only chooses the words of
+   * a refusal (joinAdmitted), never who is let in.
+   */
   private unanswered = false;
 
   private pending: unknown[];
