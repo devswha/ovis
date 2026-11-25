@@ -121,6 +121,22 @@ test("the read a sign-in starts itself refuses it, also in the millisecond it fi
   expect(await signIn(pc, device)).toMatchObject(REFUSED);
 });
 
+test("a whole read that ended before the key first asked, in the same millisecond, does not end its wait", async () => {
+  const time = testTime();
+  const pc = await pcInAccount();
+  const device = await stranger();
+  pc.ready();
+  time.advance(1_000);
+  // the clock stands: a whole read, then the key's first ask, in one millisecond; every read after it fails
+  await pc.mailbox.pull();
+  pc.reach.down = true;
+  expect(await signIn(pc, device)).toEqual(CATCHING_UP);
+  // the first read that begins after the ask, and reads whole, ends the wait, in that same millisecond too
+  pc.reach.down = false;
+  await pc.mailbox.pull();
+  expect(await signIn(pc, device)).toMatchObject(REFUSED);
+});
+
 test("a read that began before the key first asked does not refuse it: only one after it does", async () => {
   const pc = await pcInAccount();
   const device = await stranger();
