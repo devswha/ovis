@@ -211,7 +211,8 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
               <li key={pc.server_id} className="account-manage-row" data-pc-id={pc.server_id}>
                 <StatusDot state={off ? "offline" : "ready"} />
                 <span className="visually-hidden">{off ? t("Offline") : t("Online")}</span>
-                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Update Ovis on this PC")}` : ""}</span>}</span>
+                {/* no keys posted: not added from that PC yet, or its Ovis is from before lists; both are said */}
+                <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first")}` : ""}</span>}</span>
                 {post !== undefined && <button type="button" className="btn account-head-btn" data-action="add-pc" onClick={() => setAdding({ pc, post })}>{t("Add|account pc")}</button>}
                 {/* a PC in use lists itself again on its next pull: only an offline one is offered, whatever its age */}
                 {off && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}

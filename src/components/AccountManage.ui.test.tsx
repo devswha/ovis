@@ -165,8 +165,9 @@ describe("Manage account's devices and PCs", () => {
       // the directory routes Desk (heard from lately) and names Dead box alone; the list holds Laptop with no route
       pcs = [{ ...pcs[0]!, public_key: "a".repeat(64), relay: "wss://relay.example" }, pcs[1]!] as Service.DirectoryPc[];
       const root = await mount();
-      // this device may write the list, and Dead box posted no keys for it: it runs an Ovis from before lists
-      expect(rows(root, "account-pcs")).toEqual(["OfflineLaptopRemove", "OnlineDesk", "OfflineDead box · Not in your account's list yet · Update Ovis on this PCRemove"]);
+      // this device may write the list, and Dead box posted no keys for it: it was not added from itself yet, or runs an
+      // Ovis from before lists
+      expect(rows(root, "account-pcs")).toEqual(["OfflineLaptopRemove", "OnlineDesk", "OfflineDead box · Not in your account's list yet · Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 firstRemove"]);
       const removes = () => root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-pc");
       await act(async () => { removes()[0]!.props.onClick(); });
       expect(textOf(dialog(root))).toContain("Remove Laptop from your account?");
@@ -220,7 +221,7 @@ describe("Manage account's devices and PCs", () => {
       // Dead box posted for the list; Old box runs a build from before lists
       posted = [{ server_id: "b".repeat(32) }];
       const root = await mount();
-      expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box · Not in your account's list yetAddRemove", "OnlineOld box · Not in your account's list yet · Update Ovis on this PC"]);
+      expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box · Not in your account's list yetAddRemove", "OnlineOld box · Not in your account's list yet · Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first"]);
       await act(async () => { action(root, "add-pc").props.onClick(); });
       const number = root.find((node) => node.props["data-testid"] === "add-pc-number");
       expect([number.props["data-post"], number.props["data-name"], number.props["data-account"]]).toEqual(["b".repeat(32), "Dead box", "acct"]);

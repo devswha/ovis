@@ -360,7 +360,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "A PC not in the list": "不在列表中的电脑",
   "user@host or address": "user@host 或地址",
   "Enter an SSH address, such as user@host.": "请输入 SSH 地址，例如 user@host。",
-  "Update Ovis on this PC": "请更新这台 PC 上的 Ovis",
+  "Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first": "请在那台 PC 上添加（ovis add，或在其窗口中选择“将此 PC 添加到我的账户”）；早于 0.5.10 的 Ovis 需先更新",
   "{name} moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "确认之后 {name} 换成了新的密钥。没有移除任何内容：要移除它，请再次点击移除。",
   "Moved to a new key on {day}": "{day} 换成了新密钥",
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "此设备在账户中的位置已交给一个新密钥（{name}）。如果不是你做的，请在你的另一台设备上移除那台设备。",
