@@ -2453,7 +2453,12 @@ move is never named to any PC.
 - **Sessions.** A device that follows its moved list names it (`POST /api/account/list/name`, the
   naming by the key the list holds it by, with the vouch of the sign-in key the session signed in
   with) to every PC of the account that takes no `account-list-1`: one its directory lists, or one
-  its own record knows. It says nothing of the move to any other PC. On a PC that does, a PC the
+  its own record knows. A PC this device is paired with opens by that pairing, whose naming the PC
+  does not take, so the device also names its list over a session of its own through the account
+  (this sign-in's key, where the directory lists the PC) to each PC its record knows that has not
+  said it follows the list, once in ten minutes at most, never over a pairing; a PC it reaches only
+  by a pairing learns the list from another device it knows, or from Add at the PC. It says
+  nothing of the move to any other PC. On a PC that does, a PC the
   move left with no keys gets them from a member that did something itself for that PC: it takes the
   PC's card over the session (`POST /api/account/list/card`), checks it for this list and that relay
   key, signs the `pc` entry and hands the PC the page. Any other member leaves it to the number at

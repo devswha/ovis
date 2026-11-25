@@ -427,8 +427,13 @@ export async function onPcSession(given: {
   if (given.session === null || list.naming === undefined) return;
   const named = await list.naming({ account, session: given.session, endpoint, signIn: given.signIn });
   if (named === null) return;
+  await nameListTo(given.fetch, named);
+}
+
+/** Hands a PC the naming of the list, with its vouches, over the session `fetch` is of (POST /api/account/list/name). */
+export async function nameListTo(fetch: PcFetch, named: NonNullable<Awaited<ReturnType<NonNullable<AccountList["naming"]>>>>): Promise<void> {
   try {
-    await given.fetch("/api/account/list/name", {
+    await fetch("/api/account/list/name", {
       method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
       body: JSON.stringify({ naming: named.naming, ...(named.vouches.length === 0 ? {} : { vouches: named.vouches }) }),
     });
