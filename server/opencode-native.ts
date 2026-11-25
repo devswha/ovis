@@ -2,7 +2,8 @@
  * What an OpenCode v2 pane's own service says, read only from a service that already runs and that
  * /api/info proves is the one service.json names (never started or ensured here): the command and
  * skill rows for the pane's directory, the skill-activation and turn-completion events of the
- * pane's exact session, which settle a Chat send's outcome as native evidence, and the permission
+ * pane's exact session, which settle a Chat send's outcome as native evidence (and, for the TUI's own
+ * pickers and its compact, the selection or compaction they end in), and the permission
  * events that tell a prompt watch to read the pane's requests again.
  */
 import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
@@ -31,6 +32,8 @@ const CATALOG_MAX = 64;
 interface Watch {
   paneId: string; sessionID: string; at: number;
   sendId?: string; texts?: ReadonlySet<string>; skills?: ReadonlySet<string>;
+  /** the event that is this send's result where the TUI acts on it itself, enqueuing no message (RESULT_EVENTS) */
+  result?: string;
   early: OpenCodeEvent[]; inboxID?: string; delivered: boolean;
   verified: boolean;
 }
@@ -119,10 +122,24 @@ function enqueuedMessage(data: Record<string, unknown>): { inboxID: string; text
   };
 }
 
+/**
+ * The commands OpenCode's TUI runs itself, by the event that is their result (recorded on 2.2.2,
+ * server/fixtures/opencode-result-events-2.2.2.json): a model or variant picked in its picker selects the session's
+ * model, an agent picked selects its agent, and /compact ends in a compaction the user asked for (`reason: "manual"`).
+ */
+const RESULT_EVENTS: Readonly<Record<string, string>> = {
+  models: "session.model.selected", variants: "session.model.selected", agents: "session.agent.selected", compact: "session.compaction.ended",
+};
+
 const sameSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean => left.size === right.size && [...left].every((item) => right.has(item));
 
 function step(watch: Watch, event: OpenCodeEvent): void {
-  if (event.type === "session.inbox.enqueued" && watch.inboxID === undefined) {
+  if (watch.result !== undefined) {
+    if (event.type === "session.compaction.failed" && watch.result === "session.compaction.ended" && event.data.reason === "manual") watches.splice(watches.indexOf(watch), 1);
+    if (event.type !== watch.result || (event.type === "session.compaction.ended" && event.data.reason !== "manual")) return;
+    watches.splice(watches.indexOf(watch), 1);
+    noteCommandEvidence(watch.paneId, watch.sendId!, { kind: "native", at: event.created! });
+  } else if (event.type === "session.inbox.enqueued" && watch.inboxID === undefined) {
     const message = enqueuedMessage(event.data);
     if (message && watch.texts!.has(message.text) && sameSet(message.skills, watch.skills!)) watch.inboxID = message.inboxID;
   } else if (event.type === "session.inbox.delivered" && watch.inboxID !== undefined && event.data.inboxID === watch.inboxID) watch.delivered = true;
@@ -415,6 +432,8 @@ export function startOpenCodeWatch(pane: HerdrPane, sent: CommandSend | undefine
       if (!watches.includes(watch) || watch.sendId !== undefined) return;
       if (final.form?.interaction === "terminal") { remove(); return; }
       watch.sendId = final.id;
+      // typed as the slash command alone: /compact is a builtin of each version's own list (skills/opencode.ts)
+      watch.result = final.invocations.length === 1 && final.text.trim() === `/${final.invocations[0]!.name}` ? RESULT_EVENTS[final.invocations[0]!.name] : undefined;
       watch.texts = openCodePromptTexts(prompt);
       watch.skills = new Set(attached);
       flush();
