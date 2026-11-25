@@ -1,23 +1,23 @@
-import type { CardText, ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
+import type { CardText, ConversationTurn, InteractivePrompt, InteractivePromptOption } from "../../shared/protocol.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
 import { parseInline, shownText } from "../../shared/markdown.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 
 /**
  * An option's name as its card shows it, the one reading the card's rendering and a typed answer share
- * (#2220): an omp card in Markdown shows its label whole (InlineMarkdown), and `words` are the
- * characters that shows (shownText, which the server held to omp's screen); another card reads a
- * trailing "(Recommended)" off as the Recommended tag (Claude draws its own pick as "Redis (Recommended)").
- * In Markdown only gjc's own suffix is that tag, ` (Recommended)` as gjc adds it (server/gjc-ask.ts): a Markdown link
- * to `recommended` is an omp option's words, never that tag.
+ * (#2220): an omp or gjc card in Markdown shows its label whole (InlineMarkdown) without stripping
+ * literal `(Recommended)` text — only options explicitly carrying `recommended: true` show the
+ * Recommended tag. Plain-text cards read a leading or trailing "(Recommended)" off as that tag
+ * (Claude draws its own pick as "Redis (Recommended)").
  */
-export function optionName(prompt: InteractivePrompt, label: string): { text: string; recommended: boolean; words: string } {
+export function optionName(prompt: InteractivePrompt, option: string | InteractivePromptOption): { text: string; recommended: boolean; words: string } {
+  const label = typeof option === "string" ? option : option.label;
+  const marked = typeof option !== "string" && option.recommended === true;
   if (prompt.text_format === "markdown") {
-    const text = label.replace(/ \(Recommended\)$/, "");
-    return { text, recommended: text !== label, words: shownText(parseInline(text, false)) ?? text };
+    return { text: label, recommended: marked, words: shownText(parseInline(label, false)) ?? label };
   }
   const text = label.replace(/^\(recommended\)\s+|\s*\(recommended\)$/i, "");
-  return { text, recommended: text !== label, words: text };
+  return { text, recommended: marked || text !== label, words: text };
 }
 
 /** What an approval's option grants: this one call, every call like it from now on, or nothing. */

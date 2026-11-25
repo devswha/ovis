@@ -221,6 +221,7 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
       checkedOptionIndices: [], customMenuIndex: customIndex, rejectWithEscapeIndex: null,
       optionSteps: choices.map(({ steps }) => steps),
       gjcTitleRows: above,
+      ...(border >= 0 && closing ? { gjcTitleWidth: closing.length } : {}),
     }, steadyFields(agent, question, body, steady.read)), choiceRows);
   }
   const last = shown.slice(-16).map((index) => cleanLine(lines[index]!));
@@ -270,7 +271,7 @@ function tickless(agent: string, line: string): string {
 const gjcMenuIdentities = new WeakMap<ParsedPrompt, string>();
 
 /** A gjc selector's card with other words shown (server/gjc-ask.ts): its id, keys and custom-editor identity stay the screen's. */
-export function gjcMenuShown(parsed: ParsedPrompt, shown: Pick<ParsedPrompt, "question" | "body" | "options" | "text_format">): ParsedPrompt {
+export function gjcMenuShown(parsed: ParsedPrompt, shown: Pick<ParsedPrompt, "question" | "body" | "options" | "text_format" | "gjcCall">): ParsedPrompt {
   const next = { ...parsed, ...shown };
   const identity = gjcMenuIdentities.get(parsed);
   if (identity !== undefined) gjcMenuIdentities.set(next, identity);

@@ -39,11 +39,20 @@ describe("a polled prompt card (#2220 review)", () => {
     expect(fallen.text_format).toBeUndefined();
   });
 
-  it("reads gjc's ` (Recommended)` off a Markdown label as the tag, and only that suffix", () => {
-    const card = { ...markdown, agent: "gjc" };
-    expect(optionName(card, "Keep `local` socket (Recommended)")).toEqual({ text: "Keep `local` socket", recommended: true, words: "Keep local socket" });
-    expect(optionName(card, "Keep socket (recommended)")).toMatchObject({ recommended: false });
+  it("uses the explicit recommended flag on Markdown options and keeps literal (Recommended) text untouched", () => {
+    const card = {
+      ...markdown,
+      agent: "gjc",
+      options: [
+        { label: "Keep `local` socket", description: null, recommended: true as const },
+        { label: "Literal (Recommended)", description: null },
+      ],
+    };
+    expect(optionName(card, card.options[0]!)).toEqual({ text: "Keep `local` socket", recommended: true, words: "Keep local socket" });
+    expect(optionName(card, card.options[1]!)).toEqual({ text: "Literal (Recommended)", recommended: false, words: "Literal (Recommended)" });
     expect(optionName(card, "[x](recommended)")).toMatchObject({ recommended: false, words: "x" });
+    const ompCard = { ...markdown, agent: "omp", options: [{ label: "Use local socket (Recommended)", description: null }] };
+    expect(optionName(ompCard, ompCard.options[0]!)).toEqual({ text: "Use local socket (Recommended)", recommended: false, words: "Use local socket (Recommended)" });
   });
 
   it("takes the words read off the screen over the same card as they change (#2088)", () => {

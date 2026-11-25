@@ -1,11 +1,15 @@
-import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gjcAskPrompt } from "./gjc-ask.ts";
+import * as conversation from "./conversation.ts";
+import { gjcAskPrompt, withGjcFallback } from "./gjc-ask.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { parsedByPublicPrompt } from "./dialogs/shared.ts";
+import * as herdr from "./herdr/client.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
-import { answerKeys } from "./prompt.ts";
+import { answerKeys, handlePromptRequest } from "./prompt.ts";
 
 /**
  * gjc 0.22.0 in Ovis (200 columns): the screen recorded while its ask selector was open, and the session's call for
@@ -37,17 +41,21 @@ describe("gjc ask cards in the agent's own Markdown", () => {
 
   it("gives the open call's whole question and labels to the selector it draws, keeping its id and keys", () => {
     const read = card();
-    const rich = gjcAskPrompt(read, open());
+    const rich = gjcAskPrompt(read, open(), "/sess/one.jsonl");
     expect(rich).toMatchObject({
       id: read.id, kind: "menu", question: QUESTION, body: null, text_format: "markdown", custom_option_index: 3, multi_select: false,
       options: [
-        { label: "Keep `local` socket (Recommended)", description: null },
+        { label: "Keep `local` socket", description: null, recommended: true },
         { label: "Remote relay", description: null },
         { label: "Neither", description: null },
         { label: "Other (type your own)", description: null },
         { label: "Esc", description: null },
       ],
     });
+    expect(parsedByPublicPrompt.get(rich)?.gjcCall).toBeTruthy();
+    const otherCall = open().map((call) => ({ ...call, id: "call_replacement" }));
+    const richOther = gjcAskPrompt(read, otherCall, "/sess/one.jsonl");
+    expect(parsedByPublicPrompt.get(richOther)?.gjcCall).not.toBe(parsedByPublicPrompt.get(rich)?.gjcCall);
     for (const option_index of [0, 1, 2, 4]) expect(answerKeys(rich, { option_index })).toEqual(answerKeys(read, { option_index }));
     expect(answerKeys(rich, { custom_text: "mine" })).toEqual(answerKeys(read, { custom_text: "mine" }));
   });
@@ -61,21 +69,65 @@ describe("gjc ask cards in the agent's own Markdown", () => {
     expect(gjcCustomEditorMatches(editor, parsedByPublicPrompt.get(rich)!, "mine")).toBe(true);
   });
 
-  it("reads a question gjc wrapped at a narrow pane", () => {
+  it("reads a question gjc wrapped at a narrow pane, including mid-word CJK wraps", () => {
     const narrow = SCREEN.replace(` ${FIRST_ROW}`, " Fixture capture for the GJC ask card. This first\n paragraph mentions inline code and bold words.");
     expect(gjcAskPrompt(card(narrow), open()).question).toBe(QUESTION);
+
+    const cjkQuestion = "**接続方法をどれにするか教えてください？**";
+    const cjkScreen = [
+      "─".repeat(25),
+      "",
+      " 接続方法をどれにするか",
+      " 教えてください？",
+      "",
+      "─".repeat(25),
+      "│❯ Keep (Recommended)   │",
+      "│  Remote relay         │",
+      "│  Neither              │",
+      "│  Other (type your own)│",
+      "─".repeat(25),
+      "",
+      " up/down navigate",
+      " enter select esc cancel",
+      "",
+      "─".repeat(25),
+    ].join("\n");
+    const cjkCalls = withArgs(open(), (args) => {
+      args.questions[0]!.question = cjkQuestion;
+      args.questions[0]!.options[0]!.label = "Keep";
+    });
+    expect(gjcAskPrompt(card(cjkScreen), cjkCalls)).toMatchObject({ question: cjkQuestion, body: null, text_format: "markdown" });
+
+    // A short line break in a wide pane must never merge two words without a space
+    const shortLineBreak = SCREEN.replace(` ${FIRST_ROW}`, " Fixture capture for the GJC\n ask card. This first paragraph mentions inline code and bold words.");
+    const mergedCalls = withArgs(open(), (args) => {
+      args.questions[0]!.question = QUESTION.replace("GJC ask", "GJCask");
+    });
+    expect(gjcAskPrompt(card(shortLineBreak), mergedCalls).text_format).toBeUndefined();
   });
 
-  it("reads the start of a question taller than the selector's title rows only while it shows that start", () => {
+  it("does not bind a truncated title (▼ more or ▲ more), since another call can share its visible prefix", () => {
     const rows = SCREEN.split("\n");
     const top = rows.indexOf(` ${FIRST_ROW}`);
     const last = rows.indexOf(` ${LAST_ROW}`);
     const cut = [...rows.slice(0, top + 2), " ▼ more", ...rows.slice(last + 1)].join("\n");
-    expect(gjcAskPrompt(card(cut), open())).toMatchObject({ question: QUESTION, body: null, text_format: "markdown" });
+    expect(gjcAskPrompt(card(cut), open()).text_format).toBeUndefined();
     const scrolled = [...rows.slice(0, top), " ▲ more", ...rows.slice(top + 3, last + 1), ...rows.slice(last + 1)].join("\n");
     expect(gjcAskPrompt(card(scrolled), open()).text_format).toBeUndefined();
-    const other = cut.replace("A second line in the same paragraph.", "A second line in another paragraph.");
-    expect(gjcAskPrompt(card(other), open()).text_format).toBeUndefined();
+  });
+
+  it("preserves a non-recommended option's literal (Recommended) suffix without marking it recommended", () => {
+    const literalScreen = SCREEN
+      .replace("│❯ Keep local socket (Recommended)", "│❯ Keep local socket (Recommended)")
+      .replace("│  Remote relay", "│  Remote relay (Recommended)");
+    const calls = withArgs(open(), (args) => {
+      args.questions[0]!.options[0]!.label = "Keep `local` socket (Recommended)";
+      args.questions[0]!.recommended = 1;
+    });
+    const rich = gjcAskPrompt(card(literalScreen), calls);
+    expect(rich.text_format).toBe("markdown");
+    expect(rich.options[0]).toEqual({ label: "Keep `local` socket (Recommended)", description: null });
+    expect(rich.options[1]).toEqual({ label: "Remote relay", description: null, recommended: true });
   });
 
   it("reads one of a call's several questions by its (n/m) and the strip's keys", () => {
@@ -123,5 +175,98 @@ describe("gjc ask cards in the agent's own Markdown", () => {
     const read = card(twins);
     expect(read.options.map((option) => option.label).slice(0, 2)).toEqual(["Keep local socket", "Keep local socket"]);
     expect(gjcAskPrompt(read, calls)).toBe(read);
+  });
+
+  describe("transcript resolution and stale-call protection", () => {
+    const cleanupDirs: string[] = [];
+    const spies: { mockRestore(): void }[] = [];
+
+    afterEach(() => {
+      while (spies.length > 0) spies.pop()!.mockRestore();
+      while (cleanupDirs.length > 0) rmSync(cleanupDirs.pop()!, { recursive: true, force: true });
+    });
+
+    it("resolves paneTranscript once per gjc fallback read and skips it when enrich is false", async () => {
+      const lookup = spyOn(conversation, "paneTranscript").mockResolvedValue({
+        source: "gjc-transcript",
+        path: fixture("open.jsonl"),
+      });
+      spies.push(lookup);
+
+      const base = card();
+      const plain = await withGjcFallback("w1:p-gjc-1", base, SCREEN, false);
+      expect(plain).toBe(base);
+      expect(lookup).toHaveBeenCalledTimes(0);
+
+      const enriched = await withGjcFallback("w1:p-gjc-1", base, SCREEN, true);
+      expect(enriched?.text_format).toBe("markdown");
+      expect(lookup).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses to answer a replacement gjc ask call that draws the same screen, while allowing the original call with one transcript lookup", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "gjc-ask-answer-"));
+      cleanupDirs.push(dir);
+      const sessionPath = join(dir, "session.jsonl");
+      const openText = readFileSync(fixture("open.jsonl"), "utf8");
+      writeFileSync(sessionPath, openText);
+
+      const paneId = "w1:p-gjc-stale";
+      const sentKeys: string[][] = [];
+      spies.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+        panes: [{ pane_id: paneId, agent: "gjc", agent_status: "blocked", cwd: dir }],
+        workspaces: [],
+        tabs: [],
+      } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>));
+      spies.push(spyOn(herdr, "paneRead").mockResolvedValue({ text: SCREEN } as Awaited<ReturnType<typeof herdr.paneRead>>));
+      spies.push(spyOn(herdr, "paneSendKeys").mockImplementation(async (_id, keys) => { sentKeys.push([...keys]); }));
+      const lookup = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "gjc-transcript", path: sessionPath });
+      spies.push(lookup);
+
+      const getRes = await handlePromptRequest(new Request(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`), new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`));
+      expect(getRes?.status).toBe(200);
+      const body = await getRes!.json() as { prompt: { id: string; text_format?: string } };
+      expect(body.prompt.text_format).toBe("markdown");
+      expect(lookup).toHaveBeenCalledTimes(1);
+
+      // Close the original ask call and append a replacement ask call in the session log that draws the identical screen
+      const originalId = open()[0]!.id;
+      const lines = openText.trimEnd().split("\n");
+      const toolCallLine = lines.at(-1)!;
+      const closeLine = JSON.stringify({
+        type: "message",
+        id: "m_close",
+        timestamp: "2026-11-25T00:00:02.000Z",
+        message: { role: "toolResult", toolCallId: originalId, toolName: "ask", content: [{ type: "text", text: "ok" }] },
+      });
+      const replacementLine = toolCallLine.replaceAll(originalId, `${originalId}_replacement`);
+      writeFileSync(sessionPath, `${openText.trimEnd()}\n${closeLine}\n${replacementLine}\n`);
+
+      const staleRes = await handlePromptRequest(new Request("http://127.0.0.1/api/pane/prompt/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: paneId, prompt_id: body.prompt.id, option_index: 0 }),
+      }), new URL("http://127.0.0.1/api/pane/prompt/answer"));
+      expect(staleRes?.status).toBe(409);
+      expect(sentKeys).toEqual([]);
+
+      // Fetch the replacement call's card, then answer it while unchanged: succeeds and uses single transcript lookups
+      lookup.mockClear();
+      const getRes2 = await handlePromptRequest(new Request(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`), new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`));
+      expect(getRes2?.status).toBe(200);
+      const body2 = await getRes2!.json() as { prompt: { id: string } };
+      expect(body2.prompt.id).not.toBe(body.prompt.id);
+      expect(lookup).toHaveBeenCalledTimes(1);
+
+      lookup.mockClear();
+      const okRes = await handlePromptRequest(new Request("http://127.0.0.1/api/pane/prompt/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: paneId, prompt_id: body2.prompt.id, option_index: 0 }),
+      }), new URL("http://127.0.0.1/api/pane/prompt/answer"));
+      expect(okRes?.status).toBe(200);
+      expect(sentKeys).toEqual([["enter"]]);
+      // POST answer reads prompt once (readPrompt -> 1) and verifies once before commit (verifyThenSend -> 1) = 2 total, never 4
+      expect(lookup.mock.calls.length).toBeLessThanOrEqual(2);
+    });
   });
 });

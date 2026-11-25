@@ -86,11 +86,11 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
     // its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
     if (prompt.text_format === "markdown") {
       const exact = (shown: string): boolean => spaced(shown) === lower;
-      const shown = only((index) => optionName(prompt, prompt.options[index]!.label).words, exact);
+      const shown = only((index) => optionName(prompt, prompt.options[index]!).words, exact);
       if (shown !== undefined) return shown;
       // gjc's recommended row as its terminal draws it, with the ` (Recommended)` the card shows as a tag (server/gjc-ask.ts)
       return only((index) => {
-        const name = optionName(prompt, prompt.options[index]!.label);
+        const name = optionName(prompt, prompt.options[index]!);
         return name.recommended ? `${name.words} (Recommended)` : name.words;
       }, exact);
     }

@@ -15,7 +15,7 @@ import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
-import { withGjcAsk } from "./gjc-ask.ts";
+import { gjcCallStillOpen, withGjcFallback } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
@@ -639,7 +639,7 @@ function asked(paneId: string, prompt: InteractivePrompt | null, turns: number):
       if (asking) asking.content = null;
       return null;
     }
-    const call = parsedByPublicPrompt.get(prompt)?.ompCall;
+    const call = parsedByPublicPrompt.get(prompt)?.ompCall ?? parsedByPublicPrompt.get(prompt)?.gjcCall;
     // the same drawing under another ask call is another asking: omp asked again with the same questions
     if (asking?.content !== prompt.id || call !== undefined && asking.call !== undefined && asking.call !== call) {
       asking = { content: prompt.id, n: askingCount += 1, queued: prompt.queued !== undefined };
@@ -783,8 +783,12 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
-  const card = await withAgentRecord(paneId, agent, parseFallbackPrompt(agent, screen), screen);
-  return { prompt: card === null || agent !== "gjc" ? card : await withGjcAsk(paneId, card), screen };
+  const fallback = parseFallbackPrompt(agent, screen);
+  if (agent === "gjc" && parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
+    return { prompt: await withGjcFallback(paneId, fallback, screen, true), screen };
+  }
+  const card = await withAgentRecord(paneId, agent, fallback, screen);
+  return { prompt: card, screen };
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
@@ -1292,8 +1296,7 @@ async function readKnownPrompt(
   if (!prompt && agent === "gjc" && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
-      const card = await withAgentRecord(paneId, agent, fallback, screen);
-      return { prompt: card === null ? null : await withGjcAsk(paneId, card), screen };
+      return { prompt: await withGjcFallback(paneId, fallback, screen, markdown), screen };
     }
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
@@ -1726,7 +1729,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           : await Promise.race([guarding.then(() => true), Bun.sleep(Math.max(0, guardUntil - Date.now())).then(() => false)]);
         if (!guarded) throw new KeyRefused();
         const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, openCodeState,
-          AbortSignal.timeout(Math.max(1, readUntil - Date.now())), true, screenOnly === "editor" ? "editor" : !screenOnly);
+          AbortSignal.timeout(Math.max(1, readUntil - Date.now())),
+          agent === "gjc" ? parsedPrompt?.gjcCall !== undefined : true,
+          screenOnly === "editor" ? "editor" : !screenOnly);
         reading.catch(() => undefined);
         const read = await Promise.race([reading, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
         const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
@@ -1744,6 +1749,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // a card showing its record's command goes to that request only: after the screen's last read, the record must
         // still hold it open, so another request that opened meanwhile with the same command takes none of its keys
         if (parsedPrompt?.record !== undefined && (await recordRequest(body.pane_id, agent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
+        if (parsedPrompt?.gjcCall !== undefined && screenOnly === "editor" && !(await gjcCallStillOpen(body.pane_id, parsedPrompt.gjcCall))) throw new KeyRefused();
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
@@ -2230,7 +2236,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             // a card with its record's command is that request's: the screen must still show it, with nothing else changed
             const record = parsed.record === undefined ? undefined : recordFor(agent);
             const card = drawn && record ? withRecord(drawn, parsed.record!, screen, record) : drawn;
-            return card?.id === parsed.id && (!onCursor || card.selectedIndex === cursor);
+            return card?.id === parsed.id
+              && (parsed.gjcCall === undefined || shown?.gjcCall === parsed.gjcCall)
+              && (!onCursor || card.selectedIndex === cursor);
           }
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
           return shown.question === parsed.question && shown.ompCall === parsed.ompCall
