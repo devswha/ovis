@@ -8,20 +8,29 @@ export interface QuestionField {
   readonly choices: readonly Choice[];
   readonly multiple: boolean;
   readonly custom: string | null;
+  readonly optional: boolean;
 }
 
 export const hasQuestionForms = (harness: string) => ["claude", "codex", "opencode", "agy", "gjc"].includes(harness);
 const words = (s: unknown): s is string => typeof s === "string" && s.trim() !== "" && s.length <= 4096 && showable(s);
 
-/** Parse only native clarification forms. MCP elicitation, OAuth, Claude confirm_* and
- * fallback-model consent are NOT clarification, even when they offer a select field. */
-export function questionFields(harness: string, p: Record<string, unknown>): QuestionField[] | null {
-  if (p.mode !== "form" || !words(p.message) || (harness !== "gjc" && !words(p.toolCallId)) || !isRecord(p.requestedSchema)
+const fieldOrder = new Intl.Collator("en", { numeric: true });
+
+/** A form that can be drawn is not necessarily a clarification the parent may answer.
+ * GJC uses identical selectors for native asks and MCP consent. Claude also uses forms
+ * for confirm_* downloads and model-switch consent. Keep those choices for the person. */
+export function questionForm(harness: string, p: Record<string, unknown>): { audience: "person" | "parent"; fields: QuestionField[] } | null {
+  if (p.mode !== "form" || !words(p.message) || !isRecord(p.requestedSchema)
     || p.requestedSchema.type !== "object" || !isRecord(p.requestedSchema.properties)) return null;
   const properties = p.requestedSchema.properties;
   const entries = Object.entries(properties);
   if (entries.length === 0 || entries.length > 32) return null;
-  if (harness === "claude" && typeof p.toolCallId === "string" && p.toolCallId.startsWith("confirm_")) return null;
+  const modelChoice = harness === "claude" && p.toolCallId == null && entries.length === 1 && entries[0]?.[0] === "choice";
+  if (!modelChoice && harness !== "gjc" && !words(p.toolCallId)) return null;
+  const personOnly = harness === "gjc" || modelChoice || harness === "claude" && typeof p.toolCallId === "string" && p.toolCallId.startsWith("confirm_");
+  if (["claude", "opencode", "agy"].includes(harness)) entries.sort(([a], [b]) => fieldOrder.compare(a, b));
+  const required = p.requestedSchema.required;
+  if (required !== undefined && (!Array.isArray(required) || !required.every(k => typeof k === "string" && Object.hasOwn(properties, k)))) return null;
   const fields: QuestionField[] = [];
   const consumed = new Set<string>();
   for (const [key, field] of entries) {
@@ -32,7 +41,7 @@ export function questionFields(harness: string, p: Record<string, unknown>): Que
     let prompt: unknown;
     switch (harness) {
       case "claude":
-        if (key !== `question_${fields.length}`) return null;
+        if (!modelChoice && key !== `question_${fields.length}`) return null;
         prompt = field.description ?? p.message;
         customKey = `${key}_custom`;
         break;
@@ -80,7 +89,7 @@ export function questionFields(harness: string, p: Record<string, unknown>): Que
       consumed.add(customKey);
       custom = customKey;
     }
-    fields.push({ key, prompt, choices, multiple, custom });
+    fields.push({ key, prompt, choices, multiple, custom, optional: harness === "claude" && !personOnly && !required?.includes(key) });
   }
-  return fields.length && consumed.size === entries.length ? fields : null;
+  return fields.length && consumed.size === entries.length ? { audience: personOnly ? "person" : "parent", fields } : null;
 }

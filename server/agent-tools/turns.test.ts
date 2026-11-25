@@ -7,7 +7,7 @@ import { FakeHcCore } from "../herdr-core/core.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { AcpChildren, type AcpHc } from "../acp/children.ts";
-import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
+import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt, until } from "../acp/keeper.fake.ts";
 import { lineCall } from "../line-call.ts";
 import { AgentToolHub } from "./hub.ts";
 import { KeeperClient, KeeperRequestError } from "../acp/client.ts";
@@ -172,27 +172,36 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
       expect((await call("read", { session, what: "state" })).state).not.toHaveProperty("question");
       expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "not_owner" } });
       token = parent;
+      await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: "code" });
+      await until(child.client, "new mode", () => child.client.sessionMode === "code");
+      expect(await call("answer", { ...args, choice: 1 })).toMatchObject({ error: { code: "not_granted" } });
+      await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: "ask" });
+      await until(child.client, "original mode", () => child.client.sessionMode === "ask");
+      expect(await call("answer", { ...args, choice: 1 })).toMatchObject({ kind: "answered" });
+    } else {
+      if (path === "pass") expect(await call("answer", args)).toMatchObject({ kind: "state", state: { state: "waiting_human" } });
+      else await until(child.client, "handoff notification", () => child.client.status === "blocked", 33_000);
+      expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "waiting_human" } });
+      const card = acpPrompt(child);
+      expect(card).toMatchObject({ kind: "question", question: "Which color?" });
+      if (!card) throw new Error("no card");
+      expect(await answerAcpPrompt(child, { pane_id: session, prompt_id: card.id, option_index: 1 })).toBe("answered");
     }
-    const clock = spyOn(Date, "now");
-    try {
-      if (path === "parent") {
-        expect(await call("answer", { ...args, choice: 1 })).toMatchObject({ kind: "answered" });
-      } else {
-        if (path === "pass") expect(await call("answer", args)).toMatchObject({ kind: "state", state: { state: "waiting_human" } });
-        else clock.mockReturnValue(Date.now() + 60_000);
-        expect(await call("answer", { ...args, choice: 0 })).toMatchObject({ error: { code: "waiting_human" } });
-        const card = acpPrompt(child);
-        expect(card).toMatchObject({ kind: "question", question: "Which color?" });
-        if (!card) throw new Error("no card");
-        expect(await answerAcpPrompt(child, { pane_id: session, prompt_id: card.id, option_index: 1 })).toBe("answered");
-      }
-    } finally { clock.mockRestore(); }
     await call("wait", { session });
     expect(await call("result", { session })).toMatchObject({ final_message: { text: JSON.stringify({ action: "accept", content: { q0: "blue" } }) } });
     expect((await call("answer", { ...args, choice: 0 })).kind).toBe("refusal");
     const audit = readFileSync(join(dir, "tools/audit.jsonl"), "utf8");
     expect(audit.split("\n").filter(line => line.includes('"verb":"answer"'))).toHaveLength(path === "timeout" ? 0 : 1);
     expect(audit).not.toContain("Which color?");
+  }, 38_000);
+  it.each(["parent", "person"])("stops without answering a question waiting for its %s", async owner => {
+    const started = await call("start", { harness: "opencode", cwd: dir, task: "question" });
+    if (!isRecord(started.session)) throw new Error("no child");
+    const session = started.session.address;
+    const waiting = await call("wait", { session });
+    if (!isRecord(waiting.state) || !isRecord(waiting.state.question)) throw new Error("no question");
+    if (owner === "person") expect(await call("answer", { session, question_id: waiting.state.question.id })).toMatchObject({ state: { state: "waiting_human" } });
+    expect(await call("stop", { session })).toMatchObject({ stopped: true });
   });
   it("refuses an unrelated run as not_owner without changing the child or audit", async () => {
     const session = await start();

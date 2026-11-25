@@ -155,6 +155,13 @@ fn main() {
                         }
                     }
                     "helpers" => helpers(words.next().unwrap_or(".")),
+                    "elicit" => {
+                        let mut params: Value = serde_json::from_str(text.strip_prefix("elicit ").unwrap()).unwrap();
+                        params["sessionId"] = json!(session);
+                        asked = Some(id);
+                        send(&mut out, &json!({"jsonrpc":"2.0","id":"question","method":"elicitation/create","params":params}));
+                        continue;
+                    }
                     "question" => {
                         asked = Some(id);
                         send(

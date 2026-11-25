@@ -66,11 +66,11 @@ export class KeeperClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private readonly approvals = new Map<string, AcpApproval>();
   private readonly answers = new KeeperAnswers();
-  readonly questions = new KeeperQuestions(() => this.changed(), (id, result) => {
+  readonly questions = new KeeperQuestions(() => this.changed(), (id, result, expectedMode) => {
     if (this.client === null || this.status === "unknown") return Promise.resolve("gone");
     return this.answers.reserve({ id, optionId: null }, send => this.onChange(send), reservation => {
       reservation.by = `client-${this.client}`;
-      this.write({ jsonrpc: "2.0", id, result });
+      this.write({ jsonrpc: "2.0", id, result, ...(expectedMode !== undefined ? { expectedMode } : {}) });
     });
   });
   private readonly requests = new KeeperRequests(message => this.write(message));

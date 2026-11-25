@@ -12,7 +12,7 @@ A child starts as a local ACP session in its harness's ordinary mode, with the p
 normal settings, including hooks and allow rules from the user, project or managed policy.
 Ovis selects the ordinary mode where the harness would otherwise start in a wider one.
 Ovis does not pin harness or adapter versions. Only permission requests the harness actually
-sends become cards, with one-time choices. The parent never sees or answers the request.
+sends become approval cards, with one-time choices. The parent never sees or answers the request.
 
 These are observed defaults or documented behavior, not a promise for every version or setup.
 The run reports are under `~/.dori-sa/reports/acp-children-open/`.
@@ -31,7 +31,7 @@ Claude and agy must report `default`. Ovis still refuses known full-access modes
 mode. Claude's adapter is asked not to offer bypass. Ovis disables Copilot's `COPILOT_ALLOW_ALL`
 and refuses its separate Allow All selector even when the ACP mode still reads `#agent`.
 The keeper rechecks both the starting mode and Allow All just before Ovis registers the child,
-and before every delegated prompt. A widened start stops with `not_granted`; a later prompt is
+and before every delegated prompt or parent answer. A widened start stops with `not_granted`; a later prompt is
 refused rather than resetting the mode behind the person's back. A child can call another
 permitted harness under the same rules if depth allows.
 
@@ -55,7 +55,7 @@ for example:
 ```
 
 With a valid run token, a parent can still stop a child it started after its start/send grant
-shrinks. Stop cancels pending approval cards without choosing any option. Use `off` to revoke
+shrinks. Stop cancels pending approvals and questions without choosing any option. Use `off` to revoke
 every existing run token; a new launch is needed after revocation. Changing a grant never kills
 a running child. Ovis does not install adapters
 or edit the user's settings.
@@ -113,14 +113,16 @@ with several questions returns one field at a time; wait again for the next ID. 
 arguments, `answer` hands the question to a person immediately. If the parent does nothing for
 30 seconds from the request, Ovis shows the ordinary question card in the child's chat. The parent
 cannot answer after handoff. Replaying an open question after a server restart also hands it to the
-person. Permission cards take priority and their text and options stay hidden.
+person. A parent answer, like a new task, requires the same permission mode the child started in.
+Stopping a child with an open question cancels the elicitation; it sends no selection. Permission
+cards take priority and their text and options stay hidden.
 
 | Harness | What can be answered |
 | --- | --- |
-| Claude Code | The adapter maps `AskUserQuestion` to a session-scoped `elicitation/create` form. Its `confirm_` dialogs and fallback-model consent are not parent questions. |
+| Claude Code | The adapter maps `AskUserQuestion` to a session-scoped `elicitation/create` form. Its `confirm_` dialogs and fallback-model consent offer their real choices to the person only. A person may skip an optional clarification field. |
 | OpenCode | Its question tool sends `q0`, `q1`, … select fields. A separate permission to run the tool is still a person's card. |
 | agy | Its native form uses `q1`, `q2`, … and optional `_other` text. Ovis returns the option's wire value, not its display label. |
-| GJC | Its selector form uses `value` with `option:N` wire values. The alternate permission-based selector stays human-only. The question channel does not make a blocked launch eligible. |
+| GJC | A clarification and consent to an MCP input request can have exactly the same `value` / `option:N` form. Only a person can answer these or their free-text follow-ups. The alternate permission-based selector also stays human-only. |
 | Codex | `codex-acp` 2.11's blocking `item/tool/requestUserInput` becomes a form when the child offers that tool. Secret fields, async messages and MCP consent are not delegated. |
 | Copilot | The tested CLI (1.0.109) asked in its final text, not as an actionable ACP request. Read the result and send a normal follow-up; Ovis does not guess from punctuation. |
 

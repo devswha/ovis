@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Row } from "./messages.ts";
 import type { AnswerOutcome } from "./answers.ts";
-import { questionFields, type QuestionField } from "./question-form.ts";
+import { questionForm, type QuestionField } from "./question-form.ts";
 import { showable } from "../approvals/hub.ts";
 
 interface Pending {
@@ -21,11 +21,12 @@ const WINDOW_MS = 30_000;
  * person immediately: restarting Ovis never gives a passed question back to an agent. */
 export class KeeperQuestions {
   private readonly pending = new Map<string, Pending>();
-  constructor(private readonly changed: () => void, private readonly send: (id: string, result: Reply) => Promise<AnswerOutcome>) {}
+  constructor(private readonly changed: () => void, private readonly send: (id: string, result: Reply, expectedMode?: string) => Promise<AnswerOutcome>) {}
 
   add(harness: string, row: Row, id: string, params: Record<string, unknown>, live: boolean): void {
-    const fields = Buffer.byteLength(row.raw) <= 65_536 ? questionFields(harness, params) ?? [] : [];
-    const deadline = fields.length && live && row.ts ? Math.min(Date.now(), row.ts) + WINDOW_MS : 0;
+    const form = Buffer.byteLength(row.raw) <= 65_536 ? questionForm(harness, params) : null;
+    const fields = form?.fields ?? [];
+    const deadline = form?.audience === "parent" && live && row.ts ? Math.min(Date.now(), row.ts) + WINDOW_MS : 0;
     this.remove(id);
     const timer = deadline > Date.now() ? setTimeout(() => this.pass(id), deadline - Date.now()).unref() : undefined;
     const message = typeof params.message === "string" && params.message.length <= 4096 && showable(params.message) ? params.message : null;
@@ -52,7 +53,8 @@ export class KeeperQuestions {
     this.pass(item.id);
     return true;
   }
-  async respond(receipt: string, parent: boolean, input: { indices: readonly number[]; text?: string }): Promise<"answered" | "changed" | "invalid"> {
+  async respond(receipt: string, parentMode: string | null, input: { indices: readonly number[]; text?: string }): Promise<"answered" | "changed" | "invalid"> {
+    const parent = parentMode !== null;
     const item = this.pending.values().next().value, q = this.current;
     if (!item || !q || q.id !== receipt || q.parent !== parent) return "changed";
     const field = q.field;
@@ -64,13 +66,14 @@ export class KeeperQuestions {
       if (!choice || picks.includes(choice.value)) return "invalid";
       picks.push(choice.value);
     }
-    if (input.text !== undefined && (!field.custom || !input.text.trim() || input.text.length > 4096)) return "invalid";
-    if ((!field.multiple && picks.length > 1) || (!picks.length && input.text === undefined)) return "invalid";
+    const skip = !parent && field.optional && !picks.length && (input.text === "" || field.multiple && input.text === undefined);
+    if (!skip && input.text !== undefined && (!field.custom || !input.text.trim() || input.text.length > 4096)) return "invalid";
+    if ((!field.multiple && picks.length > 1) || (!skip && !picks.length && input.text === undefined)) return "invalid";
     const content = new Map(item.content);
     if (picks.length) content.set(field.key, field.multiple ? picks : picks[0] ?? "");
-    if (field.custom && input.text !== undefined) content.set(field.custom, input.text);
+    if (!skip && field.custom && input.text !== undefined) content.set(field.custom, input.text);
     if (item.step + 1 === item.fields.length) {
-      return await this.send(item.id, { action: "accept", content: Object.fromEntries(content) }) === "won" ? "answered" : "changed";
+      return await this.send(item.id, { action: "accept", content: Object.fromEntries(content) }, parentMode ?? undefined) === "won" ? "answered" : "changed";
     }
     for (const [key, value] of content) item.content.set(key, value);
     item.step++;

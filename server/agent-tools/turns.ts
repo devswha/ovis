@@ -104,8 +104,10 @@ export class ChildTurns {
   }
   async answerQuestion(child: AcpChild, row: ToolChild, args: Record<string, unknown>) {
     const client = child.client, session = row.terminal;
+    const expectedMode = delegatedMode(row.harness, client);
+    if (expectedMode === null) return refuse("not_granted", "Child permission mode is not allowed.");
     if (client.pending().length) return refuse("waiting_human", "Only a person can answer a permission request.");
-    if (client.holdGeneration !== null || client.status === "unknown") return refuse("taken_over", "ACP does not own this conversation.");
+    if (row.held || client.holdGeneration !== null || client.status === "unknown") return refuse("taken_over", "ACP does not own this conversation.");
     const q = client.questions.current;
     if (!q?.parent || q.id !== args.question_id) return refuse("waiting_human", "This question is not waiting for you.");
     if (args.choice === undefined && args.choices === undefined && args.text === undefined) {
@@ -114,7 +116,7 @@ export class ChildTurns {
     }
     if (args.choices !== undefined && args.choice !== undefined) return refuse("bad_request", "Supply choice or choices, not both.");
     const indices = Array.isArray(args.choices) ? args.choices : typeof args.choice === "number" ? [args.choice] : [];
-    const result = await client.questions.respond(q.id, true, { indices, ...(typeof args.text === "string" ? { text: args.text } : {}) });
+    const result = await client.questions.respond(q.id, expectedMode, { indices, ...(typeof args.text === "string" ? { text: args.text } : {}) });
     if (result !== "answered") return refuse(result === "invalid" ? "bad_request" : "unavailable", "The answer was not accepted.");
     this.ledger.audit(row, "answer", row.turns.at(-1)?.n ?? null);
     return answer("answered", { session, question_id: q.id });

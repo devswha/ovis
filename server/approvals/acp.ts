@@ -94,6 +94,7 @@ export function acpPrompt(child: { harness: string; client: KeeperClient }): Int
   if (custom !== null || !field) options.push({ label: englishOf(label), description: null });
   return { id: q.id, agent: child.harness, kind: "question", title: englishOf(title), question: field?.prompt ?? q.message ?? englishOf(title),
     body: null, options, custom_option_index: custom, multi_select: field?.multiple ?? false,
+    ...(field?.optional ? { optional: true } : {}), ...(field?.multiple && field.custom ? { checks_with_text: true } : {}),
     own_text: { title, labels, ...(!field && !q.message ? { question: title } : {}) } };
 }
 
@@ -108,7 +109,7 @@ export async function answerAcpPrompt(child: { harness: string; client: KeeperCl
     if (body.custom_text !== undefined && typeof body.custom_text !== "string") return "invalid";
     const indices = body.option_indices ?? (optionIndex === undefined || body.custom_text !== undefined && optionIndex === child.client.questions.current?.field?.choices.length ? [] : [optionIndex]);
     if (!Array.isArray(indices)) return "invalid";
-    return child.client.questions.respond(promptId, false, { indices, text: body.custom_text });
+    return child.client.questions.respond(promptId, null, { indices, text: body.custom_text });
   }
   const asked = child.client.pending().find((request) => cardId(request) === promptId);
   if (asked === undefined) return "changed";

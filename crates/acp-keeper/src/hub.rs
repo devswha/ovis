@@ -768,6 +768,19 @@ impl Hub {
     fn answer(&mut self, key: &str, raw: &str, by: &str) {
         let mut answer: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
         let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
+        if let Some(expected) = answer.as_object_mut().and_then(|msg| msg.remove("expectedMode")) {
+            // Only parent answers carry this keeper-local field. A mode change may have
+            // reached the keeper since the broker read its last selections note.
+            if self.hold.is_some()
+                || self.mode != Mode::Acp
+                || !self.permits_tool_mode(expected.as_str())
+                || !self.model.pending.iter().any(|p| p.key == key && p.method == "elicitation/create")
+                || self.model.pending.iter().any(|p| p.method == "session/request_permission")
+            {
+                self.note_row("_keeper/dropped", json!({"id":id,"by":by,"reason":"question or permission ceiling changed"}));
+                return;
+            }
+        }
         if let Some(reason) = self.model.pending.iter().find(|p| p.key == key).and_then(|p| invalid_answer(p, &answer)) {
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": reason}));
             return;
@@ -831,7 +844,9 @@ impl Hub {
             .model
             .pending
             .iter()
-            .filter(|p| matches!(p.method.as_str(), "session/request_permission" | "elicitation/create") && (self.stop.is_some() || p.session.as_deref() == session) && !self.answering.contains(&p.key))
+            .filter(|p| {
+                matches!(p.method.as_str(), "session/request_permission" | "elicitation/create") && (self.stop.is_some() || p.session.as_deref() == session) && !self.answering.contains(&p.key)
+            })
             .map(|p| (p.key.clone(), p.id.clone(), p.method == "elicitation/create"))
             .collect();
         for (key, id, form) in keys {
@@ -872,6 +887,51 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
         (Hub::new(Arc::new(archive), tx, opts, false, false), rx)
+    }
+
+    #[test]
+    fn parent_cannot_resume_in_an_unproven_mode_and_stop_sends_only_cancel() {
+        let dir = std::env::temp_dir().join(format!("ak-question-stop-{}", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        hub.handle(Ev::Agent(
+            0,
+            json!({"jsonrpc":"2.0","id":"child-id","method":"elicitation/create","params":{"sessionId":"s","mode":"form"}}).to_string(),
+        ));
+        let id = hub.model.pending[0].id.clone();
+        let answer = json!({"jsonrpc":"2.0","id":id,"expectedMode":"ask","result":{"action":"accept","content":{"q0":"yes"}}}).to_string();
+        hub.handle(Ev::Client { conn: 1, line: answer.clone() });
+        assert!(sent.try_recv().is_err(), "an unverified parent answer went to the child");
+        hub.model
+            .session_result(&json!({"modes":{"currentModeId":"ask"},"configOptions":[{"id":"allow_all","currentValue":"on"}]}));
+        hub.handle(Ev::Client { conn: 1, line: answer });
+        assert!(sent.try_recv().is_err(), "allow_all changed without a mode change");
+        hub.handle(Ev::Agent(
+            0,
+            json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"s"}}).to_string(),
+        ));
+        hub.handle(Ev::Client {
+            conn: 1,
+            line: json!({"jsonrpc":"2.0","id":22,"method":"_keeper/tool_stop","params":{}}).to_string(),
+        });
+        hub.handle(Ev::Agent(
+            0,
+            json!({"jsonrpc":"2.0","id":"late","method":"elicitation/create","params":{"sessionId":"s","mode":"form"}}).to_string(),
+        ));
+        for (id, result) in [
+            ("child-id", json!({"action":"cancel"})),
+            ("permission", json!({"outcome":{"outcome":"cancelled"}})),
+            ("late", json!({"action":"cancel"})),
+        ] {
+            assert!(!hub.quit);
+            let wire = sent.try_recv().unwrap();
+            let cancel: Value = serde_json::from_slice(&wire.bytes).unwrap();
+            assert_eq!(cancel, json!({"jsonrpc":"2.0","id":id,"result":result}));
+            hub.handle(Ev::Written(0, wire.receipt.unwrap()));
+        }
+        assert!(hub.quit);
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

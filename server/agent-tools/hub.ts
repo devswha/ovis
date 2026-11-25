@@ -204,8 +204,8 @@ export class AgentToolHub {
       if (!allowed()) return deny();
       if (this.options.acp.forPane(session) !== child) return refuse("unknown_session", "The child has ended.");
       if (verb === "send") return this.turns.send(child, row, args);
-      if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
       if (verb === "answer") return this.turns.answerQuestion(child, row, args);
+      if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
       try {
         const receipt = await child.client.request("_keeper/tool_stop", {}, signal);
         if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");
