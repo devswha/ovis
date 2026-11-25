@@ -398,6 +398,8 @@ export function createAccountController(mount: RelayShellMount, view: {
   /** The wait a `too_new` plan told, in ms: what it rests on is not asked for again before it, whatever asks. */
   const toldMs = (status: AccountListView["status"]): number => status.at === "none" && status.move?.why === "too_new" && status.move.wait !== null ? status.move.wait * 1000 : 0;
   let askTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The session the asker holds open now: a dispose closes it, so nothing more is asked or named over it. */
+  let askOpened: RelayTransport | null = null;
   let disposed = false;
   /**
    * While this device waits on its PCs, the asking runs again on a clock too: a plan that comes out the same every
@@ -482,7 +484,10 @@ export function createAccountController(mount: RelayShellMount, view: {
         .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= Math.max(askGap(), toldMs(status))
           && (naming === null || now >= (namingNotBefore.get(namingKey(session.account, endpoint)) ?? 0)));
       if (due.length === 0) return;
+      // the run is this controller's for this sign-in: a dispose, a sign-out or another sign-in meanwhile ends it after any wait
+      const owned = (): boolean => !disposed && shownFor === session && accountView?.kind === "signed-in";
       const saved = await store.list();
+      if (!owned()) return;
       const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       let heard = false;
       for (const endpoint of due) {
@@ -501,6 +506,7 @@ export function createAccountController(mount: RelayShellMount, view: {
         // not born by a move, say) opens no session for it
         const named = naming === null || openKey === null || lists.naming === undefined ? null
           : await lists.naming({ account: session.account, session: openKey.key.public_spki, endpoint, signIn: openKey.key.public_spki });
+        if (!owned()) return;
         if (naming !== null && named === null) continue;
         let opened: RelayTransport | null = null;
         const openBy = (options: RelayTransportOptions) => open(way.offer, { ...options, label, signal: AbortSignal.timeout(ASK_OPEN_MS) });
@@ -514,8 +520,11 @@ export function createAccountController(mount: RelayShellMount, view: {
             if (held === null) throw error;
             opened = await openBy({ store: withAccountDevice(store, accountDevice(way.offer, held)), accountListKey: true });
           }
+          askOpened = opened;
+          if (!owned()) return;
           const fetch = (path: string, init?: RequestInit): Promise<Response> => opened!.fetch(path, init);
           const witness = await witnessOf(fetch);
+          if (!owned()) return;
           const said = witness === "final" ? null : witness;
           // no answer here takes no answer heard meanwhile (a session of this page's own may have heard one)
           if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);
@@ -529,8 +538,9 @@ export function createAccountController(mount: RelayShellMount, view: {
           console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);
         } finally {
           opened?.close();
+          if (askOpened === opened) askOpened = null;
         }
-        if (shownFor !== session) return;
+        if (!owned()) return;
       }
       if (heard) await lists.sync().catch(() => undefined);
     } finally {
@@ -619,6 +629,8 @@ export function createAccountController(mount: RelayShellMount, view: {
     disposed = true;
     if (refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
     if (askTimer !== undefined) { clearTimeout(askTimer); askTimer = undefined; }
+    askOpened?.close();
+    askOpened = null;
     document.removeEventListener("visibilitychange", seen);
     unfollow?.();
     untidy?.();

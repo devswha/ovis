@@ -32,7 +32,8 @@ function sessionOf(given: { readonly pinned?: boolean; readonly key?: string; re
     fetch: async (path: string, init?: RequestInit) => {
       asked.push({ method: init?.method ?? "GET", path, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
       const said = given.answers?.[`${init?.method ?? "GET"} ${path}`];
-      return said === undefined ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : said instanceof Response ? said : Response.json(said);
+      const held = said instanceof Promise ? await said : said;
+      return held === undefined ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : held instanceof Response ? held : Response.json(held);
     },
     close: () => { closed = true; },
   };
@@ -630,6 +631,54 @@ describe("the shell's sessions and the move of an account onto its list", () => 
         expect(await leftUp(opened, 2)).toEqual({ sessions: 1, named: 0 });
       }
     } finally { jest.useRealTimers(); }
+  });
+
+  /** A moved device whose naming, or whose witness ask, waits until the test lets it go. */
+  const namingHeld = async (account: string, hold: "naming" | "witness") => {
+    const signedIn = await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const LIST = "5c".repeat(32);
+    const naming = Promise.withResolvers<void>();
+    const witness = Promise.withResolvers<void>();
+    const following = (): AccountListView => ({ account, reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async () => {
+      if (hold === "naming") await naming.promise;
+      return { naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] };
+    });
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const sessions: ReturnType<typeof sessionOf>[] = [];
+    const made = controller(list, store, async () => {
+      const said = { account, pinned: null, admits: [], removed: [] };
+      const one = sessionOf({ key: signedIn, answers: {
+        "GET /api/account/list/witness": hold === "witness" ? witness.promise.then(() => Response.json(said)) : said,
+        "POST /api/account/list/name": { pinned: true, list: LIST },
+      } });
+      sessions.push(one);
+      return one.opened;
+    }, [row], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    return { made, sessions, release: () => { naming.resolve(); witness.resolve(); } };
+  };
+
+  it("#4735 review U12: a controller disposed while the naming is signed opens no session and names nothing", async () => {
+    const { made, sessions, release } = await namingHeld("acct-u12-naming", "naming");
+    made.dispose();
+    release();
+    await settle();
+    expect(sessions).toEqual([]);
+  });
+
+  it("#4735 review U12: a controller disposed while its session asks the witness closes that session and names nothing", async () => {
+    const { made, sessions, release } = await namingHeld("acct-u12-witness", "witness");
+    expect(sessions).toHaveLength(1);
+    made.dispose();
+    expect(sessions[0]!.closed()).toBe(true);
+    release();
+    await settle();
+    expect(sessions[0]!.asked.map((call) => `${call.method} ${call.path}`)).toEqual(["GET /api/account/list/witness"]);
   });
 
   it("F10: a PC the directory gives no way through the account is named nothing over its pairing", async () => {
