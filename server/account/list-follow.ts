@@ -1972,18 +1972,22 @@ export class ListFollow implements ListAuthority {
   /**
    * The key of an `epoch` before this PC came into the list, as a device reads one (src/lib/account/listNames.ts
    * openEpochs): from the nearest `later` wrap that opens, back through the links the list's entries carry (walkBack),
-   * each key checked against the commitment this PC's verified copy holds. Every key the walk reaches is kept. Null
-   * where it cannot reach `epoch` (a link missing or that does not open): final, and no error, as a name that does not
-   * open. Names only: nothing that decides who gets in reads these keys.
+   * each key checked against the commitment this PC's verified copy holds. Every key the walk reaches is kept; a walk
+   * that ends at its bound of links goes on from the last key it reached. Null where it cannot reach `epoch` (a link
+   * missing or that does not open): final, and no error, as a name that does not open. Names only: nothing that decides
+   * who gets in reads these keys.
    */
   private async walkedKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys, later: readonly { readonly epoch: number; readonly wrap: string }[]): Promise<EpochKey | null> {
     const openings = new Map<number, EpochOpening>(state.epochs.map((row, at) => [at, { commitment: row.opens, link: row.link === null ? null : fromBase64Url(row.link) }]));
     for (const wrap of [...later].sort((a, b) => a.epoch - b.epoch)) {
       const from = this.epochKeys.get(`${copy.list} ${wrap.epoch}`) ?? await this.openedWrap(copy, state, wrap.epoch, keys, wrap.wrap);
       if (from === null) continue;
-      const walk = await walkBack({ list: copy.list, from, to: epoch, openings });
-      for (const key of walk.keys) if (!this.epochKeys.has(`${copy.list} ${key.epoch}`)) this.epochKeys.set(`${copy.list} ${key.epoch}`, key);
-      return walk.keys.find((key) => key.epoch === epoch) ?? null;
+      for (let start: EpochKey | undefined = from; start !== undefined;) {
+        const walk = await walkBack({ list: copy.list, from: start, to: epoch, openings });
+        for (const key of walk.keys) if (!this.epochKeys.has(`${copy.list} ${key.epoch}`)) this.epochKeys.set(`${copy.list} ${key.epoch}`, key);
+        start = walk.stopped?.why === "bound" ? walk.keys.at(-1) : undefined;
+      }
+      return this.epochKeys.get(`${copy.list} ${epoch}`) ?? null;
     }
     return null;
   }
