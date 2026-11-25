@@ -86,6 +86,13 @@ const V2_BUILTINS: readonly Builtin[] = [
   { name: "worktrees", description: "Manage workspaces", forms: TERMINAL, visibility: "terminal" },
 ];
 
+/**
+ * A command OpenCode 2's TUI runs itself before it asks its server (`argumentSlash` in prompt/index.tsx at 2.2.2): every
+ * builtin but the server's init and review. A server command of the same name never runs from that TUI.
+ */
+export const openCodeTuiCommand = (name: string): boolean => name !== "init" && name !== "review"
+  && (name in DESCRIPTIONS || V2_BUILTINS.some((row) => row.name === name));
+
 const majorMinor = (version: string): string => version.split(".").slice(0, 2).join(".");
 const isV2 = (version: string | null | undefined): boolean => Number(/^(\d+)(?:\.|$)/.exec(version ?? "")?.[1] ?? 1) >= 2;
 const canonical = (path: string): string => { try { return realpathSync(path); } catch { return path; } };

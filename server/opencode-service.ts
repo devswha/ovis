@@ -391,6 +391,46 @@ async function reply(config: OpenCodeServiceConfig, path: string, payload: unkno
   }
 }
 
+/**
+ * What became of a command sent through OpenCode's API: its status; `unsent` when the connection never opened, so
+ * nothing reached OpenCode; `unknown` when it opened and no answer came back, so it may have run.
+ */
+export type OpenCodeCommandAnswer = { status: number } | "unsent" | "unknown";
+
+/** Longer than a read's: a command's callback runs before its answer (session.ts command handler at 2.2.2). */
+const OPENCODE_COMMAND_TIMEOUT_MS = 5_000;
+
+function postCommand(config: OpenCodeServiceConfig, path: string, payload: unknown): Promise<OpenCodeCommandAnswer> {
+  return new Promise((resolve) => {
+    let connected = false;
+    const req = request(new URL(path, config.baseUrl), {
+      agent: false,
+      method: "POST",
+      headers: { Authorization: opencodeAuthHeader(config.password), "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(OPENCODE_COMMAND_TIMEOUT_MS),
+    }, (response) => {
+      resolve({ status: response.statusCode ?? 0 });
+      response.destroy();
+    });
+    req.once("socket", (socket) => {
+      if (socket.connecting) socket.once("connect", () => { connected = true; });
+      else connected = true;
+    });
+    req.once("error", () => resolve(connected ? "unknown" : "unsent"));
+    req.end(JSON.stringify(payload));
+  });
+}
+
+/** A server command (`GET /api/command`) run in the session as the TUI's Enter runs it: `POST J/command`, steered (prompt/index.tsx at 2.2.2). */
+export function runOpenCodeCommand(config: OpenCodeServiceConfig, sessionID: string, name: string, text: string): Promise<OpenCodeCommandAnswer> {
+  return postCommand(config, `/api/session/${encodeURIComponent(sessionID)}/command`, { name, text, delivery: "steer" });
+}
+
+/** The TUI's `/compact`: `POST J/compact`, answered once the compaction is admitted, not done (routes/session/index.tsx at 2.2.2). */
+export function compactOpenCodeSession(config: OpenCodeServiceConfig, sessionID: string): Promise<OpenCodeCommandAnswer> {
+  return postCommand(config, `/api/session/${encodeURIComponent(sessionID)}/compact`, {});
+}
+
 export function replyOpenCodeForm(
   config: OpenCodeServiceConfig,
   sessionID: string,

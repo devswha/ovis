@@ -8,10 +8,11 @@ import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
 import { paneProcessRoots } from "../conversation.ts";
 import type { CommandSend } from "../outcome.ts";
+import { commandDataRoute, sendCommandAsData } from "../command-data-send.ts";
 import { processStartedAt } from "../process-start.ts";
 import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
-import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
+import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteCommandEvidence, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "../dialogs/registry.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
@@ -623,6 +624,30 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           }, () => {});
         }
         inTime();
+        const route = pane && command ? commandDataRoute(command, text) : null;
+        if (pane && command && route) {
+          const watch = startOpenCodeWatch(pane, command, options.openCodeStateDir);
+          const beforeWrite = (): void => {
+            inTime();
+            if (!mayType()) refusal(new HerdrError("cancelled", "The message's sender may no longer type into this pane"));
+            bindCommandProcess(paneId, command, seen, pane);
+          };
+          let viaData: Awaited<ReturnType<typeof sendCommandAsData>>;
+          try {
+            viaData = await sendCommandAsData(pane, route, beforeWrite, options.openCodeStateDir);
+          } catch (error) {
+            watch?.cancel();
+            throw error;
+          }
+          if (viaData) {
+            noteSubmitted(paneId, text, recorded(command), viaData.at);
+            if (viaData.ran) noteCommandEvidence(paneId, command.id, { kind: "native", at: Date.now() });
+            watch?.commit(command, [{ pasted: text }], []);
+            return;
+          }
+          watch?.cancel();
+          inTime();
+        }
         // agent.prompt pastes the whole text, and OpenCode v2 leaves a pasted @skill unattached
         let skills: string[] = [];
         if (pane) ({ sent: command, skills } = await openCodeSkillsToType(pane, command, text, beforeScreen, options.openCodeStateDir));
