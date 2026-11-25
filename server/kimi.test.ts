@@ -164,10 +164,12 @@ it("finds a locked session in a managed workspace's store too", () => {
   expect(kimiWireForProcesses([process.pid], home)).toBe(path);
 });
 
+const SHELL_PID = process.pid === 10_000 ? 10_001 : 10_000;
+
 function windowsKimiRows(pid = process.pid, started = Date.now() - 10_000): ProcessRow[] {
   return [
-    { pid: 10_000, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 1_000 },
-    { pid, parent: 10_000, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
+    { pid: SHELL_PID, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 1_000 },
+    { pid, parent: SHELL_PID, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
   ];
 }
 
@@ -176,17 +178,41 @@ it("binds a Windows pane's Kimi descendant and keeps its session while that proc
   const rows = windowsKimiRows();
   const started = rows[1]!.started!;
   lock("session_a", { ...liveLock(), startedAt: started + 1 });
-  expect(kimiWireForWindowsProcesses("win:p1", 10_000, rows, home)).toBe(wire("session_a"));
+  expect(kimiWireForWindowsProcesses("win:p1", SHELL_PID, rows, home)).toBe(wire("session_a"));
   rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
-  expect(kimiWireForWindowsProcesses("win:p1", 10_000, rows, home)).toBe(wire("session_a"));
+  expect(kimiWireForWindowsProcesses("win:p1", SHELL_PID, rows, home)).toBe(wire("session_a"));
 });
 
 it("refuses a Windows lock from before the process started and a pane without Kimi", () => {
   const { home, lock } = kimiHome("session_a");
   const rows = windowsKimiRows();
   lock("session_a", { ...liveLock(), startedAt: rows[1]!.started! - 1 });
-  expect(kimiWireForWindowsProcesses("win:p2", 10_000, rows, home)).toBeNull();
-  expect(kimiWireForWindowsProcesses("win:p3", 10_000, [rows[0]!], home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:p2", SHELL_PID, rows, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:p3", SHELL_PID, [rows[0]!], home)).toBeNull();
+});
+
+it("excludes a Windows Kimi launched in a separate console (own conhost.exe child)", () => {
+  const { home, lock } = kimiHome("session_sep");
+  const started = Date.now() - 10_000;
+  const rows: ProcessRow[] = [
+    { pid: SHELL_PID, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 2_000 },
+    { pid: process.pid, parent: SHELL_PID, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
+    { pid: SHELL_PID + 50, parent: process.pid, path: "C:\\Windows\\System32\\conhost.exe", commandLine: "conhost.exe 0x4", started: started + 5 },
+  ];
+  lock("session_sep", { ...liveLock(process.pid), startedAt: started + 10 });
+  expect(kimiWireForWindowsProcesses("win:sep-console", SHELL_PID, rows, home)).toBeNull();
+});
+
+it("withholds but preserves an idle Windows Kimi binding when a snapshot omits the process start time", () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const rows = windowsKimiRows();
+  const started = rows[1]!.started!;
+  lock("session_a", { ...liveLock(), startedAt: started + 1 });
+  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, rows, home)).toBe(wire("session_a"));
+  rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+  const incomplete: ProcessRow[] = [rows[0]!, { pid: rows[1]!.pid, parent: rows[1]!.parent, path: rows[1]!.path, commandLine: rows[1]!.commandLine }];
+  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, incomplete, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, rows, home)).toBe(wire("session_a"));
 });
 
 it("distinguishes an unavailable Windows process table from a successful empty one", async () => {
@@ -204,11 +230,11 @@ it("keeps an idle Windows Kimi binding through an unavailable process table", ()
   const rows = windowsKimiRows();
   const started = rows[1]!.started!;
   lock("session_a", { ...liveLock(), startedAt: started + 1 });
-  expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
+  expect(kimiWireForWindowsProcesses("win:probe", SHELL_PID, rows, home)).toBe(wire("session_a"));
   rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
-  expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
-  expect(kimiWireForWindowsProcesses("win:probe", 10_000, null, home)).toBeNull();
-  expect(kimiWireForWindowsProcesses("win:probe", 10_000, rows, home)).toBe(wire("session_a"));
+  expect(kimiWireForWindowsProcesses("win:probe", SHELL_PID, rows, home)).toBe(wire("session_a"));
+  expect(kimiWireForWindowsProcesses("win:probe", SHELL_PID, null, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:probe", SHELL_PID, rows, home)).toBe(wire("session_a"));
 });
 
 it("reads a Windows pane's Kimi below the shell herdr names, and keeps it while the process table cannot be read", async () => {
@@ -216,7 +242,7 @@ it("reads a Windows pane's Kimi below the shell herdr names, and keeps it while 
   const rows = windowsKimiRows();
   lock("session_a", { ...liveLock(), startedAt: rows[1]!.started! + 1 });
   let table: ProcessRow[] | null = rows;
-  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "win:route", shell_pid: 10_000, foreground_processes: [{ pid: 10_000, name: "powershell.exe", argv: ["powershell.exe"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "win:route", shell_pid: SHELL_PID, foreground_processes: [{ pid: SHELL_PID, name: "powershell.exe", argv: ["powershell.exe"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
   const probe = spyOn(windowsProcesses, "tryWindowsProcessTable").mockImplementation(async () => table);
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   Object.defineProperty(process, "platform", { value: "win32" });
@@ -229,6 +255,35 @@ it("reads a Windows pane's Kimi below the shell herdr names, and keeps it while 
     table = rows;
     expect(await kimiTranscriptPathForPane(pane, home)).toBe(wire("session_a"));
     expect(probe).toHaveBeenCalledTimes(3);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    info.mockRestore();
+    probe.mockRestore();
+  }
+});
+
+it("coalesces concurrent Windows process table probes instead of spawning one per pane", async () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const rows = windowsKimiRows();
+  lock("session_a", { ...liveLock(), startedAt: rows[1]!.started! + 1 });
+  let release!: (value: ProcessRow[] | null) => void;
+  const pending = new Promise<ProcessRow[] | null>((resolve) => { release = resolve; });
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => ({ pane_id: paneId, shell_pid: SHELL_PID, foreground_processes: [{ pid: SHELL_PID, name: "powershell.exe", argv: ["powershell.exe"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  const probe = spyOn(windowsProcesses, "tryWindowsProcessTable").mockImplementation(() => pending);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const calls = [1, 2, 3, 4].map((n) => kimiTranscriptPathForPane({ pane_id: `win:conc-${n}` } as HerdrPane, home));
+    await Promise.resolve();
+    await Promise.resolve();
+    release(rows);
+    const results = await Promise.all(calls);
+    expect(results).toEqual([wire("session_a"), wire("session_a"), wire("session_a"), wire("session_a")]);
+    expect(probe).toHaveBeenCalledTimes(1);
+
+    // Discovery (fresh: false) reuses the recent snapshot populated by the probe above without spawning another PowerShell.
+    expect(await kimiTranscriptPathForPane({ pane_id: "win:conc-1" } as HerdrPane, home, { fresh: false })).toBe(wire("session_a"));
+    expect(probe).toHaveBeenCalledTimes(1);
   } finally {
     Object.defineProperty(process, "platform", platform);
     info.mockRestore();

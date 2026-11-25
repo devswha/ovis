@@ -66,7 +66,7 @@ import { MuseLogUnreadable, resolveMuseSession } from "./muse-store.ts";
 import { LettaUnavailable, lettaToolOutputOffThread, parseLettaTranscript } from "./letta.ts";
 import { programName } from "./agent-identity.ts";
 import { lettaLocalSettings, resolveLettaTranscript } from "./letta-store.ts";
-import { followKimiUndo, kimiToolOutput, kimiTranscriptPathForPane, parseKimiTranscript, type KimiUndo } from "./kimi.ts";
+import { followKimiUndo, forgetKimiWindowsTable, kimiToolOutput, kimiTranscriptPathForPane, parseKimiTranscript, type KimiUndo } from "./kimi.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
@@ -1320,6 +1320,7 @@ export function forgetTranscriptState(): void {
   writtenSessions.clear();
   forgetClaudeSessions();
   forgetGjcState();
+  forgetKimiWindowsTable();
   forgetSubagents();
   forgetOpencodeState();
   forgetOmpBlobTypes();
@@ -1973,7 +1974,7 @@ async function dshForeground(known: KnownProcesses): Promise<{ foreground_proces
  * label: omo's own store is read only when omo is really running
  * in that pane, never on a matching cwd alone.
  */
-async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<ResolvedTranscript> {
+async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, freshKimi = false): Promise<ResolvedTranscript> {
   const paneId = pane.pane_id;
   let agent = resolveAgent(pane).agent ?? "";
   // herdr names no agent for this pane: a session report an earlier agent left behind says
@@ -2091,7 +2092,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       return { source: "hermes-transcript", path: resolved.dbPath, sessionId: resolved.sessionId };
     }
     if ((agent === "kimi" || agent === "kimi-code") && pane.agent === "kimi") {
-      const path = await kimiTranscriptPathForPane(pane);
+      const path = await kimiTranscriptPathForPane(pane, undefined, { fresh: freshKimi });
       if (path === null) throw new ConversationUnavailable("no_session_path");
       return { source: "kimi-transcript", path };
     }
@@ -2111,7 +2112,7 @@ async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[
   return { path: session.path, ...(session.identity === undefined ? {} : { identity: session.identity }) };
 }
 
-export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<NativeTranscript> {
+export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, freshKimi = false): Promise<NativeTranscript> {
   const socket = herdrSocketPath();
   const panes = (snapshot ?? await sessionSnapshot()).panes;
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
@@ -2153,7 +2154,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known));
+  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, freshKimi));
 }
 
 const AGY_WRITE_RACE_MS = 5000;
@@ -2408,7 +2409,7 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   if (transcript.source !== "copilot-transcript") {
     if (!live() || rebound(paneId, transcript)) throw new ConversationUnavailable("no_session_id");
     let fresh: NativeTranscript;
-    try { fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData); }
+    try { fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData, undefined, true); }
     catch (error) {
       if (error instanceof ConversationNotStarted) return await onNotStarted(error);
       throw error;
