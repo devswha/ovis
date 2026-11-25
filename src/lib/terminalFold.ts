@@ -1,6 +1,7 @@
 import type { ITheme, Terminal } from "@xterm/xterm";
 import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
 import { viewRows, type ScreenCell, type ScreenLine, type ScreenRows } from "./terminalScreen.ts";
+import { GHOSTTY_DREW_EVENT } from "./ghostty/viewMoved.ts";
 
 /*
  * The folded view of a grid wider than its screen that this browser does not size. A Windows PC's
@@ -318,7 +319,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!xterm || !grid || !row || term.rows === 0 || term.cols === 0) return;
     const gridRect = grid.getBoundingClientRect();
     const line = grid.offsetHeight / term.rows;
-    const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (reader().cursorY + 1) * line;
+    // the preedit and xterm's helper textarea stand at xterm's own cursor
+    const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * line;
     let target = view.offsetTop + row.offsetTop + row.offsetHeight;
     let scroll = 0;
     let left = 0;
@@ -403,6 +405,10 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!foreign() || !wrap()) sync();
     else draw(start, end);
   });
+  // libghostty's rows change where it says, not where xterm's write did (a resize lays the two out apart): the fold
+  // draws every row again after a frame of libghostty's, writing only those whose HTML changed
+  const ghosttyDrew = (): void => { if (active && foreign() && wrap()) draw(0, term.rows - 1); };
+  host.addEventListener(GHOSTTY_DREW_EVENT, ghosttyDrew);
   const resized = term.onResize(() => sync());
   const measured = new ResizeObserver(() => sync());
   const grid = screen();
@@ -472,6 +478,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     cursorBottom,
     dispose() {
       rendered.dispose();
+      host.removeEventListener(GHOSTTY_DREW_EVENT, ghosttyDrew);
       resized.dispose();
       measured.disconnect();
       view.removeEventListener("click", tap);

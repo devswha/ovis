@@ -103,9 +103,10 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (!showing()) return;
       const matches = data?.matches ?? [];
       const nativeScroll = data?.scroll;
+      // the rows drawn, read once a paint (each read of libghostty's is a row read from wasm)
+      const buffer = rows();
       const rectangles = active && data && validScroll(nativeScroll) ? visibleFindRects(matches, nativeScroll, active.query, terminal.cols, terminal.rows,
         (row, col) => {
-          const buffer = rows();
           const cell = buffer.getLine(buffer.viewportY + row)?.getCell(col);
           return cell ? { chars: cell.getChars(), width: cell.getWidth() } : undefined;
         }, active.result.match) : [];
@@ -274,8 +275,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     });
     // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
     const readLocal = () => {
-      const view = rows();
-      setLocalBack(view.viewportY < view.baseY);
+      // xterm's own view: the overlay follows it (overlay.ts), and moves libghostty's view only when it next draws
+      setLocalBack(terminal.buffer.active.viewportY < terminal.buffer.active.baseY);
     };
     const scrolled = terminal.onScroll(readLocal);
     const rendered = terminal.onRender(() => { readLocal(); paintHits(); });

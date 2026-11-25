@@ -12,7 +12,7 @@ import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminal
 import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
-import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
+import { GHOSTTY_DREW_EVENT, VIEW_MOVED_EVENT } from "./viewMoved.ts";
 import { holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
 import { holdSelection } from "./selection.ts";
 import { ghosttyRows } from "./screenRows.ts";
@@ -467,6 +467,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       written = false;
       bottomText = screenText;
     }
+    if (changed) host.dispatchEvent(new Event(GHOSTTY_DREW_EVENT));
     if (changed) {
       const c = vt.cursor();
       Object.assign(cursor.style, c.visible
