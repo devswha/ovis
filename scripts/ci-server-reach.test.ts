@@ -25,6 +25,7 @@ describe("a pull request's reach into the server-side jobs", () => {
     ["a dependency", ["bun.lock"], ["package.json"]],
     ["ci.yml and the action its jobs set up with", [".github/workflows/ci.yml"], [".github/actions/setup-ci/action.yml"]],
     ["the client build's config", ["vite.config.ts"]],
+    ["the client's account and relay code, which the ovis command shares", ["src/lib/account/store.ts"], ["src/lib/relay/new.ts"], ["src/lib/nativeApp.ts"], ["src/lib/shellMode.ts"]],
     ["the docs", ["docs/development.md"]],
     ["a folder the list does not name", ["plugins/new/index.ts"]],
     ["a folder's own name, which is no path inside it", ["src"]],
@@ -49,7 +50,7 @@ describe("a pull request's reach into the server-side jobs", () => {
     expect(result.stdout).toBe("server=true\n");
   });
 
-  function filesTheJobsTestsImport(): Map<string, string> {
+  function filesTheJobsTestsLoad(): Map<string, string> {
     const transpilers = { ts: new Bun.Transpiler({ loader: "ts" }), tsx: new Bun.Transpiler({ loader: "tsx" }), js: new Bun.Transpiler({ loader: "js" }) };
     const from = new Map<string, string>();
     const queue: string[] = [];
@@ -73,7 +74,16 @@ describe("a pull request's reach into the server-side jobs", () => {
       const file = queue.shift()!;
       const loader = file.endsWith(".tsx") ? "tsx" : file.endsWith(".ts") ? "ts" : /\.m?js$/.test(file) ? "js" : undefined;
       if (loader === undefined) continue;
-      for (const { path } of transpilers[loader].scanImports(readFileSync(join(root, file), "utf8"))) {
+      const text = readFileSync(join(root, file), "utf8");
+      // files read at run time beside the file: new URL("<path>", import.meta.url), join/resolve(import.meta.dir, "<part>", ...)
+      const runtime = [...text.matchAll(/new URL\(\s*["'`]([^"'`$]+)["'`]\s*,\s*import\.meta\.url/g)].map((match) => match[1]!)
+        .concat([...text.matchAll(/\b(?:join|resolve)\(\s*import\.meta\.dir((?:\s*,\s*["'`][^"'`$]+["'`])+)/g)].map((match) => [...match[1]!.matchAll(/["'`]([^"'`]+)["'`]/g)].map((part) => part[1]!).join("/")));
+      for (const path of runtime) {
+        const read = relative(root, join(root, dirname(file), path));
+        if (read.startsWith("..") || !existsSync(join(root, read))) continue;
+        if (statSync(join(root, read)).isDirectory()) from.set(`${read}/x`, file); else add(read, file);
+      }
+      for (const { path } of transpilers[loader].scanImports(text.replace(/^#!.*/, ""))) {
         if (!path.startsWith(".")) continue;
         const base = join(dirname(file), path);
         const found = [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts")].find((candidate) => existsSync(join(root, candidate)) && statSync(join(root, candidate)).isFile());
@@ -84,7 +94,8 @@ describe("a pull request's reach into the server-side jobs", () => {
   }
 
   it("leaves out no file that the jobs' tests load", () => {
-    const files = filesTheJobsTestsImport();
+    const files = filesTheJobsTestsLoad();
+    expect(files.has("server/fixtures/acp/keeper.jsonl"), "a fixture a test reads through new URL(..., import.meta.url) is counted").toBe(true);
     expect(files.size).toBeGreaterThan(300);
     for (const id of SERVER_JOBS) expect([...files.values()].some((by) => by === `ci.yml ${id}`), `found no bun test of ${id} in ci.yml`).toBe(true);
     const result = spawnSync("bash", ["-c", "while IFS= read -r path; do printf '%s\\n' \"$path\" | bash \"$0\" | grep -q server=false && echo \"$path\"; done; true", join(root, "scripts/ci-server-reach.sh")], { input: [...files.keys()].map((path) => `${path}\n`).join(""), encoding: "utf8" });
@@ -95,6 +106,13 @@ describe("a pull request's reach into the server-side jobs", () => {
 });
 
 describe("ci.yml and the server-side jobs a change cannot reach", () => {
+  it("gives bun test only paths from the repository's root, which match no file of the client's", () => {
+    // bun test's bare filter (server/acp) also selects src/lib/server/acp-view.test.ts: ./server/acp does not
+    const bare = SERVER_JOBS.flatMap((id) => (ci.jobs[id]!.steps ?? []).flatMap((step) => (step.run ?? "").split("\n")))
+      .flatMap((line) => line.split(/[\s"()]+/)).filter((word) => /^(server|shared|scripts|tui|src)\//.test(word));
+    expect(bare).toEqual([]);
+  });
+
   it("skips only those jobs by the change's reach, and every other event keeps them", () => {
     for (const id of SERVER_JOBS) expect([id, ci.jobs[id]!.if]).toEqual([id, SERVER]);
     expect(Object.entries(ci.jobs).filter(([, job]) => (job.if ?? "").includes("outputs.server")).map(([id]) => id).sort()).toEqual(SERVER_JOBS);
