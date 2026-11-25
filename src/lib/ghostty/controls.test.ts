@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { matchHerdrWidths } from "../terminalWidths.ts";
-import { controlScanner, controlsWriter } from "./controls.ts";
+import { controlScanner, controlsWriter, withoutQuestions } from "./controls.ts";
 import { GhosttyVt } from "./vt.ts";
 
 const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
 
-const SESSION = "\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[?1000h\x1b[?1006h\x1b[>4;2m\x1b]0;a title\x07\x1b]8;;https://x.test\x1b\\link\x1b]8;;\x1b\\"
+const SESSION = "\x1b=\x1b[4h\x1b[?66$p\x1b[4$p\x1b>\x1b[4l" + "\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[?1000h\x1b[?1006h\x1b[>4;2m\x1b]0;a title\x07\x1b]8;;https://x.test\x1b\\link\x1b]8;;\x1b\\"
   + "\x1b[2J\x1b[H\x1b[1;31m한글 prompt\x1b[0m $ \x1b[6n" + "x".repeat(70) + "\x1b[3;5H\x1b]52;c;aGVsbG8=\x07\x1b[?6n\x1b[c\x1b[>c\x1b[5n"
   + "\x1bPq#0;2;0;0;0#0~~\x1b\\\x1b_Gf=24;AAAA\x1b\\\x1b[?2026$p\x1b[14t\x1b[?25l\x1b[?1004h\r\nend\x1b[?25h";
 
@@ -16,7 +16,7 @@ test("the scanner takes the same controls from a stream however it is split", ()
   const split = [...SESSION].flatMap((ch) => pieces(ch));
   const flat = (list: typeof whole) => list.map((piece) => piece.controls + (piece.question ?? "")).join("");
   expect(flat(split)).toBe(flat(whole));
-  expect(whole.map((piece) => piece.question).filter(Boolean)).toEqual(["\x1b[6n", "\x1b[?6n", "\x1b[c", "\x1b[>c", "\x1b[5n", "\x1b[?2026$p", "\x1b[14t"]);
+  expect(whole.map((piece) => piece.question).filter(Boolean)).toEqual(["\x1b[?66$p", "\x1b[4$p", "\x1b[6n", "\x1b[?6n", "\x1b[c", "\x1b[>c", "\x1b[5n", "\x1b[?2026$p", "\x1b[14t"]);
   expect(flat(whole)).not.toContain("prompt");
   expect(flat(whole)).not.toContain("a title");
   expect(flat(whole)).toContain("\x1b]52;c;aGVsbG8=\x07");
@@ -56,4 +56,23 @@ test("xterm fed the controls alone keeps the modes, the cursor and the answers o
 
 test("the same holds when every frame is cut at any point, a question included", async () => {
   await compare(SESSION.match(/[\s\S]{1,7}/g)!);
+});
+
+test("an OSC 52 split across frames reaches xterm whole, nothing written into it between them", async () => {
+  const only = new Terminal({ cols: 20, rows: 4, allowProposedApi: true });
+  const vt = await GhosttyVt.create(20, 4);
+  const copied: string[] = [];
+  only.parser.registerOscHandler(52, (payload) => { copied.push(payload); return true; });
+  try {
+    const writeOnly = controlsWriter(vt, (data, callback) => only.write(data, callback));
+    for (const frame of ["text \x1b]52;c;YWJj", "ZGVm\x07 more"]) await new Promise<void>((resolve) => writeOnly(frame, resolve));
+    expect(copied).toEqual(["c;YWJjZGVm"]);
+  } finally {
+    vt.dispose();
+    only.dispose();
+  }
+});
+
+test("a stream handed to xterm whole keeps everything but the questions it already answered", () => {
+  expect(withoutQuestions(["a\x1b[6nb", "\x1b[?2004h c\x1b[c", "d"])).toBe("ab\x1b[?2004h cd");
 });

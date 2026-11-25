@@ -1,6 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import type { HerdrSocket } from "../ws.ts";
-import { controlScanner } from "./controls.ts";
+import { controlScanner, withoutQuestions } from "./controls.ts";
 import type { GhosttyOverlay } from "./overlay.ts";
 
 /** bytes held for libghostty while its module loads: a herdr-core history replay fits many times over */
@@ -9,7 +9,8 @@ const HELD_BYTES_MAX = 32 * 1024 * 1024;
 export const GHOSTTY_ONLY_KEY = "ovis:ghostty-only";
 
 function ghosttyOnly(): boolean {
-  return globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY) === "on";
+  // a browser that refuses storage leaves the default
+  try { return globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY) === "on"; } catch { return false; }
 }
 
 /** `picturesWanted`: whether this terminal is to draw iTerm2 and sixel pictures (Pictures in the terminal), which xterm draws */
@@ -22,8 +23,6 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   // (controls.ts). iTerm2 and sixel pictures are drawn by xterm (overlay.ts): a terminal that shows them keeps xterm's
   // full parse
   let only = false;
-  // the held chunks xterm was given whole, before `only` was decided
-  let wholeBefore = 0;
   const scan = controlScanner();
   const decoder = new TextDecoder();
   const controlsOf = (data: string | Uint8Array): string =>
@@ -35,9 +34,14 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     term.write = write;
     term.reset = reset;
   };
+  // xterm saw only the controls of `chunks`: it parses them whole after all, from a reset (their modes come again)
+  // and without the questions it already answered
+  const parseWhole = (chunks: (string | Uint8Array)[]): void => {
+    reset();
+    write(withoutQuestions(chunks));
+  };
   const giveUp = (): void => {
-    // xterm saw only the controls of what libghostty was to draw: it parses all of it after all
-    if (only && held) for (const chunk of held.slice(wholeBefore)) write(chunk);
+    if (only && held) parseWhole(held);
     held = null;
     unwrap();
   };
@@ -45,7 +49,8 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     if (held) {
       held.push(data);
       heldBytes += data.length;
-      if (heldBytes > HELD_BYTES_MAX) giveUp();
+      // the chunk that crosses the limit is in what xterm takes whole
+      if (heldBytes > HELD_BYTES_MAX) { giveUp(); callback?.(); return; }
     }
     write(only && held ? controlsOf(data) : data, callback);
   }) as Terminal["write"];
@@ -60,7 +65,6 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     if (decided || stopped || !socket.featuresListed()) return;
     decided = true;
     only = ghosttyOnly() && !picturesWanted();
-    wholeBefore = held?.length ?? 0;
     let taken: (string | Uint8Array)[] | null = null;
     const takeBacklog = (): (string | Uint8Array)[] | null => {
       if (stopped || !held) return null;
@@ -71,15 +75,15 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     };
     // libghostty took the backlog and does not draw after all: xterm, which saw only its controls, parses it whole
     const handBack = (): void => {
-      if (only && taken && !stopped) for (const chunk of taken.slice(wholeBefore)) write(chunk);
+      if (only && taken && !stopped) parseWhole(taken);
       taken = null;
     };
     void import("./overlay.ts")
-      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, host, takeBacklog, only))
+      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, host, takeBacklog, only ? scan : null))
       .then((attached) => {
         if (!attached) { handBack(); return; }
         taken = null;
-        if (stopped) { attached.dispose(); return; }
+        if (stopped) { attached.dispose(false); return; }
         overlay = attached;
       }, (error: unknown) => {
         handBack();
@@ -96,6 +100,6 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     off();
     held = null;
     unwrap();
-    overlay?.dispose();
+    overlay?.dispose(false);
   };
 }

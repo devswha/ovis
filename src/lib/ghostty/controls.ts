@@ -27,7 +27,8 @@ function csiKind(body: string): "mode" | "question" | null {
   const final = body[body.length - 1]!;
   const prefix = body[0]!;
   if (final === "p") return body === "!p" ? "mode" : body.endsWith("$p") ? "question" : null;
-  if (prefix === "?" && (final === "h" || final === "l")) return "mode";
+  // DEC private modes and ANSI ones (insert mode 4, new-line mode 20): xterm keeps both, and reports them
+  if ((final === "h" || final === "l") && (prefix === "?" || /^[\d;]+[hl]$/.test(body))) return "mode";
   if (prefix === ">" && final === "m") return "mode";
   if (final === "c" || final === "n") return "question";
   if (final === "q") return prefix === ">" ? "question" : null;
@@ -45,12 +46,18 @@ const forwardsOsc = (body: string): boolean => {
 /** A stretch of the stream up to `end` (an index in the text), with what xterm takes of it; `question` ends it. */
 export interface ControlPiece { end: number; controls: string; question: string | null }
 
+/** `streaming()`: an OSC 52 is open in what xterm was given, so nothing else may go to xterm before it ends */
+export type ControlScanner = ((text: string) => ControlPiece[]) & { streaming(): boolean };
+
 /** the sequences xterm takes from each piece of text, the state carried from one call to the next */
-export function controlScanner(): (text: string) => ControlPiece[] {
+export function controlScanner(): ControlScanner {
   let state = GROUND;
   let seq = "";
   let keep = true;
-  return (text) => {
+  // an OSC 52 goes to xterm as it comes, not once whole: a frame that opens it and one that ends it are each seen
+  // owning it, as they are when xterm parses everything (the clipboard's replay guard reads xterm's OSC state)
+  let streaming = false;
+  const scanner = (text: string): ControlPiece[] => {
     const pieces: ControlPiece[] = [];
     let out = "";
     let at = 0;
@@ -69,9 +76,11 @@ export function controlScanner(): (text: string) => ControlPiece[] {
       switch (state) {
         case ESC:
           if (ch === "[") { state = CSI; seq = ""; }
-          else if (ch === "]") { state = OSC; seq = ""; keep = true; }
+          else if (ch === "]") { state = OSC; seq = ""; keep = true; streaming = false; }
           else if (ch === "P" || ch === "_" || ch === "^" || ch === "X") state = STRING;
           else if (ch === "c") { out += "\x1bc"; state = GROUND; }
+          // the keypad's application and numeric modes (DECKPAM, DECKPNM), which xterm keeps for its keys
+          else if (ch === "=" || ch === ">") { out += `\x1b${ch}`; state = GROUND; }
           else if (ch === "\x1b") state = ESC;
           else state = GROUND;
           break;
@@ -89,17 +98,21 @@ export function controlScanner(): (text: string) => ControlPiece[] {
           break;
         case OSC:
           if (code === 0x07) {
-            if (keep && forwardsOsc(seq)) out += `\x1b]${seq}\x07`;
+            if (streaming) out += "\x07";
+            else if (keep && forwardsOsc(seq)) out += `\x1b]${seq}\x07`;
             state = GROUND;
           } else if (code === 0x1b) state = OSC_ESC;
-          else if (code === 0x18 || code === 0x1a) state = GROUND;
+          else if (code === 0x18 || code === 0x1a) { if (streaming) out += ch; state = GROUND; }
+          else if (streaming) out += ch;
           else if (keep) {
             seq += ch;
-            if (seq.length === OSC_HEAD && !seq.startsWith("52;")) { keep = false; seq = ""; }
+            if (seq === "52;") { streaming = true; out += "\x1b]52;"; }
+            else if (seq.length === OSC_HEAD && !seq.startsWith("52;")) { keep = false; seq = ""; }
           }
           break;
         case OSC_ESC:
-          if (ch === "\\" && keep && forwardsOsc(seq)) out += `\x1b]${seq}\x1b\\`;
+          if (streaming) out += ch === "\\" ? "\x1b\\" : "\x1b";
+          else if (ch === "\\" && keep && forwardsOsc(seq)) out += `\x1b]${seq}\x1b\\`;
           // ESC ends the string either way; anything but `\` starts a new sequence
           if (ch === "\\") state = GROUND;
           else { state = ESC; at--; }
@@ -117,6 +130,7 @@ export function controlScanner(): (text: string) => ControlPiece[] {
     pieces.push({ end: length, controls: out, question: null });
     return pieces;
   };
+  return Object.assign(scanner, { streaming: () => streaming && state !== GROUND });
 }
 
 export interface ControlsEngine {
@@ -129,8 +143,8 @@ export interface ControlsEngine {
  * write, whose callback still acknowledges the frame) the controls the scanner picks, with its cursor put where the
  * engine's is.
  */
-export function controlsWriter(engine: ControlsEngine, xterm: (data: string, callback?: () => void) => void): (data: string | Uint8Array, callback?: () => void) => void {
-  const scan = controlScanner();
+export function controlsWriter(engine: ControlsEngine, xterm: (data: string, callback?: () => void) => void,
+  scan: ControlScanner = controlScanner()): (data: string | Uint8Array, callback?: () => void) => void {
   const decoder = new TextDecoder();
   const cursorAt = (): string => { const { x, y } = engine.screenCursor(); return `\x1b[${y + 1};${x + 1}H`; };
   return (data, callback) => {
@@ -148,9 +162,30 @@ export function controlsWriter(engine: ControlsEngine, xterm: (data: string, cal
         engine.write(text.slice(from, piece.end));
         from = piece.end;
         out += piece.controls;
-        if (piece.question !== null) out += cursorAt() + piece.question;
+        if (piece.question !== null) out += (scan.streaming() ? "" : cursorAt()) + piece.question;
       }
     }
-    xterm(out + cursorAt(), callback);
+    // xterm's cursor follows libghostty's, unless an OSC 52 it was given is still open (a CUP would end it)
+    xterm(scan.streaming() ? out : out + cursorAt(), callback);
   };
+}
+
+/**
+ * A stream to hand xterm whole after it took only its controls (libghostty gave up): every byte but the questions it
+ * already answered, so the program gets no second reply. The caller resets xterm first, so its modes come again.
+ */
+export function withoutQuestions(chunks: readonly (string | Uint8Array)[]): string {
+  const scan = controlScanner();
+  const decoder = new TextDecoder();
+  let out = "";
+  for (const chunk of chunks) {
+    const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+    let from = 0;
+    for (const piece of scan(text)) {
+      if (piece.question === null) { out += text.slice(from); break; }
+      out += text.slice(from, Math.max(from, piece.end - piece.question.length));
+      from = piece.end;
+    }
+  }
+  return out;
 }
