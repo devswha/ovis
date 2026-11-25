@@ -42,6 +42,14 @@ types it otherwise. Only a send that is exactly one command, with no `@skill`, i
 | --- | --- | --- | --- |
 | OpenCode 2 | a server command (`GET /api/command`: `init`, `review`, `goal`, user commands), not one the TUI runs itself | `POST /api/session/{id}/command {name, text, delivery: "steer"}`, as the TUI's Enter does | the 204 answers once the command's callback ran: `native` evidence |
 | OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it, so the send stays `accepted` as a typed `/compact` does |
+| Codex on the server Ovis started for it (0.169 to 0.171) | bare `/plan`, only while the thread is idle (Codex's own dispatcher allows `/plan` only between tasks) | `thread/settings/update` with Plan mode, Plan's own effort (`plan_mode_reasoning_effort` from `config/read`, else the preset `collaborationMode/list` gives) and the thread's model as it is when the request goes, as the TUI's `/plan` does | the server's answer: `native` evidence |
+
+A Codex `/plan` goes only to the thread herdr reports as the pane's session, read again right
+before the request (a `/resume` in the TUI moves it without the server telling Ovis), once the
+server said that thread is idle and named its model ([`server/approvals/codex.ts`](../server/approvals/codex.ts)
+`servedPlan`); until then, and in a Codex Ovis did not start, it is typed. Codex's `/compact` stays
+typed: compacting through its server aborts a turn Ovis may not have heard of yet. In a pane where
+Ovis started Codex on its server, `/plan` is offered in the palette again (`withDataRoutes`).
 
 The pane's session must be the one its verified OpenCode 2 service holds (`openCodePaneService`)
 and the one herdr still reports for the pane right before the request, never on Windows. The
@@ -233,9 +241,9 @@ Recognized Hermes informational result cards remain available.
   after this send's own echo and was not on screen when it was sent. Hermes `/help`, `/status`,
   `/version`, `/profile` and `/reload-skills` work this way, and the text is shown verbatim on a
   card with a **Dismiss** that sends no keys.
-- `native`: the agent's own event stream or API answer. Today only OpenCode v2, whose service
-  announces the session's message and the end of its execution, and answers a server command sent
-  as data once its callback ran.
+- `native`: the agent's own event stream or API answer. OpenCode v2, whose service announces the
+  session's message and the end of its execution, and answers a server command sent as data once
+  its callback ran; and the answer to a command sent as data (Codex's `/plan`).
 - `side-store`: reserved for an agent's own side store, such as omp's saved BTW answers. Nothing
   produces it yet, so omp `/btw` is a terminal command.
 
