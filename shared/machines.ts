@@ -534,6 +534,12 @@ export interface RemotePairingRequest {
    * member. Absent from an older server, or while it has not confirmed.
    */
   confirmed?: true;
+  /**
+   * A join this PC cannot let in: it lets devices in by its account's signed list, and the app that asks knows no join
+   * into a list (an Ovis older than 0.5.10). No approval decides it (409 `list_unknown`); a decline ends it. Absent from
+   * an older server, or when false.
+   */
+  list_unknown?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

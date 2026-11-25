@@ -16,8 +16,12 @@ export const pairingWindowFs = { rmSync, truncateSync };
 export type PairingDecision = { approved: true; by?: DeviceMatch; pcLabel?: string; own?: true } | { approved: false };
 
 /** What a remote approval came to: done, nothing waiting under that id, or the wrong digits picked (which ends it). */
-/** `not_confirmed`: a join into the list whose new device has not said yet that the digits match; nothing was decided, and the request waits as it did. */
-export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" | "not_confirmed" };
+/**
+ * `not_confirmed`: a join into the list whose new device has not said yet that the digits match; nothing was decided, and
+ * the request waits as it did. `list_unknown`: an approval of a join this PC cannot let in (an app that knows no join into
+ * a list, on a pinned PC); nothing was decided either, and the request waits until it is declined or ends.
+ */
+export type RemoteDecision = { outcome: "decided"; device_id: string } | { outcome: "gone" | "wrong_digits" | "not_confirmed" | "list_unknown" };
 
 /**
  * What the owner's typed digits came to on this PC's own window: approved, nothing such waiting, wrong (which ends it), or
@@ -278,12 +282,14 @@ export class RelayPairingApprovals {
   }
 
   remoteList(): RemotePairingRequest[] {
-    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched, provenServerId, list, confirmed }) => ({
+    return [...this.waiting.values()].filter(({ localOnly }) => !localOnly).map(({ request, choices, key, vouched, provenServerId, list, confirmed, listUnknown }) => ({
       id: request.id, label: request.label, intent: request.intent, choices: vouched ? [] : choices, expires_at: request.expires_at, key,
       ...(vouched ? { vouched: true as const, ...(provenServerId ? { proven_server_id: provenServerId } : {}) } : {}),
       // the join brought the device's card for the account's list: it is let in by an entry of the list, which its approver signs
       ...(list ? { list: true as const } : {}),
       ...(list && confirmed ? { confirmed: true as const } : {}),
+      // one this PC cannot let in: no approval decides it (decideRemote), and the approver's card says to update that app
+      ...(listUnknown ? { list_unknown: true as const } : {}),
     }));
   }
 
@@ -432,6 +438,8 @@ export class RelayPairingApprovals {
     const entry = this.waiting.get(id);
     if (!entry || entry.localOnly) return { outcome: "gone" };
     if (!approved) { entry.finish({ approved: false }); return { outcome: "decided", device_id: entry.deviceId }; }
+    // an app that knows no join into the list, on a pinned PC: no approval lets it in, the right digits included
+    if (entry.listUnknown) return { outcome: "list_unknown" };
     // a join into the list: the member signs the device's entry, and only once its person said the digits match. The
     // request stays as it was, for the approval that comes after the confirmation
     if (entry.list && !entry.confirmed) return { outcome: "not_confirmed" };

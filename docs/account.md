@@ -2099,7 +2099,10 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
   The PC's own window shows it with the same words and no Allow or number field, and
   `POST /api/relay/join` answers an approval of it `409 list_unknown` and leaves it waiting (a
-  decline still ends it).
+  decline still ends it, first join or not). A member's approval from another device
+  (`POST /api/relay/pairing`) is refused the same way, the right digits included: the waiting
+  list marks such a join `list_unknown`, and the member's card says to update Ovis on that
+  device instead of offering Approve.
 - **The PC signs only for a person at this PC**: an approval from its own window or its local
   command. An approval from another browser that drives the PC, and a member's approval from afar,
   sign nothing here. A PC that joined by an invite is in the list and signs for nothing either.

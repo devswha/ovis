@@ -16,7 +16,7 @@ import { pageAccountList } from "../lib/account/pageList.ts";
 import { useT } from "../lib/i18n.ts";
 import { accountServiceOf, AccountService, type Admission } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
-import { decideRelayPairing } from "../lib/api.ts";
+import { ApiError, decideRelayPairing } from "../lib/api.ts";
 import { indexedDeviceStore } from "../lib/relay/device.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
@@ -133,6 +133,13 @@ function DeviceApprovals({ pairings, onStalled }: { pairings: readonly RemotePai
   const deviceName = known?.admission?.label ?? (accountLabel(request.label) || t("Device"));
 
   const decide = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
+    try { await approveOrDecline(decision, digits); } catch (error) {
+      // the PC cannot let this device in (an app that knows no join into a list): nothing was approved or written
+      if (error instanceof ApiError && error.code === "list_unknown") throw new Error(t("{pc} cannot let {device} in: {pc} lets devices into your account by its signed list, and {device} asked as an Ovis older than 0.5.10 does. Update Ovis on {device}, then have it ask to join again.", { device: deviceName, pc: where.pcName }));
+      throw error;
+    }
+  };
+  const approveOrDecline = async (decision: "approve" | "decline", digits?: string): Promise<void> => {
     if (decision === "decline" || digits === undefined) { await decideRelayPairing(request.id, "decline"); return; }
     const service = new AccountService({ store: indexedAccountStore });
     const session = await service.session();
