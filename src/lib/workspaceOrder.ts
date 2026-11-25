@@ -161,8 +161,9 @@ export class ReorderCoordinator {
     const pc = this.pc(id);
     const ids = snapshot.workspaces.map((workspace) => workspace.workspace_id);
     const evidence = evidenceOf(snapshot);
-    pc.last = { ids, evidence };
     if (evidence && pc.retired.has(evidence.epoch)) return;
+    if (evidence && pc.last?.evidence?.epoch === evidence.epoch && pc.last.evidence.seq > evidence.seq) return;
+    pc.last = { ids, evidence };
     if (pc.waiters.length > 0 && this.qualifies(pc, evidence)) for (const waiter of pc.waiters.splice(0)) waiter.resolve(ids);
     if (pc.pending.size > 0 || pc.hold) {
       if (pc.pending.size === 0 && this.releases(pc, evidence, source)) { pc.hold = null; pc.desired = null; pc.shown = ids; return; }
@@ -188,19 +189,21 @@ export class ReorderCoordinator {
   private mismatch(id: string, pc: PcOrder, evidence: Evidence | null): void {
     const verify = this.options.verify;
     if (!verify || !evidence || pc.protectedEpoch === null || evidence.epoch === pc.protectedEpoch) return;
-    const key = `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`;
+    const key = `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.protectedEpoch}`;
     if (pc.check?.key === key) return;
     pc.check?.abort.abort();
     const check = { key, abort: new AbortController() };
     pc.check = check;
-    void verify(id, check.abort.signal).then((answer) => {
+    const finish = (answer: Awaited<ReturnType<SourceProofQuery>>) => {
       if (pc.check !== check) return;
       pc.check = null;
-      if (answer && !check.abort.signal.aborted && key === `${pc.receipts}:${pc.guard?.version ?? 0}:${pc.generation}:${pc.protectedEpoch}`) {
+      if (answer && !check.abort.signal.aborted) {
         pc.answered = evidence.epoch;
         this.proved(id, pc, answer);
       }
-    }, () => { if (pc.check === check) pc.check = null; });
+      for (const waiter of pc.waiters.splice(0)) waiter.reject(new Error("Could not confirm the PC's workspace order"));
+    };
+    void verify(id, check.abort.signal).then(finish, () => finish(null));
   }
 
   private invalidateCheck(pc: PcOrder): void {
@@ -222,7 +225,13 @@ export class ReorderCoordinator {
     pc.protectedEpoch = boot;
     const entry = answer.machines.find((machine) => machine.id === id);
     const evidence = entry?.snapshot ? evidenceOf(entry.snapshot) : null;
-    if (entry?.snapshot && evidence?.epoch === boot && pc.pending.size === 0 && !pc.hold) pc.shown = entry.snapshot.workspaces.map((workspace) => workspace.workspace_id);
+    if (entry?.snapshot && evidence?.epoch === boot) {
+      if (pc.last?.evidence?.epoch !== boot || pc.last.evidence.seq <= evidence.seq) {
+        pc.last = { ids: entry.snapshot.workspaces.map((workspace) => workspace.workspace_id), evidence };
+      }
+      pc.shown = pc.last.ids;
+      for (const waiter of pc.waiters.splice(0)) waiter.resolve(pc.last.ids);
+    }
     this.notify();
   }
 
@@ -235,11 +244,14 @@ export class ReorderCoordinator {
     if (pc.shown === null) pc.shown = [...current];
     if (pc.hold) pc.hold.settleMark = null;
     else pc.hold = { epoch: null, receipts: 0, legacy: false, settleMark: null };
-    pc.receipts++;
-    this.invalidateCheck(pc);
+    // A drag behind a parked batch cannot send a move until that batch has its recovery proof.
+    if (pc.waiters.length === 0) {
+      pc.receipts++;
+      this.invalidateCheck(pc);
+    }
     this.notify();
     const run = pc.chain.then(async () => {
-      const base = pc.failed ? await this.qualifiedBase(pc, generation) : [...current];
+      const base = pc.failed ? await this.qualifiedBase(machineId, pc, generation) : [...current];
       pc.failed = false;
       for (const step of workspaceMoves(base, mergeOrder(next, base))) {
         const sent = pc.last?.evidence ?? null;
@@ -250,10 +262,14 @@ export class ReorderCoordinator {
     return run.then(() => this.settle(machineId, pc, generation, null), (error: unknown) => this.settle(machineId, pc, generation, error));
   }
 
-  private qualifiedBase(pc: PcOrder, generation: number): Promise<string[]> {
+  private qualifiedBase(machineId: string, pc: PcOrder, generation: number): Promise<string[]> {
     if (pc.last && this.qualifies(pc, pc.last.evidence)) return Promise.resolve(pc.last.ids);
     if (pc.gone) return Promise.reject(new Error("This PC was removed"));
-    return new Promise((resolve, reject) => pc.waiters.push({ generation, resolve, reject }));
+    return new Promise((resolve, reject) => {
+      pc.waiters.push({ generation, resolve, reject });
+      const sent = pc.hold?.sent;
+      if (sent !== undefined) this.recheck(machineId, pc, sent);
+    });
   }
 
   private acknowledge(pc: PcOrder, receipt: WorkspaceMoved | void, sent: Evidence | null): void {
