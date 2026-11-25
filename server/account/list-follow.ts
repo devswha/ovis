@@ -137,13 +137,15 @@ const PEER_SESSIONS_MAX = 64;
 export type PeerCaller = string;
 
 /**
- * The place this PC asks a member's entries after, as it states it to that member: never past its footing, the last
- * entry a member signed in its copy. An entry no member signed above it (one the account service showed it) is not
- * counted as held, so a member hands the entries that take its place.
+ * The read this PC keeps for a member and asks it for, as it states it: a read from its own top asks from its footing,
+ * the last entry a member signed in its copy (an entry no member signed above it, which the account service showed it,
+ * is not counted as held, so a member hands the entries that take its place). A read that goes on inside another
+ * history (`carry`) keeps its place, wherever that lies. What is kept and what is asked are one place, so the page
+ * that answers it is taken as its continuation.
  */
-function footingAsk(copy: FollowerCopy, after: number | null): number | null {
+function footingRead(copy: FollowerCopy, read: FollowRead): FollowRead {
   const footing = copy.state?.footing.seq ?? null;
-  return after === null || footing === null || after <= footing ? after : footing;
+  return read.carry !== null || read.after === null || footing === null || read.after <= footing ? read : { ...read, after: footing };
 }
 
 /**
@@ -1956,16 +1958,17 @@ export class ListFollow implements ListAuthority {
         if (!this.live(scope)) return null;
         // what the PC holds was replaced while the page was checked (a list named here): the page is checked against that
         if (this.copy === null || changed(copy, this.copy)) continue;
+        const next = result.read === null ? null : footingRead(result.copy, result.read);
         if (session !== undefined) {
           this.peerReads.delete(session);
-          if (result.read !== null) {
-            this.peerReads.set(session, result.read);
+          if (next !== null) {
+            this.peerReads.set(session, next);
             while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
           }
         }
         // acted on at once; said as taken only once it is on disk
         const saved = this.keep(result.copy, scope, changed(copy, result.copy));
-        return { verdict: saved ? result.verdict : "not_saved", asks: result.read === null ? null : { list: result.read.list, after: footingAsk(result.copy, result.read.after) } };
+        return { verdict: saved ? result.verdict : "not_saved", asks: next === null ? null : { list: next.list, after: next.after } };
       }
       return null;
     });
@@ -1995,13 +1998,14 @@ export class ListFollow implements ListAuthority {
     }
     const answered = served === null ? own : { ...own, page: served };
     if (compared.read === null) return answered;
+    // asked from the footing the PC states beside it: an entry no member signed above it is not counted as held
+    const read = footingRead(copy, compared.read);
     if (session !== undefined) {
       this.peerReads.delete(session);
-      this.peerReads.set(session, compared.read);
+      this.peerReads.set(session, read);
       while (this.peerReads.size > PEER_SESSIONS_MAX) this.peerReads.delete(this.peerReads.keys().next().value!);
     }
-    // asked from the footing the PC states beside it: an entry no member signed above it is not counted as held
-    return { ...answered, asks: { list: compared.read.list, after: footingAsk(copy, compared.read.after) } };
+    return { ...answered, asks: { list: read.list, after: read.after } };
   }
 
   /** Whether `session` may make one more call of the two (PEER_CALLS_PER_MINUTE): each costs signature checks. Charged before its body is read. */
