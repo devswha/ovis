@@ -1101,6 +1101,43 @@ describe("AgentSidebar fold memory", () => {
     expect(restingLabel()).toBe("+1 resting");
   });
 
+  it("while the pointer is in the list, an agent kept above the resting line by its busy helper stays when the helper leaves, and a new helper stands with its agent", async () => {
+    stored.set("ovis:settings", JSON.stringify({ agentOrder: "waiting" }));
+    type Panes = NonNullable<Machine["snapshot"]>["panes"];
+    const scene = (edit: (panes: Panes) => Panes) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && { ...machine.snapshot, panes: edit(machine.snapshot.panes) } }));
+    const helped = (helper: boolean) => scene((panes: Panes) => panes.flatMap((pane) => pane.pane_id === "w1D:p1" ? [{ ...pane, agent_status: "idle" as const }]
+      : pane.pane_id === "w1E:p1" ? helper ? [{ ...pane, agent_status: "working" as const, parent_pane_id: "w1D:p1" }] : [] : [pane]));
+    const working = (newHelper: boolean) => scene((panes: Panes) => panes.flatMap((pane) => pane.pane_id !== "w1D:p1" ? [pane]
+      : [{ ...pane, agent_status: "working" as const }, ...newHelper ? [{ ...pane, pane_id: "w1D:p9", terminal_id: "w1D:p9", agent_status: "done" as const, parent_pane_id: "w1D:p1", acp_child: true as const }] : []]));
+    const renderList = (machines: Machine[]) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    await act(async () => { renderer = create(renderList(helped(true))); });
+    if (!renderer) throw new Error("sidebar did not mount");
+    const mounted = renderer;
+    const section = () => mounted.root.findByType("section");
+    const drawnEntries = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label agent-resting-label"))
+      .map((node) => [node.props["data-pane"] ?? "RESTING", node.props["data-depth"] ?? 0]);
+    const restingLabel = () => mounted.root.findByProps({ className: "agent-background-label agent-resting-label" }).findByType("span").children.join("");
+    expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["w1E:p1", 1], ["RESTING", 0]]);
+
+    await act(async () => { section().props.onPointerEnter(); });
+    await act(async () => { mounted.update(renderList(helped(false))); });
+    expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["RESTING", 0]]);
+    await act(async () => { section().props.onPointerLeave(); });
+    expect(drawnEntries()).toEqual([["w1C:p1", 0], ["RESTING", 0]]);
+
+    await act(async () => { mounted.update(renderList(working(false))); });
+    const before = restingLabel();
+    expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["RESTING", 0]]);
+    await act(async () => { section().props.onPointerEnter(); });
+    await act(async () => { mounted.update(renderList(working(true))); });
+    expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["w1D:p9", 1], ["RESTING", 0]]);
+    expect(restingLabel()).toBe(before);
+  });
+
   it("keeps rows still for one second after a touch ends, then applies the new order without changing selection", async () => {
     stored.set("ovis:settings", JSON.stringify({ agentOrder: "waiting" }));
     jest.useFakeTimers();

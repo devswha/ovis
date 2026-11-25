@@ -344,13 +344,26 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const busy = (row: AgentRow) => { const status = rowStatus(row); return status === "blocked" || status === "working" || status === "waiting"; };
   useEffect(() => {
     if (holding) return;
-    held.current = { readerKey, order: people.map(rowKey), active: new Set(people.filter(busy).map(rowKey)) };
+    // what stands above the resting line is held by family: a helper leaving or ending keeps its agent in place
+    held.current = { readerKey, order: people.map(rowKey), active: new Set(agentFamilies(people).filter((family) => family.some(busy)).flat().map(rowKey)) };
   });
   const heldOrder = holding ? held.current?.order ?? [] : [];
-  const shownPeople = !holding ? people : [...people].sort((a, b) => {
-    const at = (row: AgentRow) => { const index = heldOrder.indexOf(rowKey(row)); return index < 0 ? Number.MAX_SAFE_INTEGER : index; };
-    return at(a) - at(b);
-  });
+  const shownPeople = (() => {
+    if (!holding) return people;
+    // a row that came during the hold takes the place of its nearest held ancestor, so a new helper stands with its agent
+    const byKey = new Map(people.map((row) => [rowKey(row), row]));
+    const at = (row: AgentRow): number => {
+      const passed = new Set<AgentRow>();
+      for (let up: AgentRow | undefined = row; up && !passed.has(up); up = up.entry.pane.parent_pane_id === undefined ? undefined : byKey.get(sidebarPinKey(up.machine.id, up.entry.pane.parent_pane_id))) {
+        const index = heldOrder.indexOf(rowKey(up));
+        if (index >= 0) return index;
+        passed.add(up);
+      }
+      return Number.MAX_SAFE_INTEGER;
+    };
+    const places = new Map(people.map((row) => [row, at(row)]));
+    return [...people].sort((a, b) => places.get(a)! - places.get(b)!);
+  })();
   useEffect(() => {
     if (foldRequest === null || foldRequest.folded === folded) return;
     if (filter.active) { setFilterFold(foldRequest.folded); return; }
