@@ -1,15 +1,28 @@
 import type { Terminal } from "@xterm/xterm";
 import type { HerdrSocket } from "../ws.ts";
+import { controlScanner } from "./controls.ts";
 import type { GhosttyOverlay } from "./overlay.ts";
 
 /** bytes held for libghostty while its module loads: a herdr-core history replay fits many times over */
 const HELD_BYTES_MAX = 32 * 1024 * 1024;
+/** "on" or "off": whether libghostty alone parses this browser's terminals (overlay `only`); off unless set */
+export const GHOSTTY_ONLY_KEY = "ovis:ghostty-only";
+
+function ghosttyOnly(): boolean {
+  return globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY) === "on";
+}
 
 export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement): () => void {
   let held: (string | Uint8Array)[] | null = [];
   let heldBytes = 0;
   let overlay: GhosttyOverlay | null = null;
   let stopped = false;
+  // with `only`, xterm takes the controls of what libghostty is to draw from the start (controls.ts)
+  const only = ghosttyOnly();
+  const scan = only ? controlScanner() : null;
+  const decoder = new TextDecoder();
+  const controlsOf = (data: string | Uint8Array): string =>
+    scan!(typeof data === "string" ? data : decoder.decode(data, { stream: true })).map((piece) => piece.controls + (piece.question ?? "")).join("");
   const write = term.write.bind(term);
   const reset = term.reset.bind(term);
   const unwrap = (): void => {
@@ -18,6 +31,8 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
     term.reset = reset;
   };
   const giveUp = (): void => {
+    // xterm saw only the controls of what libghostty was to draw: it parses all of it after all
+    if (only && held) for (const chunk of held) write(chunk);
     held = null;
     unwrap();
   };
@@ -27,7 +42,7 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
       heldBytes += data.length;
       if (heldBytes > HELD_BYTES_MAX) giveUp();
     }
-    write(data, callback);
+    write(only && held ? controlsOf(data) : data, callback);
   }) as Terminal["write"];
   term.write = holdingWrite;
   term.reset = () => {
@@ -39,19 +54,28 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   const decide = (): void => {
     if (decided || stopped || !socket.featuresListed()) return;
     decided = true;
+    let taken: (string | Uint8Array)[] | null = null;
     const takeBacklog = (): (string | Uint8Array)[] | null => {
       if (stopped || !held) return null;
-      const backlog = held;
-      giveUp();
-      return backlog;
+      taken = held;
+      held = null;
+      unwrap();
+      return taken;
+    };
+    // libghostty took the backlog and does not draw after all: xterm, which saw only its controls, parses it whole
+    const handBack = (): void => {
+      if (only && taken && !stopped) for (const chunk of taken) write(chunk);
+      taken = null;
     };
     void import("./overlay.ts")
-      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, host, takeBacklog))
+      .then(({ attachGhosttyOverlay }) => attachGhosttyOverlay(term, host, takeBacklog, only))
       .then((attached) => {
-        if (!attached) return;
+        if (!attached) { handBack(); return; }
+        taken = null;
         if (stopped) { attached.dispose(); return; }
         overlay = attached;
       }, (error: unknown) => {
+        handBack();
         giveUp();
         console.warn("libghostty could not draw this terminal; xterm draws it", error);
       });
@@ -63,7 +87,8 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   return () => {
     stopped = true;
     off();
-    giveUp();
+    held = null;
+    unwrap();
     overlay?.dispose();
   };
 }
