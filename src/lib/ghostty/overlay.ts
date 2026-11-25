@@ -12,8 +12,9 @@ import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminal
 import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
-import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
-import { holdScreenRows, terminalScreen } from "../terminalScreen.ts";
+import { GHOSTTY_DREW_EVENT, VIEW_MOVED_EVENT } from "./viewMoved.ts";
+import { type ScreenLine, holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
+import { holdSelection } from "./selection.ts";
 import { ghosttyRows } from "./screenRows.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
@@ -466,6 +467,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       written = false;
       bottomText = screenText;
     }
+    if (changed) host.dispatchEvent(new Event(GHOSTTY_DREW_EVENT));
     if (changed) {
       const c = vt.cursor();
       Object.assign(cursor.style, c.visible
@@ -583,19 +585,35 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
     overlay.dispose();
   };
-  holdScreenRows(term, () => {
+  const heldRows = (): ScreenRows | null => {
     if (disposed) return null;
     try {
       const rows = ghosttyRows(vt);
+      // xterm's line, read into xterm's own cells: a reader may hold one of libghostty's cells as its scratch
+      const xtermLine = (y: number): ScreenLine | undefined => {
+        const line = term.buffer.active.getLine(y);
+        return line && { isWrapped: line.isWrapped, length: line.length, translateToString: (trimRight?: boolean, start?: number, end?: number) => line.translateToString(trimRight, start, end), getCell: (x: number) => line.getCell(x) };
+      };
       return {
         ...rows,
         getLine: (y) => {
-          if (disposed) return term.buffer.active.getLine(y);
+          if (disposed) return xtermLine(y);
           try {
-            return rows.getLine(y);
+            const line = rows.getLine(y);
+            if (!line) return line;
+            // a line's styled cells are read when first asked: a failure there falls back the same way
+            return {
+              ...line,
+              getCell: (x, cell) => {
+                if (!disposed) {
+                  try { return line.getCell(x, cell); } catch (error) { readFailed(error); }
+                }
+                return xtermLine(y)?.getCell(x);
+              },
+            };
           } catch (error) {
             readFailed(error);
-            return term.buffer.active.getLine(y);
+            return xtermLine(y);
           }
         },
       };
@@ -603,7 +621,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       readFailed(error);
       return null;
     }
-  });
+  };
+  holdScreenRows(term, heldRows);
+  const releaseSelection = holdSelection(term);
   const overlay: GhosttyOverlay = {
     dispose: () => {
       if (disposed) return;
@@ -611,6 +631,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       cancelPaint();
       delete host.dataset["renderer"];
       holdScreenRows(term, null);
+      releaseSelection();
       unmuteXtermRows();
       term.refresh(0, term.rows - 1);
       term.write = write;
