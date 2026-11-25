@@ -83,6 +83,9 @@ async function hasList(list: AccountList, account: string): Promise<boolean> {
 /** What a card places, and goes on placing at Try again: the very post the number came from, by the member key it was worked out with. */
 type Placing = { readonly post: AddNumber["post"]; readonly member: string };
 
+/** A card held by the parent while its Add places the PC (`admitted`: the account took it already). */
+type Held = { readonly pc: DirectoryPc; readonly placing: Placing; readonly admitted: boolean };
+
 /** No number came for a PC that asks to be added (listAdd.ts). */
 class NumberError extends Error {
   constructor(readonly why: NumberRefusal) {
@@ -119,9 +122,12 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   const [listing, setListing] = useState<Listing | null>(null);
   const [confirmed, setConfirmed] = useState<readonly DirectoryPc[]>([]);
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
-  // The cards whose admission passed and whose entry the list did not take: the account's directory no longer lists
-  // them as asking, and they stay until the device's own copy holds the PC or the person says No
-  const [kept, setKept] = useState<readonly DirectoryPc[]>([]);
+  // The cards whose Add is placing a PC, with what they place, held here from before the admission: once the account
+  // admitted the PC its directory no longer lists it as asking, and a read of it while the entry goes out would take
+  // the card away. They stay until the device's own copy holds the PC or the person says No (`admitted`: the account
+  // took the PC, so Try again places it with no admission)
+  const [kept, setKept] = useState<readonly Held[]>([]);
+  const release = (serverId: string): void => setKept((prior) => prior.filter((each) => each.pc.server_id !== serverId));
   useEffect(() => {
     if (!enabled) { setListing(null); return; }
     let version = 0;
@@ -163,22 +169,24 @@ export function UnconfirmedPcNotices({ service = indexedAccountService, enabled 
   const { session } = listing;
   const told = new Set(confirmed.map((pc) => pc.server_id));
   const asking = new Set(listing.pcs.map((pc) => pc.server_id));
-  const cards = [...listing.pcs, ...kept.filter((pc) => !asking.has(pc.server_id))];
+  const cards = [...listing.pcs, ...kept.map((each) => each.pc).filter((pc) => !asking.has(pc.server_id))];
   return (
     <>
       {cards.filter((pc) => !told.has(pc.server_id) && !removed.has(pc.server_id)).map((pc) => (
         <UnconfirmedPcNotice key={`${session.account}:${pc.server_id}:${pc.listing_id ?? pc.added_at}`} pc={pc} session={session} service={service} now={now} retry={pendingFor(listing.pending, pc)} numberWaitMs={numberWaitMs}
           {...(onSignInAgain ? { onSignInAgain } : {})}
           onConfirmed={(row) => setConfirmed((prior) => [...prior.filter((each) => each.server_id !== row.server_id), row])}
-          onKept={() => setKept((prior) => [...prior.filter((each) => each.server_id !== pc.server_id), pc])}
-          onRemoved={() => { setRemoved((prior) => new Set([...prior, pc.server_id])); setKept((prior) => prior.filter((each) => each.server_id !== pc.server_id)); }} />
+          placing={kept.find((each) => each.pc.server_id === pc.server_id && each.admitted)?.placing ?? null}
+          onHold={(placing, admitted) => setKept((prior) => [...prior.filter((each) => each.pc.server_id !== pc.server_id), { pc, placing, admitted }])}
+          onRelease={() => release(pc.server_id)}
+          onRemoved={() => { setRemoved((prior) => new Set([...prior, pc.server_id])); release(pc.server_id); }} />
       ))}
       {tellConfirmed && confirmed.map((pc) => <NewPcNotice key={`${session.account}:new:${pc.server_id}`} pc={pc} session={session} dismissalKey={newPcNoticeKey(session.account, pc)} />)}
     </>
   );
 }
 
-function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, onKept, onRemoved }: {
+function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, onSignInAgain, onConfirmed, placing, onHold, onRelease, onRemoved }: {
   readonly pc: DirectoryPc;
   readonly session: AccountSession;
   readonly service: AccountService;
@@ -188,8 +196,11 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   readonly numberWaitMs?: number | undefined;
   readonly onSignInAgain?: (provider: AccountProvider) => void;
   readonly onConfirmed: (row: DirectoryPc) => void;
-  /** the account admitted the PC and the list did not take its entry: the card stays, whatever the directory says */
-  readonly onKept: () => void;
+  /** what this card goes on placing once the account admitted the PC and the list did not take its entry; null otherwise */
+  readonly placing: Placing | null;
+  /** the parent holds the card and what it places from before the admission on, whatever the directory says since */
+  readonly onHold: (placing: Placing, admitted: boolean) => void;
+  readonly onRelease: () => void;
   readonly onRemoved: () => void;
 }) {
   const t = useT();
@@ -210,8 +221,6 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   // On an account with a signed list, for a PC that posted its keys for it: the number both screens show, worked out
   // with the PC (listAdd.ts). The person confirms it at the PC first; the Add beside it then signs the PC into the list.
   const [number, setNumber] = useState<AddNumber | null>(null);
-  // the PC the account admitted and whose entry the list did not take yet: what Try again places
-  const [placing, setPlacing] = useState<Placing | null>(null);
   // the numbers this card asked for: NUMBER_TRIES at most, Not the same and a number that ran out included
   const [tries, setTries] = useState(0);
   const spent = tries >= NUMBER_TRIES && number === null;
@@ -316,24 +325,28 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     const list = pageAccountList();
     if (list === null) return;
     let admitted = placing !== null;
+    // held by the parent before the admission: a read of the account's PCs while the entry goes out keeps the card
+    onHold(shown, admitted);
     const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
       expect: { account: session.account, list: shown.post.list }, member: shown.member,
       admit: async () => {
         if (admitted) return;
         await directory.admitPc(pc.server_id, undefined, typeof pc.listing_id === "string" ? pc.listing_id : undefined);
         admitted = true;
+        onHold(shown, true);
       },
     });
     // the service's own window for the listing ended: nothing was admitted, and the request is started again on the PC
-    if (!outcome.added && outcome.why === "admit" && outcome.code === "listing_expired") { setNumber(null); setToldExpired(true); setYoung(false); return; }
-    if (!outcome.added && admitted) { setNumber(null); setPlacing(shown); onKept(); }
+    if (!outcome.added && outcome.why === "admit" && outcome.code === "listing_expired") { onRelease(); setNumber(null); setToldExpired(true); setYoung(false); return; }
+    // nothing admitted: the card is the directory's again; admitted, it stays with Try again (the parent holds it)
+    if (!outcome.added && !admitted) onRelease();
+    if (!outcome.added && admitted) setNumber(null);
     if (!outcome.added) throw new AddRefused(outcome);
     // The person pressed Add where a number was compared on both screens: kept in this device's own record of its PCs,
     // by the relay key the number was worked out for. It only records: storage that is not there changes nothing.
     // written before the card goes: a tab closed right after keeps it
     await noteAct(session.account, shown.post.endpoint, "added").catch(() => undefined);
     setNumber(null);
-    setPlacing(null);
     window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT));
     onRemoved();
   };
@@ -349,7 +362,9 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     setNumber(null);
     setProblem({ text: tries >= NUMBER_TRIES ? numberRefusal(t, "spent") : t("The numbers did not match. This PC was not added."), signInAgain: false });
   };
-  const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id, typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
+  // No: a listing that asks is removed by its id (account#67); a PC the account admitted already no longer asks, so
+  // the PC itself is removed, which the account service takes for an admitted PC
+  const remove = (): Promise<void> => act(async () => { await removal.remove(session, pc.server_id, placing === null && typeof pc.listing_id === "string" ? pc.listing_id : undefined); },
     () => ({ text: t("The PC could not be removed. Try again."), signInAgain: false }));
   const latestAdd = useRef(add);
   latestAdd.current = add;

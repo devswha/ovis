@@ -117,6 +117,7 @@ export function AddPcByNumber({ list, account, post, name, waitMs, now = Date.no
         <div className="account-approval-actions">
           {number !== null ? (
             <>
+              <button type="button" className="btn" disabled={busy} onClick={onClose}>{t("Cancel")}</button>
               <button type="button" className="btn" disabled={busy} onClick={notTheSame}>{t("Not the same")}</button>
               <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void add(number)}>{t("Add|account pc")}</button>
             </>

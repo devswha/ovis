@@ -1475,6 +1475,9 @@ as on an account with no list. Once the account admitted the PC and the list did
 entry, the card stays, whatever the directory lists, and says **{name} is not in your account's list
 yet. Try again.**: **Try again** goes again with the same card and member key (the request kept
 for it is sent again, or signed anew on a new head), and nothing is admitted a second time. The
+page holds the card and what it places from before the admission, so a read of the account's PCs
+while the entry goes out does not take it away; **No** on such a card removes the admitted PC from
+the account. The
 record of the Add is written before the card or the dialog goes.
 
 A number that is shown proves nothing by itself: only the two confirmations do, each for its own
@@ -1495,7 +1498,9 @@ key the list holds for the device. An entry the copy holds and the PC has not re
 spends nothing: the pairing stays the device's own, nothing is opened over its session, and the
 PC opens from its row once it took the list. An entry whose placement is not known (no answer and
 no read of the log since) is handled the same way, after a read of the device's own copy: never as
-a refusal. A refusal at a later ask is said as the PC's refusal. A device that cannot write a list
+a refusal. So is a session that drops at a later ask, once the entry is placed; and where the PC
+says it read an entry and the device's copy cannot be read to tell, that is not known yet, never
+"not in the list". A refusal at a later ask is said as the PC's refusal. A device that cannot write a list
 its account has (it waits to be let in, or its copy does not read; a page that has not read its
 list yet reads it first) sends no link from before either: the pairing stays its own and nothing
 is opened over it. A PC with no such call (it follows no list, or is from before lists) gets the link, as
