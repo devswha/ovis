@@ -44,7 +44,7 @@ import { withRecord } from "./dialogs/record.ts";
 import { titleStatus } from "./agent-identity.ts";
 import { recordFor, recordRequest, recordSettled, type RecordOutcome, withAgentRecord } from "./record-cards.ts";
 import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts";
-import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
+import { SUGGESTION_READ_MS, claudeBoxRows, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
@@ -52,7 +52,7 @@ import { OpenCodePromptState } from "./opencode-prompt.ts";
 export { removedInvisible } from "./dialogs/claude.ts";
 export type { OmoAsk } from "./dialogs/shared.ts";
 export { parseFallbackPrompt } from "./dialogs/fallback.ts";
-export { CLAUDE_CLEAR_INPUT_KEYS, INPUT_BOX_SHOWN_CHARS, claudeClearableDraft, claudeHeldIsGrey, claudeInputBoxContent, claudeSendAnywayBox, claudeInputBoxText, foldedPlaceholder, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, historyEndShowsLive, isClaudeHeld, parseClaudeSuggestion, shownInputBox, viewportShowsLive } from "./claude-input.ts";
+export { CLAUDE_CLEAR_INPUT_KEYS, INPUT_BOX_SHOWN_CHARS, claudeBoxRows, claudeClearableDraft, claudeHeldIsGrey, claudeInputBoxContent, claudeSendAnywayBox, claudeInputBoxText, foldedPlaceholder, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, historyEndShowsLive, isClaudeHeld, parseClaudeSuggestion, shownInputBox, viewportShowsLive } from "./claude-input.ts";
 export { hermesInputDraft } from "./hermes-input.ts";
 export { OpenCodePromptState } from "./opencode-prompt.ts";
 export { openOmoAsks, pendingOmoAsk } from "./omo-questions.ts";
@@ -705,7 +705,7 @@ async function restoredOnLiveScreen(paneId: string, viewport: string): Promise<s
   const colors = (await paneRead({ paneId, source: "visible", format: "ansi", timeoutMs: SUGGESTION_READ_MS })).text;
   const scrollAfter = await paneScrollInfo(paneId);
   const live = await detection();
-  return viewportShowsLive(scrollBefore, scrollAfter, colors, before, live) ? claudeRestoredDraft(live, colors, sent) : null;
+  return viewportShowsLive(scrollBefore, scrollAfter, colors, before, live, claudeBoxRows(live)) ? claudeRestoredDraft(live, colors, sent) : null;
 }
 
 /**

@@ -12,7 +12,7 @@ import { commandDataRoute, sendCommandAsData } from "../command-data-send.ts";
 import { processStartedAt } from "../process-start.ts";
 import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
-import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteCommandEvidence, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
+import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeBoxRows, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, foldedPlaceholder, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteCommandEvidence, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "../dialogs/registry.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
@@ -324,7 +324,7 @@ export async function claudeBoxReads(paneId: string): Promise<[string, string | 
   const colors = (await paneRead({ paneId, source: "visible", format: "ansi" })).text;
   const scrollAfter = await paneScrollInfo(paneId);
   const live = (await paneRead({ paneId, source: "detection", format: "text" })).text;
-  return [live, viewportShowsLive(scrollBefore, scrollAfter, colors, before, live) ? colors : null];
+  return [live, viewportShowsLive(scrollBefore, scrollAfter, colors, before, live, claudeBoxRows(live)) ? colors : null];
 }
 
 /**
