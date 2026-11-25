@@ -29,6 +29,7 @@ import {
   birthSeals, birthText, elapsed, handOverRecord, joinedRecord, knownPcs, listDoubt, MOVE_AGAIN_SECONDS, noticeRecord, notCarriedAt, pageAnswers, pcAgrees, readBirth, readHandOver,
   readJoined, readNotice, readRetired, retiredText, scaled, signLink, type KeptBirth, type ListDoubt, type MoveNoticeView, type MoveRefusal, type PcAnswers,
 } from "./listMigrate.ts";
+import { removeFromList } from "./listRemoveDevice.ts";
 import { clearTried, noteTried, readSeenPcs } from "./seenPcs.ts";
 import { deviceCard, deviceListKeys, type DeviceListKeys } from "./listKeys.ts";
 import { namesAt, openEpochs, readWraps, wrapsRecord, type OpenedEpochs } from "./listNames.ts";
@@ -453,6 +454,8 @@ interface Held {
   readonly behind?: true;
   /** A carried device's check of its list against its PCs, from the last round that read them (V4-6). */
   readonly check?: { readonly doubt: ListDoubt | null; readonly asks: readonly string[] };
+  /** The keys of this device's own blocks that the list its own birth made holds: its first write there puts them out (#4652, b2). */
+  readonly owed?: readonly string[];
 }
 
 /**
@@ -626,8 +629,10 @@ export interface AccountList {
    * What this device signs an entry on, or null: it follows no list, is not in it with power `full`, or was shown
    * another history. `self`: for the removal of this device's own key, which a device of any power may sign (a
    * borrowed browser that signs out): only the power is not asked, and the kinds refuse whatever else it would sign.
+   * While the device owes the list the removal of keys it blocked itself (Held's `owed`), only that removal signs
+   * (`owed`): it is the first write there.
    */
-  writer(options?: { readonly self?: boolean }): ListWriter | null;
+  writer(options?: { readonly self?: boolean; readonly owed?: boolean }): ListWriter | null;
   /** The place of the entry at `seq` in this device's copy, or null where the copy does not reach it. */
   placeAt(seq: number): ListPlace | null;
   /** Whether this device's copy holds that entry at that place: its own entry is in its copy only once the log showed it. */
@@ -1157,6 +1162,19 @@ export function accountList(options: AccountListOptions): AccountList {
     return winner === null ? { why: "sending", wait: null, asks: [] } : await sendBirth(bound, account, winner, signal);
   };
 
+  /**
+   * The keys of this device's own blocks (`own_blocks`) that the list its own birth made holds, each by the key that
+   * stands for it now (#4652, b2): X5 sends a kept birth as it is, so a key blocked after it was signed may be carried
+   * in, by a block the service refused for good or a service that placed the birth all the same. The device's first
+   * write in that list puts them out.
+   */
+  const owedOf = async (account: string, copy: FollowerCopy, keys: DeviceListKeys): Promise<string[]> => {
+    const { state } = copy;
+    if (copy.pin.how !== "genesis" || state === null || !movedList(state)) return [];
+    const blocked = (await accountStore.get("own_blocks"))?.[account] ?? [];
+    return [...new Set(blocked.flatMap((key) => { const now = standsFor(state, key); return now === null || now === keys.key ? [] : [now]; }))];
+  };
+
   /** Whether a list was born by a move: its first signer handed its place on, or it carried somebody in. */
   const movedList = (state: ListState): boolean => {
     const first = Object.entries(state.signers).find(([, row]) => row.seq === 0)?.[0] ?? null;
@@ -1425,7 +1443,8 @@ export function accountList(options: AccountListOptions): AccountList {
     // while none of them says against it, and its copy holds no alarm of another history
     const check = await checkJoined(account, copy);
     if (copy.pin.how === "carried" && copy.state !== null && copy.alarm === null && (check?.doubt ?? null) === null) await handOver(bound, session, keys, copy, signal);
-    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}), ...(check === undefined ? {} : { check }) };
+    const owed = await owedOf(account, copy, keys);
+    return { account, copy, saved, trouble: worst([troubleOf(verdict), other ? "other_list" : null]), without: { at: "off" }, ...(unread ? { unread: true as const } : {}), ...(behind ? { behind: true as const } : {}), ...(check === undefined ? {} : { check }), ...(owed.length === 0 ? {} : { owed }) };
   };
 
   const round = async (): Promise<AccountListView> => {
@@ -1566,6 +1585,23 @@ export function accountList(options: AccountListOptions): AccountList {
     }
   };
 
+  /** The removal the device owes the list its own birth made, while it is under way: the rounds its write reads in pay nothing again. */
+  let paying: Promise<void> | null = null;
+  /**
+   * Puts out the keys the device owes its list (Held's `owed`) through the devices step's removal, kept and sent
+   * again like any write (operation `not-me:<key>:<digest>`); a removal that is not placed yet is tried at the next round.
+   */
+  const payOwed = async (): Promise<void> => {
+    const owed = held?.owed ?? [];
+    if (owed.length === 0) return;
+    try {
+      const outcome = await removeFromList(page, { keys: [...owed], pcs: [] }, { operation: `not-me:${owed[0]}`, writer: () => page.writer({ owed: true }) });
+      if (!outcome.removed) console.info("Ovis: the removal of a key this device blocked is not placed in its list yet", outcome.why);
+    } catch (error) {
+      console.info("Ovis: the removal of a key this device blocked is not placed in its list yet", error instanceof Error ? error.name : error);
+    }
+  };
+
   const sync = (options: { readonly read?: boolean } = {}): Promise<AccountListView> => {
     if (options.read === true) readAsked = true;
     if (running !== null) {
@@ -1583,10 +1619,15 @@ export function accountList(options: AccountListOptions): AccountList {
       }
       throw error;
     }).finally(() => { running = null; });
-    return running;
+    return running.then(async (view) => {
+      if (paying !== null || (held?.owed?.length ?? 0) === 0) return view;
+      paying = payOwed().finally(() => { paying = null; });
+      await paying;
+      return shown;
+    });
   };
 
-  return {
+  const page: AccountList = {
     sync,
     async follows(account) {
       return (await store.get("copy", account)) !== undefined;
@@ -1719,6 +1760,7 @@ export function accountList(options: AccountListOptions): AccountList {
       if (status.at !== "following" || status.standing !== "in" || status.trouble === "fork" || status.trouble === "stuck") return null;
       const own = copy.state.signers[ctx.keys.key];
       if (own === undefined || own.ended !== null || (own.power !== "full" && options.self !== true)) return null;
+      if ((held.owed?.length ?? 0) > 0 && options.owed !== true) return null;
       const at = seconds();
       return {
         account: held.account, list: copy.list, state: copy.state, keys: ctx.keys, service: ctx.bound,
@@ -1789,12 +1831,16 @@ export function accountList(options: AccountListOptions): AccountList {
       };
       const first = standsFor(state, notice.first);
       const devices: { key: string; name: ListNames | null }[] = [];
+      const removed: { key: string; name: ListNames | null }[] = [];
+      // a device this device blocked itself and put out of the list again (#4652, b2)
+      const blocked = new Set((await accountStore.get("own_blocks"))?.[account] ?? []);
       for (const key of notice.devices) {
         const now = standsFor(state, key);
         if (now !== null && !self.has(now)) devices.push({ key: now, name: await nameOf(now, key) });
+        else if (now === null && blocked.has(key)) removed.push({ key, name: await nameOf(key, key) });
       }
       const pcs = notice.pcs.flatMap((endpoint) => { const row = shown.pcs.find((pc) => pc.endpoint === endpoint); return row === undefined ? [] : [{ endpoint, name: row.name }]; });
-      return { list: notice.list, first: { self: first !== null && self.has(first), key: first, name: first === null ? null : await nameOf(first, notice.first) }, devices, pcs };
+      return { list: notice.list, first: { self: first !== null && self.has(first), key: first, name: first === null ? null : await nameOf(first, notice.first) }, devices, pcs, removed };
     },
     async noticeSeen(account, list) {
       await lock(account, async () => {
@@ -1829,4 +1875,5 @@ export function accountList(options: AccountListOptions): AccountList {
       if (shown.account === account) { offAt = null; misses = 0; publish(OFF); }
     },
   };
+  return page;
 }

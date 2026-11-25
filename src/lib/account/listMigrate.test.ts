@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { heldNaming, heldVouches, MIGRATION_ANSWER_SECONDS, type KnownPc, type PcAnswer, type PcHow } from "../../../shared/account-list-migrate.ts";
-import { listView } from "../../../shared/account-list.ts";
+import { listView, readKind } from "../../../shared/account-list.ts";
+import { entryFromText, readBody } from "../../../shared/account-list-entry.ts";
 import { readSave, writeSave } from "../../../shared/account-list-follower.ts";
 import { askingPc, listWorld, postPcKeys } from "./accountList.test-helpers.ts";
 import { inUse, moved, movingWorld } from "./listMigrate.test-helpers.ts";
 import { keysForCarriedPc } from "./listCarriedPc.ts";
 import type { ListStore } from "./listStore.ts";
+import { AccountServiceError } from "./service.ts";
 import { newKey } from "./store.ts";
 import { keepUnsent, postKept } from "./unsentBlocks.ts";
 import { joinedRecord, listDoubt, MOVE_AGAIN_SECONDS, pcAgrees, readBirth, readJoined, readNotice } from "./listMigrate.ts";
@@ -749,3 +751,76 @@ describe("the guards of a carried device's check, its asks and its sign-in", () 
     expect(listView(world.held().state).pcs.find((one) => one.endpoint === pc.endpoint)?.key).toBeNull();
   });
 });
+
+/**
+ * A kept birth against a later Not me, as ruled on #4652 (b2): X5 stands, and once the device follows the list its birth
+ * made, its first write there removes every key of its own blocks that the list holds.
+ */
+describe("a key this device blocked after its birth was signed, carried in all the same (#4652, b2)", () => {
+  /** The phone keeps a birth that carries the laptop and whose request never arrives; then it blocks the laptop. */
+  async function blockedAfterTheBirth(given: { readonly stored?: boolean } = {}) {
+    const setting = await inUse();
+    const { phone, laptop, world } = setting;
+    if (given.stored === true) world.fake.tamperAccount(world.account, { withholdAnswer: true });
+    else {
+      phone.device.wire.answer = (request) => {
+        if (request.method === "POST" && new URL(request.url).pathname === "/v2/lists") throw new TypeError("the request never arrived");
+        return null;
+      };
+    }
+    expect((await phone.device.list.sync()).status).toMatchObject({ at: "none", why: "moving", move: { why: "sending" } });
+    phone.device.wire.answer = null;
+    world.fake.untamperAccount(world.account);
+    const block = { v: 1, kind: "block", id: "f".repeat(64), account: world.account, target: laptop.signIn, target_no: 2, signer: phone.signIn, signer_no: 1, signed_at: "2026-11-25T00:00:00Z", nonce: "n", signature: "s" } as never;
+    expect(await keepUnsent(phone.device.store, phone.device.session, [block])).toBe(true);
+    return { ...setting, block };
+  }
+  /** The kinds of the entries after the birth's, with who signed each. */
+  const after = (texts: readonly string[], from: number) => texts.slice(from).map((text) => { const body = readBody(entryFromText(text).body); return { signer: body.signer, kind: readKind(body) }; });
+
+  test("the block refused for good: the birth goes as it is, and the device's first entry in the list removes the laptop", async () => {
+    const { phone, laptop, world, block, birthsSent } = await blockedAfterTheBirth();
+    // the account service refuses the block for good: it never freezes the laptop's sign-in
+    await postKept(phone.device.store, phone.device.session, [block], async () => { throw new AccountServiceError(403, "signer_not_older", "x"); });
+    const view = await phone.device.list.sync();
+    expect(new Set(birthsSent(phone.device).map((sent) => JSON.stringify(sent.body))).size).toBe(1);
+    expect(view.status).toMatchObject({ at: "following", standing: "in", list: world.held().id });
+    const born = (birthsSent(phone.device)[0]!.body!.entries as string[]).length + 1;
+    const written = after(world.held().entries, born);
+    expect(written[0]).toMatchObject({ signer: phone.member, kind: { kind: "remove", ends: laptop.signIn } });
+    expect(written.slice(1).every((entry) => entry.kind?.kind === "epoch" || entry.kind?.kind === "remove")).toBe(true);
+    expect(listView(world.held().state).devices.find((row) => row.key === laptop.signIn)?.ended).not.toBeNull();
+  });
+
+  test("the service placed the birth it was never sent again: the device follows it, and its first entry there removes the laptop", async () => {
+    const { phone, laptop, world, birthsSent } = await blockedAfterTheBirth({ stored: true });
+    // the block has no answer yet: the kept birth is held, but the service placed the first request all the same
+    const view = await phone.device.list.sync();
+    expect(birthsSent(phone.device)).toHaveLength(1);
+    expect(view.status).toMatchObject({ at: "following", standing: "in", list: world.held().id });
+    const born = (birthsSent(phone.device)[0]!.body!.entries as string[]).length + 1;
+    expect(after(world.held().entries, born)[0]).toMatchObject({ signer: phone.member, kind: { kind: "remove", ends: laptop.signIn } });
+    // the notice says the laptop was removed, and offers no Not me on it
+    const notice = await phone.device.list.notice!(world.account);
+    expect(notice?.devices.map((row) => row.key)).not.toContain(laptop.signIn);
+    expect(notice?.removed).toEqual([{ key: laptop.signIn, name: { label: "Laptop", os: null } }]);
+  });
+
+  test("until the removal is placed, the device signs nothing else in the list", async () => {
+    const { phone, world, block } = await blockedAfterTheBirth();
+    await postKept(phone.device.store, phone.device.session, [block], async () => { throw new AccountServiceError(403, "signer_not_older", "x"); });
+    // the removal's request gets no answer
+    phone.device.wire.answer = (request) => request.method === "POST" && new URL(request.url).pathname.endsWith("/entries")
+      ? Response.json({ error: { code: "unavailable", message: "x" } }, { status: 503 }) : null;
+    await phone.device.list.sync();
+    expect(phone.device.list.writer()).toBeNull();
+    phone.device.wire.answer = null;
+    await phone.device.list.sync();
+    expect(phone.device.list.writer()).not.toBeNull();
+    const removals = phone.device.sent.filter((one) => one.route === `POST /v2/lists/${world.held().id}/entries`).map((one) => JSON.stringify(one.body));
+    // kept and sent again as it is
+    expect(removals.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(removals).size).toBe(1);
+  });
+});
+

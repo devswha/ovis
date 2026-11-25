@@ -6,6 +6,7 @@ export const LIST_MOVE_JA: Record<string, string> = {
   "Your account now keeps its own list": "アカウントの名簿ができました",
   "This device made your account's list.": "この端末がアカウントの名簿を作りました。",
   "{device} made your account's list.": "{device} がアカウントの名簿を作りました。",
+  "{device} was removed from your account, as you asked with Not me.": "「自分ではない」で求めたとおり、{device} をアカウントから外しました。",
   "It brought these in. Press Not me on one you do not know.": "次の端末と PC も一緒に入りました。知らないものがあれば「自分ではない」を押してください。",
   "A device of yours": "あなたの端末",
   "Remove {pc} from your account?": "{pc} をアカウントから外しますか？",

@@ -313,6 +313,8 @@ export interface MoveNoticeView {
   readonly first: { readonly self: boolean; readonly key: string | null; readonly name: ListNames | null };
   readonly devices: readonly { readonly key: string; readonly name: ListNames | null }[];
   readonly pcs: readonly { readonly endpoint: string; readonly name: ListNames | null }[];
+  /** Devices the move carried in that this device put out again, by the key they were carried in by: it blocked them itself (Not me). */
+  readonly removed: readonly { readonly key: string; readonly name: ListNames | null }[];
 }
 
 export function noticeRecord(notice: MoveNotice): unknown {

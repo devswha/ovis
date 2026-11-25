@@ -6,6 +6,7 @@ export const LIST_MOVE_KO: Record<string, string> = {
   "Your account now keeps its own list": "이제 계정 명단이 생겼어요",
   "This device made your account's list.": "이 기기가 계정 명단을 만들었어요.",
   "{device} made your account's list.": "{device} 기기가 계정 명단을 만들었어요.",
+  "{device} was removed from your account, as you asked with Not me.": "‘내가 아니에요’로 요청한 대로 {device} 기기를 계정에서 뺐어요.",
   "It brought these in. Press Not me on one you do not know.": "아래 기기와 PC도 함께 들어왔어요. 모르는 것이 있으면 ‘내가 아니에요’를 누르세요.",
   "A device of yours": "내 기기",
   "Remove {pc} from your account?": "계정에서 {pc} PC를 뺄까요?",

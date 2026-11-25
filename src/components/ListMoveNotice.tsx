@@ -152,6 +152,9 @@ export function ListMoveNotice({ list = pageAccountList(), removePc, notMeDevice
           ))}
         </ul>
       </>}
+      {notice.removed.map((row) => (
+        <p key={row.key} className="account-approval-hint" data-testid="list-move-removed">{t("{device} was removed from your account, as you asked with Not me.", { device: deviceName(row.name) })}</p>
+      ))}
       {asked !== null && (
         <div className="list-move-ask" role="alertdialog" aria-label={t("Remove {pc} from your account?", { pc: asked.name })}>
           <p className="account-approval-ask">{t("Remove {pc} from your account?", { pc: asked.name })}</p>

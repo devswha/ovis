@@ -2305,13 +2305,16 @@ move is never named to any PC.
   the link of its account key to its sign-in key) as it is until a 201 or its own list back in a
   `409 list_exists`, or until the account service names that list. While a block of its own on a key
   the birth carries has no answer from the account service, the birth waits: a frozen sign-in is
-  never carried. The birth's own final refusal (a 400 or a 413 of its body, a `403 not_carried`)
-  drops it; the next plan comes an hour later at the soonest and leaves out the key or the PC a `403
-  not_carried` named (its `index`: entry 0 is 0, then the devices, then the PCs, in the plan's
-  order). A refusal of the caller (a frozen sign-in, a route the service hides) keeps it. Only a
-  `409 list_exists` naming another list gives its list up for good, and a birth kept for another
-  list than the one the device follows is let go. It follows the list pinned under the sign-in key
-  that signed entry 0.
+  never carried. Where a key it blocked is carried in all the same (a block the service refused for
+  good, or a service that placed the birth anyway), the device's first write in the list it made
+  removes it (`not-me:<key>:<digest>`, kept and sent again like any write), and it signs nothing
+  else there before that is placed. The birth's own final refusal (a 400 or a 413 of its body, a
+  `403 not_carried`) drops it; the next plan comes an hour later at the soonest and leaves out the
+  key or the PC a `403 not_carried` named (its `index`: entry 0 is 0, then the devices, then the
+  PCs, in the plan's order). A refusal of the caller (a frozen sign-in, a route the service hides)
+  keeps it. Only a `409 list_exists` naming another list gives its list up for good, and a birth
+  kept for another list than the one the device follows is let go. It follows the list pinned under
+  the sign-in key that signed entry 0.
 - **A carried device.** A device that is not in the list the account service names reads its first
   two entries, in one request (`limit=2`), on every account: entry 1's kind is the only word on
   whether a move carried it in. A list whose entry 1 is `carried` is read whole without being kept.
@@ -2343,10 +2346,10 @@ move is never named to any PC.
   key, signs the `pc` entry and hands the PC the page. Any other member leaves it to the number at
   the PC.
 - **What the person sees.** Once, after the pin, who made the list and every device and PC it
-  brought in that is still in, never the device itself. Each PC has Not me, which removes it from
-  the list after a question; a device's Not me, and that of the device that made the list where it
-  is another, is the devices list's Remove. A carried device that refused the list says why. Nothing
-  else.
+  brought in that is still in, never the device itself, and each device it put out again because
+  this device said Not me to it. Each PC has Not me, which removes it from the list after a
+  question; a device's Not me, and that of the device that made the list where it is another, is the
+  devices list's Remove. A carried device that refused the list says why. Nothing else.
 - **The QA twin** (`sh.ovis.app.previewqa`, which says so through `HerdrShell.appId`) multiplies
   the durations the device hands over (`known`, `tried`) by `localStorage["ovis-migrate-qa-scale"]`
   (1 to 86400). No other build reads it, and the pure constants never change; a PC scales its own

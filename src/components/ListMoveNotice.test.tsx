@@ -49,7 +49,7 @@ const text = (): string => JSON.stringify(renderer?.toJSON() ?? null);
 const settle = async (): Promise<void> => { await act(async () => { for (let turn = 0; turn < 5; turn += 1) await Promise.resolve(); }); };
 
 it("says once who made the list and whom it brought in, with Not me on each PC, and is not shown again after OK", async () => {
-  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }], pcs: [{ endpoint: E(1), name: { label: "Desk", os: null } }] };
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }], pcs: [{ endpoint: E(1), name: { label: "Desk", os: null } }], removed: [] };
   const { list, seen } = listWith(following, notice);
   const removed: string[] = [];
   await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={list} removePc={async (endpoint) => { removed.push(endpoint); return true; }} /></SettingsProvider>); });
@@ -75,7 +75,7 @@ it("says once who made the list and whom it brought in, with Not me on each PC, 
 });
 
 it("names the device that made the list where this device did not", async () => {
-  const notice: MoveNoticeView = { list: LIST, first: { self: false, key: "G", name: { label: "Phone", os: null } }, devices: [], pcs: [] };
+  const notice: MoveNoticeView = { list: LIST, first: { self: false, key: "G", name: { label: "Phone", os: null } }, devices: [], pcs: [], removed: [] };
   await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} /></SettingsProvider>); });
   await settle();
   expect(text()).toContain("Phone made your account's list.");
@@ -102,8 +102,18 @@ it("tells a device the list carried in why it did not join, naming the PC and wh
   expect(renderer!.toJSON()).toBeNull();
 });
 
+it("says which device it put out again because this device said Not me to it, with no Not me on it (#4652)", async () => {
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [], pcs: [], removed: [{ key: "L", name: { label: "Laptop", os: null } }] };
+  const asked: string[] = [];
+  await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} notMeDevice={(key) => { asked.push(key); }} /></SettingsProvider>); });
+  await settle();
+  expect(text()).toContain("Laptop was removed from your account, as you asked with Not me.");
+  expect(renderer!.root.findAll((node) => node.type === "button" && node.props.children === "Not me")).toHaveLength(0);
+  expect(asked).toEqual([]);
+});
+
 it("draws a carried device's row with no Not me while nothing removes a device here: no button that does nothing", async () => {
-  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }], pcs: [] };
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }], pcs: [], removed: [] };
   await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} /></SettingsProvider>); });
   await settle();
   expect(text()).toContain("Laptop");
@@ -111,7 +121,7 @@ it("draws a carried device's row with no Not me while nothing removes a device h
 });
 
 it("hands a carried device's key and name to the devices list's Remove (useNotMe's notMe) on Not me", async () => {
-  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }, { key: "J", name: null }], pcs: [] };
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [{ key: "K", name: { label: "Laptop", os: null } }, { key: "J", name: null }], pcs: [], removed: [] };
   const asked: [string, string][] = [];
   await act(async () => { renderer = create(<SettingsProvider><ListMoveNotice list={listWith(following, notice).list} notMeDevice={(key, name) => { asked.push([key, name]); }} /></SettingsProvider>); });
   await settle();
@@ -139,7 +149,7 @@ it("tells a device whose PCs do not know the list it follows so, and offers the 
 });
 
 it("Not me on a PC acts on the account, list and member key it was pressed for, and asks nothing once they changed (astra-migapp 9)", async () => {
-  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [], pcs: [{ endpoint: E(1), name: { label: "Desk", os: null } }] };
+  const notice: MoveNoticeView = { list: LIST, first: { self: true, key: "G", name: null }, devices: [], pcs: [{ endpoint: E(1), name: { label: "Desk", os: null } }], removed: [] };
   let view: AccountListView = following;
   const listeners: ((next: AccountListView) => void)[] = [];
   const list = {

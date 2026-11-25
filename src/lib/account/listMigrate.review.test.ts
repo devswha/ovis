@@ -269,7 +269,7 @@ describe("M2: who made the list has Not me (R-G)", () => {
 
   test("M2: on a device the move carried in, the device that made the list can be answered Not me", async () => {
     setGlobals();
-    const notice: MoveNoticeView = { list: LIST, first: { self: false, key: "G", name: { label: "Phone", os: null } }, devices: [], pcs: [] };
+    const notice: MoveNoticeView = { list: LIST, first: { self: false, key: "G", name: { label: "Phone", os: null } }, devices: [], pcs: [], removed: [] };
     const asked: [string, string][] = [];
     await act(async () => {
       renderer = create(createElement(SettingsProvider, null, createElement(ListMoveNotice, { list: listWith(notice), notMeDevice: (key: string, name: string) => { asked.push([key, name]); } })));

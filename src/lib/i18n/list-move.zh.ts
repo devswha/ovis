@@ -6,6 +6,7 @@ export const LIST_MOVE_ZH: Record<string, string> = {
   "Your account now keeps its own list": "你的账户现在有了自己的名单",
   "This device made your account's list.": "此设备创建了你的账户名单。",
   "{device} made your account's list.": "{device} 创建了你的账户名单。",
+  "{device} was removed from your account, as you asked with Not me.": "已按你通过“不是我”的要求，将 {device} 从账户中移除。",
   "It brought these in. Press Not me on one you do not know.": "以下设备和电脑也一并加入了。如有不认识的，请按“不是我”。",
   "A device of yours": "你的一台设备",
   "Remove {pc} from your account?": "要将 {pc} 从你的账户中移除吗？",
