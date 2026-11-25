@@ -76,7 +76,8 @@ export class AgentToolHub {
   }
   /** Drops the words on panes that closed while nobody asked (an Ovis restart, a missed vacate). */
   async reconcilePanes(): Promise<void> {
-    this.grants.reconcile(await (this.options.panes ?? hcPanes).list());
+    const before = this.grants.known();
+    this.grants.reconcile(await (this.options.panes ?? hcPanes).list(), before);
   }
   async answerPane(id: string, allow: boolean): Promise<"ok" | "gone"> {
     const pane = this.grants.view().pending.find(p => p.id === id)?.pane;
@@ -142,11 +143,12 @@ export class AgentToolHub {
     const peer = socketPeer(socket);
     if (!peer) return refuse("not_granted", "This process could not be traced to a pane.");
     try {
+      const before = this.grants.known();
       const proof = await provePane(peer, hint, this.options.panes ?? hcPanes);
       if (!proof) return refuse("not_granted", "This process is not in one of this PC's herdr-core panes.");
       const { key, terminal } = proof;
       // the panes hc lists now: cards and grants of panes that closed unseen free their places before this one is counted
-      this.grants.reconcile(proof.live);
+      this.grants.reconcile(proof.live, before);
       if (this.options.acp.forPane(key.pane) || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"] || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "Ovis started this pane's agent with a tool of its own.");
       if (signal.aborted || this.closed || this.setting.level !== "start") return refuse("not_granted", "The grant changed.");
       const word = this.grants.decide(key, paneLabel(terminal, key.pane));

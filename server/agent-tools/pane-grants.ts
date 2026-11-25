@@ -46,7 +46,8 @@ export class PaneGrants {
     if ([...this.rows.values()].filter(r => r.state === "pending").length >= PENDING_MAX) return { state: "full" };
     const id = randomBytes(8).toString("hex");
     this.rows.set(id, { id, key, label: label.slice(0, 80), state: "pending" });
-    this.save();
+    // a card that could not be written is not kept: the next call raises it again
+    try { this.save(); } catch (error) { this.rows.delete(id); throw error; }
     return { state: "pending" };
   }
   /** Whether this pane's run is still the one its owner allowed. */
@@ -75,11 +76,17 @@ export class PaneGrants {
     this.save();
     return true;
   }
-  /** Forgets the panes that closed or whose root process changed; `live` is hc's whole list of this PC's panes. */
-  reconcile(live: readonly PaneTerminal[]): void {
+  /** The rows known now, so a list asked for later is held only against the rows that existed when it was asked. */
+  known(): ReadonlySet<string> { return new Set(this.rows.keys()); }
+  /**
+   * Forgets the panes that closed or whose root process changed; `live` is hc's whole list of this PC's panes, asked for
+   * when `before` was taken. A row made while the list was on its way may be a pane the list does not have yet: it stays.
+   */
+  reconcile(live: readonly PaneTerminal[], before: ReadonlySet<string>): void {
     const roots = live.filter(localPane);
     let changed = false;
     for (const r of this.rows.values()) {
+      if (!before.has(r.id)) continue;
       if (roots.some(t => t.address === r.key.pane && t.pid === r.key.root && t.created_ms === r.key.created_ms)) continue;
       if (r.run) this.runs.revoke(r.run);
       this.rows.delete(r.id); changed = true;

@@ -119,7 +119,8 @@ The shell command never tries the server's ordinary HTTP credential.
 A pane opened outside Ovis (`hc run omo`, a lane another tool started) has no token. With neither
 variable set, `ovis agent` calls `<state folder>/agent-tools/hub.sock` (`OVIS_STATE_DIR` from the
 environment or Ovis's settings file, else the default one) with no token, only while **Let agents call
-other agents** is on (Linux only for now):
+other agents** is on (Linux 6.5 or later for now, which has `SO_PEERPIDFD`; an older kernel without it
+proves no pane, so every call answers `not_granted` and no card appears):
 
 1. The server asks the kernel which process connected (`SO_PEERCRED`) and pins it (`SO_PEERPIDFD`,
    so a pid reused after it exits is not that process), walks its parents through `/proc`, and asks

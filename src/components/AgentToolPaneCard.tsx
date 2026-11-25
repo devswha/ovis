@@ -25,7 +25,8 @@ export function AgentToolPaneCard() {
   };
   const name = pane.label === pane.pane ? pane.pane : `${pane.label} (${pane.pane})`;
   return (
-    <div className="relay-pairing-layer">
+    // keyed by the card: a button focused on one pane's card is gone when another pane's card takes its place
+    <div className="relay-pairing-layer" key={pane.id}>
       <div className="update-notice is-paired relay-pairing-prompt" role="group" aria-label={t("Give {name} the tool to call other agents?", { name })} data-testid="agent-tool-pane-card">
         <Network aria-hidden="true" />
         <span>
