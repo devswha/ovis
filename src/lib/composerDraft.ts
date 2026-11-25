@@ -1,3 +1,6 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
+import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 import { COMMAND_PREFIX, paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 import { newReceiptId } from "./receiptResume.ts";
 
@@ -157,18 +160,29 @@ export class ComposerDraftStore {
   sendOf(key: string): number | undefined { return this.sends.get(key)?.id; }
   /** Only a claimed composer draft, never a terminal line or a saved queue action. */
   commandKey(key: string, message: string): string | undefined {
-    if (!this.pending.has(key)) return undefined;
+    const claim = this.pending.get(key);
+    if (!claim) return undefined;
     const prior = this.commands.get(key);
-    if (prior?.message === message) {
-      // Read at Send, not at storage-event delivery: another tab can already
-      // have cleared and retyped the same words, invalidating this exact draft.
-      if (!prior.shared) return prior.id;
-      try { if (this.storage().getItem(COMMAND_PREFIX + key) === prior.id) return prior.id; }
-      catch { return prior.id; }
-    }
+    // Edits and acknowledgements remove the marker, even when the same words are
+    // retyped before another tab sees a storage event. Bind any added quote too.
+    const prefix = bytesToHex(sha256(utf8ToBytes(JSON.stringify([claim.sent, message])))) + ":";
+    let shareable = false;
+    try {
+      const storage = this.storage();
+      shareable = !this.unsaved.has(key) && (storage.getItem(key) ?? "") === claim.sent;
+      if (shareable) {
+        const marker = storage.getItem(COMMAND_PREFIX + key);
+        const id = marker?.startsWith(prefix) ? marker.slice(prefix.length) : "";
+        if (RECEIPT_RESUME_ID.test(id)) {
+          this.commands.set(key, { message, id, shared: true });
+          return id;
+        }
+      }
+    } catch { if (prior?.message === message) return prior.id; }
+    if (!shareable && prior?.message === message && !prior.shared) return prior.id;
     const id = newReceiptId();
     let shared = false;
-    try { this.storage().setItem(COMMAND_PREFIX + key, id); shared = true; } catch {}
+    if (shareable) try { this.storage().setItem(COMMAND_PREFIX + key, prefix + id); shared = true; } catch {}
     this.commands.set(key, { message, id, shared });
     return id;
   }

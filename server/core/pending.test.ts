@@ -265,6 +265,24 @@ it("replays a held draft's acceptance, not its input or its lease, when the retr
   } finally { screen.mockRestore(); }
 });
 
+it("retries the same command after a transient identity lookup failed before the first write", async () => {
+  const bridge = heldCopyBridge();
+  const frame = { type: "submit" as const, command_key: crypto.randomUUID(), pane_id: "p", text: "continue", payload: "continue" };
+  const first = bridge.tab();
+  const lookup = spyOn(herdr, "paneProcessInfo").mockRejectedValueOnce(new Error("identity temporarily unavailable"));
+  try {
+    await bridge.delivery.pendingFrames.submit(first, { ...frame, id: 1 });
+    expect(bridge.answer(first, 1)).toMatchObject({ ok: false, code: "submit_failed" });
+    expect(bridge.typed).toEqual([]);
+  } finally { lookup.mockRestore(); }
+  bridge.clients.delete(first);
+  bridge.delivery.closeConnection(first);
+  const next = bridge.tab();
+  await bridge.delivery.pendingFrames.submit(next, { ...frame, id: 2 });
+  expect(bridge.typed).toEqual(["p"]);
+  expect(bridge.answer(next, 2)).toMatchObject({ ok: true });
+});
+
 it("replays the uncertain result after a queued draft was pasted but lost its connection before Enter", async () => {
   const bridge = heldCopyBridge(undefined, () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: () => {} }));
   const first = bridge.tab(), writes: string[] = [];

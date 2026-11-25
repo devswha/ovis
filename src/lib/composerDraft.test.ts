@@ -26,6 +26,19 @@ it("can claim and key a draft on HTTP without crypto.randomUUID", () => {
   }
 });
 
+it.each(["continue", "> reply\ncontinue"])("another tab retries the unchanged draft with the original key: %s", (message) => {
+  const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue");
+  expect(store.claim(key, "continue")).toBe(true);
+  const sent = store.commandKey(key, message);
+  expect(sent).toBeString();
+  store.end(key); // no acknowledgement
+  expect(other.claim(key, "continue")).toBe(true);
+  expect(other.commandKey(key, message)).toBe(sent);
+  expect(other.commandKey(key, "> a different reply\ncontinue")).not.toBe(sent);
+});
+
 it("recognizes an identical draft replaced by another tab before storage events run", () => {
   const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
   const key = "ovis:composer-draft:p";
