@@ -1224,7 +1224,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         let held = false;
         const take = (items: CaughtKey[], heldNow: boolean): void => {
           held ||= heldNow || !socket.connected;
+          // a key typed before the link that is up now was confirmed holds every key after it, whichever way it goes
+          // (the resume queue refuses it without telling the catch)
           for (const item of items) {
+            if (!socket.linkedSince(item.typedAt)) held = true;
             // as typing here: a masked prompt on screen now makes it secret (never held, never kept for a receipt),
             // and a draft held for this pane (a late attach held what came first) takes what follows it
             const secret = secretRef.current !== null;
@@ -1630,6 +1633,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!event.isComposing && event.keyCode !== 229 && !composingRef.current && !compositionCommitPendingRef.current) beganMark = null;
       };
       host.addEventListener("keydown", plainKey, true);
+      // a composition that ends with nothing let out dates nothing after it (a menu paste comes with no key first)
+      const compositionDone = (event: CompositionEvent): void => { if (!event.data) beganMark = null; };
+      host.addEventListener("compositionend", compositionDone, true);
       const pasteText = (text: string, typedAt: number): void => {
         const previous = pasting;
         pasting = true;
@@ -1774,9 +1780,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
         const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey !== null && input === "\u001b", secret,
           // a Stop's keys are dated to the Stop: its second Escape, sent later, goes only over a link up since then
-          typedAt: pasteMark ?? stopKey ?? beganMark ?? markTyped(),
+          // xterm's own reply (automatic) belongs to no typing: it neither takes nor clears the mark
+          typedAt: pasteMark ?? stopKey ?? (automatic ? null : beganMark) ?? markTyped(),
           ...(arrow !== null ? { arrowModeEpoch: arrowModeWitness === arrowModeEpoch ? arrowModeEpoch : null } : {}), ...(automatic ? { automatic } : {}) };
-        if (!composingRef.current) beganMark = null;
+        if (!composingRef.current && !automatic) beganMark = null;
         adoptTypeAhead(current);
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
@@ -2571,6 +2578,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("compositionstart", textBegan, true);
         host.removeEventListener("paste", textBegan, true);
         host.removeEventListener("keydown", plainKey, true);
+        host.removeEventListener("compositionend", compositionDone, true);
         host.removeEventListener("dragover", onDragOver);
         host.removeEventListener("drop", onDrop);
         offDisconnect();
