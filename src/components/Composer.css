@@ -206,7 +206,8 @@
 
 .composer-status[data-model="out"] .composer-model-info,
 .composer-status[data-model="no-effort"] .composer-reasoning,
-.composer-status[data-model="no-effort"] .composer-mode {
+.composer-status[data-model="no-effort"] .composer-mode,
+.composer-status[data-mode="out"] .composer-mode {
   position: absolute;
   width: 1px;
   height: 1px;

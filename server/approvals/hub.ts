@@ -73,6 +73,12 @@ export interface CommandEvent {
   args?: string;
 }
 
+/** A permission mode an agent's hook told, with the session it told it in. */
+export interface ToldMode {
+  mode: string;
+  session: string;
+}
+
 export interface HeldApproval extends ApprovalRequest {
   /** what a card built on this request carries in its id, so that its answer settles this request and no other */
   id: string;
@@ -95,8 +101,8 @@ export interface ApprovalAdapter {
   toCard(event: unknown): ApprovalRequest | null;
   /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop, OmO's runs), else null. */
   turn?(event: unknown): TurnEvent | null;
-  /** The permission mode an event the hook sent was sent under (every Claude hook names it), else null. */
-  mode?(event: unknown): string | null;
+  /** The permission mode an event the hook sent was sent under, and the agent's session it was in, else null. */
+  mode?(event: unknown): ToldMode | null;
   /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
   command?(event: unknown): CommandEvent | null;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
@@ -198,7 +204,7 @@ export class ApprovalHub {
   private readonly launches = new Map<string, Launch>();
   private readonly pending = new Map<string, Pending[]>();
   /** each pane's agent's permission mode, as its hook last told */
-  private readonly modes = new Map<string, string>();
+  private readonly modes = new Map<string, ToldMode>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
   readonly address: string;
@@ -221,8 +227,8 @@ export class ApprovalHub {
     return (this.options.now ?? Date.now)();
   }
 
-  /** The permission mode the hook of the agent started in `paneId` last told, or null. */
-  toldMode(paneId: string): string | null {
+  /** The permission mode the hook of the agent started in `paneId` last told, and in which of its sessions, or null. */
+  toldMode(paneId: string): ToldMode | null {
     return this.modes.get(paneId) ?? null;
   }
 

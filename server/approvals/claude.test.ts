@@ -633,9 +633,12 @@ describe("Claude's other tools on a card from the hook's request", () => {
     const told: (string | null)[] = [];
     for (const event of events) {
       await ask(hook, event).answer();
-      told.push(hooks.toldMode("p1"));
+      told.push(hooks.toldMode("p1")?.mode ?? null);
     }
     expect(told).toEqual(["auto", "auto", "default", "default", "acceptEdits", "acceptEdits"]);
+    expect(hooks.toldMode("p1")?.session).toBe(events[0]!["session_id"] as string);
+    // a subagent's hook has its own mode
+    expect(claudeApprovals.mode!({ ...events[0], agent_id: "a1", permission_mode: "bypassPermissions" })).toBeNull();
     expect(hooks.toldMode("p2")).toBeNull();
     // another agent started in the pane has told nothing yet
     launch(hooks, "p1", undefined);

@@ -60,6 +60,7 @@ import { composerFull, formatChars, pasteOverflow } from "../lib/composerLength.
 import { normalizeComposerImageFile } from "../lib/composerImageMime.ts";
 import { paneStatus } from "../lib/status.ts";
 import { modelLabel } from "../lib/modelName.ts";
+import { permissionModeLabel } from "../lib/permissionMode.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
 import { resolveComposerMenuActiveItemId } from "../lib/composerMenuHighlight.ts";
@@ -399,6 +400,10 @@ export function Composer({
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
+      // the permission mode gives way first: where any label of the pill is cut, it steps out before the level is measured
+      status.removeAttribute("data-mode");
+      if (status.querySelector(".composer-mode") !== null
+        && [".composer-model", ".composer-reasoning", ".composer-mode"].some(clipped)) status.setAttribute("data-mode", "out");
       const first = composerModelDraw({
         modelClipped: clipped(".composer-model"),
         effortClipped: clipped(".composer-reasoning"),
@@ -1070,11 +1075,7 @@ export function Composer({
   useEffect(() => { if (dictating) tally(() => usageCounters.paneUse("composer_voice", machineId)); }, [dictating, machineId]);
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
   const model = metadata?.model ? modelLabel(metadata.model) : null;
-  // Claude Code's permission mode, drawn only when it is not its default
-  const mode = metadata?.permission_mode;
-  const modeShown = mode === undefined || mode === "default" ? null
-    : mode === "plan" ? t("Plan mode") : mode === "acceptEdits" ? t("Accept edits") : mode === "auto" ? t("Auto mode")
-    : mode === "bypassPermissions" ? t("Bypass permissions") : mode === "dontAsk" ? t("Don't ask") : mode;
+  const modeShown = permissionModeLabel(metadata?.permission_mode, t);
   const modelShown = Boolean(metadata?.model || metadata?.reasoning_effort || modeShown);
   const usageDetail = usageWindows.map((window) => {
     const reset = formatResetIn(window.resets_at, Date.now());
