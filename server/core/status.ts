@@ -35,7 +35,8 @@ import { resolveGrokStore } from "../grok-store.ts";
 import { createLettaStatus, lettaPanes, lettaTitleStatus } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
-import { resolveAgent } from "../pane-context.ts";
+import { resolveAgent, versionSourceOf } from "../pane-context.ts";
+import { storeAgentVersion } from "../agent-version.ts";
 import { launchedAgents } from "../launched-agents.ts";
 import { bridgeAgentNews, MachineManager } from "../machines.ts";
 import { omoPanes } from "../omo.ts";
@@ -50,7 +51,7 @@ import { SessionPlans } from "../session-plan.ts";
 import { readStatuslineContext } from "../statusline.ts";
 import { userHome } from "../user-home.ts";
 import { notePaneFolders } from "../windows-share.ts";
-import type { Telemetry } from "../telemetry.ts";
+import type { Telemetry, VisitPane } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
@@ -536,13 +537,35 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
     if (!telemetry?.counting()) return;
-    let agents: Promise<(string | null)[]> | (string | null)[] = [];
+    let agents: Promise<VisitPane[]> | VisitPane[] = [];
     if (snapshot || Date.now() - visitReadAt >= VISIT_READ_MS) {
       visitReadAt = Date.now();
-      agents = (snapshot ?? clientSnapshot()).then((read) => read.panes.map((pane) => resolveAgent(pane).agent));
+      agents = (snapshot ?? clientSnapshot()).then(visitPanes);
     }
     void telemetry.active(agents, visit)
       .catch((error) => console.error(`telemetry: the visit was not counted (${error instanceof Error ? error.message : String(error)})`));
+  }
+  /** each pane's agent version as its session names it, by the pane, agent and session it was read for */
+  const visitVersions = new Map<string, { session: string; version: string }>();
+  async function visitVersion(pane: HerdrPane, agent: string | null, read: SessionSnapshot): Promise<string | null> {
+    if (agent !== "claude" && agent !== "codex" && agent !== "opencode") return null;
+    const session = `${agent}\0${JSON.stringify(pane.agent_session ?? null)}`;
+    const known = visitVersions.get(pane.pane_id);
+    if (known?.session === session) return known.version;
+    const source = await paneTranscript(pane.pane_id, options.codexHome, read, undefined, options.opencodeDb).then(versionSourceOf, () => null);
+    const version = storeAgentVersion(agent, source);
+    if (version !== null) visitVersions.set(pane.pane_id, { session, version });
+    return version;
+  }
+  /** what a visit tells the usage counts of each pane: its agent, whether this server started it, and its version */
+  async function visitPanes(read: SessionSnapshot): Promise<VisitPane[]> {
+    const agents = read.panes.map((pane) => ({ pane_id: pane.pane_id, agent: resolveAgent(pane).agent }));
+    for (const paneId of visitVersions.keys()) if (!agents.some((pane) => pane.pane_id === paneId)) visitVersions.delete(paneId);
+    const started = launchedAgents.startedPanes(agents);
+    return Promise.all(read.panes.map(async (pane, index) => {
+      const agent = agents[index]!.agent;
+      return { agent, ovis: started.has(pane.pane_id), version: await visitVersion(pane, agent, read).catch(() => null) };
+    }));
   }
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null; context?: PaneContext | null } = {}): ServerMessage =>
     ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, status), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
@@ -743,6 +766,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // back at work, the agent has had its answer, maybe from a terminal: the same prompt on
     // its screen after this is another asking, which an answer to the old card must not take.
     if (raw === "working") promptWaitEnded(paneId);
+    options.telemetry?.paneStatus(paneId, raw);
     if (raw === "working" || agent !== "codex") codexWorking(paneId, raw === "working" && agent === "codex");
     if (raw === "working" || agent !== "claude") claudeWorking(paneId, raw === "working" && agent === "claude");
     const claudeEnd = agent === "claude" && raw !== "blocked" && raw !== "working" ? claudeRest(paneId) : null;
