@@ -1742,6 +1742,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
+        // the reads above yield: a Codex question its server said meanwhile is answered takes no key
+        if (agent === "codex" && parsedPrompt !== undefined && questionClosed(body.pane_id, parsedPrompt)) throw new KeyRefused();
         return write();
       };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
