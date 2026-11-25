@@ -115,16 +115,22 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
   // written in this window, or the window coming back, reads it, and the PC gets its turn
   const signedOut = useRef(new Set<string>());
   const [signIns, noteSignIn] = useState(0);
+  // the PCs tried again right as their failure came, since the last sign-in written or return of the window: each is
+  // tried so once (a sign-in that finished as the failure came), and then only by the next of those
+  const triedOnFailure = useRef(new Set<string>());
   useEffect(() => {
     if (failure?.signIn !== true) return;
     signedOut.current.add(failure.server_id);
+    if (triedOnFailure.current.has(failure.server_id)) return;
+    triedOnFailure.current.add(failure.server_id);
     noteSignIn((count) => count + 1);
   }, [failure]);
   useEffect(() => {
-    const again = () => noteSignIn((count) => count + 1);
+    const again = () => { triedOnFailure.current.clear(); noteSignIn((count) => count + 1); };
     window.addEventListener(ACCOUNT_SESSION_EVENT, again);
     return () => window.removeEventListener(ACCOUNT_SESSION_EVENT, again);
   }, []);
+  useEffect(() => { triedOnFailure.current.clear(); }, [reads]);
   useEffect(() => {
     if (signedOut.current.size === 0) return;
     let live = true;

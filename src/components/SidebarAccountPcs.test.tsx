@@ -4,6 +4,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
 import { ACCOUNT_SESSION_EVENT } from "../lib/account/store.ts";
+import { SignedOutError } from "../lib/account/service.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { AccountPcsSource } from "../lib/account/useAccountPcs.ts";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
@@ -400,6 +401,19 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
     expect(text(row("Desk"))).not.toContain("Sign in again");
     expect(starts()).toBe(1);
+    expect(admitted).toEqual([DESK.server_id]);
+  });
+
+  it("asks to sign in again where the admission finds the page's sign-in gone, and tries that PC once it is signed in again", async () => {
+    let gone = true;
+    source.admit = async (serverId) => { if (gone) throw new SignedOutError(); admitted.push(serverId); };
+    await mount();
+    expect(text(row("Desk"))).toContain("Sign in again");
+    expect(admitted).toEqual([]);
+    gone = false;
+    await act(async () => { events.dispatchEvent(new Event(ACCOUNT_SESSION_EVENT)); });
+    await settle();
+    expect(text(row("Desk"))).not.toContain("Sign in again");
     expect(admitted).toEqual([DESK.server_id]);
   });
 
