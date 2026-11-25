@@ -15,11 +15,13 @@ import { validArgs } from "./guards.ts";
 import { ChildTurns, childRef, childState } from "./turns.ts";
 import { HarnessView, type ViewOptions } from "./view.ts";
 import { provePane, socketPeer, stillIn, type PaneReader } from "./pane-proof.ts";
+import { OVIS_AGENT_LAUNCH_LABEL } from "./launch.ts";
 
 interface Options extends ViewOptions {
   readonly acp: AcpChildren;
   readonly dir: string;
   readonly setting: () => HarnessToolSetting;
+  readonly paneRunEpoch?: () => string | null;
   readonly now?: () => number;
   readonly resolve?: (kind: string) => HarnessCommand | null;
   /** this PC's herdr-core panes; tests give their own */
@@ -45,7 +47,7 @@ export class AgentToolHub {
   private closed = false;
   constructor(private readonly options: Options) {
     this.address = join(options.dir, "hub.sock");
-    this.runs = new RunStore(options.dir);
+    this.runs = new RunStore(options.dir, options.paneRunEpoch);
     this.now = options.now ?? Date.now;
     this.ledger = new Ledger(options.dir);
     this.turns = new ChildTurns(this.ledger, options.acp, this.now);
@@ -136,7 +138,8 @@ export class AgentToolHub {
       if (!proof) return refuse("not_granted", "This process is not in one of this PC's herdr-core panes.");
       const { key, terminal } = proof;
       this.runs.reconcilePanes(proof.live, before);
-      if (this.options.acp.forPane(key.pane) || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"] || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "Ovis started this pane's agent with a tool of its own.");
+      if (terminal.labels[OVIS_AGENT_LAUNCH_LABEL] || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"]
+        || this.options.acp.forPane(key.pane) || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "This pane is managed by Ovis.");
       if (signal.aborted || this.closed || this.setting.level !== "start") return refuse("not_granted", "The grant changed.");
       const run = this.runs.bindPane(key);
       const auth = () => !signal.aborted && !this.closed && this.setting.level === "start" && stillIn(peer, key) && this.runs.hasPaneRun(run.id);

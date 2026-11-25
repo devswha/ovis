@@ -1,37 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HARNESS_CONTRACT, isRecord, type HarnessToolSetting } from "../../shared/harness-tool.ts";
-import { lineCall } from "../line-call.ts";
+import { harnessToolSetting, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import * as herdr from "../herdr/client.ts";
 import { AcpChildren } from "../acp/children.ts";
 import { KEEPER_BUILD, keeperBuilt } from "../acp/keeper.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { FakeHcCore } from "../herdr-core/core.fake.ts";
+import * as runtime from "../herdr-core/runtime.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
+import { agentLaunch } from "../agent-launch.ts";
+import { PreferenceStore } from "../preferences.ts";
+import * as stateDocument from "../state-document.ts";
 import { AgentToolHub } from "./hub.ts";
-import { procLink, stillIn, type PaneTerminal } from "./pane-proof.ts";
+import { procLink, type PaneTerminal } from "./pane-proof.ts";
+import { callerArgv, code, paneCallers, paneRuns, quote } from "./pane-test-fixture.ts";
 
-const CLI = join(import.meta.dir, "../../scripts/plugin-agent.ts");
 const START: HarnessToolSetting = { level: "start", depth: 1, harnesses: ["opencode"] };
 let state: string, hub: AgentToolHub, setting: HarnessToolSetting, terminals: PaneTerminal[];
 let snapshot: ReturnType<typeof spyOn>;
 
-function paneHub() {
-  return new AgentToolHub({ dir: join(state, "agent-tools"), setting: () => setting, acp: new AcpChildren(join(state, "acp")),
+function paneHub(preferences?: PreferenceStore) {
+  return new AgentToolHub({ dir: join(state, "agent-tools"), setting: () => preferences ? harnessToolSetting(preferences.get().settings.agentHarnessTool) : setting,
+    paneRunEpoch: () => preferences?.paneRunEpoch ?? null, acp: new AcpChildren(join(state, "acp")), resolve: () => null,
     panes: { list: async () => terminals, get: async address => terminals.find(t => t.address === address) ?? null } });
 }
 
 const paneRegistry = () => join(state, "agent-tools", "pane-runs.json");
-function paneRuns() {
-  const rows: unknown = JSON.parse(readFileSync(paneRegistry(), "utf8"));
-  if (!Array.isArray(rows)) throw new Error("missing pane runs");
-  return rows.map((row: unknown) => {
-    if (!isRecord(row) || !isRecord(row.run) || typeof row.run.id !== "string" || typeof row.run.self !== "string" || !Array.isArray(row.calls)) throw new Error("invalid pane run");
-    return { id: row.run.id, self: row.run.self, calls: row.calls.length };
-  });
-}
+const runs = () => paneRuns(paneRegistry());
+const { callerEnv, inPane, outside, holdPane } = paneCallers(() => state, terminal => {
+  terminals = [...terminals.filter(t => t.address !== terminal.address), terminal];
+});
 
 beforeEach(() => {
   state = mkdtempSync(join(tmpdir(), "athp-"));
@@ -42,29 +42,6 @@ beforeEach(() => {
   snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ protocol: 22, version: "fixture", agents: [], workspaces: [], tabs: [], layouts: [], panes: [] });
 });
 afterEach(() => { snapshot.mockRestore(); hub.close(); rmSync(state, { recursive: true, force: true }); });
-
-const callerEnv = (hint?: string) => {
-  const env: Record<string, string> = { PATH: process.env["PATH"] ?? "", HOME: state, OVIS_STATE_DIR: state };
-  if (hint) env["HC_TERMINAL_ID"] = hint;
-  return env;
-};
-const callerArgv = (words: readonly string[]) => [process.execPath, "-e", `const { runAgent } = await import(${JSON.stringify(CLI)}); process.exit(await runAgent(${JSON.stringify(words)}));`];
-
-/** A pane: a shell hc would run, whose pid is the pane's root, that starts the command once it is told the pane exists. */
-async function inPane(address: string, words: readonly string[], options: { hint?: string; raw?: boolean } = {}) {
-  const command = options.raw ? words : callerArgv(words);
-  const shell = Bun.spawn(["/bin/sh", "-c", 'read go; "$@"; status=$?; exit $status', "pane", ...command], { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: callerEnv(options.hint) });
-  terminals = [...terminals.filter(t => t.address !== address), { address, state: "live", pid: shell.pid, created_ms: shell.pid, labels: {}, name: `pane ${address}` }];
-  shell.stdin.write("go\n"); await shell.stdin.end();
-  const lines = (await new Response(shell.stdout).text()).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
-  return { code: await shell.exited, reply: lines[0]!, lines };
-}
-async function outside(words: readonly string[]) {
-  const caller = Bun.spawn(callerArgv(words), { stdout: "pipe", stderr: "inherit", env: callerEnv() });
-  return { code: await caller.exited, reply: JSON.parse(await new Response(caller.stdout).text()) as Record<string, unknown> };
-}
-const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
-const code = (reply: Record<string, unknown>) => (reply["error"] as { code?: string } | undefined)?.code;
 
 describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started", () => {
   it("accepts concurrent first calls from one proven pane without asking for consent", async () => {
@@ -113,14 +90,14 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
     const shell = await holdPane("t7", "t7");
     try {
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      const [first] = paneRuns();
+      const [first] = runs();
       if (!first) throw new Error("missing first pane run");
       hub.close();
       hub = paneHub();
       await hub.reconcilePanes();
       hub.listen();
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      expect(paneRuns()).toEqual([{ id: first.id, self: "t7", calls: 2 }]);
+      expect(runs()).toEqual([{ id: first.id, self: "t7", calls: 2 }]);
     } finally { await shell.close(); }
   });
 
@@ -129,29 +106,89 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
     expect(code((await inPane("t7", ["ls", "--json"])).reply)).toBe("not_granted");
   });
 
-  it("ends every pane run when switching to look-only even if the registry write fails", async () => {
-    const first = await holdPane("t7"), second = await holdPane("t8");
+  it("marks an Ovis-launched OpenCode pane before its tokenless process calls the tool", async () => {
+    const fake = new FakeHcCore();
+    const terminal = fake.spawn();
+    const hc = new HcConnection(() => fake.transport());
+    const connection = spyOn(runtime, "coreConnection").mockReturnValue(hc);
+    const shell = await holdPane(terminal.address);
+    let reply: Record<string, unknown> | undefined;
+    const start = spyOn(herdr, "agentStart").mockImplementationOnce(async () => {
+      const { labels } = await hc.call("terminal.get", { terminal: terminal.address });
+      terminals = terminals.map(t => t.address === terminal.address ? { ...t, labels } : t);
+      reply = await shell.call(["ls", "--json"]);
+    });
+    serveRuntime(HERDR_CORE);
     try {
-      for (const shell of [first, second]) expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      const previous = paneRuns().map(row => row.id);
-      rmSync(paneRegistry());
-      mkdirSync(paneRegistry());
-      setting = { ...START, level: "view" };
-      expect(() => hub.settingsChanged()).toThrow();
-      rmSync(paneRegistry(), { recursive: true });
-      setting = START;
-      hub.settingsChanged();
-      for (const shell of [first, second]) expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      expect(paneRuns().filter(row => previous.includes(row.id))).toEqual([]);
-    } finally { await first.close(); await second.close(); }
+      expect(await agentLaunch(terminal.address, { kind: "opencode", name: "opencode-fixture" })).toEqual({ agent_started: true });
+      expect(reply).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
+      expect(await shell.call(["ls", "--json"])).toMatchObject({ error: { code: "not_granted" } });
+    } finally {
+      start.mockRestore(); connection.mockRestore(); serveRuntime(null);
+      await shell.close(); hc.close();
+    }
   });
 
-  it("a pane registry that cannot be written does not stop a token run", async () => {
-    const key = hub.runs.reserve();
-    key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "omo" });
-    mkdirSync(join(state, "agent-tools", "pane-runs.json"));
-    const reply = await lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token: readFileSync(key.tokenFile, "utf8"), verb: "scope", args: {} }, 2000);
-    expect(reply).toMatchObject({ kind: "scope" });
+  it("does not restore revoked runs after re-enabling starts and restarting with the old registry still intact", async () => {
+    const preferences = new PreferenceStore(state);
+    preferences.set({ settings: { agentHarnessTool: START } });
+    hub.close();
+    hub = paneHub(preferences);
+    hub.listen();
+    const first = await holdPane("t7"), second = await holdPane("t8");
+    const unsubscribe = preferences.subscribe(() => hub.settingsChanged());
+    const write = stateDocument.writeStateDocument;
+    let registryUnavailable = false;
+    const failed = spyOn(stateDocument, "writeStateDocument").mockImplementation((path, text, keepDamaged) => {
+      if (path === paneRegistry() && registryUnavailable) throw new Error("fixture: registry write failed");
+      write(path, text, keepDamaged);
+    });
+    try {
+      for (const shell of [first, second]) expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      const previous = runs().map(row => row.id);
+      const oldFile = readFileSync(paneRegistry(), "utf8");
+      registryUnavailable = true;
+      expect(() => preferences.set({ settings: { agentHarnessTool: { ...START, level: "view" } } })).toThrow("fixture: registry write failed");
+      preferences.set({ settings: { agentHarnessTool: START } });
+      expect(readFileSync(paneRegistry(), "utf8")).toBe(oldFile);
+      hub.close();
+      hub = paneHub(new PreferenceStore(state));
+      await hub.reconcilePanes();
+      hub.listen();
+      registryUnavailable = false;
+      for (const shell of [first, second]) expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      expect(runs().filter(row => previous.includes(row.id))).toEqual([]);
+    } finally { failed.mockRestore(); unsubscribe(); await first.close(); await second.close(); }
+  });
+
+  it("keeps a live legacy pane's run and start key across upgrade and removes the old decisions", async () => {
+    const shell = await holdPane("t7");
+    try {
+      const terminal = terminals[0], root = terminal?.pid;
+      const birth = root ? procLink(root)?.birth : undefined;
+      if (!terminal || !root || !birth) throw new Error("missing fixture root");
+      const key = { pane: terminal.address, created_ms: terminal.created_ms, root, birth };
+      const id = "0123456789abcdef", child = "fedcba9876543210";
+      const grants = join(state, "agent-tools", "pane-grants.json");
+      writeFileSync(paneRegistry(), JSON.stringify([{ run: { id, self: key.pane, root: id, depth: 0, started_by: null, harness: "hc-pane", created_ms: 1 }, starts: [{ key: "work", run: child }], calls: [] }]));
+      writeFileSync(grants, JSON.stringify([{ id: "ab0123456789cdef", key, state: "allowed", run: id, label: "legacy pane" }]));
+      hub.close();
+      hub = paneHub();
+      await hub.reconcilePanes();
+      hub.listen();
+      expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
+      expect(runs()).toEqual([{ id, self: key.pane, calls: 1 }]);
+      expect(hub.runs.previousStart(id, "work")).toBe(child);
+      expect(existsSync(grants)).toBe(false);
+    } finally { await shell.close(); }
+  });
+
+  it("removes stale legacy decisions even when there is no registry to migrate", () => {
+    const grants = join(state, "agent-tools", "pane-grants.json");
+    writeFileSync(grants, JSON.stringify([{ state: "denied" }]));
+    hub.close();
+    hub = paneHub();
+    expect(existsSync(grants)).toBe(false);
   });
 
   it("refuses a process outside every pane", async () => {
@@ -167,7 +204,7 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
       const posing = await inPane("t9", ["ls", "--json"], { hint: "t7" });
       expect(code(posing.reply)).toBe("not_granted");
-      expect(paneRuns()).toEqual([expect.objectContaining({ self: "t7", calls: 1 })]);
+      expect(runs()).toEqual([expect.objectContaining({ self: "t7", calls: 1 })]);
       expect((await inPane("t9", ["ls", "--json"])).reply).toMatchObject({ kind: "sessions" });
     } finally { await shell.close(); }
   });
@@ -177,13 +214,13 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
     let previous: string | undefined;
     try {
       expect(await shell.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
-      previous = paneRuns()[0]?.id;
+      previous = runs()[0]?.id;
     } finally { await shell.close(); }
     terminals = [];
     await hub.reconcilePanes();
-    expect(paneRuns()).toEqual([]);
+    expect(runs()).toEqual([]);
     expect((await inPane("t7", ["ls", "--json"])).reply).toMatchObject({ kind: "sessions" });
-    expect(paneRuns()[0]?.id).not.toBe(previous);
+    expect(runs()[0]?.id).not.toBe(previous);
   });
 
   it("ends the old run when hc reports a different root for a pane that is still open", async () => {
@@ -195,7 +232,7 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
       try {
         terminals = terminals.map(t => t.address === "t7" && prior ? { ...t, created_ms: prior.created_ms } : t);
         await hub.reconcilePanes();
-        expect(paneRuns()).toEqual([]);
+        expect(runs()).toEqual([]);
         expect(code(await previous.call(["ls", "--json"]))).toBe("not_granted");
         expect(await replacement.call(["ls", "--json"])).toMatchObject({ kind: "sessions" });
       } finally { await replacement.close(); }
@@ -209,57 +246,23 @@ describe.skipIf(process.platform !== "linux")("ovis agent from a pane hc started
       setting = { ...START, level };
       hub.settingsChanged();
       expect(code(await shell.call(["ls", "--json"]))).toBe(reason);
-      expect(paneRuns()).toEqual([]);
+      expect(runs()).toEqual([]);
     } finally { await shell.close(); }
   });
 
   it("keeps the hub's limits: an unticked harness is not started for a pane", async () => {
     const shell = await holdPane("t7");
     try {
-      expect(code(await shell.call(["start", "--harness", "gjc", "--json"]))).toBe("not_granted");
+      const request = ["start", "--harness", "opencode", "--cwd", state, "--json"];
+      setting = { ...START, harnesses: ["agy"] };
+      expect(code(await shell.call(request))).toBe("not_granted");
+      setting = START;
+      expect(code(await shell.call(request))).toBe("start_failed"); // only the missing fixture adapter stops it
     } finally { await shell.close(); }
   });
 
   it("still refuses starts on other machines for a proved local pane", async () => {
     const reply = await inPane("t7", ["start", "--harness", "opencode", "--on", "other", "--json"]);
     expect(reply.reply).toMatchObject({ error: { code: "approval_required", message: expect.stringContaining("another machine") } });
-  });
-});
-
-/** A pane whose shell stays, running each command it is given as its own child, as a person types into it. */
-async function holdPane(address: string, hint?: string) {
-  const shell = Bun.spawn(["/bin/sh", "-c", 'while read -r line; do eval "$line"; done'], { stdin: "pipe", stdout: "pipe", stderr: "inherit", env: callerEnv(hint) });
-  terminals = [...terminals.filter(t => t.address !== address), { address, state: "live", pid: shell.pid, created_ms: shell.pid, labels: {}, name: `pane ${address}` }];
-  const reader = shell.stdout.getReader();
-  let buffered = "";
-  const line = async () => {
-    for (;;) {
-      const at = buffered.indexOf("\n");
-      if (at >= 0) { const out = buffered.slice(0, at); buffered = buffered.slice(at + 1); return out; }
-      const { value, done } = await reader.read();
-      if (done) throw new Error("pane shell ended");
-      buffered += new TextDecoder().decode(value);
-    }
-  };
-  const run = async (text: string, count: number) => {
-    shell.stdin.write(`${text}\n`);
-    await shell.stdin.flush();
-    const out: Record<string, unknown>[] = [];
-    while (out.length < count) out.push(JSON.parse(await line()) as Record<string, unknown>);
-    return out;
-  };
-  return {
-    run,
-    call: async (words: readonly string[]) => (await run(callerArgv(words).map(quote).join(" "), 1))[0]!,
-    close: async () => { await shell.stdin.end(); await shell.exited; },
-  };
-}
-describe.skipIf(process.platform !== "linux")("a call's caller stays a process of its pane", () => {
-  it("is in the pane while the pane's root, born when proved, is among its parents, and out once it is not", () => {
-    const parent = procLink(process.ppid)!;
-    const peer = { pid: process.pid, alive: () => true, close: () => {} };
-    expect(stillIn(peer, { pane: "t1", created_ms: 1, root: parent.pid, birth: parent.birth })).toBe(true);
-    expect(stillIn(peer, { pane: "t1", created_ms: 1, root: parent.pid, birth: "another-birth" })).toBe(false);
-    expect(stillIn({ ...peer, alive: () => false }, { pane: "t1", created_ms: 1, root: parent.pid, birth: parent.birth })).toBe(false);
   });
 });

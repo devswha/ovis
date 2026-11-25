@@ -138,9 +138,9 @@ proves no pane, so every call answers `not_granted`):
 3. The run ends when the pane closes, its root process changes, or the switch leaves `start`.
    Turning starts back on lets a proven pane begin a new run. Existing children are not killed.
 
-Panes Ovis launched with a token, and its ACP children, never take this path. This attributes a
-call to a pane; it is not a sandbox against the OS account: a same-user debugger, or a process
-of the pane relaying for another program, is outside it.
+Panes where Ovis launches an agent, with or without a token, and its ACP children never take this
+path. This attributes a call to a pane; it is not a sandbox against the OS account: a same-user
+debugger, or a process of the pane relaying for another program, is outside it.
 
 A driving device can cancel a tool child's turn with `POST /api/pane/turn/cancel {"pane_id":"t12"}`.
 This leaves the child alive but holds it against new agent input. The same device route group

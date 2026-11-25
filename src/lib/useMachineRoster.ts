@@ -427,7 +427,6 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
         scheduleRefetch(true);
       },
     });
-    // the owner's pane list goes with the stream that brought it: a sign-out without a reload must not leave it shown
     return () => { stop(); onRosterStream("closed"); };
   }, [machineSessions, locked, scheduleRefetch, dropIn, chime, reorderCoordinator, onRosterStream]);
 }

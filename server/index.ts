@@ -950,7 +950,7 @@ export function createServer(
   // No deferred listener from a failed HTTP/LAN bind may replace a running server's hub.
   if (acp && process.platform !== "win32" && hcMachine() === null) {
     try {
-      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
+      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool), paneRunEpoch: () => preferences.paneRunEpoch });
       const hub = agentTools;
       void acpReady?.then(async restored => {
         if (!restored) throw new Error("ACP restore incomplete.");
