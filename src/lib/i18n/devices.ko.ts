@@ -368,4 +368,5 @@ export const DEVICES_KO: Record<string, string> = {
   "a device that is no longer in your account": "이제 계정에 없는 기기",
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "확인한 뒤에 고른 항목 중 하나가 새 키로 바뀌었어요. 아무것도 제거하지 않았으니, 제거하려면 다시 제거를 누르세요.",
   "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.": "에이전트에게 PC를 추가할 초대를 주려면 Ovis 휴대폰 앱이나 app.ovis.sh에서 만드세요: PC 추가 → Ovis 릴레이 → PC 초대.",
+  "This device keeps its place in your account's list: signed in again here, it opens your PCs with no Allow. To take it out too, use Disconnect on its own row.": "이 기기는 계정 명단에 그대로 남아요. 여기서 다시 로그인하면 허용 없이 PC를 열 수 있어요. 이 기기도 빼려면 이 기기 줄의 연결 끊기를 누르세요.",
 };

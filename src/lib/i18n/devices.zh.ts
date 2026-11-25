@@ -368,4 +368,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "a device that is no longer in your account": "已不在你账户中的设备",
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "确认之后，你勾选的某一项换成了新的密钥。没有移除任何内容：要移除它，请再次点击移除。",
   "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.": "要给智能体一个添加 PC 的邀请，请在 Ovis 手机应用或 app.ovis.sh 中创建：添加 PC → Ovis 中继 → 邀请 PC。",
+  "This device keeps its place in your account's list: signed in again here, it opens your PCs with no Allow. To take it out too, use Disconnect on its own row.": "此设备会留在你的账户名单中：在这里重新登录后，无需允许即可打开你的电脑。如果也要移除它，请使用它自己那一行的“断开连接”。",
 };
