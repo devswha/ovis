@@ -427,13 +427,28 @@ export async function onPcSession(given: {
   if (given.session === null || list.naming === undefined) return;
   const named = await list.naming({ account, session: given.session, endpoint, signIn: given.signIn });
   if (named === null) return;
+  await nameListTo(given.fetch, named);
+}
+
+/** What a PC answered a naming (docs/account-list.md, "On the PC"): the list it follows, or why it follows none and for how long, in seconds. */
+export type NamingAnswer = { readonly pinned: true; readonly list: string } | { readonly pinned: false; readonly why: string; readonly wait: number | null };
+
+/**
+ * Hands a PC the naming of the list, with its vouches, over the session `fetch` is of (POST /api/account/list/name), and
+ * reads its answer: null for none that reads (a PC from before this release, one away), which is named again later.
+ */
+export async function nameListTo(fetch: PcFetch, named: NonNullable<Awaited<ReturnType<NonNullable<AccountList["naming"]>>>>): Promise<NamingAnswer | null> {
   try {
-    await given.fetch("/api/account/list/name", {
+    const answer = await fetch("/api/account/list/name", {
       method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
       body: JSON.stringify({ naming: named.naming, ...(named.vouches.length === 0 ? {} : { vouches: named.vouches }) }),
     });
+    const body: unknown = answer.ok ? await answer.json() : null;
+    if (!isRecord(body)) return null;
+    if (body.pinned === true && typeof body.list === "string") return { pinned: true, list: body.list };
+    return body.pinned === false && typeof body.why === "string" ? { pinned: false, why: body.why, wait: isSpan(body.wait) ? body.wait : null } : null;
   } catch {
-    // a PC that follows no list, from before this release or away: it is named again at the next session
+    return null;
   }
 }
 

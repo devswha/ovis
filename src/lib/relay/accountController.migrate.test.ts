@@ -431,6 +431,168 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     } finally { jest.useRealTimers(); }
   });
 
+  /** A device that waits on its PCs, asked once in the background; the fake clock is the test's to move. */
+  const waitingAsked = async (name: string, inApp = false) => {
+    await signIn(name);
+    const { store } = await pairedPc(name);
+    const { list, tell } = listIn(() => ({ account: name, reached: true, status: { at: "none", why: "moving", move: { why: "no_witness", wait: null, asks: [] } }, devices: [], pcs: [] }));
+    const opened: unknown[] = [];
+    const made = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ answers: { "GET /api/account/list/witness": { account: name, pinned: null, admits: [], removed: [] } } }).opened; }, [], inApp);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toHaveLength(1);
+    return { made, opened };
+  };
+
+  it("#4713 M3: a disposed controller asks no PC again on its clock", async () => {
+    jest.useFakeTimers();
+    try {
+      const { made, opened } = await waitingAsked("acct-disposed");
+      made.dispose();
+      jest.advanceTimersByTime(3_600_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4713 M2: once the device signs out, its clock asks none of the old account's PCs, even while its list still shows the move", async () => {
+    jest.useFakeTimers();
+    try {
+      const { made, opened } = await waitingAsked("acct-signed-out");
+      made.signOut();
+      jest.advanceTimersByTime(3_600_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4713 M3: on a hidden page the clock asks nothing, and asks once the page is shown again", async () => {
+    jest.useFakeTimers();
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    let state: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    try {
+      const { opened } = await waitingAsked("acct-hidden");
+      state = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      jest.advanceTimersByTime(30 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(1);
+      // shown again: the page reads its account again, and the PC, due long since, is asked at once
+      state = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await settle();
+      expect(opened).toHaveLength(2);
+    } finally {
+      jest.useRealTimers();
+      if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+      else Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
+  /**
+   * F10 (staging): the device that moved the account is paired with its PC too, and the shell opens a PC it is paired
+   * with by that pairing, whose naming the PC does not take (a pairing is no key it let in through the account). So the
+   * device names its list over a session of its own through the account, the one way its naming counts.
+   */
+  const movedWithPairing = async (account: string, answers: { pinned: string | null }[], nameAnswer: unknown = { pinned: false, why: "session_new", wait: 60 }) => {
+    const signedIn = await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const LIST = "5c".repeat(32);
+    const named: unknown[] = [];
+    const following = (): AccountListView => ({ account, reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async (given) => { named.push(given); return { naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }; });
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const opened: { accountOpensAll: boolean; asked: () => string[] }[] = [];
+    const made = controller(list, store, async (_offer, options) => {
+      const said = answers[Math.min(opened.length, answers.length - 1)]!;
+      const one = sessionOf({ key: signedIn, answers: { "GET /api/account/list/witness": { account, pinned: said.pinned, admits: [], removed: [] }, "POST /api/account/list/name": nameAnswer } });
+      opened.push({ accountOpensAll: options.accountOpensAll === true, asked: () => one.asked.map((call) => `${call.method} ${call.path}`) });
+      return one.opened;
+    }, [row], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    return { pc, signedIn, LIST, named, opened };
+  };
+
+  it("F10: after its move, a device names its list over a session through the account to a PC it is paired with, never over the pairing", async () => {
+    const { pc, signedIn, named, opened } = await movedWithPairing("acct-name-way", [{ pinned: null }]);
+    expect(opened.map((one) => one.accountOpensAll)).toEqual([true]);
+    expect(opened[0]!.asked()).toEqual(["GET /api/account/list/witness", "POST /api/account/list/name"]);
+    // signed for that session's key, the sign-in key the PC lets in through the account, which vouches for itself
+    expect(named).toEqual([{ account: "acct-name-way", session: signedIn, endpoint: pc.endpoint, signIn: signedIn }]);
+  });
+
+  it("F10: a PC that says it follows the list is named nothing more, and asked again only on the gap", async () => {
+    jest.useFakeTimers();
+    try {
+      const { LIST, opened } = await movedWithPairing("acct-name-done", [{ pinned: null }, { pinned: "5c".repeat(32) }]);
+      expect(opened).toHaveLength(1);
+      jest.advanceTimersByTime(11 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+      expect(opened[1]!.asked()).toEqual(["GET /api/account/list/witness"]);
+      expect(LIST).toBe("5c".repeat(32));
+      // it follows the list now: nothing more on the clock
+      jest.advanceTimersByTime(60 * 60_000);
+      await settle();
+      expect(opened).toHaveLength(2);
+    } finally { jest.useRealTimers(); }
+  });
+
+  /** How many sessions the asker opened, and how many of them named the list, after `hours` of a page left up. */
+  const leftUp = async (opened: { asked: () => string[] }[], hours: number) => {
+    for (let step = 0; step < hours * 6; step++) { jest.advanceTimersByTime(10 * 60_000 + 1_000); await settle(); }
+    return { sessions: opened.length, named: opened.filter((one) => one.asked().includes("POST /api/account/list/name")).length };
+  };
+
+  it("#4723 naming review L1: a PC that refuses the naming for a cause no wait changes is named once in this run of the page", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const why of ["first_signer_unknown", "first_signer_removed", "named_here", "lists_full", "removed"]) {
+        const { opened } = await movedWithPairing(`acct-l1-${why}`, [{ pinned: null }], { pinned: false, why, wait: null });
+        expect(await leftUp(opened, 3)).toEqual({ sessions: 1, named: 1 });
+      }
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review L1: a refusal with a wait is named again only once that wait is over, and on the gap after it", async () => {
+    jest.useFakeTimers();
+    try {
+      const { opened } = await movedWithPairing("acct-l1-wait", [{ pinned: null }], { pinned: false, why: "session_new", wait: 3_600 });
+      expect(opened).toHaveLength(1);
+      expect(await leftUp(opened, 0.5)).toEqual({ sessions: 1, named: 1 });
+      expect(await leftUp(opened, 0.7)).toEqual({ sessions: 2, named: 2 });
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review L1: a PC that follows another list, or answers no witness, is named nothing and not asked again in this run", async () => {
+    jest.useFakeTimers();
+    try {
+      const other = await movedWithPairing("acct-l1-other", [{ pinned: "6d".repeat(32) }]);
+      expect(await leftUp(other.opened, 2)).toEqual({ sessions: 1, named: 0 });
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("F10: a PC the directory gives no way through the account is named nothing over its pairing", async () => {
+    const signedIn = await signIn("acct-name-paired-only");
+    const { store } = await pairedPc("acct-name-paired-only");
+    const LIST = "5c".repeat(32);
+    const following = (): AccountListView => ({ account: "acct-name-paired-only", reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async () => ({ naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }));
+    const opened: unknown[] = [];
+    const made = controller(list, store, async (offer) => { opened.push(offer); return sessionOf({ key: signedIn }).opened; }, [], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    expect(opened).toEqual([]);
+  });
+
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
     await signIn("acct-check");
     const one = pcKeys();
