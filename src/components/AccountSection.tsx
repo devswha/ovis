@@ -8,10 +8,10 @@ import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } 
 import { Check, Plus, X } from "lucide-react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
-import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
+import { ApiError, cancelListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { pagePcs } from "../lib/account/listPcs.ts";
@@ -220,6 +220,21 @@ function onePressRefusal(t: Translate, pressed: Exclude<OnePress, "added">): str
     : `${t("This PC was not added in one press.")} ${otherWays}`;
 }
 
+/**
+ * Why an add of this PC by its account's list started nothing, or ended, by the PC's code (POST /api/account/list/add's
+ * refusals, and the `why` of an add that ended: server/account/list-add.ts), in the words `ovis add` uses for it.
+ */
+function listAddRefusal(t: Translate, why: string): string {
+  switch (why) {
+    case "account_unavailable": return t("The account service could not be reached, so this PC was not added. Try again.");
+    case "account_mismatch": return t("This PC was set up for another account. Sign in to that one, or add this PC again.");
+    case "list_removed": case "removed": return t("This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again.");
+    case "cancelled": return t("The numbers were not the same, so nothing was added. If the device that adds this PC showed another number, something stood between the two: try once more, and if they differ again, do not add it.");
+    case "attempts": return t("Too many tries for this PC. Start again on the PC in a few minutes.");
+    default: return t("This PC could not join the account's list ({why}).", { why });
+  }
+}
+
 let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
 
 /**
@@ -389,11 +404,16 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   const begun = state.kind === "waiting" ? state : null;
   const listed = useEffectEvent(() => onListed?.());
   useEffect(() => { if (begun !== null) listed(); }, [begun !== null]);
+  /** the run of the PC's add by the account's list that the wait under way follows now, which its Stop waiting gives up */
+  const listRun = useRef<(() => string | undefined) | null>(null);
+  const listEnded = useEffectEvent((why: string) => setState({ kind: "error", message: listAddRefusal(t, why) }));
   useEffect(() => {
     if (begun === null) return;
     const until = begun.until;
     let live = true;
     let mark = begun.mark;
+    const follows = (): string | undefined => mark?.run;
+    listRun.current = follows;
     const shared = mark !== null && readAddPcWaiting()?.until === until;
     /** Another copy of this screen ended this wait: nothing more is opened, listed or kept for it. */
     const withdrawn = (): boolean => shared && readAddPcWaiting()?.until !== until;
@@ -470,6 +490,37 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (!closed && windowId !== undefined && starts.current === startsThen && !waitKept()) closeWindow(windowId);
       })()).catch(warned("Ovis: this PC's pairing window was not reopened")).finally(() => { reopening = false; });
     };
+    /**
+     * The PC's add by the account's list that this wait started, as the PC says it stands. One whose ten minutes ran out
+     * while the wait runs, or that another add took the place of (the PC restarted), is started again under the wait's
+     * account alone; one that ended otherwise ends the wait, which says why. Its number, and the person's yes to it,
+     * are the window's own prompts (useOwnWindowPrompts); that the PC joined, the read of its account says.
+     */
+    const followList = async (): Promise<void> => {
+      const run = mark?.run;
+      if (mark === null || run === undefined) return;
+      const now = await fetchListAdd(run);
+      if (!live || withdrawn() || mark?.run !== run) return;
+      if (now.state === "ended" && now.why !== "timeout") { forget(); listEnded(now.why); return; }
+      if (now.state !== "ended" && now.state !== "replaced") return;
+      if (expired()) return;
+      if (!await stillSignedIn()) { if (live) stopped(); return; }
+      if (!live || withdrawn()) return;
+      const again = await addByList(mark.account);
+      if (!live || withdrawn() || mark === null) {
+        // the wait ended (Stop waiting gave up the run it knew) while this one started: nobody waits for it, unless a
+        // newer listing or a wait the tab keeps goes on with it (the PC hands it the same run)
+        if (again.kind === "run" && starts.current === startsThen && !waitKept()) cancelListAdd(again.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return;
+      }
+      switch (again.kind) {
+        case "run": mark = { ...mark, run: again.run }; keepAddPcWaiting(mark); return;
+        // the account keeps no list now: the wait goes on as an account without one waits
+        case "none": mark = { name: mark.name, until: mark.until, serverId: mark.serverId, account: mark.account, listedAt: mark.listedAt }; keepAddPcWaiting(mark); return;
+        case "added": return;
+        case "refused": forget(); listEnded(again.why); return;
+      }
+    };
     let asking = false;
     const ask = (): void => {
       if (pageHidden() || asking) return;
@@ -479,6 +530,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (!live) return;
         if (account !== null) await joined(account, enrolling);
         else if (withdrawn()) left();
+        else await followList().catch(warned("Ovis: this PC's add by the account's list could not be read"));
       })()).catch(warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
     };
     let relisting: ReturnType<typeof setTimeout> | null = null;
@@ -559,6 +611,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (begun.resumed) reopen();
     return () => {
       live = false;
+      if (listRun.current === follows) listRun.current = null;
       for (const timer of timers) clearInterval(timer);
       if (relisting !== null) clearTimeout(relisting);
       clearTimeout(end);
@@ -628,6 +681,36 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         closeOpened();
         keepAddPcWaiting(null);
         return await joinedAs(membership.account, membership.enrolling);
+      }
+      // an account that keeps a signed list takes this PC by that list alone: the PC is asked to start that add first,
+      // as `ovis add` asks it, and the one press below is tried only where it says the account keeps none
+      const byList = account === null ? null : await addByList(account);
+      if (!current()) {
+        // an add nobody waits for is given up, unless a newer attempt goes on with it (the PC hands it the same run)
+        if (byList?.kind === "run" && starts.current === began && !waitKept()) cancelListAdd(byList.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return null;
+      }
+      if (account !== null && byList !== null && byList.kind !== "none") {
+        if (byList.kind === "run") {
+          const now = Date.now();
+          const mark = { name, until: now + WAITING_MS, serverId, account, listedAt: now, run: byList.run };
+          pressedUntil.current = mark.until;
+          keepAddPcWaiting(mark);
+          return { kind: "waiting", name, until: mark.until, mark, resumed: false, signedIn: as !== null };
+        }
+        closeOpened();
+        if (byList.kind === "added") {
+          listed();
+          keepAddPcWaiting(null);
+          return await joinedAs(account, false);
+        }
+        // in an account by now (a device added it meanwhile): said as any join is
+        if (byList.why === "in_account") {
+          const now = await thisPcMembership();
+          if (!current()) return null;
+          if (now.account !== null) { keepAddPcWaiting(null); return await joinedAs(now.account, now.enrolling); }
+        }
+        return { kind: "error", message: listAddRefusal(t, byList.why) };
       }
       // in one press when the account service admits it; the window this listing opened is then needed no more
       const pressed = account === null ? "refused" : await addInOnePress(accountService(), serverId, account, current, opensAll());
@@ -770,13 +853,18 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * Stops waiting, in every copy of this screen, and closes the window on the PC so nothing more is taken;
    * an older Ovis has no such route and lets it run out. A reopen or a listing still on its way to the PC may
    * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`),
-   * also a listing that was given up for getting no answer in time.
+   * also a listing that was given up for getting no answer in time. The PC's add by the account's list that the wait
+   * follows is given up with it, by its run as the tab keeps the wait (another copy may have started it again), else as
+   * this copy knows it: an add that took its place is not this wait's.
    */
   const stop = (): void => {
+    const kept = readAddPcWaiting();
+    const run = state.kind === "waiting" && kept !== null && kept.until === state.until ? kept.run : listRun.current?.();
     stops.current++;
     keepAddPcWaiting(null);
     setState({ kind: "offer" });
     closeWindow();
+    if (run !== undefined) cancelListAdd(run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
   };
   /**
    * The wait's one sign-in again, with the provider of the sign-in it began under. It runs only while its wait does, in

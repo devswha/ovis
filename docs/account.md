@@ -1949,6 +1949,18 @@ finishes when the PC is in the account. Where nobody can type (a script, a codin
 the number and the exact command that confirms it, `ovis add --confirm <the number>`, and confirms
 nothing itself; an agent adds a PC in one step with an invite instead.
 
+**Add this PC to my account** in the PC's own window goes the same way
+([`src/lib/account/addThisPc.ts`](../src/lib/account/addThisPc.ts) `addByList`): it lists the PC,
+names it the account, then asks the PC to start this add (`POST /api/account/list/add`) before any
+one press. Only where the PC says the account keeps no list (`no_list`, or a PC that follows none:
+403, 404, 405) does the one press follow, as before. With an add under way the screen waits as a
+pressed one does; the number and **The numbers match** come in the window's own prompt. The wait
+asks the PC where its add stands: an add that ended (the numbers differed, three numbers, a refusal)
+ends the wait and says why, and one whose ten minutes ran out is started again while the wait's
+30 minutes run. **Stop waiting** gives the add up by its `run`. A 503 `account_unavailable` started
+nothing and tries no one press: the screen says the account service could not be reached, and the
+button asks again; `account_mismatch` and `list_removed` say their own sentences.
+
 #### A PC joins the list with an invite
 
 The line of an invite names the account's list (`shared/account-list-join.ts`). The person at the

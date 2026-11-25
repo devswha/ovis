@@ -398,9 +398,20 @@ export async function fetchListReason(): Promise<string | null> {
   return typeof said === "string" && said !== "" ? said : null;
 }
 
-/** GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). */
-export async function fetchListAdd(): Promise<ListAddState> {
-  return await getJson<ListAddState>("/api/account/list/add", { cache: "no-store" });
+/**
+ * GET /api/account/list/add: where an add of this PC by its account's list stands (this PC's own window alone). `run`:
+ * the add the caller started; another one in its place is answered `replaced`.
+ */
+export async function fetchListAdd(run?: string): Promise<ListAddState> {
+  return await getJson<ListAddState>(run === undefined ? "/api/account/list/add" : `/api/account/list/add?run=${encodeURIComponent(run)}`, { cache: "no-store" });
+}
+
+/**
+ * POST /api/account/list/add: a person at this PC starts adding it to `account` by the account's list, or goes on with
+ * the add under way for it; `no_list` where the account keeps none (this PC's own window alone).
+ */
+export async function startListAdd(account: string): Promise<ListAddState> {
+  return await getJson<ListAddState>("/api/account/list/add", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
 }
 
 /** POST /api/account/list/add/confirm: the person at this PC says the device adding it shows these digits; 409 `wrong_number` confirms nothing. */
