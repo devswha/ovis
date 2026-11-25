@@ -288,6 +288,9 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   return result;
 }
 
+/** How long `addByList` waits for the PC to take the account's name before it asks for the add all the same. */
+export const NAMING_MS = 10_000;
+
 /**
  * What this PC said when asked to add itself by the account's signed list: `none` where the account keeps no list, or
  * this PC has no such add for this window (it follows no list, the window is not its own, or its Ovis has no such route:
@@ -305,8 +308,8 @@ export type ByList = { readonly kind: "none" } | { readonly kind: "run"; readonl
  */
 export async function addByList(account: string): Promise<ByList> {
   const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
-  // a naming that fails is not the end of it: the PC's answer to the add says what it lacks
-  await post("/api/account/relay-account").catch((error: unknown) => console.warn("Ovis: this PC was not named the account for its add", error instanceof Error ? error.name : error));
+  // a naming that fails, or gets no answer within NAMING_MS, is not the end of it: the PC's answer to the add says what it lacks
+  await within(NAMING_MS, post("/api/account/relay-account")).catch((error: unknown) => console.warn("Ovis: this PC was not named the account for its add", error instanceof Error ? error.name : error));
   let state: ListAddState;
   try { state = await startListAdd(account); } catch (error) {
     if (!(error instanceof ApiError)) throw error;

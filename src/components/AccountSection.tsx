@@ -507,7 +507,12 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (!await stillSignedIn()) { if (live) stopped(); return; }
       if (!live || withdrawn()) return;
       const again = await addByList(mark.account);
-      if (!live || withdrawn() || mark === null) return;
+      if (!live || withdrawn() || mark === null) {
+        // the wait ended (Stop waiting gave up the run it knew) while this one started: nobody waits for it, unless a
+        // newer listing or a wait the tab keeps goes on with it (the PC hands it the same run)
+        if (again.kind === "run" && starts.current === startsThen && !waitKept()) cancelListAdd(again.run).catch(warned("Ovis: this PC's add by the account's list was not given up"));
+        return;
+      }
       switch (again.kind) {
         case "run": mark = { ...mark, run: again.run }; keepAddPcWaiting(mark); return;
         // the account keeps no list now: the wait goes on as an account without one waits
@@ -849,10 +854,12 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
    * an older Ovis has no such route and lets it run out. A reopen or a listing still on its way to the PC may
    * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`),
    * also a listing that was given up for getting no answer in time. The PC's add by the account's list that the wait
-   * follows is given up with it, by its run: an add that took its place is not this wait's.
+   * follows is given up with it, by its run as the tab keeps the wait (another copy may have started it again), else as
+   * this copy knows it: an add that took its place is not this wait's.
    */
   const stop = (): void => {
-    const run = listRun.current?.();
+    const kept = readAddPcWaiting();
+    const run = state.kind === "waiting" && kept !== null && kept.until === state.until ? kept.run : listRun.current?.();
     stops.current++;
     keepAddPcWaiting(null);
     setState({ kind: "offer" });

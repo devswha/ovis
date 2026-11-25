@@ -9,7 +9,7 @@ import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { ListAddState } from "../../shared/machines.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
-import { CLOSE_ANSWER_MS } from "../lib/account/addThisPc.ts";
+import { CLOSE_ANSWER_MS, NAMING_MS } from "../lib/account/addThisPc.ts";
 import { AccountServiceError, SignedOutError, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -73,10 +73,12 @@ describe("AddThisPc", () => {
    * was asked of it, in order, with the account this PC was named (POST /api/account/relay-account) at that moment
    */
   let byList: {
-    start: ListAddState | { status: number; code: string }; started?: () => void; now: ListAddState | null;
+    start: ListAddState | { status: number; code: string }; started?: () => void | Promise<void>; now: ListAddState | null;
     calls: { what: string; body: Record<string, unknown> | null; named: string | null }[];
   } | null;
   let namedAs: string | null;
+  /** this PC never answers a naming of its account (POST /api/account/relay-account) */
+  let hangNaming: boolean;
   const loopbackFetch = globalThis.fetch;
   let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
@@ -112,6 +114,7 @@ describe("AddThisPc", () => {
     relayRequest = null;
     byList = null;
     namedAs = null;
+    hangNaming = false;
     held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
@@ -154,11 +157,12 @@ describe("AddThisPc", () => {
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
       const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null;
       if (path === "/api/account/relay-account") namedAs = typeof body?.account === "string" ? body.account : null;
+      if (path === "/api/account/relay-account" && hangNaming) return new Promise<Response>(() => {});
       if (byList !== null && path.startsWith("/api/account/list/add")) {
         byList.calls.push({ what: `${init?.method ?? "GET"} ${path}${url.search}`, body, named: namedAs });
         if (path === "/api/account/list/add/cancel") return Response.json(byList.now = { state: "ended", run: String(body?.run), account: ACCOUNT, why: "cancelled" });
         if (init?.method !== "POST") return Response.json(byList.now ?? { state: "none" });
-        byList.started?.();
+        await byList.started?.();
         const start = byList.start;
         if ("code" in start) return Response.json({ error: { code: start.code, message: "refused" } }, { status: start.status });
         return Response.json(byList.now = start);
@@ -2166,6 +2170,37 @@ describe("AddThisPc", () => {
       expect(JSON.parse(tab.get(MARKER)!).run).toBe(NEXT);
       await press(renderer, "Stop waiting");
       expect(cancels().map(({ body }) => body)).toEqual([{ run: NEXT }]);
+    });
+
+    test("an add started again after Stop waiting gave the wait up is given up too", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = running(NEXT);
+      let release!: () => void;
+      byList!.started = () => new Promise<void>((done) => { release = done; });
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(2);
+      await press(renderer, "Stop waiting");
+      release();
+      await settle();
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }, { run: NEXT }]);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    });
+
+    test("Stop waiting gives up the run the tab keeps for the wait, which another copy may have started again", async () => {
+      const renderer = await waitingFrom();
+      tab.set(MARKER, JSON.stringify({ ...JSON.parse(tab.get(MARKER)!), run: NEXT }));
+      await press(renderer, "Stop waiting");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: NEXT }]);
+    });
+
+    test("a PC that never answers the naming of its account holds the add for NAMING_MS at most", async () => {
+      hangNaming = true;
+      const renderer = await waitingFrom();
+      expect(starts()).toBe(0);
+      await advance(NAMING_MS);
+      expect(starts()).toBe(1);
+      expect(words(renderer)).toContain(WAIT);
     });
 
     test("the PC joins by its list: the wait says Added", async () => {
