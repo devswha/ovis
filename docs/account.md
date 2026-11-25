@@ -2213,8 +2213,9 @@ its own record before it follows a list a device names to it. Nothing else decid
   the keys the account's rows let in to drive right now, each with both counts in seconds and how
   long ago its row was last used here (by the day), and the keys this PC holds a removal against,
   never why. A row that waits for a whole read lets nobody in and is not told. The counts are those
-  of the record's last step, which runs on its own timer, and a caller asks at most 30 times a
-  minute (`429 rate_limited`). A device outside the
+  of the record's last step, which runs on its own timer; how long ago a key was used is read at
+  the answer. A caller asks at most 30 times a minute (`429 rate_limited`). A PC in its account
+  whose rows cannot be read now answers `503 witness_unavailable`. A device outside the
   account is refused (`403 account_required`), a PC in no account answers `409 not_in_account`.
 - **A staging run.** `OVIS_LIST_MIGRATE_TIME_SCALE` (a whole number from 1 to 86400) multiplies the
   counts this PC hands over, to a device and to its own check of a naming, so a day passes in a

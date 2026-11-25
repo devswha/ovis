@@ -36,13 +36,28 @@ describe("the vouches a PC keeps for the lists devices named to it", () => {
     for (let n = 1; n <= VOUCH_LISTS_MAX; n++) expect(vouches.keep(SCOPE, list(n), [])).toBe("kept");
     expect(vouches.keep(SCOPE, list(9), [vouch(1)])).toBe("full");
     expect(vouches.of(SCOPE, list(9))).toEqual([]);
-    expect(vouches.keep(SCOPE, list(1), Array.from({ length: VOUCHES_PER_LIST_MAX + 10 }, (_, n) => vouch(n)))).toBe("kept");
+    expect(vouches.keep(SCOPE, list(1), Array.from({ length: VOUCHES_PER_LIST_MAX + 10 }, (_, n) => vouch(n)))).toBe("full");
     expect(vouches.of(SCOPE, list(1))).toHaveLength(VOUCHES_PER_LIST_MAX);
-    expect(vouches.keep(SCOPE, list(1), [vouch(500)])).toBe("kept");
+    expect(vouches.keep(SCOPE, list(1), [vouch(500)])).toBe("full");
     expect(vouches.of(SCOPE, list(1)).some((one) => one.key === "member-500")).toBe(false);
     // once the PC follows one of them, the others go
     vouches.keepOnly(SCOPE, list(1));
     expect([vouches.of(SCOPE, list(2)), vouches.keep(SCOPE, list(9), [])]).toEqual([[], "kept"]);
+  });
+
+  test("a link whose sign-in key this PC holds a removal against is kept past the cap; any other past it is refused, never dropped unsaid", () => {
+    const dir = folder();
+    const vouches = new ListVouches(dir);
+    const removed = (device: string) => device.startsWith("removed-");
+    expect(vouches.keep(SCOPE, list(1), Array.from({ length: VOUCHES_PER_LIST_MAX }, (_, n) => vouch(n)), removed)).toBe("kept");
+    // full: a link that holds a device out still goes in, and says it was kept
+    expect(vouches.keep(SCOPE, list(1), [{ key: "member-x", device: "removed-x" }], removed)).toBe("kept");
+    expect(vouches.of(SCOPE, list(1)).some((one) => one.device === "removed-x")).toBe(true);
+    // one that only says a device is known here does not, and the caller is told
+    expect(vouches.keep(SCOPE, list(1), [vouch(500)], removed)).toBe("full");
+    expect(vouches.of(SCOPE, list(1)).some((one) => one.key === "member-500")).toBe(false);
+    // what is kept already is no news, and is no refusal
+    expect(vouches.keep(SCOPE, list(1), [vouch(1)], removed)).toBe("kept");
   });
 
   test("a file that does not read is no vouches and is replaced; the file goes when the binding goes", () => {

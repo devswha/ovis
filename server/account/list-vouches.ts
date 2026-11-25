@@ -77,18 +77,27 @@ export class ListVouches {
     this.write(scope, (lists) => lists, { list, by });
   }
 
-  /** Keeps `vouches` for `list` beside what is kept. `full`: the binding keeps vouches for as many lists as it may, and none of them is `list`. Throws when the file cannot be written. */
-  keep(scope: Scope, list: string, vouches: readonly HeldVouch[]): "kept" | "full" {
-    return this.write(scope, (lists) => {
+  /**
+   * Keeps `vouches` for `list` beside what is kept. `full`: the binding keeps vouches for as many lists as it may and
+   * none of them is `list`, or a vouch was not kept for the list's cap. The cap never refuses a vouch whose sign-in key
+   * this PC holds a removal against (`removed`): such a one keeps a device out (heldOut), and there are no more of them
+   * than the PC's own removals. Any other past the cap only says who is known here, and is refused out loud, never
+   * dropped unsaid: the caller does not rely on it. Throws when the file cannot be written.
+   */
+  keep(scope: Scope, list: string, vouches: readonly HeldVouch[], removed: (device: string) => boolean = () => false): "kept" | "full" {
+    let refused = false;
+    const written = this.write(scope, (lists) => {
       const was = lists[list];
       if (was === undefined && Object.keys(lists).length >= VOUCH_LISTS_MAX) return null;
       const kept = [...was ?? []];
       for (const one of vouches) {
-        if (kept.length >= VOUCHES_PER_LIST_MAX) break;
-        if (!kept.some((held) => held.key === one.key && held.device === one.device)) kept.push({ key: one.key, device: one.device });
+        if (kept.some((held) => held.key === one.key && held.device === one.device)) continue;
+        if (kept.length >= VOUCHES_PER_LIST_MAX && !removed(one.device)) { refused = true; continue; }
+        kept.push({ key: one.key, device: one.device });
       }
       return { ...lists, [list]: kept };
-    }) ? "kept" : "full";
+    });
+    return written && !refused ? "kept" : "full";
   }
 
   /** The PC follows `list` now: the vouches of every other list go. */

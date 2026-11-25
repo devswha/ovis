@@ -1013,7 +1013,9 @@ export class ListFollow implements ListAuthority {
       const handed = state.account !== scope.account ? [] : this.linksThatCount(state, [...await heldVouches(scope.account, naming.list, given.vouches), ...named.links], witness);
       if (state.account === scope.account) {
         let kept: "kept" | "full";
-        try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, naming.list, handed); } catch { return no("unavailable"); }
+        const held = (device: string): boolean => witness.removed.includes(device) || holds?.(device) === true;
+        try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, naming.list, handed, held); } catch { return no("unavailable"); }
+        // a pin never rests on a link this PC would not keep
         if (kept === "full") return no("lists_full");
       }
       const held = this.vouchedFor(naming.list);
@@ -2385,7 +2387,11 @@ export class ListFollow implements ListAuthority {
     if (links === null || state === null || !this.live(scope) || this.copy?.list !== copy.list) return;
     const counted = this.linksThatCount(state, links, witness);
     if (counted.length === 0) return;
-    try { this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, copy.list, counted); } catch { return; }
+    const holds = this.deps.holdsRemoval;
+    let kept: "kept" | "full";
+    try { kept = this.vouches.keep({ serverId: scope.serverId, bindId: scope.bindId }, copy.list, counted, (device) => witness.removed.includes(device) || holds?.(device) === true); } catch { return; }
+    // every link that keeps a device out is kept whatever the cap; what was not kept only said who is known here
+    if (kept === "full") console.error(`[account] ${ACCOUNT_LIST_VOUCHES_FILE} is full for this list: links that only say a device is known here were not kept`);
     this.settle();
   }
 
@@ -2573,7 +2579,6 @@ export class ListFollow implements ListAuthority {
       if (text === undefined) continue;
       const entry = entryFromText(text);
       const id = entryHash(entry.body);
-      if (this.applied.has(id + key)) continue;
       // and every key it handed its place on from: the device is out by all of them, also once this PC reads a snapshot again
       for (const one of [key, ...handedFrom(copy.state, key)]) {
         if (this.applied.has(id + one)) continue;

@@ -178,9 +178,11 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     if (peer.kind === "relay" && !devices.accountSession(peer.device.id, peer.key)) return fail("account_required", "Ask this from a device of this PC's account", 403);
     // within the caller's calls a minute, with the list's other session calls
     if (context.services.accountList?.peerBudget(peer.kind === "relay" ? `key ${peer.key}` : "direct") === false) return limited();
-    const held = context.services.accountWitness?.admits() ?? null;
     const account = devices.account();
-    if (account === null || held === null || held.account !== account) return fail("not_in_account", "This PC is in no account", 409);
+    if (account === null) return fail("not_in_account", "This PC is in no account", 409);
+    // a PC in its account whose rows cannot be read now has no answer: that is not an answer that nobody is let in
+    const held = context.services.accountWitness?.admits() ?? null;
+    if (held === null || held.account !== account) return fail("witness_unavailable", "This PC cannot say now whom it lets in; ask again later", 503);
     const removed = [...new Set([...devices.removalKeys(), ...context.services.accountHolds.list()])].sort();
     return reply({ account, pinned: context.services.accountList?.summary()?.pinned_list ?? null, admits: held.admits, removed });
   }

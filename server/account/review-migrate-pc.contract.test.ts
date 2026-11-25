@@ -24,7 +24,7 @@ import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_LIST_VOUCHES_FILE, VOUCHES_PER_LIST_MAX } from "./list-vouches.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { accountServiceUrl } from "./mailbox.ts";
-import { asSignIn, birthPlan, migratingDevice, MigratedList, signedInAgain, signIn, type MigratingPhone } from "./migrate.test-helpers.ts";
+import { asSignIn, birthPlan, migratingDevice, MigratedList, scaled, signedInAgain, signIn, signInOutcome, type MigratingPhone } from "./migrate.test-helpers.ts";
 import { migrateTimeScale } from "./migrate-time.ts";
 import { ask } from "./pairing.test-helpers.ts";
 import { AccountWitness, type WitnessedRow } from "./witness.ts";
@@ -54,7 +54,7 @@ async function accountInUse() {
   service.listAccounts = "*";
   service.listMigrateAccounts = "*";
   const accountService = { url: "https://account.test", fetch: (request: Request) => service.fetch(request) };
-  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 });
+  const { fixture, member } = await scaled(undefined, () => relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 }));
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
   const { services } = fixture.app.context;
@@ -79,8 +79,7 @@ async function accountInUse() {
   const list = services.accountList!;
   const pull = async () => { await services.accountMailbox.pull(); await list.settled(); };
   const signsIn = async (device: MigratingPhone, which: "signIn" | "member" = "signIn"): Promise<"drive" | "watch" | null> => {
-    const link = await relayConnection(fixture, { serverId });
-    return await link.auth(asSignIn(serverId, device, which)).then((ok) => ok.role, () => null);
+    return await signInOutcome(await relayConnection(fixture, { serverId }), asSignIn(serverId, device, which));
   };
   const rowOf = (key: string) => services.accountRows!.rows().find((row) => row.key === key) ?? null;
   const settle = async () => { list.tick(); await list.settled(); };

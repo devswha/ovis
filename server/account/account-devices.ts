@@ -340,10 +340,10 @@ export class AccountDeviceStore implements AccountRowSource {
       if (this.ports.heldByDevicesJson(to) || !this.admits(to)) continue;
       // while the row still stands under its old id, so each of its sessions ends as `auth_changed`
       this.ports.closeSessions(row.id, "list");
-      this.waiting.delete(row.id);
       const id = accountDeviceId(this.serverId, to);
-      // the same device: a hold it is still in goes on
+      // the same device: a hold it is still in goes on, and so does a wait for a whole read, which this commit then ends
       this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate === row ? { ...row, id, key: to } : candidate) });
+      if (this.waiting.delete(row.id)) this.waiting.add(id);
     }
   }
 

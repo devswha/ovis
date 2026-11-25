@@ -17,10 +17,9 @@ import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ACCOUNT_LIST_FILE, ACCOUNT_LIST_OWED_FILE, forgetList } from "./list-follow.ts";
 import { ACCOUNT_WITNESS_FILE } from "./witness.ts";
 import { ACCOUNT_LIST_VOUCHES_FILE } from "./list-vouches.ts";
-import { MIGRATE_TIME_SCALE_ENV } from "./migrate-time.ts";
 import { ACCOUNT, registerSnapshotPc } from "./listed-pc.test-helpers.ts";
 import { ask } from "./pairing.test-helpers.ts";
-import { asSignIn, birthPlan, migratingDevice, MigratedList, signedInAgain, signIn, type MigratingPhone } from "./migrate.test-helpers.ts";
+import { asSignIn, birthPlan, migratingDevice, MigratedList, scaled, signedInAgain, signIn, signInOutcome, type MigratingPhone } from "./migrate.test-helpers.ts";
 
 const closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -46,7 +45,7 @@ function testTime() {
  * A PC in an account that was in use: the account's snapshot let a phone and a tablet in by their sign-in keys, and
  * the PC has let both in for a day and more, by both of its clocks. The account has no list yet.
  */
-async function accountInUse() {
+async function accountInUse(options: { readonly scale?: number } = {}) {
   const time = testTime();
   const service = new FakeAccountService();
   service.opensAll = true;
@@ -55,7 +54,7 @@ async function accountInUse() {
   /** How often the PC asked the account service for a page of its list's log. */
   const reads = { log: 0 };
   const accountService = { url: "https://account.test", fetch: async (request: Request) => { if (new URL(request.url).pathname === "/v2/pc/list/log") reads.log += 1; return await service.fetch(request); } };
-  const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 });
+  const { fixture, member } = await scaled(options.scale, () => relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 }));
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
   const { services } = fixture.app.context;
@@ -85,8 +84,7 @@ async function accountInUse() {
   const pull = async () => { await services.accountMailbox.pull(); await list.settled(); };
   /** What a sign-in comes to: the role the PC lets the device in as, or null. */
   const signsIn = async (device: MigratingPhone, which: "signIn" | "member" = "signIn"): Promise<"drive" | "watch" | null> => {
-    const link = await relayConnection(fixture, { serverId });
-    return await link.auth(asSignIn(serverId, device, which)).then((ok) => ok.role, () => null);
+    return await signInOutcome(await relayConnection(fixture, { serverId }), asSignIn(serverId, device, which));
   };
   const rowOf = (key: string) => services.accountRows!.rows().find((row) => row.key === key) ?? null;
   /** The PC looks at its clock, and does what that brings. */
@@ -140,19 +138,25 @@ describe("what a PC tells a device of its account before the account moves", () 
   }, SLOW);
 
   test("a staging run's factor multiplies what the PC tells, and says so in its status; the production service never takes it", async () => {
-    const was = process.env[MIGRATE_TIME_SCALE_ENV];
-    process.env[MIGRATE_TIME_SCALE_ENV] = "60";
-    closes.push(() => { if (was === undefined) delete process.env[MIGRATE_TIME_SCALE_ENV]; else process.env[MIGRATE_TIME_SCALE_ENV] = was; });
-    const pc = await accountInUse();
+    const pc = await accountInUse({ scale: 60 });
     const phone = await relayConnection(pc.fixture, { serverId: pc.serverId });
     await phone.auth(asSignIn(pc.serverId, pc.phone));
     const told = (await ask(phone, "/api/account/list/witness")).body as { admits: { key: string; wall: number; ran: number }[] };
     const record = pc.witness.record()!.keys[pc.phone.signIn.key]!;
     expect(told.admits.find((row) => row.key === pc.phone.signIn.key)).toMatchObject({ wall: record.wall * 60, ran: record.ran * 60 });
     expect((await ask(phone, "/api/account/status")).body).toMatchObject({ migrate_time_scale: 60 });
-    const production = relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.ovis.sh", fetch: pc.service.fetch } });
+    const production = scaled(60, () => relayFixture(false, { accountOpensAll: true, accountService: { url: "https://account.ovis.sh", fetch: pc.service.fetch } }));
     closes.push(() => production.close());
     expect(production.app.context.services.accountWitness!.scale).toBe(1);
+  }, SLOW);
+
+  test("a PC in its account whose rows cannot be read now has no answer, which is not an answer that nobody is let in", async () => {
+    const pc = await accountInUse();
+    const phone = await sessionOf(pc, pc.phone);
+    const unread = spyOn(pc.witness, "admits").mockReturnValue(null);
+    const answer = await ask(phone, "/api/account/list/witness");
+    expect([answer.status, (answer.body as { error: { code: string } }).error.code]).toEqual([503, "witness_unavailable"]);
+    unread.mockRestore();
   }, SLOW);
 
   test("a PC in no account answers not_in_account", async () => {
@@ -214,7 +218,10 @@ describe("a PC that follows no list, and a device of its account names one in it
       link.onFrame = (frame) => { if (frame.type === FrameType.WELCOME) seen.push(frame.payload as unknown as Record<string, unknown>); };
       const first = await link.hello(features) as unknown as Record<string, unknown>;
       await link.flush();
-      return [first, ...seen];
+      // each WELCOME once: the one hello() was answered with may have reached onFrame too
+      const welcomes = [first, ...seen.filter((payload) => JSON.stringify(payload) !== JSON.stringify(first))];
+      expect(link.frames.filter((frame) => frame.type === FrameType.WELCOME)).toHaveLength(welcomes.length);
+      return welcomes;
     };
     // as on main: the provisional WELCOME alone, with the same members and no feature of lists
     const before = await welcomes([ACCOUNT_LIST_FEATURE]);
@@ -394,10 +401,7 @@ describe("the naming's bounds, and what the PC does not take for a list", () => 
   }, SLOW);
 
   test("on a staging run the wait the PC tells is in its own seconds, the factor taken back out", async () => {
-    const was = process.env[MIGRATE_TIME_SCALE_ENV];
-    process.env[MIGRATE_TIME_SCALE_ENV] = "60";
-    closes.push(() => { if (was === undefined) delete process.env[MIGRATE_TIME_SCALE_ENV]; else process.env[MIGRATE_TIME_SCALE_ENV] = was; });
-    const pc = await accountInUse();
+    const pc = await accountInUse({ scale: 60 });
     const laptop = await migratingDevice("Laptop");
     signIn(pc.service, ACCOUNT, laptop);
     await pc.run(60_000);
@@ -563,7 +567,7 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     const pc = await followsByMove();
     pc.fixture.app.stop();
     rmSync(join(pc.fixture.stateDir, ACCOUNT_LIST_FILE));
-    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: pc.service.fetch } });
+    const again = scaled(undefined, () => relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: pc.service.fetch } }));
     closes.push(() => again.app.stop());
     const { accountList, accountMailbox } = again.app.context.services;
     await accountMailbox.pull();
@@ -572,6 +576,8 @@ describe("keys for a PC the list carried in as an endpoint", () => {
     await accountList!.settled();
     expect(accountList!.status()).toMatchObject({ pinned: true, standing: "waiting" });
     expect(accountList!.summary()?.reason).toContain("ovis add");
+    // and it lets no device of its account in meanwhile: the tablet's sign-in is refused, not lost
+    expect(await signInOutcome(await relayConnection(again, { serverId: pc.serverId }), asSignIn(pc.serverId, pc.tablet))).toBeNull();
   }, SLOW);
 });
 
@@ -621,6 +627,24 @@ describe("after the pin, the rows the list makes", () => {
     for (const key of [pc.tablet.member.key, pc.tablet.signIn.key]) expect(pc.services.devices.isTombstoned(key)).toBe(true);
   }, SLOW);
 
+  test("a removal of a key the device handed over from that could not be kept is tried again, not skipped with the rest of its chain", async () => {
+    const pc = await pinnedToBirth();
+    await pc.born.handOver(pc.tablet);
+    await pc.pull();
+    const removeAccountKey = pc.services.devices.removeAccountKey.bind(pc.services.devices);
+    let failed = false;
+    const once = spyOn(pc.services.devices, "removeAccountKey").mockImplementation((key, ...rest) => {
+      if (key === pc.tablet.signIn.key && !failed) { failed = true; throw new Error("disk full"); }
+      return removeAccountKey(key, ...rest);
+    });
+    await pc.born.remove(pc.tablet.member.key, pc.phone.member);
+    await pc.pull();
+    expect([failed, pc.services.devices.isTombstoned(pc.tablet.member.key), pc.services.devices.isTombstoned(pc.tablet.signIn.key)]).toEqual([true, true, false]);
+    await pc.settle();
+    expect(pc.services.devices.isTombstoned(pc.tablet.signIn.key)).toBe(true);
+    once.mockRestore();
+  }, SLOW);
+
   test("a device this PC holds a removal against stays out by whichever of its keys it is in by", async () => {
     const pc = await pinnedToBirth();
     pc.services.devices.removeAccountKey(pc.tablet.signIn.key, ACCOUNT, { id: "a".repeat(32), issuedAt: new Date().toISOString() });
@@ -663,7 +687,7 @@ describe("after the pin, the rows the list makes", () => {
     const before = pc.rowOf(pc.tablet.signIn.key)!;
     pc.fixture.app.stop();
     const reach = { away: true };
-    const again = relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: async (request: Request) => { if (reach.away) throw new Error("away"); return await pc.service.fetch(request); } } });
+    const again = scaled(undefined, () => relayFixture(false, { stateDir: pc.fixture.stateDir, accountOpensAll: true, accountService: { url: "https://account.test", fetch: async (request: Request) => { if (reach.away) throw new Error("away"); return await pc.service.fetch(request); } } }));
     closes.push(() => again.app.stop());
     const { accountList, accountMailbox, accountRows, devices } = again.app.context.services;
     devices.useClock(pc.time.waits);
@@ -671,7 +695,7 @@ describe("after the pin, the rows the list makes", () => {
     await accountList!.settled();
     accountList!.tick();
     await accountList!.settled();
-    const signsIn = async () => { const link = await relayConnection(again, { serverId: pc.serverId }); return await link.auth(asSignIn(pc.serverId, pc.tablet)).then((ok) => ok.role, () => null); };
+    const signsIn = async () => await signInOutcome(await relayConnection(again, { serverId: pc.serverId }), asSignIn(pc.serverId, pc.tablet));
     // the service is away: nothing says the tablet's sign-in still stands, so it waits, and its row stays
     expect(await signsIn()).toBeNull();
     expect(accountRows!.rows().find((row) => row.key === pc.tablet.signIn.key)).toMatchObject({ id: before.id, no: before.no });

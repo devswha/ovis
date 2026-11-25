@@ -10,6 +10,8 @@ import { signMigration, signNaming, signRotation, signVouch, type MigratingDevic
 import { accountDeviceId, exportAccountKey } from "../../shared/account-records.ts";
 import type { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
+import { bounded, type relayConnection } from "../relay/test-helpers.ts";
+import { MIGRATE_TIME_SCALE_ENV } from "./migrate-time.ts";
 
 const SERVICE = "https://account.test";
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
@@ -43,6 +45,34 @@ export function asSignIn(serverId: string, device: MigratingPhone, which: "signI
   const pair = which === "signIn" ? device.signInPair : device.memberPair;
   const key = which === "signIn" ? device.signIn.key : device.member.key;
   return { keys: pair, publicKey: key, id: accountDeviceId(serverId, key) };
+}
+
+/**
+ * Makes a server with the staging factor `scale` in force, or none, whatever the runner's own environment holds: the
+ * server reads it once, when it is made.
+ */
+export function scaled<T>(scale: number | undefined, make: () => T): T {
+  const was = process.env[MIGRATE_TIME_SCALE_ENV];
+  const restore = () => { if (was === undefined) delete process.env[MIGRATE_TIME_SCALE_ENV]; else process.env[MIGRATE_TIME_SCALE_ENV] = was; };
+  if (scale === undefined) delete process.env[MIGRATE_TIME_SCALE_ENV]; else process.env[MIGRATE_TIME_SCALE_ENV] = String(scale);
+  let made: T;
+  try { made = make(); } catch (error) { restore(); throw error; }
+  // a server made after an await is made once that promise settles: the factor stands until then
+  if (made instanceof Promise) return made.finally(restore) as T;
+  restore();
+  return made;
+}
+
+/**
+ * What a sign-in comes to: the role the PC lets the device in as, or null for a refusal the PC said (a SESSION_ERROR).
+ * A sign-in that broke in any other way (a handshake that timed out, a transport that closed) fails the test.
+ */
+export async function signInOutcome(link: Awaited<ReturnType<typeof relayConnection>>, device: ReturnType<typeof asSignIn>): Promise<"drive" | "watch" | null> {
+  try { return (await link.auth(device)).role; } catch (error) {
+    const said = await bounded(link.serverError, 2000).catch(() => null);
+    if (said === null) throw error;
+    return null;
+  }
 }
 
 /** The first device's side of sealing, with real epoch keys: the keys it made, and the wraps of the next epoch the birth carries. */

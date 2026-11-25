@@ -133,12 +133,19 @@ export class AccountWitness {
     const held = this.held;
     const last = this.last;
     if (held === null || last === null) return null;
-    // whom the rows let in right now, read only: a row that began to wait since the last step lets nobody in
-    const letting = new Set((this.deps.rows() ?? []).filter((row) => row.lets).map((row) => row.key));
+    // whom the rows let in right now, read only: a row that began to wait since the last step lets nobody in. Rows that
+    // cannot be read are no answer, not an answer that nobody is let in
+    const rows = this.deps.rows();
+    if (rows === null) return null;
+    const letting = new Map<string, number | null>();
+    for (const row of rows) if (row.lets) letting.set(row.key, Math.max(letting.get(row.key) ?? -1, row.seen ?? -1));
     const scale = this.deps.scale ?? 1;
-    const now = Math.floor(last.wall / 1000);
-    const admits = [...held.keys].filter(([key]) => letting.has(key)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([key, row]) => ({ key, wall: Math.floor(row.wall / 1000) * scale, ran: Math.floor(row.ran / 1000) * scale, idle: row.seen === null ? null : Math.max(0, now - row.seen) }));
+    // how long ago a key was last used is read now, from the newest use the rows or the record know
+    const now = Math.floor(this.wall() / 1000);
+    const admits = [...held.keys].filter(([key]) => letting.has(key)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, row]) => {
+      const seen = Math.max(row.seen ?? -1, letting.get(key) ?? -1);
+      return { key, wall: Math.floor(row.wall / 1000) * scale, ran: Math.floor(row.ran / 1000) * scale, idle: seen < 0 ? null : Math.max(0, now - seen) };
+    });
     return { account: held.account, admits };
   }
 

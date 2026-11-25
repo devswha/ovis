@@ -2133,7 +2133,11 @@ neither a hand-over nor the pin undoes a removal.
   a key with the other session calls of the list). The PC keeps a vouch only between a device of
   that list and a key it lets in through its account or holds a removal against, so links between
   made-up keys take no place (`account-list-vouches.json`, at most 4 lists and 64 vouches a list;
-  the other lists' go at the pin, and the file goes with the binding and at an identity reset). It
+  the other lists' go at the pin, and the file goes with the binding and at an identity reset).
+  The cap never refuses a link whose sign-in key the PC holds a removal against: such a link keeps
+  a device out, and there are no more of them than the PC's own removals. Any other link past the
+  cap only says who is known here: a naming that would rest on one is refused (`lists_full`), and
+  after the pin it is left out with a line in the log, never dropped unsaid. It
   reads that list's log with its own proof, at most once a list each 30 seconds, and follows only
   on a read that reached the head the service shows. It asks `pinVerdict` with its own record and
   the vouches it kept and was handed now. It answers `{ pinned: true, list }` or `{ pinned: false,
