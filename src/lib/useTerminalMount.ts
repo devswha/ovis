@@ -174,7 +174,7 @@ export interface TerminalMountDeps {
   socketRef: RefObject<HerdrSocket | null>;
   stackRef: RefObject<HTMLDivElement | null>;
   stalledRef: RefObject<boolean>;
-  stopKeyRef: RefObject<boolean>;
+  stopKeyRef: RefObject<number | null>;
   submitRetention: PaneSubmitRetention | null;
   t: Translate;
   tRef: RefObject<Translate>;
@@ -1691,7 +1691,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const userInput = userInputTracker(term);
       const onData = term.onData((data) => {
         const automatic = !userInput.wasUserInput();
-        if (!touchWheelDispatching && (barKeyRef.current !== null || stopKeyRef.current || pasting)) cancelTouchRef.current();
+        if (!touchWheelDispatching && (barKeyRef.current !== null || stopKeyRef.current !== null || pasting)) cancelTouchRef.current();
         // the split half following the other half's grid of the same tab draws it only: the active
         // half's terminal answers the program's queries (a second answer would reach it as typing),
         // and a press or key here makes this half the active one before anything is typed
@@ -1700,7 +1700,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const barKey = barKeyRef.current;
         barKeyRef.current = null;
         const stopKey = stopKeyRef.current;
-        stopKeyRef.current = false;
+        stopKeyRef.current = null;
         const physicalChord = typedChord;
         typedChord = null;
         // a modified Enter (Shift+Enter's newline, Ctrl+Enter's "send now") is decided on before its
@@ -1761,8 +1761,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // tell xterm, and there sendTyped types the arrow as xterm encoded it.
         const arrow = chord === null && !pasting && !composingRef.current && !compositionCommitPendingRef.current && key?.startsWith("Arrow")
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
-        const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret,
-          typedAt: pasteMark ?? markTyped(),
+        const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey !== null && input === "\u001b", secret,
+          // a Stop's keys are dated to the Stop: its second Escape, sent later, goes only over a link up since then
+          typedAt: pasteMark ?? stopKey ?? markTyped(),
           ...(arrow !== null ? { arrowModeEpoch: arrowModeWitness === arrowModeEpoch ? arrowModeEpoch : null } : {}), ...(automatic ? { automatic } : {}) };
         adoptTypeAhead(current);
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
