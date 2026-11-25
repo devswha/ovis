@@ -202,6 +202,19 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
   }
 
   if (fixture === "copilot-1.0.109-ask") {
+    it("lets the parent retry the same start key after a refused child is stopped", async () => {
+      const args = { harness, cwd: dir, key: "retry-start" };
+      scenario({ openingAllowAll: "on" });
+      expect(await call("start", args)).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
+      expect((await acp.terminals()).filter(row => row.state === "live")).toHaveLength(0);
+
+      scenario({ openingAllowAll: "off" });
+      const started = await call("start", args);
+
+      expect(started).toMatchObject({ kind: "session" });
+      expect(await call("start", args)).toMatchObject(started);
+    });
+
     it("stops Copilot whose Allow All selector is on even in Agent mode", async () => {
       scenario({ openingAllowAll: "on" });
       expect(await call("start", { harness, cwd: dir })).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });

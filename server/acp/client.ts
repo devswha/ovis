@@ -39,7 +39,7 @@ export class KeeperClient {
   model: string | null = null;
   sessionMode: string | null = null;
   allowAll: boolean | null = null;
-  /** The keeper logs the opening selection before publishing the first session, including on replay. */
+  /** The keeper logs the opening selection before publishing the session, including on replay. */
   private openedIn: { readonly mode: string | null; readonly allowAll: boolean | null } | null = null;
   get initialPermissions() { return this.openedIn; }
   private opening: unknown;
@@ -219,9 +219,10 @@ export class KeeperClient {
   }
 
   private receive(chunk: string): void {
+    if (this.closed) return;
     this.buffer += chunk;
     let changed = false;
-    for (let end = this.buffer.indexOf("\n"); end >= 0; end = this.buffer.indexOf("\n")) {
+    for (let end = this.buffer.indexOf("\n"); end >= 0 && !this.closed; end = this.buffer.indexOf("\n")) {
       const line = this.buffer.slice(0, end);
       this.buffer = this.buffer.slice(end + 1);
       changed = this.line(line) || changed;
@@ -355,11 +356,13 @@ export class KeeperClient {
       case "_keeper/mode":
         this.mode = params.phase !== "ready" ? "switching" : params.mode === "terminal" ? "terminal" : params.mode === "acp" ? "acp" : "switching";
         return true;
-      case "_keeper/session":
-        this.session = text(params["sessionId"]) || null;
-        if (this.session) this.openedIn ??= { mode: this.sessionMode, allowAll: this.allowAll };
+      case "_keeper/session": {
+        const session = text(params["sessionId"]) || null;
+        if (session !== this.session) this.openedIn = session ? { mode: this.sessionMode, allowAll: this.allowAll } : null;
+        this.session = session;
         this.agentGone = false;
         return true;
+      }
       case "_keeper/ready":
       case "_keeper/agent_exit":
         this.agentGone = method === "_keeper/agent_exit";

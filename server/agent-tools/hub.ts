@@ -278,6 +278,7 @@ export class AgentToolHub {
         key.cancel();
         await this.options.acp.stop(child.id);
         this.ledger.finish(key.id);
+        this.runs.forgetFailedStart(run.id, key.id);
         return refuse("not_granted", "The child's starting permissions could not be confirmed.");
       }
       const row: ToolChild = { ...intent, id: child.id, terminal: child.terminal, created: this.now(), held: false, turns: [] };

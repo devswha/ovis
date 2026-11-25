@@ -26,11 +26,12 @@ export class KeeperQuestions {
   add(harness: string, row: Row, id: string, params: Record<string, unknown>, live: boolean): void {
     const form = Buffer.byteLength(row.raw) <= 65_536 ? questionForm(harness, params) : null;
     const fields = form?.fields ?? [];
-    const deadline = form?.audience === "parent" && live && row.ts ? Math.min(Date.now(), row.ts) + WINDOW_MS : 0;
+    const now = Date.now();
+    const deadline = form?.audience === "parent" && live && row.ts ? Math.min(now, row.ts) + WINDOW_MS : 0;
     this.remove(id);
-    const timer = deadline > Date.now() ? setTimeout(() => this.pass(id), deadline - Date.now()).unref() : undefined;
+    const timer = deadline > now ? setTimeout(() => this.pass(id), deadline - now).unref() : undefined;
     const message = typeof params.message === "string" && params.message.length <= 4096 && showable(params.message) ? params.message : null;
-    this.pending.set(id, { id, fields, message, content: new Map(), step: 0, timer, deadline,
+    this.pending.set(id, { id, fields, message, content: new Map(), step: 0, timer, deadline: timer ? deadline : 0,
       receipt: `question.${row.seq}.${createHash("sha256").update(row.raw).digest("hex").slice(0, 16)}` });
   }
   remove(id: string): void {
@@ -41,15 +42,16 @@ export class KeeperQuestions {
   get current() {
     const item = this.pending.values().next().value;
     if (!item) return null;
-    return { id: `${item.receipt}.${item.step}`, field: item.fields[item.step], message: item.message, parent: item.deadline > Date.now() };
+    if (item.deadline <= Date.now()) item.deadline = 0;
+    return { id: `${item.receipt}.${item.step}`, field: item.fields[item.step], message: item.message, parent: item.deadline !== 0 };
   }
   private pass(id: string): void {
     const item = this.pending.get(id);
     if (item) { item.deadline = 0; clearTimeout(item.timer); this.changed(); }
   }
   handoff(receipt: string): boolean {
-    const item = this.pending.values().next().value;
-    if (!item || this.current?.id !== receipt || !this.current.parent) return false;
+    const item = this.pending.values().next().value, q = this.current;
+    if (!item || q?.id !== receipt || !q.parent) return false;
     this.pass(item.id);
     return true;
   }
