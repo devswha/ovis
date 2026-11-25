@@ -497,7 +497,7 @@ describe("the shell's sessions and the move of an account onto its list", () => 
    * with by that pairing, whose naming the PC does not take (a pairing is no key it let in through the account). So the
    * device names its list over a session of its own through the account, the one way its naming counts.
    */
-  const movedWithPairing = async (account: string, answers: { pinned: string | null }[]) => {
+  const movedWithPairing = async (account: string, answers: { pinned: string | null }[], nameAnswer: unknown = { pinned: false, why: "session_new", wait: 60 }) => {
     const signedIn = await signIn(account);
     const { pc, store } = await pairedPc(account);
     const LIST = "5c".repeat(32);
@@ -508,7 +508,7 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     const opened: { accountOpensAll: boolean; asked: () => string[] }[] = [];
     const made = controller(list, store, async (_offer, options) => {
       const said = answers[Math.min(opened.length, answers.length - 1)]!;
-      const one = sessionOf({ key: signedIn, answers: { "GET /api/account/list/witness": { account, pinned: said.pinned, admits: [], removed: [] }, "POST /api/account/list/name": { pinned: false, why: "session_new", wait: 60 } } });
+      const one = sessionOf({ key: signedIn, answers: { "GET /api/account/list/witness": { account, pinned: said.pinned, admits: [], removed: [] }, "POST /api/account/list/name": nameAnswer } });
       opened.push({ accountOpensAll: options.accountOpensAll === true, asked: () => one.asked.map((call) => `${call.method} ${call.path}`) });
       return one.opened;
     }, [row], true);
@@ -541,6 +541,40 @@ describe("the shell's sessions and the move of an account onto its list", () => 
       jest.advanceTimersByTime(60 * 60_000);
       await settle();
       expect(opened).toHaveLength(2);
+    } finally { jest.useRealTimers(); }
+  });
+
+  /** How many sessions the asker opened, and how many of them named the list, after `hours` of a page left up. */
+  const leftUp = async (opened: { asked: () => string[] }[], hours: number) => {
+    for (let step = 0; step < hours * 6; step++) { jest.advanceTimersByTime(10 * 60_000 + 1_000); await settle(); }
+    return { sessions: opened.length, named: opened.filter((one) => one.asked().includes("POST /api/account/list/name")).length };
+  };
+
+  it("#4723 naming review L1: a PC that refuses the naming for a cause no wait changes is named once in this run of the page", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const why of ["first_signer_unknown", "first_signer_removed", "named_here", "lists_full", "removed"]) {
+        const { opened } = await movedWithPairing(`acct-l1-${why}`, [{ pinned: null }], { pinned: false, why, wait: null });
+        expect(await leftUp(opened, 3)).toEqual({ sessions: 1, named: 1 });
+      }
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review L1: a refusal with a wait is named again only once that wait is over, and on the gap after it", async () => {
+    jest.useFakeTimers();
+    try {
+      const { opened } = await movedWithPairing("acct-l1-wait", [{ pinned: null }], { pinned: false, why: "session_new", wait: 3_600 });
+      expect(opened).toHaveLength(1);
+      expect(await leftUp(opened, 0.5)).toEqual({ sessions: 1, named: 1 });
+      expect(await leftUp(opened, 0.7)).toEqual({ sessions: 2, named: 2 });
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review L1: a PC that follows another list, or answers no witness, is named nothing and not asked again in this run", async () => {
+    jest.useFakeTimers();
+    try {
+      const other = await movedWithPairing("acct-l1-other", [{ pinned: "6d".repeat(32) }]);
+      expect(await leftUp(other.opened, 2)).toEqual({ sessions: 1, named: 0 });
     } finally { jest.useRealTimers(); }
   });
 

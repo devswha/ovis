@@ -26,7 +26,8 @@ import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS,
 import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
-import { askWitness, asksAgain, nameListTo, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs } from "../account/listMigrate.ts";
+import type { PcAnswer } from "../../../shared/account-list-migrate.ts";
+import { askWitness, asksAgain, nameListTo, onPcSession, ownRemovals, pageAnswers, pageScale, pcsToAsk, readAppId, waitsOnPcs, type NamingAnswer } from "../account/listMigrate.ts";
 import { callNative, hasNativeMethod } from "../nativeApp.ts";
 import { readSeenPcs } from "../account/seenPcs.ts";
 import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
@@ -55,6 +56,9 @@ const LINK_SENDS = 5;
 export const LINK_RETRY_MAX_MS = 15_000;
 /** A PC this device asks in the background for the move of its account onto its list is asked again after this long at the soonest. */
 const ASK_AGAIN_MS = 10 * 60_000;
+/** A PC's refusal of a naming that no wait changes (docs/account-list.md, "Naming the list to a PC"): it is named nothing more in this run of the page. */
+const NAMING_FINAL: ReadonlySet<string> = new Set(["stopped", "other_account", "other_list", "carried_off_curve", "removed", "session_unknown", "not_member",
+  "session_other_device", "first_signer_removed", "first_signer_unknown", "naming_invalid", "named_here", "lists_full"]);
 /** However far the QA twin turns the move's waits down (pageScale), a PC is asked again no sooner than this. */
 const ASK_AGAIN_MIN_MS = 30_000;
 /** How long such an ask waits for the PC's session to open: a PC that is off is silent, which the move waits out. */
@@ -437,7 +441,22 @@ export function createAccountController(mount: RelayShellMount, view: {
     const { status } = view;
     if (status.at !== "following" || status.standing !== "in") return [];
     return pcsToAsk({ account: session.account, record: readSeenPcs(session.account), answers: pageAnswers, now: Math.floor(Date.now() / 1000), scale: pageScale(), again: true })
-      .filter((endpoint) => pageAnswers.get(session.account, endpoint)?.pinned !== status.list);
+      .filter((endpoint) => pageAnswers.get(session.account, endpoint)?.pinned !== status.list && namingNotBefore.get(namingKey(session.account, endpoint)) !== Infinity);
+  };
+  /** By account and relay key: from when the device may name its list to that PC again in this run of the page, in ms; Infinity for never. */
+  const namingNotBefore = new Map<string, number>();
+  const namingKey = (account: string, endpoint: string): string => `${account} ${endpoint}`;
+  /**
+   * What the device does next about naming its list to a PC, by what that PC said in this run: nothing more where no wait
+   * changes it (it follows another list, it holds a removal, it does not know who started the list, it wants another
+   * list, ...; or it answers no witness), not before the wait it named where it named one, else on the gap.
+   */
+  const namingAnswered = (account: string, endpoint: string, list: string, said: PcAnswer | null, answer: NamingAnswer | null | "unasked"): void => {
+    const key = namingKey(account, endpoint);
+    const never = said === null || said.account !== account || (said.pinned !== null && said.pinned !== list)
+      || (answer !== null && answer !== "unasked" && (answer.pinned ? answer.list !== list : NAMING_FINAL.has(answer.why)));
+    if (never) namingNotBefore.set(key, Infinity);
+    else if (answer !== null && answer !== "unasked" && !answer.pinned && answer.wait !== null) namingNotBefore.set(key, Date.now() + answer.wait * 1000);
   };
   const askDuePcs = async (): Promise<void> => {
     if (lists === null || accountView?.kind !== "signed-in") return;
@@ -457,7 +476,8 @@ export function createAccountController(mount: RelayShellMount, view: {
       const { status } = listed;
       const only = naming === null && status.at === "following" && status.doubt === undefined ? status.asks ?? [] : null;
       const due = (naming ?? pcsToAsk({ account: session.account, record, answers: pageAnswers, now: Math.floor(now / 1000), scale: pageScale(), again: asksAgain(status) }))
-        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= Math.max(askGap(), toldMs(status)));
+        .filter((endpoint) => (only === null || only.includes(endpoint)) && now - (askedPcs.get(endpoint) ?? -Infinity) >= Math.max(askGap(), toldMs(status))
+          && (naming === null || now >= (namingNotBefore.get(namingKey(session.account, endpoint)) ?? 0)));
       if (due.length === 0) return;
       const saved = await store.list();
       const hexOf = (key: string): string => Array.from(importPublicKey(key), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -497,7 +517,10 @@ export function createAccountController(mount: RelayShellMount, view: {
           if (said !== null || pageAnswers.get(session.account, endpoint) === undefined) pageAnswers.set(session.account, endpoint, said);
           heard ||= said !== null && naming === null;
           // a PC of this account that follows no list is named the list, over this session through the account alone
-          if (named !== null && said !== null && said.account === session.account && said.pinned === null && opened.deviceKey === openKey?.key.public_spki) await nameListTo(fetch, named);
+          if (named !== null && status.at === "following") {
+            const answer = said !== null && said.account === session.account && said.pinned === null && opened.deviceKey === openKey?.key.public_spki ? await nameListTo(fetch, named) : "unasked";
+            namingAnswered(session.account, endpoint, status.list, said, answer);
+          }
         } catch (error) {
           console.info("Ovis: a PC of the account did not answer for the move onto its list", error instanceof Error ? error.name : error);
         } finally {
