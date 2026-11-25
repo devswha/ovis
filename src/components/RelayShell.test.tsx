@@ -2279,6 +2279,13 @@ describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on 
     const removed = failed("revoked");
     expect(plain(removed)).toBe("removed");
     expect(removed).toContain("This device was removed from Mac. Ask again to join it.");
+    // refused before anybody was asked (a PC in no account yet, one paused after too many tries): nobody declined it
+    const refused = failed("pair-unavailable");
+    expect(plain(refused)).toBe("refused");
+    expect(refused).toContain("Mac cannot take this device yet");
+    expect(refused).toContain('data-action="ask-again"');
+    expect(refused).not.toContain("Not allowed");
+    expect(refused).not.toContain("[Allow]");
     const off = failed("pc-offline");
     expect(plain(off)).toBe("off");
     expect(off).toContain('data-action="check-again"');

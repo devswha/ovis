@@ -1144,7 +1144,15 @@ registered here, a PC that does not list this key or no longer admits it, one fr
 in), the same press sends the join request once, with no second press, and the join's screens
 follow as before; nothing tries the account's way again by itself. That join is the one a press
 sent before: the PC judges it as any other, so a key the account removed is never let back in, and
-a key the PC revoked comes back only when someone approves it on the PC's own window. A hold the PC
+a key the PC revoked comes back only when someone approves it on the PC's own window. A load past
+the 24 hours whose sign-in by the account's key the PC refuses outright (`auth_failed`: it holds
+no row for that key, as for a key the account service does not count as the account's yet, such as
+a sign-in without two-step) puts up the same join sheet, and nothing says the PC removed this
+device, unless this device held a session with that PC under the account before
+([What a device remembers of its PCs](#what-a-device-remembers-of-its-pcs)). Only then does the
+page say **This device was removed from (the PC). Ask again to join it.**, and its **Ask again**
+asks that PC to let it join at once, as a launch does, rather than opening it by the account's key
+again. A hold the PC
 answers is waited out, as for any such sign-in. The account service admits the PC before the PC is
 asked, so a press the PC then refuses (it restarted, was put in another account meanwhile, or was
 not this PC's own window) still told the account's other devices and marked the PC new; such a PC is
@@ -2709,8 +2717,10 @@ Seoul, South Korea", leaving out what is unknown ([Adding a PC](#adding-a-pc), "
 ## What a device remembers of its PCs
 
 The app keeps, on the device and for each account it was signed in to, a record of the PCs it has
-held sessions with. It only records: nothing in the app decides by it yet. It is written now so
-that it has a history by the time something does.
+held sessions with. It decides one thing in the app: whether a PC that refuses this device's
+sign-in by the account's key outright removed this device (it let it in before) or never let it in
+([Adding a PC](#adding-a-pc)). Otherwise it only records, so that it has a history by the time
+something else decides by it.
 
 - **A row per PC, by the PC's relay key** (64 hex), the key the end-to-end channel is bound to.
   Never by what the account service's directory says: a PC whose relay identity was reset is
