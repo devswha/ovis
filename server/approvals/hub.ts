@@ -28,6 +28,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
+import { settingsFile } from "../claude-settings-file.ts";
 import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
 import { isNonce, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
@@ -62,10 +63,14 @@ export interface TurnEvent {
   prompt: string | null;
 }
 
-/** A command the agent's hook told it ran: one of its own (`builtin`), or a skill or custom command it expanded. */
+/**
+ * A command the agent's hook told it ran: one of its own (`builtin`), or a skill or custom command it expanded, with the
+ * argument it was given where the hook names it.
+ */
 export interface CommandEvent {
   name: string;
   builtin: boolean;
+  args?: string;
 }
 
 export interface HeldApproval extends ApprovalRequest {
@@ -131,6 +136,7 @@ const LAUNCHES_MAX = 256;
 /** The most of a card's body the bridge and the card show (finishPrompt, promptWords). */
 const CARD_BODY_MAX = 12_000;
 const SOCKET_NAME = "hub.sock";
+const KEY_SUFFIX = ".key";
 
 const spaced = (text: string): string => text.trim().replace(/\s+/g, " ");
 const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -232,9 +238,9 @@ export class ApprovalHub {
     const uid = process.getuid?.();
     if (!folder.isDirectory() || (uid !== undefined && folder.uid !== uid)) throw new Error(`${this.dir} is not a folder of this account`);
     chmodSync(this.dir, 0o700);
-    // a settings file or extension names a key of an earlier run of this server, which nothing here answers any more,
+    // a settings file, extension or key file is of an earlier run of this server, which nothing here answers any more,
     // and the socket of that run is in the way of this one's
-    for (const name of readdirSync(this.dir)) if (/\.js(?:on)?$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
+    for (const name of readdirSync(this.dir)) if (/\.(?:js|json|key)$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
     const listener = createServer((socket) => this.receive(socket));
     // a bind that fails comes as an event on the next tick (a pipe's name taken, a folder it may not bind in): no
     // hook works then, as its relay finds no answer, and the server goes on
@@ -274,14 +280,21 @@ export class ApprovalHub {
     const [command, ...relay] = this.options.relay ?? relayCommand();
     let hooked: string[] | null;
     try {
-      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch", key] }, this.dir);
+      // the key goes in a file of its own (named by its digest), never on the agent's command line, which Claude Code
+      // writes into its transcript (relay.ts)
+      const keyFile = settingsFile(key, this.dir, KEY_SUFFIX);
+      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch-file", keyFile] }, this.dir);
     } catch (error) {
       console.error(`approval hub (${kind}): ${error instanceof Error ? error.message : String(error)}`);
+      this.dropKey(keyDigest(key));
       return unchanged;
     }
-    if (hooked === null) return unchanged;
+    if (hooked === null) {
+      this.dropKey(keyDigest(key));
+      return unchanged;
+    }
     this.launches.set(keyDigest(key), { key, paneId, adapter });
-    if (this.launches.size > LAUNCHES_MAX) this.launches.delete(this.launches.keys().next().value!);
+    if (this.launches.size > LAUNCHES_MAX) this.dropLaunch(this.launches.keys().next().value!);
     return hooked;
   }
 
@@ -447,7 +460,17 @@ export class ApprovalHub {
    */
   forget(paneId: string): void {
     for (const entry of [...(this.pending.get(paneId) ?? [])]) entry.settle(null);
-    for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.launches.delete(digest);
+    for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
+  }
+
+  /** A launch no request is taken for any more, and its key file, so its hook finds no key and gives no decision. */
+  private dropLaunch(digest: string): void {
+    this.launches.delete(digest);
+    this.dropKey(digest);
+  }
+
+  private dropKey(digest: string): void {
+    rmSync(join(this.dir, `${digest}${KEY_SUFFIX}`), { force: true });
   }
 
   stop(): void {

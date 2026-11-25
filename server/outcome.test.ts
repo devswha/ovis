@@ -875,6 +875,35 @@ describe("session-scoped command outcomes", () => {
     });
   });
 
+  it("takes a hook for the send with its argument, not an expired one, and one told before the send was noted", async () => {
+    const pane = target();
+    await withFakeHerdr(pane, async (paneId) => {
+      const skill = (text: string, at: number) => ({ ...commandSendFrom(pane, "claude", [{ ...row("hello"), source: "skill" }], text)!, at });
+      const expired = skill("/hello", Date.now() - WINDOW_MS - 10);
+      noteSubmitted(paneId, expired.text, expired);
+      const other = skill("/hello first", Date.now());
+      noteSubmitted(paneId, other.text, other);
+      const fresh = skill("/hello second", other.at + 1);
+      // Claude ran it before herdr answered the keys, so before the send was noted
+      noteHookCommand(paneId, "claude", { name: "hello", builtin: false, args: "second" }, fresh.at + 2);
+      noteSubmitted(paneId, fresh.text, fresh);
+      noteHookCommand(paneId, "claude", { name: "hello", builtin: false, args: "" }, fresh.at + 3);
+      const shown = (await served(paneId)).outcomes ?? [];
+      expect(shown.find(({ id }) => id === fresh.id)).toMatchObject({ state: "result-observed", evidence: [{ kind: "native" }] });
+      expect(shown.find(({ id }) => id === other.id)?.state).not.toBe("result-observed");
+      expect(shown.find(({ id }) => id === expired.id)?.state).not.toBe("result-observed");
+    });
+  });
+
+  it("takes Claude's clear for a sent /new, which starts the next session as one", async () => {
+    const pane = target();
+    await withFakeHerdr(pane, async (paneId) => {
+      const fresh = await submit(paneId, pane, "/new");
+      noteHookCommand(paneId, "claude", { name: "clear", builtin: true }, fresh.at + 1);
+      expect((await served(paneId)).outcomes).toMatchObject([{ id: fresh.id, state: "result-observed" }]);
+    });
+  });
+
   it("keeps the initiating receipt when the next session sends before the first poll", async () => {
     const pane = target();
     await withFakeHerdr(pane, async (paneId) => {

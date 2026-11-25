@@ -86,11 +86,18 @@ describe.skipIf(!posix)("launchArgs", () => {
     expect(settings.hooks.UserPromptSubmit).toEqual([{ hooks: [entry.hooks[0]!] }]);
     expect(settings.hooks.Stop).toEqual([{ hooks: [entry.hooks[0]!] }]);
     // and the commands it ran
-    for (const event of ["SessionStart", "PostCompact", "UserPromptExpansion"] as const) expect(settings.hooks[event], event).toEqual([{ hooks: [entry.hooks[0]!] }]);
+    const told = [{ ...entry.hooks[0]!, timeout: 10 }];
+    expect([settings.hooks.SessionStart, settings.hooks.PostCompact, settings.hooks.UserPromptExpansion])
+      .toEqual([[{ matcher: "clear", hooks: told }], [{ matcher: "manual", hooks: told }], [{ hooks: told }]]);
     expect(entry.hooks[0]).toMatchObject({ type: "command", command: process.execPath });
     expect(entry.hooks[0]!.args.slice(0, 3)).toEqual(relayCommand().slice(1));
     expect(entry.hooks[0]!.args).toContain(join(dir, "hub.sock"));
-    expect(plain.join(" ")).not.toContain(entry.hooks[0]!.args.at(-1)!);
+    // the launch's key is in a file of its own, never in the command Claude Code writes into its transcript
+    const keyFile = entry.hooks[0]!.args[entry.hooks[0]!.args.indexOf("--launch-file") + 1]!;
+    expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+    const key = readFileSync(keyFile, "utf8");
+    expect(key.length).toBeGreaterThan(20);
+    expect([...plain, readFileSync(path, "utf8")].join(" ")).not.toContain(key);
     expect(settings.ultracode).toBeUndefined();
 
     const merged = launch(hooks, "p1", ["--model", "opus", "--settings", ULTRACODE, "--", "--settings"])!;
