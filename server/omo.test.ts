@@ -1,5 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
+import * as fs from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -315,6 +316,46 @@ it("reads an OmO holder's chat when sidecars outnumber the session scan limit (#
     expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id)?.path).toBe(path);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+it("caps all session-directory entries and does not scan again for a pending holder (#4499)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-bounded-")));
+  const cwd = join(home, "project");
+  const agentDir = join(home, ".omo", "agent");
+  const store = join(agentDir, "sessions");
+  const dir = join(store, omoSessionFolder(cwd));
+  const spawn = Bun.spawnSync;
+  const list = fs.readdirSync;
+  const limits: string[] = [];
+  let bulk = 0;
+  const reader = spyOn(Bun, "spawnSync").mockImplementation((args: unknown, options?: unknown) => {
+    if (Array.isArray(args) && args.at(-2) === dir) limits.push(args.at(-1)!);
+    return Reflect.apply(spawn, Bun, [args, options]);
+  });
+  const bulkReader = spyOn(fs, "readdirSync").mockImplementation(((path: Parameters<typeof list>[0], options?: unknown) => {
+    const entries = Reflect.apply(list, fs, [path, options]);
+    if (path === dir) bulk += entries.length;
+    return entries;
+  }) as typeof list);
+  try {
+    const id = "unwritten-session";
+    const pid = process.pid;
+    holdRecord(dir, id, pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
+    for (let i = 0; i < 32_768; i++) writeFileSync(join(dir, `${i}.jsonl.binding.json`), "");
+
+    const { capped } = omoCandidates(cwd, home);
+    expect({ capped: capped.has(store), limits, bulk }).toEqual({ capped: true, limits: ["8192"], bulk: 0 });
+
+    limits.length = 0; bulk = 0;
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
+    const selected = omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id);
+    expect({ pending: selected?.pending, path: selected?.path, limits, bulk }).toEqual({ pending: null, path: null, limits: ["8192"], bulk: 0 });
+  } finally {
+    reader.mockRestore();
+    bulkReader.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);
 
 it("does not pin a launch id to a second store when its own transcript scan was capped (#4499)", () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-incomplete-")));
