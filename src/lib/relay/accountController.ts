@@ -404,7 +404,8 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (askTimer !== undefined) clearTimeout(askTimer);
     askTimer = undefined;
     const status = lists?.view().status;
-    if (disposed || status === undefined || !waitsOnPcs(status)) return;
+    // a page signed out asks nobody: its list may show the move until it reads that the sign-in is gone
+    if (disposed || accountView?.kind !== "signed-in" || status === undefined || !waitsOnPcs(status)) return;
     const told = toldMs(status);
     askTimer = setTimeout(() => {
       askTimer = undefined;
@@ -425,7 +426,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     try { await askDuePcs(); } finally { armAsk(); }
   };
   const askDuePcs = async (): Promise<void> => {
-    if (lists === null) return;
+    if (lists === null || accountView?.kind !== "signed-in") return;
     const listed = lists.view();
     const session = shownFor;
     if (session === undefined || listed.account !== session.account || !waitsOnPcs(listed.status)) return;
@@ -580,7 +581,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     // the removal may have counted, and no read of this device's could show it (its sign-in may have ended with it)
     : outcome.why === "unknown" ? t("This device signed out. Whether your account still lists it is not known yet: check its devices from another device.")
     : t("This device signed out, but your account still lists it. Remove it from another device.");
-  const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); };
+  const invalidate = (): void => { deletion = undefined; generation++; directory = []; dropKnownPcs(); accountView = { kind: "signed-out", error: null }; followedFor = undefined; armRefresh(); armAsk(); };
   /**
    * Signs out. `shown`: the account the person signed out of, and its list and this device's key in it, as the page
    * showed them (hostedSignIn.ts): where the sign-in stored by the time it is read is another account's, or the list
