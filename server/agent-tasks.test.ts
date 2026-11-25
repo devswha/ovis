@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import * as fs from "node:fs";
+import { afterEach, describe, expect, it } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AgentTaskStatus, SCAN_BYTES, readTaskLine, taskCount, type SessionTasks, type TaskCount } from "./agent-tasks.ts";
+import { AgentTaskStatus, readTaskLine, taskCount, type SessionTasks, type TaskCount } from "./agent-tasks.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 
 const T0 = Date.parse("2026-11-09T04:00:00Z");
@@ -125,29 +124,6 @@ describe("AgentTaskStatus", () => {
     expect(resets).toEqual(["p1"]);
   });
 
-  it("reads a long session file a bounded part per poll and tells its count only once it has read all of it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
-    roots.push(root);
-    const path = join(root, "a.jsonl");
-    const filler = `${JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: iso(0), content: "x".repeat(64 * 1024) })}\n`;
-    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n${filler.repeat(Math.ceil(2.5 * SCAN_BYTES / filler.length))}${JSON.stringify(agy.notice(3, 2))}\n`);
-    const told: TaskCount[] = [];
-    const status = new AgentTaskStatus({ resolve: async () => ({ path, started: null, owner: null }), onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => T0 + 3 * 60_000 });
-    const reads = spyOn(fs, "readSync");
-    try {
-      await status.track(pane("agy"));
-      const bytes = () => reads.mock.results.reduce((sum, result) => sum + Number(result.value), 0);
-      expect(bytes()).toBeLessThanOrEqual(SCAN_BYTES);
-      expect(told).toEqual([]);
-      reads.mockClear();
-      status.poll();
-      expect(bytes()).toBeLessThanOrEqual(SCAN_BYTES);
-      expect(told).toEqual([]);
-      status.poll();
-      expect(told).toEqual([count(0, 0, T0)]);
-    } finally { reads.mockRestore(); }
-  });
-
   it("takes no agy lookup for a pane that runs grok by the time it finishes", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);
@@ -164,6 +140,62 @@ describe("AgentTaskStatus", () => {
     expect(asked).toEqual(["agy", "grok"]);
     expect(told).toEqual([]);
     expect(status.countOf("p1")).toBe(0);
+  });
+
+  it("keeps a grok lookup that a snapshot naming no session for the pane comes in during", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "one.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["watch", "running", 1]]))}\n`);
+    const session = { ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value: "one" } } as HerdrPane;
+    const lookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? lookup.promise : Promise.resolve(null); }, onChange: () => undefined, onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    const tracking = status.track(session);
+    await status.refresh([pane("grok")]);
+    lookup.resolve({ path, started: null, owner: null });
+    await tracking;
+    expect(asked).toEqual(["one"]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("takes the grok session the newest snapshot names back, after one named another during the lookup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "one.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["watch", "running", 1]]))}\n`);
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const lookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? lookup.promise : Promise.resolve(null); }, onChange: () => undefined, onReset: () => undefined, now: () => T0 + 2 * 60_000 });
+    const tracking = status.refresh([session("one")]);
+    await status.refresh([session("two")]);
+    await status.refresh([session("one")]);
+    lookup.resolve({ path, started: null, owner: null });
+    await tracking;
+    expect(asked).toEqual(["one"]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("keeps a held agy timer's own lookup from taking the place of the grok one a snapshot started", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const files = { agy: join(root, "agy.jsonl"), grok: join(root, "grok.jsonl") };
+    writeFileSync(files.agy, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1, "Timer: 2h, Prompt: x"))}\n`);
+    writeFileSync(files.grok, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["build", "running", 1], ["serve", "running", 1]]))}\n`);
+    const grokLookup = Promise.withResolvers<{ path: string; started: null; owner: null } | null>();
+    const asked: string[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: (looked) => { asked.push(looked.agent); return looked.agent === "agy" ? Promise.resolve({ path: files.agy, started: null, owner: null }) : grokLookup.promise; }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    await status.track(pane("agy"));
+    expect(status.countOf("p1")).toBe(1);
+    now += 30_000;
+    const switching = status.refresh([pane("grok")]);
+    status.poll();
+    grokLookup.resolve({ path: files.grok, started: null, owner: null });
+    await switching;
+    expect(asked).toEqual(["agy", "grok"]);
+    expect(status.countOf("p1")).toBe(2);
   });
 
   it("drops a lookup that finishes after the pane was let go", async () => {
