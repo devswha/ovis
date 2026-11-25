@@ -143,11 +143,11 @@ export interface ControlsEngine {
  * write, whose callback still acknowledges the frame) the controls the scanner picks, with its cursor put where the
  * engine's is.
  */
-export function controlsWriter(engine: ControlsEngine, xterm: (data: string, callback?: () => void) => void,
-  scan: ControlScanner = controlScanner()): (data: string | Uint8Array, callback?: () => void) => void {
+export function controlsWriter(engine: ControlsEngine, xterm: (data: string, callback?: () => void) => void) {
   const decoder = new TextDecoder();
+  const scan = controlScanner();
   const cursorAt = (): string => { const { x, y } = engine.screenCursor(); return `\x1b[${y + 1};${x + 1}H`; };
-  return (data, callback) => {
+  const write = (data: string | Uint8Array, callback?: () => void): void => {
     const text = typeof data === "string" ? data : decoder.decode(data, { stream: true });
     const pieces = scan(text);
     let out = "";
@@ -168,6 +168,16 @@ export function controlsWriter(engine: ControlsEngine, xterm: (data: string, cal
     // xterm's cursor follows libghostty's, unless an OSC 52 it was given is still open (a CUP would end it)
     xterm(scan.streaming() ? out : out + cursorAt(), callback);
   };
+  // xterm already parsed the captured controls. Restore the scanner and UTF-8 decoder state without
+  // sending the controls again, then put its cursor where the replay left libghostty's.
+  return Object.assign(write, {
+    replay(data: string | Uint8Array): void {
+      const text = typeof data === "string" ? data : decoder.decode(data, { stream: true });
+      scan(text);
+      engine.write(text);
+    },
+    syncCursor(): void { if (!scan.streaming()) xterm(cursorAt()); },
+  });
 }
 
 /**

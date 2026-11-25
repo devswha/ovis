@@ -126,6 +126,18 @@ const chafaTiff = (rgb: [number, number, number], side = 24): string => {
 };
 
 const pixel = (page: Page, x: number, y: number) => page.evaluate(({ x, y }) => {
+  const ghostty = document.querySelector(".pane-frame.is-current .ghostty-layer");
+  if (ghostty) {
+    const origin = ghostty.getBoundingClientRect();
+    for (const canvas of [...ghostty.querySelectorAll<HTMLCanvasElement>("canvas.ghostty-image")].reverse()) {
+      const rect = canvas.getBoundingClientRect();
+      const dx = origin.left + x - rect.left, dy = origin.top + y - rect.top;
+      if (dx < 0 || dy < 0 || dx >= rect.width || dy >= rect.height) continue;
+      const rgba = canvas.getContext("2d")?.getImageData(dx * canvas.width / rect.width, dy * canvas.height / rect.height, 1, 1).data;
+      if (rgba && rgba[3]) return [...rgba.slice(0, 3)];
+    }
+    return null;
+  }
   const layer = document.querySelector<HTMLCanvasElement>(".pane-frame.is-current canvas.xterm-image-layer");
   if (!layer || layer.width === 0) return null;
   const [r, g, b, a] = layer.getContext("2d")!.getImageData(x, y, 1, 1).data;
@@ -181,8 +193,11 @@ try {
       await addonLoaded;
       await settled(page);
 
-      await print(page, `\x1b[H\x1b[2J${RED}`, "RED-PRINTED");
-      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "a sixel picture is drawn where it is printed");
+      // The reset and stale-cell checks below are for xterm's addon. Sixel still makes it take over
+      // even when libghostty parses by itself. Use a PNG for the sample pixel, independent of sixel startup.
+      await print(page, `\x1b[H\x1b[2J\x1bPq\x1b\\${RED}`, "RED-PRINTED");
+      assert.equal(await page.locator(".pane-frame.is-current [data-renderer=ghostty]").count(), 0, "sixel hands the pane to xterm");
+      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "the picture is drawn where it is printed");
 
       await setPictures(page, false);
       assert.equal(await pixel(page, 4, 4), null, "off: the pictures go");

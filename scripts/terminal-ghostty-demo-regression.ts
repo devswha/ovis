@@ -1,7 +1,7 @@
 /**
  * herdr's own server is
- * drawn by libghostty too, and so is a device that turned the old Draw with libghostty switch off; xterm
- * draws an iTerm2 picture by itself. Demo fixtures only: no herdr, hc or user state.
+ * drawn by libghostty too, and so is a device that turned the old Draw with libghostty switch off.
+ * The libghostty-only renderer places iTerm2 pictures where xterm does. Demo fixtures only.
  */
 import { deflateSync } from "node:zlib";
 import assert from "node:assert/strict";
@@ -110,13 +110,14 @@ const picture = (page: Page) => page.evaluate(() => {
   return { rgb: [r, g, b], width: canvas.style.width, top: canvas.style.top };
 });
 
-async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
+async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false, only = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-  await context.addInitScript(([storedOff, images]) => {
+  await context.addInitScript(([storedOff, images, only]) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
     if (storedOff) localStorage.setItem("ovis:terminal-ghostty", "false");
     localStorage.setItem("ovis:terminal-pictures", JSON.stringify(images));
-  }, [storedOff, images] as const);
+    if (only) localStorage.setItem("ovis:ghostty-only", "on");
+  }, [storedOff, images, only] as const);
   if (noModule) await context.route(/\.wasm$/, (route) => route.abort());
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -352,10 +353,10 @@ try {
         await page.context().close();
       }
       {
-        // an iTerm2 picture (Pictures in the terminal): libghostty cannot draw it, xterm's image addon does and moves its
-        // cursor past it, so the text after it must be shown on the row xterm alone shows it on (#2980)
+        // iTerm2 in only mode: the converted picture stays on libghostty, and text still starts
+        // at xterm's row and column after the picture.
         const shownRow = async (ghostty: boolean) => {
-          const { page, errors } = await open(browser, server.port, prefix, "core", { noModule: !ghostty, images: true });
+          const { page, errors } = await open(browser, server.port, prefix, "core", { noModule: !ghostty, images: true, only: true });
           if (ghostty) await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
           else await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor();
           await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .xterm") as { imageAt?: unknown } | null)?.imageAt === "function");
@@ -364,18 +365,26 @@ try {
             const layer = document.querySelector(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]");
             const rows = [...document.querySelectorAll(layer ? ".pane-frame.is-current .ghostty-row" : ".pane-frame.is-current .xterm-rows > div")];
             const index = rows.findIndex((row) => row.textContent?.includes("IT2-AFTER"));
-            return index >= 0 ? { index } : null;
-          }).then(async (handle) => (await handle.jsonValue())!.index);
-          assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-renderer]").count(), 0, `core, iTerm2 picture${ghostty ? "" : ", no module"}: xterm draws the pane`);
-          const picture = await page.evaluate(() => (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => unknown }).imageAt?.(0, 0) ?? null);
-          assert.notEqual(picture, null, `core, iTerm2 picture${ghostty ? "" : ", no module"}: the picture is drawn where it was placed`);
+            return index >= 0 ? { index, column: rows[index]?.textContent?.indexOf("IT2-AFTER") } : null;
+          }).then(async (handle) => handle.jsonValue());
+          assert.equal(await page.locator(".pane-frame.is-current .pane-terminal[data-renderer]").count(), Number(ghostty), "core, iTerm2 picture: only a missing module falls back to xterm");
+          const rgb = ghostty ? (await picture(page))?.rgb : await page.evaluate(() =>
+            (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => unknown }).imageAt?.(0, 0));
+          assert.deepEqual(rgb, [0, 128, 0], "core, iTerm2 picture: the picture is drawn where it was placed");
+          if (ghostty) {
+            // One blue GIF pixel. Seeing the marker and the new colour together proves the browser
+            // decode ran before the following text, without leaving the libghostty renderer.
+            const gif = Buffer.from("474946383961010001008000000000ffffff002c00000000010001000002024401003b", "hex").toString("base64");
+            await print(page, `\x1b_Ga=d,d=A\x1b\\\x1b[H\x1b]1337;File=inline=1;width=2:${gif}\x07`, "GIF-AFTER");
+            assert.deepEqual((await picture(page))?.rgb, [0, 0, 255], "core, iTerm2 GIF: libghostty draws the browser-converted picture");
+          }
           assert.deepEqual(errors.filter((error) => !error.includes("libghostty") && !error.includes("wasm")), [], `core, iTerm2 picture${ghostty ? "" : ", no module"}: no page errors`);
           await page.context().close();
           return row;
         };
         const xtermRow = await shownRow(false);
-        assert.ok(xtermRow > 0, `core, iTerm2 picture, no module: xterm moves past the picture (row ${xtermRow})`);
-        assert.equal(await shownRow(true), xtermRow, "core, iTerm2 picture: the text after it is shown on xterm's row");
+        assert.ok(xtermRow && xtermRow.index > 0, `core, iTerm2 picture, no module: xterm moves past the picture (${JSON.stringify(xtermRow)})`);
+        assert.deepEqual(await shownRow(true), xtermRow, "core, iTerm2 picture: text following the picture lands where xterm puts it");
       }
       {
         const { page, wasm, errors } = await open(browser, server.port, prefix, "herdr");

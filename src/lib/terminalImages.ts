@@ -18,6 +18,7 @@ export function terminalImageOptions(coarse: boolean): IImageAddonOptions {
 interface Loaded {
   addon: ImageAddon;
   windowOptions: Terminal["options"]["windowOptions"];
+  limits: PictureLimits;
   enabled: boolean;
   resetPictures(): void;
 }
@@ -118,7 +119,12 @@ const SIZE_REPORTS = { getWinSizePixels: true, getCellSizePixels: true, getWinSi
  * and drops them; a pane drawn again (attached anew) comes back without its pictures either way.
  */
 export function terminalDrawsPictures(terminal: Terminal): boolean {
-  return loaded.get(terminal)?.enabled === true;
+  return terminalPictureLimits(terminal) !== null;
+}
+
+export function terminalPictureLimits(terminal: Terminal): PictureLimits | null {
+  const entry = loaded.get(terminal);
+  return entry?.enabled ? entry.limits : null;
 }
 
 export function useTerminalImages(terminal: Terminal | null, enabled: boolean, coarse: boolean): void {
@@ -162,7 +168,7 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       const feed = iipFeed(addon);
       const limits: PictureLimits = { sizeLimit: options.iipSizeLimit ?? 20_000_000, pixelLimit: options.pixelLimit ?? 16_777_216 };
       const pictures = feed && itermPictures(feed, () => limits);
-      const entry: Loaded = { addon, windowOptions, enabled: true, resetPictures: () => pictures?.reset() };
+      const entry: Loaded = { addon, windowOptions, limits, enabled: true, resetPictures: () => pictures?.reset() };
       // xterm feeds every handler each piece and asks only at the end who takes it: while off, a payload
       // that began then is not held here
       let taking = false;
