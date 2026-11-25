@@ -48,6 +48,8 @@ describe("AddThisPc", () => {
     gate: "open" | "closed"; via: "open" | "loopback" | "device"; paired: boolean; cookieSticks: boolean; healthDown: boolean;
     role: "drive" | "watch";
     healthId?: string | null;
+    /** in its account, following its list with no key of its own in it (it came in as the account moved) */
+    needsKeys?: boolean;
   };
   let signedIn: string | null;
   /** which sign-in of that account is stored: a sign-in again, or another one, stores the next */
@@ -147,7 +149,8 @@ describe("AddThisPc", () => {
       if (path === "/api/relay/link/close") await held.close;
       if (relayRequest !== null && (path === "/api/relay/link" || path === "/api/relay/link/close")) return relayRequest(path, init);
       if (path === "/api/account/status" && pc.statusDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
-      if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling });
+      if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling,
+        ...(pc.needsKeys === true ? { list: { pinned_list: "f".repeat(64), standing: "in", reason: "no key of its own", needs_keys: true } } : {}) });
       if (path === "/api/relay/start" && pc.start === "broken") return Response.json({ error: { code: "internal", message: "broken" } }, { status: 500 });
       if (path === "/api/relay/start" && pc.start === "off") return Response.json({ phase: "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: null, error: null });
       if (path === "/api/relay/start") {
@@ -2141,6 +2144,56 @@ describe("AddThisPc", () => {
       const renderer = await waitingFrom();
       expect(words(renderer)).toContain("Added");
       expect(buttons(renderer)).toEqual([]);
+    });
+
+    describe("a PC in its account that the account's move left with no key of its own in the list", () => {
+      const KEYS = "This PC is in your account, but holds no key of its own in your account's list yet: it came in as your account moved, so it cannot let a new device in.";
+      const KEYS_WAIT = "On another device of your account, open Manage account → PCs and choose Add for this PC, then compare the number it shows with the one here.";
+      beforeEach(() => { pc.account = ACCOUNT; pc.needsKeys = true; });
+
+      test("offers the add for its keys in words of its own, and the press starts the add by the list with nothing listed and no window opened", async () => {
+        const renderer = await mount();
+        expect(words(renderer)).toContain(KEYS);
+        expect(words(renderer)).not.toContain("Added");
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+        await press(renderer, "Add this PC to my account's list");
+        expect(byList!.calls[0]).toEqual({ what: "POST /api/account/list/add", body: { account: ACCOUNT }, named: ACCOUNT });
+        expect(words(renderer)).toContain(KEYS_WAIT);
+        expect(buttons(renderer)).toEqual(["Stop waiting"]);
+        // the device whose number was confirmed signs its keys: the PC holds them, and the window says Added
+        byList!.now = { state: "added", run: RUN, account: ACCOUNT, list: LIST };
+        pc.needsKeys = false;
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).toContain("Added");
+        // nothing of the old way: no listing in the directory, no pairing window, no one press
+        expect([directory, links(), admitted]).toEqual([[], 0, []]);
+        expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+      });
+
+      test("Stop waiting gives that add up by its run and offers it again; an add the PC ends says why", async () => {
+        const renderer = await mount();
+        await press(renderer, "Add this PC to my account's list");
+        await press(renderer, "Stop waiting");
+        expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }]);
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+        byList!.now = null;
+        await press(renderer, "Add this PC to my account's list");
+        byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "cancelled" };
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).toContain("The numbers were not the same, so nothing was added.");
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+        expect(links()).toBe(0);
+      });
+
+      test("a PC that holds its keys says Added, and one signed in to another account is offered nothing", async () => {
+        pc.needsKeys = false;
+        expect(words(await mount())).toContain("Added");
+        pc.needsKeys = true;
+        signedIn = "acct_other";
+        const other = await mount();
+        expect(buttons(other)).toEqual([]);
+        expect(words(other)).not.toContain(KEYS);
+      });
     });
 
     test("an add the PC ends (the numbers were not the same) ends the wait and says why", async () => {

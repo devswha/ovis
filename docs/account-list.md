@@ -2365,8 +2365,18 @@ neither a hand-over nor the pin undoes a removal.
   sign with, and it says so. Such a PC (with no key at all, or keys from an entry another device
   signed) says `needs_keys` in the list of `GET /api/account/status`, and `ovis add` there goes on to
   that add instead of saying the PC is in an account already: it lists nothing and signs in to
-  nothing, and ends once the PC holds its keys. Asked to approve a join, it says that it came in as its
-  account moved, never that it joined by an invite.
+  nothing, and ends once the PC holds its keys. Its own window offers the same add as **Add this PC
+  to my account's list**, which opens no pairing window and lists nothing. Asked to approve a join, it
+  says that it came in as its account moved, never that it joined by an invite.
+- **The device's side of that number.** A device that may write the list reads the PCs that posted
+  their keys (`postedFor` in `src/lib/account/listPcs.ts`, which Manage account, My PCs and the join
+  card share) and tells three apart: a PC the list does not hold (Add adds it), a PC the move carried
+  in with no key (Add gives it its keys: any device that may write signs that `pc` entry once the
+  number was compared at the PC, as for any add by the number), and a PC the list holds by these very
+  keys under an entry another device signed. That PC takes its keys from that device alone, so the
+  others offer no Add and Manage account names the device that can finish it. Manage account marks a
+  keyless carried PC "No key of its own in your account's list yet", and says to run `ovis add` there
+  until it posts.
 
 ### What is left
 

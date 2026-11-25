@@ -16,6 +16,7 @@
  * A device that cannot read its list (its copy is damaged, a later build saved it, or it stopped at an entry this
  * build cannot place) lists the directory's PCs, every one marked, and says so (listReading).
  */
+import type { ListState } from "../../../shared/account-list.ts";
 import type { AccountList, AccountListView } from "./accountList.ts";
 import { postedPcs, type PostedPc } from "./listAdd.ts";
 import { holdsList } from "./listWrite.ts";
@@ -49,18 +50,45 @@ export async function unreadCopy(list: AccountList, account: string): Promise<bo
  * their keys for it, none where this device may not write it. Such a PC is added by the number both screens show
  * (AddPcByNumber), never by a join on its own page, which is the directory's admission alone.
  */
-export type ListAdds = { readonly account: string; readonly list: AccountList; readonly posts: readonly PostedPc[] } | null;
+export type ListAdds = { readonly account: string; readonly list: AccountList; readonly posts: readonly ListedPost[] } | null;
+
+/**
+ * What an Add with the number does for a PC that posted its keys, by this device's copy of the list: `add`, it adds a
+ * PC the list does not hold; `keys`, it gives a PC that the account's move carried in with no key of its own its keys,
+ * which any device that may write the list signs once the number was compared at that PC (docs/account-list.md, "Keys
+ * for a PC carried in as an endpoint"); `signer`, the list holds the PC by these very keys under an entry another
+ * device signed (`signer`, its key), and the PC takes them only from that device, so only it finishes the add.
+ */
+export type PostedFor = { readonly kind: "add" } | { readonly kind: "keys" } | { readonly kind: "signer"; readonly signer: string };
+export type ListedPost = PostedPc & { readonly for: PostedFor };
+
+/**
+ * What an Add of `post` does (PostedFor), by `state` as a device whose member key is `member` holds it; null where no
+ * Add of it holds: the list put that PC out (it comes back only as a new PC), or holds another key at its relay key.
+ */
+export function postedFor(state: ListState, member: string, post: Pick<PostedPc, "endpoint" | "key">): PostedFor | null {
+  const row = Object.hasOwn(state.pcs, post.endpoint) ? state.pcs[post.endpoint]! : undefined;
+  if (row === undefined) return { kind: "add" };
+  if (row.removed !== null) return null;
+  if (row.key === null) return { kind: "keys" };
+  if (row.key !== post.key) return null;
+  const signer = Object.hasOwn(state.signers, row.key) ? state.signers[row.key]!.by : null;
+  return signer === null || signer === member ? { kind: "keys" } : { kind: "signer", signer };
+}
 
 /** The page's list (pageList.ts), as ListAdds asks it. A list whose posts could not be read offers no Add. */
 export async function pageListAdds(account: string): Promise<ListAdds> {
   const list = pageAccountList();
   if (list === null || !await accountHasList(list, account).catch(() => true)) return null;
-  const writes = pageListReading(account) === "in" && list.writer() !== null;
-  const posts = writes ? await postedPcs(list).catch((error: unknown) => {
+  const writer = pageListReading(account) === "in" ? list.writer() : null;
+  const posts = writer !== null ? await postedPcs(list).catch((error: unknown) => {
     console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
     return [];
   }) : [];
-  return { account, list, posts };
+  return { account, list, posts: writer === null ? [] : posts.flatMap((post) => {
+    const kind = postedFor(writer.state, writer.keys.key, post);
+    return kind === null ? [] : [{ ...post, for: kind }];
+  }) };
 }
 
 /**
@@ -127,6 +155,8 @@ export function pcsByList(view: AccountListView | null | undefined, account: str
       last_seen_at: route?.last_seen_at ?? null, public_key: route === undefined ? null : pc.endpoint, relay: route?.relay ?? null,
       new_until: isNew ? new Date(newUntil).toISOString() : null, admitted_at: null, admitted_before_you: false, by_list: true as const,
       ...(addedBy === undefined ? {} : { added_by: addedBy }),
+      // carried in by the move with no key of its own: it lets the list's devices in, and nobody new until it has one
+      ...(pc.how === "carried" && !pc.allows ? { needs_keys: true as const } : {}),
     };
   }), ...directory.filter((pc) => !held.has(pc.server_id)).map(outside)];
 }

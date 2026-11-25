@@ -37,9 +37,10 @@ export async function thisPcAccount(): Promise<string | null> {
  * The account this PC belongs to (null while it is in none), and whether it still waits for its first member's
  * enrollment (docs/account.md, "Enrolling a PC"): until that ends, the account's other devices are not let in.
  */
-export async function thisPcMembership(): Promise<{ readonly account: string | null; readonly enrolling: boolean }> {
+/** `needsKeys`: in its account, and in the account's list with no key of its own (it came in as the account moved). */
+export async function thisPcMembership(): Promise<{ readonly account: string | null; readonly enrolling: boolean; readonly needsKeys: boolean }> {
   const status = await pcAccountStatus(apiFetch);
-  return { account: status.account, enrolling: status.account !== null && status.enrolling === true };
+  return { account: status.account, enrolling: status.account !== null && status.enrolling === true, needsKeys: status.account !== null && status.needsKeys === true };
 }
 
 /** Whether this PC belongs to no account yet: only such a PC offers to be added. */

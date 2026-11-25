@@ -13,7 +13,7 @@ const pc = (server_id: string, name: string): MyPc => ({ server_id, name, state:
 const phone = { pcs: [], recent: [], current: null, sshPort: null, read: true, reread: () => {} } as never;
 /** this phone's list, as far as My PCs asks it: a stand-in that the number dialog asks in vain */
 const list = { writer: () => null, view: () => ({ account: ACCOUNT, status: { at: "off" }, reached: false, devices: [], pcs: [] }), subscribe: () => () => {} } as unknown as AccountList;
-const postOf = (server_id: string) => ({ list: "f".repeat(64), endpoint: "e".repeat(64), server_id, key: "member-key", enc: "enc-key", card: "card" });
+const postOf = (server_id: string) => ({ list: "f".repeat(64), endpoint: "e".repeat(64), server_id, key: "member-key", enc: "enc-key", card: "card", for: { kind: "add" as const } });
 
 const globals = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | undefined;
