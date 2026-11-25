@@ -3404,6 +3404,13 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       if (fresh.source !== transcript.source || fresh.path !== transcript.path || rebound(paneId, transcript)) return null;
     }
   } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
+  if (resolved.source === "kimi-transcript" && output !== null) {
+    if (rebound(paneId, transcript)) return null;
+    let fresh: NativeTranscript;
+    try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData, undefined, true, windowsTableWatermark()); }
+    catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
+    if (fresh.source !== transcript.source || fresh.path !== transcript.path || fresh.kimiOwner !== transcript.kimiOwner || rebound(paneId, transcript)) return null;
+  }
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
   if (resolved.source === "copilot-transcript") {
     const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims).catch(() => null);

@@ -85,12 +85,12 @@ export async function windowsProcessTable(timeoutMs = 10_000, command: string[] 
 }
 
 const SHARED_TABLE_RECENT_MS = 5_000;
-let sharedRecent: { at: number; settled: boolean; rows: Promise<ProcessRow[] | null> } | null = null;
-let sharedFreshReads = 0;
+let sharedReads = 0;
+let sharedRecent: { at: number; started: number; settled: boolean; rows: Promise<ProcessRow[] | null> } | null = null;
 let sharedFresh: { started: number; rows: Promise<ProcessRow[] | null> } | null = null;
 
 export function windowsTableWatermark(): number {
-  return sharedFreshReads;
+  return sharedReads;
 }
 
 export function forgetWindowsProcessTable(): void {
@@ -106,7 +106,7 @@ export function recentWindowsProcessTable(
   if (shared && sharedRecent && now - sharedRecent.at < SHARED_TABLE_RECENT_MS) {
     return { rows: sharedRecent.rows, cached: sharedRecent.settled };
   }
-  const entry = { at: now, settled: false, rows: Promise.resolve().then(read) };
+  const entry = { at: now, started: ++sharedReads, settled: false, rows: Promise.resolve().then(read) };
   if (shared) {
     sharedRecent = entry;
     void entry.rows.then((rows) => {
@@ -123,13 +123,15 @@ export function freshWindowsProcessTable(
   shared = true,
 ): Promise<ProcessRow[] | null> {
   if (shared && sharedFresh && sharedFresh.started > after) return sharedFresh.rows;
-  const entry = { started: ++sharedFreshReads, rows: Promise.resolve().then(read) };
+  const entry = { started: ++sharedReads, rows: Promise.resolve().then(read) };
   if (shared) {
     sharedFresh = entry;
     const clear = () => { if (sharedFresh === entry) sharedFresh = null; };
     void entry.rows.then((rows) => {
       clear();
-      if (rows !== null && rows.length > 0) sharedRecent = { at: Date.now(), settled: true, rows: Promise.resolve(rows) };
+      if (rows !== null && rows.length > 0 && (!sharedRecent || entry.started >= sharedRecent.started)) {
+        sharedRecent = { at: Date.now(), started: entry.started, settled: true, rows: Promise.resolve(rows) };
+      }
     }, clear);
   }
   return entry.rows;

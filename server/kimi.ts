@@ -210,7 +210,7 @@ function historyAfterProof(path: string | undefined, previous: { path: string; s
  */
 const proven = new Map<string, { path: string; pid: number; since?: number; program: string; store: number; history?: { path: string; size: number } }>();
 
-export function kimiWireForPane(paneId: string, pids: number[], home = homedir(), identity: ProcessIdentity = nativeProcessIdentity): string | null {
+export function kimiWireForPane(paneId: string, pids: number[], home = homedir(), identity: ProcessIdentity = nativeProcessIdentity, preserveOnMiss = false): string | null {
   const own = new Set(pids.filter((pid) => Number.isSafeInteger(pid) && pid > 1));
   const proof = proveWire(own, home, identity.startUpperBound);
   if (typeof proof === "object") {
@@ -228,26 +228,30 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
   }
   const last = proven.get(paneId);
   proven.delete(paneId);
-  if (proof !== "none" || last === undefined || !processAlive(last.pid)) return null;
+  const miss = (): null => {
+    if (preserveOnMiss && last !== undefined) proven.set(paneId, last);
+    return null;
+  };
+  if (proof !== "none" || last === undefined || !processAlive(last.pid)) return miss();
   if (identity.inconclusive?.(last.pid, last.program)) {
     proven.set(paneId, last);
     return null;
   }
-  if (!own.has(last.pid)) return null;
+  if (!own.has(last.pid)) return miss();
   const currentProgram = identity.program(last.pid);
   if (currentProgram === undefined) {
     proven.set(paneId, last);
     return null;
   }
-  if (currentProgram !== last.program) return null;
+  if (currentProgram !== last.program) return miss();
   // a lock on this session now is another process's (the pane's own would have proved it)
   const session = dirname(dirname(dirname(last.path)));
-  try { statSync(join(home, ".kimi-code", "locks", "sessions", `${basename(session)}.lock`)); return null; } catch {}
+  try { statSync(join(home, ".kimi-code", "locks", "sessions", `${basename(session)}.lock`)); return miss(); } catch {}
   // a session the folder got since (`/new`) may be the one this Kimi has switched to before it writes
-  try { if (statSync(dirname(session)).mtimeMs !== last.store) return null; } catch { return null; }
+  try { if (statSync(dirname(session)).mtimeMs !== last.store) return miss(); } catch { return miss(); }
   if (last.history !== undefined) {
     const read = readHistory(last.history.path, last.history.size);
-    if (read === null || read.switched) return null;
+    if (read === null || read.switched) return miss();
     last.history = { path: last.history.path, size: read.end };
   }
   proven.set(paneId, last);
@@ -255,8 +259,19 @@ export function kimiWireForPane(paneId: string, pids: number[], home = homedir()
 }
 
 const KIMI_EXECUTABLE = /(^|[\\/])kimi(?:-code)?(?:\.exe|\.[cm]?js)?$/i;
-const CONSOLE_HOST = /(^|[\\/"])(conhost|openconsole)(?:\.exe)?(?="|\s|$)/i;
+const CONSOLE_HOST = /(^|\/)(conhost|openconsole)(\.exe)?$/i;
+const JS_RUNTIME = /(^|[\\/])(?:bun|node)(?:\.exe)?$/i;
 const windowsPath = (value: string): string => value.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
+const consoleExecutable = (row: ProcessRow): string => {
+  if (row.path) return windowsPath(row.path);
+  const cmd = (row.commandLine ?? "").trim();
+  if (!cmd) return "";
+  if (cmd.startsWith("\"")) {
+    const end = cmd.indexOf("\"", 1);
+    return windowsPath(end > 1 ? cmd.slice(1, end) : cmd.slice(1));
+  }
+  return windowsPath(cmd.split(/\s+/, 1)[0] ?? "");
+};
 
 export function forgetKimiWindowsTable(): void {
   forgetWindowsProcessTable();
@@ -267,7 +282,7 @@ export function kimiWireOwner(paneId: string): string | null {
   return entry === undefined ? null : `${entry.pid}:${entry.program}`;
 }
 
-export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, rows: ProcessRow[] | null, home = homedir()): string | null {
+export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, rows: ProcessRow[] | null, home = homedir(), preserveOnMiss = false): string | null {
   if (rows === null) return null;
   const startedOf = new Map<number, number | undefined>(rows.map((row) => [row.pid, row.started]));
   const parentOf = new Map<number, number>(rows.map((row) => [row.pid, row.parent]));
@@ -275,7 +290,7 @@ export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, ro
   // A process started in its own console (`Start-Process kimi`) owns a conhost.exe/OpenConsole.exe child;
   // an in-pane process shares herdr's console (matching server/omo.ts).
   const ownConsole = new Set(rows.filter((row) => {
-    const candidate = windowsPath(row.path ?? row.commandLine ?? "");
+    const candidate = consoleExecutable(row);
     if (!CONSOLE_HOST.test(candidate)) return false;
     const parentStarted = startedOf.get(row.parent);
     return row.started === undefined || parentStarted === undefined || row.started >= parentStarted;
@@ -306,10 +321,11 @@ export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, ro
       const row = rowByPid.get(pid);
       if (row === undefined) return false;
       if (row.started === undefined) return true;
-      return row.path === null && row.commandLine === null && String(row.started) === expectedProgram;
+      const missingScript = row.commandLine === null && (row.path === null || JS_RUNTIME.test(row.path));
+      return missingScript && String(row.started) === expectedProgram;
     },
   };
-  return kimiWireForPane(paneId, [shellPid, ...pids], home, identity);
+  return kimiWireForPane(paneId, [shellPid, ...pids], home, identity, preserveOnMiss);
 }
 
 export async function kimiTranscriptForPane(
@@ -324,7 +340,7 @@ export async function kimiTranscriptForPane(
     if (options.fresh === false) {
       const recent = recentWindowsProcessTable(() => tryWindowsProcessTable());
       const rows = await recent.rows;
-      const found = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, rows, home);
+      const found = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, rows, home, recent.cached);
       if (found !== null) return { path: found, owner: kimiWireOwner(pane.pane_id) };
       if (!recent.cached) return null;
       // A cached discovery miss must not hide a newly started Kimi for the cache TTL.

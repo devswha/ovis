@@ -212,6 +212,13 @@ it("excludes a Windows Kimi launched in a separate console (own conhost.exe or O
     ];
     expect(kimiWireForWindowsProcesses(`win:sep-console-${index}`, SHELL_PID, rows, home)).toBeNull();
   }
+  // A child whose arguments mention conhost.exe is not a console host and must not exclude Kimi.
+  const argChildRows: ProcessRow[] = [
+    { pid: SHELL_PID, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 2_000 },
+    { pid: process.pid, parent: SHELL_PID, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
+    { pid: hostPid, parent: process.pid, path: null, commandLine: "cmd.exe /c echo C:\\Windows\\System32\\conhost.exe", started: started + 5 },
+  ];
+  expect(kimiWireForWindowsProcesses("win:arg-conhost", SHELL_PID, argChildRows, home)).toContain("session_sep");
 });
 
 it("withholds but preserves an idle Windows Kimi binding when a snapshot omits start time or executable metadata", () => {
@@ -227,6 +234,17 @@ it("withholds but preserves an idle Windows Kimi binding when a snapshot omits s
   const missingExec: ProcessRow[] = [rows[0]!, { pid: rows[1]!.pid, parent: rows[1]!.parent, path: null, commandLine: null, started }];
   expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, missingExec, home)).toBeNull();
   expect(kimiWireForWindowsProcesses("win:missing-start", SHELL_PID, rows, home)).toBe(wire("session_a"));
+  // Script-run Kimi (`node.exe kimi.js`) with null commandLine keeps its idle binding too.
+  const nodeRows: ProcessRow[] = [
+    rows[0]!,
+    { pid: process.pid, parent: SHELL_PID, path: "C:\\Program Files\\nodejs\\node.exe", commandLine: "\"C:\\Program Files\\nodejs\\node.exe\" C:\\Tools\\kimi.js", started },
+  ];
+  lock("session_a", { ...liveLock(), startedAt: started + 1 });
+  expect(kimiWireForWindowsProcesses("win:node-missing-cmd", SHELL_PID, nodeRows, home)).toBe(wire("session_a"));
+  rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+  const missingNodeCmd: ProcessRow[] = [rows[0]!, { pid: process.pid, parent: SHELL_PID, path: "C:\\Program Files\\nodejs\\node.exe", commandLine: null, started }];
+  expect(kimiWireForWindowsProcesses("win:node-missing-cmd", SHELL_PID, missingNodeCmd, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:node-missing-cmd", SHELL_PID, nodeRows, home)).toBe(wire("session_a"));
 });
 
 it("distinguishes an unavailable Windows process table from a successful empty one", async () => {
@@ -351,6 +369,21 @@ it("shares the recent Windows table with OmO/GJC, retries a cached discovery mis
     releaseOld(rows1);
     await older;
     expect(call).toBe(2);
+
+    // 5. An out-of-order older shell-only probe finishing late must not overwrite a newer snapshot or drop an idle binding.
+    let releaseStale!: (value: ProcessRow[] | null) => void;
+    const staleProbe = new Promise<ProcessRow[] | null>((resolve) => { releaseStale = resolve; });
+    probe.mockImplementationOnce(() => staleProbe).mockResolvedValue(rows2);
+    const staleReq = kimiTranscriptForPane({ pane_id: "win:unrelated" } as HerdrPane, home, { fresh: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    const wm2 = windowsTableWatermark();
+    expect(await kimiTranscriptForPane({ pane_id: "win:oo-race" } as HerdrPane, home, { fresh: true, freshAfter: wm2 })).toEqual({ path: wire("session_a"), owner: `${process.pid}:${started1 + 500}` });
+    rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+    releaseStale(shellOnly);
+    expect(await staleReq).toBeNull();
+    // Next discovery poll still sees the newer snapshot and preserves the idle binding.
+    expect(await kimiTranscriptForPane({ pane_id: "win:oo-race" } as HerdrPane, home, { fresh: false })).toEqual({ path: wire("session_a"), owner: `${process.pid}:${started1 + 500}` });
   } finally {
     Object.defineProperty(process, "platform", platform);
     info.mockRestore();
