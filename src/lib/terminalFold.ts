@@ -331,7 +331,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       const segment = Math.max(0, Math.floor((rect.top + rect.height / 2 - row.getBoundingClientRect().top) / foldLine));
       target = view.offsetTop + row.offsetTop + Math.min(row.offsetHeight, (segment + 1) * foldLine);
       // xterm's input stands on the last column while the cursor waits to wrap past it
-      const column = Math.min(reader().cursorX, term.cols - 1);
+      // xterm's input stands at xterm's cursor
+      const column = Math.min(term.buffer.active.cursorX, term.cols - 1);
       const needed = gridRect.left - (parseFloat(xterm.style.left) || 0) + xterm.scrollLeft + column * grid.offsetWidth / term.cols - rect.left;
       scroll = Math.max(0, Math.min(needed, xterm.scrollWidth - xterm.clientWidth));
       left = scroll - needed;
