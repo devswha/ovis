@@ -28,6 +28,10 @@ function otherPane(under: Pick<AppLink, "machine" | "pane"> | null, shown: Pick<
   return under !== null && (under.machine !== shown.machine || under.pane !== shown.pane);
 }
 
+function entryKey(): string | undefined {
+  return (window as Window & { navigation?: { currentEntry?: { key: string } | null } }).navigation?.currentEntry?.key;
+}
+
 export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, newSessionPending, setHeaderNote, selectionRef }: {
   inbox: Pick<ReturnType<typeof useInbox>, "shown" | "enabled" | "show" | "leave">;
   mode?: { on: boolean; lands(): boolean };
@@ -99,7 +103,11 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   const heldWrite = useRef(false);
   // Refusing a sheet Back may leave the browser on another pane's entry if the return is lost.
   // A later render still owns the pane shown, not the entry where that Back stopped.
-  const refusedEntry = useRef<Pick<AppLink, "machine" | "pane"> | null>(null);
+  const refusedEntry = useRef<{ link: Pick<AppLink, "machine" | "pane">; key: string | undefined } | null>(null);
+  const wouldOverwriteRefused = (shown: Pick<AppLink, "machine" | "pane">): boolean => {
+    const refused = refusedEntry.current;
+    return refused !== null && (refused.key === undefined || refused.key === entryKey()) && otherPane(refused.link, shown);
+  };
   const [released, setReleased] = useState(0);
   const filePop = fileFromPop();
   const entryLink = fileLeft && filePop !== 0 && popStill.current !== filePop ? readLink(pageSearch()) : null;
@@ -128,7 +136,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       const written = writtenLink.current;
       if (listWritten.current && !newSessionOpen && written?.create && !popUnread(window.event, readPop.current)) {
         const link: AppLink = { ...written, create: null, machine: LOCAL_MACHINE };
-        if (otherPane(refusedEntry.current, link)) { heldWrite.current = true; return; }
+        if (wouldOverwriteRefused(link)) { heldWrite.current = true; return; }
         writtenLink.current = link;
         const search = linkSearch(link, pageSearch());
         if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
@@ -153,7 +161,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
     const moved = leftInbox ? inboxEnabled && link.pane !== null : previous !== null && !autoSelected && isNavigation(previous, link);
     const navigate = !popped && !settingsOpen && !newSessionOpen && moved;
     const replaces = !navigate || (!leftInbox && (modeOn || (fileLeft && !kept)));
-    if (replaces && otherPane(refusedEntry.current, link)) { heldWrite.current = true; return; }
+    if (replaces && wouldOverwriteRefused(link)) { heldWrite.current = true; return; }
     writtenLink.current = link;
     listWritten.current = inboxShown;
     poppedTo.current = false;
@@ -187,7 +195,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   useEffect(() => {
     const listHere = (): boolean => modeRef.current?.lands() ?? inboxRef.current.enabled;
     const onPop = (event: PopStateEvent): void => {
-      if (sheetSteppedOff()) { refusedEntry.current = readLink(pageSearch()); return; }
+      if (sheetSteppedOff()) { refusedEntry.current = { link: readLink(pageSearch()), key: entryKey() }; return; }
       if (settingsEntry(event.state) !== null) return;
       if (settingsSteppedOff()) { sayShown(); return; }
       refusedEntry.current = null;
@@ -236,7 +244,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
     const sayShown = (): void => {
       if (heldWrite.current) { poppedTo.current = true; return; }
       const shown = writtenLink.current;
-      if (shown !== null && otherPane(refusedEntry.current, shown)) { heldWrite.current = true; return; }
+      if (shown !== null && wouldOverwriteRefused(shown)) { heldWrite.current = true; return; }
       const search = shown ? linkSearch(shown, pageSearch()) : pageSearch();
       if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
     };
