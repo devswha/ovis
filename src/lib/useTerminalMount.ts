@@ -1716,8 +1716,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (keyboardToggleFocusRef.current && (data === "\x1b[I" || data === "\x1b[O")) return;
         const barKey = barKeyRef.current;
         barKeyRef.current = null;
-        const stopKey = stopKeyRef.current;
-        stopKeyRef.current = null;
+        // the Stop's mark is for its Escape: text xterm flushes ahead of it (a pending commit) is not the Stop's
+        const stopKey = data === "\u001b" ? stopKeyRef.current : null;
+        if (stopKey !== null) stopKeyRef.current = null;
         const physicalChord = typedChord;
         typedChord = null;
         // a modified Enter (Shift+Enter's newline, Ctrl+Enter's "send now") is decided on before its
