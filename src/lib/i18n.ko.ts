@@ -647,6 +647,7 @@ const BASE: Record<string, string> = {
   "This PC may not have been listed in your account. Try again.": "이 PC가 계정에 올라가지 않았을 수 있습니다. 다시 시도하세요.",
   "Turn on remote access through the Ovis relay above first.": "먼저 위에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "먼저 설정 → 기기와 PC에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
+  "This PC did not take the request. Try again.": "이 PC가 요청을 받지 않았어요. 다시 해 보세요.",
   "This PC could not be added by your account's list in time. Try again.": "이 PC를 제때 계정 명단으로 추가하지 못했어요. 다시 시도하세요.",
   "The account service could not be reached, so this PC was not added. Try again.": "계정 서비스에 연결할 수 없어 이 PC를 추가하지 못했어요. 다시 시도하세요.",
   "This PC was set up for another account. Sign in to that one, or add this PC again.": "이 PC는 다른 계정으로 설정됐어요. 그 계정으로 로그인하거나 이 PC를 다시 추가하세요.",

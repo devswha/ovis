@@ -78,6 +78,8 @@ export interface ListAddDeps {
   mono?(): number;
   /** The least time between two asks of the account service for the phone's next message: ADD_POLL_MS when unset. */
   readonly pollMs?: number | undefined;
+  /** Runs `work` once, `ms` from now, and answers what calls it off (setTimeout, unref'd, when unset); a test's own. */
+  schedule?(work: () => void, ms: number): () => void;
 }
 
 interface Attempt { readonly adder: string; readonly commitment: string; readonly nonce: Uint8Array; readonly sentAt: number; readonly digits: string | null }
@@ -118,8 +120,33 @@ export class ListAdd {
   private run: Run | null = null;
   private none: { readonly account: string } | null = null;
   private turn: Promise<unknown> = Promise.resolve();
+  /** what calls off the next step this PC takes by itself; null while none is due */
+  private following: (() => void) | null = null;
+  private stopped = false;
 
   constructor(private readonly deps: ListAddDeps) {}
+
+  /** Ends the steps this PC takes by itself (the server stops): an add is then only what is asked of it. */
+  stop(): void {
+    this.stopped = true;
+    this.following?.();
+    this.following = null;
+  }
+
+  /**
+   * While `run` runs, this PC takes its next step by itself a poll's time on, whether or not anything asks it: the
+   * device's next message, and after the yes its entry in the list. A window that confirmed and was then hidden or
+   * closed, or a terminal gone, does not hold the add up. It ends with the run, or once another took its place.
+   */
+  private follow(run: Run): void {
+    if (this.stopped || this.following !== null || this.run !== run || run.end !== null) return;
+    const schedule = this.deps.schedule ?? ((work: () => void, ms: number) => { const timer = setTimeout(work, ms); timer.unref?.(); return () => clearTimeout(timer); });
+    this.following = schedule(() => {
+      this.following = null;
+      if (this.stopped || this.run !== run || run.end !== null) return;
+      void this.inTurn(() => this.step(run)).catch(() => undefined).finally(() => this.follow(run));
+    }, this.deps.pollMs ?? ADD_POLL_MS);
+  }
 
   /** A person at this PC starts adding it to `account` (its own window, `ovis add`). An Add under way for that account goes on. */
   start(account: string): Promise<AddState> {
@@ -127,7 +154,10 @@ export class ListAdd {
       const running = this.run;
       // an add of the relay identity this PC had before a reset was another PC's
       if (running !== null && running.account === account && running.end === null && this.mono() - running.startedAt < ADD_WINDOW_MS
-        && running.serverId === (await this.deps.own())?.serverId) return await this.step(running);
+        && running.serverId === (await this.deps.own())?.serverId) { this.follow(running); return await this.step(running); }
+      // the steps the run before took by itself end with it: this one's are its own
+      this.following?.();
+      this.following = null;
       this.run = null;
       this.none = null;
       // not asked: nothing says whether the account keeps a list, and the caller asks again (ListAddAway)
@@ -145,6 +175,7 @@ export class ListAdd {
         startedAt: this.mono(), until: this.deps.now() + ADD_WINDOW_MS, postedAt: null, polledAt: null, answered: 0, attempt: null, seen: new Set(), confirmed: null, cancelled: false, end: null,
       };
       this.run = run;
+      this.follow(run);
       return await this.step(run);
     });
   }

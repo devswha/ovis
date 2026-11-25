@@ -651,8 +651,8 @@ signed list ([A PC is added to the list](#a-pc-is-added-to-the-list)). This PC's
 alone (403 `owner_only` otherwise), for the account named for this PC (409 `account_mismatch`), on a
 PC in no account (409 `in_account`) that the account's list did not remove (409 `list_removed`). It
 posts the PC's card and answers where the add stands; asked again while an add runs, it goes on with
-that one. `GET /api/account/list/add` answers the same, and takes the adding device's next message
-from the account service, every 3 seconds at most. 503 `account_unavailable` while the account
+that one. `GET /api/account/list/add` answers the same; the PC takes the adding device's next message
+from the account service every 3 seconds while the add runs, asked or not. 503 `account_unavailable` while the account
 service does not say whether the account keeps a list: nothing was started.
 
 ```json
@@ -1950,8 +1950,10 @@ would be as good as the account's.
 - A number lasts 120 seconds from the PC's answer. A new commitment replaces it: the PC never shows
   two, and a yes typed under the old one confirms nothing.
 - An add lasts 10 minutes, confirmed or not: an entry that arrives after them joins nothing. The
-  PC asks the account service for the device's next message every 3 seconds while something asks it
-  (its own window or `ovis add`). Both lifetimes are counted by a clock that only moves forward, so
+  PC asks the account service for the device's next message, and after the yes reads its list, every
+  3 seconds while the add runs, by itself: a window that confirmed and was then hidden or closed, or a
+  terminal gone, does not hold the add up (a read by its own window or `ovis add` within those 3
+  seconds asks nothing more). Both lifetimes are counted by a clock that only moves forward, so
   setting the PC's clock back gives neither more time.
 - `ovis add` that stops (Ctrl+C, an error) gives its add up at the PC: a yes confirmed before joins
   nothing once the command is gone.

@@ -7,11 +7,12 @@
 import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } from "react";
 import { Check, Plus, X } from "lucide-react";
 
+import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
-import { ApiError, cancelListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
+import { ApiError, cancelListAdd, confirmListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { pagePcs } from "../lib/account/listPcs.ts";
@@ -30,6 +31,7 @@ import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark, providerCho
 import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
 import { AccountManageLists } from "./AccountManage.tsx";
 import { QrCode } from "./QrCode.tsx";
+import { aroundDigits } from "./RelayPairingPrompt.tsx";
 import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsQuery, SettingsRow } from "./SettingsControls.tsx";
 
@@ -414,6 +416,24 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   /** the run of the PC's add by the account's list that the wait under way follows now, which its Stop waiting gives up */
   const listRun = useRef<(() => string | undefined) | null>(null);
   const listEnded = useEffectEvent((why: string) => setState({ kind: "error", message: listAddRefusal(t, why) }));
+  /**
+   * The number the PC shows for its add by the list, for the wait that ends `until`: drawn in the wait itself, where the
+   * person just pressed Add this PC (the window's own prompt of it may sit behind the dialog this screen is in), with
+   * its yes and its No. `refused`: why the last yes confirmed nothing.
+   */
+  const [listNumber, setListNumber] = useState<{ readonly until: number; readonly run: string; readonly digits: string; readonly refused: string | null } | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const listShown = useEffectEvent((until: number, now: ListAddState) => setListNumber((prior) => now.state !== "number" ? null
+    : { until, run: now.run, digits: now.digits, refused: prior !== null && prior.run === now.run && prior.digits === now.digits ? prior.refused : null }));
+  const answerNumber = (shown: { readonly run: string; readonly digits: string }, yes: boolean): void => {
+    if (answering) return;
+    setAnswering(true);
+    (yes ? confirmListAdd(shown.run, shown.digits) : cancelListAdd(shown.run)).then(() => setListNumber(null), (error: unknown) => {
+      console.warn("Ovis: the answer to this PC's number was not taken", error instanceof Error ? error.name : error);
+      const refused = error instanceof ApiError && error.code === "wrong_number" ? t("That is no longer the number this PC shows, so nothing was confirmed. Have the device ask again.") : t("This PC did not take the request. Try again.");
+      setListNumber((prior) => prior === null ? null : { ...prior, refused });
+    }).finally(() => setAnswering(false));
+  };
   useEffect(() => {
     if (begun === null) return;
     const until = begun.until;
@@ -518,6 +538,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       if (mark === null || run === undefined) return;
       const now = await fetchListAdd(run);
       if (!live || withdrawn() || mark?.run !== run) return;
+      listShown(until, now);
       if (now.state === "ended" && now.why !== "timeout") { forget(); listEnded(now.why); return; }
       if (now.state !== "ended" && now.state !== "replaced") return;
       if (expired() || Date.now() < retryAt) return;
@@ -1045,6 +1066,7 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
   };
   if (state.kind === "hidden") return null;
   const againShown = state.kind === "waiting" && again?.until === state.until ? again : null;
+  const shownNumber = state.kind === "waiting" && listNumber?.until === state.until ? listNumber : null;
   return (
     <div className="settings-item account-add-pc">
       {state.kind === "adding" ? (
@@ -1060,6 +1082,20 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
       ) : state.kind === "waiting" ? (
         <>
           <p className="settings-description" role="status">{t("On another device of your account, choose Add on {name}.", { name: state.name })}</p>
+          {shownNumber !== null && (() => {
+            const [before, after] = aroundDigits(t("This PC is being added to your account. Does the device adding it show {digits}?"), state.name);
+            return (
+              <>
+                <p className="settings-description" role="status" data-testid="list-add-number">{before}<strong className="relay-pairing-digits">{`${shownNumber.digits.slice(0, 3)} ${shownNumber.digits.slice(3)}`}</strong>{after}</p>
+                <p className="settings-hint">{t("Confirm only if that device shows the same number")}</p>
+                <div className="account-device-actions">
+                  <button type="button" className="btn btn-primary" disabled={answering} onClick={() => answerNumber(shownNumber, true)}>{t("The numbers match")}</button>
+                  <button type="button" className="btn" disabled={answering} onClick={() => answerNumber(shownNumber, false)}>{t("Cancel")}</button>
+                </div>
+                {shownNumber.refused !== null && <p className="settings-condition" role="alert">{shownNumber.refused}</p>}
+              </>
+            );
+          })()}
           {againShown !== null && againShown.step !== "failed" ? (
             <>
               {againShown.step === "offered" ? <p className="settings-description">{t("Sign in again now to add it right away.")}</p>

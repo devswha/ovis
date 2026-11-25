@@ -988,6 +988,7 @@ export function createServer(
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
+      listAdd?.stop();
       accountWitness?.stop();
       accountRows?.stop();
       accountCatchUp.stop();
