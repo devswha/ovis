@@ -3,7 +3,7 @@ import { ChevronDown, ChevronLeft, ChevronRight, Plus, QrCode } from "lucide-rea
 
 import { useT, type Translate } from "../lib/i18n.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
-import { callNative, hasNativeMethod, hasNativePlugin, inMacApp } from "../lib/nativeApp.ts";
+import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import type { KnownPc } from "../lib/account/knownPcs.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
@@ -626,14 +626,14 @@ export function SignedOutRelayPanel({ signIn, signingIn, code }: { readonly sign
 
 /**
  * The relay tab signed in: a PC joins the account from its own Ovis, signed in with the same account, so this says so; a
- * PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser. The Mac app also
- * makes invites here.
+ * PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser. Every device that
+ * may write its account's signed list also makes invites here, the way a PC is set up through an agent.
  */
 export function AccountRelayPanel({ code }: { readonly code: CodeWays }) {
   const t = useT();
-  // In the Mac app, where a person sets a PC up through an agent: invites for a PC, on a device that may write its
-  // account's signed list (InvitePc draws nothing for any other)
-  const list = inMacApp() ? pageAccountList() : null;
+  // the page's list, in the phone apps and the hosted app in a browser alike (InvitePc draws nothing for a device that
+  // may not write it); a PC's own page has none, and says where invites are made instead (ConnectPhoneDialog)
+  const list = pageAccountList();
   return (
     <>
       <p className="relay-shell-copy">{t("Turn on Ovis on the PC and sign in with the same account.")}</p>

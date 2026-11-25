@@ -366,4 +366,5 @@ export const DEVICES_JA: Record<string, string> = {
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "この端末のアカウントでの位置が新しいキー（{name}）に引き継がれました。心当たりがなければ、別の端末からその端末を削除してください。",
   "a device that is no longer in your account": "アカウントにもういない端末",
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "確認のあとに、選んだもののひとつが新しいキーに移りました。何も削除していません。削除するにはもう一度「削除」を押してください。",
+  "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.": "PC を追加する招待をエージェントに渡すには、Ovis のスマートフォンアプリか app.ovis.sh で作成してください: PC を追加 → Ovis リレー → PC を招待。",
 };

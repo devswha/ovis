@@ -366,4 +366,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "此设备在账户中的位置已交给一个新密钥（{name}）。如果不是你做的，请在你的另一台设备上移除那台设备。",
   "a device that is no longer in your account": "已不在你账户中的设备",
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "确认之后，你勾选的某一项换成了新的密钥。没有移除任何内容：要移除它，请再次点击移除。",
+  "To give an agent an invite that adds a PC, make one in the Ovis phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.": "要给智能体一个添加 PC 的邀请，请在 Ovis 手机应用或 app.ovis.sh 中创建：添加 PC → Ovis 中继 → 邀请 PC。",
 };
