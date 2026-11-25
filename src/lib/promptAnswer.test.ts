@@ -213,6 +213,18 @@ describe("answering a prompt from the chat", () => {
       };
       expect(answerFromText(card, typed), name).toEqual(expected);
     }
+    const ambiguousRecommended: InteractivePrompt = {
+      ...prompt(["Deploy", "Deploy (Recommended)", "Other"], 2),
+      agent: "gjc",
+      text_format: "markdown",
+      options: [
+        { label: "Deploy", description: null, recommended: true },
+        { label: "Deploy (Recommended)", description: null },
+        { label: "Other", description: null },
+      ],
+    };
+    expect(answerFromText(ambiguousRecommended, "Deploy (Recommended)")).toEqual({ custom_text: "Deploy (Recommended)" });
+    expect(answerFromText(ambiguousRecommended, "Deploy")).toEqual({ option_index: 0 });
   });
   it("gives every case-folded letter, alone or under marks, a skeleton that is its own skeleton (#2220 review)", () => {
     const letters = CASE_FOLDING_DATA.split(";").flatMap((entry) => entry.split("=")[0]!.split(" ").concat(entry.split("=")[1]!.split(" ")))

@@ -23,7 +23,7 @@ const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
 const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const COMBINING_RE = /^[\p{Mark}\p{Cf}]+$/u;
-const WIDE_GRAPHEME_RE = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|\p{Regional_Indicator}{2}|[\u1100-\u115F\u2329\u232A\u2E80-\u303E\u3040-\u33FF\u3400-\u4DBF\u4E00-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u;
+const WIDE_GRAPHEME_RE = /\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F|\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3|[\u1100-\u115F\u2329\u232A\u2E80-\u303E\u3040-\u33FF\u3400-\u4DBF\u4E00-\uA4CF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{1F300}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u;
 
 function graphemeCells(grapheme: string): number {
   if (COMBINING_RE.test(grapheme)) return 0;
@@ -114,14 +114,15 @@ export function gjcAskPrompt(prompt: InteractivePrompt, open: OmoAsks, session =
     const recommended = asked.options.length > 1 ? asked.recommended : null;
     const screenLabels = asked.options.map((option, at) => at === recommended && !option.label.endsWith(RECOMMENDED) ? `${option.label}${RECOMMENDED}` : option.label);
     return titleShown(title, markdown, parsed.gjcTitleWidth) && optionsShown(rows, screenLabels)
-      ? [{ index, markdown, rawOptions: asked.options, recommended }]
+      ? [{ index, markdown, rawOptions: asked.options, recommended, screenLabels }]
       : [];
   });
   if (matches.length !== 1) return prompt;
-  const { index, markdown, rawOptions, recommended } = matches[0]!;
-  // labels the card would show alike are told apart on the terminal by place alone: the card stays as drawn (#2233)
+  const { index, markdown, rawOptions, recommended, screenLabels } = matches[0]!;
+  // labels the card or terminal would show alike are told apart by place alone: the card stays as drawn (#2233)
   const shown = rawOptions.map((option) => alike(cardDrawn(option.label, false) ?? option.label));
-  if (new Set(shown).size !== shown.length) return prompt;
+  const drawnScreen = screenLabels.map((label) => alike(cardDrawn(label, false) ?? label));
+  if (new Set(shown).size !== shown.length || new Set(drawnScreen).size !== drawnScreen.length) return prompt;
   const gjcCall = session ? JSON.stringify([session, open[0]!.id, index]) : undefined;
   return publicPrompt(gjcMenuShown(parsed, {
     question: markdown, body: null, text_format: "markdown",
@@ -139,6 +140,19 @@ export function gjcAskPrompt(prompt: InteractivePrompt, open: OmoAsks, session =
 
 const reader = new OmoAskReader(ompAsksAfter);
 const unreadable = new Set<string>();
+
+/** Synchronously checks whether the bound `gjcCall` is still the one open ask in its already-verified session file. */
+export function gjcCallStillOpenInFile(gjcCall: string): boolean {
+  let expected: [string, string, number];
+  try { expected = JSON.parse(gjcCall) as [string, string, number]; } catch { return false; }
+  if (!Array.isArray(expected) || typeof expected[0] !== "string" || typeof expected[1] !== "string") return false;
+  try {
+    const open = reader.read(expected[0]);
+    return open.length === 1 && open[0]!.id === expected[1];
+  } catch {
+    return false;
+  }
+}
 
 /** Whether the gjc ask call bound in `gjcCall` is still the pane's one open ask call. */
 export async function gjcCallStillOpen(paneId: string, gjcCall: string): Promise<boolean> {
@@ -158,10 +172,11 @@ export async function gjcCallStillOpen(paneId: string, gjcCall: string): Promise
 /**
  * Resolves a gjc selector's transcript once and applies either its pending shell-approval record
  * (`withGjcRecordAt`) or its open `ask` call Markdown (`gjcAskPrompt`), avoiding back-to-back
- * transcript lookups during prompt reads and answer verification.
+ * transcript lookups during prompt reads and answer verification. Record binding stays active
+ * even when `enrich` is false (e.g. cursor-move rereads on a shell approval).
  */
 export async function withGjcFallback(paneId: string, card: InteractivePrompt, screen: string, enrich = true): Promise<InteractivePrompt | null> {
-  if (!enrich || parsedByPublicPrompt.get(card)?.responder !== "fallback-gjc-menu") return card;
+  if (parsedByPublicPrompt.get(card)?.responder !== "fallback-gjc-menu") return card;
   if (commandCut(screen, gjcRecord)) return null;
   let path: string | null = null;
   try {
@@ -177,7 +192,7 @@ export async function withGjcFallback(paneId: string, card: InteractivePrompt, s
     return card;
   }
   const recorded = await withGjcRecordAt(paneId, card, screen, path);
-  if (recorded === null || parsedByPublicPrompt.get(recorded)?.record !== undefined || path === null) return recorded;
+  if (!enrich || recorded === null || parsedByPublicPrompt.get(recorded)?.record !== undefined || path === null) return recorded;
   try {
     return gjcAskPrompt(recorded, reader.read(path), path);
   } catch (error) {

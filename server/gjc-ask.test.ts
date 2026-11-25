@@ -118,6 +118,15 @@ describe("gjc ask cards in the agent's own Markdown", () => {
       args.questions[0]!.options[0]!.label = "Keep";
     });
     expect(gjcAskPrompt(card(emojiScreen), spacedEmojiCalls).text_format).toBe("markdown");
+
+    // Keycap emoji clusters (2 cells each) wrap cleanly in a 25-column frame too
+    const keycapRow = "1️⃣".repeat(11);
+    const keycapScreen = cjkScreen.replace(" 接続方法をどれにするか", ` ${keycapRow}`).replace(" 教えてください？", " 次？");
+    const keycapCalls = withArgs(open(), (args) => {
+      args.questions[0]!.question = `${keycapRow}次？`;
+      args.questions[0]!.options[0]!.label = "Keep";
+    });
+    expect(gjcAskPrompt(card(keycapScreen), keycapCalls).text_format).toBe("markdown");
   });
 
   it("does not bind a truncated title (▼ more or ▲ more), since another call can share its visible prefix", () => {
@@ -191,6 +200,19 @@ describe("gjc ask cards in the agent's own Markdown", () => {
     expect(gjcAskPrompt(read, calls)).toBe(read);
   });
 
+  it("leaves the card as read when a recommended option collides on screen with a literal (Recommended) option", () => {
+    const ambiguous = SCREEN
+      .replace("│❯ Keep local socket (Recommended)", "│❯ Deploy (Recommended)")
+      .replace("│  Remote relay", "│  Deploy (Recommended)");
+    const calls = withArgs(open(), (args) => {
+      args.questions[0]!.options[0]!.label = "Deploy";
+      args.questions[0]!.options[1]!.label = "Deploy (Recommended)";
+      args.questions[0]!.recommended = 0;
+    });
+    const read = card(ambiguous);
+    expect(gjcAskPrompt(read, calls)).toBe(read);
+  });
+
   describe("transcript resolution and stale-call protection", () => {
     const cleanupDirs: string[] = [];
     const spies: { mockRestore(): void }[] = [];
@@ -200,7 +222,7 @@ describe("gjc ask cards in the agent's own Markdown", () => {
       while (cleanupDirs.length > 0) rmSync(cleanupDirs.pop()!, { recursive: true, force: true });
     });
 
-    it("resolves paneTranscript once per gjc fallback read and skips it when enrich is false", async () => {
+    it("resolves paneTranscript once per gjc fallback read and skips ask Markdown when enrich is false while keeping record binding", async () => {
       const lookup = spyOn(conversation, "paneTranscript").mockResolvedValue({
         source: "gjc-transcript",
         path: fixture("open.jsonl"),
@@ -210,8 +232,9 @@ describe("gjc ask cards in the agent's own Markdown", () => {
       const base = card();
       const plain = await withGjcFallback("w1:p-gjc-1", base, SCREEN, false);
       expect(plain).toBe(base);
-      expect(lookup).toHaveBeenCalledTimes(0);
+      expect(lookup).toHaveBeenCalledTimes(1);
 
+      lookup.mockClear();
       const enriched = await withGjcFallback("w1:p-gjc-1", base, SCREEN, true);
       expect(enriched?.text_format).toBe("markdown");
       expect(lookup).toHaveBeenCalledTimes(1);
@@ -402,6 +425,70 @@ describe("gjc ask cards in the agent's own Markdown", () => {
       expect(postB?.status).toBe(409);
       // Only the first Enter (to open Other) was sent; final Enter was refused because the editor closed
       expect(sentKeysB).toEqual([["enter"]]);
+    });
+
+    it("keeps record binding on cursor-move rereads so a record-backed gjc shell approval can move to Deny", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "gjc-record-move-"));
+      cleanupDirs.push(dir);
+      const sessionPath = join(dir, "session.jsonl");
+      writeFileSync(sessionPath, `${JSON.stringify({
+        type: "message",
+        id: "m_bash",
+        timestamp: "2026-11-25T00:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_bash_1", name: "bash", arguments: { command: "touch am-short.flag" } }],
+        },
+      })}\n`);
+      const paneId = "w1:p-gjc-record-move";
+      const approvalAllow = [
+        "─".repeat(40),
+        "",
+        " Approve the shell command",
+        " touch am-short.flag",
+        " Allow this command?",
+        "",
+        "─".repeat(40),
+        "│❯ Allow once                          │",
+        "│  Deny                                │",
+        "─".repeat(40),
+        "",
+        " up/down navigate",
+        " enter select esc cancel",
+        "",
+        "─".repeat(40),
+      ].join("\n");
+      const approvalDeny = approvalAllow
+        .replace("│❯ Allow once", "│  Allow once")
+        .replace("│  Deny", "│❯ Deny");
+      let currentScreen = approvalAllow;
+      const sentKeys: string[][] = [];
+      spies.push(spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+        panes: [{ pane_id: paneId, agent: "gjc", agent_status: "blocked", cwd: dir }],
+        workspaces: [],
+        tabs: [],
+      } as unknown as Awaited<ReturnType<typeof herdr.sessionSnapshot>>));
+      spies.push(spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: currentScreen } as Awaited<ReturnType<typeof herdr.paneRead>>)));
+      spies.push(spyOn(herdr, "paneSendKeys").mockImplementation(async (_id, keys) => {
+        sentKeys.push([...keys]);
+        if (keys.includes("down")) currentScreen = approvalDeny;
+        else if (keys.includes("enter")) currentScreen = " $ ";
+      }));
+      spies.push(spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "gjc-transcript", path: sessionPath }));
+
+      const getRes = await handlePromptRequest(new Request(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`), new URL(`http://127.0.0.1/api/pane/prompt?pane_id=${encodeURIComponent(paneId)}`));
+      expect(getRes?.status).toBe(200);
+      const body = await getRes!.json() as { prompt: { id: string; body?: string | null; options: { label: string }[] } };
+      expect(body.prompt.body).toContain("touch am-short.flag");
+      expect(body.prompt.options.map((o) => o.label)).toEqual(["Allow once", "Deny", "Esc"]);
+
+      const postRes = await handlePromptRequest(new Request("http://127.0.0.1/api/pane/prompt/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pane_id: paneId, prompt_id: body.prompt.id, option_index: 1 }),
+      }), new URL("http://127.0.0.1/api/pane/prompt/answer"));
+      expect(postRes?.status).toBe(200);
+      expect(sentKeys).toEqual([["down"], ["enter"]]);
     });
   });
 });

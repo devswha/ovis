@@ -15,7 +15,7 @@ import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
-import { gjcCallStillOpen, withGjcFallback } from "./gjc-ask.ts";
+import { gjcCallStillOpen, gjcCallStillOpenInFile, withGjcFallback } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
@@ -985,7 +985,7 @@ async function readKnownPrompt(
   openCodeStateDir?: string,
   openCodeState = defaultOpenCodeState,
   signal?: AbortSignal,
-  markdown = false,
+  markdown: boolean | "record" | "screen" = false,
   /**
    * for a key's verifying read: once every other look of this read is done, the screen is read again as it was
    * read before and parsed with what this read found; a card the screen no longer draws so authorizes no key
@@ -1246,7 +1246,7 @@ async function readKnownPrompt(
   if ((agent === "letta" || agent === "agy") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
   let rebind = (card: InteractivePrompt): InteractivePrompt => card;
   if (prompt && agent === "omp") {
-    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown, ompBindings);
+    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown === true, ompBindings);
     prompt = read.prompt;
     rebind = read.rebind;
     if (read.unverified) inputUnverified = true;
@@ -1301,10 +1301,11 @@ async function readKnownPrompt(
   // a command approval stays: its held request is answered through the approval hub with no key, and a key for it is
   // still refused before it goes (beforeKey)
   if (agent === "pi" && approvalDialog(prompt) === null && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
-  if (!prompt && agent === "gjc" && settle !== "editor") {
+  if (!prompt && agent === "gjc" && markdown !== false && settle !== "editor") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
-      return { prompt: await withGjcFallback(paneId, fallback, screen, markdown), screen };
+      if (markdown === "screen") return { prompt: fallback, screen };
+      return { prompt: await withGjcFallback(paneId, fallback, screen, markdown === true), screen };
     }
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
@@ -1769,8 +1770,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
-        // the reads above yield: a Codex question its server said meanwhile is answered takes no key
+        // the reads above yield: a Codex question its server said meanwhile is answered takes no key,
+        // and a gjc ask call replaced in its session file during the final screen read takes no key or paste
         if (agent === "codex" && parsedPrompt !== undefined && questionClosed(body.pane_id, parsedPrompt)) throw new KeyRefused();
+        if (parsedPrompt?.gjcCall !== undefined && !gjcCallStillOpenInFile(parsedPrompt.gjcCall)) throw new KeyRefused();
         return write();
       };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
@@ -2228,7 +2231,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             if (!asks() || request.signal.aborted) return false;
             const left = deadline - Date.now();
             if (left <= 0) return false;
-            const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
+            const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir,
+              openCodeState, undefined, agent === "gjc" ? (parsed.record !== undefined ? "record" : "screen") : false);
             reading.catch(() => undefined);
             const read = await Promise.race([reading, Bun.sleep(left).then(() => null)]);
             if (!read || Date.now() > deadline) return false;
