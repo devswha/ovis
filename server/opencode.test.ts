@@ -653,6 +653,96 @@ describe("OpenCode 2.4 split assistant content", () => {
       expect(newest.turns.filter((turn) => turn.role === "user").flatMap((turn) => turn.parts)).toEqual([{ kind: "text", text: "Newest prompt" }]);
     }
   });
+
+  it("invalidates page and parsed-record caches on same-millisecond growing and equal-length part rewrites", () => {
+    const s = storeV24();
+    s.db.exec("CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);");
+    const bumpRevision = (seq: number) => {
+      s.db.query("INSERT OR REPLACE INTO event_sequence (aggregate_id, seq) VALUES (?, ?)").run(s.session, seq);
+    };
+    s.prompt("Go");
+    const step = s.answer("", { content: [] });
+    s.part(step, 0, { type: "text", text: "A" }, T0 + 3);
+    bumpRevision(1);
+    const first = page(opencodeConversation(s.path, s.session));
+    expect(first.turns[1]?.parts).toEqual([{ kind: "text", text: "A", phase: "final_answer" }]);
+
+    // Growing write in the same millisecond (even without moving time_updated)
+    s.part(step, 0, { type: "text", text: "AB" }, T0 + 3);
+    bumpRevision(2);
+    const grown = page(opencodeConversation(s.path, s.session));
+    expect(grown.signature).not.toBe(first.signature);
+    expect(grown.turns[1]?.parts).toEqual([{ kind: "text", text: "AB", phase: "final_answer" }]);
+
+    // Equal-length rewrite in the same millisecond
+    s.part(step, 0, { type: "text", text: "CD" }, T0 + 3);
+    bumpRevision(3);
+    const rewritten = page(opencodeConversation(s.path, s.session));
+    expect(rewritten.signature).not.toBe(grown.signature);
+    expect(rewritten.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
+
+    // Also without event_sequence: growing write & equal-length write followed by idle row
+    const noSeq = storeV24();
+    noSeq.prompt("Go");
+    const noSeqStep = noSeq.answer("", { content: [] });
+    noSeq.part(noSeqStep, 0, { type: "text", text: "A" }, T0 + 3);
+    const n1 = page(opencodeConversation(noSeq.path, noSeq.session));
+    noSeq.part(noSeqStep, 0, { type: "text", text: "AB" }, T0 + 3);
+    const n2 = page(opencodeConversation(noSeq.path, noSeq.session));
+    expect(n2.signature).not.toBe(n1.signature);
+    expect(n2.turns[1]?.parts).toEqual([{ kind: "text", text: "AB", phase: "final_answer" }]);
+    noSeq.part(noSeqStep, 0, { type: "text", text: "CD" }, T0 + 3);
+    noSeq.idle();
+    const n3 = page(opencodeConversation(noSeq.path, noSeq.session));
+    expect(n3.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
+  });
+
+  it("reads tool images stored as media:<sha256> blobs scoped by session and message blob_ref", () => {
+    const s = storeV24();
+    s.db.exec(`
+      CREATE TABLE blob (hash text PRIMARY KEY, mime text NOT NULL, bytes integer NOT NULL, width integer, height integer, data blob NOT NULL, time_created integer NOT NULL);
+      CREATE TABLE blob_ref (session_id text NOT NULL, message_id text NOT NULL, hash text NOT NULL, seq integer NOT NULL, PRIMARY KEY (session_id, message_id, hash));
+    `);
+    const hash = "a".repeat(64);
+    const otherHash = "b".repeat(64);
+    s.db.query("INSERT INTO blob VALUES (?, 'image/png', ?, 1, 1, ?, ?)").run(hash, PNG.length, PNG, T0);
+    s.db.query("INSERT INTO blob VALUES (?, 'image/png', ?, 1, 1, ?, ?)").run(otherHash, PNG.length, PNG, T0);
+    s.prompt("Show chart");
+    const step = s.answer("", { content: [] });
+    s.db.query("INSERT INTO blob_ref VALUES (?, ?, ?, 2)").run(s.session, step, hash);
+    s.db.query("INSERT INTO blob_ref VALUES ('ses_other', 'msg_other', ?, 2)").run(otherHash);
+    s.part(step, 0, tool("read", {
+      status: "completed",
+      input: { path: "chart.png" },
+      content: [
+        { type: "file", uri: `media:${hash}`, mime: "image/png" },
+        { type: "file", uri: `media:${otherHash}`, mime: "image/png" },
+      ],
+    }, "call_blob"));
+
+    const conv = page(opencodeConversation(s.path, s.session));
+    const toolPart = conv.turns[1]?.parts.find((p) => p.kind === "tool");
+    expect(toolPart && toolPart.kind === "tool" ? toolPart.images : []).toEqual([
+      { media_type: "image/png", ref: `opencode:${step}:0` },
+    ]);
+    expect(opencodeImage(s.path, s.session, `opencode:${step}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+    expect(opencodeImage(s.path, s.session, `opencode:${step}:1`)).toBeNull();
+  });
+
+  it("does not overflow SQLite integer sum on extreme session_part timestamps", () => {
+    const s = storeV24();
+    s.prompt("Huge timestamps");
+    const step = s.answer("", { content: [] });
+    // Two values whose direct SUM overflows SQLite 64-bit signed integer (2^63 - 1 = 9223372036854775807)
+    const huge = 5_000_000_000_000_000_000;
+    s.part(step, 0, { type: "text", text: "One" }, huge);
+    s.part(step, 1, { type: "text", text: "Two" }, huge + 1);
+    const conv = page(opencodeConversation(s.path, s.session));
+    expect(conv.turns[1]?.parts).toEqual([
+      { kind: "text", text: "One" },
+      { kind: "text", text: "Two", phase: "final_answer" },
+    ]);
+  });
 });
 
 describe("where a page starts", () => {
