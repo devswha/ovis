@@ -87,12 +87,9 @@ export const SETUP_KO: Record<string, string> = {
   "None": "없음",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "에이전트가 다룰 수 있는 브라우저입니다. Ovis가 이 에이전트를 띄울 때 버전을 고정한 MCP 서버를 붙입니다. 그 브라우저는 따로 만든 프로필을 써서 내 로그인은 쓰지 않고, Ovis가 지켜보거나 막지 않습니다. 다음에 띄울 때부터 적용되고, 터미널에서 직접 띄운 에이전트는 바뀌지 않습니다.",
   "Let agents call other agents": "다른 에이전트 부르기",
-  "On this PC only. You still answer every permission request.": "이 PC에서만. 승인은 항상 직접 합니다.",
+  "On this PC only. Only you can approve requests.": "이 PC에서만. 승인은 직접 해요.",
   "Agents they may call": "부를 수 있는 에이전트",
   "The allow rules you set in {agents}, a project folder's included, apply when they are called too.": "{agents}에 직접 정해 둔 허용 규칙(프로젝트 폴더 것 포함)은 불려 나올 때도 적용돼요.",
   "{agents} searches the web without asking.": "{agents}는 웹 검색을 묻지 않고 해요.",
   "Not saved: this PC did not answer. Try again.": "저장하지 못했습니다: 이 PC가 답하지 않았습니다. 다시 시도하세요.",
-  "Give {name} the tool to call other agents?": "{name} 칸에 다른 에이전트 부르기 도구를 줄까요?",
-  "Programs in this pane can start other agents and give them work until it closes. You still answer every permission request.": "이 칸이 닫힐 때까지 칸 안의 프로그램이 다른 에이전트를 띄우고 일을 맡길 수 있습니다. 승인은 항상 직접 합니다.",
-  "A pane you allowed to call other agents, until it closes.": "다른 에이전트를 부르도록 허락한 칸입니다. 칸이 닫히면 끝납니다.",
 };

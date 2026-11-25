@@ -18,8 +18,10 @@ export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { clau
 export const OWN_RULES_HARNESSES: readonly string[] = ["codex", "copilot", "agy"];
 /** Of those, the ones whose built-in web search runs unasked in every launch. */
 export const UNASKED_SEARCH_HARNESSES: readonly string[] = ["agy"];
-export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "view", depth: 1, harnesses: [] };
-export const HARNESS_TOOL_OFF: HarnessToolSetting = { ...HARNESS_TOOL_DEFAULT, level: "off" };
+/** Harness kinds with an ACP launch in server/agent-tools/harnesses.ts (resolveHarness). */
+export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc"] as const;
+export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES };
+export const HARNESS_TOOL_OFF: HarnessToolSetting = { level: "off", depth: 1, harnesses: [] };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {
   if (!isRecord(stored) || !Object.keys(stored).every(k => ["level","depth","harnesses"].includes(k))) return null;
   const { level, depth, harnesses } = stored;
@@ -38,7 +40,3 @@ export const harnessVerb = (value: unknown): value is HarnessVerb => typeof valu
 export const isView = (verb: HarnessVerb) => VIEW_VERBS.some(v => v === verb);
 export const answer = <K extends string, B extends object>(kind: K, body: B) => ({ contract: HARNESS_CONTRACT, kind, ...body });
 export const refuse = (code: string, message: string) => answer("refusal", { error: { code, message } });
-
-/** Panes hc started that asked for the agent tool (`agent-tool-panes`, GET /api/agent-tools/panes): this PC's owner only. */
-export interface AgentToolPane { readonly id: string; readonly pane: string; readonly label: string }
-export interface AgentToolPanes { readonly pending: readonly AgentToolPane[]; readonly allowed: readonly AgentToolPane[] }

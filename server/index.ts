@@ -60,6 +60,7 @@ import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
 import { noteHookCommand, OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
+import { readToldModes } from "./conversation.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -503,6 +504,8 @@ export function createServer(
     join: (given) => accountList.joinList(given),
     joined: () => accountMailbox.joinedByList(),
     joinedTo: (account, list) => { const status = accountList.status(); return status.pinned && status.account === account && status.pinned_list === list && status.standing === "in"; },
+    inAccount: () => devices.account() !== null,
+    needsKeys: () => accountList.needsKeys(),
     now: () => Date.now(),
     pollMs: options.accountListAddPollMs,
   });
@@ -608,6 +611,7 @@ export function createServer(
   const catalogPlatformHere = catalogPlatform(process.platform);
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
   readHeldApprovals(approvals);
+  readToldModes((paneId) => approvals.toldMode(paneId));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
     return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;
@@ -637,7 +641,7 @@ export function createServer(
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
   let agentTools: AgentToolHub | null = null;
-  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); agentTools?.grants.forgetPane(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
@@ -950,7 +954,7 @@ export function createServer(
   // No deferred listener from a failed HTTP/LAN bind may replace a running server's hub.
   if (acp && process.platform !== "win32" && hcMachine() === null) {
     try {
-      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
+      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool), paneRunEpoch: () => preferences.paneRunEpoch });
       const hub = agentTools;
       void acpReady?.then(async restored => {
         if (!restored) throw new Error("ACP restore incomplete.");
@@ -984,6 +988,7 @@ export function createServer(
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
+      listAdd?.stop();
       accountWitness?.stop();
       accountRows?.stop();
       accountCatchUp.stop();

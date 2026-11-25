@@ -736,7 +736,7 @@ export type ConversationPart =
     output_ref?: string; output_size?: number;
     /** images the call returned (pi reads a picture into the result); same fetch as a user image */
     images?: { media_type: string; ref: string }[];
-    /** the agent's own id for the call (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`); absent from other agents and older servers */
+    /** the agent's own id for the call, when available (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`, OpenCode `id`) */
     call_id?: string;
     /**
      * What the transcript itself records of the call's outcome, never guessed from its output text.
@@ -808,6 +808,11 @@ export interface ConversationMetadata {
    * `openai-codex`): set by a model change and by each answer, absent when none is named.
    */
   provider?: string;
+  /**
+   * Claude Code's permission mode (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), as its
+   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it.
+   */
+  permission_mode?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
