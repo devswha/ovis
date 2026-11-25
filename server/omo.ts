@@ -318,8 +318,14 @@ export function omoCandidates(cwd: string, home: string, exactPaths: string[] = 
     const dir = sessionDir(cwd, agentDir);
     let names: string[] = [];
     try { names = readdirSync(dir); } catch { /* only explicit evidence may remain */ }
-    // Never choose a subset when the directory is too large to inspect safely.
-    if (names.length <= 4096) for (const name of names) if (name.endsWith(".jsonl")) paths.add(join(dir, name));
+    const transcripts: string[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".jsonl")) continue;
+      transcripts.push(name);
+      if (transcripts.length > 4096) break;
+    }
+    // Bound transcript reads without counting sidecars or guessing from a partial set.
+    if (transcripts.length <= 4096) for (const name of transcripts) paths.add(join(dir, name));
   }
   const found = new Map<string, OmoCandidate>();
   for (const path of paths) {
