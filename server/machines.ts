@@ -403,7 +403,9 @@ export class MachineManager {
   private discoveryTimer?: ReturnType<typeof setTimeout>;
   private discoveryStarted = false;
   private hcTimer?: ReturnType<typeof setTimeout>;
-  private hcStart?: (machine: Pick<HcMachine, "id" | "name">) => Promise<MachineBridge>;
+  private hcStart?: (machine: Pick<HcMachine, "id" | "name">, signal: AbortSignal) => Promise<MachineBridge>;
+  /** Aborts the bridges still starting: stop() would otherwise wait for their start deadline. */
+  private readonly stopping = new AbortController();
   private settingsPath: string;
   private preferences: MachineSettings = { ...DEFAULT_SETTINGS };
   private autoChain: Promise<void> = Promise.resolve();
@@ -605,7 +607,7 @@ export class MachineManager {
     this.profileState.flush();
     if (errors.length) throw new AggregateError(errors, "Some saved machine keys could not be removed; cleanup will retry");
   }
-  watchHcMachines(read: () => Promise<HcMachine[]>, start: (machine: Pick<HcMachine, "id" | "name">) => Promise<MachineBridge>, intervalMs = 5000): void {
+  watchHcMachines(read: () => Promise<HcMachine[]>, start: (machine: Pick<HcMachine, "id" | "name">, signal: AbortSignal) => Promise<MachineBridge>, intervalMs = 5000): void {
     if (this.hcStart || this.stopped) return;
     this.hcStart = start;
     let failures = 0, previousError: string | undefined;
@@ -2266,7 +2268,7 @@ export class MachineManager {
         const prior = this.bridgeWork.get(hc.id) ?? Promise.resolve();
         await this.trackBridgeWork(hc.id, prior.catch(() => undefined).then(async () => {
           if (!current()) return;
-          const bridge = await this.hcStart!(hc);
+          const bridge = await this.hcStart!(hc, this.stopping.signal);
           if (!current()) { await bridge.stop(); return; }
           hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
           void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
@@ -2744,6 +2746,7 @@ export class MachineManager {
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }
     this.listeners.clear();
+    this.stopping.abort();
     await Promise.allSettled(this.bridgeWork.values());
   }
 }

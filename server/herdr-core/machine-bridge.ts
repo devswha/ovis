@@ -43,7 +43,7 @@ const STOP_MS = 10_000;
  * machine's, so no transcript of this PC can be taken for one of its panes. Its state lives under
  * `stateDir`; it ends with this server (it holds the stdin this one keeps open).
  */
-export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string): Promise<MachineBridge> {
+export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string, signal?: AbortSignal): Promise<MachineBridge> {
   const dir = join(stateDir, "hc-machines", machine.id);
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -80,6 +80,10 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
     ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`));
   });
   const timer = setTimeout(() => ready.reject(new Error(`The server for ${machine.name} did not start within ${READY_MS / 1000}s`)), READY_MS);
+  // this server is stopping: a child that has not answered yet is not waited for until READY_MS
+  const abort = () => ready.reject(new Error(`The server for ${machine.name} was stopped before it answered`));
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
   try {
     const { port, token } = await ready.promise;
     return { endpoint: { url: `http://127.0.0.1:${port}`, token }, exited: child.exited, stop };
@@ -90,5 +94,6 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
 }

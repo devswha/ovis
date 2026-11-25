@@ -51,6 +51,22 @@ describe("herdr-core's machines as PCs (#2497)", () => {
     }
   });
 
+  it("stops without waiting for a machine bridge that has not answered yet", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-hc-machines-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
+    const starting = Promise.withResolvers<void>();
+    // a bridge that never reports ready: only the stop's abort ends its start
+    manager.watchHcMachines(async () => [], (_machine, signal) => {
+      starting.resolve();
+      return new Promise<MachineBridge>((_resolve, reject) => { signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true }); });
+    }, 3_600_000);
+    await settled();
+    manager.syncHcMachines([lab]);
+    await starting.promise;
+    await manager.stop();
+  }, 5_000);
+
   it("drains the old bridge before opening the same machine under a new name", async () => {
     const drain = Promise.withResolvers<void>();
     const { manager, events } = await fixture(drain.promise);

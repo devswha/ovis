@@ -4,11 +4,11 @@ Base: `1d71a718db4e0318c2d7d3f3a80c3e8c939e36c1`. Synthetic data only; no produc
 
 ## Design and limits
 
-- One serialized lane per SeenStore; at most MAX_SEEN (500) accepted browser acknowledgements, including the in-flight operation. Excess acknowledgements use the existing `seen_unwritable` error handling. One-shot pane moves use the same ordering, but cannot be retried, so they are not rejected when a backlog accumulates. Identical/older updates reach the head and skip persistence.
+- One serialized lane per SeenStore with group commit: everything that arrives while a write runs goes into the next single file replacement, so a backlog costs at most two writes. At most MAX_SEEN (500) accepted browser acknowledgements, including the in-flight batch; an excess acknowledgement gets 503 `seen_busy`, which the browser retries. One-shot pane moves use the same ordering, but cannot be retried, so they are not rejected when a backlog accumulates. Identical/older updates reach the head and skip persistence.
 - Stage from the last committed map, await private temporary-file write/fsync/atomic rename, then replace memory and publish. Failed operations do not poison the lane or contribute to a later merge.
 - Damaged bytes are copied privately and synced before replacing `.bad`; the original stays in place until the final atomic rename. Generic synchronous `writeStateDocument` is unchanged.
-- `close()` rejects new work and drains accepted operations. ServerInstance.stop returns that drain; SSH shutdown keeps ownership until the drain finishes or its ten-second exit deadline is reached. Local and remote move callbacks catch async errors. The managed launcher forwards signals to the child, which owns its drain.
-- JSON schema, success payloads and events are unchanged. Saturation uses the existing persistence-error response (500), not a new wire code. File reading on initialization/first effective update and JSON/map work remain synchronous. Multiple independent owners of the same stateDir remain unsupported.
+- `close()` rejects new work, drains accepted operations and waits for what listeners started for them (herdr-core's `herdr.seen` label). ServerInstance.stop returns that drain; SSH shutdown keeps ownership until the drain finishes or its ten-second exit deadline is reached. Local and remote move callbacks catch async errors. The managed launcher forwards signals to the child, which owns its drain and stops waiting for it after 4 s (the supervisor kills at 6 s). A machine bridge still starting is aborted at stop instead of waiting for its 30 s start deadline.
+- JSON schema, success payloads and events are unchanged. Saturation answers 503 `seen_busy` (additive; clients already retry 5xx from 502 up). File reading on initialization/first effective update and JSON/map work remain synchronous. Multiple independent owners of the same stateDir remain unsupported.
 
 ## Reproduction
 
