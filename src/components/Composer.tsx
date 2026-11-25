@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ClipboardList, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
@@ -60,7 +60,6 @@ import { composerFull, formatChars, pasteOverflow } from "../lib/composerLength.
 import { normalizeComposerImageFile } from "../lib/composerImageMime.ts";
 import { paneStatus } from "../lib/status.ts";
 import { modelLabel } from "../lib/modelName.ts";
-import { permissionModeIcon, permissionModeLabel } from "../lib/permissionMode.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
 import { resolveComposerMenuActiveItemId } from "../lib/composerMenuHighlight.ts";
@@ -400,14 +399,6 @@ export function Composer({
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
-      // the permission mode gives way first: where any label of the pill is cut it is drawn as its mark, and where that
-      // is cut too it steps out, before the level is measured
-      status.removeAttribute("data-mode");
-      const pillCut = (): boolean => [".composer-model", ".composer-reasoning", ".composer-mode"].some(clipped);
-      if (status.querySelector(".composer-mode") !== null && pillCut()) {
-        status.setAttribute("data-mode", "short");
-        if (pillCut()) status.setAttribute("data-mode", "out");
-      }
       const first = composerModelDraw({
         modelClipped: clipped(".composer-model"),
         effortClipped: clipped(".composer-reasoning"),
@@ -1079,9 +1070,7 @@ export function Composer({
   useEffect(() => { if (dictating) tally(() => usageCounters.paneUse("composer_voice", machineId)); }, [dictating, machineId]);
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
   const model = metadata?.model ? modelLabel(metadata.model) : null;
-  const modeShown = permissionModeLabel(metadata?.permission_mode, t);
-  const ModeIcon = modeShown === null ? null : permissionModeIcon(metadata!.permission_mode!);
-  const modelShown = Boolean(metadata?.model || metadata?.reasoning_effort || modeShown);
+  const modelShown = Boolean(metadata?.model || metadata?.reasoning_effort);
   const usageDetail = usageWindows.map((window) => {
     const reset = formatResetIn(window.resets_at, Date.now());
     return `${windowLabel(window)} ${meterText(window, settings.usageCount)}${reset ? ` · ${t("Resets in {time}", { time: reset })}` : ""}`;
@@ -1474,12 +1463,10 @@ export function Composer({
                     <span className="composer-reasoning-short" aria-hidden="true">{metadata.reasoning_effort}</span>
                   </>}
                 </span>
-                {modeShown && <span className="composer-mode" title={t("Permission mode: {mode}", { mode: modeShown })}>
-                  <span className="composer-reasoning-dot" aria-hidden="true">·</span>
-                  <span className="visually-hidden">{t("Permission mode: {mode}", { mode: modeShown })}</span>
-                  <span className="composer-mode-name" aria-hidden="true">{modeShown}</span>
-                  {ModeIcon && <ModeIcon className="composer-mode-icon" aria-hidden="true" />}
-                </span>}
+              </span>}
+              {/* Claude Code's plan mode is the one mode the pill marks, as an icon; every other mode draws nothing */}
+              {metadata?.permission_mode === "plan" && <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
+                <ClipboardList aria-hidden="true" />
               </span>}
               {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span

@@ -388,9 +388,6 @@ const BASE: Record<string, string> = {
 
   "Browse": "찾아보기",
   "Cancel": "취소",
-  "Accept edits": "편집 자동 허용",
-  "Don't ask": "묻지 않기",
-  "Bypass permissions": "권한 확인 건너뛰기",
   "Install": "설치",
   "Installed": "설치됨",
   "Not installed": "설치되지 않음",

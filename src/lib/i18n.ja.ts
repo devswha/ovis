@@ -390,9 +390,6 @@ const BASE: Record<string, string> = {
 
   "Browse": "参照",
   "Cancel": "キャンセル",
-  "Accept edits": "編集を自動で許可",
-  "Don't ask": "確認しない",
-  "Bypass permissions": "権限確認をスキップ",
   "Install": "インストール",
   "Installed": "インストール済み",
   "Not installed": "未インストール",

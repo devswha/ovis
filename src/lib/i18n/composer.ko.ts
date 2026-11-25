@@ -2,7 +2,7 @@
  * Korean for the keys only the composer files use:
  * components/Composer.tsx (with SOURCE_LABEL), components/ComposerNotices.tsx,
  * components/VoiceInput.tsx, components/SecretInput.tsx, components/TerminalInput.tsx,
- * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts, lib/permissionMode.ts,
+ * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts,
  * and ../../../shared/card-text.ts (CARD_TEXT, the card text the bridge writes itself).
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
@@ -56,8 +56,6 @@ export const COMPOSER_KO: Record<string, string> = {
   "Reasoning effort not available": "추론 강도 정보 없음",
   "Reasoning {effort}": "추론 {effort}",
   "Plan mode": "플랜 모드",
-  "Auto mode": "자동 모드",
-  "Permission mode: {mode}": "권한 모드: {mode}",
   "Uploading file…": "파일 올리는 중…",
   "{max}-character limit · {count} over": "{max}자 한도 · {count}자 넘침",
   "{max}-character limit": "{max}자 한도",

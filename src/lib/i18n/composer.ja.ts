@@ -2,7 +2,7 @@
  * Japanese for the keys only the composer files use:
  * components/Composer.tsx (with SOURCE_LABEL), components/ComposerNotices.tsx,
  * components/VoiceInput.tsx, components/SecretInput.tsx, components/TerminalInput.tsx,
- * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts, lib/permissionMode.ts,
+ * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts,
  * and ../../../shared/card-text.ts (CARD_TEXT, the card text the bridge writes itself).
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
@@ -56,8 +56,6 @@ export const COMPOSER_JA: Record<string, string> = {
   "Reasoning effort not available": "推論レベル情報なし",
   "Reasoning {effort}": "推論 {effort}",
   "Plan mode": "プランモード",
-  "Auto mode": "自動モード",
-  "Permission mode: {mode}": "権限モード: {mode}",
   "Uploading file…": "ファイルをアップロードしています…",
   "{max}-character limit · {count} over": "{max} 文字の上限 · {count} 文字超過",
   "{max}-character limit": "{max} 文字の上限",

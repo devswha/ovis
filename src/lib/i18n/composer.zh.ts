@@ -2,7 +2,7 @@
  * Simplified Chinese for the keys only the composer files use:
  * components/Composer.tsx (with SOURCE_LABEL), components/ComposerNotices.tsx,
  * components/VoiceInput.tsx, components/SecretInput.tsx, components/TerminalInput.tsx,
- * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts, lib/permissionMode.ts,
+ * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts,
  * and ../../../shared/card-text.ts (CARD_TEXT, the card text the bridge writes itself).
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
@@ -56,8 +56,6 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Reasoning effort not available": "推理强度信息不可用",
   "Reasoning {effort}": "推理 {effort}",
   "Plan mode": "计划模式",
-  "Auto mode": "自动模式",
-  "Permission mode: {mode}": "权限模式：{mode}",
   "Uploading file…": "正在上传文件…",
   "{max}-character limit · {count} over": "{max} 字上限 · 超出 {count} 字",
   "{max}-character limit": "{max} 字上限",

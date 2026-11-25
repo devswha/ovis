@@ -25,6 +25,27 @@ try {
         await page.evaluate(() => (window as any).fitReply(true));
         await page.locator(".composer-stop").waitFor();
       });
+      // Claude Code's plan mode is the one mode drawn: an icon named for it, whole in the row at every width, with or
+      // without the plan chip; every other mode draws nothing
+      for (const width of [320, 360, 390, 1280]) for (const noChip of [false, true]) for (const mode of ["plan", "default", "acceptEdits", "auto", "bypassPermissions", "dontAsk"]) {
+        if (mode !== "plan" && (width !== 390 || noChip)) continue;
+        await withCard(browser, width, { agent: "claude", model: "claude-opus-5-5", status: "idle", pending: false, mode, noChip }, async (page) => {
+          const what = `${mode} at ${width}px${noChip ? " without the plan chip" : ""}`;
+          if (mode === "plan") await page.getByRole("img", { name: "Plan mode", exact: true }).waitFor();
+          await page.waitForFunction((chip) => (document.querySelector(".bg-tasks-toggle") !== null) === chip, !noChip, { timeout: 5_000 });
+          const row = await measure(page);
+          const icon = await page.evaluate(() => {
+            const item = document.querySelector<HTMLElement>(".composer-mode");
+            if (!item) return null;
+            const box = item.getBoundingClientRect(), status = document.querySelector(".composer-status")!.getBoundingClientRect();
+            return { width: box.width, inRow: box.left >= status.left - 0.5 && box.right <= status.right + 0.5 && box.top >= status.top - 0.5 && box.bottom <= status.bottom + 0.5 };
+          });
+          if (mode === "plan") assert.ok(icon !== null && icon.width > 1.5 && icon.inRow, `${what}: the plan icon is drawn whole in the row: ${JSON.stringify(icon)}`);
+          else assert.equal(icon, null, `${what}: no mode is drawn`);
+          assert.deepEqual(row.overlaps, [], `${what}: nothing overlaps its neighbour`);
+          assert.equal(row.overflowing, false, `${what}: the page does not scroll sideways`);
+        });
+      }
       // Typography is applied by SettingsProvider after the render. At this fixed card width,
       // the larger interface font must step effort out without needing a viewport resize.
       await withCard(browser, 1075, { agent: "codex", model: LONG_MODEL }, async (page) => {

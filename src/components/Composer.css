@@ -205,9 +205,7 @@
 }
 
 .composer-status[data-model="out"] .composer-model-info,
-.composer-status[data-model="no-effort"] .composer-reasoning,
-.composer-status[data-model="no-effort"] .composer-mode,
-.composer-status[data-mode="out"] .composer-mode {
+.composer-status[data-model="no-effort"] .composer-reasoning {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -252,32 +250,15 @@
   white-space: nowrap;
 }
 
-/* Claude Code's permission mode beside the level: it gives way first, to its mark and then out (fitStatus) */
+/* Claude Code's plan mode as an icon after the level: it never shrinks, the model's name gives way instead */
 .composer-mode {
-  flex: 0 200 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.composer-mode-icon {
-  display: none;
-  width: var(--icon-size-xs);
-  height: var(--icon-size-xs);
-  vertical-align: -1px;
-}
-
-.composer-status[data-mode="short"] .composer-mode {
+  display: inline-flex;
   flex: none;
 }
 
-.composer-status[data-mode="short"] .composer-mode-name {
-  display: none;
-}
-
-.composer-status[data-mode="short"] .composer-mode-icon {
-  display: inline-block;
+.composer-mode svg {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
 }
 
 .composer-reasoning-dot {
