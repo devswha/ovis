@@ -87,12 +87,19 @@ describe("remote-bundles.yml", () => {
     expect(build.env?.["HERDR_BUNDLE_OUTPUT"]).not.toBe("remote-bundles");
   });
 
-  it("runs the pull request's SSH checks on a bundle without the Rust PTY host, as the ssh job's, even after a failed smoke", () => {
+  it("runs the Linux bundle and its smoke whatever became of the Windows bundle", () => {
+    const linux = workflow.jobs["bundle-linux"]!.steps!;
+    const conditions = [linux.find((step) => step.id === "pty-host"), linux.find((step) => step.id === "linux-bundle"), linux.find(runs("remote-bundle-smoke.ts"))].map((step) => step?.if);
+    expect(conditions).toEqual(["!cancelled() && steps.common.outcome == 'success'", "!cancelled() && steps.pty-host.outcome == 'success'", "!cancelled() && steps.linux-bundle.outcome == 'success'"]);
+  });
+
+  it("runs the pull request's SSH checks on a bundle without the Rust PTY host, as the ssh job's, whatever became of the other checks", () => {
     const linux = workflow.jobs["bundle-linux"]!.steps!;
     const node = linux.find((step) => step.id === "node-bundle")!;
     expect(node.env).toEqual({ HERDR_BUNDLE_PTY_SIDECAR: "" });
     expect(node.run).toBe("bun run scripts/build-remote-bundle.ts");
-    expect(node.if).toBe("!cancelled() && steps.linux-bundle.outcome == 'success'");
+    expect(node.if).toBe("!cancelled() && steps.common.outcome == 'success'");
+    expect(linux.find((step) => step.id === "common")!.run).toBe("bun run typecheck && bun run build");
     for (const step of linux.filter(runs("ci-ssh-checks.sh"))) expect([step.name, step.if]).toEqual([step.name, "!cancelled() && steps.node-bundle.outcome == 'success'"]);
     expect(at(linux, (step) => step.id === "node-bundle")).toBeGreaterThan(at(linux, runs("remote-bundle-smoke.ts")));
     expect(workflow.jobs["ssh"]!.env?.["HERDR_BUNDLE_PTY_SIDECAR"]).toBeUndefined();

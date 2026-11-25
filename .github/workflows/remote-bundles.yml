@@ -88,7 +88,8 @@ jobs:
           node: 'true'
           cache: none
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck && bun run build
+      - id: common
+        run: bun run typecheck && bun run build
       # in a folder of its own, so the artifact holds the Windows bundle alone, as bundle-windows' does
       - name: Windows bundle
         env:
@@ -99,14 +100,20 @@ jobs:
         with:
           name: remote-win32-x64
           path: remote-bundles-win32/*
-      - run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
+      # the Linux bundle and its smoke, whatever became of the Windows bundle
+      - id: pty-host
+        if: "!cancelled() && steps.common.outcome == 'success'"
+        run: bun scripts/pty-sidecar.ts build linux-x64 pty-sidecar
       - id: linux-bundle
+        if: "!cancelled() && steps.pty-host.outcome == 'success'"
         run: bun run scripts/build-remote-bundle.ts
-      - run: bun run scripts/remote-bundle-smoke.ts
-      # the ssh job's bundle has no Rust PTY host, so its remote PC runs the Node one: the same here
+      - if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        run: bun run scripts/remote-bundle-smoke.ts
+      # the ssh job's bundle has no Rust PTY host, so its remote PC runs the Node one: the same here, whatever became
+      # of the Windows bundle, the Rust PTY host or the smoke
       - id: node-bundle
         name: Linux bundle without the Rust PTY host
-        if: "!cancelled() && steps.linux-bundle.outcome == 'success'"
+        if: "!cancelled() && steps.common.outcome == 'success'"
         env:
           HERDR_BUNDLE_PTY_SIDECAR: ''
         run: bun run scripts/build-remote-bundle.ts
