@@ -350,6 +350,28 @@ describe("a join to a pinned PC whose account service does not answer", () => {
     expect(made.devices.hasKey(phone.key)).toBe(false);
   }, 30_000);
 
+  test("#4720 review J1: a join whose admission the PC has read is not refused when the rest of the read is slow", async () => {
+    const { made, services, account, join } = await pinnedPc();
+    const phone = await listMember();
+    const card = await claimKey(made.account, ACCOUNT, account.id, phone);
+    // the mailbox answers at once, so the admission is read; the snapshot read after it waits until the test lets it go
+    const snapshot = deferred<void>();
+    serviceWire.answer = async (request, forward) => {
+      if (new URL(request.url).pathname === "/v1/pc/snapshot") await snapshot.promise;
+      return await forward();
+    };
+    try {
+      const asked = await join(phone, card);
+      let refused: unknown = null;
+      void asked.opening.catch((error: unknown) => { refused = error; });
+      const shown = deferred<void>();
+      const stop = services.relay.approvals.subscribe(() => { if (services.relay.approvals.ownJoins().length > 0) shown.resolve(); });
+      try { await bounded(shown.promise, 15_000); } finally { stop(); }
+      expect(refused).toBeNull();
+      expect(services.accountMailbox.currentAdmission(phone.key)).toBe(true);
+    } finally { snapshot.resolve(); }
+  }, 40_000);
+
   test("a service that does not answer at all (its host black-holed): the PC says so within seconds, not after its calls time out", async () => {
     const { made, account, join } = await pinnedPc();
     const phone = await listMember();

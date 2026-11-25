@@ -13,7 +13,7 @@ import { openSealed, openWrap, wrapFromText } from "../../shared/account-list-se
 import { readKind, readNames } from "../../shared/account-list.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
-import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { ACCOUNT_LIST_ALLOW_FILE, LIST_ALLOW_MS, LIST_MEMBER_WAIT_MS } from "./list-follow.ts";
@@ -626,6 +626,32 @@ describe("what the PC does when the entry does not go in", () => {
     expect(entriesPlaced(made)).toBe(0);
   });
 });
+
+/**
+ * #4720 review J2 (the lead's ruling): a join waits at most JOIN_ADMISSION_WAIT_MS for the account's word only where its
+ * client offered `account-listing-errors-1`, which can hear why and try again. Any other join (another PC of the account,
+ * an older app) waits as it always did and hears what it always heard.
+ */
+test("with the account's word late, a join that can hear why is refused at the bound, and one that cannot waits and is taken once the word comes", async () => {
+  const made = await allowingPc();
+  const [told, older] = [await listMember(), await listMember()];
+  const cards = await Promise.all([told, older].map(async (device) => ({ enc: device.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, device) })));
+  // the mailbox, where the PC reads both admissions, answers once the test lets it
+  const word = deferred<void>();
+  made.hook.on = async (request, forward) => {
+    if (new URL(request.url).pathname === "/v1/pc/mailbox") await word.promise;
+    return await forward();
+  };
+  try {
+    const waiting = join(made, older, { card: cards[1]! });
+    const refusal = await join(made, told, { card: cards[0]!, features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT, ACCOUNT_LIST_ALLOW, ACCOUNT_LISTING_ERRORS] })
+      .then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
+    expect(refusal).toBe(`The join was refused: ${JSON.stringify({ code: "account_unreachable", message: "account_unreachable" })}`);
+    // the join that offered nothing is still waiting past that bound; the word comes, and it is taken
+    word.resolve();
+    expect((await waiting).list).toBe(made.account.id);
+  } finally { word.resolve(); }
+}, 60_000);
 
 describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("a PC that follows no list takes a PAIR_REQUEST whose list members are out of their form as it always did", async () => {
