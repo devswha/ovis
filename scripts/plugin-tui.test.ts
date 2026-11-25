@@ -179,13 +179,14 @@ function fake(options: { flushed?: boolean[]; probes?: Probe[]; answer?: string 
       runs.push({ command, ...run });
       return { exited: Promise.resolve(options.end ?? { code: 0, signal: null }), kill: (signal) => { calls.push(`kill ${signal}`); } };
     },
-    holdFile: () => options.held === null ? null : { path: HOLD, held: () => options.held ?? "none", remove: () => { unheld++; } },
+    holdFile: () => options.held === null ? null : { path: HOLD, held: () => options.held ?? "none", stopsJob: () => (options.held ?? "none") !== "none", remove: () => { unheld++; } },
     terminal: { save: () => SAVED, restore: (saved) => { restored.push(saved); }, write: (bytes) => { written.push(bytes); } },
     on: (signal, handler) => {
       calls.push(`on ${signal}`);
       handlers.set(signal, handler);
       return () => { calls.push(`off ${signal}`); };
     },
+    stop: () => { calls.push("stop"); },
     err: (text) => { said.push(text); },
     ...options.over,
   };
@@ -345,21 +346,41 @@ describe("signals and the terminal", () => {
     const run = fake({ end: new Promise<End>((resolve) => { end = resolve; }) });
     const ran = launchTui([], run.parts);
     for (let turns = 0; turns < 50 && !run.calls.includes("run screen"); turns++) await Promise.resolve();
-    expect(run.calls).toEqual(["probe /scratch/hc.sock", "on SIGINT", "on SIGTERM", "on SIGHUP", "run screen"]);
+    expect(run.calls).toEqual(["probe /scratch/hc.sock", "on SIGINT", "on SIGTERM", "on SIGHUP", "on SIGTSTP", "run screen"]);
     run.handlers.get("SIGINT")!();
     run.handlers.get("SIGTERM")!();
     run.handlers.get("SIGHUP")!();
     end({ code: 143, signal: null });
     expect(await ran).toBe(143);
-    expect(run.calls.slice(5)).toEqual(["kill SIGTERM", "kill SIGHUP", "off SIGINT", "off SIGTERM", "off SIGHUP"]);
+    expect(run.calls.slice(6)).toEqual(["kill SIGTERM", "kill SIGHUP", "off SIGINT", "off SIGTERM", "off SIGHUP", "off SIGTSTP"]);
     expect(run.written).toEqual([]);
+  });
+
+  it.each([
+    ["a screen that holds nothing stopped at the signal itself: the launcher stops too", "none", ["stop"]],
+    ["a screen that holds its modes gives the terminal back and then stops the whole job, the launcher with it", "modes", []],
+  ] as const)("at a stop of the whole job: %s", async (_, held, stops) => {
+    let end!: (value: End) => void;
+    const run = fake({ held, end: new Promise<End>((resolve) => { end = resolve; }) });
+    const ran = launchTui([], run.parts);
+    for (let turns = 0; turns < 50 && !run.calls.includes("run screen"); turns++) await Promise.resolve();
+    run.handlers.get("SIGTSTP")!();
+    expect(run.calls.filter((call) => call === "stop")).toEqual([...stops]);
+    end({ code: 0, signal: null });
+    expect(await ran).toBe(0);
+  });
+
+  it("stops with the job as before when no hold file could be made: the screen then stops only itself", async () => {
+    const run = fake({ held: null });
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(run.calls.filter((call) => call.startsWith("on "))).toEqual(["on SIGINT", "on SIGTERM", "on SIGHUP"]);
   });
 
   it("stops listening when the screen cannot be started", async () => {
     const run = fake({ over: { run: () => { throw new Error("ENOENT"); } } });
     expect(await launchTui([], run.parts)).toBe(1);
     expect(run.codes()).toEqual(["start_failed"]);
-    expect(run.calls.filter((call) => call.startsWith("off ")).sort()).toEqual(["off SIGHUP", "off SIGINT", "off SIGTERM"]);
+    expect(run.calls.filter((call) => call.startsWith("off ")).sort()).toEqual(["off SIGHUP", "off SIGINT", "off SIGTERM", "off SIGTSTP"]);
   });
 
   /** the real runner, with a screen that ends as told: by its own SIGKILL, or with a code */

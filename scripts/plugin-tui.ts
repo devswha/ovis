@@ -18,7 +18,7 @@ import { mergeEnvLayers } from "../server/legacy-env.ts";
 import { coreLaunchEnv, withoutAskpass } from "../server/herdr-core/core-env.ts";
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
 import { type Held, undoHeld } from "../tui/host/guard.ts";
-import { makeHold, readHold, SCREEN_HOLD } from "../tui/host/hold.ts";
+import { makeHold, readHold, SCREEN_HOLD, stopsJob } from "../tui/host/hold.ts";
 import { EXIT_FAILED, parseArgs, SCREEN_FOLDER, SCREEN_SERVER, targetEnv } from "../tui/start.ts";
 import { openLibc } from "../tui/host/libc.ts";
 import { loopbackOrigin } from "../shared/loopback-origin.ts";
@@ -187,6 +187,8 @@ export interface HoldFile {
   readonly path: string;
   /** what the screen last said it holds */
   held(): Held;
+  /** whether the screen stops the whole job itself at a stop from outside, this process with it */
+  stopsJob(): boolean;
   remove(): void;
 }
 
@@ -235,7 +237,9 @@ export interface LaunchParts {
   holdFile(): HoldFile | null;
   readonly terminal: TerminalSettings;
   /** listens for a signal; what it returns stops listening */
-  on(signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void): () => void;
+  on(signal: "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGTSTP", handler: () => void): () => void;
+  /** stops this process as the default action of SIGTSTP would */
+  stop(): void;
   err(text: string): void;
 }
 
@@ -322,7 +326,9 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
  * others: a screen killed before it turned its modes on, or stopped from its shell after it had undone them, holds
  * none, and undoing them all the same would take the caller's own (the shell's keyboard protocol entry, its bracketed
  * paste). So a screen that had no hold file to say it in has nothing undone. After any other end it writes nothing:
- * the screen gave the terminal back itself.
+ * the screen gave the terminal back itself. At a stop of the whole job (SIGTSTP), this process stops only when the
+ * screen does not stop the job itself (tui/host/hold.ts), so that the shell sees the job stopped, and can continue it,
+ * only once the screen has stopped too.
  */
 async function runScreen(argv: string[], env: Record<string, string>, parts: LaunchParts): Promise<number> {
   const offs = [parts.on("SIGINT", () => undefined)];
@@ -336,6 +342,10 @@ async function runScreen(argv: string[], env: Record<string, string>, parts: Lau
       return EXIT_FAILED;
     }
     hold = parts.holdFile();
+    if (hold !== null) {
+      const told = hold;
+      offs.push(parts.on("SIGTSTP", () => { if (!told.stopsJob()) parts.stop(); }));
+    }
     const command = [...parts.screen.command, ...argv];
     const options = { env: hold === null ? env : { ...env, [SCREEN_HOLD]: hold.path }, cwd: parts.screen.cwd };
     try {
@@ -411,7 +421,7 @@ function systemHoldFile(temps: readonly string[]): HoldFile | null {
     try { dir = mkdtempSync(join(temp, "ovis-tui-")); } catch { continue; }
     const path = join(dir, "held");
     const remove = () => { rmSync(dir, { recursive: true, force: true }); };
-    if (makeHold(path)) return { path, held: () => readHold(path), remove };
+    if (makeHold(path)) return { path, held: () => readHold(path), stopsJob: () => stopsJob(path), remove };
     remove();
   }
   return null;
@@ -470,6 +480,7 @@ export function systemParts(caller: Env, home: string): LaunchParts {
       process.on(signal, handler);
       return () => process.off(signal, handler);
     },
+    stop: () => { process.kill(process.pid, "SIGSTOP"); },
     err: (text) => process.stderr.write(text),
   };
 }

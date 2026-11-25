@@ -1,4 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { HOLD_BYTES, makeHold, SCREEN_HOLD } from "./hold.ts";
 import { createUnixHost } from "./unix.ts";
 
 // The real host's wiring over stand-ins for stdin, stdout and the process: never this test's own
@@ -59,6 +63,23 @@ describe("the unix host", () => {
     expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
     expect(log.filter((entry: string) => entry.startsWith("raw")).at(-1)).toBe("raw on");
     expect(sizes).toEqual([{ cols: 120, rows: 40 }]);
+  });
+
+  it("started by a launcher, says `stopping` before it gives the terminal back at SIGTSTP, then stops its whole process group, the launcher with it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "unix-host-"));
+    try {
+      const file = join(dir, "held");
+      expect(makeHold(file)).toBe(true);
+      const { host, log, proc, written } = standIns({ env: { [SCREEN_HOLD]: file } });
+      host.enter();
+      const entered = written();
+      proc.emit("SIGTSTP");
+      expect([readFileSync(file, "utf8"), written().slice(entered.length), log.at(-1)]).toEqual([HOLD_BYTES.stopping, LEAVE, "kill 0 SIGSTOP"]);
+      proc.emit("SIGCONT");
+      expect(readFileSync(file, "utf8")).toBe(HOLD_BYTES.modes);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("enters nothing when stdin or stdout is not a terminal", () => {

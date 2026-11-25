@@ -366,12 +366,13 @@ describe("the launcher and the screen together", () => {
     expect(run.output().endsWith(`${ESC}[?2031l${LEAVE}`)).toBe(true);
   }, TEST_MS);
 
-  it.skipIf(process.platform === "win32")("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again", async () => {
+  // `ovis tui` hands itself over to the shell waiter; the launcher stays itself where it cannot
+  it.skipIf(process.platform === "win32").each(["waiter", "launcher"])("comes back after an interactive shell stopped the whole job and `fg` continued it: the screen takes keys again (the %s waits)", async (via) => {
     const env = { ...scratch(), PS1: "$ ", SHELL: "/bin/bash" };
     // the shell leads the pty's session with every stream on it, so its prompt shows and its job control works
     const run = runOnPty({ command: ["bash", "--norc", "--noprofile", "-i"], env, cols: 80, rows: 24 });
     await run.until("$ ");
-    run.type(`${process.execPath} ${LAUNCHER} job\r`);
+    run.type(`${process.execPath} ${LAUNCHER} job ${via === "waiter" ? "waiter" : ""}\r`);
     await run.until(PROBE);
     run.type(ANSWER);
     await run.until("READY\r");

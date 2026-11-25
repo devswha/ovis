@@ -1,7 +1,7 @@
 /** Replace the launcher with a small waiter, without putting the screen's environment in argv. */
 import { FFIType, ptr } from "bun:ffi";
 import { undoHeld } from "../tui/host/guard.ts";
-import { HOLD_BYTES } from "../tui/host/hold.ts";
+import { HOLD_BYTES, STOPS_JOB_BYTES } from "../tui/host/hold.ts";
 import { openLibc } from "../tui/host/libc.ts";
 
 export const waiterCommand = (command: readonly string[], hold: string): string[] => [
@@ -9,6 +9,10 @@ export const waiterCommand = (command: readonly string[], hold: string): string[
     'held=$1; modes=$2; watch=$3; shift 3',
     // Ignore, not a handler: macOS's Bash 3.2 can lose a HUP arriving during an INT handler.
     "trap '' INT",
+    // A stop of the whole job: a screen that stops the job itself (tui/host/hold.ts) stops this shell with it, once it
+    // gave the terminal back; stopped before, the shell running it would take the terminal back and its `fg` could come
+    // before the screen stopped. A trap, not an ignore, so the screen starts with the default action again.
+    `trap 'case $(/bin/cat "$held" 2>/dev/null) in ${STOPS_JOB_BYTES.join("|")}) ;; *) kill -STOP $$ ;; esac' TSTP`,
     'saved=$(/bin/stty -g 2>/dev/null)',
     'pid=; pending=',
     `trap 'if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null; else pending=TERM; fi' TERM`,

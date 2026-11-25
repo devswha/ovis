@@ -19,6 +19,12 @@ export const LEAVE_ALL = `${UNWATCH_DISPLAY}${LEAVE}`;
 /** Which of the terminal's modes the screen holds: none, ENTER's, or ENTER's and the colour-scheme watch. */
 export type Held = "none" | "modes" | "modes+watch";
 
+/**
+ * What the screen tells the process that started it (tui/host/hold.ts): what it holds, or `stopping`: at a stop from
+ * outside it gives the terminal back and then stops its whole job itself, so that process must not stop on its own.
+ */
+export type HoldState = Held | "stopping";
+
 /** The bytes that give back what is held, for the screen itself and for a process that does it once the screen died. */
 export const undoHeld = (held: Held): string => held === "none" ? "" : held === "modes" ? LEAVE : LEAVE_ALL;
 /**
@@ -61,14 +67,17 @@ export interface TerminalPort {
   /** installs the hooks; returns their removal */
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
-  /** stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action) */
+  /**
+   * stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action); started by a
+   * launcher that was told `stopping`, its whole process group, the launcher with it
+   */
   suspend(): void;
   /**
    * Told which modes the screen holds: before it turns them on, and once it has undone them (at a stop from outside,
    * just before it undoes them). Whoever started the screen reads it after the screen died without giving the terminal
    * back (tui/host/hold.ts).
    */
-  hold(held: Held): void;
+  hold(held: HoldState): void;
 }
 
 /** EIO and EPIPE: the terminal is gone; EAGAIN reaches here only once the port gave up waiting for it. */
@@ -242,10 +251,11 @@ export function guardedHost(port: TerminalPort): Host {
     port.stopReading();
     // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the terminal
     // back, and a continue that comes before this process stops itself is lost, so the stop would last. Nothing new may
-    // stand between those bytes and the stop.
+    // stand between those bytes and the stop. `stopping`, not `none`: the launcher, the job's first process, then waits
+    // for this process to stop the whole job, so the shell sees the job stopped only once this process is.
     const held = modesOn;
     modesOn = false;
-    holding();
+    port.hold("stopping");
     if (held) {
       try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
     }

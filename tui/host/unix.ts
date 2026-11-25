@@ -156,10 +156,12 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
     exit: (code) => { proc.exit(code); },
     // this process itself, the one stop no handler can catch. stopReading let go of the loop; it is held again first, or
     // a screen with nothing else to wait for could end on its own the moment the continue wakes it, before the continue
-    // is heard
+    // is heard. A launcher that was told `stopping` waits for this stop (hold.ts): its whole process group stops at once,
+    // in one kill, so a shell sees the job stopped only after the terminal was given back, and its `fg` always finds
+    // this process stopped, or about to stop with the stop the continue then cancels
     suspend: () => {
       stdin.ref?.();
-      proc.kill(proc.pid, "SIGSTOP");
+      proc.kill(hold === null ? proc.pid : 0, "SIGSTOP");
     },
     hold: (held) => { hold?.(held); },
   });
