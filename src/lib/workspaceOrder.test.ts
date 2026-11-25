@@ -153,6 +153,7 @@ describe("ReorderCoordinator", () => {
     const check = await checks.next();
     const third = thirdDrag ? coordinator.reorder("remote", A, O, move) : null;
     coordinator.roster([entry("remote", B, "E2", 1)], event);
+    coordinator.roster([entry("remote", A, "E1", 1)], event);
     check.resolve({ boot_id: "E2", machines: [entry("remote", A, "E2", 0)] });
     await queued;
     await third;
@@ -181,6 +182,32 @@ describe("ReorderCoordinator", () => {
       return { ok: true, order_epoch: "E2", moved_seq: 2 };
     });
     expect(serverOrder).toEqual(A);
+  });
+
+  test("uses the recovered workspace set for drags queued before a close", async () => {
+    const checks = verifier(), moves = mover();
+    const coordinator = new ReorderCoordinator({ verify: checks.verify });
+    const initial = [..."abcde"], desired = [..."cdabe"];
+    coordinator.roster([entry("remote", initial, "E1", 0)], event);
+    const first = coordinator.reorder("remote", initial, desired, moves.move);
+    const step = await moves.next();
+    let serverOrder = [..."bcde"];
+    const move = async ({ workspaceId, insertIndex }: WorkspaceMove) => {
+      serverOrder = movedTabOrder(serverOrder, workspaceId, insertIndex) ?? serverOrder;
+      return { ok: true as const, order_epoch: "E2", moved_seq: 1 };
+    };
+    const queued = coordinator.reorder("remote", desired, initial, move);
+    coordinator.roster([entry("remote", [..."bcdae"], "E2", 0)], event);
+    step.resolve({ ok: true, order_epoch: "E1", moved_seq: 1 });
+    (await moves.next()).reject(new Error("second move refused"));
+    await first;
+    const proof = await checks.next();
+    const third = coordinator.reorder("remote", initial, [..."abdce"], move);
+    coordinator.roster([entry("remote", [..."bcde"], "E2", 0)], event);
+    proof.resolve({ boot_id: "E2", machines: [entry("remote", [..."bcdae"], "E2", 0)] });
+    await queued;
+    await third;
+    expect(serverOrder).toEqual([..."bdce"]);
   });
   test("a pre-move read delivered after confirmation stays fenced", async () => {
     const now = spyOn(Date, "now").mockReturnValue(10_000);
