@@ -338,12 +338,17 @@ export class RelayPairingApprovals {
     return this.waiting.get(id)?.key ?? null;
   }
 
-  /** On this PC's own window: Allow or Decline of a first join. A join a member could approve is typed instead. */
+  /** On this PC's own window: Allow or Decline of a first join, and Decline of a join marked list_unknown. A join a member could approve is typed instead. */
   decideOwn(id: string, approved: boolean): TapDecision {
     const entry = this.waiting.get(id);
     if (!entry || !ownJoin(entry)) return "gone";
-    // an app that knows no join into the list: this PC lets it in by nothing, so an Allow approves nothing
-    if (approved && entry.listUnknown) return "list_unknown";
+    // an app that knows no join into the list: this PC lets it in by nothing, so an Allow approves nothing; a Decline
+    // ends it, first join or not (nothing of it is typed)
+    if (entry.listUnknown) {
+      if (approved) return "list_unknown";
+      entry.finish({ approved: false });
+      return "decided";
+    }
     if (!entry.firstJoin) return "typed_only";
     entry.finish(approved ? { approved: true, own: true } : { approved: false });
     return "decided";

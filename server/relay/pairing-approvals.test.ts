@@ -424,6 +424,18 @@ describe("an account join on this PC's own window", () => {
     expect(await first.decision).toEqual({ approved: false });
   });
 
+  it("lets a join marked list_unknown that is not a first join be declined on the own window, and approved by nothing", async () => {
+    const f = fixture();
+    const approvals = f.open();
+    const later = approvals.ask("Old phone", "654321", f.clock.at + 90_000, { intent: "account", key: "k3", deviceId: "d3", membersOnly: true, listUnknown: true })!;
+    const id = approvals.ownJoins()[0]!.id;
+    expect(approvals.decideOwn(id, true)).toBe("list_unknown");
+    expect(approvals.decideTyped(id, "654321")).toBe("list_unknown");
+    expect(approvals.decideOwn(id, false)).toBe("decided");
+    expect(await later.decision).toEqual({ approved: false });
+    expect(approvals.ownJoins()).toEqual([]);
+  });
+
   it("never decides a comparison the window itself shows", () => {
     const f = fixture();
     const approvals = f.open();
