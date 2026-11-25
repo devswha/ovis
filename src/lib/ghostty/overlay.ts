@@ -529,6 +529,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     while (keptBytes > KEPT_BYTES_MAX && kept.length > 1) keptBytes -= kept.shift()!.length;
   };
   term.write = ((data: string | Uint8Array, callback?: () => void) => {
+    // an iTerm2 or sixel picture, which only xterm draws: xterm takes the terminal over from here, the output kept
+    // handed to it whole (dispose), and draws this write and the picture as it does without libghostty
+    if (only && !disposed && pictureIn(data) && terminalDrawsPictures(term)) overlay.dispose();
     if (only && !disposed) {
       try {
         // xterm, which takes the cursor and DEC 2026 with every write, renders when a synchronized update ends: the

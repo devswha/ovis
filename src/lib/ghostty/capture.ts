@@ -13,15 +13,13 @@ function ghosttyOnly(): boolean {
   try { return globalThis.localStorage?.getItem(GHOSTTY_ONLY_KEY) === "on"; } catch { return false; }
 }
 
-/** `picturesWanted`: whether this terminal is to draw iTerm2 and sixel pictures (Pictures in the terminal), which xterm draws */
-export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement, picturesWanted: () => boolean): () => void {
+export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement): () => void {
   let held: (string | Uint8Array)[] | null = [];
   let heldBytes = 0;
   let overlay: GhosttyOverlay | null = null;
   let stopped = false;
   // with `only` (decided when the server says what it is), xterm takes the controls of what libghostty is to draw
-  // (controls.ts). iTerm2 and sixel pictures are drawn by xterm (overlay.ts): a terminal that shows them keeps xterm's
-  // full parse
+  // (controls.ts); an iTerm2 or sixel picture, which only xterm draws, hands the terminal back to it (overlay.ts)
   let only = false;
   const scan = controlScanner();
   const decoder = new TextDecoder();
@@ -64,7 +62,7 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   const decide = (): void => {
     if (decided || stopped || !socket.featuresListed()) return;
     decided = true;
-    only = ghosttyOnly() && !picturesWanted();
+    only = ghosttyOnly();
     let taken: (string | Uint8Array)[] | null = null;
     const takeBacklog = (): (string | Uint8Array)[] | null => {
       if (stopped || !held) return null;
