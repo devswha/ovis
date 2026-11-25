@@ -340,6 +340,7 @@ export const DEVICES_JA: Record<string, string> = {
   "{name} could not be removed. Try again.|device": "{name} を外せませんでした。もう一度お試しください。",
   "Remove {name} from your account?": "{name} をアカウントから外しますか？",
   "{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.": "すべてのデバイスで、アカウントの PC から {name} が外れます。{name} が再びオンラインになると、その PC 自身もアカウントから外れます。アカウントのデバイスからは開けなくなり、{name} と直接ペアリングしたデバイスは引き続き開けます。アカウントでもう一度使うには、{name} で追加し直してください。",
+  "{name} leaves your account's list on every device, and your account's devices no longer open it; a device paired with {name} itself still does. It comes back to your account only as a new PC, added again on {name}.": "{name} はすべての端末でアカウントのリストから外れ、アカウントの端末からは開けなくなります。{name} と直接ペアリングした端末は引き続き開けます。この PC は新しい PC としてのみアカウントに戻れ、{name} でもう一度追加する必要があります。",
   "Devices could not be loaded.": "デバイス一覧を読み込めませんでした。",
   "PCs could not be loaded.": "PC 一覧を読み込めませんでした。",
   "This device was removed on the PC, so your Tailscale login no longer lets it in. Allow it on the PC's own screen, or pair it with a code.": "このデバイスは PC で削除されたため、Tailscale のログインでは入れなくなりました。PC 本体の画面で許可するか、コードでペアリングしてください。",

@@ -340,6 +340,7 @@ export const DEVICES_KO: Record<string, string> = {
   "{name} could not be removed. Try again.|device": "{name} 기기를 빼지 못했어요. 다시 시도하세요.",
   "Remove {name} from your account?": "계정에서 {name} PC를 뺄까요?",
   "{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.": "모든 기기의 계정 PC 목록에서 {name} PC가 빠집니다. {name} PC가 다시 온라인이 되면 그 PC도 계정에서 빠집니다. 계정의 기기로는 더 이상 열 수 없고, {name} PC와 직접 페어링한 기기로는 그대로 열 수 있습니다. 계정에서 다시 쓰려면 {name}에서 다시 추가하세요.",
+  "{name} leaves your account's list on every device, and your account's devices no longer open it; a device paired with {name} itself still does. It comes back to your account only as a new PC, added again on {name}.": "모든 기기에서 {name} PC가 계정 명단에서 빠지고, 계정의 기기로는 더 이상 열 수 없어요. {name} PC와 직접 페어링한 기기는 계속 열 수 있어요. 이 PC는 새 PC로만 계정에 다시 들어올 수 있고, {name} PC에서 다시 추가해야 해요.",
   "Devices could not be loaded.": "기기 목록을 불러오지 못했습니다.",
   "PCs could not be loaded.": "PC 목록을 불러오지 못했습니다.",
   "This device was removed on the PC, so your Tailscale login no longer lets it in. Allow it on the PC's own screen, or pair it with a code.": "이 기기는 PC에서 제거되어 Tailscale 로그인으로는 더 이상 들어갈 수 없어요. PC 화면에서 허용하거나 코드로 페어링하세요.",

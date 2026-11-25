@@ -214,8 +214,9 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
                 {/* no keys posted: not added from that PC yet, or its Ovis is from before lists; both are said */}
                 <span className="account-manage-name">{pc.label}{pc.not_in_list === true && <span className="settings-hint" data-pc-note=""> · {t("Not in your account's list yet")}{posts !== null && post === undefined && !watching ? ` · ${t("Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first")}` : ""}</span>}</span>
                 {post !== undefined && <button type="button" className="btn account-head-btn" data-action="add-pc" onClick={() => setAdding({ pc, post })}>{t("Add|account pc")}</button>}
-                {/* a PC in use lists itself again on its next pull: only an offline one is offered, whatever its age */}
-                {off && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}
+                {/* On an account with no list, a PC in use lists itself again on its next pull: only an offline one is
+                    offered, whatever its age. A PC the account's list holds comes back only as a new PC: on or off */}
+                {(off || pc.by_list === true) && !watching && <button type="button" className="btn account-head-btn" data-action="remove-pc" onClick={() => setAsked({ ...pc, held: heldRemoval(account, pc.server_id) })}>{t("Remove")}</button>}
               </li>
             );
           })}
@@ -226,7 +227,9 @@ function AccountPcs({ account, watching }: { readonly account: string; readonly 
       )}
       {asked !== null && (
         <ConfirmDialog title={t("Remove {name} from your account?", { name: asked.label })}
-          body={t("{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.", { name: asked.label })}
+          body={asked.by_list === true
+            ? t("{name} leaves your account's list on every device, and your account's devices no longer open it; a device paired with {name} itself still does. It comes back to your account only as a new PC, added again on {name}.", { name: asked.label })
+            : t("{name} leaves your account's PCs on every device. Once {name} is online again it leaves your account too: your account's devices no longer open it, and a device paired with {name} itself still does. To use it with your account again, add it on {name}.", { name: asked.label })}
           confirmLabel={t("Remove")} onClose={() => setAsked(null)}
           onConfirm={async () => {
             // a removal that wants a fresh sign-in first closes the question: its Sign in again, below the list, removes it
