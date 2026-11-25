@@ -17,7 +17,7 @@ import { KeeperClient } from "./client.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
 
-type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label";
+type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label" | "machine.exec";
 /** The hc calls the registry makes (HcConnection, or a test's stand-in). */
 export interface AcpHc {
   call<M extends AcpHcMethod>(method: M, params: HcMethods[M]["params"]): Promise<HcMethods[M]["result"]>;
@@ -251,6 +251,13 @@ export class AcpChildren {
   }
 
   async terminals() { return (await this.hc().call("terminal.list", {})).terminals; }
+
+  /** Run alongside the keeper, using the same core environment plus the same launch overrides. */
+  async versionOutput(executable: string, { cwd, env }: Pick<AcpStart, "cwd" | "env">): Promise<string | null> {
+    if (this.refusal() !== null) return null;
+    const result = await this.hc().call("machine.exec", { argv: [executable, "--version"], cwd, env, timeout: 5 }).catch(() => null);
+    return result?.code === 0 && !result.timed_out && !result.truncated ? Buffer.from(result.stdout, "base64").toString("utf8") : null;
+  }
 
   private add(child: AcpChild): AcpChild {
     this.children.set(child.id, child);

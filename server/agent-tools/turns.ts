@@ -1,6 +1,6 @@
 import type { AcpChild, AcpChildren } from "../acp/children.ts";
-import { KeeperRequestError } from "../acp/client.ts";
-import { isFullAccessMode } from "./harnesses.ts";
+import { KeeperRequestError, type KeeperClient } from "../acp/client.ts";
+import { allowsDelegatedMode } from "./harnesses.ts";
 import type { Ledger, ToolChild } from "./ledger.ts";
 import { HARNESS_LIMITS, answer, harnessStopReason, refuse } from "../../shared/harness-tool.ts";
 import type { SessionRef, SessionState, Untrusted } from "../../shared/harness-contract.generated.ts";
@@ -17,6 +17,14 @@ export function childState(child: AcpChild, row?: ToolChild): SessionState {
   if (client.pending().length) return { state: "waiting_human", turn, on: "approval" };
   return { state: !client.connected || client.turn?.running ? "working" : client.turn ? "done" : "idle", turn };
 }
+export function delegatedMode(harness: string, client: KeeperClient): string | null {
+  const initial = client.initialPermissions;
+  if (!initial?.mode || !allowsDelegatedMode(harness, initial.mode) || client.sessionMode !== initial.mode
+    || initial.allowAll === true || client.allowAll === true
+    || (harness === "copilot" && client.allowAll !== false)) return null;
+  return initial.mode;
+}
+
 export class ChildTurns {
   private readonly watches = new Map<AcpChild, () => void>();
   private readonly closing = new AbortController();
@@ -42,8 +50,8 @@ export class ChildTurns {
     change();
   }
   async send(child: AcpChild, row: ToolChild, args: Record<string, unknown>) {
-    const expectedMode = child.client.initialSessionMode;
-    if (!expectedMode || child.client.sessionMode !== expectedMode || isFullAccessMode(row.harness, expectedMode)) return refuse("not_granted", "Child permission mode is not allowed.");
+    const expectedMode = delegatedMode(row.harness, child.client);
+    if (expectedMode === null) return refuse("not_granted", "Child permission mode is not allowed.");
     const key = typeof args.key === "string" ? args.key : null;
     const accepted = (n: number, duplicate: boolean) => answer("accepted", { session: row.terminal, accepted: true, turn_id: `${row.id}.${n}`, key, duplicate });
     if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this child.");

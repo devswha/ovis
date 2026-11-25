@@ -568,6 +568,11 @@ impl Hub {
     }
 
     fn apply(&mut self, change: &Change, result: &Value) {
+        if let Change::Config { config, value } = change {
+            if config == "allow_all" {
+                self.model.allow_all = value != "off";
+            }
+        }
         let (selector, value) = match change {
             Change::Mode(id) => (self.model.modes.as_mut(), id),
             Change::Model(id) => (self.model.models.as_mut(), id),
@@ -592,8 +597,15 @@ impl Hub {
     fn selections_note(&self) {
         self.note_row(
             "_keeper/selections",
-            json!({"mode":self.model.modes.as_ref().map(|s| &s.current),"model":self.model.models.as_ref().map(|s| &s.current)}),
+            json!({"mode":self.model.modes.as_ref().map(|s| &s.current),"model":self.model.models.as_ref().map(|s| &s.current),"allowAll":self.model.allow_all}),
         );
+    }
+
+    fn permits_tool_mode(&self, expected: Option<&str>) -> bool {
+        expected.is_some_and(|mode| !mode.is_empty())
+            && !self.model.allow_all
+            && expected == self.model.modes.as_ref().map(|m| m.current.as_str())
+            && !self.routes.values().any(|route| route.change.is_some())
     }
 
     fn on_client(&mut self, conn: u64, line: String) {
@@ -633,6 +645,14 @@ impl Hub {
                         self.finish_stop();
                     }
                 }
+            }
+            (Some(method), Some(id)) if method == "_keeper/tool_check" => {
+                let params = msg.get("params").unwrap_or(&Value::Null);
+                let permitted = self.mode == Mode::Acp
+                    && self.model.session.is_some()
+                    && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref()
+                    && self.permits_tool_mode(params.get("expectedMode").and_then(Value::as_str));
+                self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"result":permitted}));
             }
             (Some(_), Some(id)) if self.mode != Mode::Acp => {
                 self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "terminal mode"}));
@@ -689,10 +709,7 @@ impl Hub {
                         self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32005,"message":"a turn or decision is already pending"}}));
                         return;
                     }
-                    if self.model.modes.is_none()
-                        || self.routes.values().any(|r| r.change.is_some())
-                        || expected.as_ref().and_then(Value::as_str) != self.model.modes.as_ref().map(|m| m.current.as_str())
-                    {
+                    if !self.permits_tool_mode(expected.as_ref().and_then(Value::as_str)) {
                         self.client_ids.remove(&(conn, key_of(&id)));
                         self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32004,"message":"permission ceiling not proven"}}));
                         return;

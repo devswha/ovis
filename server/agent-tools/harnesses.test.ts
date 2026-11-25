@@ -32,6 +32,7 @@ it("opens Claude and Codex with installed adapters regardless of adapter package
     argv: [join(dir, "claude-agent-acp"), "--hide-claude-auth"],
     env: { CLAUDE_CODE_EXECUTABLE: join(dir, "claude") },
     sessionMeta: { claudeCode: { options: { allowDangerouslySkipPermissions: false } } },
+    configOptions: [{ configId: "mode", value: "default" }],
   });
   writeFileSync(manifest, JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "99.1.2" }));
   expect(resolveHarness("codex")).toEqual({
@@ -44,12 +45,12 @@ it("requires the separately installed adapter for Claude Code", () => {
   expect(resolveHarness("claude")).toBeNull();
 });
 
-it("keeps native ACP launch hygiene without changing permissions or project configuration", () => {
+it("keeps native ACP launch hygiene and selects ordinary startup permissions", () => {
   expect(resolveHarness("opencode")).toEqual({ argv: [join(dir, "opencode"), "acp"] });
-  expect(resolveHarness("gjc")).toEqual({ argv: [join(dir, "gjc"), "--mode", "acp"] });
-  expect(resolveHarness("copilot")).toEqual({ argv: [join(dir, "copilot"), "--acp", "--stdio", "--no-auto-update"] });
+  expect(resolveHarness("gjc")).toEqual({ argv: [join(dir, "gjc"), "--mode", "acp"], env: { GJC_ACP_PERMISSION_MODE: "prompt" } });
+  expect(resolveHarness("copilot")).toEqual({ argv: [join(dir, "copilot"), "--acp", "--stdio", "--no-auto-update"], env: { COPILOT_ALLOW_ALL: "false" } });
   expect(resolveHarness("agy")).toEqual({
-    argv: [join(dir, "agy"), "acp", "--disable-telemetry", "--log-file", "/dev/null"],
+    argv: [join(dir, "agy"), "--mode=default", "acp", "--disable-telemetry", "--log-file", "/dev/null"],
     env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" },
   });
 });

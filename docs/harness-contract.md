@@ -98,8 +98,9 @@ the earlier "ACP is not Ovis's path"). In this contract it is four things:
     `waiting_human` (G8 holds).
   - Ovis adds no approval of its own, so a child that requests nothing ends with no card.
     See [the per-harness defaults](harness-tool.md#child-defaults-and-approvals) for what can
-    run unasked. A known full-access mode or an unreported starting mode stops the launch;
-    a later prompt is refused if the mode differs from the starting mode.
+    run unasked. Claude and agy must report `default`. A full-access mode, an unreported
+    starting mode or Copilot's separate Allow All setting stops the launch. The keeper checks
+    again before registration and refuses a prompt if the mode has changed or Allow All is on.
   - Ovis offers the agent no client file or terminal methods (`fs/*`, `terminal/*`). ACP v2 drops
     them anyway (plan 10.1).
   - A harness without ACP is driven in a terminal instead (see the fallback after the schema).

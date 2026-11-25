@@ -8,8 +8,9 @@ card is open, reads give only `waiting_human`: ask the person to open Ovis.
 
 ## Child defaults and approvals
 
-A child starts as a local ACP session in its harness's own default mode, with the person's
+A child starts as a local ACP session in its harness's ordinary mode, with the person's
 normal settings, including hooks and allow rules from the user, project or managed policy.
+Ovis selects the ordinary mode where the harness would otherwise start in a wider one.
 Ovis does not pin harness or adapter versions. Only permission requests the harness actually
 sends become cards, with one-time choices. The parent never sees or answers the request.
 
@@ -18,19 +19,21 @@ The run reports are under `~/.dori-sa/reports/acp-children-open/`.
 
 | Harness | Default ACP mode | What can run without an Ovis card | Evidence |
 | --- | --- | --- | --- |
-| Claude Code | The adapter's `auto` when available, otherwise `default`, unless the person's settings select another mode | `auto` approved writes, shell commands and an MCP call. Configured allow rules and hooks also apply. | `claude/RESULT.md`, mode control and pre-approvals |
+| Claude Code | `default` (Manual), selected before opening the session | Read-only tools and commands such as `ls`; configured allow rules and approval hooks still apply. The adapter's automatic mode is not used. | `claude/RESULT.md`, mode control and pre-approvals |
 | Codex | `agent` | Its own automatic reviewer approved edits, commands and an MCP call. Configured hooks, rules and MCP policy also apply. | `codex/RESULT.md`, default launch |
 | Copilot | `https://agentclientprotocol.com/protocol/session-modes#agent` | File listings; configured hooks approved writes, shell actions and HTTP MCP calls. | `copilot/RESULT.md`, baseline and hook runs |
 | OpenCode | `build` on a clean setup | OpenCode 2 allows most tools by default, including edits and shell. Reads of `.env` and similar files ask by default, except `.env.example`. | Isolated 2.2.2 ACP handshake and [OpenCode 2 permissions](https://opencode.ai/v2/docs/permissions) |
 | agy | `default` | Built-in web search; configured hooks also approved writes, commands and an MCP call. | `agy/RESULT.md`, focused and planted runs |
-| GJC | `default` | Writes, URL reads and MCP calls ran unasked even with its default prompt policy; Bash requested approval. | `gjc/RESULT.md`, baseline runs |
+| GJC | `default`, with its ordinary `prompt` permission handling | Writes, URL reads and MCP calls ran unasked even with its default prompt policy; Bash requested approval. | `gjc/RESULT.md`, baseline runs |
 
-Ovis stops a child that starts in a known full-access mode (`bypassPermissions` in Claude,
-`agent-full-access` in Codex, or Copilot's `autopilot` / `allow-all`) and replies `not_granted`.
-Ovis also refuses starts that report no mode. Claude's adapter is asked not to offer bypass.
-Each delegated prompt checks the reported mode against the starting mode again in the keeper.
-A different mode is refused, not selected or reset behind the person's back. A child can call
-another permitted harness under the same rules if depth allows.
+Claude and agy must report `default`. Ovis still refuses known full-access modes such as Codex's
+`agent-full-access` and Copilot's `autopilot` / `allow-all`, and stops any start that reports no
+mode. Claude's adapter is asked not to offer bypass. Ovis disables Copilot's `COPILOT_ALLOW_ALL`
+and refuses its separate Allow All selector even when the ACP mode still reads `#agent`.
+The keeper rechecks both the starting mode and Allow All just before Ovis registers the child,
+and before every delegated prompt. A widened start stops with `not_granted`; a later prompt is
+refused rather than resetting the mode behind the person's back. A child can call another
+permitted harness under the same rules if depth allows.
 
 Claude's adapter still uses `--hide-claude-auth`, which requires a supported provider such as an
 API key or Console sign-in rather than Claude Free, Pro, Max or Team. Copilot did not start the
@@ -86,8 +89,8 @@ ovis agent read t12 --transcript --json
 
 Use the address the start returned instead of `t12`. When Ovis could read the harness version
 at launch, `start`, `ask` and the session list include it as `session.version` on the child's
-session reference. This is the harness version, not its ACP adapter version. Older sessions
-without a saved version omit the field.
+session reference. This is the full harness version, including any prerelease suffix, not its
+ACP adapter version. Older sessions without a saved version omit the field.
 
 `OVIS_AGENT_SOCKET` and
 `OVIS_AGENT_TOKEN_FILE` are set for this run's process tree. Neither contains the secret itself.

@@ -3,15 +3,16 @@ import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { HubConnections } from "./connections.ts";
 import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, harnessVerb, isRecord, isView, refuse, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { parseVersion } from "../../shared/agent-catalog.ts";
 import { projectSafeCommand } from "../entries.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { AcpStartFailed, AcpUnavailable, type AcpChildren } from "../acp/children.ts";
-import { KeeperRequestError } from "../acp/client.ts";
-import { harnessVersion, isFullAccessMode, resolveHarness, type HarnessCommand } from "./harnesses.ts";
+import { KeeperDisconnected, KeeperRequestError } from "../acp/client.ts";
+import { harnessVersionExecutable, resolveHarness, type HarnessCommand } from "./harnesses.ts";
 import { RunStore, type Run } from "./runs.ts";
 import { Ledger, type ToolChild } from "./ledger.ts";
 import { validArgs } from "./guards.ts";
-import { ChildTurns, childRef, childState } from "./turns.ts";
+import { ChildTurns, childRef, childState, delegatedMode } from "./turns.ts";
 import { HarnessView, type ViewOptions } from "./view.ts";
 import { provePane, socketPeer, stillIn, type PaneReader } from "./pane-proof.ts";
 import { OVIS_AGENT_LAUNCH_LABEL } from "./launch.ts";
@@ -251,24 +252,32 @@ export class AgentToolHub {
     }
     const command = (this.options.resolve ?? resolveHarness)(kind);
     if (!command) return refuse("start_failed", "This harness has no supported ACP adapter.");
-    const version = await harnessVersion(kind, command);
     const cwd = typeof args.cwd === "string" ? args.cwd : (await coreConnection().call("terminal.get", { terminal: run.self })).cwd;
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return refuse("bad_request", "The folder does not exist.");
-    if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) return refuse("not_granted", "The grant changed.");
-    if (expired()) return refuse("time_limit", "This child no longer starts new work.");
     const key = this.runs.reserve(run.depth + 1);
-    const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, version, created: this.now() };
+    const launch = { ...command, cwd, env: { ...command.env, OVIS_AGENT_SOCKET: this.address, OVIS_AGENT_TOKEN_FILE: key.tokenFile } };
     try {
+      const executable = harnessVersionExecutable(kind, command);
+      const output = executable === undefined ? null : await this.options.acp.versionOutput(executable, launch);
+      if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) { key.cancel(); return refuse("not_granted", "The grant changed."); }
+      if (expired()) { key.cancel(); return refuse("time_limit", "This child no longer starts new work."); }
+      const version = output === null ? undefined : parseVersion(output, "reported") ?? undefined;
+      const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, version, created: this.now() };
       if (typeof args.key === "string") this.runs.rememberStart(run.id, args.key, key.id);
       this.ledger.begin(intent);
-      const child = await this.options.acp.start({ harness: kind, argv: command.argv, env: { ...command.env, OVIS_AGENT_SOCKET: this.address, OVIS_AGENT_TOKEN_FILE: key.tokenFile },
-        cwd, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)], askEveryTime: true, sessionMeta: command.sessionMeta });
+      const child = await this.options.acp.start({ ...launch, harness: kind, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)], askEveryTime: true });
       this.view.signInNeeded.delete(kind);
-      const startMode = child.client.initialSessionMode;
-      if (!startMode || isFullAccessMode(kind, startMode)) {
+      const startMode = delegatedMode(kind, child.client);
+      const permitted = startMode !== null && await child.client.request("_keeper/tool_check",
+        { sessionId: child.client.session, expectedMode: startMode }, AbortSignal.timeout(5000)).catch((error: unknown) => {
+        if (error instanceof KeeperRequestError || error instanceof KeeperDisconnected) return false;
+        throw error;
+      });
+      if (permitted !== true || delegatedMode(kind, child.client) !== startMode) {
+        key.cancel();
         await this.options.acp.stop(child.id);
-        this.ledger.finish(key.id); key.cancel();
-        return refuse("not_granted", startMode ? "The child opened in full-access mode." : "The child did not report a mode.");
+        this.ledger.finish(key.id);
+        return refuse("not_granted", "The child's starting permissions could not be confirmed.");
       }
       const row: ToolChild = { ...intent, id: child.id, terminal: child.terminal, created: this.now(), held: false, turns: [] };
       this.ledger.children.set(child.terminal, row); this.ledger.save(); this.ledger.audit(row, "start", null); this.turns.watch(child);

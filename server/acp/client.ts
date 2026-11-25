@@ -36,9 +36,10 @@ export class KeeperClient {
   usage: { tokens?: number; cost?: { amount: number; currency: string } } | null = null;
   model: string | null = null;
   sessionMode: string | null = null;
+  allowAll: boolean | null = null;
   /** The keeper logs the opening selection before publishing the first session, including on replay. */
-  private openedIn: string | null | undefined;
-  get initialSessionMode(): string | null { return this.openedIn ?? null; }
+  private openedIn: { readonly mode: string | null; readonly allowAll: boolean | null } | null = null;
+  get initialPermissions() { return this.openedIn; }
   private opening: unknown;
   turn: AcpTurn | null = null;
   agentGone = false;
@@ -326,6 +327,7 @@ export class KeeperClient {
       case "_keeper/selections":
         this.model = text(params.model);
         this.sessionMode = text(params.mode);
+        this.allowAll = typeof params.allowAll === "boolean" ? params.allowAll : null;
         return true;
       case "_keeper/hold_changed":
         this.holdGeneration = typeof params.generation === "number" ? params.generation : null;
@@ -338,7 +340,7 @@ export class KeeperClient {
         return true;
       case "_keeper/session":
         this.session = text(params["sessionId"]) || null;
-        if (this.session && this.openedIn === undefined) this.openedIn = this.sessionMode;
+        if (this.session) this.openedIn ??= { mode: this.sessionMode, allowAll: this.allowAll };
         this.agentGone = false;
         return true;
       case "_keeper/ready":
