@@ -299,6 +299,23 @@ const writeSession = (dir: string, id: string, cwd: string): string => {
   return path;
 };
 
+it("reads an OmO holder's chat when sidecars outnumber the session scan limit (#4499)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-sidecars-")));
+  try {
+    const cwd = join(home, "project");
+    const agentDir = join(home, ".omo", "agent");
+    const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+    const id = "held-session";
+    const path = writeSession(dir, id, cwd);
+    for (let index = 0; index < 4096; index++) writeFileSync(join(dir, `${index}.jsonl.claude-sdk-oauth-binding.json`), "");
+    const pid = process.pid;
+    holdRecord(dir, id, pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
+    const pane = { pane_id: "w:p1", cwd, agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: path } } as HerdrPane;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
+    expect(omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id)?.path).toBe(path);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 it("identifies an argv-silent omo runtime only through verified native holders", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-custom-")));
   try {
