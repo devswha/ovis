@@ -777,6 +777,14 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       await paneSendText(paneId, shaped, undefined, mayType).catch(firstWriteFailure);
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
+      if (pickerAgent !== undefined) {
+        try {
+          await freeAgentPicker(paneId, pickerAgent);
+        } catch (error) {
+          if (!(error instanceof HerdrError)) throw error;
+          throw new HerdrError("submit_partial", "The message was pasted, but the terminal menu could not be ruled out before Enter. Check the terminal before sending again.");
+        }
+      }
       authorize();
       const sentAt = Date.now();
       await paneSendKeys(paneId, ["Enter"], undefined, mayType).catch(refusal);
