@@ -73,7 +73,7 @@ describe.skipIf(WINDOWS_HOST)("the launcher on a Mac or Linux", () => {
       hostname: "127.0.0.1", port: 0,
       fetch: () => Response.json({ ok: true, auth: { required: false, authenticated: true }, herdr: {} }),
     });
-    const env = { HOME: dir, TMPDIR: dir, TEST_BUN: process.execPath, TEST_PLUGIN: plugin, XDG_STATE_HOME: join(dir, "state") };
+    const env = { HOME: dir, TMPDIR: dir, TEST_BUN: process.execPath, TEST_PLUGIN: plugin, XDG_STATE_HOME: join(dir, "state"), TZ: "Pacific/Honolulu" };
     const launcher = writeLauncher(join(dir, "cli"), "linux", at);
     const record = { pid: process.pid, bun: at.serverBinary, started: processStartSync(process.pid) };
     expect(record.started).not.toBeNull();

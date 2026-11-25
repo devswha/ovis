@@ -258,7 +258,7 @@ export interface Saved {
    * the server it ran last, so a run after a crash can end one left behind; `started` is its start time (`ps -o lstart=`).
    * `bun` is the program it ran: the server's binary, or the bundled Bun of an app from before the binary.
    */
-  server: { pid: number; bun: string; started: string | null; ready?: true } | null;
+  server: { pid: number; bun: string; started: string | null; ready?: boolean } | null;
 }
 
 export function readSaved(path: string): Saved {
@@ -269,7 +269,7 @@ export function readSaved(path: string): Saved {
       ? {
         pid: value.server.pid, bun: value.server.bun,
         started: typeof value.server.started === "string" ? value.server.started : null,
-        ...(value.server.ready === true ? { ready: true as const } : {}),
+        ...(typeof value.server.ready === "boolean" ? { ready: value.server.ready } : {}),
       }
       : null;
     return { port, server };
@@ -304,16 +304,19 @@ const SERVES = /^"? serve$/;
  * server and started at the recorded time. A pid the system has since
  * given to another program, or to another server, is left alone.
  */
-export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = { command: processCommand, started: processStart }): Promise<boolean> {
+export async function endLeftover(saved: Saved["server"], probe?: ProcessProbe): Promise<boolean> {
   if (saved === null) return false;
-  const line = await probe.command(saved.pid);
+  const line = await (probe?.command ?? processCommand)(saved.pid);
   // Windows writes the program's path in quotes when it has a space in it: `"C:\…\bun.exe" …`
   if (line === null) return false;
   const command = line.startsWith('"') ? line.slice(1) : line;
   // the binary's `serve`, or the server's source on Bun as an app from before the binary ran it
   if (!command.startsWith(saved.bun) || !(SERVES.test(command.slice(saved.bun.length)) || command.includes(join("server", "index.ts")))) return false;
   // without a start time it cannot be told from another process that got the pid since: left alone
-  if (saved.started === null || await probe.started(saved.pid) !== saved.started) return false;
+  if (saved.started === null) return false;
+  // Records made before the CLI used them stored ps's time in the desktop app's local time zone.
+  const started = probe ? await probe.started(saved.pid) : await processStart(saved.pid, saved.ready === undefined ? "legacy" : "utc");
+  if (started !== saved.started) return false;
   try { process.kill(saved.pid, "SIGTERM"); } catch { return false; }
   return true;
 }
@@ -339,15 +342,15 @@ export async function processCommand(pid: number): Promise<string | null> {
 export function processStartSync(pid: number): string | null {
   try {
     const [command, args] = psStart(pid);
-    const output = execFileSync(command, args, { env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: WINDOWS ? 15_000 : 5_000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
+    const output = execFileSync(command, args, { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, encoding: "utf8", timeout: WINDOWS ? 15_000 : 5_000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
     return output === "" ? null : output;
   } catch {
     return null;
   }
 }
 
-export async function processStart(pid: number): Promise<string | null> {
-  const { code, output } = await run(...psStart(pid), { ...process.env, LC_ALL: "C" }, null, WINDOWS ? 15_000 : 5_000);
+export async function processStart(pid: number, zone: "utc" | "legacy" = "utc"): Promise<string | null> {
+  const { code, output } = await run(...psStart(pid), { ...process.env, LC_ALL: "C", ...(zone === "utc" ? { TZ: "UTC" } : {}) }, null, WINDOWS ? 15_000 : 5_000);
   return code === 0 && output.trim() !== "" ? output.trim() : null;
 }
 
