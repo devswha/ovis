@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { heldOmoProcess, heldRuntime, heldSessionIds, isOmoProcess, omoAgentDir, omoPanes, omoProcessIdentity, omoSessionFolder, omoCandidates, omoTranscriptsOfCwd, selectOmoTranscript, withOmoDescendants, type OmoRuntime, type ProcessInfo } from "./omo.ts";
 import * as client from "./herdr/client.ts";
+import * as directory from "./directory-entries.ts";
 import * as omoModule from "./omo.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
@@ -317,19 +318,47 @@ it("reads an OmO holder's chat when sidecars outnumber the session scan limit (#
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+it("finds written and pending OmO holder sessions without Node", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-no-node-")));
+  const which = Bun.which;
+  const node = spyOn(Bun, "which").mockImplementation((name, options) => name === "node" ? null : which(name, options));
+  try {
+    const cwd = join(home, "project");
+    const agentDir = join(home, ".omo", "agent");
+    const dir = join(agentDir, "sessions", omoSessionFolder(cwd));
+    const id = "held-session";
+    const path = writeSession(dir, id, cwd);
+    const pid = process.pid;
+    holdRecord(dir, id, pid, { pid, processStartedAtMs: processStartedAt(pid), cwd });
+    const pane = { pane_id: "w:p1", cwd } as HerdrPane;
+    const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
+    const select = () => omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id);
+    const written = select();
+    rmSync(path);
+    const pending = select();
+    expect([written?.path, pending?.pending]).toEqual([path, id]);
+  } finally {
+    node.mockRestore();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it("caps all session-directory entries and does not scan again for a pending holder (#4499)", () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omo-bounded-")));
   const cwd = join(home, "project");
   const agentDir = join(home, ".omo", "agent");
   const store = join(agentDir, "sessions");
   const dir = join(store, omoSessionFolder(cwd));
-  const spawn = Bun.spawnSync;
+  const entries = directory.directoryEntries;
   const list = fs.readdirSync;
-  const limits: string[] = [];
+  const counts: number[] = [];
   let bulk = 0;
-  const reader = spyOn(Bun, "spawnSync").mockImplementation((args: unknown, options?: unknown) => {
-    if (Array.isArray(args) && args.at(-2) === dir) limits.push(args.at(-1)!);
-    return Reflect.apply(spawn, Bun, [args, options]);
+  const reader = spyOn(directory, "directoryEntries").mockImplementation(function* (path) {
+    if (path !== dir) { yield* entries(path); return; }
+    let count = 0;
+    try {
+      for (const entry of entries(path)) { count++; yield entry; }
+    } finally { counts.push(count); }
   });
   const bulkReader = spyOn(fs, "readdirSync").mockImplementation(((path: Parameters<typeof list>[0], options?: unknown) => {
     const entries = Reflect.apply(list, fs, [path, options]);
@@ -343,13 +372,13 @@ it("caps all session-directory entries and does not scan again for a pending hol
     for (let i = 0; i < 32_768; i++) writeFileSync(join(dir, `${i}.jsonl.binding.json`), "");
 
     const { capped } = omoCandidates(cwd, home);
-    expect({ capped: capped.has(store), limits, bulk }).toEqual({ capped: true, limits: ["8192"], bulk: 0 });
+    expect({ capped: capped.has(store), counts, bulk }).toEqual({ capped: true, counts: [8192], bulk: 0 });
 
-    limits.length = 0; bulk = 0;
+    counts.length = 0; bulk = 0;
     const pane = { pane_id: "w:p1", cwd } as HerdrPane;
     const infos = new Map([[pane.pane_id, { process_info: { foreground_processes: [{ pid, argv: ["omo"], cwd }] } }]]);
     const selected = omoTranscriptsOfCwd(cwd, [pane], infos, home, () => [`OMO_CODING_AGENT_DIR=${agentDir}`]).get(pane.pane_id);
-    expect({ pending: selected?.pending, path: selected?.path, limits, bulk }).toEqual({ pending: null, path: null, limits: ["8192"], bulk: 0 });
+    expect({ pending: selected?.pending, path: selected?.path, counts, bulk }).toEqual({ pending: null, path: null, counts: [8192], bulk: 0 });
   } finally {
     reader.mockRestore();
     bulkReader.mockRestore();

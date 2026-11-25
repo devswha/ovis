@@ -1,4 +1,5 @@
 import { constants, fstatSync, closeSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { directoryEntries } from "./directory-entries.ts";
 import { uptime } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
@@ -316,34 +317,15 @@ export function earliestStart(starts: readonly (number | null)[]): number | null
 const SESSION_ENTRY_LIMIT = 8192;
 const SESSION_TRANSCRIPT_LIMIT = 4096;
 
-// Bun's Dir eagerly reads the entire folder before readSync yields an entry.
-// Node's Dir is incremental; use the same fixed limit there, with no shell.
-const READ_SESSION_DIR = `
-  if (process.versions.bun) process.exit(1);
-  const dir = require("node:fs").opendirSync(process.argv[1]);
-  const names = [];
-  try {
-    for (let read = 0; read < Number(process.argv[2]); read++) {
-      const entry = dir.readSync();
-      if (entry === null) { process.stdout.write(JSON.stringify(names)); return; }
-      if (entry.name.endsWith(".jsonl")) names.push(entry.name);
-    }
-    process.exitCode = 2;
-  } finally { dir.closeSync(); }
-`;
-
 function sessionListing(dir: string): { transcripts: string[]; capped: boolean } | null {
-  const node = Bun.which("node");
-  if (node === null) return null;
   try {
-    const read = Bun.spawnSync([node, "-e", `(() => {${READ_SESSION_DIR}})()`, "--", dir, String(SESSION_ENTRY_LIMIT)], {
-      env: { ...process.env, NODE_OPTIONS: "" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000,
-    });
-    if (read.exitCode === 2) return { transcripts: [], capped: true };
-    if (read.exitCode !== 0) return null;
-    const names: unknown = JSON.parse(read.stdout.toString());
-    return Array.isArray(names) && names.length < SESSION_ENTRY_LIMIT && names.every((name): name is string => typeof name === "string")
-      ? { transcripts: names, capped: false } : null;
+    const transcripts: string[] = [];
+    let count = 0;
+    for (const name of directoryEntries(dir)) {
+      if (++count >= SESSION_ENTRY_LIMIT) return { transcripts: [], capped: true };
+      if (name.endsWith(".jsonl")) transcripts.push(name);
+    }
+    return { transcripts, capped: false };
   } catch { return null; }
 }
 
