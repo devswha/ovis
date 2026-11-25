@@ -2,7 +2,7 @@ import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, FALLBACK_ENTER_WITHHELD_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo, faultOf, type HerdrFailureView } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
@@ -782,7 +782,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           await freeAgentPicker(paneId, pickerAgent);
         } catch (error) {
           if (!(error instanceof HerdrError)) throw error;
-          throw new HerdrError("submit_partial", "The message was pasted, but the terminal menu could not be ruled out before Enter. Check the terminal before sending again.");
+          throw new HerdrError("submit_partial", FALLBACK_ENTER_WITHHELD_MESSAGE);
         }
       }
       authorize();

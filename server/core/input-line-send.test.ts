@@ -1,5 +1,6 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
+import { FALLBACK_ENTER_WITHHELD_MESSAGE } from "../../shared/submit-outcome.ts";
 import * as client from "../herdr/client.ts";
 import { createSubmitText } from "./composer.ts";
 
@@ -36,9 +37,26 @@ it("withholds the fallback Enter when a menu appears after the paste", async () 
   spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
   prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
   typed.mockImplementation(async () => { screen = menu; });
-  await expect(submitter()("w:p1", "hello devin", "hello devin", Date.now())).rejects.toMatchObject({ code: "submit_partial" });
+  await expect(submitter()("w:p1", "hello devin", "hello devin", Date.now())).rejects.toMatchObject({
+    code: "submit_partial", message: FALLBACK_ENTER_WITHHELD_MESSAGE,
+  });
   expect(typed).toHaveBeenCalledTimes(1);
   expect(keys).not.toHaveBeenCalled();
+});
+
+it("sends ordinary Devin draft text mentioning navigation keys after a fallback paste", async () => {
+  const { prompt, typed, keys } = herdr();
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "devin", agent_status: "idle", cwd: "/tmp", terminal_id: "devin-test" } as Awaited<ReturnType<typeof client.paneGet>>);
+  const composer = readFileSync(new URL("../fixtures/devin-3000.12.43-composer.txt", import.meta.url), "utf8");
+  const message = "Document these keyboard shortcuts: Up/Down and Enter.";
+  let screen = composer;
+  spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
+  prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
+  typed.mockImplementation(async () => {
+    screen = composer.replace(/^❭ .*$/m, `❭ ${message.replace(": ", ":\n")}`);
+  });
+  await submitter()("w:p1", message, message, Date.now());
+  expect(keys).toHaveBeenCalledTimes(1);
 });
 
 it("still types a short input line, an answer into an open menu included", async () => {
