@@ -45,7 +45,7 @@ describe.skipIf(!keeperBuilt)("stopping delegated work", () => {
     { name: "the depth limit drops to the parent's depth", policy: { depth: 1 }, depth: 1 },
     { name: "the child's harness is removed", policy: { harnesses: [] }, depth: 0 },
   ] as const;
-  it.each([...reductions])("a parent can discover and stop its child after $name", async ({ policy, depth }) => {
+  it.each([...reductions])("a parent can discover and stop its child at an approval after $name", async ({ policy, depth }) => {
     let setting: HarnessToolSetting = { level: "start", depth: 2, harnesses: ["agy"] };
     const adapter = join(dir, "agy");
     const replay = join(import.meta.dir, "replay-agent.fake.ts");
@@ -60,9 +60,12 @@ describe.skipIf(!keeperBuilt)("stopping delegated work", () => {
       if (depth > 0) parent.bind({ self: "parent", harness: "fixture", depth, root: root.id, started_by: root.id });
       const token = readFileSync(parent.tokenFile, "utf8");
       const call = (verb: string, args: object = {}) => lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token, verb, args }, 5000);
-      const started = await call("start", { harness: "agy", cwd: dir });
+      const started = await call("start", { harness: "agy", cwd: dir, task: "do the recorded action" });
       if (!isRecord(started) || !isRecord(started.session) || typeof started.session.address !== "string") throw new Error(JSON.stringify(started));
       const session = started.session.address;
+      const child = acp.forPane(session);
+      if (!child) throw new Error("missing child");
+      await until(child.client, "the pending approval", () => child.client.pending().length === 1);
 
       setting = { ...setting, ...policy };
       hub.settingsChanged();
@@ -70,6 +73,7 @@ describe.skipIf(!keeperBuilt)("stopping delegated work", () => {
       expect(await call("stop", { session })).toMatchObject({ kind: "stopped", stopped: true, session });
       expect(scope).toMatchObject({ verbs: expect.arrayContaining(["stop"]) });
       expect(scope).not.toMatchObject({ verbs: expect.arrayContaining(["send"]) });
+      expect(child.client.pending()).toEqual([]);
       expect(acp.forPane(session)).toBeUndefined();
     } finally {
       hub.close();

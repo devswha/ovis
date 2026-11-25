@@ -229,7 +229,6 @@ export class AgentToolHub {
         const receipt = await child.client.request("_keeper/tool_stop", {}, signal);
         if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");
       } catch (error) {
-        if (error instanceof KeeperRequestError && error.code === -32003) return refuse("waiting_human", "A person must answer the child's card.");
         if (error instanceof KeeperRequestError && error.code === -32002) return refuse("taken_over", "A person holds this child.");
         throw error;
       }
