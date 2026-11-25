@@ -206,6 +206,8 @@ export const RELAY_ZH: Record<string, string> = {
   "It was approved, and {name} did not see it in your account's list in time. Ask to join again, and approve it on a device of your account or on {name} itself.": "已批准，但 {name} 没有及时在账户名单中看到此设备。请再次请求加入，并在账户的某台设备或 {name} 上批准。",
   "{name} runs an older Ovis than your account's other devices, so it cannot add a device by itself. Update Ovis on {name}, or approve this device on another device of your account.": "{name} 上的 Ovis 比账户中其他设备的旧，无法自行添加设备。请更新 {name} 上的 Ovis，或在账户的另一台设备上批准此设备。",
   "{name} could not add it. Ask to join again.": "{name} 无法添加它。请再次请求加入。",
+  "{name} cannot add this device itself": "{name} 无法自行添加此设备",
+  "{name} joined your account by an invite, so it lets nobody into your account's list itself. Ask to join again, and approve it on another device of your account.": "{name} 是通过邀请加入账户的，因此无法自行将任何人加入账户列表。请再次请求加入，并在账户的另一台设备上批准。",
   "{name} belongs to another account's list": "{name} 属于另一个账户的名单",
   "{name} follows a list that is not your account's. Sign in to the same account on {name} and on this device, then try again.": "{name} 遵循的名单不是你账户的。请在 {name} 和此设备上登录同一账户，然后重试。",
   "{name} was removed from your account": "{name} 已从你的账户中移除",

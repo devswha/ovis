@@ -2089,7 +2089,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   claimed the key), `list_service_away` or `list_head_lost` (it could not be placed in time),
   `list_not_in` (a member allowed it and no entry reached this PC), `list_pc_behind` (Ovis on this
   PC is older than what a member wrote into the list, so the PC signs nobody in until it is
-  updated; a device of the account can still allow the newcomer), else `list_refused`. One entry
+  updated; a device of the account can still allow the newcomer), `list_not_signer` (this PC joined
+  by an invite and signs nobody into the list: a device of the account allows the newcomer), else
+  `list_refused`. One entry
   is signed for one place: the same signed entry is sent again while this PC's copy shows the same
   head (a lost answer, a 5xx answer that says nothing of the entry, a read that failed, a service
   that asks to try again or is reading the list again, after the time its `retry-after` names),

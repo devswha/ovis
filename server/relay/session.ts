@@ -92,6 +92,8 @@ function listSignInRequired(): Response {
  */
 const LIST_ALLOW_CAUSES: Partial<Record<AllowRefusal, string>> = {
   not_claimed: "list_not_claimed", service_away: "list_service_away", head_lost: "list_head_lost", not_in_list: "list_not_in", behind: "list_pc_behind",
+  // a PC that joined by an invite signs nobody into the list: the device is pointed to another device of the account
+  not_signer: "list_not_signer",
 };
 
 export interface RelaySessionOptions {

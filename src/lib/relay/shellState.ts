@@ -77,7 +77,7 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
    * the account allowed it and no entry reached the PC; Ovis on the PC is too old to sign for the list; anything
    * else. `list-other`: the PC follows another list than this device's account's, said before any digits.
    */
-  | "list-not-claimed" | "list-not-placed" | "list-not-in" | "list-pc-behind" | "list-refused" | "list-other"
+  | "list-not-claimed" | "list-not-placed" | "list-not-in" | "list-pc-behind" | "list-pc-invited" | "list-refused" | "list-other"
   /** the sign-in a marked pairing stopped for took longer than its code is good for: only a new scan pairs */
   | "scan-expired";
 
@@ -186,7 +186,7 @@ export function offerOf(device: RelayDevice): RelayOffer {
 /** The causes a PC names when a join into its account's list ends with nobody let in (docs/account.md, "A PC allows a device into the list"). */
 const LIST_JOIN_CAUSES: Readonly<Record<string, RelayFailure>> = {
   list_not_claimed: "list-not-claimed", list_service_away: "list-not-placed", list_head_lost: "list-not-placed",
-  list_not_in: "list-not-in", list_pc_behind: "list-pc-behind", list_refused: "list-refused",
+  list_not_in: "list-not-in", list_pc_behind: "list-pc-behind", list_not_signer: "list-pc-invited", list_refused: "list-refused",
 };
 
 export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean; codeless?: boolean }): RelayFailure {
