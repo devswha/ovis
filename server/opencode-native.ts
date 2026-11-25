@@ -277,17 +277,17 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
     if (own?.size === 0) inFlightByPane.delete(paneId!);
   }
   if (verification.cancelled || released) return null;
+  // a newer verification already bound the pane: this older one neither releases it nor replaces its session, its
+  // process or its stream
+  const superseded = paneId !== undefined && (verifiedPanes.get(paneId)?.started ?? 0) > verification.started;
   if (!held) {
-    if (paneId !== undefined && verifiedPanes.has(paneId)) releaseOpenCodePane(paneId);
+    if (paneId !== undefined && verifiedPanes.has(paneId) && !superseded) releaseOpenCodePane(paneId);
     return null;
   }
-  if (paneId === undefined) return { service: service!, sessionID };
+  if (paneId === undefined || superseded) return { service: service!, sessionID };
   const live = ensureStream(service!);
-  const earlier = verifiedPanes.get(paneId);
-  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid : pid;
-  const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid, started: verification.started });
   for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();
   return { service: service!, sessionID };

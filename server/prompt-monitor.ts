@@ -10,7 +10,7 @@ export interface PromptReader {
   read(pane: HerdrPane, panes: HerdrPane[]): Promise<string | null | undefined>;
 }
 
-interface WatchedPrompt { shown?: string; signature?: string; failures: number }
+interface WatchedPrompt { shown?: string; signature?: string; failures: number; wakes: number }
 
 /**
  * One read loop for the server's prompt watches (server/core/prompt-watch.ts): every watched pane is read every
@@ -26,6 +26,7 @@ export class PromptMonitor {
   private readonly salt = randomUUID();
   private timer?: ReturnType<typeof setInterval>;
   private ticking: Promise<void> | null = null;
+  private tickingOnly = false;
   private stopped = false;
 
   constructor(
@@ -44,7 +45,7 @@ export class PromptMonitor {
 
   watch(paneId: string): void {
     if (this.stopped || this.panes.has(paneId)) return;
-    this.panes.set(paneId, { failures: 0 });
+    this.panes.set(paneId, { failures: 0, wakes: 0 });
     if (!this.timer) {
       this.timer = setInterval(() => void this.tick(), this.intervalMs);
       this.timer.unref();
@@ -62,10 +63,13 @@ export class PromptMonitor {
 
   /**
    * Reads a watched pane now. A tick under way may have read it before the change, so a wake during one reads the
-   * pane again once it ends; reads of one pane still never run at once.
+   * pane again once it ends, and what that older read found is not told; reads of one pane still never run at once.
+   * A woken read that fails counts toward no end of the watch: only the ticks', a half second apart, do.
    */
   wake(paneId: string): void {
-    if (!this.panes.has(paneId)) return;
+    const state = this.panes.get(paneId);
+    if (!state) return;
+    state.wakes += 1;
     this.woken.add(paneId);
     if (!this.ticking) void this.tick(this.takeWoken());
   }
@@ -80,7 +84,11 @@ export class PromptMonitor {
 
   /** One read of every watched pane, never two at once: a slow herdr skips ticks rather than piling reads up. */
   tick(only?: ReadonlySet<string>): Promise<void> {
-    this.ticking ??= this.readAll(only).finally(() => {
+    // a woken pane's read under way stands for no other pane: the full read it was asked for follows it
+    if (this.ticking && !only && this.tickingOnly) return this.ticking.then(() => this.tick());
+    if (this.ticking) return this.ticking;
+    this.tickingOnly = only !== undefined;
+    this.ticking = this.readAll(only).finally(() => {
       this.ticking = null;
       if (this.woken.size > 0) void this.tick(this.takeWoken());
     });
@@ -104,26 +112,27 @@ export class PromptMonitor {
     }
     const queue = [...watched];
     const worker = async (): Promise<void> => {
-      for (let next = queue.shift(); next; next = queue.shift()) await this.readOne(next[0], next[1], snapshot);
+      for (let next = queue.shift(); next; next = queue.shift()) await this.readOne(next[0], next[1], snapshot, only === undefined);
     };
     await Promise.all(Array.from({ length: Math.min(READS_AT_ONCE, queue.length) }, worker));
   }
 
-  private async readOne(paneId: string, state: WatchedPrompt, snapshot: SessionSnapshot): Promise<void> {
+  private async readOne(paneId: string, state: WatchedPrompt, snapshot: SessionSnapshot, counted: boolean): Promise<void> {
     if (this.panes.get(paneId) !== state) return;
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
     if (!pane) {
       this.end(paneId);
       return;
     }
+    const wakes = state.wakes;
     let shown: string | null | undefined;
     try {
       shown = await this.reader.read(pane, snapshot.panes);
     } catch {
-      this.failed(paneId, state);
+      if (counted) this.failed(paneId, state);
       return;
     }
-    if (this.panes.get(paneId) !== state) return;
+    if (this.panes.get(paneId) !== state || state.wakes !== wakes) return;
     state.failures = 0;
     if (shown !== undefined) this.publish(paneId, state, shown ?? "");
   }

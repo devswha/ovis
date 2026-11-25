@@ -1,3 +1,4 @@
 ### Changed
-- An OpenCode 2 permission request now shows its card, and an answer from the terminal closes it, as
-  soon as OpenCode announces it, instead of on the next half-second check.
+- A watched OpenCode 2 pane whose service Ovis already follows now shows a permission card, and closes
+  it after an answer from the terminal, as soon as OpenCode announces it rather than on the next
+  half-second check.
