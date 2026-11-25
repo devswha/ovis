@@ -80,15 +80,24 @@ describe("claudeProcessSession", () => {
 
   it.skipIf(!NATIVE || Boolean(process.env["CLAUDE_CONFIG_DIR"]))("reads the session a pane's one Claude process records, which /clear rewrites (#540)", async () => {
     const home = nativeRecord();
-    const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
-    expect(await claudeForegroundSession([claude], home)).toBe(SESSION);
-    const cleared = "1c9e7f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
-    const path = join(home, ".claude", "sessions", `${process.pid}.json`);
-    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
-    expect(await claudeForegroundSession([claude], home)).toBe(cleared);
-    expect(await claudeForegroundSession([], home)).toBeNull();
-    expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
-    expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
+    const original = fsPromises.readFile;
+    const read = spyOn(fsPromises, "readFile");
+    read.mockImplementation((async (file: Parameters<typeof readFileSync>[0], ...args: unknown[]) =>
+      file === `/proc/${process.pid}/environ`
+        ? `HOME=${home}\0`
+        : Reflect.apply(original, fsPromises, [file, ...args])) as typeof fsPromises.readFile);
+    const darwin = process.platform === "darwin" ? spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`) : null;
+    try {
+      const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
+      expect(await claudeForegroundSession([claude], home)).toBe(SESSION);
+      const cleared = "1c9e7f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
+      const path = join(home, ".claude", "sessions", `${process.pid}.json`);
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
+      expect(await claudeForegroundSession([claude], home)).toBe(cleared);
+      expect(await claudeForegroundSession([], home)).toBeNull();
+      expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
+      expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
+    } finally { darwin?.mockRestore(); read.mockRestore(); forgetClaudeSessions(); }
   });
 
   it.skipIf(process.platform !== "darwin")("reads it on a Mac whose locale puts the day first", async () => {
@@ -410,11 +419,17 @@ describe("a claude attach pane's job (#1645)", () => {
     roots.push(home);
     const dir = join(home, ".claude");
     job(dir, JOB, { sessionId: `${JOB}-6228-4376-a66c-ad9820b26f37`, resumeSessionId: SESSION });
-    const client = { pid: process.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
-    expect(await claudeForegroundSession([client], home)).toBe(SESSION);
-    job(dir, JOB, { command: "sleep 100", sessionId: undefined });
-    expect(await claudeForegroundSession([client], home)).toBeNull();
-    expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: home }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      const client = { pid: child.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
+      expect(await claudeForegroundSession([client], home)).toBe(SESSION);
+      job(dir, JOB, { command: "sleep 100", sessionId: undefined });
+      expect(await claudeForegroundSession([client], home)).toBeNull();
+      expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
+    } finally { child.kill(); await child.exited; }
   });
 
   // CLAUDE_CODE_SESSION_KIND=bg makes Claude read no subcommand behind options: it runs an interactive Claude
@@ -961,11 +976,12 @@ describe("CLAUDE_CONFIG_DIR", () => {
       [process.execPath, "-e", "console.log('ready'); await Bun.sleep(5000)"], { env, stdout: "pipe" },
     );
     const child = sleeper({ ...process.env, CLAUDE_CONFIG_DIR: dir });
-    const bare = sleeper({ PATH: process.env["PATH"] ?? "" });
+    const paneHome = join(dir, "pane-home");
+    const bare = sleeper({ PATH: process.env["PATH"] ?? "", HOME: paneHome });
     try {
       for (const process of [child, bare]) await process.stdout.getReader().read();
       expect(await processClaudeConfigDir(child.pid)).toBe(dir);
-      expect(await processClaudeConfigDir(bare.pid, [], dir)).toBe(join(dir, ".claude"));
+      expect(await processClaudeConfigDir(bare.pid, [], dir)).toBe(join(paneHome, ".claude"));
     } finally { child.kill(); bare.kill(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
