@@ -277,10 +277,14 @@ describe("FINDING MEDIUM-2: a removal this PC holds against a device's present s
 
   test("no links read, no pin: a PC whose account service does not serve the list's links follows no naming yet", async () => {
     const pc = await tabletSignedInAgain();
-    const served = pc.service.fetch;
-    pc.service.fetch = async (request: Request) => (new URL(request.url).pathname === "/v2/pc/list/links" ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : await served.call(pc.service, request));
+    // an account service from before the route answers it as an unknown one
+    const served = pc.service.fetch.bind(pc.service);
+    const older = spyOn(pc.service, "fetch").mockImplementation(async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      return new URL(request.url).pathname === "/v2/pc/list/links" ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : await served(request);
+    });
     expect(await names(await sessionOf(pc, pc.phone), { naming: await pc.born.naming(pc.phone, pc.phone.signIn.key, pc.endpoint) })).toEqual({ pinned: false, why: "not_read", wait: null });
-    pc.service.fetch = served;
+    older.mockRestore();
     pc.time.advance(31_000);
     await pc.phoneNames();
   }, SLOW);
