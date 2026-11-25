@@ -537,7 +537,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
         // xterm, which takes the cursor and DEC 2026 with every write, renders when a synchronized update ends: the
         // layer draws on that render (onRender), never inside an open update
         keep(data);
-        writeOnly(data, callback);
+        // a frame of its own once xterm has parsed the write's controls: xterm, which holds no rows, may skip the render
+        // a cursor move alone asks for (after a resize made while it was hidden), so libghostty does not wait on it.
+        // An open synchronized update (DEC 2026) still waits for the render that ends it
+        writeOnly(data, () => {
+          if (!term.modes.synchronizedOutputMode) schedule();
+          callback?.();
+        });
         written = true;
         return;
       } catch (error) {
