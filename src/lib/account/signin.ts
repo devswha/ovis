@@ -6,7 +6,7 @@
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { AccountServiceError, requestToken } from "./service.ts";
-import type { AccountProvider, AccountSession, AccountStore, PendingPairing, PendingSignIn } from "./store.ts";
+import type { AccountProvider, AccountSession, AccountStore, EverywhereCarried, PendingPairing, PendingSignIn } from "./store.ts";
 
 /** A sign-in left at the provider's pages longer than this is not finished: its return is refused. */
 export const SIGN_IN_MS = 10 * 60_000;
@@ -30,13 +30,13 @@ function random(bytes: number): string {
  * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead. `pairing` waits in the
  * same record, so only this sign-in's return takes it, and it goes when the sign-in does.
  */
-export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string }): Promise<string> {
+export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string; signOutEverywhereAsked?: EverywhereCarried }): Promise<string> {
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const now = (options.now ?? Date.now)();
   const pending: PendingSignIn = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now, ...(options.pairing ? { pairing: options.pairing } : {}), ...(options.pc ? { pc: options.pc } : {}),
-    ...(options.signOutEverywhere ? { sign_out_everywhere: options.signOutEverywhere } : {}) };
+    ...(options.signOutEverywhere ? { sign_out_everywhere: options.signOutEverywhere } : {}), ...(options.signOutEverywhereAsked ? { sign_out_everywhere_asked: options.signOutEverywhereAsked } : {}) };
   // one per state: another tab's sign-in stays, and only ones past their time are dropped
   await options.store.update("pending", (current) => ({
     ...Object.fromEntries(Object.entries(current ?? {}).filter(([, waiting]) => now - waiting.started_at <= SIGN_IN_MS)),

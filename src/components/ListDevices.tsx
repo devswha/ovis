@@ -206,7 +206,8 @@ export function useNotMe(list: AccountList | null = pageAccountList()): { readon
 
 /**
  * Sign out every device's question, for an account whose list this device is in: every other device leaves the
- * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs. `named`: the
+ * list first, by name, since a device that is only signed out keeps a key that opens the account's PCs, and this
+ * device leaves it last, so a device of the list comes back only by an Allow at one of the account's PCs. `named`: the
  * devices the question was drawn with, which the press passes on, and no others. `children`: what the question says
  * for any other account.
  */
@@ -219,6 +220,7 @@ export function SignOutEverywhereSays({ account, named, children }: { readonly a
     <p className="settings-description" role="status" data-testid="sign-out-everywhere-says">
       {others.length === 0 ? t("Every browser and app is signed out of the account.")
         : t("These devices leave your account for good, then every browser and app is signed out: {names}", { names: others.join(", ") })}
+      {" "}{t("This device leaves your account too: to use it again, sign in and allow it on one of your PCs.")}
     </p>
   );
 }

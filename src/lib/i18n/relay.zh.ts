@@ -213,4 +213,9 @@ export const RELAY_ZH: Record<string, string> = {
   "This device's time in your account is over": "此设备在账户中的使用时间已结束",
   "It was added for a limited time. To go on, add it again from a device of your account.": "此设备只被添加了一段时间。要继续使用，请从账户的其他设备重新添加。",
   "Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.": "还不知道其他设备是否已离开你的账户，也没有设备退出登录。请稍后重试。",
+  "Whether this device left your account's list is not known yet, and nobody was signed out. Try again in a moment.": "尚不确定此设备是否已离开账户名单，因此没有让任何设备退出登录。请稍后重试。",
+  "{count} other devices left your account, but this device could not leave it, so nobody was signed out. Try again.": "其他 {count} 台设备已离开你的账户，但此设备未能离开，因此没有让任何设备退出登录。请重试。",
+  "This device could not leave your account's list, so nobody was signed out. Try again.": "此设备未能离开账户名单，因此没有让任何设备退出登录。请重试。",
+  "Every device left your account's list, this one too, so none of them opens your PCs again without an Allow. Their sign-ins could not be ended.": "包括此设备在内的所有设备都已离开账户名单，没有允许就无法再打开你的电脑。但未能结束它们的登录。",
+  "This device left your account's list, but the list changed meanwhile, so no other sign-in was ended. Check your devices on one of your PCs.": "此设备已离开账户名单，但其间名单发生了变化，因此没有结束其他登录。请在你的一台电脑上查看你的设备。",
 };

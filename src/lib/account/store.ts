@@ -51,6 +51,17 @@ export interface PendingSignIn {
   readonly pc?: string;
   /** the account whose sign-out of every device asked for this sign-in again: its return signs them out, for that account only */
   readonly sign_out_everywhere?: string;
+  /** that sign-out's question, on an account whose list this device is in: its return puts out these and no others */
+  readonly sign_out_everywhere_asked?: EverywhereCarried;
+}
+
+/**
+ * Sign out every device's question carried through a browser's sign-in again (relay/accountController.ts): the other
+ * devices it named, and the account, list and member key it was drawn with (null where the page showed no list).
+ */
+export interface EverywhereCarried {
+  readonly confirmed: readonly string[];
+  readonly scope: { readonly account: string; readonly list: string; readonly member: string } | null;
 }
 
 /** A scanned offer waiting on a sign-in; `at`: when the code was scanned, which bounds how long it is tried. */

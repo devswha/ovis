@@ -77,6 +77,15 @@ export async function leaveList(list: AccountList, account: string, options: { r
   return removeSelf(list, scope, options);
 }
 
+/**
+ * Whether this device is in `account`'s list by the copy it keeps, read first where the page has not read it yet
+ * (`viewFor`): `unread` where its store did not answer, which is no word that it is in none.
+ */
+export async function memberOf(list: AccountList, account: string): Promise<boolean | "unread"> {
+  const view = await viewFor(list, account);
+  return view === "unread" ? view : view !== null && inList(view, account);
+}
+
 /** The keys of the devices other than this one that the page's list holds for `account`: what Sign out every device's question names. */
 export function otherDevices(view: AccountListView, account: string): string[] {
   return inList(view, account) ? view.devices.filter((device) => !device.self).map((device) => device.key) : [];
@@ -85,8 +94,9 @@ export function otherDevices(view: AccountListView, account: string): string[] {
 /**
  * Sign out every device, on an account whose list this device is in: every other device the list holds leaves it
  * first, in one request with the epoch after it, since a device that is only signed out still holds a key that opens
- * the account's PCs. This device stays. `confirmed`: the devices the person's question named; a device it did not name
- * ends the removal with nothing signed (`unconfirmed`). Null for a device that keeps no copy of that account's list.
+ * the account's PCs. This device puts itself out after it (`leaveList`), last. `confirmed`: the devices the person's
+ * question named; a device it did not name ends the removal with nothing signed (`unconfirmed`). Null for a device
+ * that keeps no copy of that account's list.
  */
 export async function removeOthers(list: AccountList, account: string, confirmed: readonly string[], options: { readonly wait?: (ms: number) => Promise<void>; readonly scope?: WriteScope | null } = {}): Promise<RemoveOutcome | null> {
   const view = await viewFor(list, account);

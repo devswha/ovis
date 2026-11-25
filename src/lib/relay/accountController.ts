@@ -8,7 +8,7 @@ import { deviceCard, deviceListKeys } from "../account/listKeys.ts";
 import { listReading, pcsByList, allOutside, unreadCopy } from "../account/listPcs.ts";
 import { dropKnownPcs, keepKnownPcs, knownPcs } from "../account/knownPcs.ts";
 import { followAccountList } from "../account/listFollow.ts";
-import { forgetMembership, inList, leaveList, otherDevices, removeOthers, tidyOnRead, watchRemoval, type EverywhereAsked, type Shown } from "../account/listLeave.ts";
+import { forgetMembership, inList, leaveList, memberOf, otherDevices, removeOthers, tidyOnRead, watchRemoval, type EverywhereAsked, type Shown } from "../account/listLeave.ts";
 import { scopeOf, type RemoveOutcome, type WriteScope } from "../account/listRemoveDevice.ts";
 import { LIST_WRITE_WAITING_EVENT } from "../account/listWrite.ts";
 import { listNames } from "../account/listGenesis.ts";
@@ -21,7 +21,7 @@ import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
-import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
+import type { AccountKey, AccountProvider, AccountSession, EverywhereCarried, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { keysForCarriedPc } from "../account/listCarriedPc.ts";
 import { setPageAccountList } from "../account/pageList.ts";
@@ -135,6 +135,13 @@ function signInFailure(error: unknown): string {
   return t("The sign-in did not finish. Try again.");
 }
 
+
+/**
+ * How young a sign-in must be, by this device's clock, for Sign out every device on an account with a signed list to
+ * start its entries: the account service takes the sign-out that follows them only from a sign-in of the last ten
+ * minutes, and once this device is out of the list it signs in again for nothing.
+ */
+export const EVERYWHERE_FRESH_MS = 8 * 60_000;
 
 export function createAccountController(mount: RelayShellMount, view: {
   readonly active: () => boolean; readonly changed: () => Promise<void>; readonly outdated: () => ReadonlySet<string>;
@@ -682,13 +689,17 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (!current()) throw refused;
     return again;
   };
-  /** Every sign-in of `session`'s account ends at the service, this device's too: the signed-out page says so. */
-  const signedOutEverywhere = async (session: AccountSession): Promise<void> => {
+  /**
+   * Every sign-in of `session`'s account ends at the service, this device's too: the signed-out page says so. `forget`:
+   * what this device forgets once they ended (its account key, where it put itself out of the account's list first).
+   */
+  const signedOutEverywhere = async (session: AccountSession, forget?: () => Promise<unknown>): Promise<void> => {
     await account.forSignIn(session).signOutEverywhere();
     for (const serverId of running.values()) cancelEnrollment(serverId);
     invalidate();
     // the stored sign-in is gone: the list's view goes with it, and so does what opens its names
     forgetNames(session.account);
+    await forget?.().catch((error: unknown) => console.warn("Ovis: this device did not forget its account key", error instanceof Error ? error.name : error));
     followed?.poke();
     accountView = { kind: "signed-out", error: null, notice: t("Every device was signed out.") };
     await changed();
@@ -742,6 +753,95 @@ export function createAccountController(mount: RelayShellMount, view: {
     const newcomers = otherDevices(read, on).filter((key) => !named.includes(key));
     return newcomers.length === 0 ? null : othersRefused({ removed: false, why: "unconfirmed", retryAfterMs: null, placed: named.length, unconfirmed: newcomers }, named.length);
   };
+  /** What Sign out every device says where the list did not take this device's own removal, after `others` left it. */
+  const ownRefused = (outcome: RemoveOutcome | null, others: number): string => {
+    const why = outcome === null || outcome.removed ? null : outcome.why;
+    if (why === "unknown") return t("Whether this device left your account's list is not known yet, and nobody was signed out. Try again in a moment.");
+    if (others > 0) return t("{count} other devices left your account, but this device could not leave it, so nobody was signed out. Try again.", { count: String(others) });
+    if (why === "stopped") return t("The account service cannot change the list right now. To remove a device, use Revoke on each PC.");
+    return t("This device could not leave your account's list, so nobody was signed out. Try again.");
+  };
+  /**
+   * Sign out every device on an account whose list this device is in, as `session` (docs/account-list.md, "Sign out
+   * every device"): the devices the question named leave the list (`everyOtherOut`), then this device puts itself out,
+   * last, and only once its own read shows it out, and the list then holds nobody, does every sign-in end; this device
+   * then forgets its account key (forgetMembership: a key another account's copy holds stays). `done`: every device was
+   * signed out. `out`: this device left the list, but the sign-ins were not ended: they could not be (a browser's
+   * sign-in that grew too old meanwhile), or the list changed while this one left it; this device then ends
+   * its own sign-in, forgets its key, and its page says so. `refused`: nobody was signed out, and why. `quiet`: a
+   * sign-out or another sign-in took this action's place.
+   */
+  const listEverywhere = async (session: AccountSession, named: readonly string[], scope: WriteScope | null, current: () => boolean): Promise<{ readonly kind: "done" | "out" | "quiet" } | { readonly kind: "refused"; readonly message: string }> => {
+    if (lists === null) return { kind: "refused", message: t("Could not sign out every device. Try again.") };
+    const on = session.account;
+    // its own removal is no news to this page: what follows it is this action's
+    leavingList = on;
+    try {
+      const refusedOthers = await everyOtherOut(on, named, scope);
+      if (!current()) return { kind: "quiet" };
+      if (refusedOthers !== null) return { kind: "refused", message: refusedOthers };
+      // the key this device is in the list with, read before it puts itself out: the one forgotten after; and the place
+      // its own read of the log stood at, where nobody but the devices it named was in
+      const before = lists.view();
+      const member = scope?.member ?? scopeOf(before)?.member ?? null;
+      const headBefore = before.account === on && before.status.at === "following" ? before.status.head : null;
+      const self = await leaveList(lists, on, { scope }).catch((error: unknown): RemoveOutcome => {
+        console.warn("Ovis: this device did not put itself out of the account's list", error instanceof Error ? error.name : error);
+        return { removed: false, why: "unreached", retryAfterMs: null, placed: 0 };
+      });
+      if (!current()) return { kind: "quiet" };
+      if (self === null || !self.removed) return { kind: "refused", message: ownRefused(self, named.length) };
+      let holding = session;
+      /**
+       * This device is out of the list for good, and the sign-ins were not ended: it ends its own sign-in and forgets its
+       * key, as at a Sign out, and says what was not done.
+       */
+      const outHere = async (said: string): Promise<{ readonly kind: "out" }> => {
+        await account.forSignIn(holding).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
+        for (const serverId of running.values()) cancelEnrollment(serverId);
+        invalidate();
+        forgetNames(on);
+        await forgetMembership(accountStore, lists, holding, member).catch((error: unknown) => console.warn("Ovis: this device did not forget its account key", error instanceof Error ? error.name : error));
+        followed?.poke();
+        accountView = { kind: "signed-out", error: said };
+        await changed();
+        return { kind: "out" };
+      };
+      // right before the sign-out the list must hold nobody: its own read showed this device out, and a device that is
+      // out sees no other row, so the log must have grown by its own removal alone since the read that found nobody but
+      // the devices it named. Anything else written meanwhile (a PC let a device in) is not this device's to judge or put
+      // out any more: no other sign-in is ended
+      const left = lists.view();
+      const headAfter = left.account === on && left.status.at === "following" ? left.status.head : null;
+      if (headBefore === null || headAfter !== headBefore + 1) return await outHere(t("This device left your account's list, but the list changed meanwhile, so no other sign-in was ended. Check your devices on one of your PCs."));
+      try {
+        await signedOutEverywhere(session, () => forgetMembership(accountStore, lists, session, member));
+        return { kind: "done" };
+      } catch (error) {
+        if (!current()) return { kind: "quiet" };
+        // the phone app signs in again in place and sends it again; this device is out of the list by now, so a browser
+        // does not leave the page for a sign-in again that would come back to a device out of its list
+        if (error instanceof AccountServiceError && error.code === "reauth_required" && accountService !== null && nativeSignInAvailable()) {
+          try {
+            holding = await signInAgainInPlace(session, accountService, current, error);
+            const fresh = holding;
+            await signedOutEverywhere(fresh, () => forgetMembership(accountStore, lists, fresh, member));
+            return { kind: "done" };
+          } catch (again) {
+            if (!current()) return { kind: "quiet" };
+            console.warn("Ovis: every device was not signed out after the sign-in again", again instanceof AccountServiceError ? again.code : again instanceof Error ? again.name : again);
+          }
+        } else console.warn("Ovis: every device left the list, and their sign-ins were not ended", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      }
+      // every device is out of the list, this one too
+      return await outHere(t("Every device left your account's list, this one too, so none of them opens your PCs again without an Allow. Their sign-ins could not be ended."));
+    } finally { if (leavingList === on) leavingList = null; }
+  };
+  /** Whether `session` was made recently enough for Sign out every device on a list account to start (EVERYWHERE_FRESH_MS). */
+  const freshForEverywhere = (session: AccountSession): boolean => {
+    const age = session.signed_in_at === undefined ? Number.NaN : Date.now() - session.signed_in_at;
+    return age >= 0 && age <= EVERYWHERE_FRESH_MS;
+  };
   const signOutEverywhere = (pc?: string, asked?: EverywhereAsked): Promise<string | null> => {
     if (deletion !== undefined || leaving) return Promise.resolve(null);
     const mine = {};
@@ -759,6 +859,18 @@ export function createAccountController(mount: RelayShellMount, view: {
       // came in since, or the list does not take it, nobody is signed out
       const named = asked?.confirmed ?? (lists === null ? [] : otherDevices(lists.view(), from.account));
       const scope = asked?.shown.scope ?? null;
+      // a device that is in the list puts itself out too, after the others, before every sign-in ends: the sign-out
+      // wants a sign-in from the last ten minutes, so an older one is made again first, before anything is signed
+      if (lists !== null && await memberOf(lists, from.account) === true) {
+        if (!current()) return null;
+        let signer = from;
+        if (!freshForEverywhere(from) && accountService !== null) {
+          if (!nativeSignInAvailable()) { signIn(from.provider, undefined, undefined, pc, from.account, { confirmed: named, scope }); return null; }
+          signer = await signInAgainInPlace(from, accountService, current, new AccountServiceError(403, "reauth_required", "Sign in again first"));
+        }
+        const ended = await listEverywhere(signer, named, scope, current);
+        return ended.kind === "refused" ? ended.message : null;
+      }
       const refusedOthers = await everyOtherOut(from.account, named, scope);
       // a sign-out or another sign-in since took this action's place: it sends nothing, and says nothing
       if (!current()) return null;
@@ -880,8 +992,8 @@ export function createAccountController(mount: RelayShellMount, view: {
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */
   /** `wanted`: asked again right before the page leaves for the provider (after its pending record is written); false leaves the sign-in unstarted */
   /** `pc`: the PC whose own page this is: a web sign-in's return goes back to it (load's `toPc`) */
-  /** `everywhere`: the account whose sign-out of every device waits on this web sign-in (signOutEverywhere) */
-  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string, everywhere?: string): void => {
+  /** `everywhere`: the account whose sign-out of every device waits on this web sign-in (signOutEverywhere); `asked`: its question, on a list account */
+  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string, everywhere?: string, asked?: EverywhereCarried): void => {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
     deletion = undefined;
@@ -897,12 +1009,25 @@ export function createAccountController(mount: RelayShellMount, view: {
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const started = nativeSignInAvailable()
       ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
-      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}), ...(everywhere ? { signOutEverywhere: everywhere } : {}) })
+      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}), ...(everywhere ? { signOutEverywhere: everywhere } : {}), ...(asked ? { signOutEverywhereAsked: asked } : {}) })
         .then(async (url) => wanted === undefined || await wanted() ? leave(url) : unwanted());
     started.catch(async (error: unknown) => {
       console.warn("Ovis: the sign-in did not start", error);
       accountView = { kind: "signed-out", error: signInFailure(error), provider };
       await changed();
+    });
+  };
+  /**
+   * Sign out every device, back from the browser's sign-in again it asked for: on a list account whose question came
+   * with it, the whole of it (listEverywhere: nothing was signed before the browser left); otherwise the others are put
+   * out as before (they were, before it left) and every sign-in ends. Whether it went: a refusal comes back signed in.
+   */
+  const everywhereOnReturn = async (session: AccountSession, asked: EverywhereCarried | undefined): Promise<boolean> => {
+    if (asked !== undefined && lists !== null && await memberOf(lists, session.account) === true) return (await listEverywhere(session, asked.confirmed, asked.scope, () => true)).kind !== "refused";
+    return await everyOtherOut(session.account, [], null) === null && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
+      // still signed in, with a fresh sign-in now: pressing again in Manage account goes through
+      console.warn("Ovis: every device was not signed out after the sign-in again", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      return false;
     });
   };
   /**
@@ -926,11 +1051,7 @@ export function createAccountController(mount: RelayShellMount, view: {
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
         // back from a sign-in again for Sign out every device: the list is read again first, and a device that came in while
         // the browser was away (the question named none still in) keeps everybody signed in, to be asked about
-        else if (pending?.sign_out_everywhere === session.account && await everyOtherOut(session.account, [], null) === null && await signedOutEverywhere(session).then(() => true, (error: unknown) => {
-          // still signed in, with a fresh sign-in now: pressing again in Manage account goes through
-          console.warn("Ovis: every device was not signed out after the sign-in again", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
-          return false;
-        })) {
+        else if (pending?.sign_out_everywhere === session.account && await everywhereOnReturn(session, pending.sign_out_everywhere_asked)) {
           if (pending.pc !== undefined) outcome = { refused: null, provider: pending.provider };
         } else {
           registrationJustTried = session;

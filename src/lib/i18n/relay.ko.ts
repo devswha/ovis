@@ -213,4 +213,9 @@ export const RELAY_KO: Record<string, string> = {
   "This device's time in your account is over": "이 기기의 계정 사용 시간이 끝났어요",
   "It was added for a limited time. To go on, add it again from a device of your account.": "정해진 시간 동안만 추가된 기기예요. 계속 쓰려면 계정의 다른 기기에서 다시 추가하세요.",
   "Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.": "다른 기기가 계정에서 빠졌는지 아직 알 수 없고, 아무도 로그아웃하지 않았어요. 잠시 뒤 다시 시도하세요.",
+  "Whether this device left your account's list is not known yet, and nobody was signed out. Try again in a moment.": "이 기기가 계정 명단에서 빠졌는지 아직 알 수 없어서 아무도 로그아웃하지 않았어요. 잠시 뒤 다시 시도하세요.",
+  "{count} other devices left your account, but this device could not leave it, so nobody was signed out. Try again.": "다른 기기 {count}대는 계정에서 빠졌지만 이 기기는 빠지지 못해서 아무도 로그아웃하지 않았어요. 다시 시도하세요.",
+  "This device could not leave your account's list, so nobody was signed out. Try again.": "이 기기가 계정 명단에서 빠지지 못해서 아무도 로그아웃하지 않았어요. 다시 시도하세요.",
+  "Every device left your account's list, this one too, so none of them opens your PCs again without an Allow. Their sign-ins could not be ended.": "이 기기를 포함한 모든 기기가 계정 명단에서 빠져서, 이제 허용 없이는 어느 기기도 PC를 열 수 없어요. 다만 각 기기의 로그인은 끝내지 못했어요.",
+  "This device left your account's list, but the list changed meanwhile, so no other sign-in was ended. Check your devices on one of your PCs.": "이 기기는 계정 명단에서 빠졌지만 그사이 명단이 바뀌어서 다른 기기의 로그인은 끝내지 않았어요. 내 PC 중 하나에서 기기 목록을 확인하세요.",
 };

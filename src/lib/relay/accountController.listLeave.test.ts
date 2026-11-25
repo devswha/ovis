@@ -5,11 +5,12 @@ import { ATTEMPT_ENTRIES_MAX } from "../../../shared/account-list-follower.ts";
 import { addListPc, listWorld, type WorldDevice } from "../account/accountList.test-helpers.ts";
 import { allowDevice } from "../account/listAllow.ts";
 import { accountList, type AccountList, type AccountListView } from "../account/accountList.ts";
+import { inList } from "../account/listLeave.ts";
 import { removeFromList, scopeOf } from "../account/listRemoveDevice.ts";
 import { memoryListLock } from "../account/listStore.ts";
 import { newKey, type AccountSession } from "../account/store.ts";
 import { signInReturn } from "../account/signin.ts";
-import { createAccountController } from "./accountController.ts";
+import { createAccountController, EVERYWHERE_FRESH_MS } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 
@@ -53,7 +54,11 @@ describe("the hosted shell and a device's place in its account's signed list", (
   let asked: string[] = [];
   /** The account service ended this device's sign-in: its directory answers 401 (a linked device the list put out). */
   let directoryEnded = false;
-  beforeEach(() => { asked = []; directoryEnded = false; });
+  /** How many entries the list held when each POST /v1/signout/all was sent: the entries come first. */
+  let entriesAtSignOut: number[] = [];
+  /** The entries the world's list holds now, as the test that has a world tells it. */
+  let heldEntries: () => number = () => -1;
+  beforeEach(() => { asked = []; directoryEnded = false; entriesAtSignOut = []; heldEntries = () => -1; });
   /** The shell of `device`'s page: its account store and its list (`list`: another page's view of it); the directory the shell reads is empty. */
   const shellOf = (device: WorldDevice, list = device.list) => createAccountController({
     container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: device.store, accountService: device.session.service,
@@ -62,7 +67,7 @@ describe("the hosted shell and a device's place in its account's signed list", (
       const { pathname } = new URL(request.url);
       asked.push(`${request.method} ${pathname}`);
       if (pathname === "/v1/pcs") return directoryEnded ? Response.json({ error: { code: "unauthorized", message: "Signed out" } }, { status: 401 }) : Response.json({ pcs: [] });
-      if (pathname === "/v1/signout/all") return new Response(null, { status: 204 });
+      if (pathname === "/v1/signout/all") { entriesAtSignOut.push(heldEntries()); return new Response(null, { status: 204 }); }
       return Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
     },
     renderApp: () => ({ render() {}, unmount() {} }),
@@ -120,44 +125,82 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(await second.store.get("session")).toBeDefined();
   });
 
-  it("sign out every device on a list account puts every other device out of the list first, then signs out", async () => {
+  it("sign out every device on a list account puts every other device out of the list first, then this device, then signs out", async () => {
     const { w, first, second } = await twoDevices();
+    heldEntries = () => w.held().entries.length;
     const shell = shellOf(first);
     await shell.refresh(true);
     await first.list.sync();
     const other = (await second.keys()).key;
+    const own = (await first.keys()).key;
     await shell.signOutEverywhere();
-    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch"]);
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch", "remove"]);
     expect(readBody(entryFromText(w.held().entries[2]!).body).ends).toBe(other);
-    expect(asked).toContain("POST /v1/signout/all");
+    // this device's own removal is the last entry, and the sign-out is sent only after it
+    expect(readBody(entryFromText(w.held().entries[4]!).body).ends).toBe(own);
+    expect(entriesAtSignOut).toEqual([5]);
   });
 
-  it("sign out every device keeps this device's key and its place in the list, opens nothing by the list while signed out, and needs no Allow after signing in again", async () => {
-    const { w, first } = await twoDevices();
+  it("sign out every device on a list account leaves nobody of the list in: this device forgets its key, and signed in again it waits for an Allow", async () => {
+    const { w, first, second } = await twoDevices();
     const shell = shellOf(first);
     await shell.refresh(true);
     await first.list.sync();
     const key = (await first.keys()).key;
-    const enc = (await first.keys()).enc.key;
-    expect(shell.listKey?.public_spki).toBe(key);
-    await shell.signOutEverywhere();
-    // signed out, still the one member the person holds: its key, its encryption key and its copy of the list stay
+    const named = [(await second.keys()).key];
+    expect(await shell.signOutEverywhere(undefined, { confirmed: named, shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+    expect(listView(w.held().state).devices.filter((row) => row.ended === null)).toEqual([]);
+    // its sign-in, its account key, its encryption key and its copy of the list are gone, as at a single Sign out
     expect(await first.store.get("session")).toBeUndefined();
-    expect([(await first.keys()).key, (await first.keys()).enc.key]).toEqual([key, enc]);
-    expect(await first.lists.get("copy", w.account)).toBeDefined();
-    expect(listView(w.held().state).devices.filter((row) => row.ended === null).map((row) => row.key)).toEqual([key]);
-    // while signed out the list opens no PC: there is no member key to open with
-    await first.list.sync().catch(() => undefined);
-    expect([shell.listKey, first.list.view().status]).toEqual([null, { at: "off" }]);
-    // a new sign-in on it: the same member, in the list at once, with no Allow and no claim
-    const again = { ...first.session, access_token: w.fake.issueToken(w.account), sign_in_id: "sign-in-again", signed_in_at: w.clock.now };
-    await first.store.set("session", again);
+    expect(await first.store.get("enc_key")).toBeUndefined();
+    expect((await first.keys()).key).not.toBe(key);
+    expect(await first.lists.get("copy", w.account)).toBeUndefined();
+    expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "Every device was signed out." });
+    // a new sign-in on it is a new device, which a PC of the account allows anew
+    await first.store.set("session", { ...first.session, access_token: w.fake.issueToken(w.account), sign_in_id: "sign-in-again", signed_in_at: w.clock.now });
     const view = await first.list.sync();
-    expect(view.status).toMatchObject({ at: "following", standing: "in" });
-    expect(view.devices.filter((row) => row.self).map((row) => row.key)).toEqual([key]);
-    expect(first.sent.filter((each) => each.route.startsWith("POST ") && each.route.endsWith("/claims"))).toEqual([]);
+    expect(inList(view, w.account)).toBe(false);
+    expect(view.devices.some((row) => row.key === key)).toBe(false);
+  });
+
+  it("sign out every device on a list account whose only device is this one places this device's own removal before the sign-out", async () => {
+    const w = listWorld("acct_owner", Date.now());
+    const only = await w.device({ label: "Dana's phone" });
+    await only.list.sync();
+    heldEntries = () => w.held().entries.length;
+    const shell = shellOf(only);
     await shell.refresh(true);
-    expect(shell.listKey?.public_spki).toBe(key);
+    await only.list.sync();
+    const key = (await only.keys()).key;
+    expect(await shell.signOutEverywhere(undefined, { confirmed: [], shown: { account: w.account, scope: scopeOf(only.list.view()) } })).toBeNull();
+    expect(kinds(w.held().entries)).toEqual(["genesis", "remove"]);
+    expect(readBody(entryFromText(w.held().entries[1]!).body).ends).toBe(key);
+    expect(entriesAtSignOut).toEqual([2]);
+    expect((await only.keys()).key).not.toBe(key);
+    expect(await only.store.get("session")).toBeUndefined();
+  });
+
+  it("sign out every device signs nobody out, keeps this device's key and says what went, where the list does not take this device's own removal", async () => {
+    const { w, first, second } = await twoDevices();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    const key = (await first.keys()).key;
+    const named = [(await second.keys()).key];
+    // the others' removal is placed; then the account service stops taking changes, before this device's own
+    let posts = 0;
+    first.wire.answer = async (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries") || posts++ > 0) return null;
+      const answered = await w.fake.fetch(request);
+      w.fake.tamperList(w.held().id, { stopped: true });
+      return answered;
+    };
+    const said = await shell.signOutEverywhere(undefined, { confirmed: named, shown: { account: w.account, scope: scopeOf(first.list.view()) } });
+    expect(said).toBe("1 other devices left your account, but this device could not leave it, so nobody was signed out. Try again.");
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch"]);
+    expect(asked).not.toContain("POST /v1/signout/all");
+    expect(await first.store.get("session")).toBeDefined();
+    expect((await first.keys()).key).toBe(key);
   });
 
   it("sign out every device signs nobody out where the list does not take the removal, and says so", async () => {
@@ -419,9 +462,12 @@ describe("the hosted shell and a device's place in its account's signed list", (
     await newcomer.service.placeEntries(w.held().id, [admitted.text], []);
   }
 
-  /** A shell over `device` whose account service asks for a fresh sign-in at the first Sign out every device; everything else goes to the world's service. */
-  const freshAskingShell = (w: ReturnType<typeof listWorld>, device: WorldDevice, extra: { openSignIn?: (url: string) => void } = {}) => {
-    let asks = 0;
+  /**
+   * A shell over `device` whose account service asks for a fresh sign-in at the first Sign out every device (none with
+   * `fresh`: it takes each); everything else goes to the world's service.
+   */
+  const freshAskingShell = (w: ReturnType<typeof listWorld>, device: WorldDevice, extra: { openSignIn?: (url: string) => void } = {}, fresh = false) => {
+    let asks = fresh ? 1 : 0;
     return createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.sh/", store: empty, accountStore: device.store, accountService: device.session.service,
       accountFetch: async (input, init) => {
@@ -429,7 +475,10 @@ describe("the hosted shell and a device's place in its account's signed list", (
         const { pathname } = new URL(request.url);
         asked.push(`${request.method} ${pathname}`);
         if (pathname === "/v1/pcs") return Response.json({ pcs: [] });
-        if (pathname === "/v1/signout/all") return asks++ === 0 ? Response.json({ error: { code: "reauth_required", message: "Sign in again first" } }, { status: 403 }) : new Response(null, { status: 204 });
+        if (pathname === "/v1/signout/all") {
+          entriesAtSignOut.push(w.held().entries.length);
+          return asks++ === 0 ? Response.json({ error: { code: "reauth_required", message: "Sign in again first" } }, { status: 403 }) : new Response(null, { status: 204 });
+        }
         return w.fake.fetch(request);
       },
       renderApp: () => ({ render() {}, unmount() {} }),
@@ -442,12 +491,56 @@ describe("the hosted shell and a device's place in its account's signed list", (
     const savedFetch = globalThis.fetch;
     afterEach(() => { Reflect.deleteProperty(globalThis, "Capacitor"); globalThis.fetch = savedFetch; });
 
+    /** The app's own sign-in sheet answers with a fresh sign-in of the account; `meanwhile` runs while it is up. */
+    const sheet = (w: ReturnType<typeof listWorld>, meanwhile: () => Promise<void> = async () => {}) => {
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: async () => ({ idToken: "apple-id-token" }) } });
+      const signedInWith: number[] = [];
+      globalThis.fetch = Object.assign(async () => {
+        signedInWith.push(w.held().entries.length);
+        await meanwhile();
+        return Response.json({ access_token: w.fake.issueToken(w.account), refresh_token: "refresh-again", expires_in: 3600, account: w.account, provider: "apple" });
+      }, { preconnect: savedFetch.preconnect });
+      return signedInWith;
+    };
+
+    it("a sign-in older than eight minutes signs in again in place before any entry, then puts everybody out and signs out once", async () => {
+      const { w, first, second } = await twoDevices();
+      await first.store.set("session", { ...first.session, provider: "apple", signed_in_at: Date.now() - EVERYWHERE_FRESH_MS - 60_000 });
+      const shell = freshAskingShell(w, first, {}, true);
+      await shell.refresh(true);
+      await first.list.sync();
+      const key = (await first.keys()).key;
+      const signedInWith = sheet(w);
+      asked = [];
+      expect(await shell.signOutEverywhere(undefined, { confirmed: [(await second.keys()).key], shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+      expect(signedInWith).toEqual([2]);
+      expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch", "remove"]);
+      expect(entriesAtSignOut).toEqual([5]);
+      expect((await first.keys()).key).not.toBe(key);
+      expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "Every device was signed out." });
+    });
+
+    it("a sign-out that still asks for a fresh sign-in after the entries signs in again in place and goes on", async () => {
+      const { w, first, second } = await twoDevices();
+      await first.store.set("session", { ...first.session, provider: "apple" });
+      const shell = freshAskingShell(w, first);
+      await shell.refresh(true);
+      await first.list.sync();
+      const signedInWith = sheet(w);
+      asked = [];
+      expect(await shell.signOutEverywhere(undefined, { confirmed: [(await second.keys()).key], shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+      expect(signedInWith).toEqual([5]);
+      expect(entriesAtSignOut).toEqual([5, 5]);
+      expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "Every device was signed out." });
+      expect(await first.store.get("session")).toBeUndefined();
+    });
+
     it("a device let in while the sign-in again was out is asked about, and nobody is signed out", async () => {
       const { w, first, second } = await twoDevices();
       const pc = await addListPc(w, first, "Desk");
       const kitchen = await w.device({ label: "Kitchen tablet" });
       await kitchen.list.sync();
-      await first.store.set("session", { ...first.session, provider: "apple" });
+      await first.store.set("session", { ...first.session, provider: "apple", signed_in_at: Date.now() - EVERYWHERE_FRESH_MS - 60_000 });
       const shell = freshAskingShell(w, first);
       await shell.refresh(true);
       await first.list.sync();
@@ -461,8 +554,47 @@ describe("the hosted shell and a device's place in its account's signed list", (
       asked = [];
       const said = await shell.signOutEverywhere(undefined, { confirmed: named, shown: { account: w.account, scope: scopeOf(first.list.view()) } });
       expect(said).toBe("Unnamed device came into your account since you asked. Nobody was signed out: ask again.");
-      expect(asked.filter((call) => call === "POST /v1/signout/all")).toHaveLength(1);
+      // signed in again before anything was placed: nothing was signed, and nobody was asked to sign out
+      expect(asked.filter((call) => call === "POST /v1/signout/all")).toHaveLength(0);
+      expect(kinds(w.held().entries).slice(-1)).toEqual(["device"]);
     });
+  });
+
+  it("in a browser, a sign-in older than eight minutes goes for its sign-in again before any entry, and the return finishes what the question named", async () => {
+    const { w, first, second } = await twoDevices();
+    await first.store.set("session", { ...first.session, signed_in_at: Date.now() - EVERYWHERE_FRESH_MS - 60_000 });
+    const redirected = Promise.withResolvers<string>();
+    const shell = freshAskingShell(w, first, { openSignIn: (url) => { redirected.resolve(url); } }, true);
+    await shell.refresh(true);
+    await first.list.sync();
+    const key = (await first.keys()).key;
+    asked = [];
+    expect(await shell.signOutEverywhere(undefined, { confirmed: [(await second.keys()).key], shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+    const signInAt = await redirected.promise;
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device"]);
+    w.fake.signInAs("github", w.account);
+    const back = (await w.fake.fetch(signInAt)).headers.get("location")!;
+    await shell.load(signInReturn(new URL(back).hash));
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch", "remove"]);
+    expect(entriesAtSignOut).toEqual([5]);
+    expect((await first.keys()).key).not.toBe(key);
+    expect(shell.state).toEqual({ kind: "signed-out", error: null, notice: "Every device was signed out." });
+  });
+
+  it("in a browser, a sign-out that still asks for a fresh sign-in after the entries ends this device's sign-in here, forgets its key, and does not say every device was signed out", async () => {
+    const { w, first, second } = await twoDevices();
+    const shell = freshAskingShell(w, first, { openSignIn: () => { throw new Error("no sign-in again is started once this device is out of the list"); } });
+    await shell.refresh(true);
+    await first.list.sync();
+    const key = (await first.keys()).key;
+    asked = [];
+    expect(await shell.signOutEverywhere(undefined, { confirmed: [(await second.keys()).key], shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+    expect(kinds(w.held().entries)).toEqual(["genesis", "device", "remove", "epoch", "remove"]);
+    expect(listView(w.held().state).devices.filter((row) => row.ended === null)).toEqual([]);
+    expect(shell.state).toEqual({ kind: "signed-out", error: "Every device left your account's list, this one too, so none of them opens your PCs again without an Allow. Their sign-ins could not be ended." });
+    expect(asked).toContain("POST /v1/signout");
+    expect((await first.keys()).key).not.toBe(key);
+    expect(await first.store.get("session")).toBeUndefined();
   });
 
   it("C08: back from a browser's sign-in again for sign out every device, a device let in meanwhile keeps everybody signed in", async () => {
@@ -470,8 +602,9 @@ describe("the hosted shell and a device's place in its account's signed list", (
     const pc = await addListPc(w, first, "Desk");
     const kitchen = await w.device({ label: "Kitchen tablet" });
     await kitchen.list.sync();
+    await first.store.set("session", { ...first.session, signed_in_at: Date.now() - EVERYWHERE_FRESH_MS - 60_000 });
     const redirected = Promise.withResolvers<string>();
-    const shell = freshAskingShell(w, first, { openSignIn: (url) => { redirected.resolve(url); } });
+    const shell = freshAskingShell(w, first, { openSignIn: (url) => { redirected.resolve(url); } }, true);
     await shell.refresh(true);
     await first.list.sync();
     asked = [];
@@ -482,9 +615,11 @@ describe("the hosted shell and a device's place in its account's signed list", (
     w.fake.signInAs("github", w.account);
     const back = (await w.fake.fetch(signInAt)).headers.get("location")!;
     await shell.load(signInReturn(new URL(back).hash));
-    expect(asked.filter((call) => call === "POST /v1/signout/all")).toHaveLength(1);
+    expect(asked.filter((call) => call === "POST /v1/signout/all")).toHaveLength(0);
     const newcomer = (await kitchen.keys()).key;
     expect(listView(w.held().state).devices.some((row) => row.key === newcomer && row.ended === null)).toBe(true);
+    // nothing of the question was signed: this device is still in, with its key
+    expect(kinds(w.held().entries).slice(-1)).toEqual(["device"]);
   });
 
   it("C11: sign out every device asked for another account than the one the page shows signs nobody out", async () => {
@@ -524,6 +659,31 @@ describe("the hosted shell and a device's place in its account's signed list", (
     expect(said).toBe("1 of 1 other devices left your account, then Unnamed device came in since you asked. Ask again to go on.");
     expect(asked).not.toContain("POST /v1/signout/all");
     expect(kinds(w.held().entries).slice(-3)).toEqual(["remove", "epoch", "device"]);
+  });
+
+  it("sign out every device ends no other sign-in where the list changed while this device left it (a PC let a device in), and this device signs out here", async () => {
+    const { w, first, second } = await twoDevices();
+    const pc = await addListPc(w, first, "Desk");
+    const kitchen = await w.device({ label: "Kitchen tablet" });
+    await kitchen.list.sync();
+    const shell = shellOf(first);
+    await shell.refresh(true);
+    await first.list.sync();
+    const key = (await first.keys()).key;
+    // this device's own removal is placed, and the PC lets another device in before this device reads it back
+    let posts = 0;
+    first.wire.answer = async (request) => {
+      if (request.method !== "POST" || !new URL(request.url).pathname.endsWith("/entries") || posts++ !== 1) return null;
+      const answered = await w.fake.fetch(request);
+      await admitByPc(w, pc, kitchen);
+      return answered;
+    };
+    asked = [];
+    expect(await shell.signOutEverywhere(undefined, { confirmed: [(await second.keys()).key], shown: { account: w.account, scope: scopeOf(first.list.view()) } })).toBeNull();
+    expect(kinds(w.held().entries).slice(-4)).toEqual(["remove", "epoch", "remove", "device"]);
+    expect(asked).not.toContain("POST /v1/signout/all");
+    expect(shell.state).toEqual({ kind: "signed-out", error: "This device left your account's list, but the list changed meanwhile, so no other sign-in was ended. Check your devices on one of your PCs." });
+    expect((await first.keys()).key).not.toBe(key);
   });
 
   it("Codex 6: a leave whose own removal counted finishes on this device when the account service ended its sign-in with it", async () => {

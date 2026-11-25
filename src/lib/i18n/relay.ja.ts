@@ -213,4 +213,9 @@ export const RELAY_JA: Record<string, string> = {
   "This device's time in your account is over": "この端末のアカウント利用時間が終了しました",
   "It was added for a limited time. To go on, add it again from a device of your account.": "一定の時間だけ追加された端末です。続けるには、アカウントの別の端末からもう一度追加してください。",
   "Whether the other devices left your account is not known yet, and nobody was signed out. Try again in a moment.": "ほかのデバイスがアカウントから外れたかはまだ分からず、誰もサインアウトしていません。少ししてからもう一度お試しください。",
+  "Whether this device left your account's list is not known yet, and nobody was signed out. Try again in a moment.": "このデバイスがアカウントの名簿から外れたかどうかはまだ分からないため、誰もサインアウトしていません。少し待ってからもう一度お試しください。",
+  "{count} other devices left your account, but this device could not leave it, so nobody was signed out. Try again.": "ほかのデバイス {count} 台はアカウントから外れましたが、このデバイスは外れられなかったため、誰もサインアウトしていません。もう一度お試しください。",
+  "This device could not leave your account's list, so nobody was signed out. Try again.": "このデバイスがアカウントの名簿から外れられなかったため、誰もサインアウトしていません。もう一度お試しください。",
+  "Every device left your account's list, this one too, so none of them opens your PCs again without an Allow. Their sign-ins could not be ended.": "このデバイスを含むすべてのデバイスがアカウントの名簿から外れたので、許可なしに PC を開けるデバイスはありません。ただし、各デバイスのサインインは終了できませんでした。",
+  "This device left your account's list, but the list changed meanwhile, so no other sign-in was ended. Check your devices on one of your PCs.": "このデバイスはアカウントの名簿から外れましたが、その間に名簿が変わったため、ほかのサインインは終了していません。自分の PC のどれかでデバイスを確認してください。",
 };

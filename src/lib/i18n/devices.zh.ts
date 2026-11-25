@@ -366,4 +366,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "此设备在账户中的位置已交给一个新密钥（{name}）。如果不是你做的，请在你的另一台设备上移除那台设备。",
   "a device that is no longer in your account": "已不在你账户中的设备",
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "确认之后，你勾选的某一项换成了新的密钥。没有移除任何内容：要移除它，请再次点击移除。",
+  "This device leaves your account too: to use it again, sign in and allow it on one of your PCs.": "此设备也会离开你的账户。要再次使用，请登录后在你的一台电脑上允许它。",
 };

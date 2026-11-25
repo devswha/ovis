@@ -366,4 +366,5 @@ export const DEVICES_JA: Record<string, string> = {
   "This device's place in your account was handed to a new key ({name}). If you did not do this, remove that device from another of your devices.": "この端末のアカウントでの位置が新しいキー（{name}）に引き継がれました。心当たりがなければ、別の端末からその端末を削除してください。",
   "a device that is no longer in your account": "アカウントにもういない端末",
   "Something you ticked moved to a new key since you asked. Nothing was removed: press Remove again to remove it.": "確認のあとに、選んだもののひとつが新しいキーに移りました。何も削除していません。削除するにはもう一度「削除」を押してください。",
+  "This device leaves your account too: to use it again, sign in and allow it on one of your PCs.": "このデバイスもアカウントから外れます。もう一度使うには、サインインしてから自分の PC のどれかで許可してください。",
 };

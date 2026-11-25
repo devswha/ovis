@@ -1421,9 +1421,12 @@ so two tabs that close two notices keep both. Only a device that may remove anyb
 PCs' notices of an admission are not shown; an account with no list keeps them, with their blocks.
 
 **Sign out every device**, on an account whose list this device is in, first puts every other
-device out of the list, in one request with the epoch after it, and only then signs every browser
-and app out, as before. A device that is only signed out still holds its account key, and that key
-opens a PC that follows the list. The question names the devices that go, and the press passes on
+device out of the list, in one request with the epoch after it, then this device out of it, last,
+by the `remove` of its own key a Sign out signs (below), and only then signs every browser and app
+out. A device that is only signed out still holds its account key, and that key opens a PC that
+follows the list: after Sign out every device no device of the list gets back in without an Allow
+at one of the account's PCs, this one included. The question says so ("This device leaves your
+account too: to use it again, sign in and allow it on one of your PCs."). The question names the devices that go, and the press passes on
 those, and the list and the key it was drawn with, and no others: the list is read again before the
 removal is signed, after a sign-in again in the app, and when the browser comes back from one, and a
 device the question did not name ends it with nobody signed out ("{names} came into your account
@@ -1433,9 +1436,31 @@ one that came in meanwhile is asked about, with how many left first ("{done} of 
 devices left your account, then {names} came in since you asked. Ask again to go on."), and nothing
 is sent. A list store that cannot be read stops it too. Where the list does not take the removal,
 nobody is signed out and the question says so; where only part of it went, it says how much.
-(Holding the sign-out itself to the head that was read needs the account service: a follow-up.) This device stays in the list with its key and its copy,
-signed out as before; signed out, the list opens no PC with that key, and signed in again on it,
-it is in the list at once, with no Allow.
+(Holding the sign-out itself to the head that was read needs the account service: a follow-up.)
+This device's own removal counts only once its own read of the log shows it out; where the list
+does not take it, nobody is signed out, this device keeps its key and its copy, and the question
+says what went ("{count} other devices left your account, but this device could not leave it, so
+nobody was signed out. Try again."; where no read could show it, "not known yet"). Once it counted,
+the list must hold no device at all right before the sign-out is sent: a device that is out sees
+no other row, so the log must have grown by that removal alone since the read that found nobody
+but the devices the question named. Where anything else was written meanwhile (a PC let a device
+in), no other sign-in is ended: this device ends its own and forgets its key, and says so ("This
+device left your account's list, but the list changed meanwhile, so no other sign-in was ended.
+Check your devices on one of your PCs."). Otherwise every sign-in ends, and this device forgets its account key, its
+encryption key and its copy of the list, as a Sign out does (where another account's saved copy
+holds the key, the keys stay). Nothing says "Every device was signed out." while a
+device of the list is still in it.
+The account service takes the sign-out only from a sign-in made in the last ten minutes, and a
+device out of its list has nothing to sign in again for: so on a list account a sign-in older than
+eight minutes by this device's clock (or one that says nothing of its age) is made again first,
+before anything is signed: in the app in place, and in a browser by its redirect, which carries the
+question (the devices it named, and the list and the key it was drawn with) and finishes the whole
+of it on its return. Where the sign-out still asks for a fresh sign-in after the entries, the app
+signs in again in place and sends it again; a browser does not leave the page then: every device of
+the list is out by then, this one too, so it ends its own sign-in, forgets its key, and says that
+the sign-ins could not be ended ("Every device left your account's list, this one too, so none of
+them opens your PCs again without an Allow. Their sign-ins could not be ended."). An account with no
+list signs out as before.
 
 **Signing out and leaving.** Disconnect, Sign out and Sign out every device carry what their
 question showed (the account, and the list and this device's key in it): where the sign-in stored by
