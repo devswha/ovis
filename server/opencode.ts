@@ -38,9 +38,9 @@ const NOTICE_CHARS = 16_000;
 const BUSY_TIMEOUT_MS = 250;
 
 const SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
-const MESSAGE_ID = /^msg_[A-Za-z0-9]{1,64}$/;
-export const OPENCODE_TOOL_REF = /^(msg_[A-Za-z0-9]{1,64}):(\d{1,4})$/;
-export const OPENCODE_IMAGE_REF = /^opencode:(msg_[A-Za-z0-9]{1,64}):(\d{1,3})$/;
+const MESSAGE_ID = /^msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}$/;
+export const OPENCODE_TOOL_REF = /^(msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}):(\d{1,4})$/;
+export const OPENCODE_IMAGE_REF = /^opencode:(msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}):(\d{1,3})$/;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 type Row = Record<string, unknown>;
@@ -578,12 +578,12 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       if (view === null) return { kind: "unavailable", reason: "session_not_found" };
       const message = messageReader(db, sessionId);
       const measure = rowSize ?? supportedRowSize(db);
-      const bytes = measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : OPENCODE_ROW_SIZE.bytes;
       const revision = sessionRevision(db, sessionId);
-      // Include event_sequence revision plus overflow-safe part stats (count, max, mod-sum, byte sum)
-      // so same-millisecond growing or equal-length rewrites invalidate both the page cache and ETag.
-      const partStats = message.split ? db.query<{ count: number; maxUpdated: number | null; modUpdated: number | null; size: number }, [string]>(
-        `SELECT count(*) AS count, max(time_updated) AS maxUpdated, sum(time_updated % 1000000000) AS modUpdated, coalesce(sum(${bytes}), 0) AS size FROM session_part WHERE session_id = ?`,
+      // When OpenCode's durable event_sequence is present, it advances on every part/message write,
+      // so the cache check avoids scanning session_part payloads (critical on SQLite without octet_length).
+      // Without event_sequence, fall back to overflow-safe part stats (count, max, mod-sum, length).
+      const partStats = message.split && revision === null ? db.query<{ count: number; maxUpdated: number | null; modUpdated: number | null; size: number }, [string]>(
+        `SELECT count(*) AS count, max(time_updated) AS maxUpdated, sum(time_updated % 1000000000) AS modUpdated, coalesce(sum(${measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : "length(data)"}), 0) AS size FROM session_part WHERE session_id = ?`,
       ).get(sessionId) : null;
       const signature = `${view.signature}${revision === null ? "" : `:r${revision}`}${partStats === null ? "" : `:${partStats.count}:${partStats.maxUpdated}:${partStats.modUpdated}:${partStats.size}`}`;
       const cached = answers.get(cacheKey);
@@ -615,12 +615,23 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
         const kept = new Map<string, CachedRecord>();
         const data = db.query<{ data: string }, [string, string]>("SELECT data FROM session_message WHERE id = ? AND session_id = ?");
         const rows = db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to);
-        for (const row of message.split ? withPartStats(db, sessionId, measure, rows) : rows) {
+        const pageRows = [...(message.split ? withPartStats(db, sessionId, measure, rows) : rows)];
+        let pageMaxPartUpdated: number | null = null;
+        if (message.split) {
+          for (const row of pageRows) {
+            if (row.partsMaxUpdated !== null && row.partsMaxUpdated !== undefined
+              && (pageMaxPartUpdated === null || row.partsMaxUpdated > pageMaxPartUpdated)) {
+              pageMaxPartUpdated = row.partsMaxUpdated;
+            }
+          }
+        }
+        for (const row of pageRows) {
           let entry = known.get(row.id);
-          const sameMsSplit = row.type === "assistant" && message.split
-            && ((revision !== null && entry?.revision !== revision)
-              || (partStats !== null && partStats.maxUpdated !== null && row.partsMaxUpdated === partStats.maxUpdated));
-          if (entry?.updated !== row.updated || entry.size !== row.size || entry.partsUpdated !== row.partsUpdated || sameMsSplit) {
+          // Only re-parse a cached split assistant message when its own stats changed or it sits at
+          // the page's latest part timestamp (handling equal-length same-ms writes without reparsing older turns).
+          const atLatestPartTick = row.type === "assistant" && message.split
+            && pageMaxPartUpdated !== null && row.partsMaxUpdated === pageMaxPartUpdated;
+          if (entry?.updated !== row.updated || entry.size !== row.size || entry.partsUpdated !== row.partsUpdated || atLatestPartTick) {
             const found = data.get(row.id, sessionId);
             entry = {
               updated: row.updated, size: row.size, partsUpdated: row.partsUpdated, revision,

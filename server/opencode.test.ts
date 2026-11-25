@@ -743,6 +743,35 @@ describe("OpenCode 2.4 split assistant content", () => {
       { kind: "text", text: "Two", phase: "final_answer" },
     ]);
   });
+
+  it("serves tool output and images for forked message IDs with numeric suffixes", () => {
+    const s = storeV24();
+    s.prompt("Forked turn");
+    const forkedId = "msg_event_2";
+    const longOutput = `${"forked-line\n".repeat(400)}tail`;
+    s.add("assistant", {
+      time: { created: T0 + 1, completed: T0 + 2 },
+      content: [],
+      finish: "stop",
+    }, { id: forkedId });
+    s.part(forkedId, 0, tool("read", {
+      status: "completed",
+      input: { path: "fork.png" },
+      content: [
+        { type: "text", text: longOutput },
+        { type: "file", uri: `data:image/png;base64,${PNG.toString("base64")}`, mime: "image/png" },
+      ],
+    }, "call_fork"));
+
+    const conv = page(opencodeConversation(s.path, s.session));
+    const toolPart = conv.turns[1]?.parts.find((p) => p.kind === "tool");
+    expect(toolPart && toolPart.kind === "tool" ? toolPart.output_ref : null).toBe(`${forkedId}:0`);
+    expect(toolPart && toolPart.kind === "tool" ? toolPart.images : []).toEqual([
+      { media_type: "image/png", ref: `opencode:${forkedId}:0` },
+    ]);
+    expect(opencodeToolOutput(s.path, s.session, `${forkedId}:0`)).toBe(longOutput);
+    expect(opencodeImage(s.path, s.session, `opencode:${forkedId}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+  });
 });
 
 describe("where a page starts", () => {
