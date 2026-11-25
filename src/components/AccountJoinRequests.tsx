@@ -1,18 +1,45 @@
 import { Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { AccountList } from "../lib/account/accountList.ts";
+import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
+import { accountHasList, pageListReading } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs, newPcs, type MyPc } from "../lib/account/myPcs.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, SignedOutError, type AccountService, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { indexedDeviceStore, type RelayDevice } from "../lib/relay/device.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
+import { AddPcByNumber } from "./AddPcByNumber.tsx";
 import { usePcRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
 
-/** `ids`: each shown row's own listing ID (account#57), as rendered, which its Decline names */
-type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[]; readonly listings: ReadonlyMap<string, string>; readonly ids: ReadonlyMap<string, string> };
+/**
+ * What this device knows of the account's signed list, for its join cards: null where the account keeps none, by this
+ * device's own knowledge and never by the directory (listPcs.ts accountHasList); otherwise the list and the PCs that
+ * posted their keys for it, none where this device may not write it.
+ */
+export type ListAdds = { readonly list: AccountList; readonly posts: readonly PostedPc[] } | null;
+
+/** The page's list (pageList.ts), as ListAdds asks it. A list whose posts could not be read offers no Add. */
+async function pageListAdds(account: string): Promise<ListAdds> {
+  const list = pageAccountList();
+  if (list === null || !await accountHasList(list, account).catch(() => true)) return null;
+  const writes = pageListReading(account) === "in" && list.writer() !== null;
+  const posts = writes ? await postedPcs(list).catch((error: unknown) => {
+    console.warn("Ovis: the PCs that ask to be added could not be read", error instanceof Error ? error.name : error);
+    return [];
+  }) : [];
+  return { list, posts };
+}
+
+/**
+ * `ids`: each shown row's own listing ID (account#57), as rendered, which its Decline names. `lists`: the account's
+ * signed list, where it keeps one (ListAdds).
+ */
+type Asking = { readonly session: AccountSession; readonly pcs: readonly MyPc[]; readonly listings: ReadonlyMap<string, string>; readonly ids: ReadonlyMap<string, string>; readonly lists: ListAdds };
 
 /** One listing of a PC: a PC that asks again after a Decline is listed anew, so its new request is not the declined one. */
 const listingOf = (pc: DirectoryPc): string => pc.listing_id ?? `${pc.server_id}@${pc.added_at}`;
@@ -36,18 +63,26 @@ function askingPcs(listed: readonly DirectoryPc[], here: readonly RelayDevice[],
  * device let the PC in (or the PC asked again) is refreshed instead, and a declined card hides that listing only, so the
  * PC's new press is shown. The removal names that listing (account#67), so one that changes between that read and the
  * removal is not removed either: the service refuses it and the card is refreshed the same way.
+ *
+ * On an account that keeps a signed list (docs/account-list.md, "Adding a PC") the card never ends in that join, which
+ * is the directory's admission alone: it is shown only for a PC that posted its keys for the list, and its Allow asks
+ * for the number both screens show (AddPcByNumber), confirmed at the PC, then Add. A PC that posted nothing gets no card.
  */
 const pairedHere = (): Promise<readonly RelayDevice[]> => indexedDeviceStore.list();
 const openPcPage = (serverId: string): void => window.location.assign(serverScopePath(serverId));
 
-export function AccountJoinRequests({ service = indexedAccountService, devices = pairedHere, now = Date.now, open = openPcPage }: {
+export function AccountJoinRequests({ service = indexedAccountService, devices = pairedHere, now = Date.now, open = openPcPage, listOf = pageListAdds }: {
   readonly service?: AccountService;
   readonly devices?: () => Promise<readonly RelayDevice[]>;
   readonly now?: () => number;
   readonly open?: (serverId: string) => void;
+  /** what this device knows of `account`'s signed list (ListAdds); a test's own */
+  readonly listOf?: (account: string) => Promise<ListAdds>;
 }) {
   const t = useT();
   const [asking, setAsking] = useState<Asking | null>(null);
+  // the PC whose number is asked for, on an account that keeps a list
+  const [adding, setAdding] = useState<{ readonly pc: MyPc; readonly post: PostedPc } | null>(null);
   // the declined listings, so a new request from the same PC is shown
   const [denied, setDenied] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
@@ -67,10 +102,10 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
         if (mine !== version) return;
         if (session === undefined) { setAsking(null); return; }
         const directory = service.forSignIn(session);
-        const [own, listed, here] = await Promise.all([directory.ownSignIn(), directory.listPcs(), devices()]);
+        const [own, listed, here, lists] = await Promise.all([directory.ownSignIn(), directory.listPcs(), devices(), listOf(session.account)]);
         if (mine !== version) return;
         // a device code's sign-in is no one's to let a PC in or turn it away with
-        setAsking(own ? { session, ...askingPcs(listed, here, now()) } : null);
+        setAsking(own ? { session, ...askingPcs(listed, here, now()), lists } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setAsking(null);
@@ -91,7 +126,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
       window.removeEventListener(ACCOUNT_SIGN_OUT_EVENT, visibleRead);
       window.removeEventListener(ACCOUNT_PCS_CHANGED_EVENT, visibleRead);
     };
-  }, [service, devices, now]);
+  }, [service, devices, now, listOf]);
 
   if (asking === null) return null;
   const deny = async (pc: MyPc): Promise<void> => {
@@ -114,7 +149,17 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
       setFailed(pc.server_id);
     } finally { setBusy(null); }
   };
-  return asking.pcs.filter((pc) => !denied.has(asking.listings.get(pc.server_id) ?? "")).map((pc) => (
+  const { lists } = asking;
+  // on an account that keeps a list, only a PC that posted for it is asked about, and only by its number
+  const postOf = (pc: MyPc): PostedPc | undefined => lists?.posts.find((post) => post.server_id === pc.server_id);
+  const allow = (pc: MyPc): void => {
+    if (lists === null) { open(pc.server_id); return; }
+    const post = postOf(pc);
+    if (post !== undefined) setAdding({ pc, post });
+  };
+  const shown = asking.pcs.filter((pc) => !denied.has(asking.listings.get(pc.server_id) ?? "") && (lists === null || postOf(pc) !== undefined));
+  return <>
+    {shown.map((pc) => (
     <div key={pc.server_id} className="update-notice is-paired device-notice" role="status" data-join-request={pc.server_id}>
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
@@ -123,9 +168,14 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
         {removal.promptFor === pc.server_id && removal.prompt}
       </span>
       <div className="device-paired-actions">
-        <button type="button" className="btn" disabled={busy !== null} onClick={() => open(pc.server_id)}>{t("Allow")}</button>
+        <button type="button" className="btn" disabled={busy !== null} onClick={() => allow(pc)}>{t("Allow")}</button>
         <button type="button" className="btn" disabled={busy !== null} onClick={() => void deny(pc)}>{t("Decline")}</button>
       </div>
     </div>
-  ));
+    ))}
+    {adding !== null && lists !== null && (
+      <AddPcByNumber list={lists.list} account={asking.session.account} post={adding.post} name={adding.pc.name}
+        onClose={() => setAdding(null)} onAdded={() => { setAdding(null); window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT)); }} />
+    )}
+  </>;
 }

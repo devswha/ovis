@@ -9,11 +9,13 @@ import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, type AccountStore } from "../lib/account/store.ts";
+import type { AccountList } from "../lib/account/accountList.ts";
 import type { RelayDevice } from "../lib/relay/device.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { AccountJoinRequests } = await import("./AccountJoinRequests.tsx");
+type ListAdds = Awaited<ReturnType<NonNullable<Parameters<typeof AccountJoinRequests>[0]["listOf"]>>>;
 
 const ORIGIN = "https://account.ovis.sh";
 const ACCOUNT = "acct_owner";
@@ -31,6 +33,8 @@ let store: AccountStore;
 let service: AccountService;
 let paired: RelayDevice[] = [];
 let opened: string[] = [];
+/** what this phone knows of the account's signed list (AccountJoinRequests `listOf`): null, none (the default) */
+let lists: ListAdds = null;
 
 const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map((node) => textOf(node).trim());
@@ -63,7 +67,7 @@ async function listedByItsOwner(key: Uint8Array, label: string): Promise<void> {
 async function mount(): Promise<void> {
   if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
   await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(AccountJoinRequests, { service, devices: async () => paired, now: () => now, open: (serverId: string) => { opened.push(serverId); } }) }));
+    renderer = create(createElement(SettingsProvider, { children: createElement(AccountJoinRequests, { service, devices: async () => paired, now: () => now, open: (serverId: string) => { opened.push(serverId); }, listOf: async () => lists }) }));
   });
   await settle();
 }
@@ -91,6 +95,7 @@ beforeEach(async () => {
   store = memoryAccountStore();
   service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock(), now: () => now });
   opened = [];
+  lists = null;
   await signIn();
   // the phone is paired with the account's first PC, so a launch goes straight into it
   await listedByItsOwner(desk, "Desk");
@@ -109,6 +114,33 @@ afterEach(async () => {
 });
 
 describe("a PC that asks to join the account, on a signed-in phone", () => {
+  describe("on an account that keeps a signed list", () => {
+    /** this phone's list, as far as the card asks it: a stand-in that the number dialog asks in vain */
+    const list = { writer: () => null, view: () => ({ account: ACCOUNT, status: { at: "off" }, reached: false, devices: [], pcs: [] }), subscribe: () => () => {} } as unknown as AccountList;
+    const postOf = (key: Uint8Array) => ({ list: "f".repeat(64), endpoint: Buffer.from(key).toString("hex"), server_id: deriveServerId(key), key: "member-key", enc: "enc-key", card: "card" });
+
+    it("Allow on a PC that posted its keys for the list asks for the number, and never opens the PC's own page", async () => {
+      await listedByItsOwner(mac, "hasang-MacBookPro");
+      lists = { list, posts: [postOf(mac)] };
+      await mount();
+      expect(text()).toContain("\"hasang-MacBookPro\" asks to join your account");
+      await press("Allow");
+      expect(opened).toEqual([]);
+      const dialog = renderer!.root.findAll((node) => node.props["data-testid"] === "add-pc-number");
+      expect(dialog.map((node) => node.props["data-pc-id"])).toEqual([MAC]);
+      // nothing is written to the account by the press: the number, confirmed at the PC, is what adds it
+      expect(fake.requests.filter((line) => !line.startsWith("GET ") && !line.startsWith("POST /v1/token"))).toEqual([`PUT /v1/pcs/${DESK}`, `PUT /v1/pcs/${MAC}`]);
+    });
+
+    it("shows no card for a PC that posted nothing for the list: no way into the directory's admission alone", async () => {
+      await listedByItsOwner(mac, "hasang-MacBookPro");
+      lists = { list, posts: [] };
+      await mount();
+      expect(text()).not.toContain("hasang-MacBookPro");
+      expect(buttons()).toEqual([]);
+    });
+  });
+
   it("is shown by the name it gave itself, quoted, with Allow and Decline", async () => {
     await listedByItsOwner(mac, "hasang-MacBookPro");
     await mount();

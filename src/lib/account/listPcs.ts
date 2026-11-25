@@ -17,6 +17,7 @@
  * build cannot place) lists the directory's PCs, every one marked, and says so (listReading).
  */
 import type { AccountList, AccountListView } from "./accountList.ts";
+import { holdsList } from "./listWrite.ts";
 import { pageAccountList } from "./pageList.ts";
 import type { DirectoryPc } from "./service.ts";
 
@@ -39,6 +40,16 @@ export type ListReading = "in" | "newer" | "damaged";
 export async function unreadCopy(list: AccountList, account: string): Promise<boolean> {
   if (list.view().account === account) return false;
   try { return await list.follows(account); } catch { return true; }
+}
+
+/**
+ * Whether `account` has a list, by this device's own knowledge, never by the directory: a copy it holds, read or not
+ * read yet on this page (unreadCopy), or a list the account service names that this device is not in yet.
+ */
+export async function accountHasList(list: AccountList, account: string): Promise<boolean> {
+  const view = list.view();
+  if (view.account === account) return holdsList(view) || view.status.at === "not_in";
+  return unreadCopy(list, account);
 }
 
 /** The account whose saved copy this page found unread (readPageList), until a view of that account is there. */
