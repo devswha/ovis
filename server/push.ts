@@ -1059,6 +1059,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       // The collector has already taken the move's working status as its baseline.
       if (status === "working" && lastStatus.get(after) === "blocked") {
         lastStatus.set(after, status);
+        bump(before); // A queued webhook still checks the old ID.
         callOff(after);
       }
     },
