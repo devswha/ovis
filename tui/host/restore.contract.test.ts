@@ -438,23 +438,31 @@ describe("the launcher and the screen together", () => {
         await fresh(run, from, "INPUT 1 78\r");
       }
     } finally {
-      // PTY teardown only owns Bash's group, not the job control group. Keep the shell until its job is ended.
+      // Leave the launcher alive to reap its child, and Bash alive to reap the launcher.
       const group = pid(jobMark);
       try {
-        for (const [id, started] of own) {
-          const [pgid] = await ps(id);
-          if (pgid !== String(group) || birth(id) !== started) continue;
+        const signal = (id: number, name: NodeJS.Signals) => {
+          const started = own.get(id);
+          if (started === undefined || birth(id) !== started) return;
           try {
-            process.kill(-group, "SIGCONT");
-            process.kill(-group, "SIGKILL");
+            process.kill(id, name);
           } catch (error) {
             if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
           }
-          break;
+        };
+        const screen = pid(screenMark);
+        if (own.has(screen)) signal(screen, "SIGKILL");
+        signal(group, "SIGCONT");
+        if (!own.has(screen)) signal(group, "SIGTERM");
+        const deadline = performance.now() + 2_000;
+        while ([...own].some(([id, started]) => birth(id) === started)) {
+          if (performance.now() >= deadline) throw new Error("the fixture's launcher or screen was not reaped");
+          await new Promise<void>((resolve) => setImmediate(resolve));
         }
       } finally {
         await run.stop();
       }
+      for (const [id, started] of own) expect(birth(id)).not.toBe(started);
     }
   }, TEST_MS);
 });
