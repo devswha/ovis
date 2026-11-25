@@ -326,6 +326,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     })().finally(() => { if (reading?.read === read) reading = undefined; });
     reading = { epoch, read };
     await read;
+    void askPcs().catch((error: unknown) => console.warn("Ovis: the account's PCs were not asked for the move onto its list", error instanceof Error ? error.name : error));
     // read whatever screen is up: a confirm drawn meanwhile waits for this sign-in's directory, and a Pair press that
     // found another sign-in reads that one's before anything is paired
     if (replaced) await refresh(initial, true);
@@ -425,6 +426,9 @@ export function createAccountController(mount: RelayShellMount, view: {
     const listed = lists.view();
     const session = shownFor;
     if (session === undefined || listed.account !== session.account || !waitsOnPcs(listed.status)) return;
+    // the way to each PC is chosen from this sign-in's directory: while its read is under way (the list's first round
+    // runs inside it), nothing is asked, and the read asks once it ends (refresh)
+    if (listedFor?.epoch !== generation && reading?.epoch === generation) return;
     askingPcs = true;
     try {
       const now = Date.now();
