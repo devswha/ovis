@@ -66,7 +66,8 @@ if (import.meta.main || COMPILED) {
 }
 
 let desktopPort: number | null = null;
-if (process.env["OVIS_DESKTOP_COMMAND"] === "1") {
+// help and the version are answered here without a server, so they work with the app closed
+if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && early.kind !== "version") {
   // The app owns its server; these commands only explain how to start or stop it.
   if (early.kind === "run" && (early.command === "start" || early.command === "stop")) {
     process.stderr.write(early.command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");

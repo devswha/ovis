@@ -162,6 +162,12 @@ describe.skipIf(WINDOWS_HOST)("the launcher on a Mac or Linux", () => {
       const { code, out, err } = await runLauncher(file, ["status"], env);
       expect({ code, out }).toEqual({ code: 1, out: "" });
       expect(err).toContain("open the Ovis app first");
+      // help and the version need no server: they answer with the app closed
+      for (const local of [["--help"], ["--version"]]) {
+        const answer = await runLauncher(file, local, env);
+        expect({ code: answer.code, err: answer.err }).toEqual({ code: 0, err: "" });
+        expect(answer.out).not.toBe("");
+      }
     }
     writeFileSync(at.desktopJson, JSON.stringify({ port: 49152, server: null }));
     rmSync(at.serverBinary);
