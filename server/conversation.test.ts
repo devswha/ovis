@@ -4294,6 +4294,19 @@ describe("Agy native ledger through shared paging", () => {
     try { expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable); }
     finally { spy.mockRestore(); }
   });
+  it("reads a longer in-place Agy ledger rewrite after a WAL checkpoint", async () => {
+    db.exec("PRAGMA journal_mode=WAL");
+    add(0, "USER_INPUT", "old");
+    const initial = await page();
+    expect(initial.turns[0]?.parts[0]).toEqual({ kind: "text", text: "old" });
+    const inode = fs.statSync(path).ino;
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    writeFileSync(path, row(0, "USER_INPUT", "a longer replacement prompt"));
+    expect(fs.statSync(path).ino).toBe(inode);
+    const rewritten = await page();
+    expect(rewritten.history_id).not.toBe(initial.history_id);
+    expect(rewritten.turns[0]?.parts[0]).toEqual({ kind: "text", text: "a longer replacement prompt" });
+  });
   it("distinguishes unreadable database from verified empty history", async () => {
     add(0, "USER_INPUT", "one");
     (await page());
@@ -4319,9 +4332,10 @@ describe("Agy native ledger through shared paging", () => {
     const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
     try {
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
       db.query("INSERT INTO steps VALUES (0)").run();
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: greeting.history_id })).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
       writeFileSync(path, row(0, "USER_INPUT", "first prompt"));
       const written = await paneConversation(pane.pane_id);
       expect(written.turns).toHaveLength(1);
@@ -4334,6 +4348,19 @@ describe("Agy native ledger through shared paging", () => {
       db.exec("DELETE FROM steps");
       db.query("INSERT INTO steps VALUES (500)").run();
       expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("does not greet on a cold Agy read with only catalog step zero and no ledger", async () => {
+    rmSync(path);
+    db.query("INSERT INTO steps VALUES (0)").run();
+    const pane = { pane_id: "agy-cold", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [pane], agents: [], layouts: [], tabs: [], workspaces: [], protocol: 1, version: "test",
+    });
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    try {
+      await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it("records nothing for a pane forgotten while its status row was read", async () => {
@@ -4540,6 +4567,25 @@ describe("Agy native ledger through shared paging", () => {
       expect(JSON.stringify(fresh)).not.toContain("THIRD SESSION SECRET");
       expect(fresh).toBeInstanceOf(ConversationReadPending);
     } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it.skipIf(!linksRefused)("leaves an unpaged Agy read pending when a symlink replaces its ledger during a catalog race", async () => {
+    add(0, "USER_INPUT", "one");
+    const other = `${path}.other`;
+    writeFileSync(other, row(0, "USER_INPUT", "other"));
+    const pane = { pane_id: "agy-symlink-race", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [pane], agents: [], layouts: [], tabs: [], workspaces: [], protocol: 1, version: "test",
+    });
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    const catalog = duringCatalog(1, () => {
+      rmSync(path);
+      symlinkSync(other, path);
+      throw new Error("transient WAL copy race");
+    });
+    try {
+      await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    } finally { catalog.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
     const screen = [

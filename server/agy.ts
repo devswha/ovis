@@ -152,6 +152,13 @@ function agyScan(path: string, fd: number): Index {
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
   let index = indexes.get(path);
+  const tail = index?.steps.at(-1);
+  if (index?.identity === identity && tail !== undefined && stat.size > index.size) {
+    // Growth is not necessarily append: a rewrite can leave the old offset inside a different row.
+    const bytes = Buffer.alloc(tail.end - tail.start);
+    if (readSync(fd, bytes, 0, bytes.length, tail.start) !== bytes.length
+      || bytes.at(-1) !== 10 || hash(bytes.toString("utf8", 0, bytes.length - 1)) !== tail.digest) index = undefined;
+  }
   if (!index || index.identity !== identity || stat.size < index.size || (stat.size === index.size && changed !== index.changed)) {
     index = { identity, size: stat.size, changed, scanned: 0, revision: randomUUID(), steps: [], visible: [], retired: new Set() };
   }
@@ -260,9 +267,9 @@ export function withAgyHistory<T>(path: string, read: (projection: AgyProjection
 async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection, fd: number) => T, authorized?: { dev: number; ino: number }): Promise<T> {
   const fd = openSync(path, "r");
   try {
-    if (realpathSync(path) !== path) throw new AgyUnavailable();
     const before = fstatSync(fd);
     if (authorized !== undefined && (before.dev !== authorized.dev || before.ino !== authorized.ino)) throw new ConversationReadPending();
+    if (realpathSync(path) !== path) throw new AgyUnavailable();
     const index = agyScan(path, fd);
     const catalog = await agyCatalogOffThread(path);
     if (indexes.get(path) !== index) {

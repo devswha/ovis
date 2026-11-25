@@ -1989,7 +1989,7 @@ async function dshForeground(known: KnownProcesses): Promise<{ foreground_proces
  * label: omo's own store is read only when omo is really running
  * in that pane, never on a matching cwd alone.
  */
-async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<ResolvedTranscript> {
+async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: string, panes?: HerdrPane[], opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, agyHistoryId?: string): Promise<ResolvedTranscript> {
   const paneId = pane.pane_id;
   let agent = resolveAgent(pane).agent ?? "";
   // herdr names no agent for this pane: a session report an earlier agent left behind says
@@ -2055,7 +2055,10 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       if (!transcriptExists) {
         if (writtenSessions.has(`agy-transcript\0${found.path}`)) throw new ConversationUnavailable("transcript_missing");
         const catalog = await agyCatalogOffThread(found.path);
-        const firstTurn = pane.agent_status === "working" && (catalog.size === 0 || (catalog.size === 1 && catalog.has(0)));
+        // Step zero alone can also be an existing conversation whose ledger is gone. Keep a
+        // greeting already shown for this session or its unused process, but never infer one.
+        const firstTurn = pane.agent_status === "working" && catalog.size === 1 && catalog.has(0)
+          && (agyHistoryId === `unwritten:${found.session}` || agyHistoryId === `unwritten:agy:${pane.pane_id}:${found.pid}:${found.started}`);
         if ((catalog.size !== 0 && !firstTurn) || !sameAgyStore(found, await resolveAgyStore(pane))) throw new ConversationUnavailable("transcript_missing");
         throw new ConversationNotStarted(found.session, "agy-transcript", found.path);
       }
@@ -2127,7 +2130,7 @@ async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[
   return { path: session.path, ...(session.identity === undefined ? {} : { identity: session.identity }) };
 }
 
-export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses): Promise<NativeTranscript> {
+export async function paneTranscript(paneId: string, codexHome?: string, snapshot?: SessionSnapshot, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string, known?: KnownProcesses, agyHistoryId?: string): Promise<NativeTranscript> {
   const socket = herdrSocketPath();
   const panes = (snapshot ?? await sessionSnapshot()).panes;
   const pane = panes.find((candidate) => candidate.pane_id === paneId);
@@ -2169,7 +2172,7 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known));
+  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId));
 }
 
 const AGY_WRITE_RACE_MS = 5000;
@@ -2230,7 +2233,7 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   };
 
   try {
-    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData);
+    resolved = await paneTranscript(paneId, codexHome, snapshot, devinDbPath, opencodeDb, hermesHome, grokHome, museData, undefined, page.history_id);
     launchedAgents.forget(paneId);
   } catch (error) {
     if (error instanceof ConversationNotStarted) { launchedAgents.forget(paneId); return await onNotStarted(error); }
