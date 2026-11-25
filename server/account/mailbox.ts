@@ -362,8 +362,7 @@ export class AccountMailbox {
 
   pull(readmission?: Readmission): Promise<number> {
     this.pulling ??= this.exclusively(async () => {
-      // the order this pull began in, among pulls and first asks (unreadKey): not the clock, which a read and an ask can share
-      const began = ++this.order;
+      const began = Date.now();
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
       const read = await this.readSnapshotNow(readmission, this.drainedListing);
@@ -378,15 +377,10 @@ export class AccountMailbox {
     return this.pulling;
   }
 
-  /** Counts the pulls begun and the first asks made, so either is told to have come before or after the other. */
-  private order = 0;
-  /** Where in that order the last pull that read the mailbox and the account's rows whole without an error began; null before one. */
+  /** When the last pull that read the mailbox and the account's rows without an error began (Date.now()); null before one. */
   private readBegan: number | null = null;
-  /**
-   * When each id this PC holds no row for first asked to sign in here (unreadKey), and where in the order: at most
-   * UNREAD_KEYS, in the order they asked. The time bounds the wait and the memory; the order tells which reads came after.
-   */
-  private readonly firstAsked = new Map<string, { readonly at: number; readonly order: number }>();
+  /** When each id this PC holds no row for first asked to sign in here (unreadKey): at most UNREAD_KEYS, in the order they asked. */
+  private readonly firstAsked = new Map<string, number>();
 
   /**
    * An id this PC holds no row for asks to sign in now (relay/refused-signin.ts, before the read that ask starts): when
@@ -394,22 +388,17 @@ export class AccountMailbox {
    * ids remembered, a new one is not (null), so a flood of new ids never pushes a key's first ask out.
    */
   askedFirst(deviceId: string, now = Date.now()): number | null {
-    return this.firstAsk(deviceId, now)?.at ?? null;
-  }
-
-  private firstAsk(deviceId: string, now: number): { readonly at: number; readonly order: number } | null {
     const live = (at: number): boolean => now - at >= 0 && now - at <= UNREAD_KEY_MS;
     const first = this.firstAsked.get(deviceId);
-    if (first !== undefined && live(first.at)) return first;
+    if (first !== undefined && live(first)) return first;
     this.firstAsked.delete(deviceId);
-    for (const [id, asked] of this.firstAsked) {
-      if (live(asked.at)) break;
+    for (const [id, at] of this.firstAsked) {
+      if (live(at)) break;
       this.firstAsked.delete(id);
     }
     if (this.firstAsked.size >= UNREAD_KEYS) return null;
-    const asked = { at: now, order: ++this.order };
-    this.firstAsked.set(deviceId, asked);
-    return asked;
+    this.firstAsked.set(deviceId, now);
+    return now;
   }
 
   /**
@@ -420,10 +409,9 @@ export class AccountMailbox {
    */
   unreadKey(deviceId: string, now = Date.now()): boolean {
     if (this.options.service instanceof Error || this.pendingError !== null) return false;
-    const first = this.firstAsk(deviceId, now);
-    if (first === null || now - first.at > UNREAD_WAIT_MS) return false;
-    // a pull that began after the ask, by the order of events (both may share one millisecond): one before it says nothing of the key
-    return this.readBegan === null || this.readBegan < first.order;
+    const first = this.askedFirst(deviceId, now);
+    if (first === null || now - first > UNREAD_WAIT_MS) return false;
+    return this.readBegan === null || this.readBegan < first;
   }
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
