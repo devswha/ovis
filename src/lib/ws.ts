@@ -1239,7 +1239,7 @@ export class HerdrSocket {
   }
 
   /** Explicitly steer or discard one server-owned pending item. Never queued or replayed. */
-  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false): Promise<SubmitResult> | null {
+  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     return (async (): Promise<SubmitResult> => {
@@ -1248,7 +1248,7 @@ export class HerdrSocket {
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot change pending messages." };
       if (!this.canQueueMessages()) return { ok: false, code: "pending_input_unsupported", message: "Update this PC to manage pending messages." };
       return this.submitRequest({ type: "pending-action", id: this.nextSubmit++, pane_id: paneId, pending_id: pendingId, action,
-        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) });
+        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) }, onSent);
     })();
   }
 
@@ -1282,7 +1282,7 @@ export class HerdrSocket {
   }
 
   /** Only an acknowledgement callback is retained, never a frame to resend. */
-  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>): Promise<SubmitResult> {
+  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>, onSent?: () => void): Promise<SubmitResult> {
     const id = message.id;
     this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" || message.delivery === "hold" } : message.type === "pending-action" ? { pendingId: message.pending_id } : {}) });
     const result = new Promise<SubmitResult>((resolve) => {
@@ -1309,7 +1309,9 @@ export class HerdrSocket {
       this.submits.get(id)?.(NOT_TRANSMITTED);
       this.submits.delete(id);
       this.requests.delete(id);
+      return result;
     }
+    onSent?.();
     return result;
   }
 
