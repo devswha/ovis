@@ -1795,7 +1795,8 @@ describe("ovis link, on the PC itself", () => {
     "     That account lists no PCs yet.",
     "     Is this your account? Type yes to add this PC to it: ",
   ].join("\n");
-  const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
+  // the step that says what to press comes once this PC said how its account adds it (POST /api/account/list/add)
+  const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n     Asking your account how it adds this PC…\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
   const NO_TERMINAL = "Not run in a terminal, so nobody here can confirm the account that signs in. Run ovis add --account <your account id> (ovis status on a PC already in your account shows the id, and so does Manage account in Settings), or run ovis add in a terminal.\n";
 
   it("without --qr, asks whether the account is yours, waits for Add on a device of that account, takes its admission here, and comes online", async () => {
@@ -1900,10 +1901,31 @@ describe("ovis link, on the PC itself", () => {
       expect(run.listCalls.map((call) => call.action)).not.toContain("confirm");
     });
 
+    it("names the list's step, and never the one-press step, once this PC said the account keeps a list", async () => {
+      const run = await pressing({ list: adding(), said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); } });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain([
+        "     This PC is listed in your account as old-desktop.",
+        "     Asking your account how it adds this PC…",
+        "",
+        "2/2  Compare a number with a device of your account",
+        "     Open Ovis on your phone or another PC and choose Add for old-desktop.",
+        "     Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.",
+        "     Waiting… (up to 10:00, Ctrl+C to stop)",
+        "",
+      ].join("\n"));
+      expect(run.text).not.toContain("Press Add on a device of your account");
+      expect(run.text.split("Your account keeps a signed list").length).toBe(2);
+    });
+
     it("waits while the account service does not say whether the account keeps a list, and binds nothing on its word meanwhile", async () => {
       const run = await pressing({ pressAfter: 1, list: ({ action, count }) => action === "start" && count < 3 ? Response.json({ error: { code: "account_unavailable", message: "away" } }, { status: 503 }) : state({ state: "no_list" }) });
       expect(run.code).toBe(0);
       expect(run.text).toContain("The account service did not answer this PC just now. Still waiting…\n");
+      // what to press is said once this PC knows it, and once
+      expect(run.text.indexOf("2/2  Press Add on a device of your account")).toBeGreaterThan(run.text.indexOf("Still waiting…"));
+      expect(run.text.split("2/2  Press Add on a device of your account").length).toBe(2);
+      expect(run.text).not.toContain("Compare a number");
       // only once the PC said the account keeps no list is the admission asked for
       expect(run.paths.indexOf("POST /api/account/one-press", 2)).toBeGreaterThan(run.paths.lastIndexOf("POST /api/account/list/add"));
       expect(run.listCalls.map((call) => call.action)).toEqual(["start", "start", "start"]);

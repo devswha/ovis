@@ -455,10 +455,18 @@ for it before they show or ask anything.
   **An account that keeps a signed list** ([A PC is added to the
   list](account.md#a-pc-is-added-to-the-list)) takes this PC by that list alone, so the command
   asks this PC to start that add first (`POST /api/account/list/add`), and asks for the admission
-  only where the PC says the account keeps no list. With a list it says so (**Your account keeps a
-  signed list of its devices: the device that adds this PC shows a number, and this PC shows it
-  here. They must be the same before you press Add.**) and asks the PC every 2 seconds where the add
-  stands. When a device chooses Add for this PC, both show six digits, and the terminal asks:
+  only where the PC says the account keeps no list. Until the PC answers, the command says only that
+  it asks (**Asking your account how it adds this PC…**), and its step 2 comes with that answer:
+  **Press Add on a device of your account** where the account keeps no list, so nobody is told to
+  press Add where Add alone would not add the PC. That answer waits for the PC's round trips to the
+  account service, one after another (whether the account keeps a list, then its card and the
+  device's first message), so it takes a few seconds where the service is slow; one the service did
+  not answer is said (**The account service did not answer this PC just now. Still waiting…**).
+  With a list the step is **Compare a number with a device of your account**, and says why (**Your
+  account keeps a signed list of its devices: the device that adds this PC shows a number, and this
+  PC shows it here. They must be the same before you press Add.**); the command asks the PC every
+  2 seconds where the add stands. When a device chooses Add for this PC, both show six digits, and
+  the terminal asks:
   **This PC shows 482 913. Does the device that adds it show the same number? Type yes if it does,
   or press Enter if it does not**. `yes` (or `y`) confirms that number and nothing else, and the
   command says **Confirmed. Press Add for (this PC) on that device now.**; the PC joins once that
