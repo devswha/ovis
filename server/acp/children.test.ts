@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { FakeHcCore } from "../herdr-core/core.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { HERDR, HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { AcpChildren, AcpStartFailed, AcpUnavailable, type AcpHc } from "./children.ts";
+import { KeeperClient } from "./client.ts";
 import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt, startKeeper, until } from "./keeper.fake.ts";
 
 describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real keeper", () => {
@@ -73,6 +74,35 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(child.client.session).toMatch(/^fake-\d+$/);
     expect(children.forPane(child.terminal)).toBe(child);
     expect(children.forPane("t999")).toBeUndefined();
+  });
+
+  it("hands a child over only once its client has replayed the keeper's log, ready for its first prompt", async () => {
+    setUp();
+    // A loaded runner can read the session's row before the watermark that ends the replay: hold the watermark back
+    // until the session's row has gone through, and let it go one event-loop turn later.
+    const client = KeeperClient.prototype as unknown as { receive(this: KeeperClient, chunk: string): void };
+    const receive = client.receive;
+    let pending = "";
+    const spy = spyOn(client, "receive").mockImplementation(function (this: KeeperClient, chunk: string) {
+      pending += chunk;
+      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+        const line = pending.slice(0, end + 1);
+        pending = pending.slice(end + 1);
+        if (!("through" in JSON.parse(line))) receive.call(this, line);
+        else if (this.session !== null) setImmediate(() => receive.call(this, line));
+        else {
+          const off = this.onChange(() => {
+            if (this.session === null) return;
+            off();
+            setImmediate(() => receive.call(this, line));
+          });
+        }
+      }
+    });
+    cleanups.push(() => spy.mockRestore());
+    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
+    expect(child.client.connected).toBe(true);
+    expect(child.client.status).toBe("idle");
   });
 
   it("tells its listeners when a person holds a child and hands it back, and finds it under its parent", async () => {

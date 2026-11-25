@@ -498,6 +498,8 @@ async fn run(mut opts: Opts) -> i32 {
     let mut tui: Option<Agent> = None;
     // The pid a replaying client is told: the ACP agent's, or the real TUI's while it has the pane.
     let agent_pid = Arc::new(AtomicU32::new(child_pid));
+    // Before the socket: a client refused by a socket not listening yet asks process.json whether the keeper runs.
+    write_process(&root, acp.as_ref(), None);
     let accept = match listen(&root, archive.clone(), agent_pid.clone(), tx.clone(), previous.last_client).await {
         Ok(accept) => accept,
         Err(e) => {
@@ -509,7 +511,6 @@ async fn run(mut opts: Opts) -> i32 {
         }
     };
     let accepting = tokio::spawn(accept);
-    write_process(&root, acp.as_ref(), None);
 
     let tty = !opts.headless && is_terminal();
     let job_control = tty && agent::job_control();
