@@ -306,6 +306,8 @@ describe("the hosted front page", () => {
         waiting: async () => waits, cancel: async (given: typeof first) => { calls.push(`cancel ${given.place.hash}`); },
         sync: async () => { calls.push("sync"); throw new Error("nothing is sent in this test"); },
         subscribe: () => () => {}, view: () => ({ account: null, reached: false, status: { at: "off" }, devices: [], pcs: [] }),
+        // Add PC's relay tab asks every page list whether this device may write it (InvitePc): this one may not
+        writer: () => null,
       } as unknown as AccountList);
       const cards = () => renderer!.root.findAll((node) => node.props["data-testid"] === "list-allow-notice");
       const refusedElsewhere = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT)); await Promise.resolve(); await Promise.resolve(); }); };

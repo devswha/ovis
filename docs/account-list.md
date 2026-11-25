@@ -1687,8 +1687,13 @@ Either way the entry is signed through the one write loop of
 ### Invites
 
 A device that may write the list makes an invite for one PC
-([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)), in the Mac app under **Add
-PC → Ovis relay → Invite a PC**. By default the PC that joins with the invite asks, and a device
+([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)) under **Add PC → Ovis relay →
+Invite a PC**: in the phone apps and in the hosted app in a browser alike, wherever the page holds
+the account's list. A device that may not write it is shown no such section. A PC's own page (the
+Mac and desktop apps, a browser on the PC's address) holds no copy of the list and makes no invite:
+on a PC that follows its account's list, signed in to that account, its **Add a connection → Ovis
+relay** says where one is made (**To give an agent an invite that adds a PC, make one in the Ovis
+phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.**). By default the PC that joins with the invite asks, and a device
 of the account presses **Add** for it. With **Let the PC join by itself** on, the PC joins with
 nobody asked, for a PC an agent sets up; the line under the switch then says so: **Anyone who gets
 this line in the next 15 minutes can add a PC to your account without asking you.**

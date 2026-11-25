@@ -388,6 +388,17 @@ export async function approveOwnJoin(id: string, digits: string): Promise<void> 
 }
 
 /**
+ * GET /api/account/status: the account whose signed list this PC follows (it names one in `list` only once it is pinned
+ * to it), or null for none, and where this browser may not read the PC's account.
+ */
+export async function fetchListAccount(): Promise<string | null> {
+  const response = await apiFetch("/api/account/status", { cache: "no-store" });
+  if (!response.ok) return null;
+  const body = await response.json().catch(() => null) as { account?: unknown; list?: { pinned_list?: unknown } | null } | null;
+  return typeof body?.list?.pinned_list === "string" && typeof body.account === "string" ? body.account : null;
+}
+
+/**
  * GET /api/account/status, for why this PC lets nobody of its account in by its signed list: the `reason` of the list it
  * is pinned to, or what a PC that cannot read its own account state says (403 `strict`). Null for none.
  */
