@@ -3306,6 +3306,17 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     });
   }
 
+  it("keeps the resumed chat when only a model-change notice is visible", async () => {
+    foreground = [{ pid: 2147483629, argv: ["/usr/bin/codex", "resume", thread] }];
+    const started = spyOn(processStart, "processStartedAt").mockReturnValue(1_000_000);
+    try {
+      writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+      folderThread(otherThread, turn("b1", "An older conversation", "ok"));
+      screen = "OpenAI Codex (v0.164.0)\n• Model changed to gpt-5\n\n› Ask Codex to do anything";
+      expect(await resolve()).toBe(path);
+    } finally { started.mockRestore(); }
+  });
+
   it("drops a long answer's binding once the pane's last turn is another conversation's: it is the one the pane left", async () => {
     foreground = live;
     const fileB = folderThread(otherThread, turn("b1", "Explain which conversation this pane shows", answer));
