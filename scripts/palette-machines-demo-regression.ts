@@ -120,13 +120,17 @@ try {
           // puts `link` one entry ahead of the one the page is on. The app writes its own address over the entry it is on
           // whenever that differs (a roster update reruns it), so the link is never left as the current entry: the
           // current address goes on top of it in the same task, and the page steps back past both
-          const linkAhead = (link: string) => page.evaluate((link) => new Promise<void>((landed) => {
-            const here = location.search;
-            history.pushState(null, "", link);
-            history.pushState(null, "", here);
-            addEventListener("popstate", () => landed(), { once: true });
-            history.go(-2);
-          }), link);
+          const linkAhead = async (link: string) => {
+            await page.evaluate((link) => {
+              const here = location.search;
+              history.pushState(null, "", link);
+              history.pushState(null, "", here);
+              (window as any).linkAheadLanded = false;
+              addEventListener("popstate", () => { (window as any).linkAheadLanded = true; }, { once: true });
+              history.go(-2);
+            }, link);
+            await page.waitForFunction(() => (window as any).linkAheadLanded === true);
+          };
           await linkAhead("?machine=remote&new=workspace&agent=codex&name=Forward");
           await page.goForward();
           await dialog.waitFor();
