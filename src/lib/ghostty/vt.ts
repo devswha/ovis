@@ -7,10 +7,14 @@
 import {
   GhosttyEngine,
   GhosttyModule,
+  type EngineCell,
+  type EngineHistory,
+  type EngineRowText,
   type GhosttyCursor,
   type GhosttyImage,
   type GhosttyRun,
   type Rgb,
+  type ScreenPoint,
 } from "../../../shared/ghostty/engine.ts";
 
 export {
@@ -19,8 +23,11 @@ export {
   STYLE_INVERSE,
   STYLE_INVISIBLE,
   STYLE_ITALIC,
+  STYLE_OVERLINE,
   STYLE_STRIKE,
   STYLE_UNDERLINE_MASK,
+  type EngineCell,
+  type EngineRowText,
   type GhosttyCursor,
   type GhosttyImage,
   type GhosttyRun,
@@ -77,6 +84,8 @@ function rgb(color: string): [number, number, number] | null {
 export class GhosttyVt {
   cols: number;
   rows: number;
+  /** the history asked for: libghostty frees history a page at a time, so it can hold a few rows more */
+  scrollback = 0;
   private readonly engine: GhosttyEngine;
   private readonly encoder = new TextEncoder();
   private csi = CSI_GROUND;
@@ -191,6 +200,7 @@ export class GhosttyVt {
   /** lines of history above the screen; 0 keeps none */
   setScrollback(lines: number): void {
     this.engine.setScrollback(lines);
+    this.scrollback = lines;
   }
 
   scrollFromBottom(rowsAboveBottom: number): void {
@@ -222,6 +232,27 @@ export class GhosttyVt {
 
   cursor(): GhosttyCursor {
     return this.engine.cursor();
+  }
+
+  /** the kept rows: the history above the screen and where the view sits in it (screen coordinates, row 0 the oldest) */
+  history(): EngineHistory {
+    return this.engine.history();
+  }
+
+  alternate(): boolean {
+    return this.engine.alternate();
+  }
+
+  screenCursor(): ScreenPoint {
+    return this.engine.screenCursor();
+  }
+
+  rowCells(y: number): EngineCell[] | null {
+    return this.engine.rowCells(y);
+  }
+
+  rowText(y: number): EngineRowText | null {
+    return this.engine.rowText(y);
   }
 
   placedImages(): GhosttyImage[] | null {
