@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import type { AccountList, AccountListView } from "../account/accountList.ts";
 import { pageAnswers } from "../account/listMigrate.ts";
 import { memoryAccountStore, newKey, type AccountSession, type AccountStore } from "../account/store.ts";
@@ -60,13 +60,14 @@ describe("the shell's sessions and the move of an account onto its list", () => 
   beforeEach(() => { browser = createShellTestPage(); accountStore = memoryAccountStore(); });
   afterEach(() => { for (const each of made.splice(0)) each.dispose(); browser.dispose(); });
 
-  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] = []) => {
+  /** `inApp`: a PC's app is open in the shell (its front page is not up), as `frontUp` says it */
+  const controller = (list: AccountList, store: ShellDeviceStore, open?: (offer: unknown, options: Record<string, unknown>) => Promise<RelayTransport>, pcs: unknown[] = [], inApp = false) => {
     const made_ = createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.sh/", store, accountStore, accountService: SERVICE, accountList: list,
       ...(open === undefined ? {} : { open: open as never }),
       accountFetch: async (input) => new URL(new Request(input).url).pathname === "/v1/pcs" ? Response.json({ pcs }) : Response.json({ error: { code: "not_found" } }, { status: 404 }),
       renderApp: () => ({ render() {}, unmount() {} }),
-    }, { active: () => true, changed: async () => {}, outdated: () => new Set() });
+    }, { active: () => !inApp, changed: async () => {}, outdated: () => new Set() });
     made.push(made_);
     return made_;
   };
@@ -295,6 +296,74 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     await settle();
     expect(opened).toHaveLength(1);
     expect(pageAnswers.get("acct-paced", pc.endpoint)).toEqual(said);
+  });
+
+  /**
+   * F9 (staging): the device sits in the app of the PC it paired with. The shell opened that session before the device
+   * waited on its PCs (its list not read yet, or the account then keeping none), so the session asked nothing.
+   */
+  const inThePcsApp = async (account: string, status: () => AccountListView["status"], said: unknown) => {
+    await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const { list, tell, synced } = listIn(() => ({ account, reached: true, status: status(), devices: [], pcs: [] }));
+    const asked: string[] = [];
+    const made = controller(list, store, async () => {
+      const one = sessionOf({ answers: { "GET /api/account/list/witness": said } });
+      const fetch = one.opened.fetch.bind(one.opened);
+      return Object.assign(one.opened, { fetch: (path: string, init?: RequestInit) => { asked.push(path); return fetch(path, init); } });
+    }, [], true);
+    await made.refresh(true);
+    await settle();
+    const app = sessionOf({ answers: { "GET /api/account/list/witness": said } });
+    await made.sessionOpened(app.opened, pc.offerKey);
+    expect(app.asked).toEqual([]);
+    return { pc, tell, synced, asked };
+  };
+
+  it("F9: while a PC's app is open, the PCs are still asked in the background once the device waits on them", async () => {
+    let status: AccountListView["status"] = { at: "none", why: "not_new" };
+    const said = { account: "acct-in-app", pinned: null, admits: [], removed: [] };
+    const held = await inThePcsApp("acct-in-app", () => status, said);
+    status = { at: "none", why: "moving", move: { why: "pcs_silent", wait: 60, asks: [held.pc.endpoint] } };
+    held.tell();
+    await settle();
+    expect(held.asked).toEqual(["/api/account/list/witness"]);
+    expect(pageAnswers.get("acct-in-app", held.pc.endpoint)).toEqual(said);
+    expect(held.synced()).toBeGreaterThan(0);
+  });
+
+  it("F9: a plan that comes out the same every round asks its PC again once the wait it told has run out, and no sooner than the re-ask gap", async () => {
+    jest.useFakeTimers();
+    try {
+      let status: AccountListView["status"] = { at: "none", why: "not_new" };
+      const held = await inThePcsApp("acct-repeats", () => status, { account: "acct-repeats", pinned: null, admits: [], removed: [] });
+      // the PC answered: a key it lets in has been let in for less than a day, 15 minutes short
+      status = { at: "none", why: "moving", move: { why: "too_new", wait: 900, asks: [] } };
+      held.tell();
+      await settle();
+      expect(held.asked).toHaveLength(1);
+      const read = held.synced();
+      // the list's rounds come out the same: its view does not change, and nobody tells the controller
+      jest.advanceTimersByTime(890_000);
+      await settle();
+      expect(held.asked).toHaveLength(1);
+      jest.advanceTimersByTime(20_000);
+      await settle();
+      expect(held.asked).toHaveLength(2);
+      expect(held.synced()).toBeGreaterThan(read);
+      // the plan now waits with no time told (no PC it knows answered for the account): the PC just asked is asked
+      // again after the ten minutes' gap, not sooner
+      status = { at: "none", why: "moving", move: { why: "no_witness", wait: null, asks: [] } };
+      held.tell();
+      await settle();
+      expect(held.asked).toHaveLength(2);
+      jest.advanceTimersByTime(590_000);
+      await settle();
+      expect(held.asked).toHaveLength(2);
+      jest.advanceTimersByTime(20_000);
+      await settle();
+      expect(held.asked).toHaveLength(3);
+    } finally { jest.useRealTimers(); }
   });
 
   it("a carried device that follows its list without a doubt asks only the PCs that have not agreed yet", async () => {
