@@ -226,6 +226,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Run ovis add on that PC to give it one, and compare the number with this device": "その PC で ovis add を実行してキーを渡し、番号をこのデバイスと照合してください",
   "Only {device} can finish giving it its keys: compare the number on {device}": "このキーを渡し終えられるのは {device} だけです。{device} で番号を照合してください",
   "another device of your account": "アカウントの別のデバイス",
+  "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.": "その PC は要求を受け付けませんでした。別の PC を入れられるのは、アカウントのデバイスのうち、その PC とペアリングしたものだけです。",
   "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "プッシュ通知には HTTPS または localhost が必要です。iPhone ではホーム画面に追加したアプリを使ってください。",
   "Allow notifications in your browser settings, then try again.": "ブラウザーの設定で通知を許可してから、もう一度お試しください。",

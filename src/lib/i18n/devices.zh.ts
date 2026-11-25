@@ -226,6 +226,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Run ovis add on that PC to give it one, and compare the number with this device": "在那台 PC 上运行 ovis add 为它提供密钥，并与此设备核对数字",
   "Only {device} can finish giving it its keys: compare the number on {device}": "只有 {device} 能完成为它提供密钥：请在 {device} 上核对数字",
   "another device of your account": "账户中的另一台设备",
+  "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.": "那台 PC 没有接受该请求。只有你账户中与那台 PC 配对的设备才能让其他 PC 加入。",
   "The relay did not start: {message}": "中继未能启动：{message}",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "推送通知需要 HTTPS 或 localhost。在 iPhone 上请使用添加到主屏幕的应用。",
   "Allow notifications in your browser settings, then try again.": "请在浏览器设置中允许通知，然后重试。",

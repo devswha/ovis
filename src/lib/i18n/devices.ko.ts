@@ -226,6 +226,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Run ovis add on that PC to give it one, and compare the number with this device": "그 PC에서 ovis add를 실행해 키를 주고, 숫자를 이 기기와 비교하세요",
   "Only {device} can finish giving it its keys: compare the number on {device}": "{device}만 이 PC의 키를 마저 줄 수 있습니다. {device}에서 숫자를 비교하세요",
   "another device of your account": "계정의 다른 기기",
+  "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.": "그 PC가 요청을 받지 않았습니다. 그 PC와 페어링된 내 계정의 기기만 다른 PC를 들여보낼 수 있습니다.",
   "The relay did not start: {message}": "릴레이를 시작하지 못했습니다: {message}",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "푸시 알림은 HTTPS 또는 localhost가 필요하고, iPhone에서는 홈 화면 앱이어야 합니다.",
   "Allow notifications in your browser settings, then try again.": "브라우저 설정에서 알림을 허용한 뒤 다시 시도하세요.",

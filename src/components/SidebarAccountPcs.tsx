@@ -6,6 +6,7 @@ import "./SidebarAccountPcs.css";
 
 import type { Machine } from "../../shared/machines.ts";
 import { pcAccountStatus } from "../lib/account/join.ts";
+import { ACCOUNT_SESSION_EVENT } from "../lib/account/store.ts";
 import { isNewAccountPc } from "../lib/account/myPcs.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { fetchRelay } from "../lib/api.ts";
@@ -110,6 +111,32 @@ function JoinedAccountPcs({ account, reads, machines, onAdded, onListed, openabl
     try { localStorage.setItem(declineKey(pc.server_id), pc.new_until ?? ""); } catch { /* not kept: asked again on the next load */ }
     noteDecline((count) => count + 1);
   }, [failure]);
+  // a PC asked nothing because this page was not signed in to the account says so only until it is again: a sign-in
+  // written in this window, or the window coming back, reads it, and the PC gets its turn
+  const signedOut = useRef(new Set<string>());
+  const [signIns, noteSignIn] = useState(0);
+  useEffect(() => {
+    if (failure?.signIn !== true) return;
+    signedOut.current.add(failure.server_id);
+    noteSignIn((count) => count + 1);
+  }, [failure]);
+  useEffect(() => {
+    const again = () => noteSignIn((count) => count + 1);
+    window.addEventListener(ACCOUNT_SESSION_EVENT, again);
+    return () => window.removeEventListener(ACCOUNT_SESSION_EVENT, again);
+  }, []);
+  useEffect(() => {
+    if (signedOut.current.size === 0) return;
+    let live = true;
+    source.account().then((read) => {
+      if (!live || read !== account) return;
+      const back = [...signedOut.current];
+      signedOut.current.clear();
+      setTried((current) => new Set([...current].filter((serverId) => !back.includes(serverId))));
+      setFailures((current) => new Map([...current].filter(([serverId]) => !back.includes(serverId))));
+    }, () => undefined);
+    return () => { live = false; };
+  }, [signIns, reads]);
   useEffect(() => {
     if (passing.current.size === 0) return;
     const again = [...passing.current];

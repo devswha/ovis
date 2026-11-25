@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AccountPcEntry } from "../lib/api.ts";
+import { ACCOUNT_SESSION_EVENT } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { AccountPcsSource } from "../lib/account/useAccountPcs.ts";
 import { SidebarAccountPcs } from "./SidebarAccountPcs.tsx";
@@ -236,7 +237,7 @@ describe("the account's PCs in the sidebar", () => {
     await mount();
     await act(async () => { pairLines!.enqueue(line({ error: { code: "account_pc_declined", message: "That PC was not approved. Nothing was added." } })); pairLines!.close(); });
     await settle();
-    expect(text(row("Desk"))).toContain("That PC was not approved.");
+    expect(text(row("Desk"))).toContain("Not approved");
     expect(text(row("Desk"))).not.toContain("Connecting…");
     await comeBack();
     await comeBack();
@@ -379,6 +380,64 @@ describe("the account's PCs in the sidebar", () => {
     expect(text(row("Desk"))).toContain("Sign in again");
   });
 
+  it("says to sign in again only until this page is signed in to that account again, then adds the PC it asked nothing of", async () => {
+    // signed out after the list was read, before Desk's turn
+    let reads = 0;
+    source.account = async () => (reads += 1) === 1 ? "acct" : mine;
+    listAccount = "acct";
+    mine = null;
+    await mount();
+    expect(text(row("Desk"))).toContain("Sign in again");
+    // signed in to another account: still nothing is asked of Desk
+    mine = "other";
+    await act(async () => { events.dispatchEvent(new Event(ACCOUNT_SESSION_EVENT)); });
+    await settle();
+    expect(text(row("Desk"))).toContain("Sign in again");
+    expect(starts()).toBe(0);
+    // signed in to that account again in this window: no reload, no other window in between
+    mine = "acct";
+    await act(async () => { events.dispatchEvent(new Event(ACCOUNT_SESSION_EVENT)); });
+    await settle();
+    expect(text(row("Desk"))).not.toContain("Sign in again");
+    expect(starts()).toBe(1);
+    expect(admitted).toEqual([DESK.server_id]);
+  });
+
+  it("clears a Sign in again when the window comes back signed in to that account", async () => {
+    let reads = 0;
+    source.account = async () => (reads += 1) === 1 ? "acct" : mine;
+    listAccount = "acct";
+    mine = null;
+    await mount();
+    expect(text(row("Desk"))).toContain("Sign in again");
+    mine = "acct";
+    await comeBack();
+    expect(text(row("Desk"))).not.toContain("Sign in again");
+    expect(starts()).toBe(1);
+  });
+
+  it("says why a PC was not added in the page's language: the PC's server says it in English only", async () => {
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["ko"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
+    const said: Record<string, string> = {
+      // refused before the request was shown: most often a PC with no device of the account paired at it to approve
+      account_pc_refused: "그 PC가 요청을 받지 않았습니다. 그 PC와 페어링된 내 계정의 기기만 다른 PC를 들여보낼 수 있습니다.",
+      account_pc_declined: "승인되지 않음",
+      account_pc_unanswered: "승인되지 않음",
+      account_pc_offline: "PC에 연결할 수 없음",
+      account_pc_gone: "그 PC를 추가하지 못했습니다. 다시 시도하세요.",
+    };
+    for (const [code, words] of Object.entries(said)) {
+      stored.clear();
+      await mount();
+      await act(async () => { pairLines!.enqueue(line({ error: { code, message: "An English sentence from the PC's server." } })); pairLines!.close(); });
+      await settle();
+      const dot = row("Desk").find((node) => node.type === "span" && typeof node.props.className === "string" && node.props.className.includes("machine-dot"));
+      expect([code, dot.props.title, text(row("Desk")).includes("English sentence")]).toEqual([code, words, false]);
+      await act(async () => { renderer!.unmount(); });
+      renderer = undefined;
+    }
+  });
+
   it("tells the sidebar only the PCs it is adding, so a device keeps its own link to one that is outdated, off or declined", async () => {
     const told: (readonly string[])[] = [];
     await act(async () => { renderer = create(<SettingsProvider><SidebarAccountPcs machines={[local, lab]} onAdded={() => {}} onListed={(ids) => told.push(ids)} source={source} /></SettingsProvider>); });
@@ -408,7 +467,7 @@ describe("the account's PCs in the sidebar", () => {
     await settle();
     expect(admitted).toEqual([DESK.server_id, AWAY.server_id]);
     expect(text(row("Away"))).toContain("Connecting…");
-    expect(text(row("Desk"))).toContain("Desk did not answer.");
+    expect(text(row("Desk"))).toContain("That PC could not be added. Try again.");
     expect(text(row("Desk"))).not.toContain("Connecting…");
   });
 

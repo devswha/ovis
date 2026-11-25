@@ -74,9 +74,22 @@ export interface AccountPcs {
   /** what the PC answered when asked whether it would pair; undefined while it is asked */
   stateOf(serverId: string): AccountPcState | undefined;
   pairing: Pairing | null;
-  /** `code`: the server's refusal (ApiError.code), absent for one this page decided */
-  failure: { server_id: string; message: string; code?: string } | null;
+  /** `code`: the server's refusal (ApiError.code), absent for one this page decided; `signIn`: nothing was asked, as this page was not signed in to the account */
+  failure: AccountPcFailure | null;
   add(pc: AccountPcEntry): Promise<void>;
+}
+
+type AccountPcFailure = { server_id: string; message: string; code?: string; signIn?: true };
+
+/** What a row says of an add that failed, in the page's language: the PC's server says it in English only. */
+function failureWords(error: unknown, t: ReturnType<typeof useT>): string {
+  switch (error instanceof ApiError ? error.code : null) {
+    case "account_pc_refused": return t("That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.");
+    case "account_pc_declined": case "account_pc_unanswered": return t("Not approved");
+    case "account_pc_outdated": return t("Update Ovis on that PC");
+    case "account_pc_offline": return t("Can't reach the PC");
+    default: return t("That PC could not be added. Try again.");
+  }
 }
 
 /**
@@ -103,7 +116,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
   }, []);
   const [states, setStates] = useState<ReadonlyMap<string, AccountPcState>>(new Map());
   const [pairing, setPairing] = useState<Pairing | null>(null);
-  const [failure, setFailure] = useState<{ server_id: string; message: string; code?: string } | null>(null);
+  const [failure, setFailure] = useState<AccountPcFailure | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
   const listed = useRef<Round>({ asked: new Set(), invalid: new Set(), failed: new Set(), scope: null });
@@ -195,7 +208,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
     try {
       // signed out, or into another account, since the list was read: nothing is asked of that PC
       if (!await stillOurs()) {
-        if (!abort.signal.aborted) { setPairing(null); setFailure({ server_id: pc.server_id, message: t("Sign in again") }); }
+        if (!abort.signal.aborted) { setPairing(null); setFailure({ server_id: pc.server_id, message: t("Sign in again"), signIn: true }); }
         return;
       }
       abort.signal.throwIfAborted();
@@ -214,7 +227,7 @@ export function useAccountPcs({ machines, source, enabled = true, expect, refres
       // roster shows it added once that one ends
       if (error instanceof ApiError && error.code === "account_pc_busy") return;
       if (error instanceof ApiError && error.code === "account_pc_outdated") setStates((current) => new Map(current).set(pc.server_id, "outdated"));
-      setFailure(error instanceof ApiError ? { server_id: pc.server_id, message: error.detail, ...(error.code === null ? {} : { code: error.code }) } : { server_id: pc.server_id, message: t("That PC could not be added. Try again.") });
+      setFailure({ server_id: pc.server_id, message: failureWords(error, t), ...(error instanceof ApiError && error.code !== null ? { code: error.code } : {}) });
     }
   };
   return { pcs, added, stateOf: (serverId) => pcs?.find((pc) => pc.server_id === serverId)?.unreachable === true ? "offline" : states.get(serverId), pairing, failure, add };
