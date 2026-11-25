@@ -20,8 +20,9 @@ async function waitFor(done: () => boolean): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (!done()) {
     if (Date.now() > deadline) throw new Error("what the press started did not end");
-    // what settles meanwhile (the list's own rounds) is drawn inside act
-    await act(async () => { await Bun.sleep(25); });
+    await Bun.sleep(25);
+    // what settled meanwhile is drawn
+    await act(async () => {});
   }
 }
 
