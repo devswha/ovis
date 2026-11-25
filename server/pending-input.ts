@@ -10,6 +10,8 @@ export interface PendingIdentity {
   omoSession?: string | null;
   /** the session Claude's PID record names: it changes with /clear and /resume in the same process, hook or not */
   claudeSession?: string | null;
+  /** Pi's extension-verified file when the backend does not report the session. */
+  piSession?: { readonly path: string; readonly fileIdentity: string | null };
 }
 
 /** Whether two reads of a process's start name the same process. macOS allows a second: its birth was once read from

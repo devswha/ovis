@@ -179,7 +179,7 @@ it.each([
   }
 });
 
-it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged"] as const)(
+it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged", "same-process Pi session changed #4232", "Pi switched during paste #4232"] as const)(
   "rechecks queued Pi delivery when capture retries and the pane becomes %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-capture-race-"));
     try {
@@ -195,7 +195,8 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
         send: (value: string) => {
           const frame = JSON.parse(value) as ServerMessage;
           frames.push(frame);
-          if (frame.type === "pending-messages" && (frame.removed?.length || frame.messages.some((message) => message.state === "uncertain"))) settled.resolve();
+          if (frame.type === "pending-messages" && (frame.removed?.length
+            || frame.messages.some((message) => message.state === "uncertain" || message.error?.code === "pending_target_changed"))) settled.resolve();
           return 1;
         },
       } as Client;
@@ -205,13 +206,16 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
       spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_000);
       spyOn(client, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: foreground }));
       spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
-      spyOn(client, "paneSendText").mockImplementation(async () => { writes.push("paste"); });
+      spyOn(client, "paneSendText").mockImplementation(async () => {
+        writes.push("paste");
+        if (change === "Pi switched during paste #4232") switchSession();
+      });
       spyOn(client, "paneSendKeys").mockImplementation(async (_pane, keys, _options, allowed) => {
         if (allowed && !allowed()) throw new client.HerdrError("cancelled", "Input guard refused the key");
         writes.push(...keys);
       });
       const written = statSync(path, { bigint: true });
-      spyOn(pi, "piTranscriptPath").mockResolvedValue({ path, agentDir: null, identity: `${written.dev}:${written.ino}` });
+      const resolved = spyOn(pi, "piTranscriptPath").mockResolvedValue({ path, agentDir: null, identity: `${written.dev}:${written.ino}` });
       const capture = piDelivery.capturePiDeliveryAnchorRetrying;
       let waits = 0;
       spyOn(piDelivery, "capturePiDeliveryAnchorRetrying").mockImplementation((file, allowMissing, expected) =>
@@ -235,12 +239,31 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
         SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
 
+      function switchSession(): void {
+        const other = join(root, "second.jsonl");
+        writeFileSync(other, JSON.stringify({ type: "session", version: 3, id: "second" }) + "\n");
+        const next = statSync(other, { bigint: true });
+        resolved.mockResolvedValue({ path: other, agentDir: null, identity: `${next.dev}:${next.ino}` });
+      }
+
       await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
+      if (change === "same-process Pi session changed #4232") switchSession();
       pane.agent_status = "idle";
       delivery.pending.status("p", "idle");
       delivery.drainPending("p");
       await settled.promise;
       await serialize("p", () => {});
+
+      if (change === "same-process Pi session changed #4232") {
+        expect(writes).toEqual([]);
+        expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "held", error: { code: "pending_target_changed" } }]);
+        return;
+      }
+      if (change === "Pi switched during paste #4232") {
+        expect(writes).toEqual(["paste"]);
+        expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "uncertain", error: { code: "submit_changed" } }]);
+        return;
+      }
 
       expect(waits).toBe(1);
       expect(writes).toEqual(change === "unchanged" ? ["paste", "Enter"] : ["paste"]);
