@@ -286,7 +286,7 @@ async function launch(): Promise<void> {
       const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
         spawning = child;
         if (child.pid === undefined) return;
-        writeSaved(savedPath, { port, server: { pid: child.pid, bun: programs.serverBinary, started: processStartSync(child.pid) } });
+        writeSaved(savedPath, { port, server: { pid: child.pid, bun: programs.serverBinary, started: processStartSync(child.pid), ready: false } });
       });
       spawning = null;
       if (quitting) {
