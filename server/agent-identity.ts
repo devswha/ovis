@@ -30,7 +30,7 @@ function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
 }
 
 /** Runtimes' names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
-const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "grok-build": "grok" };
+const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "grok-build": "grok", "command-code": "cmd" };
 
 /** The interpreters an agent's script runs under when its install is a script (npm's node bin, a Python entry point). */
 const INTERPRETERS = new Set(["node", "bun", "python", "python3"]);
