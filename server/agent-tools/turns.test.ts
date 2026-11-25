@@ -243,6 +243,8 @@ describe.skipIf(!keeperBuilt)("the agent tool through its socket and real keeper
     if (!child) throw new Error("missing child");
     // A hold's receipt says the cancel reached the agent; the agent's cancelled answer to the prompt comes on its own.
     const cancelled = until(child.client, "cancelled turn", () => child.client.turn?.stopReason === "cancelled");
+    // if a hold throws first, its error is the test's; the await below still sees this wait's own failure
+    cancelled.catch(() => {});
     const first = await child.client.request("_keeper/hold", { sessionId: child.client.session });
     const second = await child.client.request("_keeper/hold", { sessionId: child.client.session });
     if (!isRecord(first) || !isRecord(second)) throw new Error("missing hold receipt");
