@@ -736,7 +736,7 @@ export type ConversationPart =
     output_ref?: string; output_size?: number;
     /** images the call returned (pi reads a picture into the result); same fetch as a user image */
     images?: { media_type: string; ref: string }[];
-    /** the agent's own id for the call (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`); absent from other agents and older servers */
+    /** the agent's own id for the call, when available (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`, OpenCode `id`) */
     call_id?: string;
     /**
      * What the transcript itself records of the call's outcome, never guessed from its output text.
@@ -1167,6 +1167,8 @@ export interface InteractivePromptAnswer {
 export interface InteractivePromptOption {
   label: string;
   description: string | null;
+  /** true when the agent explicitly marked this option as its recommended pick. */
+  recommended?: true;
 }
 
 /** POST /api/pane/prompt/answer body. One answer or navigation action; native OpenCode multiselect may combine option_indices and custom_text. */

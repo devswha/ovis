@@ -14,6 +14,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { OrderSequence } from "./order-sequence.ts";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
 import { accessSync, chmodSync, constants, mkdirSync, rmSync, statSync } from "node:fs";
+import { recordDesktopListener } from "./desktop-listener.ts";
 import { version } from "../package.json";
 import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
@@ -504,6 +505,8 @@ export function createServer(
     join: (given) => accountList.joinList(given),
     joined: () => accountMailbox.joinedByList(),
     joinedTo: (account, list) => { const status = accountList.status(); return status.pinned && status.account === account && status.pinned_list === list && status.standing === "in"; },
+    inAccount: () => devices.account() !== null,
+    needsKeys: () => accountList.needsKeys(),
     now: () => Date.now(),
     pollMs: options.accountListAddPollMs,
   });
@@ -639,7 +642,7 @@ export function createServer(
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
   let agentTools: AgentToolHub | null = null;
-  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); agentTools?.grants.forgetPane(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
@@ -660,7 +663,7 @@ export function createServer(
     seen.subscribe((finish, presented) => { if (presented !== "new") markSeen(finish, false); });
     seen.onPresented((finish) => markSeen(finish, true));
   }
-  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
+  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 10 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
   const bridgeToken = options.bridgeToken ?? randomBytes(32).toString("hex");
@@ -952,7 +955,7 @@ export function createServer(
   // No deferred listener from a failed HTTP/LAN bind may replace a running server's hub.
   if (acp && process.platform !== "win32" && hcMachine() === null) {
     try {
-      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
+      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool), paneRunEpoch: () => preferences.paneRunEpoch });
       const hub = agentTools;
       void acpReady?.then(async restored => {
         if (!restored) throw new Error("ACP restore incomplete.");
@@ -986,6 +989,7 @@ export function createServer(
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
+      listAdd?.stop();
       accountWitness?.stop();
       accountRows?.stop();
       accountCatchUp.stop();
@@ -1163,11 +1167,19 @@ export async function serve(): Promise<void> {
     herdrCore?.stop();
     process.exit(1);
   }
+  let clearDesktopListener: (() => void) | undefined;
+  const desktopRecord = process.env["OVIS_DESKTOP_APP"] === "1" ? process.env["OVIS_DESKTOP_COMMAND_RECORD"] : undefined;
+  if (desktopRecord !== undefined) {
+    try { clearDesktopListener = recordDesktopListener(desktopRecord, process.pid); }
+    catch (error) { console.error("Cannot record the desktop listener:", error); }
+  }
   telemetry.start();
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
+    try { clearDesktopListener?.(); }
+    catch (error) { console.error("Cannot clear the desktop listener record:", error); }
     telemetry.stop();
     instance.stop();
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
