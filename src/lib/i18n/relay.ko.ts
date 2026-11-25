@@ -156,6 +156,7 @@ export const RELAY_KO: Record<string, string> = {
   "No answer from {name}": "{name}에서 응답이 없어요",
   "Ask again, then press [Allow] on {name}.": "다시 요청한 뒤 {name}에서 [허용]을 누르세요.",
   "{name} could not reach your Ovis account": "{name}에서 Ovis 계정에 연결할 수 없습니다",
+  "{name} is on, but it could not reach your Ovis account to check that this device asked to join. Try again in a moment.": "{name}에서 Ovis는 켜져 있지만, 이 기기의 참여 요청을 확인하려고 Ovis 계정에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
   "{name} lets your account's devices in only after the account service confirms it is still in your account, and the service did not answer. Try again in a moment. A device paired with {name} itself still connects.": "{name} PC는 계정 서비스가 이 PC가 아직 내 계정에 있다고 확인해 준 뒤에만 내 계정의 기기를 받는데, 계정 서비스가 응답하지 않았습니다. 잠시 뒤 다시 시도하세요. {name} PC와 직접 페어링한 기기는 그대로 연결됩니다.",
   "Add {name} to your account again": "{name} PC를 내 계정에 다시 추가하세요",
   "{name} is no longer in your Ovis account. On {name}, open Settings → Devices and PCs → Add a connection → Ovis relay and add it to your account again, then try again here.": "{name} PC는 이제 내 Ovis 계정에 없습니다. {name}에서 설정 → 기기와 PC → 연결 추가 → Ovis 릴레이를 열어 내 계정에 다시 추가한 뒤 여기서 다시 시도하세요.",
