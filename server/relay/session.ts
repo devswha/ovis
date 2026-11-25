@@ -280,7 +280,8 @@ export class RelaySession {
         else void this.websocket(stream, exchange);
       },
     });
-    options.channel.onClose(() => { this.carrierGone = true; this.mux.carrierLost(); });
+    // only while the session stands: an end the device or this PC made closes the carrier too, and keeps its own reason
+    options.channel.onClose(() => { if (this.mux.active) this.carrierGone = true; this.mux.carrierLost(); });
     // A WELCOME with no feature rides right behind the protected handshake's answer, so a phone signing in
     // gets its nonce one round trip sooner. It is provisional: HELLO is still required, and checked, before
     // AUTH or PAIR, and a HELLO that offers pairing by comparing digits gets the final WELCOME. Only while no

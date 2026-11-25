@@ -288,7 +288,18 @@ it("logs a session whose device went away as carrier_lost, not as an error of th
   f.app.context.services.devices.revoke(device.id);
   expect(await bounded(revoked.serverError)).toBe("auth_revoked");
   await logged(3);
-  expect(closedReasons()).toEqual(["carrier_lost", "carrier_lost", "auth_revoked"]);
+  // the device's client failed the session itself: its reason, not the carrier's (another device: that one was revoked)
+  const other = await relayDevice(f);
+  const failing = await relayConnection(f);
+  await failing.auth(other);
+  failing.mux.fail("protocol_error", "client gave up");
+  await logged(4);
+  // this PC's own GOAWAY, drained: the drain's reason
+  const drained = await relayConnection(f);
+  await drained.auth(other);
+  drained.session.mux.goAway("shutdown", 50);
+  await logged(5);
+  expect(closedReasons()).toEqual(["carrier_lost", "carrier_lost", "auth_revoked", "protocol_error", "timeout"]);
 });
 
 it("rejects OPEN before AUTH_OK without invoking the dispatcher", async () => {
