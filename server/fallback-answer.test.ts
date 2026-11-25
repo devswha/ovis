@@ -255,6 +255,16 @@ test.each([
   });
 });
 
+// a Grok question whose answer reads like the panel's refusal is no permission panel: its card keeps Enter and Esc
+test("offers no refusal row on a Grok question whose answer reads like one", () => {
+  const screen = recorded("grok-1.0.77-ask");
+  const answers = screen.split("\n").filter((line) => /^\s*┃\s+\d \([○●]\) /u.test(line));
+  expect(answers.length).toBeGreaterThan(1);
+  const alike = screen.replace(answers[1]!, answers[1]!.replace(/\) .*$/u, ") No, reject (type to add feedback)"));
+  expect(labels(parseFallbackPrompt("grok", alike))).toEqual(labels(parseFallbackPrompt("grok", screen)));
+  expect(labels(parseFallbackPrompt("grok", alike))).toContain("Esc");
+});
+
 // Muse 1.4.25 keeps "◇ Calling tools (21s · esc to interrupt)" over its approval dialog, its time and glyph ticking
 test("keeps Muse's approval card while the row over it ticks, and not once its words change", () => {
   const turn = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/muse.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns

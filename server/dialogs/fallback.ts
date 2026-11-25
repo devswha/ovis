@@ -21,9 +21,12 @@ const ESCAPE_REFUSAL_ROW_RE: Readonly<Record<string, RegExp>> = {
 
 /**
  * Grok's permission panel row that refuses, its number the key that picks it (Grok 1.0.92): "┃  4 (○) No, reject (type
- * to add feedback)". Esc moves Grok's focus to its scrollback and leaves the panel up (#4571).
+ * to add feedback)". Esc moves Grok's focus to its scrollback and leaves the panel up (#4571). Only a panel that also
+ * opens on the call it asks about ("┃  ›  Run …") and offers "Yes, proceed" is one: a question's answer may read alike.
  */
-const GROK_REJECT_ROW_RE = /^┃\s+(\d) \([○●]\) (No, reject)\b/u;
+const GROK_REJECT_ROW_RE = /^┃\s+(\d) \([○●]\) (No, reject) \(type to add feedback\)$/u;
+const GROK_PROCEED_ROW_RE = /^┃\s+\d \([○●]\) Yes, proceed$/u;
+const GROK_PANEL_CALL_RE = /^┃\s+›\s/u;
 
 /**
  * what a menu's hint line says to do with it: a way to choose ("Enter to select", "↵ choose",
@@ -246,7 +249,8 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
   // screen (the agent's composer owns the keys then) or for a line of quoted output
   const hints = NOT_PROMPT_TEXT_RE.test(last.at(-1) ?? "") ? [] : last.slice(-2).filter((line) => !NOT_PROMPT_TEXT_RE.test(line));
   const question = [...last].reverse().find((line) => ASKED_RE.test(line)) ?? last.at(-1);
-  const grokRejects = agent === "grok" ? last.filter((line) => GROK_REJECT_ROW_RE.test(line)) : [];
+  const grokPanel = agent === "grok" && last.some((line) => GROK_PANEL_CALL_RE.test(line)) && last.some((line) => GROK_PROCEED_ROW_RE.test(line));
+  const grokRejects = grokPanel ? last.filter((line) => GROK_REJECT_ROW_RE.test(line)) : [];
   const grokReject = grokRejects.length === 1 ? GROK_REJECT_ROW_RE.exec(grokRejects[0]!) : null;
   // a (y/n) letter is offered only for the prompt at the screen's end, never for a mention
   // above it; it is typed without an Enter: a program reading a whole line still waits for
