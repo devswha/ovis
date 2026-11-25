@@ -2059,10 +2059,14 @@ top of Manage account's lists, and in one line on My PCs that points there: **Tw
 histories of your account's list were seen**. It names no device or PC as the cause. It says that
 the devices and PCs already in keep working and that this device lets nobody new in while it
 shows, and it gives the way back of [What a person does](#two-histories), one device or PC at a
-time: reset one (a device: disconnect it from the account, sign in again and be allowed from
-another device or PC; a PC: Revoke all, then add it again), look at what it shows and remove what
-is not the person's at that same device or PC, check it is gone there before the next, and stop
-where two of them still differ. A pinned PC says the same in its own words, in `reason` of
+time: reset one (a device: Sign out, sign in again and be allowed from another device or PC, then
+remove its old listing there; a PC: Revoke all, then add it again), look at what it shows and
+remove what is not the person's at that same device or PC, check it is gone there before the next,
+and stop where two of them still differ. A device is reset by Sign out, not Disconnect: Disconnect
+signs the device's own removal first, which the alarm refuses, so it never finishes while the alarm
+stands, while Sign out signs nothing, ends the sign-in and forgets the key and the copy. The old key
+stays in the list until a member that shows no alarm removes it, as the one that let the device in
+again can; the message after that sign-out says so in the same order. A pinned PC says the same in its own words, in `reason` of
 `GET /api/account/list` and in the account's status, which `ovis status --json` shows as
 `list.reason`.
 

@@ -60,6 +60,11 @@ describe("the alarm of the account's list, on this device", () => {
     // one member at a time, removed AT that member, checked before the next, and a stop
     const steps = notice!.findAll((node) => node.type === "li").map(textOf);
     expect(steps).toHaveLength(4);
+    // a device is reset by Sign out, which finishes while the alarm stands (Disconnect would sign its removal first):
+    // then it is let in again, and its old listing is removed there, on a member that shows no alarm
+    expect(steps[0]).not.toMatch(/disconnect/i);
+    const order = ["sign out", "sign in again", "allow it from another device or PC", "remove its old listing there"].map((words) => steps[0]!.indexOf(words));
+    expect(order.every((at, index) => at >= 0 && (index === 0 || at > order[index - 1]!))).toBe(true);
     expect(steps[1]).toContain("on that same device or PC");
     expect(steps[2]).toContain("before you reset the next one");
     expect(steps[3]).toContain("stop");

@@ -36,7 +36,7 @@ export function ListAlarmNotice({ account }: { readonly account?: string }) {
       <p className="settings-hint">{t("This device was shown two versions of your account's list. Devices and PCs already in your account keep working. While this shows, this device lets nobody new in.")}</p>
       <p className="settings-hint">{t("To fix it, go one device or PC at a time:")}</p>
       <ol className="account-list-alarm-steps settings-hint">
-        <li>{t("Reset one. On a device, disconnect it from your account, sign in again and allow it from another device or PC. On a PC, choose Revoke all, then add it to your account again.")}</li>
+        <li>{t("Reset one. On a device, sign out, sign in again and allow it from another device or PC, then remove its old listing there. On a PC, choose Revoke all, then add it to your account again.")}</li>
         <li>{t("Look at the devices and PCs it shows, and remove any that is not yours on that same device or PC.")}</li>
         <li>{t("Check that it is gone there before you reset the next one.")}</li>
         <li>{t("If two of them still show different devices and PCs, stop: resetting more of them does not fix it.")}</li>
