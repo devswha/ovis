@@ -3282,6 +3282,24 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(await codexOpenRollout(root, root, home)).toBe(path);
   });
 
+  for (const [issue, launch] of [[3725, ["/usr/bin/codex", "resume", thread]], [3491, ["/usr/bin/codex"]]] as const) {
+    it(`does not show the previous thread when a picker resume leaves no readable screen (#${issue})`, async () => {
+      foreground = [{ pid: 2147483629, argv: [...launch] }];
+      const started = spyOn(processStart, "processStartedAt").mockReturnValue(1_000_000);
+      try {
+        writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+        folderThread(otherThread, turn("b1", "Original B request", "ok"));
+        if (issue === 3491) {
+          screen = footed(["› Explain which conversation this pane shows"], [`• ${answer}`]);
+          expect(await resolve()).toBe(path);
+        }
+        title = issue === 3491 ? "Older named thread B" : null;
+        screen = "";
+        expect(await resolve()).toBeNull();
+      } finally { started.mockRestore(); }
+    });
+  }
+
   it("drops a long answer's binding once the pane's last turn is another conversation's: it is the one the pane left", async () => {
     foreground = live;
     const fileB = folderThread(otherThread, turn("b1", "Explain which conversation this pane shows", answer));
