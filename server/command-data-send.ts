@@ -4,9 +4,10 @@
  * is typed as before. Once a request may have reached the agent, the command is never typed as well.
  */
 import type { HerdrPane } from "../shared/protocol.ts";
-import { HerdrError } from "./herdr/client.ts";
+import { HerdrError, paneGet } from "./herdr/client.ts";
+import { opencodeSessionId } from "./opencode.ts";
 import { openCodePaneService } from "./opencode-native.ts";
-import { compactOpenCodeSession, runOpenCodeCommand } from "./opencode-service.ts";
+import { compactOpenCodeSession, openCodePermissionsRead, runOpenCodeCommand } from "./opencode-service.ts";
 import type { CommandSend } from "./outcome.ts";
 import { openCodeTuiCommand } from "./skills/opencode.ts";
 
@@ -18,10 +19,11 @@ export function commandDataRoute(command: CommandSend, text: string): CommandDat
   if (command.agent !== "opencode" || command.invocations.length !== 1) return null;
   // an @skill rides with the typed text, where the TUI attaches it (opencode-skill-attach.ts)
   if (/(?:^|\s)@\S/u.test(text)) return null;
-  const head = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/u.exec(text.trim());
+  // as OpenCode's TUI reads it (parseSlashHead): the slash first, the name up to the first white space, the rest as is
+  const head = /^\/(\S+)(?:\s([\s\S]*))?$/u.exec(text);
   if (!head || head[1] !== command.invocations[0]!.name) return null;
   const [, name, argument = ""] = head as unknown as [string, string, string | undefined];
-  if (name === "compact") return argument === "" ? { agent: "opencode", kind: "compact" } : null;
+  if (name === "compact") return argument.trim() === "" ? { agent: "opencode", kind: "compact" } : null;
   return openCodeTuiCommand(name) ? null : { agent: "opencode", kind: "command", name, text: argument };
 }
 
@@ -32,17 +34,18 @@ export interface DataSent { at: number; ran: boolean }
  * Sends a routed command through the pane's own agent session. Null when nothing reached the agent (no verified
  * session, the connection never opened, or a refusal before anything ran): the caller types it. Throws when the
  * request may have run without an answer, or ran and failed, so the command is not typed again.
- * `beforeWrite` asks the sender once more right before the request leaves and throws if it was revoked.
+ * `mayWrite` asks the sender once more right before the request's bytes leave; false sends nothing (null).
  */
-export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute, beforeWrite: () => void, openCodeStateDir?: string): Promise<DataSent | null> {
+export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute, mayWrite: () => boolean, openCodeStateDir?: string): Promise<DataSent | null> {
   if (process.platform === "win32") return null;
   const bound = await openCodePaneService(pane, undefined, openCodeStateDir);
-  if (!bound) return null;
-  beforeWrite();
+  // only the 2.x API measured; and only the session the pane shows now, not one an older check bound
+  if (!bound || !openCodePermissionsRead(bound.service.version) || bound.sessionID !== opencodeSessionId(pane)) return null;
+  if (opencodeSessionId(await paneGet(pane.pane_id)) !== bound.sessionID) return null;
   const at = Date.now();
   const answer = route.kind === "compact"
-    ? await compactOpenCodeSession(bound.service.config, bound.sessionID)
-    : await runOpenCodeCommand(bound.service.config, bound.sessionID, route.name, route.text);
+    ? await compactOpenCodeSession(bound.service.config, bound.sessionID, mayWrite)
+    : await runOpenCodeCommand(bound.service.config, bound.sessionID, route.name, route.text, mayWrite);
   if (answer === "unsent") return null;
   if (answer === "unknown") throw new HerdrError("timeout", "OpenCode did not answer the command sent to its session; check the terminal before sending it again");
   // 4xx: refused before anything ran (an unknown command is CommandNotFoundError, 404)

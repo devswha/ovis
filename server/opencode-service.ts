@@ -400,7 +400,8 @@ export type OpenCodeCommandAnswer = { status: number } | "unsent" | "unknown";
 /** Longer than a read's: a command's callback runs before its answer (session.ts command handler at 2.2.2). */
 const OPENCODE_COMMAND_TIMEOUT_MS = 5_000;
 
-function postCommand(config: OpenCodeServiceConfig, path: string, payload: unknown): Promise<OpenCodeCommandAnswer> {
+/** `mayWrite` is asked once the connection is open, right before the request's bytes go; false sends nothing. */
+function postCommand(config: OpenCodeServiceConfig, path: string, payload: unknown, mayWrite: () => boolean): Promise<OpenCodeCommandAnswer> {
   return new Promise((resolve) => {
     let connected = false;
     const req = request(new URL(path, config.baseUrl), {
@@ -412,23 +413,27 @@ function postCommand(config: OpenCodeServiceConfig, path: string, payload: unkno
       resolve({ status: response.statusCode ?? 0 });
       response.destroy();
     });
+    const write = (): void => {
+      if (!mayWrite()) { resolve("unsent"); req.destroy(); return; }
+      connected = true;
+      req.end(JSON.stringify(payload));
+    };
     req.once("socket", (socket) => {
-      if (socket.connecting) socket.once("connect", () => { connected = true; });
-      else connected = true;
+      if (socket.connecting) socket.once("connect", write);
+      else write();
     });
     req.once("error", () => resolve(connected ? "unknown" : "unsent"));
-    req.end(JSON.stringify(payload));
   });
 }
 
 /** A server command (`GET /api/command`) run in the session as the TUI's Enter runs it: `POST J/command`, steered (prompt/index.tsx at 2.2.2). */
-export function runOpenCodeCommand(config: OpenCodeServiceConfig, sessionID: string, name: string, text: string): Promise<OpenCodeCommandAnswer> {
-  return postCommand(config, `/api/session/${encodeURIComponent(sessionID)}/command`, { name, text, delivery: "steer" });
+export function runOpenCodeCommand(config: OpenCodeServiceConfig, sessionID: string, name: string, text: string, mayWrite: () => boolean): Promise<OpenCodeCommandAnswer> {
+  return postCommand(config, `/api/session/${encodeURIComponent(sessionID)}/command`, { name, text, delivery: "steer" }, mayWrite);
 }
 
 /** The TUI's `/compact`: `POST J/compact`, answered once the compaction is admitted, not done (routes/session/index.tsx at 2.2.2). */
-export function compactOpenCodeSession(config: OpenCodeServiceConfig, sessionID: string): Promise<OpenCodeCommandAnswer> {
-  return postCommand(config, `/api/session/${encodeURIComponent(sessionID)}/compact`, {});
+export function compactOpenCodeSession(config: OpenCodeServiceConfig, sessionID: string, mayWrite: () => boolean): Promise<OpenCodeCommandAnswer> {
+  return postCommand(config, `/api/session/${encodeURIComponent(sessionID)}/compact`, {}, mayWrite);
 }
 
 export function replyOpenCodeForm(

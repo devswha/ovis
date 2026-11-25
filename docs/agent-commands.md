@@ -41,10 +41,17 @@ types it otherwise. Only a send that is exactly one command, with no `@skill`, i
 | Agent | Command | Route | Result |
 | --- | --- | --- | --- |
 | OpenCode 2 | a server command (`GET /api/command`: `init`, `review`, `goal`, user commands), not one the TUI runs itself | `POST /api/session/{id}/command {name, text, delivery: "steer"}`, as the TUI's Enter does | the 204 answers once the command's callback ran: `native` evidence |
-| OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it; the compaction it ends in settles it |
+| OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it, so the send stays `accepted` as a typed `/compact` does |
 
-The pane's session must be the one its verified service holds (`openCodePaneService`), never on
-Windows. A 4xx answer (an unknown command is 404) or a connection that never opened types the
+The pane's session must be the one its verified OpenCode 2 service holds (`openCodePaneService`)
+and the one herdr still reports for the pane right before the request, never on Windows. The
+text is read as OpenCode's TUI reads it: the slash first, the name up to the first white space
+(it may hold `/`, as `team/check`), the rest as the argument; a name the TUI runs itself, or one
+of its aliases (`/resume`, `/effort`, `/usage`), is typed. The sender's right to type and the
+send's deadline are checked once the connection is open, right before the request's bytes go.
+Known limits: a message queued behind a working agent is typed when its turn comes, as before;
+and a model or agent picked in OpenCode's terminal but not yet sent there is not used, where the
+TUI's own Enter would commit it first. A 4xx answer (an unknown command is 404) or a connection that never opened types the
 command as before. No answer after the connection opened is `timeout`, and a 5xx is
 `command_failed`: neither is typed again, and the chat keeps the text.
 

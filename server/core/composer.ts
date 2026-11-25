@@ -626,26 +626,25 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         inTime();
         const route = pane && command ? commandDataRoute(command, text) : null;
         if (pane && command && route) {
-          const watch = startOpenCodeWatch(pane, command, options.openCodeStateDir);
-          const beforeWrite = (): void => {
-            inTime();
-            if (!mayType()) refusal(new HerdrError("cancelled", "The message's sender may no longer type into this pane"));
-            bindCommandProcess(paneId, command, seen, pane);
+          const sending = command;
+          const sendingTo = pane;
+          // asked as the request's bytes leave, as herdr asks at its write: a revoked sender or a spent deadline sends nothing
+          const mayWrite = (): boolean => {
+            try { inTime(); } catch (error) { refused = error; return false; }
+            if (!mayType()) return false;
+            bindCommandProcess(paneId, sending, seen, sendingTo);
+            return true;
           };
-          let viaData: Awaited<ReturnType<typeof sendCommandAsData>>;
-          try {
-            viaData = await sendCommandAsData(pane, route, beforeWrite, options.openCodeStateDir);
-          } catch (error) {
-            watch?.cancel();
-            throw error;
-          }
+          const viaData = await sendCommandAsData(pane, route, mayWrite, options.openCodeStateDir);
           if (viaData) {
             noteSubmitted(paneId, text, recorded(command), viaData.at);
-            if (viaData.ran) noteCommandEvidence(paneId, command.id, { kind: "native", at: Date.now() });
-            watch?.commit(command, [{ pasted: text }], []);
+            // evidence counts only after the send it belongs to (outcome.ts)
+            if (viaData.ran) noteCommandEvidence(paneId, command.id, { kind: "native", at: Math.max(Date.now(), viaData.at + 1) });
             return;
           }
-          watch?.cancel();
+          if (refused !== undefined) throw refused;
+          // nothing reached the agent: what follows types it as before
+          writeStarted = false;
           inTime();
         }
         // agent.prompt pastes the whole text, and OpenCode v2 leaves a pasted @skill unattached
