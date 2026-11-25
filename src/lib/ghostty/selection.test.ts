@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Terminal } from "@xterm/xterm";
 import { matchHerdrWidths } from "../terminalWidths.ts";
-import type { ScreenRows } from "../terminalScreen.ts";
+import { holdScreenRows, viewRows, type ScreenRows } from "../terminalScreen.ts";
 import { ghosttyRows } from "./screenRows.ts";
 import { selectionText, wordAt, wrappedRange } from "./selection.ts";
 import { GhosttyVt } from "./vt.ts";
@@ -55,4 +55,42 @@ test("a triple click and a copy take the same lines and text off either engine's
   });
   const { xterm, ghostty } = await both(20, 8, SCREEN, read);
   expect(ghostty).toEqual(xterm);
+});
+
+test("a wide glyph's second column is taken as xterm takes it: in a double click, a copy that starts there and a column copy", async () => {
+  const { ghostty, xterm } = await both(4, 4, "界 cat\r\na界BC\r\n0123\r\na界B\r\n0123", (rows) => ({
+    rightHalf: wordAt(rows, 4, SEPARATORS, [1, 0], false),
+    wrapped: wordAt(rows, 4, SEPARATORS, [2, 2], false),
+    fromSecondHalf: selectionText(rows, [1, 0], [5, 0], false, "\n"),
+    column: selectionText(rows, [2, 4], [4, 6], true, "\n"),
+  }));
+  expect(ghostty).toEqual(xterm);
+  // xterm.js 6: the word is the glyph; the word runs on over the wrap; a copy from the second column starts with a space
+  expect(ghostty).toEqual({ rightHalf: { start: 0, length: 2 }, wrapped: { start: 0, length: 5 }, fromSecondHalf: "  c", column: "23\n B\n23" });
+});
+
+test("a row xterm keeps in its history is read as the row as far above the screen in libghostty, wherever the view is", async () => {
+  const term = new Terminal({ cols: 80, rows: 3, scrollback: 50, allowProposedApi: true });
+  const vt = await GhosttyVt.create(80, 3);
+  try {
+    vt.setScrollback(50);
+    const stream = [1, 2, 3, 4, 5, 6].map((n) => String(n).repeat(100)).join("\r\n");
+    vt.write(stream);
+    await parse(term, stream);
+    term.resize(120, 3);
+    vt.resize(120, 3, 8, 16);
+    holdScreenRows(term, () => ghosttyRows(vt));
+    // the two engines lay out a widened screen differently: what the row reads is the row drawn there (libghostty's)
+    const read = (): string => viewRows(term).getLine(term.buffer.active.baseY)?.translateToString(true) ?? "";
+    const drawn = ghosttyRows(vt).getLine(ghosttyRows(vt).viewportY)?.translateToString(true);
+    const atBottom = read();
+    term.scrollToTop();
+    vt.scrollFromBottom(vt.history().scrollback);
+    expect(atBottom).toBe(drawn!);
+    expect(read()).toBe(atBottom);
+  } finally {
+    holdScreenRows(term, null);
+    vt.dispose();
+    term.dispose();
+  }
 });

@@ -5,7 +5,7 @@
  * selection takes the same cells and copies the same text whichever engine holds the rows.
  */
 import type { Terminal } from "@xterm/xterm";
-import type { ScreenLine, ScreenRows } from "../terminalScreen.ts";
+import { viewRows, type ScreenLine, type ScreenRows } from "../terminalScreen.ts";
 
 type Point = readonly [x: number, y: number];
 const NON_BREAKING_SPACE = /\u00a0/g;
@@ -45,7 +45,7 @@ export function wrappedRange(rows: ScreenRows, y: number): { first: number; last
 /** the string index of column `x` in the row's text, as xterm's _convertViewportColToCharacterIndex */
 function charIndexOf(line: ScreenLine, x: number): number {
   let index = x;
-  for (let i = 0; i < x; i++) {
+  for (let i = 0; i <= x; i++) {
     const length = chars(line, i).length;
     if (width(line, i) === 0) index--;
     else if (length > 1 && x !== i) index += length - 1;
@@ -125,19 +125,18 @@ interface XtermSelection {
 const COLUMN_MODE = 3;
 
 /**
- * Has xterm's selection read `rows` (libghostty's, null while it gives none) in place of its own buffer: the word a
+ * Has xterm's selection read libghostty's rows (terminalScreen.ts viewRows) in place of its own buffer: the word a
  * double click takes, the lines a triple click takes and the text a copy takes. xterm keeps the gestures and the
- * selection's cells; a cell of xterm's view is the cell drawn there (`rows` is lined up with it by the view's top).
+ * selection's cells.
  * Returns the undo.
  */
-export function holdSelection(term: Terminal, held: () => ScreenRows | null): () => void {
+export function holdSelection(term: Terminal): () => void {
   const service = (term as unknown as { _core?: { _selectionService?: XtermSelection } })._core?._selectionService;
   if (!service || typeof service._getWordAt !== "function" || typeof service._selectLineAt !== "function") return () => {};
+  // xterm's own buffer answers its own reads: only libghostty's rows are read here
   const view = (): ScreenRows | null => {
-    const rows = held();
-    if (!rows) return null;
-    const offset = rows.viewportY - term.buffer.active.viewportY;
-    return { ...rows, length: rows.length - offset, getLine: (y) => rows.getLine(y + offset) };
+    const rows = viewRows(term);
+    return rows === term.buffer.active ? null : rows;
   };
   const own = { getWordAt: service._getWordAt, selectLineAt: service._selectLineAt };
   service._getWordAt = function (coords, allowWhitespace, followAbove = true, followBelow = true) {

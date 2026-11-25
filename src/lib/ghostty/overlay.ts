@@ -593,7 +593,18 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
         getLine: (y) => {
           if (disposed) return term.buffer.active.getLine(y);
           try {
-            return rows.getLine(y);
+            const line = rows.getLine(y);
+            if (!line) return line;
+            // a line's styled cells are read when first asked: a failure there falls back the same way
+            return {
+              ...line,
+              getCell: (x, cell) => {
+                if (!disposed) {
+                  try { return line.getCell(x, cell); } catch (error) { readFailed(error); }
+                }
+                return term.buffer.active.getLine(y)?.getCell(x, cell as never);
+              },
+            };
           } catch (error) {
             readFailed(error);
             return term.buffer.active.getLine(y);
@@ -606,7 +617,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
   };
   holdScreenRows(term, heldRows);
-  const releaseSelection = holdSelection(term, heldRows);
+  const releaseSelection = holdSelection(term);
   const overlay: GhosttyOverlay = {
     dispose: () => {
       if (disposed) return;
