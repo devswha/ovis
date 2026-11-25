@@ -152,6 +152,6 @@ export function terminalFileLinks(buffer: ScreenRows, lineNumber: number, open: 
   return links;
 }
 
-export function terminalFileLinkProvider(screen: ScreenRows, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
-  return { provideLinks: (line, callback) => callback(terminalFileLinks(screen, line, open, bare)) };
+export function terminalFileLinkProvider(buffer: () => ScreenRows, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
+  return { provideLinks: (line, callback) => callback(terminalFileLinks(buffer(), line, open, bare)) };
 }

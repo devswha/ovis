@@ -49,6 +49,8 @@ export interface ScreenRows {
 type ScreenPoint = readonly [x: number, y: number];
 
 export interface TerminalScreen extends ScreenRows {
+  /** the rows of the screen up now (normal or alternate), held as they are for a read that walks them */
+  active(): ScreenRows;
   /** a full-screen program's alternate screen is up: it keeps no history */
   readonly alternate: boolean;
   getNullCell(): ScreenCell;
@@ -83,6 +85,7 @@ export function terminalScreen(term: Terminal): TerminalScreen {
     get cursorX() { return term.buffer.active.cursorX; },
     get cursorY() { return term.buffer.active.cursorY; },
     get alternate() { return term.buffer.active.type === "alternate"; },
+    active: () => term.buffer.active,
     getLine: (y) => term.buffer.active.getLine(y),
     getNullCell: () => term.buffer.active.getNullCell(),
     // xterm (5.5 and 6.0) keeps OSC 8 targets in its own link service with no public way to read them: this reads

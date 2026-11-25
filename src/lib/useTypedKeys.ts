@@ -81,7 +81,7 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     if (!term || !socket || !socket.connected) return;
     const now = Date.now();
     const key = stopKey(agent, () => {
-      const buffer = terminalScreen(term);
+      const buffer = terminalScreen(term).active();
       return Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "");
     }, hermesStopSentRef.current, hermesCtrlCAtRef.current, now);
     if (key === null) {

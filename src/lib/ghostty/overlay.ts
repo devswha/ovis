@@ -215,13 +215,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   };
 
   const renderService = xtermRenderService(term);
-  const buffer = terminalScreen(term);
-  const currentSelection = (): Selection | null => buffer.drawnSelection();
+  const reader = terminalScreen(term);
+  const currentSelection = (): Selection | null => reader.drawnSelection();
   const rowSelected: string[] = [];
   const paintRow = (y: number, runs: GhosttyRun[], selection: Selection | null): boolean => {
     const row = rowEls[y];
     if (!row) return false;
-    const selected = selectedColumns(selection, buffer.viewportY + y, term.cols);
+    const selected = selectedColumns(selection, reader.viewportY + y, term.cols);
     rowSelected[y] = String(selected);
     let html = "";
     for (const run of runs) html += runHtml(run, selected);
@@ -439,6 +439,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       fit();
     }
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
+    const buffer = reader.active();
     vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
     const selection = currentSelection();
     const changed = vt.frame((y, runs) => {

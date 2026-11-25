@@ -456,12 +456,12 @@ export function PaneTerminal({
     const current = kindRef.current;
     if (term === null || !readsInputRow(current)) return null;
     if (!frameGateRef.current.current) return "unknown";
-    return inputRowState(current, readScreen(terminalScreen(term), term.cols, term.rows));
+    return inputRowState(current, readScreen(terminalScreen(term).active(), term.cols, term.rows));
   }, []);
   const inputAtRest = useCallback((): boolean => {
     const term = termRef.current;
     if (term === null || agentRef.current !== "claude") return false;
-    const lines = readScreenLines(terminalScreen(term), term.rows);
+    const lines = readScreenLines(terminalScreen(term).active(), term.rows);
     return lines !== null && claudeMainAtRest(inputRowNow(), lines);
   }, [inputRowNow]);
   // The row as the send's receipt came, before the peek's own resize: the watch starts from it, since

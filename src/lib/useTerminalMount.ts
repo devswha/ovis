@@ -270,7 +270,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
-      term.registerLinkProvider(terminalFileLinkProvider(terminalScreen(term), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
+      term.registerLinkProvider(terminalFileLinkProvider(() => terminalScreen(term).active(), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
       term.open(host);
       // xterm turns autocorrect, autocapitalize and spellcheck off on its helper textarea; an Android
       // keyboard still shows its word strip there unless the field also says autocomplete="off",
@@ -465,8 +465,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (!shouldOpenInPanel(event, target.url)) openExternal(target.url, "link", reuseTab(event));
             return true;
           }
-          const buffer = terminalScreen(term);
-          const uri = buffer.hyperlinkAt(buffer.viewportY + target.row, target.col);
+          const buffer = terminalScreen(term).active();
+          const uri = terminalScreen(term).hyperlinkAt(buffer.viewportY + target.row, target.col);
           if (uri !== null && (isWebLink(uri) || fileUriPath(uri) !== null)) {
             openHyperlink(event, uri);
             return true;
