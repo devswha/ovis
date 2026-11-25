@@ -1203,7 +1203,9 @@ waits, failed, or could not start within its minute): it may be a device the acc
 this PC has not read yet. It is `held` with `catching_up` to a client that knows the account codes,
 which asks again and gets in by the row a read brings, only while a read can come (not with the
 account service off, nor while the PC's waiting records do not read) and for 3 minutes from the
-id's first ask at most. Once such a read finished without the key, or after those 3 minutes, it is
+id's first ask at most. A read here is a pull that read the account's rows whole (or the service
+reads none, `step2_off`): one whose snapshot did not commit is none. Once such a read finished
+without the key, or after those 3 minutes, it is
 refused (`auth_failed`) as before until a read brings its row or the PC forgets the id (10 minutes;
 it remembers 512 ids, and answers a new one as before while they are all live), and so is every
 unknown key from another client, on a PC that fails closed and on a PC in no account. This changes

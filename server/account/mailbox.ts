@@ -358,10 +358,12 @@ export class AccountMailbox {
       const began = Date.now();
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
-      const adds = applied + (await this.readSnapshotNow(readmission, this.drainedListing)).adds;
-      // a pull that ended with no error: what the account let in by then has its row here, as far as such a pull reads
-      // (one that read only part, or nothing where there was nothing to read, refuses earlier: it never lets a key in)
-      if (this.error === null) this.readBegan = began;
+      const read = await this.readSnapshotNow(readmission, this.drainedListing);
+      const adds = applied + read.adds;
+      // a pull that ended with no error and read the account's rows whole: what the account let in by then has its row
+      // here. A snapshot that did not commit (a page that failed, a stale answer) is no such read, unless the service
+      // reads no rows by its own word (step2_off); nothing to read counts as read. A read only refuses: it lets no key in
+      if (this.error === null && read.whole) this.readBegan = began;
       await this.sendCompletion();
       return adds;
     }).finally(() => { this.pulling = undefined; });
@@ -629,8 +631,9 @@ export class AccountMailbox {
   }
 
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
-  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number }> {
-    const empty = { outcome: null, adds: 0 };
+  /** `whole`: the account's rows were read whole, or there were none to read, or the service reads none (step2_off): what unreadKey may rest on. */
+  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number; whole: boolean }> {
+    const empty = { outcome: null, adds: 0, whole: true };
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
     const account = snapshot.account();
@@ -699,7 +702,7 @@ export class AccountMailbox {
       // device's link just bound is listed by that device after its link: until then, for a bounded time, it is not yet listed
       if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
       else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string") devices.pinServiceListing(linked, named);
-      return { outcome, adds };
+      return { outcome, adds, whole: outcome.committed || step2Off };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       return empty;
