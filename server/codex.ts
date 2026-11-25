@@ -2602,6 +2602,7 @@ async function everSaid(segments: readonly HistorySegment[]): Promise<{ said: st
  * then maybe " · " and a message; or all of it cut with "…" where the line is narrow.
  */
 const STATUS_ROW = /^[\u2022\u25e6] (?:.* \((?:\d+h )?(?:\d+m )?\d+s(?: \u2022 .* to interrupt)?\)(?: \u00b7 .*)?|.*\u2026)$/;
+const MODEL_CHANGE_ROW = /^\u2022 Model changed to [\w.-]+(?: [\w.-]+)?$/;
 
 /**
  * What a Codex TUI's screen shows of its conversation since its last header, answers only: each
@@ -2620,7 +2621,10 @@ function shownAnswers(screen: string): string {
     if (line.includes("OpenAI Codex (v")) {
       kept = [];
       answer = false;
-    } else if (/^\S/.test(line)) answer = line.startsWith("\u2022") && !STATUS_ROW.test(line.trimEnd()) && !CODEX_TOOL_CALL.test(line);
+    } else if (/^\S/.test(line)) {
+      const row = line.trimEnd();
+      answer = line.startsWith("\u2022") && !STATUS_ROW.test(row) && !MODEL_CHANGE_ROW.test(row) && !CODEX_TOOL_CALL.test(line);
+    }
     else if (/^\s+(?:[\u2514\u21b3](?:\s|$)|answer: |note: )/.test(line)) answer = false;
     if (answer) kept.push(line);
   }
