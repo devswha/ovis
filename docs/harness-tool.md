@@ -67,9 +67,10 @@ match instead.
 Settings → Agents → **Let agents call other agents** defaults to `start` on this PC's herdr-core
 (not on Windows). The default policy includes every harness with an ACP launch: Claude Code, Codex,
 Copilot, OpenCode, agy and GJC. This does not install adapters or bypass launch checks.
-**Agents they may call** shows the installed agents eligible for unverified parents; deselect any
-you do not want called. Existing saved policies, including `view` and `off`, do not change. A
-driving device can set the policy with `PUT /api/preferences`, for example:
+**Agents they may call** shows installed agents with an ACP launch; deselect any you do not want
+called. Appearing in the list does not guarantee a start. Existing saved policies, including
+`view` and `off`, do not change. A driving device can set the policy with `PUT /api/preferences`,
+for example:
 
 ```json
 {"settings":{"agentHarnessTool":{"level":"start","depth":1,"harnesses":["opencode"]}}}

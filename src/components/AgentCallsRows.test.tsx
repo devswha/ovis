@@ -54,10 +54,10 @@ describe("Settings > Agents > Let agents call other agents", () => {
   const toggle = () => renderer!.root.findByProps({ role: "switch" });
   const chips = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "settings-chip");
 
-  it("starts on with the installed, eligible agent already selected", () => {
+  it("starts on with installed ACP agents already selected", () => {
     mount();
     expect(toggle().props["aria-checked"]).toBe(true);
-    expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["OpenCode", true]]);
+    expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["OpenCode", true], ["Claude Code", true]]);
   });
 
   it("writes this PC's grant straight to its server when an agent is unticked and delegation is turned off", async () => {
@@ -73,14 +73,19 @@ describe("Settings > Agents > Let agents call other agents", () => {
     expect(chips()).toHaveLength(0);
   });
 
-  it("offers no OpenCode whose version has no ask-every-time launch", () => {
-    mount(false, [agent("opencode", "OpenCode", true, "2.2.3"), agent("claude", "Claude Code", true, "2.1.330")]);
-    expect(chips().map((chip) => chip.children.join(""))).toEqual(["Claude Code"]);
+  it("offers installed ACP agents even at unknown versions but omits agents without an ACP launch", () => {
+    mount(false, [agent("opencode", "OpenCode", true, "2.2.3"), agent("claude", "Claude Code", true), agent("pi", "pi", true)]);
+    expect(chips().map((chip) => chip.children.join(""))).toEqual(["OpenCode", "Claude Code"]);
   });
 
-  it("offers Claude Code at the version its ask-every-time launch was run against", () => {
-    mount(false, [agent("claude", "Claude Code", true, "2.1.330")]);
-    expect(chips().map((chip) => chip.children.join(""))).toEqual(["Claude Code"]);
+  it("lets a person deselect GJC when it is installed", async () => {
+    mount(false, [agent("gjc", "GJC", true, "0.18.12")]);
+    const gjc = chips().find((chip) => chip.children.join("") === "GJC");
+    if (!gjc) throw new Error("Expected a GJC chip");
+    expect(gjc.props["aria-pressed"]).toBe(true);
+    await act(async () => { gjc.props.onClick(); });
+    expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["GJC", false]]);
+    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy"] }]);
   });
 
   it("names the agents whose own allow rules still apply to them when called, and only those", () => {
