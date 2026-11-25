@@ -66,6 +66,10 @@ export type PaneContext = { used: number; window: number | null };
 export type HerdrPane = PaneInfo & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
+  /** Stop on this pane cancels a keeper session rather than interrupting a TUI. */
+  acp_child?: true;
+  /** A person stopped this ACP child: the agent that started it gets no new turn until a person hands it back (POST /api/pane/turn/release with these). */
+  acp_hold?: AcpHold;
   own_tab?: true;
   agent_kind?: string;
   agent_message?: string;
@@ -628,6 +632,10 @@ export interface RelayStatus {
    * with `x-ovis-no-account-only`). Absent from an older server.
    */
   readonly account_named?: boolean;
+  /** This PC's relay ID (null before it has one), to this PC's own window and CLI only; absent elsewhere and from an older server. */
+  readonly server_id?: string | null;
+  /** The account named for this PC (`account_named`), to its own window and CLI only, as `server_id`. */
+  readonly relay_account?: string | null;
   /**
    * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
    * listened on now (none while the relay is off). Absent from a server without them.
@@ -721,6 +729,8 @@ export type ConversationPart =
     kind: "tool"; name: string; summary: string; input: string; output: string; error?: boolean;
     /** Hermes could not load a tool-call list whose arguments exceeded its page limit. */
     arguments_omitted?: true;
+    /** File changes reported by ACP, separate from the call arguments and text output. */
+    edits?: { path: string; before: string; after: string }[];
     skill?: SkillActivity;
     /** set when `output` was cut: an opaque ref for GET /api/pane/conversation/tool-output, and the whole output's length */
     output_ref?: string; output_size?: number;
@@ -798,6 +808,11 @@ export interface ConversationMetadata {
    * `openai-codex`): set by a model change and by each answer, absent when none is named.
    */
   provider?: string;
+  /**
+   * Claude Code's permission mode (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), as its
+   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it.
+   */
+  permission_mode?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
@@ -838,6 +853,9 @@ export interface OmpBtwHistory {
 }
 
 /** How far a pane's plan has got, for the sidebar: `current` names the step in progress. */
+/** The keeper's hold a person's Stop set on an ACP child, as the release route takes it back. */
+export interface AcpHold { child_id: string; generation: number }
+
 export interface PlanSummary {
   done: number;
   total: number;
@@ -859,7 +877,7 @@ export interface ConversationResponse {
    * fallback and from older bridges. A 200 and a 304 also carry it as the `x-server-time` header.
    */
   server_time?: string;
-  source: "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "acp" | "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -962,6 +980,8 @@ export interface SlashCommand {
   forms?: CommandForm[];
   /** `terminal`: only works in the terminal; `agent-hidden`: the agent's own menu hides it, it still sends when typed */
   visibility?: "offered" | "terminal" | "agent-hidden";
+  /** Omit this ordinary live control from Chat suggestions without changing how typed commands run. */
+  readonly chatPaletteHidden?: true;
   /** where this row came from, and whether it was checked against the running agent version */
   provenance?: {
     /** how the row was found: `scan` read from disk, `static` shipped with the bridge, `native` asked of the agent */
@@ -1293,8 +1313,12 @@ export type ClientMessage =
    * `agent_only` (feature "agent-only"): the message is for an agent alone (a chat message carrying comments on
    * a reply, #511, whose `> quote` lines a shell would read as redirects). The server refuses it with
    * agent_not_ready, typing nothing, when no agent is in front of the pane as it would type it; a queued or held
-   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery. */
-  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true }
+   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery.
+   * `command_key`: UUID of a draft send, kept across manual retries until edited or acknowledged.
+   * The WebSocket upgrade's optional `receipt_resume_id` identifies the browser even before attach.
+   * A recent acceptance for this pane, device and browser answers `replayed`; an uncertain result
+   * repeats its refusal. Neither writes again. A replayed pending item is a copy, not a lease. */
+  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true; command_key?: string }
   /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
    * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore
    * this optional field and retain their existing discard behaviour, without this protection.
@@ -1439,7 +1463,7 @@ export type ServerMessage =
    * `sending_at`: on an ok for a message this request typed (an immediate send, or one with
    * `typed_now`), the PC's clock (ISO 8601) before it typed anything, as a queued row's `sending_at`:
    * the message's turn is written after it on that clock. An older server never sends it. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; replayed?: true; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes

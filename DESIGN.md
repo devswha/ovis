@@ -2976,8 +2976,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Pane actions are not tab actions. Up to 768px, where a split tab shows one pane at a time, the
   tab's menu lists the tab's panes first, the open one marked current, over a hairline, each pane
   once (the pane's own actions, which carry the panes where the row counts as hidden, add no
-  second list). There a tap on the open split tab opens that menu, in the row and in the header
-  alike, and the open split tab is that pane: it wears the pane's agent mark (none for a shell) and
+  second list). A pane picked there while a pane's field held the typing (the keyboard up) takes
+  the typing, its field focused inside the tap, so the keyboard comes back on the pane now shown
+  (herdr's TUI sends the next key to the pane its focus moves to; a zoomed tab keeps the typing on
+  its zoomed pane, the one still in view).
+  There a tap on the open split tab opens that menu, in the row and in the header alike, and the
+  open split tab is that pane: it wears the pane's agent mark (none for a shell) and
   its name (the pane's agent or first-message name, else its title), unless someone named the tab,
   whose name stays, and its place among them (`1/2`, heard as "Pane 1 of 2") follows its name, in the
   row as in the header; in the row under the header that name is cut with an ellipsis at
@@ -3017,7 +3021,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The snapshot's tab order is authoritative: a tab's stable `number` is not its place. A drop calls
   `tab.move` with an insertion boundary before removal, within that workspace and PC. The visible
   order changes with herdr's snapshot, keeping selection and keyboard focus; a refusal shows an
-  inline error. One request waits for acknowledgement before another move is accepted. Escape,
+  inline error. One request waits for acknowledgement before another move is accepted. Dragging a
+  one-pane tab out of the strip onto another workspace's sidebar row on the same PC outlines that
+  row (`--accent` on `--accent-tint`, hiding `SplitDropPreview` while aimed at a row) and moves the
+  tab there via `POST /api/tab/move-to-workspace`, matching the tab menu's **Move to workspace…**
+  guards (no highlight and no move for the tab's own workspace, a split tab, a watching device, a
+  PC whose layout Ovis does not keep, or another PC); it follows VS Code and Zed dragging an editor
+  tab across groups and Chrome/Firefox dragging a tab across windows (#4458). Escape,
   a tab-list change or leaving the workspace cancels an unsent drag. Touch keeps native sideways
   scrolling and uses Move tab left/right in the selected tab's menu; Alt+Shift+Left/Right provides
   the same adjacent moves only while a tab has keyboard focus.
@@ -3659,6 +3669,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   look and take a `--pointer-target` hit area through an invisible `::before` expander.
 - A message carries no rewind action: an agent's own `/rewind` (Claude Code, grok, Antigravity) is run in the pane's terminal, and
   Chat follows the native transcript's active branch once the agent records it; it never guesses a restore from a dialog's wording.
+- A stop in Claude Code (Esc) is one quiet line where the turn stopped, **Stopped** and its time
+  (`.chat-stopped`, drawn as a goal's wait is: `--text-dim` `--fs-sm` between hairlines), not a bubble.
+  Claude Code records a stop in the person's seat, `[Request interrupted by user for tool use]` after
+  the call it refused or `[Request interrupted by user]`; nobody typed it, and it starts no turn. It
+  follows Claude Code's own terminal, which draws a stop as a dim **Interrupted** line rather than as
+  the person's message; the word is the chat's own (**Stopped on an error**).
 - A terminal-only command sent from Chat is one quiet right-aligned row, not a bubble:
   `SquareTerminal`, the command in mono `--fs-sm`, **Ran in terminal** in `--text-dim`,
   and one **Open Terminal** text button, which opens a terminal peek over the chat (see the

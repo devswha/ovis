@@ -9,6 +9,7 @@ import type { RemovalEvidence } from "./removal-evidence.ts";
 import { rowDrop } from "./row-drop-evidence.ts";
 import { expiresAt } from "./row-expiry.ts";
 import type { Readmission } from "./readmission.ts";
+import type { WitnessedRow } from "./witness.ts";
 import { firstDevice, holdSecondsLeft, JOIN_HOLD_MS, mayEndHold, type Sayer } from "./join-hold.ts";
 import { CLEARED, loadAccountDevices, type DevicesFile, type AccountRow, type AccountRowPorts, type AccountRowSource, type AccessAnswer, type DropReason, type JournalEntry, type ListCommit } from "./account-device-state.ts";
 export type { AccountRow, AccountRowPorts, AccountRowSource, AccessAnswer, DropReason, JournalEntry, ListCommit } from "./account-device-state.ts";
@@ -165,6 +166,22 @@ export class AccountDeviceStore implements AccountRowSource {
     this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === id ? { ...candidate, last_signin_day: today } : candidate) });
   }
 
+  /**
+   * Read only, for the record of how long each key has been let in (witness.ts): every row that is out of its hold and
+   * stands, and whether it lets its key in right now, as `access` would. A row that waits for a whole read stands and
+   * lets nobody in, unless a release a person at this PC gave lets that row in meanwhile; with Step 2 off here no row
+   * does. null for a file that cannot be used, which is no word that its rows are gone.
+   */
+  witnessed(): readonly WitnessedRow[] | null {
+    if (this.error !== null) return null;
+    const now = this.ports.now();
+    const off = this.ports.serviceStep2Off?.() === true;
+    return this.file.devices.filter((row) => row.state === "live" && expiresAt(row) > now).map((row) => {
+      const seen = row.last_signin_day === null ? NaN : Date.parse(row.last_signin_day);
+      return { key: row.key, lets: !off && (!this.waiting.has(row.id) || this.release(row) !== null), seen: Number.isFinite(seen) ? Math.floor(seen / 1000) : null };
+    });
+  }
+
   /** P9: the days this PC saw each row used, for page 0 of the next read; an admission alone is no use. */
   usedReport(): UsedReport {
     return this.rows().flatMap((row) => row.state !== "expired" && row.last_signin_day !== null ? [{ key: row.key, day: row.last_signin_day }] : []);
@@ -243,21 +260,26 @@ export class AccountDeviceStore implements AccountRowSource {
     }
   }
 
-  /** Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in. */
-  commitList(list: ListCommit, readmission?: Readmission): { admitted: string[]; dropped: string[] } {
+  /**
+   * Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in.
+   * `settled`: the keys whose coming in is no news to a person at this PC, who has just taken the list as the
+   * account's (the PC pinned its signed list) or let that very device in here: they come in with no join hold.
+   */
+  commitList(list: ListCommit, readmission?: Readmission, settled: (key: string) => boolean = () => false): { admitted: string[]; dropped: string[] } {
     this.admittedNow = [];
-    try { return this.commit(list, readmission); } finally {
+    try { return this.commit(list, readmission, settled); } finally {
       const rows = this.admittedNow;
       this.admittedNow = null;
       this.tellAdmitted(rows);
     }
   }
 
-  private commit(list: ListCommit, readmission?: Readmission): { admitted: string[]; dropped: string[] } {
+  private commit(list: ListCommit, readmission: Readmission | undefined, settled: (key: string) => boolean): { admitted: string[]; dropped: string[] } {
     this.usable();
     const removed = new Set(list.removed.map((gone) => gone.key));
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
     const sameAccount = this.file.account === null || this.file.account === list.account;
+    if (sameAccount) this.move(list.moved ?? [], eligible);
     const stillListed = new Set(list.devices.map(entry => entry.key));
     const leaving = this.file.devices.filter(row => !sameAccount || removed.has(row.key) ||
       (!eligible.has(row.key) && !(row.state === "expired" && stillListed.has(row.key))));
@@ -282,12 +304,17 @@ export class AccountDeviceStore implements AccountRowSource {
     this.republish();
     const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
-      if (!this.ports.hasNoticeSlot()) break;
+      // whoever comes in new, or again, gets a notice; with none to give nobody does
+      const slot = this.ports.hasNoticeSlot();
       const existing = this.file.devices.find((row) => row.key === entry.key);
       if (existing) {
-        if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        if (slot && sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        // a person has just let this very key in: a row a read made for it a moment before waits no longer either.
+        // Its row is there already and takes no notice, so this holds while no notice can be made too
+        else if (existing.state === "hold" && settled(entry.key)) this.goLive(existing.id);
         continue;
       }
+      if (!slot) continue;
       // This new key needs a slot. A later proved replacement in the same list does not.
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
@@ -296,9 +323,28 @@ export class AccountDeviceStore implements AccountRowSource {
         key: entry.key, listKeys, removedKeys: [...removed], othersEver: first.othersEver(), firstListKey: first.listKey(),
         otherRows: first.otherRows() || this.file.devices.some((row) => row.key !== entry.key),
       });
-      if (this.admit(entry, bypass)) admitted.push(entry.key);
+      if (this.admit(entry, bypass || settled(entry.key))) admitted.push(entry.key);
     }
     return { admitted, dropped };
+  }
+
+  /**
+   * A device that handed its place on to another key of its own keeps its row here, under the key it is in by now: the
+   * same name, age and admission, with no new hold and no notice, as it is the same device; a hold it is still in goes on. Its sessions under the key it
+   * handed over end as a row that changed under them, and it signs in again with the other.
+   */
+  private move(moved: NonNullable<ListCommit["moved"]>, eligible: ReadonlyMap<string, SnapshotDevice>): void {
+    for (const { from, to } of moved) {
+      const row = this.file.devices.find((candidate) => candidate.key === from && candidate.state !== "expired");
+      if (row === undefined || !eligible.has(to) || this.file.devices.some((candidate) => candidate.key === to)) continue;
+      if (this.ports.heldByDevicesJson(to) || !this.admits(to)) continue;
+      // while the row still stands under its old id, so each of its sessions ends as `auth_changed`
+      this.ports.closeSessions(row.id, "list");
+      const id = accountDeviceId(this.serverId, to);
+      // the same device: a hold it is still in goes on, and so does a wait for a whole read, which this commit then ends
+      this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate === row ? { ...row, id, key: to } : candidate) });
+      if (this.waiting.delete(row.id)) this.waiting.add(id);
+    }
   }
 
   /** The PC's account was cleared or its relay identity reset (T44): every account-joined row goes. */

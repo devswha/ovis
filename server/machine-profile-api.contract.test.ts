@@ -547,7 +547,7 @@ function shippedRoutes(): string[] {
   }
   return [...paths].sort();
 }
-const NO_HERDR = /^\/api\/(?:account|relay|devices|push|alerts|auth|telemetry|preferences|seen|system|fonts|updates|voice|memory|cliproxy|access|health|connection-diagnostics|info|event|herdr-ui|usage(?!\/login))(?:\/|$)/;
+const NO_HERDR = /^\/api\/(?:account|relay|devices|push|alerts|auth|telemetry|preferences|seen|system|fonts|updates|voice|memory|agent-tools|cliproxy|access|health|connection-diagnostics|info|event|herdr-ui|usage(?!\/login))(?:\/|$)/;
 const ids = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", target: "w1:p1", target_pane_id: "w1:p2", source: "recent", text: "x", keys: "Enter",
   name: "x", label: "x", agent_id: "x", plugin_id: "x", action_id: "x", branch: "x", query: "x", q: "x", ref: "x", id: "x", provider: "claude" };
 const walkQuery = `?${new URLSearchParams({ ...ids, offset: "1", index: "0", start: "0", end: "1" }).toString()}`;
@@ -555,6 +555,8 @@ const walkBody = { ...ids, keys: ["Enter"], direction: "right", cols: 80, rows: 
 const OWN: Record<string, Record<string, string>> = {
   "/api/sessions/history": { agent: "claude" }, "/api/pane/find": { direction: "forward" },
   "/api/pane/move": { side: "right" },
+  "/api/worktree/create-checked": { expected_core: "c1", expected_repo: "/repo/.git" },
+  "/api/worktree/remove-checked": { expected_core: "c1", expected_repo: "/repo/.git", expected_checkout: "/checkout", expected_git_id: "1:2:3" },
 };
 const NOT_WALKED = /^(?:(?:GET|POST|PUT) \/api\/(?:usage\/login|agent-catalog\/(?:install|sign-in)|fs\/favicon|workspace\/directories|agent\/commands)|PUT \/api\/fs\/text|POST \/api\/(?:layout\/ratio|pane\/image|pane\/prompt\/answer|pane\/scroll|pane\/swap|tab\/move|workspace\/move|workspace\/pr\/merge|worktree\/create|worktree\/open|tab\/create|workspace\/create|sessions\/resume)|(?:GET|POST|PUT) \/api\/pane\/(?:selection|conversation\/image)|GET \/api\/plugin\/action)(?:$|\?|\/)/;
 
@@ -575,6 +577,15 @@ async function walk(ask: (path: string, init: RequestInit) => Promise<Response>,
   return answers;
 }
 const answeredFirst = (answer: { status: number; code: string | null }) => answer.code === "machine_profile" || answer.code === "not_found" && answer.status === 404 || answer.code === "method_not_allowed" || answer.status === 405;
+
+it("does not expose keeper turn controls on a profile without an ACP registry", async () => {
+  const { stateDir } = profileServer();
+  for (const action of ["cancel", "release"]) {
+    const response = await owner(stateDir, `/api/pane/turn/${action}`, { method: "POST", headers: { ...headers, origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify({ pane_id: "t1" }) });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+  }
+});
 
 it.each(["refusing every call", "answering only its snapshot and panes", "not listening"])("answers every failed herdr call with its own words while herdr is %s", async (mode) => {
   const dir = state();

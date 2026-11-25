@@ -1,3 +1,4 @@
+import type { AgentToolPanes } from "./harness-tool.ts";
 import type { AgentRowTokens } from "./pane-tokens.ts";
 import type { SharedPreferences } from "./preferences.ts";
 import type { HealthAuth, SecuritySummary, ServerMessage, SessionSnapshot } from "./protocol.ts";
@@ -355,8 +356,9 @@ export interface AccountAddRelay { phase: "off" | "connecting" | "online" | "err
 /**
  * POST /api/account/ssh-add's answer: that PC is in `account`; `relay` is null where its Ovis did not say (one from before
  * this), or where the take's answer was lost and a second inspect found that PC in the account (`unanswered`).
+ * `list_joined`: the account keeps a signed list, and that PC joined it by this add (not one the list held already).
  */
-export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null; unanswered?: true }
+export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null; unanswered?: true; list_joined?: true }
 
 const RELAY_PHASES: readonly unknown[] = ["off", "connecting", "online", "error"];
 const RELAY_BLOCKS: readonly unknown[] = ["serve_only", "identity_unreadable", null];
@@ -444,6 +446,20 @@ export interface DevicePairedSeenEvent {
 /** What a comparison asks for (docs/account.md, "Negotiation"): pairing this PC only, or joining the account. */
 export type PairingIntent = "pc" | "account";
 /**
+ * Where an add of this PC to an account that keeps a signed list stands (GET /api/account/list/add, this PC's own
+ * window and CLI alone; server/account/list-add.ts `AddState` answers it). `number`: `digits` are on this PC's
+ * screen until `until`, and the person says here whether the device adding the PC shows the same
+ * (POST /api/account/list/add/confirm `{ digits, run }`, or `/cancel` `{ run }`).
+ */
+export type ListAddState =
+  | { readonly state: "none" | "replaced" }
+  | { readonly state: "no_list"; readonly account: string }
+  | { readonly state: "waiting" | "confirmed"; readonly run: string; readonly account: string; readonly list: string; readonly until: string }
+  | { readonly state: "number"; readonly run: string; readonly account: string; readonly list: string; readonly digits: string; readonly until: string }
+  | { readonly state: "added"; readonly run: string; readonly account: string; readonly list: string }
+  | { readonly state: "ended"; readonly run: string; readonly account: string; readonly why: string };
+
+/**
  * An account join taken outside the pairing window, as this PC's own window lists it (GET /api/relay/joins): never its
  * digits, which the owner types from the new device's screen (POST /api/relay/join). `digits`: a first join, asked while
  * the PC had no member to approve it, which the owner compares and allows or declines by a tap there.
@@ -454,6 +470,8 @@ export interface OwnJoinRequest {
   asked_at: string;
   left_ms: number;
   digits?: string;
+  /** The join is let in by the account's signed list: an approval here is received at once, and the device is in only once its entry is in the list. */
+  list?: true;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its
@@ -500,6 +518,17 @@ export interface RemotePairingRequest {
   vouched?: true;
   /** Derived by the receiving PC only after the joining server answered its channel-bound challenge. */
   proven_server_id?: string;
+  /**
+   * The join brought the new device's card for the account's signed list: the PC lets it in by an entry of the list,
+   * which its approver signs and places, never by the approval alone. Absent from an older server, or when false.
+   */
+  list?: true;
+  /**
+   * The new device's person said the digits match (its PAIR_CONFIRM reached the PC). For a join into the list the
+   * approver signs the device's entry only once this is true, so a device that gives up before it is nobody's
+   * member. Absent from an older server, or while it has not confirmed.
+   */
+  confirmed?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }
@@ -514,7 +543,10 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   | DeviceRemovedEvent
   | RelayPairingsEvent
   | RemotePairingsEvent
-  | PendingRedemptionsEvent;
+  | PendingRedemptionsEvent
+  | AgentToolPanesEvent;
+/** Panes hc started that wait for, or have, this PC's owner's word on the agent tool: his windows alone, when one opens and at each change. */
+export type AgentToolPanesEvent = { type: "agent-tool-panes" } & AgentToolPanes;
 /**
  * A device that redeemed a code and proved its key, waiting for this PC's screen to approve that key (device table S31,
  * T71). `label` is what the device says about itself; `fingerprint` is what its own screen shows for the same key.
