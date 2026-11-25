@@ -1705,8 +1705,8 @@ this line in the next 15 minutes can add a PC to your account without asking you
    For an invite a PC joins with by itself the current epoch's key is wrapped to the invite's key,
    so the PC that joins reads the list's names.
 4. Only when the device's own copy shows the entry is the line shown, with the minutes left and
-   the one line an agent runs on the PC (`--join-file ~/ovis-invite.txt --account <the account's
-   id>`). Where the service or the list refuses, nothing is shown, the service's invite is ended
+   the one line an agent runs on the PC: the one-line installer, then `ovis join --invite-file
+   ~/ovis-invite.txt --account <the account's id>` (the installer takes no invite itself). Where the service or the list refuses, nothing is shown, the service's invite is ended
    again, and the key pair is gone. Where the entry went out and whether it was placed is not
    known (no answer and no read of the log since, or a request the service kept asking for
    again), nothing is ended and the line is not dropped: the page keeps it in memory for its life
@@ -1768,8 +1768,10 @@ under a name they choose, for the invite's fifteen minutes, and the press is the
 of that name. A lying account service cannot: it never has the line. An invite a PC joins with by
 itself needs no card at all.
 
-The account service and the PC do not carry `invite` and `invite_proof` with a post yet: until
-they do, a PC that joined with such an invite is added with the number.
+The PC posts `invite` and `invite_proof` with its keys when it joined by a line that waits for a
+person, and the repository's account service fake carries them. The one-press Add is offered only
+where a post carries them: for a PC, or an account service, that does not, a PC that joined with
+such an invite is added with the number, like any PC that asks.
 
 ### What a pinned PC asks of the app
 

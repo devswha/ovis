@@ -90,6 +90,8 @@ type Placing = {
    * compared number (an invite that is over refuses nothing then); the one-press Add of an invited PC needs it open.
    */
   readonly invite?: { readonly key: string; readonly optional: boolean };
+  /** the invite the one-press Add needed ended after the admission: Try again cannot place it, so only No is offered */
+  readonly ended?: true;
 };
 
 /** A card held by the parent while its Add places the PC (`admitted`: the account took it already). */
@@ -264,7 +266,12 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
   }, [session.account, pc, now, reread]);
   useEffect(() => {
     if (invited === null) return;
-    const timer = setTimeout(() => setReread((count) => count + 1), Math.max(0, invited.exp * 1000 - now()) + 1_000);
+    // at the invite's end by this device's clock the card stops offering the one press, whatever a read of the posts
+    // answers then; and it reads them again
+    const timer = setTimeout(() => {
+      setInvited((current) => (current !== null && now() >= current.exp * 1000 ? null : current));
+      setReread((count) => count + 1);
+    }, Math.max(0, invited.exp * 1000 - now()) + 1_000);
     return () => clearTimeout(timer);
   }, [invited, now]);
   // the numbers this card asked for: NUMBER_TRIES at most, Not the same and a number that ran out included
@@ -380,7 +387,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
    * not take its entry, the card stays (held by the parent, onHold) and says so, and Try again goes again with the same card and member key:
    * the request kept for it is sent again, or signed anew on a new head. Nothing is admitted a second time.
    */
-  const place = async (shown: Placing): Promise<void> => {
+  const place = async (shown: Placing, until?: number): Promise<void> => {
     const list = pageAccountList();
     if (list === null) return;
     let admitted = placing !== null;
@@ -388,6 +395,9 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     // the service's id of the invite this request ends, found before its end is placed
     const serviceId = invite === undefined ? null : await serviceInviteId(list, invite.key);
     // held by the parent before the admission: a read of the account's PCs while the entry goes out keeps the card
+    // a number lives so long: checked again after the last lookup, right before the admission (a retry of a PC the
+    // account admitted already goes on)
+    if (!admitted && until !== undefined && now() >= until) { setNumber(null); setProblem(numberEnded(t, tries)); return; }
     onHold(shown, admitted);
     const outcome = await addPostedPc(list, shown.post, listNames(accountLabel(pc.label), pc.asking?.os ?? null), {
       expect: { account: session.account, list: shown.post.list }, member: shown.member,
@@ -404,6 +414,8 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
     // nothing admitted: the card is the directory's again; admitted, it stays with Try again (the parent holds it)
     if (!outcome.added && !admitted) onRelease();
     if (!outcome.added && admitted) setNumber(null);
+    // the invite ended after the admission: the card stays with No alone (Try again would need that very invite)
+    if (!outcome.added && admitted && outcome.why === "invite_ended") onHold({ ...shown, ended: true }, true);
     if (!outcome.added) throw new AddRefused(outcome);
     // The person pressed Add where a number was compared on both screens (`added`), or on the card of a PC whose line's
     // own proof says it joined with a member's invite (`invited`): kept in this device's own record of its PCs, by the
@@ -428,7 +440,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
       try { joined = (await invitedPcs(list, await writer.service.listPosts(writer.list), now())).find((each) => each.endpoint === shown.post.endpoint && each.key === shown.post.key && each.enc === shown.post.enc && each.card === shown.post.card); }
       catch { joined = undefined; }
     }
-    await place({ post: shown.post, member: shown.member, ...(joined === undefined ? {} : { invite: { key: joined.invite, optional: true } }) });
+    await place({ post: shown.post, member: shown.member, ...(joined === undefined ? {} : { invite: { key: joined.invite, optional: true } }) }, shown.until);
   }, placed);
   const placeAgain = (shown: Placing): Promise<void> => act(() => place(shown), placed);
   const notTheSame = (): void => {
@@ -463,7 +475,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
         {invited === null && <span className="settings-hint">{t("A PC was added to your account with a sign-in code at {time}.", { time })}{young ? ` ${t("Add it only if you started adding that PC yourself and entered the code it showed. If someone else gave you the code, or you did not start this, press No.")}` : ""}</span>}
         {asking && young && <span className="settings-hint">{t("Expires in {minutes} min", { minutes: Math.min(10, Math.max(1, Math.ceil((until - now()) / 60_000))) })}</span>}
         {ranOut && <span>{t("This request ran out. To add this PC, start again on the PC.")}</span>}
-        {placing !== null && <span>{t("{name} is not in your account's list yet. Try again.", { name: accountLabel(pc.label) })}</span>}
+        {placing !== null && <span>{placing.ended ? t("This request ran out. To add this PC, start again on the PC.") : t("{name} is not in your account's list yet. Try again.", { name: accountLabel(pc.label) })}</span>}
         {problem !== null && <span className="account-error" role="alert">{problem.text}</span>}
         {removal.prompt}
       </span>
@@ -473,7 +485,7 @@ function UnconfirmedPcNotice({ pc, session, service, now, retry, numberWaitMs, o
         )}
         {placing !== null ? (
           <>
-            <button type="button" className="btn" disabled={busy} onClick={() => void placeAgain(placing)}>{t("Try again")}</button>
+            {!placing.ended && <button type="button" className="btn" disabled={busy} onClick={() => void placeAgain(placing)}>{t("Try again")}</button>}
             <button type="button" className="btn" disabled={busy} onClick={remove}>{t("No|account pc")}</button>
           </>
         ) : young && number !== null ? (

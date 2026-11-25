@@ -1,14 +1,17 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { AccountList } from "../lib/account/accountList.ts";
-import { INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, pendingInvite, type ShownInvite } from "../lib/account/listInvite.ts";
+import { endPendingServiceInvites, INVITE_S, invitesOf, makeInvite, revokeInvite, type InviteOutcome, type MadeInvite, pendingInvite, type ShownInvite } from "../lib/account/listInvite.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { Toggle } from "./SettingsControls.tsx";
 
 import "./InvitePc.css";
 
-/** The one line an agent runs on the PC (INSTALL.md, "Set up a PC from an agent"): the invite's line in a file, the account named. */
-export const agentCommand = (account: string): string => `curl -fsSL https://ovis.sh/install.sh | sh -s -- --join-file ~/ovis-invite.txt --account ${account}`;
+/**
+ * The one line an agent runs on the PC: the one-line installer, then `ovis join` with the invite's line in a file and
+ * the account named (docs/relay.md, `ovis join --invite-file`). The installer puts `ovis` in `~/.local/bin`.
+ */
+export const agentCommand = (account: string): string => `curl -fsSL https://ovis.sh/install.sh | sh && ~/.local/bin/ovis join --invite-file ~/ovis-invite.txt --account ${account}`;
 
 /** How long after its end an invite is still listed. */
 const SHOWN_AFTER_MS = 60 * 60_000;
@@ -53,6 +56,9 @@ export function InvitePc({ list, now = Date.now }: { readonly list: AccountList;
   const commandRef = useRef<HTMLElement>(null);
   // the list moved (a PC joined, another device revoked): the rows are drawn again from it
   useEffect(() => list.subscribe(() => redraw((count) => count + 1)), [list]);
+  // an invite the list ended whose end did not reach the account service yet is ended there now (nothing is signed)
+  const head = list.writer()?.state.footing.seq ?? null;
+  useEffect(() => { void endPendingServiceInvites(list); }, [list, head]);
   // the countdown, and the moment an invite ends
   useEffect(() => {
     const timer = setInterval(() => redraw((count) => count + 1), 15_000);

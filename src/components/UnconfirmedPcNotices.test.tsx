@@ -617,6 +617,12 @@ describe("a PC that asks to be added to an account with a signed list", () => {
     noPosts?: boolean;
     /** the account service's own answer to a placement, in place of the fake's (null: the fake's) */
     entries?: () => Response | null | Promise<Response | null>;
+    /** runs once the account service admitted the PC */
+    onAdmit?: () => void;
+    /** runs at each read of the posts; a Response in place of the service's answer */
+    onPosts?: () => Response | undefined;
+    /** the PC lists itself and posts only when the test says (`postNow`) */
+    deferPost?: true;
   } = {}) {
     fake.listAccounts = "*";
     carried = null;
@@ -632,6 +638,8 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       const path = new URL(request.url).pathname;
       if (lies.admit !== undefined && path.endsWith("/admit")) return lies.admit();
       if (lies.noPosts && request.method === "GET" && path.endsWith("/posts")) return Response.json({ posts: [] });
+      if (request.method === "GET" && path.endsWith("/posts")) { const said = lies.onPosts?.(); if (said !== undefined) return said; }
+      if (lies.onAdmit !== undefined && request.method === "POST" && path.endsWith("/admit")) { const answer = await fake.fetch(request.clone()); if (answer.ok) lies.onAdmit(); return answer; }
       if (request.method === "POST" && path.endsWith("/entries")) { const said = await lies.entries?.(); if (said) return said; }
       if (request.method === "POST" && path.endsWith("/attempt") && (await request.clone().json() as { reveal?: string }).reveal === undefined) opened.push(path);
       const answer = await fake.fetch(request.clone());
@@ -646,10 +654,11 @@ describe("a PC that asks to be added to an account with a signed list", () => {
     await list.sync();
     setPageAccountList(list);
     const held = () => fake.accountList(ACCOUNT)!;
-    await postPcKeys(fake.fetch, ORIGIN, fake.issueToken(ACCOUNT, { device: true }), pc, held().id);
+    const postNow = async (): Promise<void> => { await postPcKeys(fake.fetch, ORIGIN, fake.issueToken(ACCOUNT, { device: true }), pc, held().id); };
+    if (lies.deferPost !== true) await postNow();
     play = pcComparing({ fake, origin: ORIGIN } as unknown as Parameters<typeof pcComparing>[0], pc, held().id);
     const pcAdmits = (): number => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length;
-    return { pc, play, list, held, pcAdmits, opened: () => opened.length };
+    return { pc, play, list, held, pcAdmits, postNow, opened: () => opened.length };
   }
   const digitsShown = (): string => textOf(renderer!.root.findByProps({ className: "relay-shell-digits" })).replaceAll(" ", "");
 
@@ -804,6 +813,56 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await settle();
       const open = await (await fake.fetch(`${ORIGIN}/v1/pc-invites`, { headers: { authorization: `Bearer ${fake.issueToken(ACCOUNT)}` } })).json() as { invites: unknown[] };
       expect(open.invites).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("stops offering the one-press Add at the invite's end by its own clock, also where the posts cannot be read then", async () => {
+    let down = false;
+    const { pc, list, postNow } = await listAccount({ deferPost: true, onPosts: () => down ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : undefined });
+    try {
+      const { invite } = await invitedBy(list, pc);
+      // the PC listed itself a minute before the invite ends, and the card is drawn ten milliseconds before it ends:
+      // the card's own timer is armed for a second after that end
+      now = (invite.exp - 60) * 1000;
+      await postNow();
+      now = invite.exp * 1000 - 10;
+      await mount();
+      expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+      down = true;
+      now = (invite.exp + 5) * 1000;
+      // the card's own timer, armed for the invite's end and a second after it: waited for by the title, within a deadline
+      const deadline = Date.now() + 5_000;
+      while (title() !== "Add this PC to your account?" && Date.now() < deadline) await settle();
+      expect(title()).toBe("Add this PC to your account?");
+    } finally { setPageAccountList(null); }
+  });
+
+  it("offers no Try again on a kept card whose invite ended after the admission: only No, which removes the PC", async () => {
+    let end: (() => void) | null = null;
+    const { pc, list, held } = await listAccount({ onAdmit: () => end?.() });
+    try {
+      const { invite } = await invitedBy(list, pc);
+      // the invite runs out while the admission is on its way
+      end = () => { now = (invite.exp + 5) * 1000; };
+      await mount();
+      await press("Add");
+      expect(text()).toContain("This request ran out. To add this PC, start again on the PC.");
+      expect(buttons()).toEqual(["No"]);
+      expect(held().state.pcs[pc.endpoint]).toBeUndefined();
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds nothing where the number ran out while the press looked up the PC's invite", async () => {
+    let late = false;
+    const { pc, held, pcAdmits } = await listAccount({ onPosts: () => { if (late) now += 121_000; return undefined; } });
+    try {
+      await mount();
+      await press("Add");
+      expect(buttons()).toEqual(["Add", "Not the same"]);
+      late = true;
+      await press("Add");
+      expect(text()).toContain("That number ran out. Press Add for a new one.");
+      expect([pcAdmits(), held().entries.length, readSeenPcs(ACCOUNT).pcs[pc.endpoint]]).toEqual([0, 1, undefined]);
     } finally { setPageAccountList(null); }
   });
 
