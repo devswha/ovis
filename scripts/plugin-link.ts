@@ -278,20 +278,28 @@ export const plainLabel = (label: string): string => label.replace(/[\u0000-\u00
 
 const SIX_DIGITS = /^[0-9]{6}$/;
 
-export interface AskingDevice { readonly label: string; readonly digits: string; readonly intent?: string }
+/** `local_only`: asked under this PC's own add screen (GET /api/relay/pairings), by the device that adds this PC to the account. */
+export interface AskingDevice { readonly label: string; readonly digits: string; readonly intent?: string; readonly local_only?: boolean }
 
 /**
  * The question a terminal asks about a device that wants in: its six digits, to compare with that device's screen,
  * and what to type. The answer that approves carries the request's own digits (`answerOf`), so it names the request
  * it is for. `whole`: its last three digits are another request's too, so they name neither, and all six are asked for.
+ * A device that adds this PC from its add screen shows an input for them instead (AddPcSheet): its person types them
+ * there, as this PC's own window asks (RelayPairingPrompt).
  */
 export function approvalPrompt(device: AskingDevice, whole = false): string {
-  const what = device.intent === "account" ? "join your account" : "pair with this PC";
+  const what = device.local_only === true ? "add this PC to your account" : device.intent === "account" ? "join your account" : "pair with this PC";
   // digits that are not six digits approve nothing (`answerOf`): the question does not ask for them
   if (!SIX_DIGITS.test(device.digits)) return `${plainLabel(device.label)} wants to ${what}, but its request came without six digits to compare, so it cannot be approved here. Press Enter to decline: `;
-  const shows = `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}.`;
-  return whole ? `${shows} Another request's digits end in ${device.digits.slice(3)} too, so type all six (${device.digits}) to approve, or press Enter to decline: `
-    : `${shows} Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
+  const digits = `${device.digits.slice(0, 3)} ${device.digits.slice(3)}`;
+  const adding = device.local_only === true;
+  const here = adding ? " here" : "";
+  const all = `Another request's digits end in ${device.digits.slice(3)} too, so type all six (${device.digits})${here} to approve, or press Enter to decline: `;
+  const three = `${device.digits.slice(3)}${here} to approve, or press Enter to decline: `;
+  const shows = adding ? `${plainLabel(device.label)} wants to ${what}. Type ${digits} on that device, or check that it shows the same number`
+    : `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${digits}`;
+  return whole ? `${shows}. ${all}` : adding ? `${shows}, then type ${three}` : `${shows}. Type ${three}`;
 }
 
 /**
@@ -1603,10 +1611,23 @@ export interface PressWords {
   readonly chosen: string;
   /** the lines said as the wait for Add begins, with the time it lasts */
   readonly waiting: (name: string, lasts: string) => string;
+  /**
+   * Where the run asks this PC how its account adds it (by the account's signed list, or by Add alone): the line said
+   * as the wait begins, before that is known. `waiting` follows once this PC said the account keeps no list, and
+   * `byList` once it said it keeps one, so nobody is told to press what would not add this PC. Unset: `waiting` at once.
+   */
+  readonly listed?: (name: string) => string;
+  readonly byList?: (name: string, lasts: string) => string;
   /** the last lines once this PC is added */
   readonly closing: string;
   /** said when no Add is offered for this PC and no admission waits for it */
   readonly noneWaiting: string;
+  /**
+   * This PC lets nobody into its account's signed list itself (it joins that list by an invite: plugin-join.ts): a
+   * device that asks to join it is allowed on another device of the account, so no first join is asked for here and
+   * `approve` is not offered.
+   */
+  readonly allowsNobody?: true;
 }
 
 /**
@@ -1638,6 +1659,9 @@ type ListAddState =
   | { readonly state: "waiting" | "confirmed" | "added"; readonly run: string }
   | { readonly state: "number"; readonly run: string; readonly digits: string }
   | { readonly state: "ended"; readonly run?: string; readonly why: string };
+
+/** How `add` says that its account adds this PC by the account's signed list. */
+const LIST_KEPT = "Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.";
 
 /** How often `add` asks this PC where its add by the list stands: the number shows, and a typed yes is taken, within this. */
 const LIST_ADD_POLL_MS = 2_000;
@@ -1890,6 +1914,8 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   // list"): the device that adds it and this PC show one number, the person here says they are the same, and only
   // then does Add on that device add it. null: not asked yet; false: the account keeps none, or this Ovis has no such route
   let byList = (press.admissionOnly === true ? false : null) as boolean | null;
+  // what to press is said once this PC said how its account adds it: only a run that asks it does (`ovis add`)
+  const deferred = byList === null && press.take === undefined && words.listed !== undefined;
   // this PC knows of no add (it restarted): the add is started again
   let restart = false;
   let listOver = false;
@@ -2007,7 +2033,7 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     if ("run" in state && state.run !== undefined) runId = state.run;
     if (byList === null && state.state !== "none") {
       byList = true;
-      say(`${STEP_INDENT}Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.\n`);
+      say(words.byList?.(name, remaining(stopAt - now())) ?? `${STEP_INDENT}${LIST_KEPT}\n`);
     }
     if (state.state === "added") { question = null; bound = true; return "added"; }
     if (state.state === "ended") {
@@ -2056,13 +2082,15 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     await press.signOut();
     // the first device that opens this PC asks for six digits only this PC may let in (a first join): here, at a
     // terminal, they are typed in the same run; elsewhere it is said where to type them
-    const hint = `If your phone asks for six digits when you open ${name}, run ${cli(options)} approve on this PC and type them.\n`;
+    const hint = words.allowsNobody === true
+      ? `If your phone asks to join when you open ${name}, allow it on another device of your account: this PC joined by an invite, and lets nobody into your account's list itself.\n`
+      : `If your phone asks for six digits when you open ${name}, run ${cli(options)} approve on this PC and type them.\n`;
     if (!online) {
       out(`Added: this PC is in your account (${mine}), but its Ovis relay did not come online within 30 seconds. Your devices can open ${name} from My PCs once it does (${cli(options)} status says when).\n${hint}${words.closing}`);
       return ended({ kind: "added", online: false }, 0);
     }
     out("Added. ");
-    const watched = options.terminal === true && options.isTty === true && await watchFirstJoins(options, api, { name, account: press.signedIn, hint }, reader ?? undefined);
+    const watched = options.terminal === true && options.isTty === true && words.allowsNobody !== true && await watchFirstJoins(options, api, { name, account: press.signedIn, hint }, reader ?? undefined);
     out(`${watched ? "" : `Open ${name} from My PCs.\n${hint}`}${words.closing}`);
     return ended({ kind: "added", online: true }, 0);
   };
@@ -2084,6 +2112,8 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
       const got = await takeByList();
       if (got !== null) return got;
       byList = false;
+      // the account keeps no list (or this Ovis adds by none): Add alone adds this PC, and that is said now
+      if (deferred) say(words.waiting(name, remaining(stopAt - now())));
     }
     try {
       await api("POST", "/api/account/one-press", { body: { account: press.signedIn } });
@@ -2112,7 +2142,7 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   try {
     // the window the listing opened takes digits approved here, which this way does not ask for
     await api("POST", "/api/relay/link/close").catch((error: unknown) => { if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error; });
-    out(words.waiting(name, remaining(stopAt - startedAt)));
+    out(deferred ? words.listed!(name) : words.waiting(name, remaining(stopAt - startedAt)));
     for (;;) {
       const got = await take();
       if (got === "added") return await added();
@@ -2208,11 +2238,17 @@ function addWords(options: LinkOptions): PressWords {
   const command = `${cli(options)} add`;
   return {
     command, anew: `Run ${command} to try again.`, chosen: "you signed in to", closing: loginClosing(options),
+    listed: (name) => `${step([`This PC is listed in your account as ${name}.`, "Asking your account how it adds this PC…"]).join("\n")}\n`,
     waiting: (name, lasts) => [
-      ...step([`This PC is listed in your account as ${name}.`]),
       "",
       "2/2  Press Add on a device of your account",
       ...step([`Open Ovis on your phone or another PC and press Add for ${name}.`, `Waiting… (up to ${lasts}, Ctrl+C to stop)`]),
+      "",
+    ].join("\n"),
+    byList: (name, lasts) => [
+      "",
+      "2/2  Compare a number with a device of your account",
+      ...step([`Open Ovis on your phone or another PC and choose Add for ${name}.`, LIST_KEPT, `Waiting… (up to ${lasts}, Ctrl+C to stop)`]),
       "",
     ].join("\n"),
     noneWaiting: `Your account lists this PC already, so your devices offer no Add for it, and no Add pressed in the last 10 minutes waits for it. Run ${command} --approve, then choose Add on this PC in Ovis on a device of your account and compare its number here.\n`,

@@ -762,7 +762,7 @@ describe("ovis link, on the PC itself", () => {
    * `said` hears every line, to `type` a line at that very moment or to `answer` after the next wait (two seconds: the
    * time a person takes to compare the digits), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string; local_only?: true }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
@@ -948,6 +948,31 @@ describe("ovis link, on the PC itself", () => {
       expect(out).not.toContain(NOT_AN_ANSWER);
     }
   }, 30_000);
+
+  it("asks about a device that adds this PC from its own add screen as that device shows it: the number is typed there, or compared", async () => {
+    // the device that adds this PC (AddPcSheet, "Add this PC") shows an input for this PC's number, not digits of its own
+    const ADDING = "Phone p1 wants to add this PC to your account. Type 111 222 on that device, or check that it shows the same number, then type 222 here to approve, or press Enter to decline: ";
+    const { code, out, decisions } = await prompting({
+      pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+      request: () => ({ local_only: true }),
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer("222"); },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toEqual([ADDING]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+  });
+
+  it("asks for all six digits of such a device as of any other, when another request ends in the same three", async () => {
+    const shown: string[] = [];
+    await prompting({
+      pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1", "p2"],
+      request: (id) => ({ digits: id === "p1" ? "111456" : "222456", local_only: true }),
+      said: (said, _type, answer) => { if (said.includes("Enter to decline")) { shown.push(said); answer(""); } },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(shown[0]).toBe("Phone p1 wants to add this PC to your account. Type 111 456 on that device, or check that it shows the same number. Another request's digits end in 456 too, so type all six (111456) here to approve, or press Enter to decline: ");
+  });
 
   it("approves with the digits as an input method types them: full-width digits and its wide space are the same digits", async () => {
     for (const line of ["２２２", "１１１２２２", "１１１　２２２", "１１１ ２２２", "2２2", "　222　"]) {
@@ -1795,7 +1820,8 @@ describe("ovis link, on the PC itself", () => {
     "     That account lists no PCs yet.",
     "     Is this your account? Type yes to add this PC to it: ",
   ].join("\n");
-  const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
+  // the step that says what to press comes once this PC said how its account adds it (POST /api/account/list/add)
+  const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n     Asking your account how it adds this PC…\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
   const NO_TERMINAL = "Not run in a terminal, so nobody here can confirm the account that signs in. Run ovis add --account <your account id> (ovis status on a PC already in your account shows the id, and so does Manage account in Settings), or run ovis add in a terminal.\n";
 
   it("without --qr, asks whether the account is yours, waits for Add on a device of that account, takes its admission here, and comes online", async () => {
@@ -1900,10 +1926,31 @@ describe("ovis link, on the PC itself", () => {
       expect(run.listCalls.map((call) => call.action)).not.toContain("confirm");
     });
 
+    it("names the list's step, and never the one-press step, once this PC said the account keeps a list", async () => {
+      const run = await pressing({ list: adding(), said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); } });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain([
+        "     This PC is listed in your account as old-desktop.",
+        "     Asking your account how it adds this PC…",
+        "",
+        "2/2  Compare a number with a device of your account",
+        "     Open Ovis on your phone or another PC and choose Add for old-desktop.",
+        "     Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.",
+        "     Waiting… (up to 10:00, Ctrl+C to stop)",
+        "",
+      ].join("\n"));
+      expect(run.text).not.toContain("Press Add on a device of your account");
+      expect(run.text.split("Your account keeps a signed list").length).toBe(2);
+    });
+
     it("waits while the account service does not say whether the account keeps a list, and binds nothing on its word meanwhile", async () => {
       const run = await pressing({ pressAfter: 1, list: ({ action, count }) => action === "start" && count < 3 ? Response.json({ error: { code: "account_unavailable", message: "away" } }, { status: 503 }) : state({ state: "no_list" }) });
       expect(run.code).toBe(0);
       expect(run.text).toContain("The account service did not answer this PC just now. Still waiting…\n");
+      // what to press is said once this PC knows it, and once
+      expect(run.text.indexOf("2/2  Press Add on a device of your account")).toBeGreaterThan(run.text.indexOf("Still waiting…"));
+      expect(run.text.split("2/2  Press Add on a device of your account").length).toBe(2);
+      expect(run.text).not.toContain("Compare a number");
       // only once the PC said the account keeps no list is the admission asked for
       expect(run.paths.indexOf("POST /api/account/one-press", 2)).toBeGreaterThan(run.paths.lastIndexOf("POST /api/account/list/add"));
       expect(run.listCalls.map((call) => call.action)).toEqual(["start", "start", "start"]);
