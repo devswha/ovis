@@ -244,16 +244,17 @@ const uncheckedGrowths = new Map<string, true>();
 
 class RevisionUnchecked extends ConversationReadPending {}
 
-interface RevisionTarget { path: string; checkWindow: boolean; live?: () => boolean }
+interface RevisionTarget { path: string; checkWindow: boolean; live?: () => boolean; noLinks?: boolean }
 
 /**
  * The file `path` names as its caller authorized it, taken in the same turn of the event loop, before
  * anything awaits. The page readers follow a link, and so does this; `link` says the settle refuses it,
  * as its open does wherever an open can (O_NOFOLLOW; not Windows).
  */
-function authorizedFile(path: string): { dev: number; ino: number; link: boolean } | null {
+function authorizedFile(path: string, noLinks = false): { dev: number; ino: number; link: boolean } | null {
   try {
     const own = lstatSync(path);
+    if (noLinks && (own.isSymbolicLink() || realpathSync(path) !== path)) return null;
     const stat = own.isSymbolicLink() ? statSync(path) : own;
     return stat.isFile() ? { dev: stat.dev, ino: stat.ino, link: own.isSymbolicLink() && constants.O_NOFOLLOW !== undefined } : null;
   } catch { return null; }
@@ -312,7 +313,7 @@ const REVISION_SETTLES = 3;
  * named no file to authorize is transcript_missing.
  */
 async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ value: T } | null> {
-  const authorized = authorizedFile(target.path);
+  const authorized = authorizedFile(target.path, target.noLinks);
   const refuse = () => authorized === null ? new ConversationUnavailable("transcript_missing") : new ConversationReadPending();
   for (let settles = 1; ; settles++) {
     await settleTranscriptRevision(target, authorized);
@@ -2333,7 +2334,7 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
   let ledger = undefined as { dev: number; ino: number } | undefined;
   let answer: RecognizedConversation;
   try {
-    const settled = await readSettled({ path: transcript.path, checkWindow: transcript.source === "muse-transcript", live }, () => {
+    const settled = await readSettled({ path: transcript.path, checkWindow: transcript.source === "muse-transcript", live, noLinks: transcript.source === "agy-transcript" }, () => {
       rememberPaneRead(paneId, transcript.path);
       if (transcript.source === "agy-transcript") {
         const opened = fstatSync(pageFile!.fd);

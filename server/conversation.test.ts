@@ -4307,6 +4307,29 @@ describe("Agy native ledger through shared paging", () => {
     expect(rewritten.history_id).not.toBe(initial.history_id);
     expect(rewritten.turns[0]?.parts[0]).toEqual({ kind: "text", text: "a longer replacement prompt" });
   });
+  it("reads a growing Agy ledger with a rewritten prefix and unchanged old tail", async () => {
+    db.exec("PRAGMA journal_mode=WAL");
+    add(0, "USER_INPUT", "old");
+    const hidden = "x".repeat(32);
+    const tail = row(2, "PLANNER_RESPONSE", "tail");
+    appendFileSync(path, row(1, "EPHEMERAL_MESSAGE", hidden));
+    add(2, "PLANNER_RESPONSE", "tail");
+    const initial = await page();
+    const inode = fs.statSync(path).ino;
+    const oldTail = fs.statSync(path).size - Buffer.byteLength(tail);
+    db.exec("INSERT INTO steps VALUES (3); PRAGMA wal_checkpoint(TRUNCATE)");
+    const prefix = row(0, "USER_INPUT", "new longer") + row(1, "EPHEMERAL_MESSAGE", hidden.slice(7));
+    expect(Buffer.byteLength(prefix)).toBe(oldTail);
+    writeFileSync(path, prefix + tail + row(3, "USER_INPUT", "next"));
+    expect(fs.statSync(path).ino).toBe(inode);
+    for (let read = 0; read < 2; read++) {
+      const rewritten = await page();
+      expect(rewritten.history_id).not.toBe(initial.history_id);
+      expect(rewritten.turns.map((turn) => turn.parts[0])).toEqual(
+        ["new longer", "tail", "next"].map((text) => ({ kind: "text", text })),
+      );
+    }
+  });
   it("distinguishes unreadable database from verified empty history", async () => {
     add(0, "USER_INPUT", "one");
     (await page());
@@ -4568,7 +4591,7 @@ describe("Agy native ledger through shared paging", () => {
       expect(fresh).toBeInstanceOf(ConversationReadPending);
     } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
-  it.skipIf(!linksRefused)("leaves an unpaged Agy read pending when a symlink replaces its ledger during a catalog race", async () => {
+  it.skipIf(!linksRefused).each(["different inode", "same inode"])("leaves an unpaged Agy read pending when a symlink to the %s replaces its ledger", async (target) => {
     add(0, "USER_INPUT", "one");
     const other = `${path}.other`;
     writeFileSync(other, row(0, "USER_INPUT", "other"));
@@ -4579,12 +4602,14 @@ describe("Agy native ledger through shared paging", () => {
     const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
     const catalog = duringCatalog(1, () => {
-      rmSync(path);
+      if (target === "same inode") renameSync(path, other);
+      else rmSync(path);
       symlinkSync(other, path);
       throw new Error("transient WAL copy race");
     });
     try {
       await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+      await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { catalog.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
