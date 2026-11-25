@@ -373,6 +373,17 @@ if (typeof window !== "undefined") {
   // a tap the browser counts as one (a scroll, or Escape, is none)
   const onTap = (): void => {
     if (navigator.userActivation?.isActive !== true) return;
+    // Chromium can commit a closing sheet's Back without dispatching popstate. At the
+    // next tap, the exact landing entry proves it finished, before a new sheet joins it.
+    if (stepping !== null && stepOnto !== null) {
+      const at = where();
+      if (at?.key === stepOnto) {
+        stepping = null;
+        stepOnto = null;
+        here = at;
+        seen = sheetOf(history.state);
+      }
+    }
     tapped = true;
     if (asked === null) makeWaiting();
   };
