@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
@@ -10,7 +10,7 @@ const text = (node: ReactTestInstance | string): string => typeof node === "stri
 describe("why this PC lets nobody of its account's list in, in Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
-  let answer: () => Response;
+  let answer: () => Response | Promise<Response>;
 
   beforeEach(() => {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -31,6 +31,7 @@ describe("why this PC lets nobody of its account's list in, in Settings", () => 
   afterEach(async () => {
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
+    jest.useRealTimers();
     setTransport(nativeTransport);
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -61,5 +62,19 @@ describe("why this PC lets nobody of its account's list in, in Settings", () => 
     await act(async () => { renderer?.unmount(); });
     answer = () => Response.json({ account: "acct_1", list: { pinned_list: "ab".repeat(32), standing: "in", reason: null } });
     expect(await shown()).toBeNull();
+  });
+
+  it("keeps the newest read when an older one answers after it", async () => {
+    let release: (response: Response) => void = () => {};
+    const late = new Promise<Response>((resolve) => { release = resolve; });
+    let reads = 0;
+    answer = () => ++reads === 1 ? late : Response.json({ account: "acct_1" });
+    jest.useFakeTimers();
+    expect(await shown()).toBeNull();
+    await act(async () => { jest.advanceTimersByTime(15_000); });
+    expect(reads).toBe(2);
+    await act(async () => { release(Response.json({ error: { code: "strict", message: "strict", reason: "account-pc.json cannot be trusted" } }, { status: 403 })); });
+    await act(async () => { for (let turn = 0; turn < 10; turn++) await Promise.resolve(); });
+    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "list-reason").length).toBe(0);
   });
 });

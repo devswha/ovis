@@ -16,9 +16,17 @@ export function ListReason() {
   const [reason, setReason] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
+    // a read that answers after a newer one was applied is older news
+    let issued = 0;
+    let applied = 0;
     const read = (): void => {
       if (document.hidden) return;
-      fetchListReason().then((said) => { if (live) setReason(said); }, () => undefined);
+      const seq = ++issued;
+      fetchListReason().then((said) => {
+        if (!live || seq < applied) return;
+        applied = seq;
+        setReason(said);
+      }, () => undefined);
     };
     read();
     const timer = setInterval(read, LIST_REASON_POLL_MS);

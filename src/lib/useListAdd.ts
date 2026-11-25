@@ -16,9 +16,17 @@ export function useListAdd(enabled: boolean, again = 0): ListAddState | null {
     if (!enabled) { setState(null); return; }
     let live = true;
     let refused = false;
+    // a read that answers after a newer one was applied is older news
+    let issued = 0;
+    let applied = 0;
     const read = (): void => {
       if (refused || document.hidden) return;
-      fetchListAdd().then((next) => { if (live) setState(next); }, (error: unknown) => {
+      const seq = ++issued;
+      fetchListAdd().then((next) => {
+        if (!live || seq < applied) return;
+        applied = seq;
+        setState(next);
+      }, (error: unknown) => {
         if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) { refused = true; if (live) setState(null); }
         else console.warn("Ovis: the add by the account's list could not be read", error instanceof Error ? error.name : error);
       });

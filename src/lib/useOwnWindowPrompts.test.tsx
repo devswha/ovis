@@ -14,7 +14,7 @@ const TAILNET = { pending: { id: "nPhone1CNTRL", hostname: "pixel", login: "owne
 // another file in the same process (OwnJoins.test.tsx, DevicesPanel's) still gets the real ones
 let joinReads = 0;
 /** What GET /api/account/list/add answers: a PC that follows no list (404) unless a test says otherwise. */
-let listAdd: Response | (() => Response) = () => Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+let listAdd: Response | (() => Response | Promise<Response>) = () => Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
 let addReads = 0;
 const documentBefore = Object.getOwnPropertyDescriptor(globalThis, "document");
 beforeEach(() => {
@@ -104,5 +104,22 @@ it("shows this PC's own window the number of an add by its account's list, and r
   await act(async () => { jest.advanceTimersByTime(10_000); });
   await settle();
   expect(addReads).toBe(reads);
+  expect(prompts.filter((prompt) => prompt.own_window === "add")).toEqual([]);
+});
+
+it("keeps the newest read of the add when an older one answers after it", async () => {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  const number = { state: "number", run: "0123456789abcdef", account: "acct_1", list: "ab".repeat(32), digits: "482913", until: "2026-11-21T00:02:00.000Z" };
+  let release: (response: Response) => void = () => {};
+  const late = new Promise<Response>((resolve) => { release = resolve; });
+  listAdd = () => addReads === 1 ? late : Response.json({ state: "ended", why: "cancelled" });
+  jest.useFakeTimers();
+  await act(async () => { renderer = create(createElement(Probe, { pairings: [] })); });
+  await settle();
+  await act(async () => { jest.advanceTimersByTime(3_000); });
+  await settle();
+  expect(addReads).toBe(2);
+  await act(async () => { release(Response.json(number)); });
+  await settle();
   expect(prompts.filter((prompt) => prompt.own_window === "add")).toEqual([]);
 });
