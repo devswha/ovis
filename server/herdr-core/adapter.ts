@@ -116,27 +116,20 @@ export const OPENCODE_SESSIONS_LABEL = "ovis.opencode";
  * write still queued is dropped rather than open a new line to hc after the server closed it.
  */
 export function sessionLabeler(hc: Pick<HcConnection, "call">) {
-  const saved = new Map<string, string>();
-  const queue = new Map<string, { value: string; run: Promise<void> }>();
+  const written = new Map<string, string>();
+  const queue = new Map<string, Promise<void>>();
   let accepting = true;
   let stopped = false;
   let draining: Promise<void> | undefined;
-  const label = (address: string, kept: string | undefined, named: readonly string[]) => {
-    if (!accepting) return;
+  const label = (address: string, kept: string, named: readonly string[]) => {
     const value = named.join(" ");
-    const pending = queue.get(address);
-    // Another Ovis can overwrite the label. Compare a fresh read, not our last write.
-    if (kept !== undefined) saved.set(address, kept);
-    const current = pending?.value ?? saved.get(address) ?? "";
-    const ids = new Set(current.split(" ").filter(Boolean));
-    if (ids.size === named.length && named.every((id) => ids.has(id))) return;
-    const run = (pending?.run ?? Promise.resolve()).then(async () => {
-      if (stopped) return;
-      await hc.call("terminal.label", { terminal: address, labels: { [OPENCODE_SESSIONS_LABEL]: value } });
-      saved.set(address, value);
-    }).catch(() => { saved.delete(address); });
-    queue.set(address, { value, run });
-    void run.then(() => { if (queue.get(address)?.run === run) queue.delete(address); });
+    if (!accepting || value === (written.get(address) ?? kept)) return;
+    written.set(address, value);
+    const run = (queue.get(address) ?? Promise.resolve())
+      .then(async () => { if (!stopped) await hc.call("terminal.label", { terminal: address, labels: { [OPENCODE_SESSIONS_LABEL]: value } }); })
+      .then(() => {}, () => { if (written.get(address) === value) written.delete(address); });
+    queue.set(address, run);
+    void run.then(() => { if (queue.get(address) === run) queue.delete(address); });
   };
   const stop: HerdrCoreAdapter["stop"] = (options) => {
     accepting = false;
@@ -146,7 +139,7 @@ export function sessionLabeler(hc: Pick<HcConnection, "call">) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          Promise.all([...queue.values()].map(({ run }) => run)),
+          Promise.all(queue.values()),
           new Promise<void>((resolve) => { timer = setTimeout(resolve, LABEL_DRAIN_MS); }),
         ]);
       } finally {
@@ -156,7 +149,7 @@ export function sessionLabeler(hc: Pick<HcConnection, "call">) {
     })();
     return draining;
   };
-  return { label, forget: (address: string) => saved.delete(address), stop };
+  return { label, forget: (address: string) => written.delete(address), stop };
 }
 
 export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string, observeSeen?: SeenObserver, options: AdapterOptions = {}): Promise<HerdrCoreAdapter> {
@@ -181,36 +174,28 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
   };
   // the OpenCode sessions each terminal named while they were pending (snapshot.ts `opencodeRecords`),
   // in every snapshot and status event, so a turn that ended between two snapshots is still one. A
-  // terminal first seen running OpenCode can also use the label kept by an earlier or peer Ovis.
-  // Once seen without OpenCode, its old label is no longer evidence for the next process.
-  const sessions = new Map<string, { named: string[]; trustLabel: boolean }>();
+  // terminal first seen running OpenCode starts from the sessions its `ovis.opencode` label kept, so
+  // one that rests through a restart of Ovis still shows its session; an empty entry is a terminal
+  // seen without OpenCode, whose label is cleared and never read again.
+  const sessions = new Map<string, string[]>();
   const sessionLabels = sessionLabeler(hc);
   const noteSession = (address: string, status: HcStatus | null | undefined, records: unknown, labels: Readonly<Record<string, string>> | undefined): readonly string[] => {
-    const kept = labels === undefined ? undefined : labels[OPENCODE_SESSIONS_LABEL] ?? "";
+    const kept = labels?.[OPENCODE_SESSIONS_LABEL] ?? "";
     if (agentOfStatus(status) !== "opencode") {
-      sessions.set(address, { named: [], trustLabel: false });
+      sessions.set(address, []);
       sessionLabels.label(address, kept, []);
       return [];
     }
     const pending = opencodeRecords(records);
-    const previous = sessions.get(address);
-    const trustLabel = previous?.trustLabel ?? true;
-    const before = [...(previous?.named ?? [])];
-    let canRepair = trustLabel;
-    if (trustLabel && kept) {
-      const missing = [...new Set(kept.split(" ").filter((id) => id !== "" && !before.includes(id)))];
-      if (before.length + missing.length <= NAMED_SESSIONS) before.push(...missing);
-      else if (!previous) before.push(...missing.slice(-NAMED_SESSIONS));
-      else canRepair = false;
-    }
+    const before = sessions.get(address) ?? kept.split(" ").filter((id) => id !== "");
     const named = [...before.filter((id) => !pending.includes(id)), ...pending].slice(-NAMED_SESSIONS);
-    sessions.set(address, { named, trustLabel });
-    if (canRepair || pending.length > 0) sessionLabels.label(address, canRepair ? kept : undefined, named);
+    sessions.set(address, named);
+    sessionLabels.label(address, kept, named);
     return named;
   };
   // the sessions a terminal named and those whose title it shows, decided in agent-identity.ts `paneSession`
   const sessionOf: SessionOf = (terminal) => {
-    const named = noteSession(terminal.address, terminal.status, terminal.records, terminal.labels ?? {});
+    const named = noteSession(terminal.address, terminal.status, terminal.records, terminal.labels);
     const titled = named.length === 0 || !terminal.title || !options.opencodeTitled ? [] : options.opencodeTitled(terminal.title);
     return paneSession(agentOfStatus(terminal.status), { named, titled });
   };
