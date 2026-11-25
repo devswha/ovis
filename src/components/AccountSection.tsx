@@ -586,7 +586,14 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         // another copy stopped the wait while the PC was being listed: what it forgot is not kept again
         if (withdrawn()) { left(); return true; }
         if (membership !== undefined) { await joined(membership.account, membership.enrolling); return true; }
-        if (mark !== null) { mark = { ...mark, listedAt: Date.now() }; keepAddPcWaiting(mark); }
+        if (mark !== null) {
+          // the add by the list it follows is the one the tab keeps for this wait: another copy may have started it again
+          // since (followList), and this copy's older run is never written back over it, so Stop gives up the one that runs
+          const held = shared ? readAddPcWaiting() : null;
+          const run = held !== null && held.until === until ? held.run : mark.run;
+          mark = { name: mark.name, until: mark.until, serverId: mark.serverId, account: mark.account, listedAt: Date.now(), ...(run === undefined ? {} : { run }) };
+          keepAddPcWaiting(mark);
+        }
         return true;
       })()).catch((error: unknown) => {
         if (error instanceof AddPcWaitOver) {

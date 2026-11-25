@@ -2214,6 +2214,17 @@ describe("AddThisPc", () => {
       expect(tab.has(MARKER)).toBe(false);
     });
 
+    test("a relist keeps the run the tab holds for the wait (another copy started it again), and Stop waiting gives that run up", async () => {
+      const renderer = await waitingFrom();
+      // another copy of the screen started the add again: the tab holds its new run for the same wait
+      tab.set(MARKER, JSON.stringify({ ...JSON.parse(tab.get(MARKER)!), run: NEXT }));
+      await advance(RELIST_MS);
+      expect(directory).toEqual(["putPc", "putPc"]);
+      expect(JSON.parse(tab.get(MARKER)!).run).toBe(NEXT);
+      await press(renderer, "Stop waiting");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: NEXT }]);
+    });
+
     test("the PC joins by its list: the wait says Added", async () => {
       const renderer = await waitingFrom();
       pc.account = ACCOUNT;
