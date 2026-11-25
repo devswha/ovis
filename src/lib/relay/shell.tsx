@@ -380,7 +380,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   keepShellAccount(account.enabled ? {
     signOut: account.signOut, leave: account.leave,
     signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
-    signOutEverywhere: () => account.signOutEverywhere(entry.serverId ?? undefined),
+    signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
     deleteAccount: async () => {
       await account.deleteAccount();
@@ -738,7 +738,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // (`added`), or otherwise (a code typed here, the digits, a code for this device alone: `paired`); nothing, where
       // it opened a PC it held or was shown
       const made = !attempt.paired || attempt.fresh === true;
-      const scanned = attempt.code && attempt.codeTyped !== true && attempt.accountEnrollment === true && !attempt.accountless;
+      // a code that carries the account's mark (`admission: 1`): one without it pairs with the PC alone
+      const scanned = attempt.code && attempt.offer.admission === 1 && attempt.codeTyped !== true && attempt.accountEnrollment === true && !attempt.accountless;
       await noteSession(signedIn, endpoint, !made ? "none" : scanned ? "added" : "paired");
     } catch (error) {
       console.warn("Ovis: this session was not written to the device's record of its PCs", error instanceof Error ? error.name : error);

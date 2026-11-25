@@ -12,6 +12,7 @@ import { isListKeyEncoding } from "../../../shared/account-list-entry.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { AccountList } from "./accountList.ts";
 import { AccountPcError, post, type PcFetch } from "./join.ts";
+import { SignedOutError } from "./service.ts";
 import { addPostedPc, type AddPcOutcome, type PostedPc } from "./listAdd.ts";
 
 /**
@@ -73,9 +74,12 @@ export async function nameListToPc(options: {
     answer === "none" ? "not_found" : "refused" in answer && typeof answer.refused === "string" ? answer.refused : null;
   // The PC says it read its entry: this device's own copy, read from the log again, must hold the PC at that very relay
   // key, for the account the naming began with. The PC's word alone spends no pairing.
+  // A read that did not reach the log tells nothing of an entry the copy does not hold yet: not known yet, never "not in".
   const taken = async (): Promise<NamedOutcome> => {
-    const view = await options.list.sync({ read: true }).catch(() => options.list.view());
-    return view.account === options.account && options.list.holdsPc(options.endpoint) ? { outcome: "added" } : { outcome: "refused", why: "not_in_list" };
+    const view = await options.list.sync({ read: true }).catch(() => null);
+    const now = view ?? options.list.view();
+    if (now.account === options.account && options.list.holdsPc(options.endpoint)) return { outcome: "added" };
+    return view !== null && view.reached && view.account === options.account ? { outcome: "refused", why: "not_in_list" } : { outcome: "unknown" };
   };
   const first = await ask(true);
   if (first === "none") return { outcome: "none" };
@@ -101,7 +105,13 @@ export async function nameListToPc(options: {
     if (row === undefined || row.removed !== null || row.key !== key) return { outcome: "unknown" };
   }
   for (let asks = 1; asks < NAMED_ASKS; asks += 1) {
-    const again = await ask(false);
+    // The entry is in the list: a session that drops now leaves it placed (the pairing kept, nothing opened over it),
+    // never a failure of the enrollment. A Cancel stays a Cancel
+    let again: Awaited<ReturnType<typeof ask>>;
+    try { again = await ask(false); } catch (error) {
+      if (options.signal?.aborted === true || error instanceof SignedOutError) throw error;
+      return { outcome: "placed" };
+    }
     const refused = refusedBy(again);
     // the entry is in the list, and the PC turned it away: said as the PC's refusal, never as placed
     if (refused !== null) return { outcome: "refused", why: refused };

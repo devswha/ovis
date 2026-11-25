@@ -192,7 +192,7 @@ describe("the admission before a first link", () => {
     const pcCard = pcKeys === null ? null : await signCard({ key: pcKeys.key, enc: pcKeys.enc, list: LIST, endpoint, invite: null }, pcKeys.signs);
     const accountList: AccountList | undefined = !options.namedList && !options.namedUnread ? undefined : {
       sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null, shown: () => Math.floor(Date.now() / 1000),
-      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
+      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null,
       kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
       // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
       writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki },
@@ -386,6 +386,13 @@ describe("the admission before a first link", () => {
       await until(() => run.apps() === 1 && run.sent.length === 1);
       await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
       expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("added");
+    });
+
+    it("a scanned code that carries no account mark pairs with the PC alone: paired, never added", async () => {
+      const run = await pairing({ listed: true });
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("paired");
     });
 
     it("a code typed on this device and compared here: paired, never added", async () => {

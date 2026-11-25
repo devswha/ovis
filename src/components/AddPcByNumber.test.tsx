@@ -122,7 +122,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(text()).toContain("Add this PC to your account?");
     expect(text()).toContain("Desk");
     expect(text()).toContain("Check that the PC shows this number and confirm it there, then Add");
-    expect(buttons()).toEqual(["Not the same", "Add"]);
+    expect(buttons()).toEqual(["Cancel", "Not the same", "Add"]);
     // nothing is signed before the press
     expect(held().entries.length).toBe(1);
     await press("Add");
@@ -131,6 +131,14 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     // a number was compared on both screens: this device's own record of its PCs says that it added this one
     await settle();
     expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
+  });
+
+  it("closes at Cancel while the number is shown, and adds nothing", async () => {
+    const { list, post, held } = await listedPc();
+    const told = await mount(list, post);
+    expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toHaveLength(1);
+    await press("Cancel");
+    expect([told.closed(), told.added(), held().entries.length]).toEqual([1, 0, 1]);
   });
 
   it("adds nothing where the person says the numbers are not the same, and offers no other try", async () => {
@@ -200,7 +208,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     const { list, post, held } = await listedPc();
     let clock = Date.now();
     await mount(list, post, { now: () => clock });
-    expect(buttons()).toEqual(["Not the same", "Add"]);
+    expect(buttons()).toEqual(["Cancel", "Not the same", "Add"]);
     clock += 121_000;
     await press("Add");
     expect(text()).toContain("That number ran out. Press Add for a new one.");
