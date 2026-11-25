@@ -6,7 +6,7 @@ import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-f
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
-import { AccountService } from "../lib/account/service.ts";
+import { ACCOUNT_SIGN_OUT_EVENT, AccountService } from "../lib/account/service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { memoryAccountStore, memoryLock, type AccountStore } from "../lib/account/store.ts";
 import type { AccountList } from "../lib/account/accountList.ts";
@@ -130,6 +130,23 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
       expect(dialog.map((node) => node.props["data-pc-id"])).toEqual([MAC]);
       // nothing is written to the account by the press: the number, confirmed at the PC, is what adds it
       expect(fake.requests.filter((line) => !line.startsWith("GET ") && !line.startsWith("POST /v1/token"))).toEqual([`PUT /v1/pcs/${DESK}`, `PUT /v1/pcs/${MAC}`]);
+    });
+
+    it("drops the number dialog an Allow opened once another account is signed in to here", async () => {
+      await listedByItsOwner(mac, "hasang-MacBookPro");
+      lists = { account: ACCOUNT, list, posts: [postOf(mac)] };
+      await mount();
+      await press("Allow");
+      const dialogs = () => renderer!.root.findAll((node) => node.props["data-testid"] === "add-pc-number");
+      expect(dialogs()).toHaveLength(1);
+      // another tab signs in to another account, which keeps a list of its own with the same PC's post
+      const other = "acct_other";
+      fake.signInAs("github", other);
+      await store.set("session", { ...(await store.get("session"))!, account: other, access_token: fake.issueToken(other) });
+      lists = { account: other, list, posts: [postOf(mac)] };
+      await act(async () => { window.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT)); });
+      await settle();
+      expect(dialogs().length).toBe(0);
     });
 
     it("shows no card for a PC that posted nothing for the list: no way into the directory's admission alone", async () => {

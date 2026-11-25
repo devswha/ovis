@@ -59,8 +59,9 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
 }) {
   const t = useT();
   const [asking, setAsking] = useState<Asking | null>(null);
-  // the PC whose number is asked for, on an account that keeps a list
-  const [adding, setAdding] = useState<{ readonly pc: MyPc; readonly post: ListedPost } | null>(null);
+  // the PC whose number is asked for, on an account that keeps a list, and the account it was asked for under: the
+  // dialog shows only while that account is the one signed in to here, and that account's list is the one read
+  const [adding, setAdding] = useState<{ readonly account: string; readonly pc: MyPc; readonly post: ListedPost } | null>(null);
   // the declined listings, so a new request from the same PC is shown
   const [denied, setDenied] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
@@ -134,7 +135,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
   const allow = (pc: MyPc): void => {
     if (lists === null) { open(pc.server_id); return; }
     const post = postOf(pc);
-    if (post !== undefined) setAdding({ pc, post });
+    if (post !== undefined) setAdding({ account: asking.session.account, pc, post });
   };
   const shown = asking.pcs.filter((pc) => !denied.has(asking.listings.get(pc.server_id) ?? "") && (lists === null || postOf(pc) !== undefined));
   return <>
@@ -152,7 +153,7 @@ export function AccountJoinRequests({ service = indexedAccountService, devices =
       </div>
     </div>
     ))}
-    {adding !== null && lists !== null && (
+    {adding !== null && lists !== null && adding.account === asking.session.account && lists.account === adding.account && (
       <AddPcByNumber list={lists.list} account={asking.session.account} post={adding.post} name={adding.pc.name} keys={adding.post.for.kind === "keys"}
         onClose={() => setAdding(null)} onAdded={() => { setAdding(null); window.dispatchEvent(new Event(ACCOUNT_PCS_CHANGED_EVENT)); }} />
     )}
