@@ -153,6 +153,7 @@ const BASE: Record<string, string> = {
   "Check the number, then approve": "番号を確かめてから承認してください",
   "First press “The numbers match” on {device}": "先に {device} で「数字が一致しています」を押してください",
   "Approve {device} on {pc}'s own screen": "{device} は {pc} 自身の画面で承認してください",
+  "{pc} cannot let {device} in: {pc} lets devices into your account by its signed list, and {device} asked as an Ovis older than 0.5.10 does. Update Ovis on {device}, then have it ask to join again.": "{pc} は {device} を参加させられません: {pc} はアカウントの署名付きリストでデバイスをアカウントに入れますが、{device} は 0.5.10 より古い Ovis と同じ方法でリクエストしました。{device} の Ovis を更新してから、もう一度参加をリクエストしてもらってください。",
   "Through {pc} · joins your {n} PCs": "{pc} 経由 · {n} 台の PC に参加します",
   "Pick the number on {device}": "{device} に表示されている数字を選んでください",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "今ご自身で始めた場合だけ承認してください。心当たりがなければ拒否してください。",

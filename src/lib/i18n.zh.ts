@@ -155,6 +155,7 @@ const BASE: Record<string, string> = {
   "Check the number, then approve": "核对数字后再批准",
   "First press “The numbers match” on {device}": "请先在 {device} 上点按“数字一致”",
   "Approve {device} on {pc}'s own screen": "请在 {pc} 自己的屏幕上批准 {device}",
+  "{pc} cannot let {device} in: {pc} lets devices into your account by its signed list, and {device} asked as an Ovis older than 0.5.10 does. Update Ovis on {device}, then have it ask to join again.": "{pc} 无法允许 {device} 加入：{pc} 通过账户的签名列表让设备加入你的账户，而 {device} 是以早于 0.5.10 的 Ovis 的方式请求的。请在 {device} 上更新 Ovis，然后让它再次请求加入。",
   "Through {pc} · joins your {n} PCs": "经由 {pc} · 将加入你的 {n} 台 PC",
   "Pick the number on {device}": "选择 {device} 上显示的数字",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "仅在你刚刚亲自发起时才批准。如果不是你发起的，请拒绝。",

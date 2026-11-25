@@ -151,6 +151,7 @@ const BASE: Record<string, string> = {
   "Check the number, then approve": "숫자를 확인한 뒤 승인하세요",
   "First press “The numbers match” on {device}": "먼저 {device}에서 “숫자가 같습니다”를 누르세요",
   "Approve {device} on {pc}'s own screen": "{device} 기기는 {pc} PC 화면에서 직접 승인하세요",
+  "{pc} cannot let {device} in: {pc} lets devices into your account by its signed list, and {device} asked as an Ovis older than 0.5.10 does. Update Ovis on {device}, then have it ask to join again.": "{pc}은(는) {device}을(를) 들일 수 없습니다: {pc}은(는) 계정의 서명된 목록으로 기기를 계정에 들이는데, {device}은(는) 0.5.10보다 오래된 Ovis처럼 요청했습니다. {device}에서 Ovis를 업데이트한 다음 다시 참여를 요청하게 하세요.",
   "Through {pc} · joins your {n} PCs": "{pc}에서 온 요청 · PC {n}대에 추가됩니다",
   "Pick the number on {device}": "{device} 화면의 숫자를 고르세요",
   "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "방금 직접 시작한 요청일 때만 승인하세요. 요청한 적이 없다면 거절하세요.",
