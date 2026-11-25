@@ -1187,13 +1187,18 @@ wait as before.
 
 A sign-in whose row only waits for a read (after a start, or once the hour has ended) is put off,
 never refused as a removed device's: `held` with `catching_up`, or `internal_error` to a client from
-before the account codes. So is, on a PC in an account that follows no signed list, a sign-in by a
-key it holds no row for while no read of the account that began after that key first asked here has
-finished (the read its sign-in starts was slower than the 5 seconds it waits, failed, or could not
-start within its minute): it may be a device the account let in that this PC has not read yet. It is
-`held` with `catching_up` to a client that knows the account codes, which asks again and gets in by
-the row a read brings; once such a read finished without the key, it is refused (`auth_failed`) as
-before, and so is every unknown key from another client and on a PC in no account. This changes
+before the account codes. So is, on a PC in an account that follows no signed list, a sign-in it
+refuses with no receipt (a key it holds no row for, or an id with a row and a proof that does not
+hold: the answer tells nobody which ids have a row) while no read of the account that began after
+that id first asked here has finished (the read its sign-in starts was slower than the 5 seconds it
+waits, failed, or could not start within its minute): it may be a device the account let in that
+this PC has not read yet. It is `held` with `catching_up` to a client that knows the account codes,
+which asks again and gets in by the row a read brings, only while a read can come (not with the
+account service off, nor while the PC's waiting records do not read) and for 3 minutes from the
+id's first ask at most. Once such a read finished without the key, or after those 3 minutes, it is
+refused (`auth_failed`) as before until a read brings its row or the PC forgets the id (10 minutes;
+it remembers 512 ids, and answers a new one as before while they are all live), and so is every
+unknown key from another client, on a PC that fails closed and on a PC in no account. This changes
 what such a PC answers, never whom it lets in. A join a member approves from afar is asked about like a sign-in before
 any device is written. A member in `devices.json` that paired its key with a code of this PC and
 kept it through its link keeps its access through the hour; what it may do for the account waits.

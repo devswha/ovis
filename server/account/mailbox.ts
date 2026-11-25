@@ -59,6 +59,8 @@ export const SIGN_IN_WAIT_MS = 5_000;
 /** How long an id with no row here is remembered as first asking to sign in (AccountMailbox.unreadKey), and how many. */
 const UNREAD_KEY_MS = 10 * 60_000;
 const UNREAD_KEYS = 512;
+/** How long from its first ask such an id is told to wait for a read at most: past it, it is refused as before. */
+const UNREAD_WAIT_MS = 3 * 60_000;
 /** How long the account service's word on whether an account keeps a signed list is kept (AccountMailbox.listNamed). */
 const LIST_NAMED_MS = 30_000;
 /** The least time between two reads of an account's admissions for links (vouch): a 429 may name a longer one. */
@@ -357,7 +359,8 @@ export class AccountMailbox {
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
       const adds = applied + (await this.readSnapshotNow(readmission, this.drainedListing)).adds;
-      // the mailbox and the account's rows were read whole: every key the account let in by then has its row here
+      // a pull that ended with no error: what the account let in by then has its row here, as far as such a pull reads
+      // (one that read only part, or nothing where there was nothing to read, refuses earlier: it never lets a key in)
       if (this.error === null) this.readBegan = began;
       await this.sendCompletion();
       return adds;
@@ -367,29 +370,38 @@ export class AccountMailbox {
 
   /** When the last pull that read the mailbox and the account's rows without an error began (Date.now()); null before one. */
   private readBegan: number | null = null;
-  /** When each id this PC holds no row for first asked to sign in here (unreadKey): bounded, the oldest dropped first. */
+  /** When each id this PC holds no row for first asked to sign in here (unreadKey): at most UNREAD_KEYS, in the order they asked. */
   private readonly firstAsked = new Map<string, number>();
 
   /**
    * An id this PC holds no row for asks to sign in now (relay/refused-signin.ts, before the read that ask starts): when
-   * it first asked, now unless it asked within UNREAD_KEY_MS. At most UNREAD_KEYS ids are kept, the oldest dropped first.
+   * it first asked, now unless it asked within UNREAD_KEY_MS. Only ids the memory let go of make room: with UNREAD_KEYS
+   * ids remembered, a new one is not (null), so a flood of new ids never pushes a key's first ask out.
    */
-  askedFirst(deviceId: string, now = Date.now()): number {
+  askedFirst(deviceId: string, now = Date.now()): number | null {
+    const live = (at: number): boolean => now - at >= 0 && now - at <= UNREAD_KEY_MS;
     const first = this.firstAsked.get(deviceId);
-    if (first !== undefined && now - first >= 0 && now - first <= UNREAD_KEY_MS) return first;
+    if (first !== undefined && live(first)) return first;
     this.firstAsked.delete(deviceId);
+    for (const [id, at] of this.firstAsked) {
+      if (live(at)) break;
+      this.firstAsked.delete(id);
+    }
+    if (this.firstAsked.size >= UNREAD_KEYS) return null;
     this.firstAsked.set(deviceId, now);
-    while (this.firstAsked.size > UNREAD_KEYS) this.firstAsked.delete(this.firstAsked.keys().next().value!);
     return now;
   }
 
   /**
-   * A sign-in by an id this PC holds no row for: whether no pull that began after that id first asked here has read the
-   * account whole yet. While so, the key may be one the account let in that this PC has not read: the sign-in is told
-   * the PC is catching up (relay/session.ts). Once such a read finished without it, it is refused as any unknown key.
+   * A sign-in by an id this PC holds no row for: whether it is to wait for a read, as a key the account may have let in
+   * that this PC has not read yet (relay/session.ts answers it catching_up). Only while a read can come (the service is
+   * on and this PC's waiting records read: as readComing reasons), for UNREAD_WAIT_MS from the id's first ask at most,
+   * and while no pull that began after that ask ended with no error. Otherwise it is refused as any unknown key.
    */
   unreadKey(deviceId: string, now = Date.now()): boolean {
+    if (this.options.service instanceof Error || this.pendingError !== null) return false;
     const first = this.askedFirst(deviceId, now);
+    if (first === null || now - first > UNREAD_WAIT_MS) return false;
     return this.readBegan === null || this.readBegan < first;
   }
 

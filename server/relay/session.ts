@@ -514,12 +514,12 @@ export class RelaySession {
         if (!device && this.authReceipts && frame.type === FrameType.AUTH) {
           const receipts = await devices.refusedRelayReceipts(frame.payload.device_id, { nonce: this.nonce, signature: frame.payload.signature, serverId: this.options.serverId });
           if (!this.mux.active) return;
-          // A key this PC holds no row for, on a PC that follows no list and does not fail closed, while no read of the
-          // account that began after it first asked here has finished (the read its sign-in started was slow, failed, or
-          // could not start yet): it may be a device the account let in that this PC has not read. A client that knows the
-          // account codes is told to wait, and asks again; it gets in only by the row a read brings. Every other unknown key
-          // is refused as before
-          if (receipts.length === 0 && !devices.has(frame.payload.device_id) && !devices.failsClosed && devices.accountError === null && !devices.listFollowed()
+          // A sign-in this PC refuses with no receipt, on a PC that follows no list and does not fail closed, while no read
+          // of the account that began after its id first asked here has finished (the read its sign-in started was slow,
+          // failed, or could not start yet): it may be a device the account let in that this PC has not read. A client that
+          // knows the account codes is told to wait, and asks again; it gets in only by the row a read brings. An id with a
+          // row and a proof that does not hold is answered the same, so the answer tells nobody which ids have a row here
+          if (receipts.length === 0 && !devices.failsClosed && devices.accountError === null && !devices.listFollowed()
             && this.options.services.accountMailbox.unreadKey(frame.payload.device_id)) {
             const refusal = accountSignInRefusal({ refused: "catching_up" }, null, true);
             this.mux.fail(refusal.code, refusal.message, undefined, refusal.hold);
