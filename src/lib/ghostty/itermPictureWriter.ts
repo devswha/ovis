@@ -1,21 +1,31 @@
-import { base64Length, ITERM_ARGS_ROOM, ITERM_PICTURE_COMMANDS, itermFile, itermMultipart, type PictureLimits } from "../itermPicturePayload.ts";
-import { itermKitty, MAX_PICTURE_BYTES, MAX_PICTURE_PIXELS, type PictureGrid, type PicturePayload } from "./itermKitty.ts";
+import { base64Length, ITERM_ARGS_ROOM, ITERM_PICTURE_COMMANDS, itermFile, itermMultipart, toBase64, type PictureLimits } from "../itermPicturePayload.ts";
+import { encodePng } from "../itermPictures.ts";
+import { itermKitty, kittyPng, MAX_PICTURE_BYTES, MAX_PICTURE_PIXELS, type PictureGrid, type PicturePayload } from "./itermKitty.ts";
+import { decodeSixel } from "./sixel.ts";
 
 type Chunk = string | Uint8Array;
-type Segment = Chunk | PicturePayload;
+type Rgb = readonly [number, number, number];
+interface SixelPayload { readonly body: string; readonly transparent: boolean }
+type Segment = Chunk | PicturePayload | SixelPayload;
 
 const OSC = "\x1b]1337;";
+const DCS = "\x1bP";
 const HEADS = ITERM_PICTURE_COMMANDS.map((command) => OSC + command);
 const latin1 = new TextDecoder("latin1");
 const ascii = new TextEncoder();
+// Bound speculative DCS parameters too; longer headers are left to the terminal parser.
+const DCS_HEAD_MAX = 128;
 
 function pictureScanner(limits: () => PictureLimits | null) {
   let state: "text" | "head" | "string" | "picture" = "text";
   let head = "";
   let byteHead = false;
   let stringEscape = false;
+  let stringDcs = false;
   let pictureEscape = false;
   let single = false;
+  let sixel = false;
+  let transparent = false;
   let parts: string[] = [];
   let recent: string[] = [];
   let size = 0;
@@ -25,7 +35,8 @@ function pictureScanner(limits: () => PictureLimits | null) {
   function* scan(data: Chunk): Generator<Segment, void> {
     const text = typeof data === "string" ? data : latin1.decode(data);
     const slice = (start: number, end: number): Chunk => typeof data === "string" ? text.slice(start, end) : data.subarray(start, end);
-    const boundary = /[\x07\x18\x1a\x1b]/g;
+    const oscBoundary = /[\x07\x18\x1a\x1b]/g;
+    const dcsBoundary = /[\x18\x1a\x1b]/g;
     let at = 0;
     let from = 0;
     // The held ESC may have come from a previous write. Keep the common case in contiguous slices.
@@ -35,12 +46,25 @@ function pictureScanner(limits: () => PictureLimits | null) {
       if (state === "head") {
         const ch = text.charAt(at);
         const next = head + ch;
-        if (HEADS.some((prefix) => prefix.startsWith(next))) {
+        if (next === DCS || (head.startsWith(DCS) && head.length < DCS_HEAD_MAX && /[\d;]/.test(ch))) {
+          head = next;
+          at++;
+        } else if (head.startsWith(DCS) && ch === "q") {
+          if (escapeAt > from) yield slice(from, escapeAt);
+          state = "picture";
+          sixel = true;
+          transparent = Number(head.slice(DCS.length).split(";")[1]) === 1;
+          const caps = limits();
+          limit = caps?.sixelSizeLimit ?? 0;
+          size = 0;
+          at++;
+        } else if (HEADS.some((prefix) => prefix.startsWith(next))) {
           head = next;
           at++;
           if (HEADS.includes(head)) {
             if (escapeAt > from) yield slice(from, escapeAt);
             state = "picture";
+            sixel = false;
             single = head.endsWith(";File=");
             const caps = limits();
             limit = caps ? ITERM_ARGS_ROOM + base64Length(caps.sizeLimit) : 0;
@@ -49,6 +73,7 @@ function pictureScanner(limits: () => PictureLimits | null) {
           }
         } else {
           state = head.length > 1 || "P_^X".includes(ch) ? "string" : "text";
+          stringDcs = head.startsWith(DCS);
           // ESC plus a string introducer is not part of that string's payload.
           if (head.length === 1 && state === "string") { head += ch; at++; }
           if (escapeAt < 0) {
@@ -61,7 +86,7 @@ function pictureScanner(limits: () => PictureLimits | null) {
       if (state === "picture" && pictureEscape) {
         pictureEscape = false;
         if (text.charAt(at) !== "\\") {
-          if (!single) multipart.reset();
+          if (!sixel && !single) multipart.reset();
           parts = []; recent = [];
           head = "\x1b";
           from = Math.max(escapeAt, 0);
@@ -91,6 +116,7 @@ function pictureScanner(limits: () => PictureLimits | null) {
         continue;
       }
 
+      const boundary = (state === "picture" ? sixel : stringDcs) ? dcsBoundary : oscBoundary;
       boundary.lastIndex = at;
       const end = st ? at : boundary.exec(text)?.index ?? text.length;
       if (state === "string") {
@@ -119,8 +145,8 @@ function pictureScanner(limits: () => PictureLimits | null) {
           from = end + 1;
           const payload = limit && limits() && (st || text.charAt(end) === "\x07") ? parts.join("") + recent.join("") : "";
           parts = []; recent = [];
-          if (!payload && !single) multipart.reset();
-          const picture = payload ? (single ? itermFile(payload) : multipart.handle(payload)) : null;
+          if (!payload && !sixel && !single) multipart.reset();
+          const picture = payload ? (sixel ? { body: payload, transparent } : single ? itermFile(payload) : multipart.handle(payload)) : null;
           if (picture) yield picture;
         }
       }
@@ -153,10 +179,14 @@ const MAX_PENDING = 8 * 1024 * 1024;
 const MAX_ACTIVE = 64 * 1024 * 1024;
 const MAX_WRITES = 1024;
 
-export function itermPictureWriter(settings: () => PictureLimits | null, grid: () => PictureGrid) {
+export function itermPictureWriter(settings: () => PictureLimits | null, grid: () => PictureGrid, background: () => Rgb = () => [0, 0, 0]) {
   const limits = (): PictureLimits | null => {
     const caps = settings();
-    return caps && { sizeLimit: Math.min(caps.sizeLimit, MAX_PICTURE_BYTES), pixelLimit: Math.min(caps.pixelLimit, MAX_PICTURE_PIXELS) };
+    return caps && {
+      sizeLimit: Math.min(caps.sizeLimit, MAX_PICTURE_BYTES),
+      sixelSizeLimit: Math.min(caps.sixelSizeLimit ?? caps.sizeLimit, MAX_PICTURE_BYTES),
+      pixelLimit: Math.min(caps.pixelLimit, MAX_PICTURE_PIXELS),
+    };
   };
   const scanner = pictureScanner(limits);
   const queue: Job[] = [];
@@ -183,7 +213,13 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
         if (typeof part === "string" || part instanceof Uint8Array) { job.emit(part); continue; }
         const caps = limits();
         if (!caps) continue;
-        const image = itermKitty(part, caps, grid);
+        const image = "base64" in part ? itermKitty(part, caps, grid) : async () => {
+          if (part.body.length > (caps.sixelSizeLimit ?? 0)) return "";
+          const decoded = decodeSixel(part.body, { transparent: part.transparent, background: background(), pixelLimit: caps.pixelLimit });
+          if (!decoded) return "";
+          const png = await encodePng(decoded.width, decoded.height, decoded.rgba);
+          return png.length <= MAX_PICTURE_BYTES ? kittyPng(toBase64(png)) : "";
+        };
         if (typeof image === "string") { if (image) job.emit(image, true); continue; }
         if (decoding || job.weight > MAX_ACTIVE || weight - job.weight > MAX_PENDING) continue;
         decoding = true;
@@ -210,7 +246,6 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
       if (weight - (queue[0]?.weight ?? 0) > MAX_PENDING || queue.length > MAX_WRITES) pending = null;
       drain();
     },
-    flush(): void { pending = null; drain(); },
     reset(): void {
       pending = null;
       scanner.reset();

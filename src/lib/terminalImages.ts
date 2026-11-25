@@ -166,7 +166,11 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
       terminal.loadAddon(addon);
       // registered after the addon, so it reads each iTerm2 payload first (xterm asks the newest handler first)
       const feed = iipFeed(addon);
-      const limits: PictureLimits = { sizeLimit: options.iipSizeLimit ?? 20_000_000, pixelLimit: options.pixelLimit ?? 16_777_216 };
+      const limits: PictureLimits = {
+        sizeLimit: options.iipSizeLimit ?? 20_000_000,
+        sixelSizeLimit: options.sixelSizeLimit ?? 25_000_000,
+        pixelLimit: options.pixelLimit ?? 16_777_216,
+      };
       const pictures = feed && itermPictures(feed, () => limits);
       const entry: Loaded = { addon, windowOptions, limits, enabled: true, resetPictures: () => pictures?.reset() };
       // xterm feeds every handler each piece and asks only at the end who takes it: while off, a payload

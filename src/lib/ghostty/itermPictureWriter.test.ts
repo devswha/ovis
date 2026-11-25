@@ -19,12 +19,49 @@ function rewrite(chunks: readonly (string | Uint8Array)[], caps: typeof CAPS | n
 
 test("rewrites a picture at every byte boundary without touching other bytes", () => {
   const before = Buffer.concat([Buffer.from("前\x1b[31m\x1b]0;title\x1b\\\x1b]1337;SetMark\x07"), Buffer.from([0xff])]);
-  const after = Buffer.from("\x1b_Ga=d\x1b\\\x1bP0;1q~\x1b\\後\x1b[0m");
+  const after = Buffer.from("\x1b_Ga=d\x1b\\\x1bP$qm\x1b\\後\x1b[0m");
   const input = Buffer.concat([before, Buffer.from(file("inline=1;width=3;height=2;preserveAspectRatio=0", png, "\x1b\\")), after]);
   const expected = Buffer.concat([before, Buffer.from(kitty(png, ",c=3,r=2")), after]);
   expect(rewrite([input])).toEqual(expected);
   for (let i = 1; i < input.length; i++) expect(rewrite([input.subarray(0, i), input.subarray(i)])).toEqual(expected);
   expect(rewrite(Array.from(input, (byte) => Uint8Array.of(byte)))).toEqual(expected);
+});
+
+async function rewriteAll(chunks: readonly (string | Uint8Array)[], caps: Parameters<typeof itermPictureWriter>[0] = () => CAPS): Promise<Buffer> {
+  const writer = itermPictureWriter(caps, () => GRID, () => [12, 34, 56]);
+  const result: Buffer[] = [];
+  for (const chunk of chunks) writer.write(chunk, (output) => { result.push(Buffer.from(output)); });
+  await new Promise<void>((done) => writer.write("", (output) => { result.push(Buffer.from(output)); }, done));
+  return Buffer.concat(result);
+}
+
+test("holds split sixels and emits their PNG before same-write and later text at every byte boundary", async () => {
+  const dcs = '\x1bP0;1;0q"1;1;2;1#1@\x1b\\';
+  const before = Buffer.concat([Buffer.from("前\x1b[31m"), Buffer.from([0xff])]);
+  const after = Buffer.from("\x1bP$qm\x1b\\後\x1b[0m");
+  const input = Buffer.concat([before, Buffer.from(dcs), after]);
+  const converted = Buffer.from(await encodePng(2, 1, Uint8Array.of(51, 51, 204, 255, 0, 0, 0, 0))).toString("base64");
+  const expected = Buffer.concat([before, Buffer.from(kitty(converted)), after]);
+  expect(await rewriteAll([input])).toEqual(expected);
+  for (let i = 1; i < input.length; i++) {
+    expect(await rewriteAll([input.subarray(0, i), input.subarray(i)])).toEqual(expected);
+  }
+  expect(await rewriteAll(Array.from(input, (byte) => Uint8Array.of(byte)))).toEqual(expected);
+});
+
+test("uses opaque background when P2 is omitted", async () => {
+  const converted = Buffer.from(await encodePng(2, 1, Uint8Array.of(255, 255, 255, 255, 12, 34, 56, 255))).toString("base64");
+  expect((await rewriteAll(['\x1bPq"1;1;2;1@\x1b\\'])).toString()).toBe(kitty(converted));
+});
+
+test.each([
+  { body: "#1@", caps: null, name: "pictures off" },
+  { body: "#1@", caps: { ...CAPS, sixelSizeLimit: 2 }, name: "sixel byte cap" },
+  { body: "!200~", caps: { ...CAPS, pixelLimit: 100 }, name: "pixel cap" },
+  { body: "!20000~", caps: { ...CAPS, pixelLimit: Infinity }, name: "hard side cap" },
+  { body: "!2", caps: CAPS, name: "malformed repeat" },
+])("drops sixels without losing following text ($name)", async ({ body, caps }) => {
+  expect((await rewriteAll(`a\x1bP0;1q${body}\x1b\\b`.split(""), () => caps)).toString()).toBe("ab");
 });
 
 test("joins imgcat parts and places the picture at FileEnd", () => {

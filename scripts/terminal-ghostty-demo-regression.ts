@@ -1,9 +1,8 @@
 /**
  * herdr's own server is
  * drawn by libghostty too, and so is a device that turned the old Draw with libghostty switch off.
- * The libghostty-only renderer places iTerm2 pictures where xterm does. Demo fixtures only.
+ * The libghostty-only renderer places iTerm2 and sixel pictures where xterm does. Demo fixtures only.
  */
-import { deflateSync } from "node:zlib";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +14,7 @@ import { chromePath } from "./chrome-path.ts";
 import { readableColor } from "../src/lib/terminalFold.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { serveDemo } from "./demo-server.ts";
+import { checkGhosttySixel, ghosttyPicture as picture, squarePng } from "./terminal-demo-pictures.ts";
 
 interface Frame { type: string; pane_id?: string; data?: string; text?: string; features?: string[] }
 interface GhosttyFixture { inputs: Frame[]; print(data: string): void; geometry(cols: number, rows: number): void }
@@ -78,21 +78,7 @@ const kittySquare = (id: number, rgb: [number, number, number]): string => {
 };
 
 const itermSquare = (): string => {
-  const chunk = (type: string, data: Uint8Array) => {
-    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
-    const out = Buffer.alloc(12 + data.length);
-    out.writeUInt32BE(data.length, 0);
-    body.copy(out, 4);
-    out.writeUInt32BE(Bun.hash.crc32(body), 8 + data.length);
-    return out;
-  };
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(24, 0);
-  header.writeUInt32BE(24, 4);
-  header.set([8, 2, 0, 0, 0], 8);
-  const row = Buffer.concat([Buffer.from([0]), ...Array.from({ length: 24 }, () => Buffer.from([0, 128, 0]))]);
-  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header),
-    chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: 24 }, () => row)))), chunk("IEND", new Uint8Array())]);
+  const png = squarePng([0, 128, 0]);
   return `\x1b]1337;File=inline=1;size=${png.length}:${png.toString("base64")}\x07`;
 };
 
@@ -102,13 +88,6 @@ const print = async (page: Page, data: string, marker: string) => {
   await page.waitForFunction((marker) => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes(marker)), marker);
   await settled(page);
 };
-const picture = (page: Page) => page.evaluate(() => {
-  const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".pane-frame.is-current .ghostty-image")];
-  if (canvases.length !== 1) return canvases.length === 0 ? null : { count: canvases.length };
-  const canvas = canvases[0]!;
-  const [r, g, b] = canvas.getContext("2d")!.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data;
-  return { rgb: [r, g, b], width: canvas.style.width, top: canvas.style.top };
-});
 
 async function open(browser: Browser, server: number, prefix: string, kind: "core" | "herdr", { storedOff = false, noModule = false, images = false, only = false } = {}): Promise<{ page: Page; wasm: string[]; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
@@ -377,6 +356,8 @@ try {
             const gif = Buffer.from("474946383961010001008000000000ffffff002c00000000010001000002024401003b", "hex").toString("base64");
             await print(page, `\x1b_Ga=d,d=A\x1b\\\x1b[H\x1b]1337;File=inline=1;width=2:${gif}\x07`, "GIF-AFTER");
             assert.deepEqual((await picture(page))?.rgb, [0, 0, 255], "core, iTerm2 GIF: libghostty draws the browser-converted picture");
+
+            await checkGhosttySixel(page, print);
           }
           assert.deepEqual(errors.filter((error) => !error.includes("libghostty") && !error.includes("wasm")), [], `core, iTerm2 picture${ghostty ? "" : ", no module"}: no page errors`);
           await page.context().close();

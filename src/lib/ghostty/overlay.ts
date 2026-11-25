@@ -1,8 +1,8 @@
 // allow: SIZE_OK - the overlay's drawing and cleanup share its terminal and renderer state.
 /**
  * libghostty-vt draws every xterm terminal's screen, Kitty graphics pictures included, while xterm stays
- * the engine under it. xterm draws by itself only where this layer cannot: a module that does not load or
- * fails, or a sixel picture (also iTerm2 when xterm still parses the same output).
+ * the engine under it. xterm draws by itself if the module fails, or when it parses the same output
+ * and an iTerm2 or sixel picture would move its cursor. In `only` mode libghostty draws those too.
  *
  * libghostty answers nothing: a reply it made to a replayed stream would reach the program as typing.
  */
@@ -18,7 +18,7 @@ import { itermPictureWriter } from "./itermPictureWriter.ts";
 import { holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
 import { holdSelection } from "./selection.ts";
 import { ghosttyRows } from "./screenRows.ts";
-import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
+import { GhosttyVt, rgb, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
 
@@ -47,25 +47,24 @@ const POWERLINE_GLYPH = /^[\ue0a4-\ue0d6]$/u;
 const MEASURED_MAX = 4096;
 
 const latin1 = new TextDecoder("latin1");
-const SIXEL = /\x1bP[0-9;]*q/g;
 const XTERM_PICTURE = /\x1b\]1337;(?:File|MultipartFile)=|\x1bP[0-9;]*q/g;
-/** an iTerm2 inline picture (OSC 1337 File=, or MultipartFile= as imgcat sends it) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
-export function hasXtermPicture(data: string | Uint8Array, only = false, carried = 0): boolean {
+/** Pictures xterm's addon draws when both parsers receive the original output. */
+export function hasXtermPicture(data: string | Uint8Array, carried = 0): boolean {
   const text = typeof data === "string" ? data : latin1.decode(data);
-  for (const match of text.matchAll(only ? SIXEL : XTERM_PICTURE)) {
+  for (const match of text.matchAll(XTERM_PICTURE)) {
     if (match.index + match[0].length > carried) return true;
   }
   return false;
 }
 
-export function xtermPictureScanner(only = false): (data: string | Uint8Array) => boolean {
+export function xtermPictureScanner(): (data: string | Uint8Array) => boolean {
   let tail = "";
   return (data) => {
     const carried = tail.length;
     const text = tail + (typeof data === "string" ? data : latin1.decode(data));
     // longer than any start it looks for (`ESC ] 1337 ; MultipartFile =`, a sixel DCS with its parameters)
     tail = text.slice(-64);
-    return hasXtermPicture(text, only, carried);
+    return hasXtermPicture(text, carried);
   };
 }
 
@@ -145,8 +144,8 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   if (!screen) throw new Error("ghostty overlay: the terminal is not open");
   const vt = await GhosttyVt.create(term.cols, term.rows);
   const backlog = takeBacklog();
-  const pictureIn = xtermPictureScanner(only);
-  if (!backlog || (terminalDrawsPictures(term) && backlog.some(pictureIn))) {
+  const pictureIn = only ? null : xtermPictureScanner();
+  if (!backlog || (pictureIn && terminalDrawsPictures(term) && backlog.some(pictureIn))) {
     vt.dispose();
     return null;
   }
@@ -526,7 +525,12 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     },
     screenCursor: () => vt.screenCursor(),
   }, (data, callback) => write(data, callback));
-  const pictures = only ? itermPictureWriter(() => terminalPictureLimits(term), () => ({ cols: term.cols, rows: term.rows, cellW, cellH })) : null;
+  const pictures = only ? itermPictureWriter(
+    () => terminalPictureLimits(term),
+    () => ({ cols: term.cols, rows: term.rows, cellW, cellH }),
+    // libghostty doesn't expose the current SGR background; use the terminal's default.
+    () => rgb(themeColors(term).background) ?? [0, 0, 0],
+  ) : null;
   const emitOnly = (replay: boolean) => (data: string | Uint8Array, picture = false): void => {
     if (disposed) return;
     try {
@@ -534,7 +538,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       if (picture) {
         const { x } = vt.screenCursor();
         send(data);
-        // Kitty moves right as well as down; the iTerm2 picture leaves the original column alone.
+        // xterm's default sixelScrolling (also used for iTerm2) ends on the last image row
+        // at the original column. Kitty ends on that row too, but moves to the right.
+        // This follows the default, not xterm's fixed-position DECSDM mode.
         if (vt.screenCursor().x !== x) send(`\x1b[${x + 1}G`);
       } else send(data);
       written = true;
@@ -551,26 +557,21 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   };
   term.write = ((data: string | Uint8Array, callback?: () => void) => {
     if (pictures && !disposed) {
-      if (pictureIn(data) && terminalDrawsPictures(term)) {
-        pictures.flush();
-        overlay.dispose();
-      } else {
-        keep(data);
-        pictures.write(data, emitLive, () => {
-          // xterm holds no rows and may skip rendering a cursor move. An open DEC 2026
-          // update still waits for the render that ends it.
-          write("", () => {
-            if (!term.modes.synchronizedOutputMode) schedule();
-            callback?.();
-          });
+      keep(data);
+      pictures.write(data, emitLive, () => {
+        // xterm holds no rows and may skip rendering a cursor move. An open DEC 2026
+        // update still waits for the render that ends it.
+        write("", () => {
+          if (!term.modes.synchronizedOutputMode) schedule();
+          callback?.();
         });
-        return;
-      }
+      });
+      return;
     }
     // libghostty takes Kitty pictures but not iTerm2 or sixel ones: when xterm draws one (Pictures in the terminal),
     // its cursor moves past the picture and libghostty's would not, so the text after it would sit on other rows.
     // xterm draws the pane from that picture on (#2980)
-    if (!disposed && pictureIn(data) && terminalDrawsPictures(term)) overlay.dispose();
+    if (!disposed && pictureIn?.(data) && terminalDrawsPictures(term)) overlay.dispose();
     if (!disposed) {
       try {
         vt.write(data);

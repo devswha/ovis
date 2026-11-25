@@ -1,5 +1,5 @@
 /** The addon's caps: decoded file bytes and pixels. */
-export interface PictureLimits { readonly sizeLimit: number; readonly pixelLimit: number }
+export interface PictureLimits { readonly sizeLimit: number; readonly pixelLimit: number; readonly sixelSizeLimit?: number }
 
 export const ITERM_PICTURE_COMMANDS = ["File=", "MultipartFile=", "FilePart=", "FileEnd"] as const;
 export const ITERM_ARGS_ROOM = 65536;

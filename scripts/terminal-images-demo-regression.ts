@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
 import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
@@ -16,6 +15,7 @@ import { chromePath } from "./chrome-path.ts";
 import { openSettingsFolds } from "./settings-page.ts";
 import { shownRows } from "./shown-rows.ts";
 import { serveDemo } from "./demo-server.ts";
+import { squarePng } from "./terminal-demo-pictures.ts";
 
 interface ImagesFixture { print(data: string): void }
 interface ImagesConfig { core?: boolean; first?: string }
@@ -64,24 +64,6 @@ function installImagesFixture(): void {
  * A 24x24 PNG square of one colour as an iTerm2 inline image. iTerm2's pictures decode in the browser
  * itself; sixel's WebAssembly decoder starts after the addon loads, so a first sixel could be missed.
  */
-const squarePng = (rgb: [number, number, number]): Buffer => {
-  const chunk = (type: string, data: Uint8Array) => {
-    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
-    const out = Buffer.alloc(12 + data.length);
-    out.writeUInt32BE(data.length, 0);
-    body.copy(out, 4);
-    out.writeUInt32BE(Bun.hash.crc32(body), 8 + data.length);
-    return out;
-  };
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(24, 0);
-  header.writeUInt32BE(24, 4);
-  header.set([8, 2, 0, 0, 0], 8);
-  const row = Buffer.concat([Buffer.from([0]), ...Array.from({ length: 24 }, () => Buffer.from(rgb))]);
-  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header),
-    chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: 24 }, () => row)))), chunk("IEND", new Uint8Array())]);
-  return png;
-};
 const square = (rgb: [number, number, number]): string => {
   const png = squarePng(rgb);
   return `\x1b]1337;File=inline=1;size=${png.length}:${png.toString("base64")}\x07`;
@@ -182,6 +164,7 @@ try {
       await context.addInitScript(() => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
         localStorage.setItem("ovis:terminal-pictures", "true");
+        localStorage.setItem("ovis:ghostty-only", "off");
       });
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
@@ -193,8 +176,8 @@ try {
       await addonLoaded;
       await settled(page);
 
-      // The reset and stale-cell checks below are for xterm's addon. Sixel still makes it take over
-      // even when libghostty parses by itself. Use a PNG for the sample pixel, independent of sixel startup.
+      // Force xterm's addon for its reset and stale-cell checks. The shared-parser mode hands
+      // over at the first picture. Use a PNG for the sample pixel, independent of sixel startup.
       await print(page, `\x1b[H\x1b[2J\x1bPq\x1b\\${RED}`, "RED-PRINTED");
       assert.equal(await page.locator(".pane-frame.is-current [data-renderer=ghostty]").count(), 0, "sixel hands the pane to xterm");
       assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "the picture is drawn where it is printed");

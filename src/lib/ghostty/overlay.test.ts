@@ -32,11 +32,3 @@ test("tells an iTerm2 or sixel picture whose start is split between two writes",
   expect(text("\x1b]0;title\x07")).toBe(false);
   expect(text("plain text")).toBe(false);
 });
-
-test("only mode hands over for a split sixel but not for either form of iTerm2 picture", () => {
-  const only = xtermPictureScanner(true);
-  expect(only("\x1b]1337;File=inline=1:AAAA\x07\x1b]1337;MultipartFile=inline=1\x07")).toBe(false);
-  expect(only("\x1bP0;1")).toBe(false);
-  expect(only(";0q#0;2;0;0;0~\x1b\\")).toBe(true);
-  expect(only("later text")).toBe(false);
-});

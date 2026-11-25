@@ -39,7 +39,7 @@ function kittyPlacement(args: ReadonlyMap<string, string>, grid: PictureGrid, im
   };
 }
 
-function kittyPng(base64: string, placement: string): string {
+export function kittyPng(base64: string, placement = ""): string {
   const chunks: string[] = [];
   for (let at = 0; at < base64.length; at += CHUNK) {
     const header = at === 0 ? `f=100,a=T,q=2${placement},` : "";

@@ -19,7 +19,7 @@ export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTM
   let overlay: GhosttyOverlay | null = null;
   let stopped = false;
   // with `only` (decided when the server says what it is), xterm takes the controls of what libghostty is to draw
-  // (controls.ts); a sixel picture hands the terminal back to xterm (overlay.ts)
+  // (controls.ts); libghostty also draws the pictures (overlay.ts)
   let only = false;
   const scan = controlScanner();
   const decoder = new TextDecoder();
