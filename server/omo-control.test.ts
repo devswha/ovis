@@ -141,7 +141,7 @@ it("sends no effort once herdr reports another session in the pane", async () =>
     return { type: "response", success: true, data: { levels: ["off", "low", "high"] } };
   });
   expect(await sendCommandAsData(pane, { agent: "omo", kind: "effort", level: "high" }, () => true)).toBeNull();
-  expect(requests.map((request) => request["type"])).toEqual(["get_available_thinking_levels"]);
+  expect(requests).toEqual([]);
   mock.restore();
 });
 

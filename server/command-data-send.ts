@@ -78,6 +78,10 @@ async function omoEffort(pane: HerdrPane, level: string, mayWrite: () => boolean
   const agentDir = roots.omo?.agentDir;
   const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
   if (socket === null || level === "off") return null;
+  // the session the send was made for, as herdr reports it now
+  const now = await paneGet(pane.pane_id);
+  if (now.terminal_id !== pane.terminal_id || JSON.stringify(now.agent_session ?? null) !== JSON.stringify(pane.agent_session ?? null)) return null;
+  // last before the write: the levels the model offers now (OmO clamps an unoffered level rather than refusing it)
   const offered = await omoControlCall(socket, { type: "get_available_thinking_levels" });
   const levels = typeof offered === "object" && typeof offered["data"] === "object" && offered["data"] !== null ? (offered["data"] as { levels?: unknown }).levels : undefined;
   if (!Array.isArray(levels)) return null;
@@ -85,9 +89,6 @@ async function omoEffort(pane: HerdrPane, level: string, mayWrite: () => boolean
   // classifyReasoningCapability): those are typed, so OmO says why
   const graded = levels.filter((offered) => offered !== "off");
   if (!graded.includes(level) || (levels.includes("off") && graded.length < 2)) return null;
-  // the session the send was made for, as herdr reports it right before the request
-  const now = await paneGet(pane.pane_id);
-  if (now.terminal_id !== pane.terminal_id || JSON.stringify(now.agent_session ?? null) !== JSON.stringify(pane.agent_session ?? null)) return null;
   const at = Date.now();
   const answer = await omoControlCall(socket, { type: "set_thinking_level", level, scope: "turn" }, mayWrite);
   if (answer === "unsent") return null;
