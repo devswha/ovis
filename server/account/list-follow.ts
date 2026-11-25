@@ -119,6 +119,8 @@ const LIST_MEMBER_READ_MS = 3_000;
 const LIST_MEMBER_LOOK_MS = 100;
 /** The longest one try waits because the account service asked it to (its `retry-after`). */
 const LIST_ALLOW_RETRY_MAX_MS = 10_000;
+/** How long after a round of naming the account service could not answer the next one may start (nameDevices). */
+const NAMES_RETRY_MS = 60_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
 export const LIST_DEVICE_LABEL = "Device";
 /** The name a PC added over SSH is sealed under when the one it gave is no name. */
@@ -445,6 +447,11 @@ export class ListFollow implements ListAuthority {
    * (listCommit). `tried`: the entries asked once, opened or not; one that does not open is not asked again.
    */
   private deviceNames: { readonly list: string; readonly byKey: Map<string, string>; readonly tried: Set<number> } | null = null;
+  /** The round of naming under way (nameDevices), or the last one, over: one at a time. */
+  private naming: Promise<void> = Promise.resolve();
+  private namingNow = false;
+  /** No round of naming starts before this time (deps.now) after one the account service could not answer. */
+  private namesRetryAt = 0;
   /** The list a person at this PC confirmed for an account the PC is not in yet, as far as it has read it. In memory only. */
   private candidate: { readonly account: string; readonly copy: FollowerCopy } | null = null;
   /** The PC has just joined by its list: the devices the list holds come in with no join hold, as at any pin. */
@@ -531,13 +538,16 @@ export class ListFollow implements ListAuthority {
     this.untilTimer = undefined;
   }
 
-  /** Everything asked of the list so far has been done. */
+  /** Everything asked of the list so far has been done, the naming of its rows (nameDevices) too. */
   async settled(): Promise<void> {
-    for (let turn: Promise<unknown> | null = null, page: Promise<unknown> | null = null; turn !== this.turn || page !== this.applying;) {
+    for (let turn: Promise<unknown> | null = null, page: Promise<unknown> | null = null, names: Promise<unknown> | null = null;
+      turn !== this.turn || page !== this.applying || names !== this.naming;) {
       turn = this.turn;
       page = this.applying;
+      names = this.naming;
       await turn;
       await page;
+      await names;
     }
   }
 
@@ -1883,18 +1893,21 @@ export class ListFollow implements ListAuthority {
    * The key to the list's names of `epoch`, when the account service holds a wrap of it for this PC that gives the
    * commitment the list holds; null otherwise. A key that does not give it is the service's doing, and is said.
    */
-  private async epochKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys, quiet = false): Promise<EpochKey | null> {
+  private async epochKey(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | null> {
+    const got = await this.epochKeyOf(copy, state, epoch, keys);
+    if (got !== null && "failed" in got) { this.error = this.words(got.failed); return null; }
+    return got;
+  }
+
+  /** epochKey, with a service that could not be asked kept apart (`failed`) from a wrap it does not hold (null). */
+  private async epochKeyOf(copy: FollowerCopy, state: ListState, epoch: number, keys: PcListKeys): Promise<EpochKey | { readonly failed: unknown } | null> {
     const id = `${copy.list} ${epoch}`;
     const kept = this.epochKeys.get(id);
     if (kept !== undefined) return kept;
     const opens = state.epochs[epoch]?.opens;
     if (opens === undefined) return null;
     let wraps: unknown;
-    try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) {
-      // naming the rows (`quiet`) is no step the PC owes anybody: a service that does not answer leaves them unnamed
-      if (!quiet) this.error = this.words(error);
-      return null;
-    }
+    try { wraps = (await this.deps.call("/v2/pc/list/wraps", { list: copy.list, member: keys.enc })).wraps; } catch (error) { return { failed: error }; }
     const mine = Array.isArray(wraps) ? wraps.find((wrap): wrap is { epoch: number; wrap: string } => typeof wrap === "object" && wrap !== null && (wrap as { epoch?: unknown }).epoch === epoch && typeof (wrap as { wrap?: unknown }).wrap === "string") : undefined;
     if (mine === undefined) return null;
     const opened = await openWrap({ list: copy.list, epoch, commitment: opens, wrap: wrapFromText(mine.wrap), member: { key: keys.enc, privateKey: keys.encPrivateKey } });
@@ -2576,7 +2589,7 @@ export class ListFollow implements ListAuthority {
     this.untilAt = nextUntil(copy, now);
     this.armUntil(now);
     try { this.deps.recheck?.(); } catch { /* the rows say it again at their next use */ }
-    this.nameDevices(scope, copy);
+    this.nameDevices(scope);
   }
 
   /** The names this PC opened for the devices of `copy`'s list, by key (deviceNames). */
@@ -2585,32 +2598,59 @@ export class ListFollow implements ListAuthority {
   }
 
   /**
-   * Opens, in turn and once each, the names the list sealed for its devices that this PC has not asked yet, with the
-   * key to the names it was given (epochKey); the rows are written again when one opened. A name that does not open (no
-   * key for its epoch, none sealed) leaves its row as it is. Names decide nothing: whom the PC lets in is the list's.
+   * Opens the names the list sealed for its devices that this PC has not decided yet, with the key to the names it was
+   * given (epochKeyOf), one round at a time. The account service's calls and the opens run OUTSIDE the follower's turn,
+   * so a read (a removal before a session opens) never waits behind them; the turn is taken only to keep the names and
+   * write the rows again. An entry is decided once its name opened, or it seals none, or the service holds no wrap for
+   * its epoch; one the service could not be asked about is asked again in a later round (NAMES_RETRY_MS on), and a
+   * round asks the service once per epoch at most. A list other than the one the round began on keeps nothing of it.
+   * Names decide nothing: whom the PC lets in is the list's.
    */
-  private nameDevices(scope: Scope, copy: FollowerCopy): void {
-    const state = copy.state;
-    if (state === null || this.stopped) return;
+  private nameDevices(scope: Scope): void {
+    const copy = this.copy;
+    const state = copy?.state ?? null;
+    if (copy === null || state === null || this.stopped || this.namingNow || this.deps.now() < this.namesRetryAt) return;
     if (this.deviceNames?.list !== copy.list) this.deviceNames = { list: copy.list, byKey: new Map(), tried: new Set() };
     const names = this.deviceNames;
     const asked = listView(state).devices.filter((row) => row.ended === null && !names.tried.has(row.seq));
     if (asked.length === 0) return;
-    for (const row of asked) names.tried.add(row.seq);
-    void this.enqueue(async () => {
+    this.namingNow = true;
+    let again = false;
+    this.naming = (async () => {
       const keys = await this.keysOf(scope);
-      if (keys === null || this.copy !== copy) return;
-      let opened = false;
+      if (keys === null) return;
+      const epochs = new Map<number, EpochKey | "failed" | null>();
+      const decided: number[] = [];
+      const opened = new Map<string, string>();
+      let failed = false;
       for (const row of asked) {
-        const label = await this.nameAt(copy, state, row.seq, keys);
-        if (label !== null && names.byKey.get(row.key) !== label) { names.byKey.set(row.key, label); opened = true; }
+        const got = await this.nameAt(copy, state, row.seq, keys, epochs);
+        if (got === "failed") { failed = true; continue; }
+        decided.push(row.seq);
+        if (got !== null) opened.set(row.key, got);
       }
-      if (opened && this.copy === copy) this.settle();
-    }).catch(() => undefined);
+      if (failed) this.namesRetryAt = this.deps.now() + NAMES_RETRY_MS;
+      await this.enqueue(() => {
+        if (this.stopped || this.deviceNames !== names || this.copy?.list !== names.list) return;
+        for (const seq of decided) names.tried.add(seq);
+        let changed = false;
+        for (const [key, label] of opened) if (names.byKey.get(key) !== label) { names.byKey.set(key, label); changed = true; }
+        if (changed) this.settle();
+        // rows a read brought while this round ran wait for no later read
+        again = !failed && decided.length > 0;
+      });
+    })().catch(() => undefined).finally(() => {
+      this.namingNow = false;
+      if (again) this.nameDevices(scope);
+    });
   }
 
-  /** The label the entry at `seq` seals, opened with the key to its epoch's names this PC holds; null for none it can open. */
-  private async nameAt(copy: FollowerCopy, state: ListState, seq: number, keys: PcListKeys): Promise<string | null> {
+  /**
+   * The label the entry at `seq` seals, opened with the key to its epoch's names this PC holds; null where it seals none
+   * or the PC holds no key for it; `failed` where the service could not be asked. `epochs`: what this round learnt of
+   * each epoch, so it asks the service once per epoch.
+   */
+  private async nameAt(copy: FollowerCopy, state: ListState, seq: number, keys: PcListKeys, epochs: Map<number, EpochKey | "failed" | null>): Promise<string | "failed" | null> {
     const text = copy.entries[seq];
     if (text === undefined) return null;
     let sealed: Sealed | null;
@@ -2619,7 +2659,13 @@ export class ListFollow implements ListAuthority {
       sealed = kind !== null && "sealed" in kind ? kind.sealed : null;
     } catch { return null; }
     if (sealed === null) return null;
-    const epoch = await this.epochKey(copy, state, sealed.epoch, keys, true);
+    let epoch = epochs.get(sealed.epoch);
+    if (epoch === undefined) {
+      const got = await this.epochKeyOf(copy, state, sealed.epoch, keys);
+      epoch = got !== null && "failed" in got ? "failed" : got;
+      epochs.set(sealed.epoch, epoch);
+    }
+    if (epoch === "failed") return "failed";
     if (epoch === null) return null;
     const opened = await openSealed({ place: { list: seq === 0 ? "" : copy.list, seq }, epoch, sealed: sealed.bytes });
     const label = opened.open ? readNames(opened.value)?.label ?? null : null;
