@@ -32,7 +32,7 @@ function sessionOf(given: { readonly pinned?: boolean; readonly key?: string; re
     fetch: async (path: string, init?: RequestInit) => {
       asked.push({ method: init?.method ?? "GET", path, body: typeof init?.body === "string" ? JSON.parse(init.body) : null });
       const said = given.answers?.[`${init?.method ?? "GET"} ${path}`];
-      return said === undefined ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : Response.json(said);
+      return said === undefined ? Response.json({ error: { code: "not_found" } }, { status: 404 }) : said instanceof Response ? said : Response.json(said);
     },
     close: () => { closed = true; },
   };
@@ -575,6 +575,60 @@ describe("the shell's sessions and the move of an account onto its list", () => 
     try {
       const other = await movedWithPairing("acct-l1-other", [{ pinned: "6d".repeat(32) }]);
       expect(await leftUp(other.opened, 2)).toEqual({ sessions: 1, named: 0 });
+    } finally { jest.useRealTimers(); }
+  });
+
+  /** A moved device and its paired PC whose witness answers the first session as `first` says, and every later one at once. */
+  const witnessFirst = async (account: string, first: () => Response | "lost") => {
+    const signedIn = await signIn(account);
+    const { pc, store } = await pairedPc(account);
+    const LIST = "5c".repeat(32);
+    const following = (): AccountListView => ({ account, reached: true, status: { at: "following", list: LIST, standing: "in", head: 4, read_at: 1, trouble: null }, devices: [], pcs: [] });
+    const { list, tell } = listIn(following, async () => ({ naming: { list: LIST, key: "member", signature: "s".repeat(86) }, vouches: [] }));
+    const row = { server_id: pc.serverId, label: "Desk", added_at: "2026-11-24T00:00:00.000Z", last_seen_at: null, public_key: pc.endpoint, relay: "wss://relay.test", new_until: null, admitted_at: null, admitted_before_you: false };
+    const opened: { asked: () => string[] }[] = [];
+    const made = controller(list, store, async () => {
+      const said = opened.length === 0 ? first() : { account, pinned: null, admits: [], removed: [] };
+      const one = sessionOf({ key: signedIn, answers: { ...(said === "lost" ? {} : { "GET /api/account/list/witness": said }), "POST /api/account/list/name": { pinned: true, list: LIST } } });
+      opened.push({ asked: () => one.asked.map((call) => `${call.method} ${call.path}`) });
+      if (said !== "lost") return one.opened;
+      // the carrier drops under the witness's request
+      const fetch = one.opened.fetch.bind(one.opened);
+      return Object.assign(one.opened, { fetch: async (path: string, init?: RequestInit) => { await fetch(path, init); throw new TypeError("the carrier dropped"); } });
+    }, [row], true);
+    await made.refresh(true);
+    await settle();
+    tell();
+    await settle();
+    return opened;
+  };
+
+  it("#4723 naming review (closure): a witness that asks to be asked later, is over its budget or is lost on the way is asked again on the gap", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const [name, first] of [
+        ["503", () => Response.json({ error: { code: "witness_unavailable" } }, { status: 503 })],
+        ["429", () => Response.json({ error: { code: "rate_limited" } }, { status: 429 })],
+        ["lost", () => "lost" as const],
+      ] as const) {
+        const opened = await witnessFirst(`acct-l1-again-${name}`, first);
+        expect(opened.map((one) => one.asked())).toEqual([["GET /api/account/list/witness"]]);
+        const after = await leftUp(opened, 0.25);
+        expect(after.named).toBe(1);
+      }
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("#4723 naming review (closure): a PC with no witness route, or one that says the session is no account's, is named nothing more in this run", async () => {
+    jest.useFakeTimers();
+    try {
+      for (const [name, first] of [
+        ["404", () => Response.json({ error: { code: "not_found" } }, { status: 404 })],
+        ["403", () => Response.json({ error: { code: "account_required" } }, { status: 403 })],
+      ] as const) {
+        const opened = await witnessFirst(`acct-l1-final-${name}`, first);
+        expect(await leftUp(opened, 2)).toEqual({ sessions: 1, named: 0 });
+      }
     } finally { jest.useRealTimers(); }
   });
 
