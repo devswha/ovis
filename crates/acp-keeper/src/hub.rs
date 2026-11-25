@@ -56,6 +56,7 @@ pub struct ToAgent {
 pub enum Receipt {
     Answer(PendingAnswer),
     Request { conn: u64, id: Value },
+    Hold { route: String, generation: u64 },
 }
 
 pub struct PendingAnswer {
@@ -139,6 +140,7 @@ pub struct Hub {
     answering: HashSet<String>,
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
+    hold: Option<u64>,
     pub quit: bool,
     /// The pane was resized: paint the status line again.
     pub redraw: bool,
@@ -167,6 +169,7 @@ impl Hub {
             answering: HashSet::new(),
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
+            hold: None,
             quit: false,
             redraw: false,
         }
@@ -316,18 +319,33 @@ impl Hub {
     }
 
     pub fn start(&mut self) {
+        let mut capabilities = json!({"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false});
+        if self.opts.announce_subagents {
+            capabilities["subagents"] = json!({});
+        }
         self.request(
             "initialize",
-            json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}, "clientInfo": {"name": "acp-keeper", "version": env!("CARGO_PKG_VERSION")}}),
+            json!({"protocolVersion": 1, "clientCapabilities": capabilities, "clientInfo": {"name": "acp-keeper", "version": env!("CARGO_PKG_VERSION")}}),
             Own::Initialize,
         );
     }
 
-    fn new_session(&mut self) {
-        let mut params = json!({"cwd": self.opts.cwd, "mcpServers": []});
+    /// What opens a session, new or loaded again (after the real TUI): the same launch settings both times, so a
+    /// reloaded session does not come back under settings the launch had left out.
+    fn session_params(&self, mut params: Value) -> Value {
+        params["cwd"] = json!(self.opts.cwd);
+        params["mcpServers"] = json!(self.opts.mcp_servers);
         if let Some(meta) = &self.opts.session_meta {
             params["_meta"] = meta.clone();
         }
+        if let Some(options) = &self.opts.config_options {
+            params["configOptions"] = Value::Array(options.clone());
+        }
+        params
+    }
+
+    fn new_session(&mut self) {
+        let params = self.session_params(json!({}));
         self.request("session/new", params, Own::NewSession);
     }
 
@@ -345,6 +363,12 @@ impl Hub {
                 if generation == self.generation {
                     match receipt {
                         Receipt::Answer(answer) => self.answer_written(answer),
+                        Receipt::Hold { route, generation } => {
+                            if let Some(r) = self.routes.remove(&route) {
+                                self.client_ids.remove(&(r.conn, key_of(&r.id)));
+                                self.reply(r.conn, &json!({"jsonrpc":"2.0","id":r.id,"result":{"generation":generation}}));
+                            }
+                        }
                         Receipt::Request { conn, id } => self.note_row("_keeper/delivered", json!({"client": conn, "id": id})),
                     }
                 }
@@ -407,6 +431,11 @@ impl Hub {
                 self.next += 1;
                 let ours = Value::String(format!("agent-{}", self.next));
                 msg.insert("id".into(), ours.clone());
+                if self.opts.ask_every_time && method == "session/request_permission" {
+                    if let Some(options) = msg.get_mut("params").and_then(|params| params.get_mut("options")).and_then(Value::as_array_mut) {
+                        options.retain(|o| matches!(o.get("kind").and_then(Value::as_str), Some("allow_once" | "reject_once")));
+                    }
+                }
                 let Some(seq) = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string()) else {
                     return;
                 };
@@ -422,7 +451,11 @@ impl Hub {
             (Some(method), None) => {
                 self.archive.append("from-agent", &text);
                 if method == "session/update" {
-                    self.model.update(msg.get("params").unwrap_or(&Value::Null));
+                    let params = msg.get("params").unwrap_or(&Value::Null);
+                    self.model.update(params);
+                    if matches!(params.pointer("/update/sessionUpdate").and_then(Value::as_str), Some("config_option_update" | "current_mode_update")) {
+                        self.selections_note();
+                    }
                 }
             }
             (None, Some(id)) => {
@@ -470,11 +503,8 @@ impl Hub {
                     }
                     Some(id) if can_load => {
                         self.model.session = Some(id.clone());
-                        self.request(
-                            "session/load",
-                            json!({"sessionId": id, "cwd": self.opts.cwd, "mcpServers": []}),
-                            Own::LoadSession { resumed: self.resumed },
-                        );
+                        let params = self.session_params(json!({"sessionId": id}));
+                        self.request("session/load", params, Own::LoadSession { resumed: self.resumed });
                     }
                     _ => self.new_session(),
                 }
@@ -505,6 +535,7 @@ impl Hub {
                     self.model.session = Some(id.to_string());
                 }
                 self.model.session_result(&result);
+                self.selections_note();
                 let session = self.model.session.clone().unwrap_or_default();
                 self.model.note(format!("세션 {session} 열림 · 폴더 {}", self.opts.cwd));
                 self.note_row(
@@ -538,6 +569,14 @@ impl Hub {
             self.model.config_options(options);
         }
         self.model.note(format!("{value}(으)로 바꿈"));
+        self.selections_note();
+    }
+
+    fn selections_note(&self) {
+        self.note_row(
+            "_keeper/selections",
+            json!({"mode":self.model.modes.as_ref().map(|s| &s.current),"model":self.model.models.as_ref().map(|s| &s.current)}),
+        );
     }
 
     fn on_client(&mut self, conn: u64, line: String) {
@@ -557,6 +596,20 @@ impl Hub {
                 };
                 self.reply(conn, &answer);
             }
+            (Some(method), Some(id)) if method == "_keeper/tool_stop" => {
+                let reply = if self.mode != Mode::Acp || self.hold.is_some() {
+                    json!({"error":{"code":-32002,"message":"held by a person"}})
+                } else if !self.model.pending.is_empty() || !self.answering.is_empty() {
+                    json!({"error":{"code":-32003,"message":"a person's decision is pending"}})
+                } else {
+                    self.quit = true;
+                    json!({"result":{"stopping":true}})
+                };
+                let mut message = reply;
+                message["id"] = id;
+                message["jsonrpc"] = json!("2.0");
+                self.reply(conn, &message);
+            }
             (Some(_), Some(id)) if self.mode != Mode::Acp => {
                 self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "terminal mode"}));
                 self.reply(
@@ -570,12 +623,63 @@ impl Hub {
                     return;
                 }
                 self.client_ids.insert((conn, key_of(&id)));
+                let params = msg.get("params").cloned().unwrap_or(Value::Null);
+                if matches!(method.as_str(), "_keeper/hold" | "_keeper/release" | "_keeper/tool_prompt") {
+                    if self.model.session.is_none() || params.get("sessionId").and_then(Value::as_str) != self.model.session.as_deref() {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"session changed"}}));
+                        return;
+                    }
+                    if method == "_keeper/hold" {
+                        self.next += 1;
+                        let generation = self.next;
+                        self.hold = Some(generation);
+                        self.note_row("_keeper/hold_changed", json!({"generation":generation}));
+                        let route = format!("hold-{generation}");
+                        self.routes.insert(route.clone(), Route { conn, id, change: None });
+                        let session = self.model.session.clone();
+                        let cancel = json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session}});
+                        self.queue(&cancel.to_string(), Some(Receipt::Hold { route, generation }));
+                        self.cancel_pending(session.as_deref(), &by);
+                        return;
+                    }
+                    if method == "_keeper/release" {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        if self.hold.is_some() && self.hold == params.get("generation").and_then(Value::as_u64) {
+                            self.hold = None;
+                            self.note_row("_keeper/hold_changed", json!({"generation":null}));
+                            self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"result":{"released":true}}));
+                        } else {
+                            self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"hold changed"}}));
+                        }
+                        return;
+                    }
+                    if self.hold.is_some() {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"held by a person"}}));
+                        return;
+                    }
+                    let expected = msg.remove("expectedMode");
+                    if !self.prompts.is_empty() || !self.model.pending.is_empty() {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32005,"message":"a turn or decision is already pending"}}));
+                        return;
+                    }
+                    if self.model.modes.is_none()
+                        || self.routes.values().any(|r| r.change.is_some())
+                        || expected.as_ref().and_then(Value::as_str) != self.model.modes.as_ref().map(|m| m.current.as_str())
+                    {
+                        self.client_ids.remove(&(conn, key_of(&id)));
+                        self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32004,"message":"permission ceiling not proven"}}));
+                        return;
+                    }
+                    msg.insert("method".into(), json!("session/prompt"));
+                }
                 self.next += 1;
                 let routed = Value::String(format!("{by}-{}", self.next));
                 let key = key_of(&routed);
                 let receipt = Receipt::Request { conn, id: id.clone() };
-                let params = msg.get("params").cloned().unwrap_or(Value::Null);
-                if method == "session/prompt" && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref() {
+                if matches!(method.as_str(), "session/prompt" | "_keeper/tool_prompt") && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref() {
                     self.prompts.insert(key.clone());
                     self.model.working = true;
                 }

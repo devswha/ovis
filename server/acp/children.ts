@@ -17,7 +17,7 @@ import { KeeperClient } from "./client.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
 
-type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list";
+type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label";
 /** The hc calls the registry makes (HcConnection, or a test's stand-in). */
 export interface AcpHc {
   call<M extends AcpHcMethod>(method: M, params: HcMethods[M]["params"]): Promise<HcMethods[M]["result"]>;
@@ -35,8 +35,16 @@ export interface AcpStart {
   name?: string;
   /** `_meta` of the keeper's `session/new` (the Claude adapter takes its model and settings this way) */
   sessionMeta?: unknown;
+  /** `configOptions` of the keeper's `session/new`, set before the agent answers it */
+  configOptions?: readonly unknown[];
+  /** environment variables, each naming a file of that name in the child's private ROOT */
+  privateFiles?: Record<string, string>;
   /** the terminal's environment over the core's */
   env?: Record<string, string>;
+  runId?: string;
+  mcpServers?: readonly { name: string; command: string; args: readonly string[]; env: readonly { name: string; value: string }[] }[];
+  announceSubagents?: boolean;
+  askEveryTime?: boolean;
 }
 
 export interface AcpChild {
@@ -56,7 +64,7 @@ export class AcpUnavailable extends Error {
 }
 
 export class AcpStartFailed extends Error {
-  constructor(readonly reason: "no_socket" | "no_session" | "agent_exited", message: string) {
+  constructor(readonly reason: "no_socket" | "no_session" | "agent_exited" | "refused", message: string, readonly agentCode?: number) {
     super(message);
     this.name = "AcpStartFailed";
   }
@@ -110,11 +118,12 @@ function socketAppears(root: string, ms: number): Promise<boolean> {
 }
 
 /** Waits, bounded, for the agent's session, or for the agent to end first. */
-function sessionOpens(client: KeeperClient, ms: number): Promise<"open" | "exited" | "late"> {
-  const state = () => client.session !== null ? "open" : client.agentGone || client.keeperGone ? "exited" : null;
+type Opening = "open" | "exited" | "late" | "refused";
+function sessionOpens(client: KeeperClient, ms: number): Promise<Opening> {
+  const state = () => client.session !== null ? "open" : client.sessionError ? "refused" : client.agentGone || client.keeperGone ? "exited" : null;
   const now = state();
   if (now !== null) return Promise.resolve(now);
-  const { promise, resolve } = Promise.withResolvers<"open" | "exited" | "late">();
+  const { promise, resolve } = Promise.withResolvers<Opening>();
   const timer = setTimeout(() => { off(); resolve("late"); }, ms);
   const off = client.onChange(() => {
     const reached = state();
@@ -184,6 +193,10 @@ export class AcpChildren {
     const argv = [
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
+      ...(start.mcpServers === undefined ? [] : ["--mcp-servers", JSON.stringify(start.mcpServers)]),
+      ...(start.configOptions === undefined ? [] : ["--config-options", JSON.stringify(start.configOptions)]),
+      ...(start.announceSubagents ? ["--announce-subagents"] : []),
+      ...(start.askEveryTime ? ["--ask-every-time"] : []),
       "--", ...start.argv,
     ];
     const displayName = start.name?.trim();
@@ -192,8 +205,8 @@ export class AcpChildren {
       ({ address: terminal } = await this.hc().call("terminal.run", {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
-        labels: { [LABEL]: id, ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
-        ...(start.env === undefined ? {} : { env: start.env }),
+        labels: { [LABEL]: id, ...(start.runId ? { "ovis.run": start.runId } : {}), ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
+        ...(start.env === undefined && start.privateFiles === undefined ? {} : { env: { ...start.env, ...Object.fromEntries(Object.entries(start.privateFiles ?? {}).map(([name, file]) => [name, join(root, file)])) } }),
       }));
     } catch (error) {
       const live = await this.liveTerminals().catch((lookupError: unknown) => {
@@ -210,18 +223,19 @@ export class AcpChildren {
     const failed = async (reason: AcpStartFailed["reason"], message: string, client?: KeeperClient): Promise<never> => {
       client?.close();
       await this.endFailedStart(terminal, root);
-      throw new AcpStartFailed(reason, message);
+      throw new AcpStartFailed(reason, message, client?.sessionError?.code);
     };
     if (!(await socketAppears(root, this.options.socketMs ?? SOCKET_MS))) return failed("no_socket", "the ACP keeper did not open its socket");
     const client = new KeeperClient(root);
     const opened = await sessionOpens(client, this.options.sessionMs ?? SESSION_MS);
+    if (opened === "refused") return failed("refused", "the agent refused to open the ACP session", client);
     if (opened === "late") return failed("no_session", "the agent did not open a session (no answer to initialize or session/new)", client);
     if (opened === "exited") return failed("agent_exited", "the agent ended before its session opened", client);
     return this.add({ id, harness: start.harness, root, terminal, client });
   }
 
   private async liveTerminals(): Promise<Map<string, string | null>> {
-    const { terminals } = await this.hc().call("terminal.list", {});
+    const terminals = await this.terminals();
     const live = new Map<string, string | null>();
     for (const terminal of terminals) {
       const id = terminal.labels[LABEL];
@@ -235,17 +249,21 @@ export class AcpChildren {
     return live;
   }
 
+  async terminals() { return (await this.hc().call("terminal.list", {})).terminals; }
+
   private add(child: AcpChild): AcpChild {
     this.children.set(child.id, child);
     let state = child.client.status;
     let plan = child.client.history.plan;
+    let hold = child.client.holdGeneration;
     for (const listener of this.listeners) listener(child);
     // a keeper that ended by itself (Ctrl+Q in its pane, its terminal closed) takes its child along
     const off = child.client.onChange(() => {
       if (this.children.get(child.id) !== child) return;
-      if (state !== child.client.status || plan !== child.client.history.plan || child.client.keeperGone) {
+      if (state !== child.client.status || plan !== child.client.history.plan || hold !== child.client.holdGeneration || child.client.keeperGone) {
         state = child.client.status;
         plan = child.client.history.plan;
+        hold = child.client.holdGeneration;
         for (const listener of this.listeners) listener(child);
       }
       if (!child.client.keeperGone) return;
@@ -260,6 +278,22 @@ export class AcpChildren {
   forPane(paneId: string): AcpChild | undefined {
     for (const child of this.children.values()) if (child.terminal === paneId) return child;
     return undefined;
+  }
+
+  /** This server's children whose keeper's terminal hc runs under `parentPane`. */
+  async childrenOf(parentPane: string): Promise<AcpChild[]> {
+    const under = (await this.terminals()).filter(terminal => terminal.state === "live" && terminal.parent === parentPane);
+    return [...this.children.values()].filter(child => under.some(terminal => terminal.address === child.terminal && terminal.labels[LABEL] === child.id));
+  }
+
+  cancelTurn(id: string): void {
+    const client = this.children.get(id)?.client;
+    if (client?.turn?.running && client.session) client.notify("session/cancel", { sessionId: client.session });
+  }
+
+  async markTimeLimit(id: string): Promise<void> {
+    const child = this.children.get(id);
+    if (child) await this.hc().call("terminal.label", { terminal: child.terminal, labels: { "ovis.limit": "time" } });
   }
 
   /**
@@ -286,7 +320,7 @@ export class AcpChildren {
     const child = this.children.get(id);
     if (child === undefined) return;
     const { client } = child;
-    if (client.turn?.running && client.session !== null) client.notify("session/cancel", { sessionId: client.session });
+    this.cancelTurn(id);
     await this.end(child.terminal, child.root);
     client.close();
     if (this.children.get(id) === child) this.children.delete(id);

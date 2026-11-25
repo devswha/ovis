@@ -9,7 +9,7 @@ import { handleIntegrationsRequest } from "./integrations-routes.ts";
 import type { OrderSequence } from "./order-sequence.ts";
 import type { HealthAuth, ObservedIngress, SecuritySummary, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
-import type { Machine } from "../shared/machines.ts";
+import type { Machine, MachineEvent } from "../shared/machines.ts";
 import { authClient, deviceAuthorizationValue, deviceCookieValue, bearerMatches, handleAuthRequest, isAuthenticated, isSecureRequest, parseCookies, presentedToken, presentedTokenHeld, recordPresentedTokenFailure, requiresAuth, unauthorizedJson } from "./auth.ts";
 import { bindScope, cameThroughProxy, decideAccess, decideMachineAccess, forwardingHeaders, inTailnet, isLoopbackAddress, isServeOwnerRequest, lanExposed, machineForwardingHeaders, observedIngress, ownerAccess } from "./access.ts";
 import { type DeviceStore, handleDeviceRequest, newStreamKey, streamCookie, streamKeys, type DeviceMatch } from "./devices.ts";
@@ -18,7 +18,7 @@ import { handleSeenRequest, type SeenStore } from "./seen.ts";
 import { openTailscaleApp, remoteAccess, serveTailscale, tailscaleBinary, type TailnetNode } from "./tailscale.ts";
 import { handleTailnetNodeRequest, tailnetNodeGate, type TailnetNodes } from "./tailnet-nodes.ts";
 import { TAILSCALE_CONTROLS } from "./dispatch-routes.ts";
-import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
+import { badRequest, errorResponse, jsonResponse, readJsonObject, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
@@ -64,6 +64,7 @@ import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
 import type { accountRowsFor } from "./account/account-devices.ts";
+import type { ListAdd } from "./account/list-add.ts";
 import type { ListFollow } from "./account/list-follow.ts";
 import type { AccountWitness } from "./account/witness.ts";
 import { accountDispatchRefusal } from "./account/dispatch-rights.ts";
@@ -78,17 +79,19 @@ import { USER_FONTS_PATH } from "../shared/user-fonts.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { handleMemoryRequest } from "./memory/routes.ts";
+import { handleAgentPanesRequest } from "./agent-tools/pane-routes.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
 import { ACCOUNT_PC_OWNER_ONLY, accountRoster, handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
-import { machinePairingEvents } from "./machine-pairing-events.ts";
+import { agentPaneEvents, machinePairingEvents, remotePairingEvents } from "./machine-pairing-events.ts";
 import { handleJoinSeen, JOIN_SEEN_PATH, type JoinNotices, type JoinViewer } from "./join-notices.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
 import type { HerdrSidebarConfig } from "./herdr-sidebar.ts";
 import { readHerdrUi } from "./herdr-ui.ts";
 import { MachineRelay, type RelayReceiptIds } from "./machine-relay.ts";
+import { RECEIPT_RESUME_ID } from "../shared/receipt-resume.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { handlePluginRequest } from "./plugin-routes.ts";
 import type { createServer } from "./index.ts";
@@ -125,8 +128,12 @@ export interface RequestServices {
   readonly accountRows: ReturnType<typeof accountRowsFor> | null;
   /** This PC following its account's signed list (server/account/list-follow.ts); null with the release flag off. */
   readonly accountList: ListFollow | null;
+  /** Adding this PC to an account that keeps a signed list (server/account/list-add.ts); null with the release flag off. */
+  readonly listAdd: ListAdd | null;
   /** For how long this PC has let each key of its account in (server/account/witness.ts); null with the release flag off. */
   readonly accountWitness: AccountWitness | null;
+  /** On a server that follows no list (Step 2 off): looks whether another Ovis on this folder pinned the PC, and then closes this server's account part. Null on a server that follows its list itself. */
+  readonly pinWatch: (() => void) | null;
   readonly preferences: PreferenceStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */
@@ -382,7 +389,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("auth-refusal");
     // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
     if (presented === "held" && pathname !== "/ws" && request.headers.has("authorization")) return presentedTokenHeld(client);
-    return pathname === "/ws" ? new Response("unauthorized", { status: 401 }) : unauthorizedJson(access.level === "none" ? access.reason : "token_required");
+    // this PC's own window is told what it cannot read (the file, the folder), where any other caller hears the general words
+    return pathname === "/ws" ? new Response("unauthorized", { status: 401 })
+      : unauthorizedJson(access.level === "none" ? access.reason : "token_required", ownWindow ? devices.accountError : null);
   }
 
   if (options.profile === "machine" && machineRouteRestricted(pathname, request.method)) {
@@ -441,9 +450,20 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a device that waits to link (it paired with a code made for a PC in no account) has the role with the fewest
   // rights, and sends one mutation: its own link, which makes it a device (server/account/routes.ts). Its relay
   // session refuses it every other call but the read of its own account status (server/relay/session.ts)
-  const ownLink = relayPeer?.provisional === true && request.method === "POST" && pathname === "/api/account/link";
-  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink)) {
+  const ownLink = relayPeer?.provisional === true && request.method === "POST" && (pathname === "/api/account/link" || pathname === "/api/account/list/named");
+  // a member tells this PC where its account's signed list stands and hands it entries it lacks: entries prove
+  // themselves, so a device that only watches may carry them too (server/account/routes.ts)
+  // only on a PC that follows a list a person named: one that follows none answers every caller as before
+  const listGossip = request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page") && (ctx.services.accountList?.peerHead() ?? null) !== null;
+  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink && !listGossip)) {
     setRequestRoute("watch-refusal");
+    // A device the account's list holds only to watch, asking for the joins that wait at this pinned PC or deciding one:
+    // it is told, in a code of its own, that it is in the list and may not let a device in (relay/routes.ts says the
+    // same to a device that drives with bound power)
+    if (ctx.peer.kind === "relay" && ctx.peer.key !== "" && (pairingDigits && request.method === "GET" || pathname === "/api/relay/pairing" && request.method === "POST")
+      && ctx.services.accountList?.allowsJoins(ctx.peer.key) === false) {
+      return jsonResponse({ error: { code: "list_cannot_allow", message: "This device is in your account's list, but only a device that can add devices to the list may let one in." } }, 403);
+    }
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
   // a text file is edited (read for it and saved) only by a device that drives this PC, here or through it on another PC (file-edit.ts)
@@ -487,8 +507,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
   }
-  // how this PC follows its account's signed list is for this PC's own window and CLI to read
-  if (pathname === "/api/account/list" && !ownWindow) {
+  // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
+  // this PC names the list it pins, by its id, by the number it compares with the phone that adds it, or by the line of an invite
+  if ((pathname === "/api/account/list" || pathname === "/api/account/list/pin" || pathname === "/api/account/list/add" || pathname.startsWith("/api/account/list/add/")
+    || pathname === "/api/account/list/join" || pathname.startsWith("/api/account/list/join/")) && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Read this on this PC itself." } }, 403);
   }
@@ -611,6 +633,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const deviceId = access.level === "full" ? access.device?.id : undefined;
     const recheck = portalRecheckMs === undefined ? {} : { recheckMs: portalRecheckMs };
     const machineId = url.searchParams.get("machine_id");
+    const browser = url.searchParams.get("receipt_resume_id");
+    const commandBrowser = browser && RECEIPT_RESUME_ID.test(browser) ? browser : undefined;
     if (machineId && machineId !== "local") {
       if (access.level === "none") return unauthorizedJson(access.reason);
       if (!machines?.endpoint(machineId)) return jsonResponse({ error: { code: "machine_offline", message: "This PC is disconnected" } }, 503);
@@ -621,7 +645,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       let relay: MachineRelay | undefined;
       try {
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
-          (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
+          (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser), commandBrowser);
         await relay.ready;
         const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" ? { open: true } : {}), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
         if (upgraded) return undefined;
@@ -641,6 +665,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const localRoster = machines && eventsEnabled && listed ? (tell: (rows: Machine[]) => void) => machines.subscribe(event => {
       if (event.type === "machines") tell(accountRoster(herdrSidebar.get(), event.machines));
     }) : undefined;
+    // a device of the account's list hears the joins that wait at this PC over the same socket, when it may let one in
+    const listJoins = localRoster ? (tell: (event: MachineEvent) => void) => {
+      const stops = [remotePairingEvents(ctx)(tell), agentPaneEvents(access)(tell)];
+      return () => { for (const stop of stops) stop(); };
+    } : undefined;
     const presentedKeys = streamKeys(request);
     const issuedKey = useMachineEvents && presentedKeys.length === 0 ? newStreamKey() : null;
     const keys = issuedKey === null ? presentedKeys : [issuedKey];
@@ -650,7 +679,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       manager: machines, preferences, herdrSidebar, seen,
       pairings: machinePairingEvents(ctx, access, keys, joinViewer),
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
+    const managedReceipts = options.bridgeOnly === true && ctx.peer.kind !== "relay" && bearerMatches(request, token);
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, listJoins, deviceId, commandBrowser, managedReceipts, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }
@@ -742,6 +772,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
   // Settings → Memory: every change is a person's on a screen; the bridge token never reaches it (not a bridge path)
+  // the owner's word on panes hc started that asked for the agent tool: his alone, a watching device's never
+  if (pathname === "/api/agent-tools/panes" || pathname.startsWith("/api/agent-tools/panes/")) return handleAgentPanesRequest(request, pathname, ownerAccess(access) && !readOnly);
   if (pathname === "/api/memory" || pathname.startsWith("/api/memory/")) {
     const by = access.level !== "full" ? "unknown" : access.device ? `device:${access.device.id}` : access.via;
     return handleMemoryRequest(request, url, ctx.services.memory, { readOnly, by });
@@ -1060,9 +1092,42 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return handleSessionResumeRequest(request, { readOnly, stores: { codexHome: options.codexHome, opencodeDb: options.opencodeDb, hermesHome: options.hermesHome }, holdOpen: (seconds) => ctx.timeout(request, seconds) });
   }
 
+  if (acp && (pathname === "/api/pane/turn/cancel" || pathname === "/api/pane/turn/release" || pathname === "/api/pane/turn/cancel-children")) {
+    setRequestRoute(pathname);
+    if (request.method !== "POST") return badRequest("method_not_allowed", "Use POST.");
+    const body = await readJsonObject(request);
+    if (body instanceof Response) return body;
+    if (typeof body.pane_id !== "string") return badRequest("missing_pane_id", "pane_id is required.");
+    if (pathname.endsWith("/cancel-children")) {
+      // every ACP child the pane started gets the same hold as its own Stop; one a person holds already keeps its hold
+      // (a new one would cancel the turn that person started), and one that cannot take it is named
+      let children;
+      try { children = await acp.childrenOf(body.pane_id); } catch (error) { return errorResponse(error); }
+      const tried = await Promise.allSettled(children.map(async child => {
+        if (!child.client.connected || !child.client.session) throw new Error("not connected");
+        if (child.client.holdGeneration !== null) return { pane_id: child.terminal, child_id: child.id, generation: child.client.holdGeneration };
+        return { pane_id: child.terminal, child_id: child.id, generation: await child.client.hold(child.client.session) };
+      }));
+      return jsonResponse({
+        ok: true,
+        held: tried.flatMap(outcome => outcome.status === "fulfilled" ? [outcome.value] : []),
+        failed: children.filter((_, index) => tried[index]?.status === "rejected").map(child => child.terminal),
+      });
+    }
+    const child = acp.forPane(body.pane_id);
+    if (!child?.client.connected || !child.client.session) return badRequest("unavailable", "No connected ACP child.");
+    const cancel = pathname.endsWith("/cancel");
+    if (!cancel && (body.child_id !== child.id || !Number.isSafeInteger(body.generation))) return badRequest("hold_changed", "The child and hold generation are required.");
+    try {
+      if (cancel) return jsonResponse({ ok: true, child_id: child.id, generation: await child.client.hold(child.client.session) });
+      const receipt = await child.client.request("_keeper/release", { sessionId: child.client.session, generation: body.generation });
+      if (!receipt || typeof receipt !== "object" || !("released" in receipt && receipt.released === true)) return badRequest("unavailable", "No keeper receipt.");
+      return jsonResponse({ ok: true, child_id: child.id, ...receipt });
+    } catch { return badRequest("hold_changed", "The keeper could not confirm that operation."); }
+  }
   if (pathname.startsWith("/api/pane/prompt")) {
     try {
-      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), onAnswered: () => options.telemetry?.tally("prompt_answers") });
+      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), ...(options.telemetry ? { onAnswering: (paneId: string) => options.telemetry!.answering(paneId) } : {}) });
       if (response) return response;
     } catch (error) {
       return errorResponse(error);

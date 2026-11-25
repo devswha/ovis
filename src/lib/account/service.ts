@@ -8,10 +8,11 @@ import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { newRecordId, pcAddSigningBytes, registerSigningBytes, type AccountRecord, type DeviceSafetyRecord, type PcAddPurpose } from "../../../shared/account-records.ts";
+import { inviteMakeBytes } from "../../../shared/account-list-invite.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
-import { claimsOf, genesisBody, hintOf, nowOf, pageOf, wrapsOf, type ListClaim, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
+import { attemptOf, claimsOf, genesisBody, hintOf, nowOf, pageOf, postsOf, wrapsOf, type ListAttempt, type ListClaim, type ListPost, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
 import type { PcProofFields } from "./pcProof.ts";
 import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
@@ -128,6 +129,10 @@ interface PcAddProof { readonly challenge_id: string; readonly signature: string
  * refusal adds to its code, where it has one (an entry that was refused says why), never its message.
  */
 export class AccountServiceError extends Error {
+  /** The place of the entry a refusal of a list's request is about (entry 0 is 0), where it names one. */
+  index: number | null = null;
+  /** The list a `409 list_exists` names, where it names one: only a hint, which the log alone confirms. */
+  list: string | null = null;
   constructor(readonly status: number, readonly code: string, message: string, readonly retryAfterMs: number | null = null, readonly reason: string | null = null) {
     super(message);
     this.name = "AccountServiceError";
@@ -225,6 +230,18 @@ export interface DirectoryPc {
   readonly asking?: AccountAsker;
   /** Until when an unconfirmed PC may be let in, by the account service's clock; null when no window applies; absent from a service that does not say. */
   readonly asking_until?: string | null;
+  /**
+   * Never from the account service: the row is a PC that this device's verified list holds (listPcs.ts). Its name and
+   * its new window are the list's, and only its relay and `last_seen_at` are the directory's.
+   */
+  readonly by_list?: true;
+  /** On such a row, while it is new: the name of the device whose signature brought the PC in, where this device can read it. */
+  readonly added_by?: string;
+  /**
+   * Never from the account service: this device is in a list of the account, or cannot read the one it has, and that
+   * list does not hold the PC (listPcs.ts). The row is the directory's; nothing opens it by itself.
+   */
+  readonly not_in_list?: true;
 }
 
 type Fetch = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
@@ -239,15 +256,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function failure(response: Response): Promise<AccountServiceError> {
   let code = "http_error";
   let reason: string | null = null;
+  let index: number | null = null;
+  let list: string | null = null;
   try {
     const body: unknown = await response.json();
     const error = isRecord(body) && isRecord(body.error) ? body.error : null;
     if (typeof error?.code === "string" && /^[a-z_]{1,40}$/.test(error.code)) code = error.code;
     if (typeof error?.reason === "string" && /^[a-z_]{1,40}$/.test(error.reason)) reason = error.reason;
+    if (typeof error?.index === "number" && Number.isSafeInteger(error.index) && error.index >= 0) index = error.index;
+    if (typeof error?.list === "string" && /^[0-9a-f]{64}$/.test(error.list)) list = error.list;
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
   }
-  return new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")), reason);
+  const failed = new AccountServiceError(response.status, code, `The account service answered ${response.status} (${code})`, retryAfterMs(response.headers.get("retry-after")), reason);
+  failed.index = index;
+  failed.list = list;
+  return failed;
 }
 
 /** A `retry-after` in delay-seconds or as an HTTP date, in ms from now; null without one either reads. */
@@ -518,6 +542,11 @@ export class AccountService {
    * sign-in, which the add then refuses as before).
    */
   private async pcAddProof(session: AccountSession, key: AccountKey, purpose: PcAddPurpose, serverId: string, listingId: string, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
+    return this.challengeProof(key, (id, challenge) => pcAddSigningBytes(purpose, session.account, serverId, listingId, id, challenge), signal, again, only);
+  }
+
+  /** A proof by `key` over the bytes `signed` gives for the service's single-use challenge; null as pcAddProof says. */
+  private async challengeProof(key: AccountKey, signed: (challengeId: string, challenge: string) => Uint8Array<ArrayBuffer>, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<PcAddProof | null> {
     let issued: unknown;
     try { issued = await this.call("POST", "/v1/pcs/challenge", {}, signal, again, only); }
     catch (error) {
@@ -528,7 +557,7 @@ export class AccountService {
     if (!isRecord(issued) || typeof issued.challenge_id !== "string" || !/^[0-9a-f]{32}$/.test(issued.challenge_id) || typeof issued.challenge !== "string" || issued.challenge === "") {
       throw new AccountServiceError(502, "invalid_answer", "The account service sent no challenge");
     }
-    const bytes = pcAddSigningBytes(purpose, session.account, serverId, listingId, issued.challenge_id, issued.challenge);
+    const bytes = signed(issued.challenge_id, issued.challenge);
     return { challenge_id: issued.challenge_id, signature: toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.private_key, bytes))) };
   }
 
@@ -768,7 +797,7 @@ export class AccountService {
    * route). `now` is the service's clock in seconds, where it says it. All of it is a hint: a device follows a list
    * only by its own evidence.
    */
-  async accountList(signal?: AbortSignal): Promise<{ readonly hint: ListHint | null; readonly now: number | null } | "off"> {
+  async accountList(signal?: AbortSignal): Promise<{ readonly hint: ListHint | null; readonly now: number | null; /** the account has no list and is on the service's migrate switch: it may move onto one (Part F) */ readonly migrate: boolean } | "off"> {
     let body: unknown;
     try { body = await this.listCall("GET", "/v2/lists/mine", undefined, signal); }
     catch (error) {
@@ -777,7 +806,33 @@ export class AccountService {
     }
     const hint = hintOf(body);
     if (hint === undefined) throw new AccountServiceError(502, "invalid_answer", "The account service sent no list");
-    return { hint, now: nowOf(body) };
+    return { hint, now: nowOf(body), migrate: hint === null && isRecord(body) && body.migrate === true };
+  }
+
+  /**
+   * The keys the account's sign-ins registered (`GET /v1/devices`), each with whether the service says a PC lets it in
+   * now (`eligible`), whether it was removed, and the name the app sent when it registered the key (`label`, only
+   * where it sent one). The service's word, which the first device of a move holds against what its PCs say they let
+   * in (shared/account-list-migrate.ts migrationPlan); the name only names a carried device in the list.
+   */
+  async devices(signal?: AbortSignal): Promise<{ readonly key: string; readonly eligible: boolean; readonly removed: boolean; readonly label?: string }[]> {
+    const body = await this.call("GET", "/v1/devices", undefined, signal);
+    if (!isRecord(body) || !Array.isArray(body.devices)) throw new AccountServiceError(502, "invalid_answer", "The account service sent no devices");
+    return (body.devices as readonly unknown[]).flatMap((row) => isRecord(row) && typeof row.key === "string" && typeof row.eligible === "boolean" && typeof row.removed === "boolean"
+      ? [{ key: row.key, eligible: row.eligible && !row.removed, removed: row.removed, ...(typeof row.label === "string" && row.label.length >= 1 && row.label.length <= 48 ? { label: row.label } : {}) }] : []);
+  }
+
+  /**
+   * The one request that moves an account that was in use onto its list (`POST /v2/lists` with `entries`; Part F,
+   * F10b): entry 0, the whole run, the hand-over and the `epoch`, placed whole or not at all, with the wraps of the epoch
+   * the birth opens and the hand-over's link. Sent once per call: the caller keeps the request and sends it again as it
+   * is. A refusal is thrown as the service's (`409 list_exists` names the account's list in `list`; `403 not_carried`
+   * and `400 entry_refused` name the place they are about in `index`).
+   */
+  async startBirth(birth: { readonly entry: string; readonly entries: readonly string[]; readonly wraps: readonly PlacedWrap[]; readonly link?: { readonly member: string; readonly device: string } }, signal?: AbortSignal): Promise<{ readonly list: string }> {
+    const body = await this.listCall("POST", "/v2/lists", { entry: birth.entry, entries: birth.entries, wraps: birth.wraps, ...(birth.link === undefined ? {} : { link: birth.link }) }, signal, 201);
+    if (!isRecord(body) || typeof body.list !== "string" || !/^[0-9a-f]{64}$/.test(body.list)) throw new AccountServiceError(502, "invalid_answer", "The account service placed no list");
+    return { list: body.list };
   }
 
   /**
@@ -852,6 +907,27 @@ export class AccountService {
     return claims;
   }
 
+  /** The PCs that posted their keys for the list and still wait to be added (`GET /v2/lists/{list}/posts`), each with the comparison under way for it. */
+  async listPosts(list: string, signal?: AbortSignal): Promise<ListPost[]> {
+    const posts = postsOf(await this.listCall("GET", `/v2/lists/${list}/posts`, undefined, signal));
+    if (posts === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no posts");
+    return posts;
+  }
+
+  /**
+   * One message of the comparison of numbers with a PC that posted (`POST /v2/lists/{list}/posts/{endpoint}/attempt`),
+   * which the account service only carries. Without `reveal` it opens an attempt with this device's key and its
+   * commitment, in place of any before it; with `reveal` it hands over the nonce it committed to, once the PC answered
+   * with its own. Refusals are the service's: `409 post_changed` (the PC posted other keys, or none stands),
+   * `409 attempt_changed` (not the open attempt, or the PC has not answered yet), `429 attempts_spent`.
+   */
+  async listAttempt(list: string, endpoint: string, message: { readonly key: string; readonly adder: string; readonly commitment: string; readonly reveal?: string }, signal?: AbortSignal): Promise<ListAttempt> {
+    const body = await this.listCall("POST", `/v2/lists/${list}/posts/${endpoint}/attempt`, message, signal);
+    const attempt = isRecord(body) ? attemptOf(body.attempt) : undefined;
+    if (attempt === undefined || attempt === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no attempt");
+    return attempt;
+  }
+
   /**
    * Places entries at the list's head, whole or not at all, with the wraps that go with them (`POST
    * /v2/lists/{list}/entries`). The answer says nothing a member relies on: its own entry is in its copy only when
@@ -859,8 +935,65 @@ export class AccountService {
    * `400 entry_refused` with its `reason`, `403 not_claimed`, `429 entry_budget`, `503 list_rebuilding` (the same
    * request again), `503 list_stopped`.
    */
-  async placeEntries(list: string, entries: readonly string[], wraps: readonly PlacedWrap[], signal?: AbortSignal): Promise<void> {
-    await this.listCall("POST", `/v2/lists/${list}/entries`, wraps.length === 0 ? { entries } : { entries, wraps }, signal);
+  async placeEntries(list: string, entries: readonly string[], wraps: readonly PlacedWrap[], signal?: AbortSignal, invite?: { readonly key: string; readonly auto: boolean }, link?: { readonly member: string; readonly device: string }): Promise<void> {
+    // a link rides only on a carried device's hand-over (Part F, F10b): the D11.2 link of its member key to this sign-in's key
+    const body = { entries, ...(wraps.length === 0 ? {} : { wraps }), ...(link === undefined ? {} : { link }) };
+    if (invite === undefined) { await this.listCall("POST", `/v2/lists/${list}/entries`, body, signal); return; }
+    // an invite is placed as one is made: by a sign-in of the last ten minutes, or with a proof of its registered key for that invite
+    const proof = await this.inviteProof(invite.key, invite.auto, signal);
+    await this.proving(proof, () => this.listCall("POST", `/v2/lists/${list}/entries`, proof === null ? body : { ...body, key_proof: proof }, signal));
+  }
+
+  /**
+   * The proof that makes or places an invite once the sign-in is older than PC_ADD_FRESH_MS (inviteMakeBytes: the
+   * bytes of an add's key proof, with the invite's public key where a listing id stands otherwise). None for a
+   * younger sign-in, and none when it registered no key. Only a person's press makes an invite, so only that signs.
+   */
+  private async inviteProof(inviteKey: string, auto: boolean, signal?: AbortSignal): Promise<PcAddProof | null> {
+    const session = await this.bound();
+    const age = session.signed_in_at === undefined ? Number.NaN : this.now() - session.signed_in_at;
+    if (age >= 0 && age <= PC_ADD_FRESH_MS) return null;
+    const key = await this.registeredKey(session);
+    if (key === null) return null;
+    return this.challengeProof(key, (id, challenge) => inviteMakeBytes({ account: session.account, invite_key: inviteKey, auto, challenge_id: id, challenge }), signal);
+  }
+
+  /**
+   * Makes the account service's invite for the public key of an invite (`POST /v1/pc-invites`): the service is given
+   * that key and whether a machine joins with it by itself, never the line or its private key. Answers the invite's id
+   * and the account it is for, which the caller holds against its own before it shows a line. A proof whose challenge
+   * was spent or ran out on the way is made anew once.
+   */
+  async makeInvite(inviteKey: string, auto: boolean, signal?: AbortSignal): Promise<{ readonly id: string; readonly account: string; readonly expires_at: string; readonly auto: boolean }> {
+    const send = async (proof: PcAddProof | null): Promise<unknown> =>
+      this.proving(proof, () => this.call("POST", "/v1/pc-invites", { invite_key: inviteKey, auto, ...(proof === null ? {} : { key_proof: proof }) }, signal));
+    const proof = await this.inviteProof(inviteKey, auto, signal);
+    let made: unknown;
+    try { made = await send(proof); }
+    catch (error) {
+      if (proof === null || !(error instanceof AccountServiceError && error.status === 400 && error.code === "challenge_invalid")) throw error;
+      made = await send(await this.inviteProof(inviteKey, auto, signal));
+    }
+    if (!isRecord(made) || typeof made.id !== "string" || !/^[0-9a-f]{32}$/.test(made.id) || typeof made.account !== "string" || typeof made.expires_at !== "string" || Number.isNaN(Date.parse(made.expires_at)) || made.auto !== auto) {
+      throw new AccountServiceError(502, "invalid_answer", "The account service sent no invite");
+    }
+    return { id: made.id, account: made.account, expires_at: made.expires_at, auto };
+  }
+
+  /**
+   * The account's invites the account service keeps (`GET /v1/pc-invites`): each one's id, and its public key where
+   * the service names it (the route is documented without it; an id whose key is not named is no one's to end by key).
+   */
+  async listInvites(signal?: AbortSignal): Promise<{ readonly id: string; readonly invite_key: string | null }[]> {
+    const said = await this.call("GET", "/v1/pc-invites", undefined, signal);
+    const rows = isRecord(said) && Array.isArray(said.invites) ? said.invites : [];
+    return rows.flatMap((row) => isRecord(row) && typeof row.id === "string" && /^[0-9a-f]{32}$/.test(row.id)
+      ? [{ id: row.id, invite_key: typeof row.invite_key === "string" ? row.invite_key : null }] : []);
+  }
+
+  /** Ends an invite the account service keeps (`DELETE /v1/pc-invites/{id}`). One a PC used, or that is gone, is refused as the service says. */
+  async endInvite(id: string, signal?: AbortSignal): Promise<void> {
+    await this.call("DELETE", `/v1/pc-invites/${id}`, undefined, signal);
   }
 
   /**

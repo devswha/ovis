@@ -6,6 +6,13 @@ import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { isNewAccountPc, type MyPc } from "../lib/account/myPcs.ts";
 import { newPcNoticeKey } from "../lib/account/newPcNotice.ts";
+import { accountList } from "../lib/account/accountList.ts";
+import { askingPc, pcComparing, postPcKeys } from "../lib/account/accountList.test-helpers.ts";
+import { listView, signCard } from "../../shared/account-list.ts";
+import { readJoinLine } from "../../shared/account-list-join.ts";
+import { makeInvite } from "../lib/account/listInvite.ts";
+import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
 import { AccountService } from "../lib/account/service.ts";
 import type { AccountOs } from "../../shared/account-asker.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
@@ -14,7 +21,8 @@ import { accountOpenablePcs } from "../lib/relay/pcPick.ts";
 import { readSeenPcs } from "../lib/account/seenPcs.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { keepShellAccount } from "../lib/account/hostedSignIn.ts";
-import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
+import { translate } from "../lib/i18n.ts";
+import { invitedTitle, UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
 
 const ORIGIN = "https://account.ovis.sh";
 const ACCOUNT = "acct_owner";
@@ -83,10 +91,10 @@ async function listedByItsOwnSignIn(): Promise<void> {
   expect(response.ok).toBe(true);
 }
 
-async function mount(): Promise<void> {
+async function mount(more: { numberWaitMs?: number } = {}): Promise<void> {
   if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
   await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now, onSignInAgain: (provider: AccountProvider) => { signInsAgain.push(provider); } }) }));
+    renderer = create(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now, onSignInAgain: (provider: AccountProvider) => { signInsAgain.push(provider); }, ...more }) }));
   });
   await settle();
 }
@@ -595,5 +603,404 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     await mount();
     expect(buttons()).toEqual([]);
     expect(fake.requests.filter((line) => line.startsWith("PUT ") || line.startsWith("DELETE "))).toHaveLength(1);
+  });
+});
+
+describe("a PC that asks to be added to an account with a signed list", () => {
+  /** This device is in its account's list, and a PC listed itself with a device code and posted its keys and its card for that list. */
+  /** what the account service carries with a PC's post, for a PC that joined with an invite: the invite's key and the line's own signature */
+  let carried: { invite: string; invite_proof: string; key?: string; enc?: string; card?: string } | null = null;
+  async function listAccount(lies: {
+    /** the account service's own answer to the admission, in place of the fake's */
+    admit?: () => Response;
+    /** the account service shows no posts any more */
+    noPosts?: boolean;
+    /** the account service's own answer to a placement, in place of the fake's (null: the fake's) */
+    entries?: () => Response | null | Promise<Response | null>;
+    /** runs once the account service admitted the PC */
+    onAdmit?: () => void;
+    /** runs at each read of the posts; a Response in place of the service's answer */
+    onPosts?: () => Response | undefined;
+    /** the PC lists itself and posts only when the test says (`postNow`) */
+    deferPost?: true;
+  } = {}) {
+    fake.listAccounts = "*";
+    carried = null;
+    await signIn();
+    await registerKey();
+    const pc = await askingPc();
+    let play: ReturnType<typeof pcComparing> | undefined;
+    // the PC answers as soon as the account service holds this device's commitment
+    // every comparison this device opened: an attempt with no reveal
+    const opened: string[] = [];
+    service = new AccountService({ store, lock: memoryLock(), now: () => now, fetch: async (input: Request | string | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (lies.admit !== undefined && path.endsWith("/admit")) return lies.admit();
+      if (lies.noPosts && request.method === "GET" && path.endsWith("/posts")) return Response.json({ posts: [] });
+      if (request.method === "GET" && path.endsWith("/posts")) { const said = lies.onPosts?.(); if (said !== undefined) return said; }
+      if (lies.onAdmit !== undefined && request.method === "POST" && path.endsWith("/admit")) { const answer = await fake.fetch(request.clone()); if (answer.ok) lies.onAdmit(); return answer; }
+      if (request.method === "POST" && path.endsWith("/entries")) { const said = await lies.entries?.(); if (said) return said; }
+      if (request.method === "POST" && path.endsWith("/attempt") && (await request.clone().json() as { reveal?: string }).reveal === undefined) opened.push(path);
+      const answer = await fake.fetch(request.clone());
+      if (request.method === "POST" && path.endsWith("/attempt")) await play?.answer();
+      if (carried !== null && request.method === "GET" && path.endsWith("/posts") && answer.ok) {
+        const body = await answer.json() as { posts: Record<string, unknown>[] };
+        return Response.json({ ...body, posts: body.posts.map((post) => post.endpoint === pc.endpoint ? { ...post, ...carried } : post) });
+      }
+      return answer;
+    } });
+    const list = accountList({ service, accountStore: store, listStore: memoryListStore(), lock: memoryListLock(), now: () => now, genesis: () => "always", durable: async () => true, names: () => ({ label: "Phone", os: "ios" }) });
+    await list.sync();
+    setPageAccountList(list);
+    const held = () => fake.accountList(ACCOUNT)!;
+    const postNow = async (): Promise<void> => { await postPcKeys(fake.fetch, ORIGIN, fake.issueToken(ACCOUNT, { device: true }), pc, held().id); };
+    if (lies.deferPost !== true) await postNow();
+    play = pcComparing({ fake, origin: ORIGIN } as unknown as Parameters<typeof pcComparing>[0], pc, held().id);
+    const pcAdmits = (): number => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length;
+    return { pc, play, list, held, pcAdmits, postNow, opened: () => opened.length };
+  }
+  const digitsShown = (): string => textOf(renderer!.root.findByProps({ className: "relay-shell-digits" })).replaceAll(" ", "");
+
+  it("shows the number both screens have before anything is added, and signs the PC into the list at the second Add", async () => {
+    const { pc, play, list, held, pcAdmits } = await listAccount();
+    try {
+      await mount();
+      await press("Add");
+      // the number, with what to do with it; nothing is admitted or signed yet
+      expect(await play.digits()).toBe(digitsShown());
+      expect(text()).toContain("Check that the PC shows this number and confirm it there, then Add");
+      expect(buttons()).toEqual(["Add", "Not the same"]);
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+      await press("Add");
+      expect([pcAdmits(), held().entries.length]).toEqual([1, 2]);
+      expect(list.view().pcs.map((row) => [row.endpoint, row.name?.label])).toEqual([[pc.endpoint, "PC"]]);
+      // a number was compared on both screens: this device's own record of its PCs says that it added this one
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
+      // the card is gone
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds nothing where the person says the numbers are not the same", async () => {
+    const { held, pcAdmits } = await listAccount();
+    try {
+      await mount();
+      await press("Add");
+      await press("Not the same");
+      expect(text()).toContain("The numbers did not match. This PC was not added.");
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+      expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
+      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds a PC that joined with this account's invite at one press, with no number, where the line itself signed for it, and ends the invite", async () => {
+    const { pc, list, held, pcAdmits } = await listAccount();
+    try {
+      const made = await makeInvite(list, { auto: false });
+      if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+      const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+      carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
+      await mount();
+      // the card says where the PC comes from, by the device's own check of the line's signature: this device made the invite
+      expect(text()).toContain("Add this PC to your account? (joined with your invite)");
+      const before = held().entries.length;
+      await press("Add");
+      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([pcAdmits(), held().entries.length - before]).toEqual([1, 2]);
+      expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+      expect(listView(held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
+      // the line's own signature is evidence the account service could not make: the device's record of its PCs says where this one came from
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
+    } finally { setPageAccountList(null); }
+  });
+
+  it("says whose invite the PC joined with: this device's, another device's by its name, or the account's where no name can be read", () => {
+    const t = (key: string, vars?: Record<string, string | number>): string => translate("en", key, vars);
+    const members = [{ key: "mine", self: true, name: { label: "Dana's Mac" } }, { key: "phone", self: false, name: { label: "Dana's phone" } }, { key: "unnamed", self: false, name: null }];
+    expect(invitedTitle(t, { by: "mine" }, members)).toBe("Add this PC to your account? (joined with your invite)");
+    expect(invitedTitle(t, { by: "phone" }, members)).toBe("Add this PC to your account? (joined with the invite from Dana's phone)");
+    for (const by of ["unnamed", "gone", null]) expect(invitedTitle(t, { by }, members)).toBe("Add this PC to your account? (joined with an invite of your account)");
+  });
+
+  /** An invite this device made, and the line's own proof for the PC's card, carried with the PC's post. */
+  async function invitedBy(list: Awaited<ReturnType<typeof listAccount>>["list"], pc: Awaited<ReturnType<typeof listAccount>>["pc"]) {
+    const made = await makeInvite(list, { auto: false });
+    if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+    const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+    carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
+    return { invite: made.invite, line };
+  }
+  const title = (): string => textOf(renderer!.root.find((node) => node.props["data-unconfirmed-pc"] !== undefined).findAll((node) => node.type === "span")[1]!);
+  const focus = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
+
+  it("is drawn again when the line's proof comes after the card, and when the invite is over: it says so only while it holds", async () => {
+    const { pc, list } = await listAccount();
+    try {
+      await mount();
+      expect(title()).toBe("Add this PC to your account?");
+      const { invite } = await invitedBy(list, pc);
+      await focus();
+      expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+      // a PC that joined with an invite came with no sign-in code: the card says nothing of one
+      expect(text()).not.toContain("entered the code it showed");
+      now = (invite.exp + 1) * 1000;
+      await focus();
+      expect(title()).toBe("Add this PC to your account?");
+    } finally { setPageAccountList(null); }
+  });
+
+  it("signs for the card that was shown and no other: a post with other keys under the same relay key is drawn again, and nothing is added at that press", async () => {
+    const { pc, list, held, pcAdmits } = await listAccount();
+    try {
+      const { invite, line } = await invitedBy(list, pc);
+      await mount();
+      expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+      // the PC posted again, with other keys and a proof of the line for them, after the card was drawn
+      const other = await askingPc();
+      const card = await signCard({ key: other.key, enc: other.enc, list: held().id, endpoint: pc.endpoint, invite: null }, other.signs);
+      carried = { invite: invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: { key: other.key, enc: other.enc, endpoint: pc.endpoint } }), key: other.key, enc: other.enc, card };
+      const before = held().entries.length;
+      await press("Add");
+      expect([pcAdmits(), held().entries.length]).toEqual([0, before]);
+      expect(list.view().pcs).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("writes the invited record before the card goes: a card is never dismissed while the record waits for another tab", async () => {
+    const { pc, list } = await listAccount();
+    const locks = Promise.withResolvers<void>();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { value: { ...navigator, locks: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } } }, configurable: true });
+    try {
+      await invitedBy(list, pc);
+      await mount();
+      const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
+      await act(async () => { void add.props.onClick(); });
+      await settle();
+      // another tab holds the record's lock: the PC is in the list, and the card stays until its record is written
+      expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      locks.resolve();
+      await settle();
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "navigator", saved);
+      setPageAccountList(null);
+    }
+  });
+
+  it("ends the invite at the account service too once its PC was added at one press, and stays with Try again where the list did not take the entry", async () => {
+    let stopped = false;
+    const { pc, list, held, pcAdmits } = await listAccount({ entries: () => stopped ? Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 }) : null });
+    try {
+      await invitedBy(list, pc);
+      stopped = true;
+      await mount();
+      await press("Add");
+      // admitted, and the list did not take the entry: the card stays, and says so
+      expect(text()).toContain("is not in your account's list yet. Try again.");
+      await focus();
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      stopped = false;
+      await press("Try again");
+      expect([pcAdmits(), list.view().pcs.map((row) => row.endpoint), listView(held().state).invites.map((row) => row.refusal)]).toEqual([1, [pc.endpoint], ["invite_revoked"]]);
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
+      await settle();
+      const open = await (await fake.fetch(`${ORIGIN}/v1/pc-invites`, { headers: { authorization: `Bearer ${fake.issueToken(ACCOUNT)}` } })).json() as { invites: unknown[] };
+      expect(open.invites).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("stops offering the one-press Add at the invite's end by its own clock, also where the posts cannot be read then", async () => {
+    let down = false;
+    const { pc, list, postNow } = await listAccount({ deferPost: true, onPosts: () => down ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : undefined });
+    try {
+      const { invite } = await invitedBy(list, pc);
+      // the PC listed itself a minute before the invite ends, and the card is drawn ten milliseconds before it ends:
+      // the card's own timer is armed for a second after that end
+      now = (invite.exp - 60) * 1000;
+      await postNow();
+      now = invite.exp * 1000 - 10;
+      await mount();
+      expect(title()).toBe("Add this PC to your account? (joined with your invite)");
+      down = true;
+      now = (invite.exp + 5) * 1000;
+      // the card's own timer, armed for the invite's end and a second after it: waited for by the title, within a deadline
+      const deadline = Date.now() + 5_000;
+      while (title() !== "Add this PC to your account?" && Date.now() < deadline) await settle();
+      expect(title()).toBe("Add this PC to your account?");
+    } finally { setPageAccountList(null); }
+  });
+
+  it("offers no Try again on a kept card whose invite ended after the admission: only No, which removes the PC", async () => {
+    let end: (() => void) | null = null;
+    const { pc, list, held } = await listAccount({ onAdmit: () => end?.() });
+    try {
+      const { invite } = await invitedBy(list, pc);
+      // the invite runs out while the admission is on its way
+      end = () => { now = (invite.exp + 5) * 1000; };
+      await mount();
+      await press("Add");
+      expect(text()).toContain("This request ran out. To add this PC, start again on the PC.");
+      expect(buttons()).toEqual(["No"]);
+      expect(held().state.pcs[pc.endpoint]).toBeUndefined();
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds nothing where the number ran out while the press looked up the PC's invite", async () => {
+    let late = false;
+    const { pc, held, pcAdmits } = await listAccount({ onPosts: () => { if (late) now += 121_000; return undefined; } });
+    try {
+      await mount();
+      await press("Add");
+      expect(buttons()).toEqual(["Add", "Not the same"]);
+      late = true;
+      await press("Add");
+      expect(text()).toContain("That number ran out. Press Add for a new one.");
+      expect([pcAdmits(), held().entries.length, readSeenPcs(ACCOUNT).pcs[pc.endpoint]]).toEqual([0, 1, undefined]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("asks for the number, as for any PC that asks, where the invite's proof is another PC's", async () => {
+    const { list } = await listAccount();
+    try {
+      const made = await makeInvite(list, { auto: false });
+      if (!made.made) throw new Error(`no invite was made: ${made.why}`);
+      const line = await readJoinLine(made.invite.line, { service: ORIGIN, followsLists: true });
+      const other = await askingPc();
+      carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: other.server_id, card: other }) };
+      await mount();
+      expect(text()).not.toContain("joined with your invite");
+      await press("Add");
+      expect(text()).toContain("Check that the PC shows this number and confirm it there, then Add");
+      expect(list.view().pcs).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("asks for three numbers at most per card, counted across Not the same: then only No is offered", async () => {
+    const { held, pcAdmits, opened } = await listAccount();
+    try {
+      await mount();
+      for (let round = 0; round < 3; round++) {
+        await press("Add");
+        expect(buttons()).toEqual(["Add", "Not the same"]);
+        await press("Not the same");
+      }
+      expect(text()).toContain("Too many tries for this PC. Start again on the PC in a few minutes.");
+      expect(buttons()).toEqual(["No"]);
+      expect([opened(), pcAdmits(), held().entries.length]).toEqual([3, 0, 1]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("adds nothing at a press after the number ran out, whatever the timer did not draw yet", async () => {
+    const { held, pcAdmits } = await listAccount();
+    try {
+      await mount();
+      await press("Add");
+      expect(buttons()).toEqual(["Add", "Not the same"]);
+      now += 121_000;
+      await press("Add");
+      expect(text()).toContain("That number ran out. Press Add for a new one.");
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("turns to the request ran out where the account service answers listing_expired to the Add beside the number", async () => {
+    const { held } = await listAccount({ admit: () => Response.json({ error: { code: "listing_expired", message: "x" } }, { status: 409 }) });
+    try {
+      await mount();
+      await press("Add");
+      await press("Add");
+      expect(text()).toContain("This request ran out. To add this PC, start again on the PC.");
+      expect(text()).not.toContain("The PC could not be added. Try again.");
+      expect(held().entries.length).toBe(1);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("never falls through to the directory's admission alone where the account has a list and the PC's post is gone", async () => {
+    const { held, pcAdmits } = await listAccount({ noPosts: true });
+    try {
+      await mount();
+      await press("Add");
+      expect(text()).toContain("The PC did not answer. Start again on the PC.");
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("stays, once the account admitted the PC and the list did not take its entry, and Try again places it with no second admission", async () => {
+    let stopped = true;
+    const { pc, list, held, pcAdmits } = await listAccount({ entries: () => stopped ? Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 }) : null });
+    try {
+      await mount();
+      await press("Add");
+      await press("Add");
+      expect(text()).toContain("The account service cannot change the list right now.");
+      expect(text()).toContain("is not in your account's list yet. Try again.");
+      expect(buttons()).toEqual(["Try again", "No"]);
+      // the directory lists the PC as admitted now: the card stays all the same
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      await settle();
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      stopped = false;
+      await press("Try again");
+      expect([pcAdmits(), held().entries.length, list.view().pcs.map((row) => row.endpoint)]).toEqual([1, 2, [pc.endpoint]]);
+      expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("keeps what it places across a read of the account's PCs that comes while the entry goes out: Try again stays", async () => {
+    let stopped = true;
+    const { pc, list } = await listAccount({ entries: async () => {
+      if (!stopped) return null;
+      // the page comes to the front while the entry is on its way: the account's PCs are read again, and the PC,
+      // admitted by now, is no longer one that asks
+      window.dispatchEvent(new Event("focus"));
+      for (let turns = 0; turns < 50; turns++) await new Promise((resolve) => setTimeout(resolve, 0));
+      return Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 });
+    } });
+    try {
+      await mount();
+      await press("Add");
+      await press("Add");
+      // the entry's answer comes after the read of the account's PCs: waited for by its words, within a deadline
+      const deadline = Date.now() + 5_000;
+      while (!text().includes("The account service cannot change the list right now.") && Date.now() < deadline) await settle();
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      expect(buttons()).toEqual(["Try again", "No"]);
+      stopped = false;
+      await press("Try again");
+      expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("removes the admitted PC from the account at No on a card kept after the list did not take its entry", async () => {
+    const { pc } = await listAccount({ entries: () => Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 }) });
+    try {
+      await mount();
+      await press("Add");
+      await press("Add");
+      expect(buttons()).toEqual(["Try again", "No"]);
+      await press("No");
+      // the account no longer lists the PC, and the card is gone
+      expect([fake.pcs(ACCOUNT).map((row) => row.server_id), renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)]).toEqual([[], []]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("says so where the PC does not answer, and shows no number", async () => {
+    const { play, held, pcAdmits } = await listAccount();
+    try {
+      play.answer = async () => false;
+      await mount({ numberWaitMs: 0 });
+      await press("Add");
+      expect(text()).toContain("The PC did not answer. Start again on the PC.");
+      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
+    } finally { setPageAccountList(null); }
   });
 });
