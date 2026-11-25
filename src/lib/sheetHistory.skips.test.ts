@@ -136,6 +136,29 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     expect(fake.at()).toBe(start);
   });
 
+  it("does not strand the entry of an automatic approval that opens after a silent Back", async () => {
+    const start = fake.at();
+    fake.tap();
+    fake.muteNextBack();
+    enter(() => {})(); await settled();
+    fake.activation.isActive = false;
+    const leaveApproval = enter(() => false);
+    fake.tap();
+    leaveApproval(); await settled();
+    enter(() => {})(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("steps off the confirmation after widening restores the sidebar preference in its URL", async () => {
+    const start = fake.at();
+    fake.tap();
+    const leave = enter(() => {});
+    const history = fake.window.history;
+    history.replaceState(history.state, "", `${fake.window.location.href}&sidebar=hidden`);
+    leave(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
   it("goes again onto the entry of a sheet that refuses Back, and tells the app both steps were the sheet's own", async () => {
     const start = fake.at();
     let busy = true;
