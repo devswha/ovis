@@ -1712,7 +1712,9 @@ export class ListFollow implements ListAuthority {
     };
     // A member's entry is waited for outside the queue: half a minute of waiting holds back no read, and no page
     const newcomer: Newcomer = { key: device.key, enc: device.enc, device: true, placeOf: (copy) => placeOf(copy, device), write: (copy, state, keys) => this.writeAllow(copy, state, device, keys) };
-    return sign ? this.enqueue(() => decided(this.allow(newcomer, no))) : decided(this.awaitMember(device, no));
+    // the device's session waits LIST_ALLOW_MS from here (allowIntoList): no try starts that could place the entry after it
+    const by = this.deps.now() + LIST_ALLOW_MS;
+    return sign ? this.enqueue(() => decided(this.allow(newcomer, no, by))) : decided(this.awaitMember(device, no));
   }
 
   /**
@@ -1761,7 +1763,7 @@ export class ListFollow implements ListAuthority {
     }
   }
 
-  private async allow(device: Newcomer, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
+  private async allow(device: Newcomer, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome, by: number | null = null): Promise<AllowOutcome> {
     {
       const scope = this.bound();
       if (scope === null || !this.isPinned) return no("not_pinned");
@@ -1779,7 +1781,11 @@ export class ListFollow implements ListAuthority {
       // how long the next try waits; nothing waits after the last one
       let wait = 0;
       for (let tries = 0; tries < LIST_ALLOW_TRIES; tries++) {
-        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        if (wait > 0) {
+          // a wait the service asked for that would leave less than one try's time before the device stops waiting ends it here
+          if (by !== null && this.deps.now() + wait + LIST_ALLOW_RETRY_MAX_MS > by) return no(last);
+          await new Promise((resolve) => setTimeout(resolve, wait));
+        }
         wait = 0;
         if (!this.live(scope)) return no("unavailable");
         const copy = this.copy;

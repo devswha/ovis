@@ -472,7 +472,7 @@ describe("what the PC does when the entry does not go in", () => {
     const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
     // the service's own answer past a PC's 30 list calls in a minute (MACHINE_LIMITER): the entry is placed with the
     // 30th, and the read after it and the entry sent again meet the limit until the minute is over
-    const limited = () => Response.json({ error: { code: "rate_limited", message: "Too many requests; try again later" } }, { status: 429, headers: { "retry-after": "1" } });
+    const limited = () => Response.json({ error: { code: "rate_limited", message: "Too many requests; try again later" } }, { status: 429, headers: { "retry-after": "2" } });
     let placed = false;
     let resent = 0;
     let limitedAt: number | null = null;
@@ -493,8 +493,31 @@ describe("what the PC does when the entry does not go in", () => {
     const { answer } = await allowed(made, phone, { enc: phone.enc, card });
     expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
     expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toMatchObject({ by: made.ownKey });
-    // sent again only after the second the service named (a timer may fire a moment early)
-    expect(againAt! - limitedAt!).toBeGreaterThanOrEqual(980);
+    // sent again only after the two seconds the service named (a timer may fire a moment early)
+    expect(againAt! - limitedAt!).toBeGreaterThanOrEqual(1_980);
+  });
+
+  test("a wait the service names that would outlast the device's wait for its entry is not taken: the device is refused, and nothing is placed after it", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const realNow = Date.now.bind(Date);
+    let spent = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => realNow() + spent);
+    let sent = 0;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/entries") return await forward();
+      sent += 1;
+      // half a minute of the device's wait is gone by this answer, and the service names its whole next minute
+      spent = 30_000;
+      return Response.json({ error: { code: "rate_limited", message: "Too many requests; try again later" } }, { status: 429, headers: { "retry-after": "60" } });
+    };
+    try {
+      const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+      expect(answer).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+    } finally { clock.mockRestore(); }
+    expect(sent).toBe(1);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
   });
 
   test("the signed entry is kept beside the copy: a second Allow at the same head sends that very entry and signs no other", async () => {
