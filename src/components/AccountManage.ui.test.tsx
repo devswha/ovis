@@ -213,8 +213,7 @@ describe("Manage account's devices and PCs", () => {
     const view: AccountListView = { account: "acct", reached: true, status: { at: "following", list: LIST, standing: "in", head: 2, read_at: 1, trouble: null }, devices: [],
       pcs: [{ endpoint: "a".repeat(64), server_id: "a".repeat(32), how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: null, new_at: null }] };
     let writes = true;
-    // a writer of an empty list: the devices part draws its nameless signers from it (ListDevices)
-    setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => (writes ? { state: { signers: {}, devices: {}, invites: {}, pcs: {} } } : null) } as unknown as AccountList);
+    setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => (writes ? { account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } } : null) } as unknown as AccountList);
     try {
       pcs = [{ ...pcs[0]!, public_key: "a".repeat(64), relay: "wss://relay.example" }, pcs[1]!,
         { server_id: "d".repeat(32), label: "Old box", public_key: null, relay: null, added_at: ago(60), last_seen_at: ago(1) }] as Service.DirectoryPc[];

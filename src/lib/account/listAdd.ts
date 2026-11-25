@@ -165,10 +165,11 @@ export async function numberWith(list: AccountList, post: PostedPc, options: { r
   }
   const until = earliest + NUMBER_MS;
   const reveal = toBase64Url(mine);
+  // the reveal, too, is a request of the wait: it ends by the wait's deadline, and by the number's own end
+  const revealBy = Math.min(deadline, until);
   for (let sends = 1; ; sends += 1) {
-    // the reveal, too, goes only while the number lives
-    if (now() >= until) return { shown: false, why: "silent" };
-    try { await within(until - now(), options.signal, (signal) => writer.service.listAttempt(writer.list, post.endpoint, { ...message, reveal }, signal)); break; } catch (error) {
+    if (now() >= revealBy) return { shown: false, why: "silent" };
+    try { await within(revealBy - now(), options.signal, (signal) => writer.service.listAttempt(writer.list, post.endpoint, { ...message, reveal }, signal)); break; } catch (error) {
       const said = refusalOf(error);
       // the service has not stored the PC's answer where this request landed yet: once more, a moment later
       if (said !== null && said.status === 409 && said.code === "attempt_changed" && sends < REVEAL_SENDS) { await wait(NUMBER_POLL_MS, options.signal); continue; }
@@ -176,7 +177,8 @@ export async function numberWith(list: AccountList, post: PostedPc, options: { r
       return said !== null && said.status === 409 ? { shown: false, why: "gone" } : refused(error);
     }
   }
-  if (now() >= until) return { shown: false, why: "silent" };
+  // an answer to the reveal that came after the deadline counts for nothing
+  if (now() >= revealBy) return { shown: false, why: "silent" };
   return { shown: true, number: { post, digits: pairDigits(binding, adder, mine, theirs), until, member: adder } };
 }
 

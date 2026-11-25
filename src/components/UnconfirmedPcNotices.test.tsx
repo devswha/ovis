@@ -616,7 +616,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
     /** the account service shows no posts any more */
     noPosts?: boolean;
     /** the account service's own answer to a placement, in place of the fake's (null: the fake's) */
-    entries?: () => Response | null;
+    entries?: () => Response | null | Promise<Response | null>;
   } = {}) {
     fake.listAccounts = "*";
     carried = null;
@@ -632,7 +632,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       const path = new URL(request.url).pathname;
       if (lies.admit !== undefined && path.endsWith("/admit")) return lies.admit();
       if (lies.noPosts && request.method === "GET" && path.endsWith("/posts")) return Response.json({ posts: [] });
-      if (request.method === "POST" && path.endsWith("/entries")) { const said = lies.entries?.(); if (said) return said; }
+      if (request.method === "POST" && path.endsWith("/entries")) { const said = await lies.entries?.(); if (said) return said; }
       if (request.method === "POST" && path.endsWith("/attempt") && (await request.clone().json() as { reveal?: string }).reveal === undefined) opened.push(path);
       const answer = await fake.fetch(request.clone());
       if (request.method === "POST" && path.endsWith("/attempt")) await play?.answer();
@@ -892,6 +892,44 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect([pcAdmits(), held().entries.length, list.view().pcs.map((row) => row.endpoint)]).toEqual([1, 2, [pc.endpoint]]);
       expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
       expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("keeps what it places across a read of the account's PCs that comes while the entry goes out: Try again stays", async () => {
+    let stopped = true;
+    const { pc, list } = await listAccount({ entries: async () => {
+      if (!stopped) return null;
+      // the page comes to the front while the entry is on its way: the account's PCs are read again, and the PC,
+      // admitted by now, is no longer one that asks
+      window.dispatchEvent(new Event("focus"));
+      for (let turns = 0; turns < 50; turns++) await new Promise((resolve) => setTimeout(resolve, 0));
+      return Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 });
+    } });
+    try {
+      await mount();
+      await press("Add");
+      await press("Add");
+      // the entry's answer comes after the read of the account's PCs: waited for by its words, within a deadline
+      const deadline = Date.now() + 5_000;
+      while (!text().includes("The account service cannot change the list right now.") && Date.now() < deadline) await settle();
+      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      expect(buttons()).toEqual(["Try again", "No"]);
+      stopped = false;
+      await press("Try again");
+      expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+    } finally { setPageAccountList(null); }
+  });
+
+  it("removes the admitted PC from the account at No on a card kept after the list did not take its entry", async () => {
+    const { pc } = await listAccount({ entries: () => Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 }) });
+    try {
+      await mount();
+      await press("Add");
+      await press("Add");
+      expect(buttons()).toEqual(["Try again", "No"]);
+      await press("No");
+      // the account no longer lists the PC, and the card is gone
+      expect([fake.pcs(ACCOUNT).map((row) => row.server_id), renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)]).toEqual([[], []]);
     } finally { setPageAccountList(null); }
   });
 

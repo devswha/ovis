@@ -388,6 +388,13 @@ describe("the admission before a first link", () => {
       expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("added");
     });
 
+    it("a scanned code that carries no account mark pairs with the PC alone: paired, never added", async () => {
+      const run = await pairing({ listed: true });
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("paired");
+    });
+
     it("a code typed on this device and compared here: paired, never added", async () => {
       const run = await pairing({ mark: true, listed: true, typedConfirmed: true, typedCode: true });
       run.admissionGate.resolve();

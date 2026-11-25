@@ -20,6 +20,8 @@ async function scanned(w: World = listWorld()) {
     addedAtOnce: false,
     /** what the PC answers once the list holds its entry, in place of `added` */
     later: null as { readonly status: number; readonly code: string } | null,
+    /** the PC's session drops once the list holds its entry: no answer at all */
+    dropsLater: false,
   };
   const fetch: PcFetch = async (path, init) => {
     if (path !== "/api/account/list/named") return new Response(null, { status: 404 });
@@ -29,6 +31,7 @@ async function scanned(w: World = listWorld()) {
     if (answers.addedAtOnce) return Response.json({ state: "added", account: body.account });
     const held = w.held();
     const row = held.state.pcs[pc.endpoint];
+    if (row !== undefined && row.removed === null && row.key === pc.key && answers.dropsLater) throw new TypeError("The session ended");
     if (row !== undefined && row.removed === null && row.key === pc.key && answers.later !== null) return Response.json({ error: { code: answers.later.code } }, { status: answers.later.status });
     if (answers.reads && row !== undefined && row.removed === null && row.key === pc.key) return Response.json({ state: "added", account: body.account });
     const card = answers.card ?? await signCard({ key: pc.key, enc: pc.enc, list: body.list, endpoint: pc.endpoint, invite: null }, pc.signs);
@@ -87,6 +90,21 @@ describe("naming the account's list to a PC whose QR code this device scanned", 
     answers.addedAtOnce = true;
     expect(await name()).toEqual({ outcome: "refused", why: "not_in_list" });
     expect([admitted, w.held().entries.length, phone.list.holdsPc((await askingPc()).endpoint)]).toEqual([[], 1, false]);
+  });
+
+  it("says placed where the session drops at a later ask, once the entry is in the list: the pairing is not spent and no failure is recorded", async () => {
+    const { w, answers, name } = await scanned();
+    answers.dropsLater = true;
+    expect(await name()).toEqual({ outcome: "placed" });
+    expect(w.held().entries.length).toBe(2);
+  });
+
+  it("says not known yet where the PC says it read an entry and this device's copy cannot be read to tell", async () => {
+    const { phone, answers, name } = await scanned();
+    answers.addedAtOnce = true;
+    // the log cannot be read: whether the list holds the PC is not known, never that it does not
+    phone.wire.answer = (request) => request.method === "GET" && new URL(request.url).pathname.startsWith("/v2/") ? new Response("down", { status: 503 }) : null;
+    expect(await name()).toEqual({ outcome: "unknown" });
   });
 
   it("says the PC's refusal at a later ask as a refusal, never as placed", async () => {
