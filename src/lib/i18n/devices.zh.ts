@@ -222,6 +222,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Update Ovis on that PC": "请更新那台 PC 上的 Ovis",
   "Not approved": "未获批准",
   "That PC could not be added. Try again.": "无法添加那台 PC。请重试。",
+  "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.": "那台 PC 没有接受该请求。只有你账户中与那台 PC 配对的设备才能让其他 PC 加入。",
   "The relay did not start: {message}": "中继未能启动：{message}",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "推送通知需要 HTTPS 或 localhost。在 iPhone 上请使用添加到主屏幕的应用。",
   "Allow notifications in your browser settings, then try again.": "请在浏览器设置中允许通知，然后重试。",

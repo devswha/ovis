@@ -1244,7 +1244,10 @@ PC's refusal or the Tailscale tab's SSH connection.
 
 The sidebar of a PC (A) whose page is signed in, with A in that account, lists the account's other
 PCs that A has not added yet, and adds one that would pair on its own ("Update Ovis on that PC" or
-"Offline" for one that would not); **Add a connection → Ovis relay** lists no PCs. An add
+"Offline" for one that would not); **Add a connection → Ovis relay** lists no PCs. Only a member of
+B approves such an add: a device of the account paired at B, not one that only opens B through the
+account. A B with none refuses it before asking anyone, and A's row says that only a device of the
+account paired with B can let another PC in there. An add
 makes A's server a paired device of that PC (B), as **Add a PC through the relay** with a link does,
 and A then lists B like any SSH PC, after a restart too. B's row is a plain watch row: A is never an
 account member, holds no account key and signs nothing ([rule 3](#rules)), and it only watches B.
