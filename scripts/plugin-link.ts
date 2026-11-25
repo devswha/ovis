@@ -1622,6 +1622,12 @@ export interface PressWords {
   readonly closing: string;
   /** said when no Add is offered for this PC and no admission waits for it */
   readonly noneWaiting: string;
+  /**
+   * This PC lets nobody into its account's signed list itself (it joins that list by an invite: plugin-join.ts): a
+   * device that asks to join it is allowed on another device of the account, so no first join is asked for here and
+   * `approve` is not offered.
+   */
+  readonly allowsNobody?: true;
 }
 
 /**
@@ -2076,13 +2082,15 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
     await press.signOut();
     // the first device that opens this PC asks for six digits only this PC may let in (a first join): here, at a
     // terminal, they are typed in the same run; elsewhere it is said where to type them
-    const hint = `If your phone asks for six digits when you open ${name}, run ${cli(options)} approve on this PC and type them.\n`;
+    const hint = words.allowsNobody === true
+      ? `If your phone asks to join when you open ${name}, allow it on another device of your account: this PC joined by an invite, and lets nobody into your account's list itself.\n`
+      : `If your phone asks for six digits when you open ${name}, run ${cli(options)} approve on this PC and type them.\n`;
     if (!online) {
       out(`Added: this PC is in your account (${mine}), but its Ovis relay did not come online within 30 seconds. Your devices can open ${name} from My PCs once it does (${cli(options)} status says when).\n${hint}${words.closing}`);
       return ended({ kind: "added", online: false }, 0);
     }
     out("Added. ");
-    const watched = options.terminal === true && options.isTty === true && await watchFirstJoins(options, api, { name, account: press.signedIn, hint }, reader ?? undefined);
+    const watched = options.terminal === true && options.isTty === true && words.allowsNobody !== true && await watchFirstJoins(options, api, { name, account: press.signedIn, hint }, reader ?? undefined);
     out(`${watched ? "" : `Open ${name} from My PCs.\n${hint}`}${words.closing}`);
     return ended({ kind: "added", online: true }, 0);
   };

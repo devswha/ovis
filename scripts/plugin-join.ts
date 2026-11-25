@@ -422,7 +422,7 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
     ...invite.list === null ? { admissionOnly: true as const } : { take: byList(invite.list, redeemed.auto) },
     askBeforeUnlist: true, stopFast: true,
     unlist: () => leave(account), named, signOut: async () => undefined,
-    words: joinWords(options, account, redeemed.auto), report: (end) => { ended = end; },
+    words: joinWords(options, account, redeemed.auto, invite.list !== null), report: (end) => { ended = end; },
   });
   const outcome = (ended as PressEnd | null) ?? (code === 0 ? { kind: "added", online: false } as const : { kind: "not_added", why: "failed", listed: null } as const);
   if (outcome.kind === "added") {
@@ -592,7 +592,7 @@ async function joining(options: LinkOptions, api: Api, undo: Undo,
 }
 
 /** `ovis join`'s words for the press: an invite chose the account, and nothing was signed in to. */
-function joinWords(options: LinkOptions, account: string, auto: boolean): PressWords {
+function joinWords(options: LinkOptions, account: string, auto: boolean, byList: boolean): PressWords {
   const command = `${cli(options)} join`;
   return {
     command, anew: "Ask for a new invite to try again.", chosen: "the invite is for",
@@ -601,5 +601,7 @@ function joinWords(options: LinkOptions, account: string, auto: boolean): PressW
       ? `This PC is listed in Ovis account ${account} as ${name}, and the invite adds it with no Add to press.\n`
       : `This PC is listed in Ovis account ${account} as ${name}. Open Ovis on your phone or another device signed in to that account and press Add for ${name} (its card shows for 10 minutes).\nWaiting… (up to ${lasts}, Ctrl+C to stop)\n`,
     noneWaiting: `The invite's add is no longer there to take: it lasts 10 minutes from the invite's first use. Ask for a new invite, then run ${command} again.\n`,
+    // a PC that joined its account's list by an invite signs nobody into that list (ovis approve says so): another device does
+    ...byList ? { allowsNobody: true as const } : {},
   };
 }

@@ -761,7 +761,9 @@ for it before they show or ask anything.
   it does once a device of the account chose **Add**. With an **auto** invite the PC builds its own entry,
   the command signs it with the line's key and hands it back, and the PC places it and joins
   (`…/join/prepare`, `…/join/body`, `…/join/place`); a list that moved meanwhile is tried again, a
-  few times. A line that names no list, for an account that keeps one, is
+  few times. A PC that joined the list by an invite signs nobody into it, so after **Added.** the
+  command asks for no first device's digits: it says to allow a device that asks to join this PC
+  on another device of the account. A line that names no list, for an account that keeps one, is
   refused by the account service (`invite_invalid`: the list does not hold that invite as open, as
   for one that was revoked, used or ran out): ask for a new invite.
 
