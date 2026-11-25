@@ -209,6 +209,8 @@ export function opencodeRecord(id: string, type: string, data: Row): OpencodeRec
           input: JSON.stringify(input, null, 2),
           output: "",
         };
+        const callId = text(block.id);
+        if (callId !== null) part.call_id = callId;
         if (skill !== null) part.skill = skill;
         const outcome = toolState(state.status);
         if (outcome !== undefined) part.state = outcome;

@@ -189,8 +189,8 @@ describe("OpenCode's rows as a conversation", () => {
       {
         role: "assistant", ts: new Date(T0 + 10).toISOString(), end_ts: new Date(T0 + 60).toISOString(), parts: [
           { kind: "thinking", text: "Write it, then read it." },
-          { kind: "tool", name: "write", summary: "hello.txt", input: JSON.stringify({ path: "hello.txt", content: "hi\n" }, null, 2), output: "Created file successfully: hello.txt", state: "ok" },
-          { kind: "tool", name: "shell", summary: "cat hello.txt", input: JSON.stringify({ command: "cat hello.txt" }, null, 2), output: "hi\n", state: "ok" },
+          { kind: "tool", name: "write", call_id: "call_1", summary: "hello.txt", input: JSON.stringify({ path: "hello.txt", content: "hi\n" }, null, 2), output: "Created file successfully: hello.txt", state: "ok" },
+          { kind: "tool", name: "shell", call_id: "call_1", summary: "cat hello.txt", input: JSON.stringify({ command: "cat hello.txt" }, null, 2), output: "hi\n", state: "ok" },
           { kind: "text", text: "It says hi.", phase: "final_answer" },
         ],
       },
@@ -582,11 +582,27 @@ describe("OpenCode 2.4 split assistant content", () => {
     const older = page(opencodeConversation(s.path, s.session, { before: newest.cursor! }));
     expect(older.turns[1]?.parts).toEqual([
       { kind: "thinking", text: "Read the log first" },
-      expect.objectContaining({ kind: "tool", name: "read", state: "ok", output_ref: `${step}:1` }),
+      expect.objectContaining({ kind: "tool", name: "read", call_id: "call_1", state: "ok", output_ref: `${step}:1` }),
       { kind: "text", text: "Checked", phase: "final_answer" },
     ]);
     expect(opencodeToolOutput(s.path, s.session, `${step}:1`)).toBe(output);
     expect(opencodeImage(s.path, s.session, `opencode:${step}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+  });
+
+  it("omits the call ID when a split tool has no usable ID", () => {
+    const s = storeV24();
+    s.prompt("Check the log");
+    const step = s.answer("", { content: [] });
+    const state = { status: "completed", input: { path: "a.log" } };
+    s.part(step, 0, { type: "tool", name: "read", state });
+    s.part(step, 1, tool("read", state, ""));
+
+    const parts = page(opencodeConversation(s.path, s.session)).turns[1]?.parts;
+    expect(parts).toHaveLength(2);
+    for (const part of parts ?? []) {
+      expect(part.kind).toBe("tool");
+      expect(part).not.toHaveProperty("call_id");
+    }
   });
 
   it("keeps inline blocks after split blocks when a message has both", () => {
