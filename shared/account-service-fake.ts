@@ -20,7 +20,7 @@ import { isWssOrigin } from "./relay-offer.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
 import { isListKeyEncoding, isListPoint } from "./account-list-entry.ts";
-import { verifyInviteRedeem } from "./account-list-invite.ts";
+import { verifyInviteRedeem, verifyLineProof } from "./account-list-invite.ts";
 import { MIGRATION_CARRIED_MAX, linkBytes } from "./account-list-migrate.ts";
 
 export const CHALLENGE_TTL_MS = 60_000;
@@ -100,6 +100,8 @@ export interface FakePc { server_id: string; label: string; public_key: string; 
   /** the PC completed its add (the service's `completed_at`; with `completions`, POST /v1/pc/complete), and a device was admitted to it by its digits (`digit_admitted`) */
   completed_at?: string | null;
   digit_admitted?: boolean;
+  /** this PC pulled its mailbox since the listing was made (the service's `pulled_since_listed`): the completion's evidence of its own */
+  pulled_since_listed?: boolean;
   /**
    * With `pcAddProofs`, on a listing a device code made under Step 2: when that sign-in was made, which starts the listing's
    * LISTING_ASKS_MS, and who asked (the system its PUT named and the place the service saw it come from)
@@ -227,6 +229,8 @@ export interface ListTamper {
   readonly answerList?: string;
   /** This id is reported as the account's list (GET /v2/lists/mine, POST /v2/pc/list, the mailbox's with_list), the log unchanged: the id is a hint, pinned only from a member. */
   readonly listId?: string;
+  /** The links of these member keys are not served to a PC (POST /v2/pc/list/links): a service can withhold a link, never forge one. */
+  readonly withholdLinks?: readonly string[];
   /** One byte of the body of the entry at this seq is flipped as served: it no longer holds (`signature_invalid`, or `entry_malformed`). */
   readonly flipEntry?: { readonly seq: number; readonly byte?: number };
   /** One byte of this member's wrap of this epoch is flipped as served: it does not open (`refused`), which is no evidence. */
@@ -260,7 +264,7 @@ export interface FakeListView {
   readonly state: ListState;
   readonly wraps: readonly ListWrap[];
   readonly claims: readonly { readonly key: string; readonly enc: string; readonly card: string; readonly until: number }[];
-  readonly posts: readonly { readonly endpoint: string; readonly server_id: string; readonly key: string; readonly enc: string; readonly card: string; readonly until: number; readonly attempt: ListAttempt | null }[];
+  readonly posts: readonly ListPostView[];
   /** Each member key's link: the registered sign-in key it names. */
   readonly links: readonly { readonly key: string; readonly device: string }[];
 }
@@ -275,8 +279,19 @@ interface ListClaim { readonly family: string; readonly enc: string; readonly ca
  * commitment, then the PC's nonce, then the adder's reveal.
  */
 export interface ListAttempt { readonly adder: string; readonly commitment: string; readonly nonce: string | null; readonly reveal: string | null }
-/** A PC's post of its keys, taken at `at`, with the attempt open on it. */
-interface ListPost { readonly server_id: string; readonly key: string; readonly enc: string; readonly card: string; readonly at: number; attempt: ListAttempt | null }
+/**
+ * A PC's post of its keys, taken at `at`, with the attempt open on it, and the plain invite's key and its line's proof when
+ * the PC joined by that line (null otherwise).
+ */
+interface ListPost {
+  readonly server_id: string; readonly key: string; readonly enc: string; readonly card: string; readonly at: number; attempt: ListAttempt | null;
+  readonly invite: { readonly key: string; readonly proof: string } | null;
+}
+/** A post as GET /v2/lists/{list}/posts shows it: `invite` and `invite_proof` only on a post that carried them. */
+export interface ListPostView {
+  readonly endpoint: string; readonly server_id: string; readonly key: string; readonly enc: string; readonly card: string; readonly until: number; readonly attempt: ListAttempt | null;
+  readonly invite?: string; readonly invite_proof?: string;
+}
 
 /** A list as the service holds it: every entry as the text it was sent, its own state of the list (never served), wraps, claims and posts. */
 interface FakeList {
@@ -296,6 +311,8 @@ interface FakeList {
   readonly additions: number[];
   /** by member key: the registered sign-in key its link names (D11.2); one per member key, and one per registered key */
   readonly links: Map<string, string>;
+  /** every link taken, oldest first, with its two signatures, kept when it gives way (POST /v2/pc/list/links serves them) */
+  linkLog?: { readonly key: string; readonly device: string; readonly link: { readonly member: string; readonly device: string }; readonly linked_at: number }[];
   readonly tamper: { readonly rule: ListTamper; readonly family: string | null; readonly server_id: string | null }[];
 }
 
@@ -898,7 +915,7 @@ export class FakeAccountService {
       // null while step 2 is off for the account, and once passed
       const keyAt = this.keyRegisteredAt.get(session.family);
       return json({ pcs: [...directory.values()].filter((entry) => unconfirmed || !this.opensAll || entry.listed_by_device !== true).map((row) => {
-        const { exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, digit_admitted: _digits, asking_since: _since, asking: _asking, ...entry } = row;
+        const { exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, digit_admitted: _digits, pulled_since_listed: _pulled, asking_since: _since, asking: _asking, ...entry } = row;
         return {
           ...entry,
           unconfirmed: this.opensAll && listed_by_device === true,
@@ -1026,6 +1043,8 @@ export class FakeAccountService {
         pending_under_step2: before === undefined ? !own && this.opensAll : before.pending_under_step2 === true,
         ...(before === undefined ? { listed_by_session: session.family } : before.listed_by_session === undefined ? {} : { listed_by_session: before.listed_by_session }),
         ...(this.completions ? { listing_id: before?.listing_id ?? randomHex(16), completed_at: before?.completed_at ?? null } : {}),
+        // upkeep keeps the listing, and with it the mark of the PC's pull since it was made
+        ...(before?.pulled_since_listed === true ? { pulled_since_listed: true } : {}),
         // a listing that asks to join keeps, from its own listing on, when its sign-in was made and who asked; a confirm clears who
         ...(before === undefined
           ? !own && this.opensAll && this.pcAddProofs ? { asking_since: this.signedInAt.get(session.family) ?? this.now(), asking: { os: accountOsOf(body.os), ...this.requestPlace } } : {}
@@ -1039,7 +1058,7 @@ export class FakeAccountService {
       directory.set(pc, entry);
       if (proven) this.pcLeaves.delete(box(pc, account));
       if (fresh || confirming) this.ring(account, session.family);
-      const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, digit_admitted: _digits, asking_since: _since, asking: _asking, ...shown } = entry;
+      const { exempt: _exempt, listed_by_device, pending_under_step2: _pending, listed_by_session: _lister, digit_admitted: _digits, pulled_since_listed: _pulled, asking_since: _since, asking: _asking, ...shown } = entry;
       return json({ pc: { ...shown, unconfirmed: this.opensAll && listed_by_device === true, ...this.askingView(entry) } });
     }
     if (pc !== undefined && request.method === "DELETE") {
@@ -1318,7 +1337,11 @@ export class FakeAccountService {
       const entry = this.directories.get(scope.account)?.get(challenge.server_id);
       // the listing still current, and its own evidence: an admission of it taken (or a completion already stamped)
       const taken = this.pcAdmissions.get(box(challenge.server_id, scope.account))?.taken === true;
-      if (entry?.listing_id !== scope.listing_id || (entry.completed_at == null && !taken)) return problem(409, "listing_changed", "This add is no longer waiting for that action");
+      // a listing still current and confirmed, with evidence of its own: completed already, a mailbox pull of this PC since it
+      // was made (so a list account's PC, which takes no one-press admission, completes on its pull), a digit admission, or a
+      // one-press admission it took
+      if (entry?.listing_id !== scope.listing_id || !this.confirmed(entry)
+        || (entry.completed_at == null && entry.pulled_since_listed !== true && entry.digit_admitted !== true && !taken)) return problem(409, "listing_changed", "This add is no longer waiting for that action");
       entry.completed_at ??= this.iso();
       return json({ completed_at: entry.completed_at });
     }
@@ -1359,7 +1382,10 @@ export class FakeAccountService {
       this.mailboxes.set(key, rest);
       // only the account the PC says it belongs to learns that it came by
       const entry = this.directories.get(body.account)?.get(challenge.server_id);
-      if (entry) entry.last_seen_at = this.iso();
+      if (entry) {
+        entry.last_seen_at = this.iso();
+        entry.pulled_since_listed = true;
+      }
       const admissions = this.admissionList
         .filter((a) => a.server_id === challenge.server_id && a.account === body.account && this.now() - Date.parse(a.at) < ADMISSION_TTL_MS)
         .map(({ key, label, at }) => ({ key, label, at }));
@@ -1501,7 +1527,7 @@ export class FakeAccountService {
       id: list.id, entries: [...list.texts], head: headOf(list), state: list.state,
       wraps: [...list.wraps].flatMap(([member, epochs]) => [...epochs].map(([epoch, wrap]) => ({ epoch, member, wrap }))),
       claims: this.liveClaims(list).map(({ key, enc, card, at }) => ({ key, enc, card, until: untilOf(at) })),
-      posts: this.livePosts(list).map(([endpoint, { server_id, key, enc, card, at, attempt }]) => ({ endpoint, server_id, key, enc, card, until: untilOf(at), attempt })),
+      posts: this.livePosts(list).map(([endpoint, post]) => postView(endpoint, post)),
       links: [...list.links].map(([key, device]) => ({ key, device })),
     };
   }
@@ -1607,7 +1633,20 @@ export class FakeAccountService {
       if (error instanceof ListKindError) return invalid;
       throw error;
     }
-    return await verifySignature(bytes, byMember, key) && await verifySignature(bytes, byDevice, own) ? own : invalid;
+    if (!(await verifySignature(bytes, byMember, key) && await verifySignature(bytes, byDevice, own))) return invalid;
+    // kept beside the link it proves, for the link's log once the link is written
+    this.linkProofs.set(`${list} ${key} ${own}`, { member, device });
+    return own;
+  }
+
+  /** The two signatures of each link a sign-in proved, by list, member key and registered key: what the link's log keeps. */
+  private readonly linkProofs = new Map<string, { readonly member: string; readonly device: string }>();
+
+  /** The link of `key` to `own` goes into the list's log of links, with its two signatures, when it is written. */
+  private logLink(list: FakeList, key: string, own: string): void {
+    const link = this.linkProofs.get(`${list.id} ${key} ${own}`);
+    if (link === undefined) return;
+    (list.linkLog ??= []).push({ key, device: own, link, linked_at: Math.floor(this.now() / 1000) });
   }
 
   /**
@@ -1620,6 +1659,7 @@ export class FakeAccountService {
     const others = [...list.links].filter(([member, registered]) => registered === own && member !== key).map(([member]) => member);
     for (const member of others) list.links.delete(member);
     list.links.set(key, own);
+    this.logLink(list, key, own);
     return true;
   }
 
@@ -1909,6 +1949,21 @@ export class FakeAccountService {
     return lie;
   }
 
+  /**
+   * POST /v2/pc/list/links: every link the list's log of links holds, oldest first, each with its two signatures
+   * (`seq` counts from 1), after `after`, at most `limit`; `more` while more follow. A link a tamper rule withholds is
+   * left out: a PC that verifies each pair can be denied a link, never shown a false one.
+   */
+  private linksPage(list: FakeList, caller: ListCaller, after: number | null, limit: number): Response {
+    const lie = this.tamperFor(list, caller);
+    const withheld = new Set(lie.withholdLinks ?? []);
+    const all = (list.linkLog ?? []).map((one, index) => ({ seq: index + 1, ...one })).filter((one) => !withheld.has(one.key));
+    const after0 = after ?? 0;
+    const rest = all.filter((one) => one.seq > after0);
+    const links = rest.slice(0, limit);
+    return this.v2Json({ list: list.id, after, links, more: rest.length > links.length });
+  }
+
   /** One page of the log after `after` (from entry 0 for null), as served to `caller`. */
   private logPage(list: FakeList, caller: ListCaller, after: number | null, limit: number): Response {
     const served = this.servedLog(list, caller);
@@ -1994,7 +2049,7 @@ export class FakeAccountService {
       default: {
         const list = this.ownList(account, id);
         if (list === undefined) return this.v2Unknown();
-        return this.v2Json({ posts: this.livePosts(list).map(([endpoint, { server_id, key, enc, card, at, attempt }]) => ({ endpoint, server_id, key, enc, card, until: untilOf(at), attempt })) });
+        return this.v2Json({ posts: this.livePosts(list).map(([endpoint, post]) => postView(endpoint, post)) });
       }
     }
   }
@@ -2028,6 +2083,7 @@ export class FakeAccountService {
     if (raced !== null) return raced;
     const list: FakeList = { id: first.hash, account: session.account, texts: [body.entry], hashes: [first.hash], last: first, state, wraps: new Map(), claims: new Map(), posts: new Map(), additions: [],
       links: new Map(linked === null ? [] : [[first.body.signer, linked]]), tamper: [] };
+    if (linked !== null) this.logLink(list, first.body.signer, linked);
     for (const wrap of wraps) storeWrap(list, wrap);
     this.lists.set(list.id, list);
     this.accountLists.set(session.account, list.id);
@@ -2119,6 +2175,7 @@ export class FakeAccountService {
     if (fell !== undefined) return notCarried(fell.index);
     const list: FakeList = { id: first.hash, account, texts: [entry, ...texts as string[]], hashes: held.map(({ hash }) => hash), last, state, wraps: new Map(), claims: new Map(), posts: new Map(),
       additions: [], links: new Map(linked === null || handOver === null ? [] : [[handOver, linked]]), tamper: [] };
+    if (linked !== null && handOver !== null) this.logLink(list, handOver, linked);
     for (const wrap of wraps) storeWrap(list, wrap);
     this.lists.set(list.id, list);
     this.accountLists.set(account, list.id);
@@ -2381,13 +2438,14 @@ export class FakeAccountService {
     const list = this.lists.get(body.list as string);
     if (list === undefined || !this.listsOn(list.account)) return this.v2Unknown();
     const listing = this.directories.get(list.account)?.get(serverId);
-    if (path === "/v2/pc/list/log" || path === "/v2/pc/list/wraps") {
+    if (path === "/v2/pc/list/log" || path === "/v2/pc/list/wraps" || path === "/v2/pc/list/links") {
       // a listing the account confirmed, or a row in the list, removed or not: a removed PC reads its removal
       const confirmed = listing !== undefined && this.confirmed(listing);
       if (!confirmed && rowOf(list.state.pcs, endpoint) === null) return this.v2Unknown();
       const halted = confirmed ? null : this.halted(list, caller);
       if (halted !== null) return halted;
       if (path === "/v2/pc/list/log") return this.logPage(list, caller, body.after === undefined ? null : body.after as number, body.limit === undefined ? LIST_PAGE_MAX : body.limit as number);
+      if (path === "/v2/pc/list/links") return this.linksPage(list, caller, body.after === undefined ? null : body.after as number, body.limit === undefined ? LIST_PAGE_MAX : body.limit as number);
       if (!isListKeyEncoding(body.member as string)) return this.v2Invalid();
       return this.v2Json({ wraps: this.servedWraps(list, caller, body.member as string) });
     }
@@ -2418,13 +2476,27 @@ export class FakeAccountService {
     const posted = { key: body.key as string, enc: body.enc as string, card: body.card as string };
     if (!isListKey(posted.key) || !isListKey(posted.enc)) return this.v2Invalid();
     if (!await cardHolds({ ...posted, list: list.id, endpoint, invite: null }, posted.card)) return this.v2Problem(400, "card_invalid", "The card is not that key's for this list and this PC");
+    // a PC that joins by the line of an invite a person holds posts that invite's key and the line's proof for the card it
+    // posts (`ovis-list-line/1`, never a redeem signature); the account's devices check both themselves, and the service only
+    // refuses junk early
+    const invite = body.invite as string | undefined;
+    const inviteProof = body.invite_proof as string | undefined;
+    if ((invite === undefined) !== (inviteProof === undefined) || (invite !== undefined && !isListPoint(invite))) return this.v2Problem(400, "invalid_request", "Send an invite's key and its line's proof together");
+    if (invite !== undefined) {
+      const halted = this.halted(list, caller);
+      if (halted !== null) return halted;
+      if (!this.listHoldsInvite(list, invite)) return this.v2Problem(409, "invite_not_in_list", "The list holds no open invite of this key");
+      if (!await verifyLineProof({ account: list.account, server_id: serverId, list: list.id, card: { key: posted.key, enc: posted.enc, endpoint } }, inviteProof, invite)) {
+        return this.v2Problem(400, "invite_proof_invalid", "The proof is not that invite line's signature for this account, this PC and this card");
+      }
+    }
     // posting the same keys again while the post still stands renews it and keeps an open comparison; a post that ran out is
     // over, and other keys are another card: either way the comparison goes
     const before = list.posts.get(endpoint);
     const stands = before !== undefined && this.now() - before.at <= LIST_CLAIM_MS;
     const attempt = stands && before.key === posted.key && before.enc === posted.enc ? before.attempt : null;
     const at = this.now();
-    list.posts.set(endpoint, { ...posted, server_id: serverId, at, attempt });
+    list.posts.set(endpoint, { ...posted, server_id: serverId, at, attempt, invite: invite === undefined ? null : { key: invite, proof: inviteProof! } });
     return this.v2Json({ endpoint, key: posted.key, until: untilOf(at) });
   }
 
@@ -2776,6 +2848,10 @@ const isLinkForm = (value: unknown): boolean => (typeof value === "string" && va
   || (isRecord(value) && hasOnly(value, ["member", "device"]) && typeof value.member === "string" && value.member.length === LINK_SIGNATURE_CHARS
     && typeof value.device === "string" && value.device.length === LINK_SIGNATURE_CHARS);
 
+/** A post as the routes show it: the plain invite's key and proof only where the post carried them. */
+const postView = (endpoint: string, { server_id, key, enc, card, at, attempt, invite }: ListPost): ListPostView =>
+  ({ endpoint, server_id, key, enc, card, until: untilOf(at), attempt, ...(invite === null ? {} : { invite: invite.key, invite_proof: invite.proof }) });
+
 /** When a PC invite ends, in ms. */
 const inviteEnd = (invite: FakeInvite): number => invite.expiresAt ?? invite.madeAt + PC_INVITE_TTL_MS;
 
@@ -2796,10 +2872,11 @@ const PC_PROOF: readonly string[] = ["server_id", "public_key", "challenge_id", 
 const PC_SHAPES: Readonly<Record<string, { readonly size: number; readonly members: readonly string[]; readonly optional?: readonly string[] }>> = {
   "/v2/pc/list": { size: LIST_BODY.small, members: ["account"] },
   "/v2/pc/list/log": { size: LIST_BODY.small, members: ["list"], optional: ["after", "limit"] },
+  "/v2/pc/list/links": { size: LIST_BODY.small, members: ["list"], optional: ["after", "limit"] },
   "/v2/pc/list/wraps": { size: LIST_BODY.small, members: ["list", "member"] },
   "/v2/pc/list/wraps/put": { size: LIST_BODY.entries, members: ["list", "wraps"] },
   "/v2/pc/list/entries": { size: LIST_BODY.entries, members: ["list", "entries"], optional: ["wraps"] },
-  "/v2/pc/list/keys": { size: LIST_BODY.small, members: ["list", "key", "enc", "card"] },
+  "/v2/pc/list/keys": { size: LIST_BODY.small, members: ["list", "key", "enc", "card"], optional: ["invite", "invite_proof"] },
   "/v2/pc/list/attempt": { size: LIST_BODY.small, members: ["list"], optional: ["commitment", "nonce"] },
 };
 
@@ -2814,12 +2891,13 @@ function pcBodyFormed(path: string, body: Record<string, unknown>): boolean {
   if (path === "/v2/pc/list") return typeof body.account === "string" && ACCOUNT_ID.test(body.account);
   if (typeof body.list !== "string" || !isListHash(body.list)) return false;
   switch (path) {
-    case "/v2/pc/list/log": return (body.after === undefined || isPlace(body.after)) && (body.limit === undefined || (isPlace(body.limit) && body.limit >= 1 && body.limit <= LIST_PAGE_MAX));
+    case "/v2/pc/list/log": case "/v2/pc/list/links": return (body.after === undefined || isPlace(body.after)) && (body.limit === undefined || (isPlace(body.limit) && body.limit >= 1 && body.limit <= LIST_PAGE_MAX));
     case "/v2/pc/list/wraps": return typeof body.member === "string";
     case "/v2/pc/list/entries": return entriesOf(body.entries) !== null && wrapsOf(body.wraps) !== null;
     case "/v2/pc/list/wraps/put": return (wrapsOf(body.wraps)?.length ?? 0) >= 1;
     case "/v2/pc/list/attempt": return (body.commitment === undefined || isNonce(body.commitment)) && (body.nonce === undefined || isNonce(body.nonce));
-    default: return typeof body.key === "string" && typeof body.enc === "string" && typeof body.card === "string" && body.card.length === CARD_SIGNATURE_CHARS;
+    default: return typeof body.key === "string" && typeof body.enc === "string" && typeof body.card === "string" && body.card.length === CARD_SIGNATURE_CHARS
+      && (body.invite === undefined || typeof body.invite === "string") && (body.invite_proof === undefined || typeof body.invite_proof === "string");
   }
 }
 

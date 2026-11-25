@@ -14,7 +14,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
-import { type ClearReason, LIST_REMOVED, PcAccountState } from "./account/pc-binding.ts";
+import { type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
 import type { ListAuthority } from "./account/list-follow.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
@@ -1484,6 +1484,19 @@ export class DeviceStore {
     this.pc.bindByService(account, listingId);
   }
 
+  /**
+   * Binds this PC, in no account, to `account` by the account's signed list (PcAccountState.bindByList): its own entry
+   * on a list a person at this PC confirmed. Only with the release flag on. An account whose list removed this relay
+   * identity takes it back on no path. Answers the binding the file holds after the write (PcAccountState.bindByList).
+   */
+  bindByList(account: string, list: string, serverId: string): ListBound {
+    this.assertWritable();
+    if (this.pc === null) throw new Error("A signed list needs OVIS_ACCOUNT_OPENS_ALL");
+    if (this.account() !== null) throw new Error("This PC is already in an account");
+    if (this.listRemovedFrom(account)) throw new Error("This PC was removed from that account");
+    return this.pc.bindByList(account, list, serverId);
+  }
+
   /** The id of this PC's binding when it stands on the account service's word alone (bindByService), else null. */
   serviceBinding(): string | null { const binding = this.pc?.binding(); return binding?.service === true ? binding.bind_id : null; }
 
@@ -2278,6 +2291,11 @@ export class DeviceStore {
   /** Whether this PC's relay identity was removed from `account` by that account's list: it joins it again on no path. */
   listRemovedFrom(account: string): boolean { return this.signedList?.removedFrom(account) === true; }
 
+  /** Whether the PC may be reset as the new PC that `account`'s list removed it as `serverId` (PcAccountState.readdReset), read from disk now. */
+  readdReset(account: string, serverId: string): "removed" | "in_account" | "not_removed" {
+    return this.pc === null ? "not_removed" : this.pc.readdReset(account, serverId);
+  }
+
   /** What an account row may do: on a pinned PC what the list says of its key, and to watch for a key the list no longer lets in. */
   private joinedRole(row: AccountRow): DeviceRole {
     const role = this.signedList?.role(row.key);
@@ -2545,10 +2563,12 @@ export class DeviceStore {
    * since is never taken for a device. A waiting row sends WAITING_LINKS links; the next turns it away, and null
    * says so.
    */
-  linkArrived(id: string, wasProvisional = false): LinkArrival | null {
+  linkArrived(id: string, wasProvisional = false, counted = true): LinkArrival | null {
     const row = this.provisional(id);
     const waiting = this.pending?.waiting;
-    if (row && waiting) {
+    // `counted` false: the row asks again where it stands after it named its account's list (listNamedBy), which is no
+    // new try of anything: only its first naming is one of its few
+    if (row && waiting && counted) {
       row.links += 1;
       if (row.links > WAITING_LINKS) { this.dropProvisional(waiting, row, "link_refused"); return null; }
     }
@@ -3655,6 +3675,35 @@ export class DeviceStore {
 
   /** Every key this PC keeps out, signed removal or not (a Revoke here, a record that no longer parses): /api/account/status `blocked`. */
   tombstoneKeys(): string[] { return [...new Set(this.tombstones.map((t) => t.key))]; }
+
+  /** Every key this PC holds a removal of its own against (holdsRemoval) that it can name: what it tells a device of its account. */
+  removalKeys(): string[] {
+    const keys = [...this.tombstoneKeys(), ...this.evidence?.tombstones().map((tombstone) => tombstone.key) ?? [], ...this.safety?.inForce.blocks.flatMap(({ record }) => (record.target === null ? [] : [record.target])) ?? []];
+    return [...new Set(keys)].sort();
+  }
+
+  /**
+   * Whether the session of row `id`, signed in with `sessionKey`, is one of a device of this PC's account: a row the
+   * account let in, or a pairing of the account's member. Its own row, as it stands now.
+   */
+  accountSession(id: string, sessionKey: string): boolean {
+    const account = this.account();
+    if (account === null || sessionKey === "") return false;
+    const joined = this.joinedRows?.row(id) ?? null;
+    if (joined !== null) return joined.key === sessionKey && joined.state !== "expired";
+    const device = this.devices.find((candidate) => candidate.id === id);
+    return device !== undefined && device.account === account && device.relay_public_key === sessionKey && !this.stale(device);
+  }
+
+  /**
+   * Whether this PC holds a removal of its own against `key`: a person's Revoke here, a signed removal or block it
+   * applied, or a removal a member handed it with an enrollment. Nothing the account service says unsigned is one.
+   */
+  holdsRemoval(key: string): boolean {
+    const account = this.account() ?? undefined;
+    return this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0 || this.accountHeld?.(key) === true
+      || this.coveredByEvidence({ relay_public_key: key, account }) || (this.safety?.inForce.blocks.some(({ record }) => record.target === key) ?? false);
+  }
 
   /** The signed `add`s behind this PC's account rows, as received: what /api/account/status lists. One that no longer parses or names another key is left out. */
   accountAdds(): AddRecord[] {
