@@ -823,6 +823,17 @@ export class AccountService {
   }
 
   /**
+   * `key`'s number in the account's order as the account service gives it (`GET /v1/devices`), the number it holds a
+   * block's `target_no` to; null when it names no such key. A PC numbers its own admissions apart from this.
+   */
+  async deviceNo(key: string, signal?: AbortSignal): Promise<number | null> {
+    const body = await this.call("GET", "/v1/devices", undefined, signal);
+    if (!isRecord(body) || !Array.isArray(body.devices)) throw new AccountServiceError(502, "invalid_answer", "The account service sent no devices");
+    const row = (body.devices as readonly unknown[]).find((device) => isRecord(device) && device.key === key);
+    return isRecord(row) && typeof row.no === "number" && Number.isSafeInteger(row.no) && row.no > 0 ? row.no : null;
+  }
+
+  /**
    * The one request that moves an account that was in use onto its list (`POST /v2/lists` with `entries`; Part F,
    * F10b): entry 0, the whole run, the hand-over and the `epoch`, placed whole or not at all, with the wraps of the epoch
    * the birth opens and the hand-over's link. Sent once per call: the caller keeps the request and sends it again as it
