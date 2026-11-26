@@ -8,10 +8,21 @@ type TitleBar = (document: FakeDocument, height: number, inset: number, post: (a
 const source = readFileSync(join(import.meta.dir, "..", "app", "mac", "Resources", "title-bar.js"), "utf8");
 const titleBar = new Function(`${source}\nreturn ovisTitleBar;`)() as TitleBar;
 
-/** An element as the script reads it: its classes, its tab order, and `matches` for a list of tags, `[attr]` and `[attr=value]`. */
+/**
+ * An element as the script reads it: its classes, its tab order, its box, its descendants, and `matches` for a list
+ * of tags, `[attr]` and `[attr=value]`.
+ */
 class FakeElement {
   constructor(readonly tag: string, readonly attrs: Record<string, string> = {}, readonly parentElement: FakeElement | null = null) {}
   readonly classList = { contains: (name: string) => (this.attrs.class ?? "").split(" ").includes(name) };
+  box = { left: 0, right: 0, top: 0, bottom: 0 };
+  getBoundingClientRect() {
+    return this.box;
+  }
+  contains(other: FakeElement): boolean {
+    for (let node: FakeElement | null = other; node; node = node.parentElement) if (node === this) return true;
+    return false;
+  }
   get tabIndex(): number {
     return this.attrs.tabindex === undefined ? (["button", "input", "select", "textarea"].includes(this.tag) ? 0 : -1) : Number(this.attrs.tabindex);
   }
@@ -31,6 +42,10 @@ class FakeDocument {
   readonly properties = new Map<string, string>();
   readonly documentElement = { dataset: {} as Record<string, string>, style: { setProperty: (name: string, value: string) => { this.properties.set(name, value); } } };
   readonly listeners: { type: string; listener: Listener }[] = [];
+  readonly elements: FakeElement[] = [];
+  querySelectorAll(selector: string): FakeElement[] {
+    return this.elements.filter((element) => element.classList.contains(selector.replace(/^\./, "")));
+  }
   addEventListener(type: string, listener: Listener) {
     this.listeners.push({ type, listener });
   }
@@ -59,9 +74,15 @@ function page() {
   const threadTop = new FakeElement("span", { class: "thread-chip-name" }, new FakeElement("div", { class: "thread-top" }, app));
   const rail = new FakeElement("nav", { class: "inbox-rail" }, app);
   const screen = new FakeElement("main", { class: "access-gate-screen" });
+  // the wide inbox's thread bar over a chat, letting presses through to it (InboxMode.css)
+  const column = new FakeElement("div", { class: "pane-column is-chat" }, app);
+  const threadBar = new FakeElement("div", { class: "thread-top" }, column);
+  threadBar.box = { left: 400, right: 1000, top: 0, bottom: 52 };
+  const chat = new FakeElement("p", {}, new FakeElement("div", { class: "chat-scroll", tabindex: "0" }, column));
+  document.elements.push(threadBar);
   const asked: Ask[] = [];
   titleBar(document, 40, 72, (ask) => asked.push(ask));
-  return { document, header, title, button, menu, switcher, scrim, pane, row, inboxTop, search, threadTop, rail, screen, asked };
+  return { document, header, title, button, menu, switcher, scrim, pane, row, inboxTop, search, threadTop, rail, screen, chat, asked };
 }
 
 const drag = (x = 300, y = 200): Ask => ({ ask: "drag", x, y });
@@ -93,6 +114,14 @@ describe("Mac app title bar", () => {
     document.fire("mousedown", rail, { clientY: 40 });
     document.fire("mousedown", pane, { clientY: 300 });
     expect(asked).toEqual([drag(300, 39), drag(300, 10)]);
+  });
+
+  test("asks to move the window from a press the inbox's thread bar lets through to its pane, inside the bar's box only", () => {
+    const { document, chat, scrim, asked } = page();
+    document.fire("mousedown", chat, { clientX: 500, clientY: 45 });
+    document.fire("mousedown", chat, { clientX: 500, clientY: 60 });
+    document.fire("mousedown", scrim, { clientX: 500, clientY: 45 });
+    expect(asked).toEqual([drag(500, 45)]);
   });
 
   test("leaves a press on a control, a focusable row, a modal scrim, in an open menu, on a group of buttons or off the bars to the page", () => {

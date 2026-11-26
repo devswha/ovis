@@ -51,6 +51,7 @@ final class OvisWebView: WKWebView {
     private var titleBarScript: String?
     private var titleBarHeight: CGFloat = 0
     private var windowWatch: [NSObjectProtocol] = []
+    private var transparencyWatch: NSKeyValueObservation?
     /// The press under way, and whether the page found it on its header's bare surface.
     private var press: NSEvent?
     private var dragArmed = false
@@ -59,6 +60,7 @@ final class OvisWebView: WKWebView {
         if let window, newWindow !== window, titleBarScript != nil {
             windowWatch.forEach(NotificationCenter.default.removeObserver)
             windowWatch = []
+            transparencyWatch = nil
             TitleBar.unfold(window, for: self)
             titleBarScript = nil
             titleBarHeight = 0
@@ -91,6 +93,14 @@ final class OvisWebView: WKWebView {
                 }
             },
         ]
+        // SwiftUI sets the bar's look again as it updates the window (as the page joins it, as the window turns
+        // inactive): an opaque bar over the header, which WebKit then moves the page below. Folding it back at
+        // once also has AppKit find the page under the bar again.
+        transparencyWatch = window.observe(\.titlebarAppearsTransparent) { window, _ in
+            MainActor.assumeIsolated {
+                if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+            }
+        }
         showHeaderInTitleBar()
     }
 

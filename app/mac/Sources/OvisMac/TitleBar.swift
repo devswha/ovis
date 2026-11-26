@@ -27,6 +27,9 @@ enum TitleBar {
         window.styleMask.insert(.fullSizeContentView)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        // the window server would move the window from a drag anywhere in the bar, a header tab or button
+        // included: only the page's asks (`title-bar.js`) move it, through `performDrag`
+        window.isMovable = false
         addToolbar(window)
         window.layoutIfNeeded()
         guard let zoom = window.standardWindowButton(.zoomButton), let bar = zoom.superview?.superview else {
@@ -60,6 +63,7 @@ enum TitleBar {
         guard folders.object(forKey: window) === page else { return }
         folders.removeObject(forKey: window)
         window.toolbar = nil
+        window.isMovable = true
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
         window.styleMask.remove(.fullSizeContentView)

@@ -22,7 +22,15 @@ function ovisTitleBar(document, height, inset, post) {
   // walked up to a bar, or to the page: a control, an open modal scrim or an open menu on the way
   // keeps the press the page's; a container focused only by script (tabindex -1, as .app is) and the
   // header's pane title text (role=group for accessibility) do not
+  // the inbox's thread bar lets presses through to its pane (InboxMode.css), so the walk below never meets it: a
+  // press in its box on what lies under it is the bar's, as on the installed desktop app's drag region
+  const throughBar = (event) => Array.from(document.querySelectorAll(".thread-top")).some((bar) => {
+    if (bar.contains(event.target) || !bar.parentElement?.contains(event.target)) return false;
+    const box = bar.getBoundingClientRect();
+    return event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
+  });
   const bare = (event) => {
+    if (throughBar(event)) return true;
     for (let node = event.target; node && typeof node.matches === "function"; node = node.parentElement) {
       if (node.classList.contains("modal-scrim")) return false;
       if ((node.matches(CONTROLS) && !node.classList.contains("context-title-text")) || node.tabIndex >= 0) return false;
