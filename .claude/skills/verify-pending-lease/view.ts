@@ -59,8 +59,10 @@ export function step(action: string, from: Vars, to: Vars): string | null {
     case "RefusedForNow": return `the send of ${what} is put off: the agent is busy or waits for an answer`;
     case "TypeNowWaits": return "the agent works again: the message waits";
     case "RefusedForGood": return `the send of ${what} is refused`;
+    case "RefusedHoldPane": return `the send of ${what} is refused, and the pane's messages are held`;
     case "LeaseFailed": return `the send of ${what} stops: its page may no longer type`;
     case "Paste": return `${what} is pasted into the terminal`;
+    case "SubmitAsData": return `${what} is sent as data`;
     case "FailedAfterPaste": return `the send of ${what} fails after it was typed`;
     case "Enter": return `Enter is pressed for ${what}`;
     case "LaterKey": return `a follow-up key is pressed for ${what}`;

@@ -421,6 +421,15 @@ RefusedForGood ==
   /\ Typing
   /\ Settle("held") /\ Quiet
 
+\* a refusal before anything was typed that holds every message of the pane with it: Codex's own screen (unannounced)
+\* on an automatic send, or Codex's app server reporting changed loaded threads on a Send now
+RefusedHoldPane ==
+  /\ Typing
+  /\ LET s1 == [st EXCEPT ![lane.m] = IF lane.direct THEN "none" ELSE "held"]
+     IN st' = Hold(s1, Msgs \ {lane.m})
+  /\ fl' = [fl EXCEPT ![lane.m] = FALSE]
+  /\ Free /\ Quiet
+
 \* authorizePending threw before the paste, or the paste's guard answered false before the first byte
 LeaseFailed ==
   /\ Typing /\ ~Authorized(lane.by, laneLease)
@@ -440,6 +449,15 @@ Paste ==
   /\ pastes' = [pastes EXCEPT ![lane.m] = Min(@ + 1, 2)]
   /\ lane' = [lane EXCEPT !.pc = "pasted"]
   /\ Write /\ Wrote /\ UNCHANGED enters
+
+\* a prompt sent as data in one step with `authorizePending` right before the socket write: ACP `child.client.submit`
+\* or Codex's app-server `turn/steer` (`writing`)
+SubmitAsData ==
+  /\ Typing /\ Authorized(lane.by, laneLease)
+  /\ pastes' = [pastes EXCEPT ![lane.m] = Min(@ + 1, 2)]
+  /\ enters' = [enters EXCEPT ![lane.m] = Min(@ + 1, 2)]
+  /\ lane' = [lane EXCEPT !.pc = "entered"]
+  /\ Write /\ Wrote
 
 \* anything that fails after the paste (a check, the lease, herdr): submit_changed or pasted_not_sent, never tried again
 FailedAfterPaste ==
@@ -477,8 +495,8 @@ Next ==
   \/ \E m \in Msgs, c \in Clients : SendNow(m, c)
   \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
   \/ DrainPick \/ DrainSkips \/ DrainClaim \/ DrainClaimNoLease
-  \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ LeaseFailed
-  \/ Paste \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent
+  \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ RefusedHoldPane \/ LeaseFailed
+  \/ Paste \/ SubmitAsData \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent
   \/ Over
 
 Spec == Init /\ [][Next]_vars
