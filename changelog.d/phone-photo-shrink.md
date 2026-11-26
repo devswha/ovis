@@ -1,5 +1,5 @@
 ### Fixed
 - A JPEG or HEIC photo is shrunk to at most 2048 pixels a side before it uploads, so it uploads
-  much faster, and its location, device and date are dropped on the way. A JPEG the browser
-  cannot draw has its Exif, XMP, IPTC and comments cut out but for its orientation, and a HEIC
-  one still uploads as it is.
+  much faster, without its location, device and date. If the browser cannot redraw a JPEG but
+  can read its markers, only JFIF, its color profile and valid orientation are kept alongside
+  the image. If neither works, or a HEIC cannot be redrawn, the original file is sent unchanged.

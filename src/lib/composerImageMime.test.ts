@@ -26,27 +26,30 @@ describe("composerImageMimeType", () => {
   });
 
   test("normalizes a generic image file for the image upload path", async () => {
-    const source = new File(["image bytes"], "screen.png", { type: "application/octet-stream", lastModified: 123 });
-    const normalized = normalizeComposerImageFile(source);
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const source = new File([png], "screen.png", { type: "application/octet-stream", lastModified: 123 });
+    const normalized = await normalizeComposerImageFile(source);
     expect(normalized).not.toBe(source);
     expect(normalized.type).toBe("image/png");
     expect(normalized.name).toBe(source.name);
     expect(normalized.lastModified).toBe(source.lastModified);
-    expect(await normalized.text()).toBe("image bytes");
+    expect(new Uint8Array(await normalized.arrayBuffer())).toEqual(png);
     const unknown = new File(["x"], "notes.txt");
-    expect(normalizeComposerImageFile(unknown)).toBe(unknown);
+    expect(await normalizeComposerImageFile(unknown)).toBe(unknown);
   });
 });
 
 const segment = (marker: number, body: readonly number[]): number[] => [0xff, marker, 0, body.length + 2, ...body];
 const jfif = segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0]);
-const icc = segment(0xe2, [1, 2, 3]);
-const scan = [...segment(0xda, [9, 9]), 0x11, 0xff, 0x00, 0x22, 0xff, 0xd0, 0x33, 0xff, 0xd9];
+const icc = segment(0xe2, [...new TextEncoder().encode("ICC_PROFILE\0"), 1, 1, 3]);
+const frame = segment(0xc0, [8, 0, 1, 0, 1, 1, 1, 0x11, 0]);
+const scanHeader = segment(0xda, [1, 1, 0, 0, 63, 0]);
+const scan = [...frame, ...scanHeader, 0x11, 0xff, 0x00, 0x22, 0xff, 0xd0, 0x33, 0xff, 0xd9];
 const withoutMetadataBytes: number[] = [0xff, 0xd8, ...jfif, ...icc, ...scan];
 const jpegBytes: Uint8Array<ArrayBuffer> = new Uint8Array([0xff, 0xd8, ...jfif, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...icc, ...segment(0xed, [8, 8]), ...scan]);
 
 describe("withoutJpegMetadata", () => {
-  test("drops APP1 and APP13, keeps every other segment and the scan byte for byte", async () => {
+  test("drops APP1 and APP13, keeps JFIF, ICC, frame and scan byte for byte", async () => {
     const stripped = await withoutJpegMetadata(new Blob([jpegBytes], { type: "image/jpeg" }));
     expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual(withoutMetadataBytes);
   });
@@ -65,6 +68,27 @@ describe("withoutJpegMetadata", () => {
     expect([...new Uint8Array(await android.arrayBuffer())]).toEqual([0xff, 0xd8, ...exif([orientation]), ...scan]);
   });
 
+  test("does not turn invalid Exif into a valid rotation", async () => {
+    const entry = [0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0];
+    const valid = [0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, ...entry, 0, 0, 0, 0];
+    const edits: Readonly<Record<number, number | undefined>>[] = [{ 6: 0x5a, 7: 0x5a }, { 9: 1 }, { 19: 2 }, { 23: 2 }, { 25: 9 }];
+    const invalid = edits.map((change) => valid.map((value, index) => change[index] ?? value));
+    invalid.push([...valid.slice(0, 15), 2, ...entry, ...entry, 0, 0, 0, 0]);
+    const results = await Promise.all(invalid.map(async (body) => {
+      const input = new Blob([new Uint8Array([0xff, 0xd8, ...segment(0xe1, body), ...scan])], { type: "image/jpeg" });
+      return [...new Uint8Array(await (await withoutJpegMetadata(input)).arrayBuffer())];
+    }));
+    expect(results).toEqual(invalid.map(() => [0xff, 0xd8, ...scan]));
+  });
+
+  test("keeps only JFIF and ICC application segments, not camera Picture Info or unknown APP data", async () => {
+    const pictureInfo = segment(0xec, [...new TextEncoder().encode("Picture Info\0Type=GateCam\nSerial#=987654\nTimeDate=1614834367")]);
+    const vendor = [0xe0, 0xe2, 0xe3, 0xee, 0xef].flatMap((marker) => segment(marker, [1, 2, 3]));
+    const input = new Blob([new Uint8Array([0xff, 0xd8, ...jfif, ...icc, ...pictureInfo, ...vendor, ...scan])], { type: "image/jpeg" });
+    const output = await withoutJpegMetadata(input);
+    expect([...new Uint8Array(await output.arrayBuffer())]).toEqual(withoutMetadataBytes);
+  });
+
   test("reads past fill bytes before a marker, so they cannot hide the Exif", async () => {
     const filled = new Uint8Array([0xff, 0xd8, 0xff, ...jfif, 0xff, 0xff, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...icc, 0xff, ...scan]);
     const stripped = await withoutJpegMetadata(new Blob([filled], { type: "image/jpeg" }));
@@ -80,7 +104,7 @@ describe("withoutJpegMetadata", () => {
   });
 
   test("reads the scan past fill bytes before a restart marker, so the first image still ends at its EOI", async () => {
-    const filledScan = [...segment(0xda, [9, 9]), 0x11, 0xff, 0xff, 0xd0, 0x22, 0xff, 0xff, 0x00, 0x33, 0xff, 0xd9];
+    const filledScan = [...frame, ...scanHeader, 0x11, 0xff, 0xff, 0xd0, 0x22, 0xff, 0xff, 0x00, 0x33, 0xff, 0xd9];
     const second = [0xff, 0xd8, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...scan];
     const stripped = await withoutJpegMetadata(new Blob([new Uint8Array([0xff, 0xd8, ...jfif, ...filledScan, ...second])], { type: "image/jpeg" }));
     expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual([0xff, 0xd8, ...jfif, ...filledScan]);
@@ -90,9 +114,6 @@ describe("withoutJpegMetadata", () => {
     const stray = new Uint8Array([0xff, 0xd8, 0x00, ...jfif, 0x12, 0x34, ...segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, 7]), ...icc, ...scan]);
     const stripped = await withoutJpegMetadata(new Blob([stray], { type: "image/jpeg" }));
     expect([...new Uint8Array(await stripped.arrayBuffer())]).toEqual(withoutMetadataBytes);
-
-    const cut = await withoutJpegMetadata(new Blob([new Uint8Array([0xff, 0xd8, ...jfif, 0xff, 0xe1, 0])], { type: "image/jpeg" }));
-    expect([...new Uint8Array(await cut.arrayBuffer())]).toEqual([0xff, 0xd8, ...jfif]);
   });
 
   test("drops an Exif whose IFD lies outside its segment or whose entry count ends before the orientation", async () => {
@@ -234,6 +255,27 @@ describe("uploadableImage", () => {
     const notes = new File(["notes"], "notes.jpg", { type: "application/octet-stream" });
     const sent = await uploadableImage(notes, async () => null);
     expect([sent.name, sent.type, await sent.text()]).toEqual(["notes.jpg", "application/octet-stream", "notes"]);
+  });
+
+  test("keeps the original bytes and type when JPEG parsing cannot complete", async () => {
+    const cases = [
+      new File([new Uint8Array([0xff, 0xd8]), "not a photo"], "data.jpg", { type: "application/octet-stream" }),
+      new File([new Uint8Array([0xff, 0xd8, ...jfif, 0xff, 0xe1, 0, 40, 7])], "truncated.jfif"),
+      new File([new Uint8Array([0xff, 0xd8, ...jfif, 0xff, 0xe1, 0])], "short-header.jpeg", { type: "image/jpeg" }),
+      new File([jpegBytes.subarray(0, -2)], "partial.jpeg", { type: "image/jpeg" }),
+    ];
+    const output = await Promise.all(cases.map((file) => uploadableImage(file, async () => null)));
+    const contents = async (file: File) => [file.name, file.type, [...new Uint8Array(await file.arrayBuffer())]];
+    expect(await Promise.all(output.map(contents))).toEqual(await Promise.all(cases.map(contents)));
+  });
+
+  test("uploads generic files with prototype-like extensions without throwing", async () => {
+    const names = ["schema.constructor", "schema.__proto__"];
+    const files = names.map((name) => new File(["schema"], name, { type: "application/octet-stream" }));
+    const output = await Promise.all(files.map((file) => uploadableImage(file, jpeg)));
+    expect(await Promise.all(output.map(async (file) => [file.name, file.type, await file.text()]))).toEqual(
+      names.map((name) => [name, "application/octet-stream", "schema"]),
+    );
   });
 
   test("leaves non-HEIF payloads and other files alone without decoding them", async () => {

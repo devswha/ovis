@@ -14,12 +14,22 @@ export function composerImageMimeType(name: string, type: string): string | null
 
   const dotIndex = name.lastIndexOf(".");
   if (dotIndex <= 0) return null;
-  return IMAGE_MIME_TYPE_BY_EXTENSION[name.slice(dotIndex + 1).toLowerCase()] ?? null;
+  const extension = name.slice(dotIndex + 1).toLowerCase();
+  return Object.hasOwn(IMAGE_MIME_TYPE_BY_EXTENSION, extension) ? IMAGE_MIME_TYPE_BY_EXTENSION[extension] ?? null : null;
 }
 
-export function normalizeComposerImageFile(file: File): File {
+export async function normalizeComposerImageFile(file: File): Promise<File> {
   const mimeType = composerImageMimeType(file.name, file.type);
-  return mimeType === null
+  if (mimeType === null) return file;
+  const bytes = await file.slice(0, 12).arrayBuffer().catch(() => null);
+  if (bytes === null) return file;
+  const header = String.fromCharCode(...new Uint8Array(bytes));
+  const detectedType = header.startsWith("\x89PNG\r\n\x1a\n") ? "image/png"
+    : header.startsWith("\xff\xd8\xff") ? "image/jpeg"
+    : header.startsWith("GIF87a") || header.startsWith("GIF89a") ? "image/gif"
+    : header.startsWith("RIFF") && header.startsWith("WEBP", 8) ? "image/webp"
+    : null;
+  return detectedType !== mimeType
     ? file
     : new File([file], file.name, { type: mimeType, lastModified: file.lastModified });
 }
@@ -102,12 +112,14 @@ async function canvasJpeg(image: Blob): Promise<Blob | null> {
 const JPEG_START = 0xd8;
 const JPEG_END = 0xd9;
 const JPEG_SCAN = 0xda;
+const JPEG_APP0 = 0xe0;
 const JPEG_EXIF = 0xe1;
-const JPEG_MPF = 0xe2;
-/** APP1 holds Exif and XMP, APP13 IPTC, and COM text comments: https://exiftool.org/TagNames/JPEG.html */
-const JPEG_METADATA: ReadonlySet<number> = new Set([JPEG_EXIF, 0xed, 0xfe]);
+const JPEG_APP2 = 0xe2;
+const JPEG_APP15 = 0xef;
+const JPEG_COMMENT = 0xfe;
+const JFIF_HEADER = [0x4a, 0x46, 0x49, 0x46, 0] as const;
 const EXIF_HEADER = [0x45, 0x78, 0x69, 0x66, 0, 0] as const;
-const MPF_HEADER = [0x4d, 0x50, 0x46, 0] as const;
+const ICC_HEADER = [0x49, 0x43, 0x43, 0x5f, 0x50, 0x52, 0x4f, 0x46, 0x49, 0x4c, 0x45, 0] as const;
 const EXIF_ORIENTATION = 0x0112;
 
 function startsWith(body: Uint8Array, header: readonly number[]): boolean {
@@ -128,16 +140,25 @@ function exifOrientation(body: Uint8Array): number | null {
   if (body.length < 14 || !startsWith(body, EXIF_HEADER)) return null;
 
   const tiff = new DataView(body.buffer, body.byteOffset + EXIF_HEADER.length, body.length - EXIF_HEADER.length);
-  const little = tiff.getUint16(0) === 0x4949;
+  const byteOrder = tiff.getUint16(0);
+  if (byteOrder !== 0x4949 && byteOrder !== 0x4d4d) return null;
+  const little = byteOrder === 0x4949;
+  if (tiff.getUint16(2, little) !== 42) return null;
   const ifd = tiff.getUint32(4, little);
-  if (ifd + 2 > tiff.byteLength) return null;
+  if (ifd < 8 || ifd % 2 !== 0 || ifd + 2 > tiff.byteLength) return null;
 
-  const count = tiff.getUint16(ifd, little);
-  for (let entry = ifd + 2; entry + 12 <= tiff.byteLength && entry < ifd + 2 + count * 12; entry += 12) {
-    if (tiff.getUint16(entry, little) === EXIF_ORIENTATION) return tiff.getUint16(entry + 8, little);
+  const end = ifd + 2 + tiff.getUint16(ifd, little) * 12;
+  if (end + 4 > tiff.byteLength) return null;
+  let orientation: number | null = null;
+  for (let entry = ifd + 2; entry < end; entry += 12) {
+    if (tiff.getUint16(entry, little) !== EXIF_ORIENTATION) continue;
+    if (orientation !== null || tiff.getUint16(entry + 2, little) !== 3 || tiff.getUint32(entry + 4, little) !== 1) return null;
+    const value = tiff.getUint16(entry + 8, little);
+    if (value < 1 || value > 8) return null;
+    orientation = value;
   }
 
-  return null;
+  return orientation;
 }
 
 /** An APP1 segment whose Exif holds the orientation alone. */
@@ -172,18 +193,21 @@ function scanEnd(bytes: Uint8Array, start: number): number {
 }
 
 /**
- * The JPEG's first image without its APP1, APP13 and COM segments, but for its Exif orientation, kept so
- * a portrait stored sideways still stands up. Anything after that image's end goes too: a second
- * frame of a multi-picture file carries its own Exif, so its MPF index goes with it. Stray bytes
+ * Keep coding segments, JFIF, ICC and a valid Exif orientation from the JPEG's first image.
+ * Other application metadata, comments, and anything after that image's end go too. Stray bytes
  * between segments are skipped, as libjpeg does, so they cannot hide a segment after them
  * (https://github.com/libjpeg-turbo/libjpeg-turbo/blob/4e151a4ad91001b3aa8c2ece2205c15f487ce320/src/jdmarker.c#L890-L925).
- * Anything that does not open as a JPEG goes as it is.
+ * If the marker walk cannot reach the end of an image, return the unmodified input.
  */
 export async function withoutJpegMetadata<T extends Blob>(file: T): Promise<T | Blob> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (!hasJpegStart(bytes)) return file;
 
   const kept: Uint8Array<ArrayBuffer>[] = [bytes.subarray(0, 2)];
+  let hasFrame = false;
+  let hasScan = false;
+  let exifIndex: number | undefined;
+  let orientation: number | null = null;
   let offset = 2;
   while (offset + 1 < bytes.length) {
     const marker = bytes[offset + 1]!;
@@ -192,7 +216,12 @@ export async function withoutJpegMetadata<T extends Blob>(file: T): Promise<T | 
       continue;
     }
 
-    if (marker === JPEG_END) return new Blob([...kept, bytes.subarray(offset, offset + 2)], { type: file.type });
+    if (marker === JPEG_END) {
+      if (!hasScan) return file;
+      if (exifIndex !== undefined && orientation !== null) kept.splice(exifIndex, 0, orientationSegment(orientation));
+      return new Blob([...kept, bytes.subarray(offset, offset + 2)], { type: file.type });
+    }
+    if (marker === JPEG_START) return file;
 
     if (standalone(marker)) {
       kept.push(bytes.subarray(offset, offset + 2));
@@ -200,28 +229,41 @@ export async function withoutJpegMetadata<T extends Blob>(file: T): Promise<T | 
       continue;
     }
 
-    if (offset + 4 > bytes.length) break;
+    if (offset + 4 > bytes.length) return file;
 
-    const end = offset + 2 + ((bytes[offset + 2]! << 8) | bytes[offset + 3]!);
+    const length = (bytes[offset + 2]! << 8) | bytes[offset + 3]!;
+    const end = offset + 2 + length;
+    if (length < 2 || end > bytes.length) return file;
     const body = bytes.subarray(offset + 4, end);
-    const orientation = marker === JPEG_EXIF ? exifOrientation(body) : null;
-    if (orientation !== null) kept.push(orientationSegment(orientation));
+    if (marker === JPEG_EXIF && startsWith(body, EXIF_HEADER)) {
+      orientation = exifIndex === undefined ? exifOrientation(body) : null;
+      exifIndex ??= kept.length;
+    }
 
-    const dropped = JPEG_METADATA.has(marker) || (marker === JPEG_MPF && startsWith(body, MPF_HEADER));
-    if (!dropped) kept.push(bytes.subarray(offset, end));
+    const isApplication = marker >= JPEG_APP0 && marker <= JPEG_APP15;
+    if ((!isApplication && marker !== JPEG_COMMENT)
+      || (marker === JPEG_APP0 && startsWith(body, JFIF_HEADER))
+      || (marker === JPEG_APP2 && startsWith(body, ICC_HEADER))) kept.push(bytes.subarray(offset, end));
 
-    offset = marker === JPEG_SCAN ? scanEnd(bytes, end) : end;
-    if (marker === JPEG_SCAN) kept.push(bytes.subarray(end, offset));
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) hasFrame = true;
+    offset = end;
+    if (marker === JPEG_SCAN) {
+      if (!hasFrame) return file;
+      offset = scanEnd(bytes, end);
+      if (offset === end) return file;
+      kept.push(bytes.subarray(end, offset));
+      hasScan = true;
+    }
   }
 
-  return new Blob(kept, { type: file.type });
+  return file;
 }
 
 /**
  * A photo as a JPEG of at most `MAX_PHOTO_SIDE` a side: a still HEIC or HEIF one always, since the
  * agents read only PNG, JPEG, GIF and WebP
  * (https://platform.claude.com/docs/en/build-with-claude/vision), and a JPEG one too, which drops
- * its camera metadata; a JPEG this browser cannot redraw loses that metadata from its bytes instead.
+ * its camera metadata; a JPEG this browser cannot redraw is stripped if its markers can be parsed.
  * Any other file (a screenshot's PNG, an animated HEIC sequence, a file that is not HEIF inside), or a
  * HEIC one this browser cannot decode, as it is.
  */
@@ -244,7 +286,10 @@ export async function uploadableImage<T extends Blob>(file: T, toJpeg: (image: B
   const jpeg = await toJpeg(file).catch(() => null);
   if (jpeg === null && heicCandidate) return file;
 
-  if (jpeg === null) return new File([await withoutJpegMetadata(file)], name, { type: normalizedType, lastModified });
+  if (jpeg === null) {
+    const stripped = await withoutJpegMetadata(file);
+    return stripped === file ? file : new File([stripped], name, { type: normalizedType, lastModified });
+  }
 
   const base = name.replace(/\.(heic|heif|jpe?g|jpe|jfif)$/i, "") || "photo";
   return new File([jpeg], `${base}.jpg`, { type: "image/jpeg", lastModified });
