@@ -100,20 +100,49 @@ describe("the unix host", () => {
   });
 
   it("started by a launcher seen running at SIGTSTP that stops a moment later (it took the signal and had not acted on it yet), stops with it", async () => {
-    const { host, log, proc, stdin, written, settledOnce } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: [false, false, true] });
+    const { host, log, proc, stdin, written, settledOnce } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: [false, true] });
     host.enter();
     const entered = written();
     const from = log.length;
     const settled = settledOnce();
     proc.emit("SIGTSTP");
     await settled;
-    expect(log.slice(from).filter((entry) => entry.startsWith("stopping") || entry.includes("stopped"))).toEqual(["stopping 4241?", "stopping 4241?", "stopping 4241?", "stopped"]);
+    expect(log.slice(from).filter((entry) => entry.startsWith("stopping") || entry.includes("stopped"))).toEqual(["stopping 4241?", "stopping 4241?", "stopped"]);
     expect(written().slice(entered.length)).toBe(LEAVE);
     // only the guard's own continue listener is left
     expect(proc.count("SIGCONT")).toBe(1);
     proc.emit("SIGCONT");
     expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
     expect(stdin.count("readable")).toBe(1);
+  });
+
+  it("does not stop at a SIGTERM that comes while it holds the stop for a launcher seen running: it ends", () => {
+    const { host, log, proc } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: false });
+    host.enter();
+    const from = log.length;
+    proc.emit("SIGTSTP");
+    proc.emit("SIGTERM");
+    expect(log.slice(from).filter((entry) => entry.includes("stopped") || entry.startsWith("exit"))).toEqual(["exit 143", "not stopped"]);
+    expect([proc.count("SIGCONT"), proc.count("SIGTERM")]).toEqual([1, 1]);
+  });
+
+  it("writes nothing to the terminal between the stop and the continue, a frame, a resize and the colour-scheme watch included; the continue enters again with them", () => {
+    const { host, proc, stdout, written } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: false });
+    const sizes: unknown[] = [];
+    host.onResize((size: unknown) => sizes.push(size));
+    host.enter();
+    proc.emit("SIGTSTP");
+    const givenBack = written();
+    expect(givenBack.endsWith(LEAVE)).toBe(true);
+    expect(host.write("frame")).toBe(false);
+    stdout.emit("resize");
+    host.watchDisplay();
+    host.refreshDisplay();
+    expect({ after: written().slice(givenBack.length), sizes }).toEqual({ after: "", sizes: [] });
+    proc.emit("SIGCONT");
+    expect(written().slice(givenBack.length)).toBe(`${ENTER}${ESC}[?2031h`);
+    expect(sizes).toEqual([{ cols: 120, rows: 40 }]);
+    expect(host.write("frame")).toBe(true);
   });
 
   it("enters nothing when stdin or stdout is not a terminal", () => {

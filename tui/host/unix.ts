@@ -29,7 +29,8 @@ const openSignal = () => openLibc({
  * back, cancels the stop instead of being lost to it. `decide` then settles it, at once or later: where the job was
  * continued before the stop was asked for, the pending stop is discarded (SIG_IGN), and the continue that came is heard
  * next, and the screen enters again. The stop lands when SIGTSTP is unblocked again; Bun's own handler comes back after
- * it.
+ * it. It stays at the default action until then: with Bun's handler in place while `decide` waits, the pending stop was
+ * taken from this thread and never landed (5 of 100 runs of tui/host/restore.contract.test.ts in the CI runner image).
  */
 function stopOnceGivenBack(libc: NonNullable<ReturnType<typeof openSignal>>, giveBack: () => void, decide: (settle: (continued: boolean) => void) => void): void {
   const tstp = constants.signals.SIGTSTP;
@@ -42,12 +43,9 @@ function stopOnceGivenBack(libc: NonNullable<ReturnType<typeof openSignal>>, giv
   const settle = (continued: boolean) => {
     if (settled) return;
     settled = true;
-    try {
-      if (continued) libc.symbols.signal(tstp, SIG_IGN);
-    } finally {
-      libc.symbols.pthread_sigmask(SIGSET.setMask, before, null);
-      libc.symbols.signal(tstp, handler);
-    }
+    if (continued) libc.symbols.signal(tstp, SIG_IGN);
+    libc.symbols.pthread_sigmask(SIGSET.setMask, before, null);
+    libc.symbols.signal(tstp, handler);
   };
   try {
     // to this thread, which holds it blocked: pending until unblocked, or discarded by a continue
@@ -258,7 +256,7 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
     // running, either the shell continued the job before this handler ran, or the launcher took the signal and has not
     // stopped yet. The stop stays pending until one shows: the launcher stops, and so does this process; or the
     // continue, which reached this process too, is heard (after the guard entered again at it), and this process does
-    // not stop. Without the C library, this process stops by the one stop no handler can catch, as it did before, and so
+    // not stop; nor does it at a signal that ends it, which the guard is answering by then. Without the C library, this process stops by the one stop no handler can catch, as it did before, and so
     // does a screen whose group leads its session.
     suspend: (giveBack) => {
       stop(() => { giveBack(); stdin.ref?.(); }, (settle) => {
@@ -267,7 +265,7 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
         let look: ReturnType<typeof setTimeout> | undefined;
         const finish = (continued: boolean) => {
           clearTimeout(look);
-          proc.off("SIGCONT", heard);
+          for (const name of ["SIGCONT", ...SIGNALS]) proc.off(name, heard);
           settle(continued);
         };
         const heard = () => { finish(true); };
@@ -276,7 +274,7 @@ export function createUnixHost(parts: Partial<UnixHostParts> = {}): Host {
           else if (performance.now() - started >= LAUNCHER_STOP_WAIT_MS) finish(true);
           else look = setTimeout(again, LAUNCHER_STOP_LOOK_MS);
         };
-        proc.on("SIGCONT", heard);
+        for (const name of ["SIGCONT", ...SIGNALS]) proc.on(name, heard);
         look = setTimeout(again, LAUNCHER_STOP_LOOK_MS);
       });
     },

@@ -103,6 +103,12 @@ export function guardedHost(port: TerminalPort): Host {
   let ending = false;
   let entering = false;
   let deferred: HostSignal | null = null;
+  /**
+   * The terminal was given back at a stop from outside and is not taken again before the continue: nothing is written
+   * meanwhile, as the process may run on a while before it stops (or not stop at all, continued already). The continue
+   * enters again and asks for a repaint.
+   */
+  let suspended = false;
   let unhook: (() => void) | null = null;
 
   const filter = new ReplyFilter();
@@ -162,7 +168,7 @@ export function guardedHost(port: TerminalPort): Host {
   };
 
   const resized = () => {
-    if (state !== "entered" || ending) return;
+    if (state !== "entered" || ending || suspended) return;
     modesAgain();
     const size = port.size();
     for (const listener of resizes) listener(size);
@@ -243,7 +249,6 @@ export function guardedHost(port: TerminalPort): Host {
    * process stops, so whatever reads the terminal meanwhile gets no mouse reports; on SIGCONT the modes are entered again
    * and the resize listeners told, so the screen is repainted whole.
    */
-  let suspended = false;
   const stopped = () => {
     if (state !== "entered" || ending || suspended) return;
     port.suspend(() => {
@@ -330,7 +335,7 @@ export function guardedHost(port: TerminalPort): Host {
     onEnd(listener) { ends.add(listener); return () => { ends.delete(listener); }; },
 
     write(data) {
-      if (state !== "entered") return false;
+      if (state !== "entered" || suspended) return false;
       return send(typeof data === "string" ? encoder.encode(data) : data);
     },
 
@@ -357,11 +362,12 @@ export function guardedHost(port: TerminalPort): Host {
       if (state !== "entered" || watchingDisplay) return;
       watchingDisplay = true;
       holding();
-      send(encoder.encode(WATCH_DISPLAY));
+      // while suspended, the continue turns it on with the rest
+      if (!suspended) send(encoder.encode(WATCH_DISPLAY));
     },
 
     refreshDisplay() {
-      if (state === "entered") send(encoder.encode(DISPLAY_QUERY));
+      if (state === "entered" && !suspended) send(encoder.encode(DISPLAY_QUERY));
     },
 
     drain() {
