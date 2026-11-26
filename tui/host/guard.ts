@@ -10,6 +10,17 @@ import { DISPLAY_QUERY, emptyProbe, PROBE_QUERY, ReplyFilter, withReply } from "
  */
 const ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[>1u";
 export const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+/** Colour-scheme notifications (2031), the one mode the screen turns on later, through `watchDisplay`. */
+const WATCH_DISPLAY = "\x1b[?2031h";
+const UNWATCH_DISPLAY = "\x1b[?2031l";
+/** What undoes every mode the screen can turn on: LEAVE's, and the colour-scheme watch before them. */
+export const LEAVE_ALL = `${UNWATCH_DISPLAY}${LEAVE}`;
+
+/** Which of the terminal's modes the screen holds: none, ENTER's, or ENTER's and the colour-scheme watch. */
+export type Held = "none" | "modes" | "modes+watch";
+
+/** The bytes that give back what is held, for the screen itself and for a process that does it once the screen died. */
+export const undoHeld = (held: Held): string => held === "none" ? "" : held === "modes" ? LEAVE : LEAVE_ALL;
 /**
  * Sent again after a resize and a focus-in, as some hosts drop them. The kitty flags are set on the
  * entry already pushed (`=1;1`), so the stack still holds one entry of ours.
@@ -50,8 +61,20 @@ export interface TerminalPort {
   /** installs the hooks; returns their removal */
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
-  /** stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action) */
-  suspend(): void;
+  /**
+   * Stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action), once
+   * `giveBack` has given the terminal back. A continue that comes from the moment it is called cancels the stop, so a
+   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called (the
+   * process that started this one, and stopped at the same signal, runs again), it gives the terminal back and does not
+   * stop. Either way the continue is heard next (`cont`).
+   */
+  suspend(giveBack: () => void): void;
+  /**
+   * Told which modes the screen holds: before it turns them on, and once it has undone them (at a stop from outside,
+   * just before it undoes them). Whoever started the screen reads it after the screen died without giving the terminal
+   * back (tui/host/hold.ts).
+   */
+  hold(held: Held): void;
 }
 
 /** EIO and EPIPE: the terminal is gone; EAGAIN reaches here only once the port gave up waiting for it. */
@@ -92,6 +115,9 @@ export function guardedHost(port: TerminalPort): Host {
 
   let drainState: { cancel: () => void; resolve: () => void } | null = null;
   let drainPromise: Promise<void> | null = null;
+
+  /** The port is told what is held now: called before a write that turns modes on, and after one that undoes them. */
+  const holding = () => port.hold(!modesOn ? "none" : watchingDisplay ? "modes+watch" : "modes");
 
   const reportGone = (why: "hangup" | "write-failed") => {
     if (gone) return [];
@@ -198,9 +224,10 @@ export function guardedHost(port: TerminalPort): Host {
     // a write error that is not gone is thrown once the terminal is given back, never before
     let failed: { error: unknown } | null = null;
     if (modesOn) {
-      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch (error) { failed = { error }; }
+      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch (error) { failed = { error }; }
     }
     modesOn = false;
+    holding();
     if (rawOn) {
       rawOn = false;
       try { port.setRaw(false); } catch { /* the terminal is gone: nothing left to restore */ }
@@ -218,17 +245,23 @@ export function guardedHost(port: TerminalPort): Host {
   let suspended = false;
   const stopped = () => {
     if (state !== "entered" || ending || suspended) return;
-    port.stopReading();
-    if (modesOn) {
-      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
-    }
-    modesOn = false;
-    if (rawOn) {
-      rawOn = false;
-      try { port.setRaw(false); } catch { /* the terminal is gone */ }
-    }
-    suspended = true;
-    port.suspend();
+    port.suspend(() => {
+      port.stopReading();
+      // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the
+      // terminal back, before this process may have stopped.
+      const held = modesOn;
+      modesOn = false;
+      holding();
+      if (held) {
+        try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+      }
+      if (rawOn) {
+        rawOn = false;
+        try { port.setRaw(false); } catch { /* the terminal is gone */ }
+      }
+      // a stop cancelled by a continue still hears that continue next, and enters again then
+      suspended = true;
+    });
   };
   const continued = () => {
     if (!suspended || state !== "entered" || ending) return;
@@ -236,7 +269,8 @@ export function guardedHost(port: TerminalPort): Host {
     port.setRaw(true);
     rawOn = true;
     modesOn = true;
-    send(encoder.encode(watchingDisplay ? `${ENTER}\x1b[?2031h` : ENTER));
+    holding();
+    send(encoder.encode(watchingDisplay ? `${ENTER}${WATCH_DISPLAY}` : ENTER));
     port.startReading(take);
     const size = port.size();
     for (const listener of resizes) listener(size);
@@ -272,6 +306,7 @@ export function guardedHost(port: TerminalPort): Host {
         port.setRaw(true);
         rawOn = true;
         modesOn = true;
+        holding();
         send(encoder.encode(ENTER));
         port.startReading(take);
       } catch (error) {
@@ -320,7 +355,8 @@ export function guardedHost(port: TerminalPort): Host {
     watchDisplay() {
       if (state !== "entered" || watchingDisplay) return;
       watchingDisplay = true;
-      send(encoder.encode("\x1b[?2031h"));
+      holding();
+      send(encoder.encode(WATCH_DISPLAY));
     },
 
     refreshDisplay() {

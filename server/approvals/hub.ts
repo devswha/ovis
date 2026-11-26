@@ -15,16 +15,21 @@
  * could not show whole, and any failure of the channel.
  *
  * A held request is kept apart from any screen: `held` lists a pane's requests and `settle` answers one by its id. A
- * card is built from the request alone (`shown`, `holds`, `answer`); the agent's dialog on the screen (Claude's Bash
- * dialog, dialogs/claude.ts; OmO's permission dialog and the one Ovis's pi extension draws like it, dialogs/pi.ts)
- * only says whether the request is still open: one the screen shows no dialog for, or a dialog showing another command
- * whole, was answered in the terminal. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
+ * card is built from the request alone (`shown`, `holds`, `answer`); the agent's dialog on the screen (Claude's
+ * permission dialog, dialogs/claude.ts; OmO's permission dialog and the one Ovis's pi extension draws like it, dialogs/pi.ts)
+ * only says whether the request is still open: one the screen shows no dialog for, or a dialog showing another request's
+ * subject whole, was answered in the terminal. An adapter may also read the turns its agent's hook tells of
+ * (`onTurn`) and the commands it says the agent ran (`onCommand`), which ask nothing and get no answer. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
+ *
+ * Codex asks no hook: Ovis is a client of its own app server (codex.ts), whose requests are held with `hold` and
+ * released when Codex says they were answered, never by a read of the screen.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { COMPILED, entryCommand, ROOT } from "../entries.ts";
+import { settingsFile } from "../claude-settings-file.ts";
+import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
 import { isNonce, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
 export type ApprovalDecision = "allow" | "deny";
@@ -33,14 +38,45 @@ export type ApprovalDecision = "allow" | "deny";
 export interface ApprovalRequest {
   command: string;
   description: string | null;
+  /**
+   * What the agent's dialog shows of this request, whole, to tell it from another: its command unless set (Claude's
+   * file dialogs show the file's path, not the text the card shows).
+   */
+  subject?: string;
+  /** which of the agent's dialogs shows it, where it has several (Codex's command, edit, grant): no other is its */
+  dialog?: string;
 }
 
 /**
- * What a read of the screen found of the agent's approval dialog: its command, whole, or null where the screen does not
- * show it whole (a panel taller than the pane).
+ * What a read of the screen found of the agent's approval dialog: the subject of the request it asks (its command),
+ * whole, or null where the screen does not show it whole (a panel taller than the pane).
  */
 export interface ApprovalDialog {
   command: string | null;
+  /** which of the agent's dialogs it is, where it has several (ApprovalRequest.dialog) */
+  kind?: string;
+}
+
+/** A turn of the agent's that its hook told began (its prompt) or ended, with the prompt's id where the agent gives one. */
+export interface TurnEvent {
+  turn: "began" | "ended";
+  prompt: string | null;
+}
+
+/**
+ * A command the agent's hook told it ran: one of its own (`builtin`), or a skill or custom command it expanded, with the
+ * argument it was given where the hook names it.
+ */
+export interface CommandEvent {
+  name: string;
+  builtin: boolean;
+  args?: string;
+}
+
+/** A permission mode an agent's hook told, with the session it told it in. */
+export interface ToldMode {
+  mode: string;
+  session: string;
 }
 
 export interface HeldApproval extends ApprovalRequest {
@@ -63,6 +99,12 @@ export interface ApprovalAdapter {
   launchArgs(args: readonly string[] | undefined, hook: { command: string; args: string[] }, dir: string): string[] | null;
   /** The approval an event the hook sent asks, or null for one the hub gives no decision on. */
   toCard(event: unknown): ApprovalRequest | null;
+  /** The turn an event the hook sent tells of, for an agent whose hook tells them (Claude's Stop, OmO's runs), else null. */
+  turn?(event: unknown): TurnEvent | null;
+  /** The permission mode an event the hook sent was sent under, and the agent's session it was in, else null. */
+  mode?(event: unknown): ToldMode | null;
+  /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
+  command?(event: unknown): CommandEvent | null;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
   decision(label: string): ApprovalDecision | null;
   /** What the hook prints for a decision, or for none (null), after which the agent's own dialog stands. */
@@ -75,10 +117,15 @@ interface Launch {
   adapter: ApprovalAdapter;
 }
 
+/** Who asks a held request: the agent kind its card names, and which card option is a decision. */
+export type ApprovalSource = Pick<ApprovalAdapter, "kind" | "decision">;
+
 interface Pending extends ApprovalRequest {
   nonce: string;
-  adapter: ApprovalAdapter;
+  adapter: ApprovalSource;
   at: number;
+  /** released only by whoever holds it (hold), never by a read of the screen */
+  pinned: boolean;
   settle: (decision: ApprovalDecision | null) => void;
 }
 
@@ -97,6 +144,7 @@ const LAUNCHES_MAX = 256;
 /** The most of a card's body the bridge and the card show (finishPrompt, promptWords). */
 const CARD_BODY_MAX = 12_000;
 const SOCKET_NAME = "hub.sock";
+const KEY_SUFFIX = ".key";
 
 const spaced = (text: string): string => text.trim().replace(/\s+/g, " ");
 const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -130,6 +178,8 @@ const idOf = (entry: Pending): string =>
 
 const publicOf = (entry: Pending): HeldApproval => ({ id: idOf(entry), kind: entry.adapter.kind, command: entry.command, description: entry.description });
 
+const subjectOf = (entry: Pending): string => entry.subject ?? entry.command;
+
 /**
  * Where the hub listens: the socket in its folder, or on Windows, where a socket is not offered here, a named pipe of a
  * name no other hub has. That name is new each run, so a restarted server is never at an earlier run's.
@@ -144,8 +194,7 @@ export function hubAddress(dir: string, platform: string = process.platform): st
  * read neither (scripts/server-artifact.ts); from source, Bun gets Ovis's own config and no env file.
  */
 export function relayCommand(root = ROOT, compiled = COMPILED): string[] {
-  const [bun, entry] = entryCommand("approval-hook", root, compiled);
-  return compiled ? [bun, entry] : [bun, `--config=${join(root, "bunfig.toml")}`, "--no-env-file", entry];
+  return projectSafeCommand("approval-hook", root, compiled);
 }
 
 export class ApprovalHub {
@@ -154,12 +203,18 @@ export class ApprovalHub {
   private stopped = false;
   private readonly launches = new Map<string, Launch>();
   private readonly pending = new Map<string, Pending[]>();
+  /** each pane's agent's permission mode, as its hook last told */
+  private readonly modes = new Map<string, ToldMode>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
   readonly address: string;
 
   constructor(private readonly dir: string, adapters: readonly ApprovalAdapter[], private readonly options: {
     now?: () => number; heldMs?: number; onHeld?: (paneId: string) => void; onSettled?: (paneId: string) => void; platform?: string;
+    /** a turn of the agent started in `paneId` began or ended, as its hook told */
+    onTurn?: (paneId: string, kind: string, turn: TurnEvent) => void;
+    /** the agent started in `paneId` ran a command, as its hook told */
+    onCommand?: (paneId: string, kind: string, command: CommandEvent) => void;
     /** what the hook runs, before its own arguments */
     relay?: readonly string[];
   } = {}) {
@@ -170,6 +225,11 @@ export class ApprovalHub {
 
   private now(): number {
     return (this.options.now ?? Date.now)();
+  }
+
+  /** The permission mode the hook of the agent started in `paneId` last told, and in which of its sessions, or null. */
+  toldMode(paneId: string): ToldMode | null {
+    return this.modes.get(paneId) ?? null;
   }
 
   /** Whether an agent of this kind asks its approvals through the hub. */
@@ -193,9 +253,9 @@ export class ApprovalHub {
     const uid = process.getuid?.();
     if (!folder.isDirectory() || (uid !== undefined && folder.uid !== uid)) throw new Error(`${this.dir} is not a folder of this account`);
     chmodSync(this.dir, 0o700);
-    // a settings file or extension names a key of an earlier run of this server, which nothing here answers any more,
+    // a settings file, extension or key file is of an earlier run of this server, which nothing here answers any more,
     // and the socket of that run is in the way of this one's
-    for (const name of readdirSync(this.dir)) if (/\.js(?:on)?$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
+    for (const name of readdirSync(this.dir)) if (/\.(?:js|json|key)$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
     const listener = createServer((socket) => this.receive(socket));
     // a bind that fails comes as an event on the next tick (a pipe's name taken, a folder it may not bind in): no
     // hook works then, as its relay finds no answer, and the server goes on
@@ -235,14 +295,21 @@ export class ApprovalHub {
     const [command, ...relay] = this.options.relay ?? relayCommand();
     let hooked: string[] | null;
     try {
-      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch", key] }, this.dir);
+      // the key goes in a file of its own (named by its digest), never on the agent's command line, which Claude Code
+      // writes into its transcript (relay.ts)
+      const keyFile = settingsFile(key, this.dir, KEY_SUFFIX);
+      hooked = adapter.launchArgs(args, { command: command!, args: [...relay, "--socket", this.address, "--launch-file", keyFile] }, this.dir);
     } catch (error) {
       console.error(`approval hub (${kind}): ${error instanceof Error ? error.message : String(error)}`);
+      this.dropKey(keyDigest(key));
       return unchanged;
     }
-    if (hooked === null) return unchanged;
+    if (hooked === null) {
+      this.dropKey(keyDigest(key));
+      return unchanged;
+    }
     this.launches.set(keyDigest(key), { key, paneId, adapter });
-    if (this.launches.size > LAUNCHES_MAX) this.launches.delete(this.launches.keys().next().value!);
+    if (this.launches.size > LAUNCHES_MAX) this.dropLaunch(this.launches.keys().next().value!);
     return hooked;
   }
 
@@ -276,21 +343,38 @@ export class ApprovalHub {
     };
     let parsed: unknown;
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
+    const mode = launch.adapter.mode?.(parsed) ?? null;
+    if (mode !== null) this.modes.set(launch.paneId, mode);
+    // told, not asked: the hook prints nothing, so the agent goes on as it would without it
+    const turn = launch.adapter.turn?.(parsed) ?? null;
+    const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
+    if (turn !== null || command !== null) {
+      socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
+      if (turn !== null) this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
+      else this.options.onCommand?.(launch.paneId, launch.adapter.kind, command!);
+      return;
+    }
     const card = launch.adapter.toCard(parsed);
     // an event the adapter does not take, or a command the card could not show whole or as it is, is the terminal's: a
     // Yes allows only what the card showed
-    if (card === null) return reply(null);
-    const body = heldBody(card);
-    if (body.length > CARD_BODY_MAX || !showable(body)) return reply(null);
-    const { paneId } = launch;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const entry = card === null ? null : this.add(launch.paneId, card, launch.adapter, false, (decision) => { clearTimeout(timer); reply(decision); });
+    if (entry === null) return reply(null);
+    timer = setTimeout(() => entry.settle(null), this.options.heldMs ?? HELD_MS);
+    // the agent ended its hook (answered in the terminal, or timed out)
+    socket.on("close", () => entry.settle(null));
+  }
+
+  /** A held request of `paneId`, or null for a card that could not show it whole or as it is. */
+  private add(paneId: string, card: ApprovalRequest, adapter: ApprovalSource, pinned: boolean, reply: (decision: ApprovalDecision | null) => void): Pending | null {
+    const body = heldBody(card);
+    if (body.length > CARD_BODY_MAX || !showable(body)) return null;
     let done = false;
     const entry: Pending = {
-      ...card, adapter: launch.adapter, nonce: randomBytes(16).toString("hex"), at: this.now(),
+      ...card, adapter, pinned, nonce: randomBytes(16).toString("hex"), at: this.now(),
       settle: (decision) => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
         const left = (this.pending.get(paneId) ?? []).filter((other) => other !== entry);
         if (left.length) this.pending.set(paneId, left);
         else this.pending.delete(paneId);
@@ -299,10 +383,21 @@ export class ApprovalHub {
       },
     };
     this.pending.set(paneId, [...this.pending.get(paneId) ?? [], entry]);
-    timer = setTimeout(() => entry.settle(null), this.options.heldMs ?? HELD_MS);
-    // the agent ended its hook (answered in the terminal, or timed out)
-    socket.on("close", () => entry.settle(null));
     this.options.onHeld?.(paneId);
+    return entry;
+  }
+
+  /**
+   * Holds a request an agent asks Ovis directly, rather than through a hook (server/approvals/codex.ts): its card's
+   * Yes or No goes to `answer`, and so does no decision (null) when the pane is forgotten or the hub stops. The screen
+   * does not release it: the returned function does, once the agent says the request was answered elsewhere. Null when
+   * the card could not show it whole or as it is: the agent's own dialog is then the only way to answer it.
+   */
+  hold(paneId: string, source: ApprovalSource, card: ApprovalRequest, answer: (decision: ApprovalDecision | null) => void): (() => void) | null {
+    if (this.stopped) return null;
+    let released = false;
+    const entry = this.add(paneId, card, source, true, (decision) => { if (!released) answer(decision); });
+    return entry === null ? null : () => { released = true; entry.settle(null); };
   }
 
   /** The requests `paneId` holds, oldest first. */
@@ -317,11 +412,16 @@ export class ApprovalHub {
     return entry !== undefined;
   }
 
-  /** The held requests a dialog on the screen leaves open, oldest first: all of them, but those showing another command whole. */
+  /**
+   * The held requests a dialog on the screen leaves open, oldest first: those of its kind, but those showing another
+   * command whole. A dialog that does not show its command whole leaves a request an agent asked directly (hold) open
+   * only when it is the one of its kind held: of two, the screen cannot tell which it shows.
+   */
   private open(paneId: string, dialog: ApprovalDialog | null): Pending[] {
     if (dialog === null) return [];
-    const { command } = dialog;
-    return (this.pending.get(paneId) ?? []).filter((entry) => command === null || shows(command, entry.command));
+    const { command, kind } = dialog;
+    const open = (this.pending.get(paneId) ?? []).filter((entry) => entry.dialog === kind && (command === null || shows(command, subjectOf(entry))));
+    return command === null && open.length > 1 && open.some((entry) => entry.pinned) ? [] : open;
   }
 
   /**
@@ -333,7 +433,7 @@ export class ApprovalHub {
   shown(paneId: string, dialog: ApprovalDialog | null): HeldApproval | null {
     const open = this.open(paneId, dialog);
     for (const entry of this.pending.get(paneId) ?? []) {
-      if (!open.includes(entry) && this.now() - entry.at >= GRACE_MS) entry.settle(null);
+      if (!entry.pinned && !open.includes(entry) && this.now() - entry.at >= GRACE_MS) entry.settle(null);
     }
     return open.length ? publicOf(open.at(-1)!) : null;
   }
@@ -349,14 +449,17 @@ export class ApprovalHub {
   }
 
   /**
-   * Whether the dialog shows the command of the request a card built on `id` showed, whole, and of no other held
-   * request: only then is that dialog this command's, and the card's options other than a decision go to it as keys.
-   * Runs of white space count as one in `shows`, so two requests that differ only in them are both shown.
+   * Whether the dialog shows the subject of the request a card built on `id` showed, whole, and of no other held
+   * request: only then is that dialog this request's, and the card's options other than a decision go to it as keys.
+   * Runs of white space count as one in `shows`, so two requests that differ only in them are both shown. Nor may another
+   * held request the dialog shows name another tool or file in its words (two MCP tools called with the same arguments
+   * show the same subject).
    */
   showsOnly(paneId: string, dialog: ApprovalDialog, id: string): boolean {
     const open = this.open(paneId, dialog);
     const latest = open.at(-1);
-    return dialog.command !== null && latest !== undefined && idOf(latest) === id && open.every((entry) => entry.command === latest.command);
+    return dialog.command !== null && latest !== undefined && idOf(latest) === id
+      && open.every((entry) => entry.command === latest.command && subjectOf(entry) === subjectOf(latest) && entry.description === latest.description);
   }
 
   /** Answers the request a card built on `id` showed. False when that request is no longer bound to the card. */
@@ -373,8 +476,19 @@ export class ApprovalHub {
    * and its launches' requests get none.
    */
   forget(paneId: string): void {
+    this.modes.delete(paneId);
     for (const entry of [...(this.pending.get(paneId) ?? [])]) entry.settle(null);
-    for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.launches.delete(digest);
+    for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
+  }
+
+  /** A launch no request is taken for any more, and its key file, so its hook finds no key and gives no decision. */
+  private dropLaunch(digest: string): void {
+    this.launches.delete(digest);
+    this.dropKey(digest);
+  }
+
+  private dropKey(digest: string): void {
+    rmSync(join(this.dir, `${digest}${KEY_SUFFIX}`), { force: true });
   }
 
   stop(): void {

@@ -12,6 +12,7 @@ import { jobProcessesBelow } from "../foreground-job.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, OVIS_LAYOUT_DOC, type PaneDirection } from "./layout-doc.ts";
 import { paneSession } from "../agent-identity.ts";
+import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import { agentInfoOf, agentOfStatus, agyPlanReview, type CoreHost, coreHost, type FirstTurn, opencodeRecords, type SessionOf, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, processInfoOf, runsCommandString, SPACE_LABEL, TAB_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import { type CoreChange, coreModel, type SessionNote } from "./core-model.ts";
 import { EVENT_LINE_BYTES, openEventStream } from "./event-stream.ts";
@@ -73,7 +74,7 @@ interface ConnectionState {
 export interface HerdrCoreAdapter {
   /** where it listens: the server's HERDR_SOCKET */
   socketPath: string;
-  stop: () => void;
+  stop: (options?: { drain?: boolean }) => void | Promise<void>;
 }
 
 /**
@@ -88,6 +89,7 @@ export type SeenObserver = (address: string, turn: number, labels: Record<string
  * and a Windows PC, which reads what runs in a pane off its own processes, starts no agent there.
  */
 export interface AdapterOptions {
+  acp?: import("../acp/children.ts").AcpChildren | null;
   otherMachine?: boolean;
   /** the OpenCode sessions whose terminal title this is (opencode.ts `opencodeSessionsTitled`); unset, no OpenCode pane shows a session */
   opencodeTitled?: (terminalTitle: string) => readonly string[];
@@ -101,6 +103,7 @@ export interface AdapterOptions {
 
 /** The sessions a terminal named that it keeps as candidates, the newest last. */
 const NAMED_SESSIONS = 32;
+const LABEL_DRAIN_MS = 500;
 /**
  * A terminal's named OpenCode sessions, space separated, kept on it through a restart of Ovis (docs/herdr-core-layout.md):
  * all of its candidates, about 1 KB at most, since the pane may still show any of them, not only the newest.
@@ -112,13 +115,15 @@ export const OPENCODE_SESSIONS_LABEL = "ovis.opencode";
  * terminal's writes in order. A write that fails is tried again on the next change. Once stopped, a
  * write still queued is dropped rather than open a new line to hc after the server closed it.
  */
-export function sessionLabeler(hc: Pick<HcConnection, "call">): { label: (address: string, kept: string, named: readonly string[]) => void; forget: (address: string) => void; stop: () => void } {
+export function sessionLabeler(hc: Pick<HcConnection, "call">) {
   const written = new Map<string, string>();
   const queue = new Map<string, Promise<void>>();
+  let accepting = true;
   let stopped = false;
+  let draining: Promise<void> | undefined;
   const label = (address: string, kept: string, named: readonly string[]) => {
     const value = named.join(" ");
-    if (stopped || value === (written.get(address) ?? kept)) return;
+    if (!accepting || value === (written.get(address) ?? kept)) return;
     written.set(address, value);
     const run = (queue.get(address) ?? Promise.resolve())
       .then(async () => { if (!stopped) await hc.call("terminal.label", { terminal: address, labels: { [OPENCODE_SESSIONS_LABEL]: value } }); })
@@ -126,7 +131,25 @@ export function sessionLabeler(hc: Pick<HcConnection, "call">): { label: (addres
     queue.set(address, run);
     void run.then(() => { if (queue.get(address) === run) queue.delete(address); });
   };
-  return { label, forget: (address) => written.delete(address), stop: () => { stopped = true; } };
+  const stop: HerdrCoreAdapter["stop"] = (options) => {
+    accepting = false;
+    if (!options?.drain || queue.size === 0) { stopped = true; return; }
+    if (stopped) return;
+    draining ??= (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all(queue.values()),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, LABEL_DRAIN_MS); }),
+        ]);
+      } finally {
+        stopped = true;
+        clearTimeout(timer);
+      }
+    })();
+    return draining;
+  };
+  return { label, forget: (address: string) => written.delete(address), stop };
 }
 
 export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string, observeSeen?: SeenObserver, options: AdapterOptions = {}): Promise<HerdrCoreAdapter> {
@@ -203,7 +226,7 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
             first = false;
             const request = parseRequest(line);
             if (!request) { send(socket, `${JSON.stringify({ id: "", error: { code: "bad_frame", message: "not a herdr request" } })}\n`, true); return; }
-            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, coreHost(options.otherMachine, options.platform), layoutWatchers, observeSeen, noteSession); return; }
+            if (request.method === "events.subscribe") { void subscribe(hc, socket, request, firstTurn, coreHost(options.otherMachine, options.platform), layoutWatchers, observeSeen, noteSession, options.acp); return; }
             void answers(request).then((reply) => send(socket, `${JSON.stringify({ id: request.id, ...reply })}\n`, true));
           }, () => socket.end()),
         };
@@ -226,10 +249,10 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
   });
   return {
     socketPath,
-    stop: () => {
-      sessionLabels.stop();
+    stop: (options) => {
       listener.stop(true);
       rmSync(socketPath, { force: true });
+      return sessionLabels.stop(options);
     },
   };
 }
@@ -468,6 +491,12 @@ const CHECKOUT_FACTS_MS = 5_000;
 /** How long a snapshot waits on git for one folder's facts before drawing it without them. */
 const CHECKOUT_FACTS_WAIT_MS = 2_000;
 
+function acpChildOf(terminal: HcTerminal, registry: AdapterOptions["acp"]) {
+  if (!terminal.labels?.["ovis.acp"]) return undefined;
+  const child = registry?.forPane(terminal.address);
+  return child && child.id === terminal.labels?.["ovis.acp"] ? child : undefined;
+}
+
 function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, layoutChanged: () => void, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
   const platform = options.platform ?? process.platform;
   const processTable = options.processTable ?? windowsProcessTable;
@@ -551,7 +580,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       firstTurn, sessionOf, host: coreHost(options.otherMachine, platform),
       shown: (terminals) => {
         forgetTurns(new Set(terminals.map((terminal) => terminal.address)));
-        return terminals;
+        return terminals.map(terminal => {
+          const child = acpChildOf(terminal, options.acp);
+          if (!child) return terminal;
+          const name = terminal.name && terminal.name !== terminal.address ? terminal.name : AGENT_CATALOG.find(entry => entry.id === child.harness)?.name ?? child.harness;
+          return { ...terminal, name, acp: { agent: child.client.agentGone ? null : child.harness, status: child.client.status, plan: child.client.history.plan, ...(child.client.holdGeneration === null ? {} : { hold: { child_id: child.id, generation: child.client.holdGeneration } }) } };
+        });
       },
     });
     const gitIds = new Map<string, string | null>();
@@ -875,6 +909,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       // a control character could end the quoted line early and type something else
       if (args.some((arg) => /[\u0000-\u001f\u007f]/.test(arg))) throw new AdapterError("invalid_params", "an argument holds a control character");
       const command = AGENT_COMMANDS[kind] ?? kind;
+      // a launcher Ovis wrote for this start (server/approvals/codex.ts) runs in place of the command, which it starts
+      const program = params["program"];
+      if (program !== undefined && (typeof program !== "string" || !isAbsolute(program) || /[\u0000-\u001f\u007f]/.test(program))) throw new AdapterError("invalid_params", "program must be an absolute path");
       // only into the pane's own shell, once hc has seen it in front: a running program would take
       // the line as its input (agent-launch.ts retries a busy pane while a new shell comes up). The
       // pane's input turn is held for the check and the typing only, so nothing typed after waits on the start.
@@ -891,7 +928,13 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
         const front = ready.foreground;
         const frontArgv = front?.argv ?? (front ? [front.name] : []);
         if ([own[0], frontArgv[0]].some((program) => /(?:^|\/)-?fish$/u.test(program ?? "")) && args.some((arg) => arg.includes("\\"))) throw new AdapterError("invalid_params", "fish would read a backslash in an argument differently");
-        const line = startLine(shell, command, args);
+        const agentArgs = program === undefined ? args : [];
+        const socket = params["ovis_agent_socket"], tokenFile = params["ovis_agent_token_file"];
+        const door = socket !== undefined || tokenFile !== undefined;
+        if (door && (platform === "win32" || typeof socket !== "string" || typeof tokenFile !== "string" || !isAbsolute(socket) || !isAbsolute(tokenFile)
+          || /[\u0000-\u001f\u007f\\]/.test(socket + tokenFile))) throw new AdapterError("invalid_params", "invalid agent tool paths");
+        const line = door ? startLine(shell, "/usr/bin/env", [`OVIS_AGENT_SOCKET=${socket}`, `OVIS_AGENT_TOKEN_FILE=${tokenFile}`, program ?? command, ...agentArgs])
+          : startLine(shell, program ?? command, agentArgs);
         // and a plain shell in front now: a program it runs, or one it `exec`ed (same pid, `exec bash -c …` too), would take the line
         if (!ready.pid || front?.pid !== ready.pid || startShellOf(frontArgv, platform) === null) throw new AdapterError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
         // on Windows the shell is in front whatever it runs: what it runs is below it
@@ -952,9 +995,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const paneId = paneIdOf(params, "target");
       const text = params["text"];
       if (typeof text !== "string") throw new AdapterError("invalid_params", "text is required");
-      if (!(await paneOf(paneId, "agent_not_found")).agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
       await inTurn(paneId, async () => {
-        const force = agyPlanReview((await terminal(paneId)).status);
+        const pane = await paneOf(paneId, "agent_not_found");
+        const current = await terminal(paneId, "agent_not_found");
+        if (current.labels?.["ovis.acp"] && !acpChildOf(current, options.acp)?.client.terminalReady) {
+          throw new AdapterError("acp_prompt_required", "This pane takes prompts through the ACP chat, not terminal input.");
+        }
+        if (!pane.agent) throw new AdapterError("agent_not_found", `no agent in pane ${paneId}`);
+        const force = agyPlanReview(current.status);
         await hc.call("terminal.send", { terminal: paneId, text, ...(force ? { force } : {}) }, 30_000);
       });
       return { type: "ok" };
@@ -1089,11 +1137,17 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     };
   };
   methods["worktree.create"] = (params) => oneAtATime(async () => {
+    if (params["expected_core"] !== undefined && params["expected_core"] !== (await hc.hello()).core.id) {
+      throw new AdapterError("worktree_other_core", "The Ovis server serves another core");
+    }
     const workspaceId = paneIdOf(params, "workspace_id");
     const branch = textOf(params, "branch");
     if (!branch) throw new AdapterError("invalid_params", "branch is required");
     const base = textOf(params, "base");
     const { shown, repository } = await inRepository(workspaceId);
+    if (params["expected_repo"] !== undefined && params["expected_repo"] !== repository.repo_key) {
+      throw new AdapterError("worktree_target_changed", "The workspace no longer names the selected repository");
+    }
     // as herdr: a worktree starts from the repository's own checkout, which the caller can ask instead
     if (repository.checkout !== repository.repo_root) throw new AdapterError("linked_worktree_source", `workspace ${workspaceId} is on a linked checkout of ${repository.repo_name}`);
     const path = typeof params["path"] === "string" && params["path"] !== "" ? params["path"] : defaultCheckoutPath(repository.repo_name, branch);
@@ -1137,12 +1191,19 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return { type: "worktree_opened", ...opened, worktree: infoOf(repository, checkout, new Map([[checkout.path, opened.workspace.workspace_id]])), already_open: false };
   });
   methods["worktree.remove"] = (params) => oneAtATime(async () => {
+    if (params["expected_core"] !== undefined && params["expected_core"] !== (await hc.hello()).core.id) {
+      throw new AdapterError("worktree_other_core", "The Ovis server serves another core");
+    }
     const workspaceId = paneIdOf(params, "workspace_id");
     const { shown, gitIds, started } = await ownRead();
     const workspace = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
     if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
     const facts = workspace.worktree;
     if (!facts?.is_linked_worktree) throw new AdapterError("not_linked_worktree", `workspace ${workspaceId} is not a linked worktree`);
+    if ((params["expected_checkout"] !== undefined && params["expected_checkout"] !== facts.checkout_path)
+      || (params["expected_repo"] !== undefined && params["expected_repo"] !== facts.repo_key)) {
+      throw new AdapterError("worktree_target_changed", "The workspace no longer names the confirmed checkout");
+    }
     // only this workspace closes with the checkout: another one open on it, or with a terminal in it
     // (started there or gone there since), would be left in a deleted folder
     const inCheckout = (folder: string | null | undefined): boolean => {
@@ -1162,6 +1223,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       if (gitId) break;
     }
     gitId ??= gitIds.get(workspaceId) ?? null;
+    if (params["expected_git_id"] !== undefined && (!now || params["expected_git_id"] !== gitDirIdentity(now.git_dir))) {
+      throw new AdapterError("worktree_target_changed", "The confirmed checkout was replaced");
+    }
     if (!now || now.repo_key !== facts.repo_key || now.checkout !== facts.checkout_path || now.checkout === now.repo_root || (gitId !== null && gitDirIdentity(now.git_dir) !== gitId)) {
       throw new AdapterError("worktree_not_found", `${facts.checkout_path} is no longer a worktree of ${facts.repo_name}`);
     }
@@ -1173,6 +1237,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return { type: "worktree_removed", workspace_id: workspaceId, path: facts.checkout_path, forced: force };
   });
 
+  methods["worktree.create_checked"] = methods["worktree.create"];
+  methods["worktree.remove_checked"] = methods["worktree.remove"];
   return async (request) => {
     const method = methods[request.method];
     // git runs here, and another machine's checkouts are there
@@ -1210,7 +1276,7 @@ const LIFECYCLE = {
  * subscriber that fell behind on hc (`missed`), or a line to hc that ended, ends this connection:
  * the status collector reopens it and reads what it missed from a fresh snapshot.
  */
-async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, host: CoreHost, layoutWatchers: Set<() => void>, observeSeen?: SeenObserver, noteSession?: SessionNote): Promise<void> {
+async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, request: Request, firstTurn: FirstTurn, host: CoreHost, layoutWatchers: Set<() => void>, observeSeen?: SeenObserver, noteSession?: SessionNote, acp?: AdapterOptions["acp"]): Promise<void> {
   const subscriptions = Array.isArray(request.params["subscriptions"]) ? request.params["subscriptions"].filter(isRecord) : [];
   const statusPanes = new Set(subscriptions.flatMap((entry) => entry["type"] === STATUS_EVENT && typeof entry["pane_id"] === "string" ? [entry["pane_id"]] : []));
   const structure = subscriptions.some((entry) => typeof entry["type"] === "string" && !NOT_STRUCTURE.has(entry["type"]));
@@ -1244,7 +1310,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     if (structure) emit(event, { type, ...("terminal" in change && change.terminal ? { pane_id: change.terminal } : {}) });
   };
   const tell = (change: Extract<CoreChange, { type: "status" }>) => {
-    if (statusPanes.has(change.terminal)) emit(STATUS_EVENT, { pane_id: change.terminal, agent_status: change.shown, agent: change.agent });
+    if (!acp?.forPane(change.terminal) && statusPanes.has(change.terminal)) emit(STATUS_EVENT, { pane_id: change.terminal, agent_status: change.shown, agent: change.agent });
   };
   const deliver = (changes: readonly CoreChange[]) => {
     for (const change of changes) {
@@ -1272,8 +1338,13 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     }
     // a change hc has no event for (a late git answer): the rows refresh as for a label
     const layoutChanged = () => lifecycle({ type: "layout" });
+    const offAcp = acp?.onStatus(child => {
+      if (statusPanes.has(child.terminal)) emit(STATUS_EVENT, { pane_id: child.terminal, agent_status: child.client.status, agent: child.client.agentGone ? null : child.harness });
+      layoutChanged();
+    });
     if (structure) layoutWatchers.add(layoutChanged);
     socket.data.unsubscribe = () => {
+      offAcp?.();
       layoutWatchers.delete(layoutChanged);
       void channel.close();
     };

@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create as createRenderer, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import type { AccountList } from "../lib/account/accountList.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { signInLink } from "./ConnectPhoneDialog.tsx";
 import { keyIdGroups } from "./KeyId.tsx";
@@ -140,6 +143,21 @@ describe("the front page's account part", () => {
     expect(rowsOf(out)).toEqual([[`/s/${"a".repeat(32)}/`, "old-desk Relay Update needed"]]);
   });
 
+  it("says of a PC that the account's list does not hold that it is not in the list yet, and of a list this device cannot read, above the rows", () => {
+    const join = { server_public_key: "k", relay: "wss://relay.example" };
+    const pcs = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, byList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
+    const html = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs } }), scoped: false, onSignIn: none });
+    expect(rowsOf(html)).toEqual([[`/s/${"c".repeat(32)}/`, "desk Relay On"], [`/s/${"d".repeat(32)}/`, "old-box Relay Not in your account&#x27;s list yet On"]]);
+    expect(html).not.toContain("data-list-unread");
+    // a copy only a newer app reads, and one that does not read: one line each, and every row marked
+    const marked = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, notInList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
+    const newer = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "newer" } }), scoped: false, onSignIn: none });
+    expect(newer).toContain("This device cannot read your account&#x27;s list. Update the app.");
+    expect(rowsOf(newer).map(([, text]) => text)).toEqual(["desk Relay Not in your account&#x27;s list yet On", "old-box Relay Not in your account&#x27;s list yet On"]);
+    const damaged = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "damaged" } }), scoped: false, onSignIn: none });
+    expect(damaged).toMatch(/data-list-unread="damaged"[^>]*>This device cannot read your account&#x27;s list\. Sign out and in again on this device, then allow it from another device\.</);
+  });
+
   it("lists on My PCs this device's own PCs and then the account's it can open, each once, by way and state, whatever the address", () => {
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
@@ -183,7 +201,7 @@ describe("the front page's account part", () => {
     expect(text).toContain("homeAnswers · Same Wi-Fi, direct · 9 ms");
     expect(text).toContain("officeAnswers · Seoul relay · 148 ms");
     expect(html).toContain('<span class="connection-slow">148 ms</span>');
-    expect(text).toContain("laptopMachine offlineIt is off, has no network, or Ovis is not running on it.");
+    expect(text).toContain("laptopMachine offlineIts Ovis relay or power is off, it has no network, or Ovis is not running on it.");
     expect(html.indexOf("Check now")).toBeLessThan(html.indexOf("home"));
     expect(text).not.toContain("Connected");
   });
@@ -279,6 +297,36 @@ describe("the hosted front page", () => {
     const shown = (node: ReactTestInstance): boolean => { for (let at: ReactTestInstance | null = node; at !== null; at = at.parent) if (at.props?.hidden === true) return false; return true; };
     const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label && shown(node));
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
+
+    it("puts up the card of a change that still waits when another change is refused for it, and the card acts on that request alone", async () => {
+      const first = { account: "acct", list: "5c".repeat(32), key: "member", on: { seq: 3, hash: "aa".repeat(32) }, place: { seq: 4, hash: "bb".repeat(32) }, for: "allow:k", at: 1 };
+      const calls: string[] = [];
+      let waits: typeof first | null = first;
+      setPageAccountList({
+        waiting: async () => waits, cancel: async (given: typeof first) => { calls.push(`cancel ${given.place.hash}`); },
+        sync: async () => { calls.push("sync"); throw new Error("nothing is sent in this test"); },
+        subscribe: () => () => {}, view: () => ({ account: null, reached: false, status: { at: "off" }, devices: [], pcs: [] }),
+        // Add PC's relay tab asks every page list whether this device may write it (InvitePc): this one may not
+        writer: () => null,
+      } as unknown as AccountList);
+      const cards = () => renderer!.root.findAll((node) => node.props["data-testid"] === "list-allow-notice");
+      const refusedElsewhere = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT)); await Promise.resolve(); await Promise.resolve(); }); };
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: () => {} });
+        expect(cards()).toHaveLength(0);
+        // a Remove on this screen was refused because an earlier change still waits
+        await refusedElsewhere();
+        expect(cards().map(textOf).join("")).toContain("An earlier change is still waiting");
+        // Cancel lets go of the request the card was put up for
+        await act(async () => { button("Cancel").props.onClick(); await Promise.resolve(); await Promise.resolve(); });
+        expect([calls, cards().length]).toEqual([[`cancel ${first.place.hash}`], 0]);
+        // put up again; another change took the place meanwhile: Try again on this card sends nothing of it
+        await refusedElsewhere();
+        waits = { ...first, place: { seq: 4, hash: "cc".repeat(32) }, for: "remove-pc:x" };
+        await act(async () => { button("Try again").props.onClick(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+        expect([calls, cards().length]).toEqual([[`cancel ${first.place.hash}`], 0]);
+      } finally { setPageAccountList(null); }
+    });
 
     describe("a pairing's step frame", () => {
       const offer = { v: 1 as const, server_id: EXPECTED, server_public_key: "k", relay: "wss://relay.example", name: "Desk" };
@@ -1914,6 +1962,95 @@ describe("the hosted front page", () => {
       });
     });
 
+    const moreWays = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "more-ways" && shown(node));
+    const wayButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
+    const wayLines = () => wayButtons().map((node) => [node.props["aria-label"], textOf(node)]);
+
+    for (const screenWide of [false, true]) {
+      it(`lists a row's other saved ways behind its More ways, closed at first, each line its tag and whole host opening that way; the row still opens by the relay (${screenWide ? "wide" : "phone"})`, async () => {
+        if (screenWide) wide();
+        await withApp(async () => {
+          const lan = "http://192.168.0.5:7317";
+          const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
+            method === "getState" ? { saved: [tail, lan, desk], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+          await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP), device(ids.desk, "Desk PC", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+          const rows = rowTexts();
+          expect(rows).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale · Address"], ["relay", "Desk PCRelay"], ["tailscale", "deskTailscaledesk.tail1e211e.ts.net"]]);
+          // one disclosure, on the row of several ways alone, closed, named for its PC
+          expect(moreWays().map((node) => [node.props["aria-label"], node.props["aria-expanded"]])).toEqual([["More ways to open hasang-uui-MacBookPro", false]]);
+          expect(wayLines()).toEqual([]);
+          // what it controls is there while closed too, hidden
+          const controlled = () => renderer!.root.findAll((node) => typeof node.type === "string" && node.props.id === moreWays()[0]!.props["aria-controls"]).map((node) => node.props.hidden);
+          expect(controlled()).toEqual([true]);
+          // the row's own tap is still the relay's page
+          expect(openers()[0]!.type).toBe("a");
+          expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+          await act(async () => { moreWays()[0]!.props.onClick(); });
+          expect(moreWays()[0]!.props["aria-expanded"]).toBe(true);
+          expect(controlled()).toEqual([false]);
+          // each other way, one to a line: its tag and the host it opens, whole, in its accessible name too
+          expect(wayLines()).toEqual([
+            ["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"],
+            ["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"],
+          ]);
+          // opening the list opens nothing; the relay row keeps its name, its way tags and where it leads
+          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+          expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+          await act(async () => { wayButtons()[1]!.props.onClick(); });
+          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${lan}/`]);
+          // closed again, the rows read as they did
+          await act(async () => { moreWays()[0]!.props.onClick(); });
+          expect(wayLines()).toEqual([]);
+          expect(rowTexts()).toEqual(rows);
+        });
+      });
+    }
+
+    it("lists, on a row of saved ways alone, the ways other than the one its tap opens", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        // the address way loaded last: the row's tap opens it, so More ways lists the Tailscale one alone
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
+          method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        expect(wayLines()).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
+        await act(async () => { wayButtons()[0]!.props.onClick(); });
+        for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
+      });
+    });
+
+    it("shows, on a row of saved ways alone, the way the app keeps open, whose row goes back to it, and lists the others under More ways", async () => {
+      await withApp(async () => {
+        const lan = "http://192.168.0.5:7317";
+        // the address loaded last, but the app keeps the Tailscale way open while the person chooses another
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "backToCurrent"] }], (method) =>
+          method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac }, choosing: true, current: tail } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
+        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317In use now"]]);
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        expect(wayLines()).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
+        await act(async () => { openers()[0]!.props.onClick(); });
+        expect(called).toContain("HerdrShell.backToCurrent");
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+      });
+    });
+
+    it("ends a More ways line's open of a Tailscale address in the Tailscale-off card while the phone's Tailscale is off, as a Tailscale row does", async () => {
+      await withApp(async () => {
+        const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "openTailscale"] }], (method) =>
+          method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: false } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined && shown(node));
+        await act(async () => { moreWays()[0]!.props.onClick(); });
+        await act(async () => { wayButtons()[0]!.props.onClick(); });
+        for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
+        expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
+        expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
+      });
+    });
+
     it("offers Forget PCs in the signed-in menu too", async () => {
       await mount({ ...signedIn(four()), onForgetSaved: none });
       await forgetPcs();
@@ -2144,6 +2281,13 @@ describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on 
     const removed = failed("revoked");
     expect(plain(removed)).toBe("removed");
     expect(removed).toContain("This device was removed from Mac. Ask again to join it.");
+    // refused before anybody was asked (a PC in no account yet, one paused after too many tries): nobody declined it
+    const refused = failed("pair-unavailable");
+    expect(plain(refused)).toBe("refused");
+    expect(refused).toContain("Mac cannot take this device yet");
+    expect(refused).toContain('data-action="ask-again"');
+    expect(refused).not.toContain("Not allowed");
+    expect(refused).not.toContain("[Allow]");
     const off = failed("pc-offline");
     expect(plain(off)).toBe("off");
     expect(off).toContain('data-action="check-again"');

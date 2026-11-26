@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILinkProvider } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { HerdrSocket, markTyped } from "./ws.ts";
@@ -38,7 +38,9 @@ import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts
 import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
-import { createTerminalFold, dimmedColor, hyperlinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
+import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
+import { screenRows, terminalScreen, viewRows } from "./terminalScreen.ts";
+import { hyperlinkProvider } from "./ghostty/hyperlinks.ts";
 import { userInputTracker } from "./terminalReplies.ts";
 import { visibleTerminalInputBounds } from "./terminalViewport.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
@@ -173,7 +175,7 @@ export interface TerminalMountDeps {
   socketRef: RefObject<HerdrSocket | null>;
   stackRef: RefObject<HTMLDivElement | null>;
   stalledRef: RefObject<boolean>;
-  stopKeyRef: RefObject<boolean>;
+  stopKeyRef: RefObject<number | null>;
   submitRetention: PaneSubmitRetention | null;
   t: Translate;
   tRef: RefObject<Translate>;
@@ -209,7 +211,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
 
       // xterm activates a link whenever a press and its release land on it: a drag that selects
       // part of a path and a right click do too, and neither means "open this"
-      const linkPressed = (event: MouseEvent): boolean => event.button === 0 && !term.hasSelection();
+      const linkPressed = (event: MouseEvent): boolean => event.button === 0 && !terminalScreen(term).hasSelection();
       const reuseTab = (event: MouseEvent): boolean => reuseExternalLinkTabRef.current && !event.metaKey && !event.ctrlKey && !event.altKey;
       const shouldOpenInPanel = (event: MouseEvent, uri: string): boolean =>
         shouldOpenWebPage(event, uri, (target, shiftKey) => openWebRef.current?.(target, shiftKey) ?? false, machineId);
@@ -264,12 +266,18 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       term.loadAddon(fit);
       matchHerdrWidths(term);
-      // the same policy as the linkHandler above: an http(s) address or nothing (S10)
-      term.loadAddon(new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); }));
+      // libghostty's OSC 8 hyperlinks, first: where a hyperlink's label is an address too, its target is what opens, as with
+      // xterm's own provider
+      term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), (uri) => isWebLink(uri) || fileUriPath(uri) !== null, openHyperlink));
+      // the same policy as the linkHandler above: an http(s) address or nothing (S10). The addon reads the rows a link is
+      // in through the terminal it is given: the rows drawn (viewRows), libghostty's while it holds the screen. It is not
+      // loaded through the terminal (that would read xterm's buffer), so it is disposed with it below
+      const webLinks = new WebLinksAddon((event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); });
+      webLinks.activate({ registerLinkProvider: (provider: ILinkProvider) => term.registerLinkProvider(provider), buffer: { get active() { return viewRows(term); } } } as unknown as Terminal);
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
       const offLinkKey = (): void => bareLinks.reset();
-      term.registerLinkProvider(terminalFileLinkProvider(() => term.buffer.active, (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
+      term.registerLinkProvider(terminalFileLinkProvider(() => viewRows(term), (path, event) => { if (linkPressed(event)) openFileRef.current?.(path); }, bareLinks));
       term.open(host);
       // xterm turns autocorrect, autocapitalize and spellcheck off on its helper textarea; an Android
       // keyboard still shows its word strip there unless the field also says autocomplete="off",
@@ -368,7 +376,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           }
           const letter = clipboardKey(event.key, event.code);
           const clipboard = event.ctrlKey && !event.altKey && /^(c|v)$/.test(letter)
-            && (letter === "v" || term.hasSelection());
+            && (letter === "v" || terminalScreen(term).hasSelection());
           if (chord !== null && !clipboard) {
             if (event.type === "keydown") {
               event.preventDefault();
@@ -385,7 +393,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!event.ctrlKey || event.altKey || event.metaKey) return true;
         const key = clipboardKey(event.key, event.code);
         if (key === "v") return false;
-        if (key === "c" && term.hasSelection()) {
+        if (key === "c" && terminalScreen(term).hasSelection()) {
           if (event.type === "keydown") {
             event.preventDefault();
             copySelection();
@@ -464,15 +472,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (!shouldOpenInPanel(event, target.url)) openExternal(target.url, "link", reuseTab(event));
             return true;
           }
-          const buffer = term.buffer.active;
-          const uri = hyperlinkAt(term, buffer.viewportY + target.row, target.col);
+          const buffer = viewRows(term);
+          const uri = terminalScreen(term).hyperlinkAt(buffer.viewportY + target.row, target.col);
           if (uri !== null && (isWebLink(uri) || fileUriPath(uri) !== null)) {
             openHyperlink(event, uri);
             return true;
           }
           const y = buffer.viewportY + target.row + 1;
           const x = target.col + 1;
-          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined)
+          const link = terminalFileLinks(buffer, y, (path, pressed) => { if (linkPressed(pressed)) openFileRef.current?.(path); }, bareLinks.pressed(event) ? bareLinks : undefined, () => viewRows(term))
             .find(({ range: { start, end } }) => (y > start.y || (y === start.y && x >= start.x)) && (y < end.y || (y === end.y && x <= end.x)));
           if (!link) return false;
           link.activate(event);
@@ -489,7 +497,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           return;
         }
         const row = screen.offsetHeight / term.rows;
-        const cursorBottom = screen.offsetTop + (term.buffer.active.cursorY + 1) * row;
+        const cursorBottom = screen.offsetTop + (viewRows(term).cursorY + 1) * row;
         const max = host.scrollHeight - host.clientHeight;
         host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight;
       };
@@ -533,7 +541,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const saidNow = (): readonly string[] => said !== null && said.pane === paneRef.current ? said.texts : [];
       const asCopied = (text: string, firstCol: number, texts: readonly string[]): string =>
         agentRef.current ? unwrapAgentRows(text, term.cols, firstCol, texts) : text;
-      const visibleSelection = (): string => asCopied(term.getSelection(), term.getSelectionPosition()?.start.x ?? 0, saidNow());
+      const visibleSelection = (): string => asCopied(terminalScreen(term).getSelection(), terminalScreen(term).getSelectionPosition()?.start.x ?? 0, saidNow());
       let selectionGeneration = 0;
       let disposed = false;
       // Run after xterm's own copy listener, including for Cmd+C and context-menu
@@ -558,7 +566,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         });
       };
       const onCopy = (event: ClipboardEvent): void => {
-        if (!term.hasSelection() || copiedText === null || !event.clipboardData) return;
+        if (!terminalScreen(term).hasSelection() || copiedText === null || !event.clipboardData) return;
         event.clipboardData.setData("text/plain", copiedText);
         event.preventDefault();
         reserveAwaitedText();
@@ -585,7 +593,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const selectionChange = term.onSelectionChange(() => {
         // a selection is the user's own copy: no program's copy fills the clipboard over it
-        if (term.hasSelection()) cancelCopy();
+        if (terminalScreen(term).hasSelection()) cancelCopy();
         else {
           copiedText = null;
           selectionGeneration++;
@@ -711,7 +719,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           programPress = { pane: paneRef.current, cell: cellAt(event).cell, codex: agent === "codex", moved: false };
           return;
         }
-        const click: ClickKeys | null = reporting && !selecting && !onLink && !term.hasSelection()
+        const click: ClickKeys | null = reporting && !selecting && !onLink && !terminalScreen(term).hasSelection()
           ? { ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey } : null;
         if (reporting) Object.defineProperty(event, isMac ? "altKey" : "shiftKey", { value: true });
         copiedText = null;
@@ -747,7 +755,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // the grid would reach the program as a hover report, and xterm clears its selection on any
           // input. herdr reports no moves to a pane holding a selection either. Copying on, the first
           // move clears the copied highlight as herdr's does, so Ctrl+C interrupts again.
-          if (event.buttons === 0 && !copyOnSelect() && term.hasSelection() && term.element?.contains(event.target as Node)) event.stopPropagation();
+          if (event.buttons === 0 && !copyOnSelect() && terminalScreen(term).hasSelection() && term.element?.contains(event.target as Node)) event.stopPropagation();
           return;
         }
         const { cell, edge } = cellAt(event);
@@ -808,13 +816,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (d.scrolled) repaint(d);
         const released = cellAt(event).cell;
         // released on the pane it was pressed on: a pane switched meanwhile gets no click of this press
-        if (d.click && d.pane !== "" && d.pane === paneRef.current && !d.scrolled && !term.hasSelection()
+        if (d.click && d.pane !== "" && d.pane === paneRef.current && !d.scrolled && !terminalScreen(term).hasSelection()
           && released.row === d.anchor.row && released.col === d.anchor.col) {
           forwardClick(event, d.click);
           if (mayReserveCopy()) reserveCopy(d.pane);
           return;
         }
-        if (!term.hasSelection()) return;
+        if (!terminalScreen(term).hasSelection()) return;
         const visibleText = visibleSelection();
         copiedText = visibleText;
         // herdr's copy_on_select: letting go copies, or only selects for Ctrl+C or Copy (herdr's text below either way)
@@ -826,7 +834,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         let range: [Cell, Cell] | null = null;
         if (d.scrolled) range = historyRange(d);
         else if (d.top !== null) {
-          const position = term.getSelectionPosition();
+          const position = terminalScreen(term).getSelectionPosition();
           if (position) {
             // xterm's end column is exclusive, herdr's inclusive
             const end = position.end.x > 0
@@ -923,7 +931,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       /** whether a click on the terminal now reaches a program that may copy for it */
       const mayReserveCopy = (): boolean => osc52AllowedRef.current && !observeRef.current && !heldRef.current
-        && !term.options.disableStdin && !term.hasSelection();
+        && !term.options.disableStdin && !terminalScreen(term).hasSelection();
       /** the reservation this live copy may fill: still waiting, same pane and output, output from after the click */
       const takeCopy = (origin: number): Osc52Reservation | null => {
         const held = copyReservation;
@@ -931,7 +939,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (held && origin <= held.after) return null;
         copyReservation = null;
         if (held && held.copy.pending && held.pane === paneRef.current && held.owner === outputOwner
-          && !observeRef.current && !term.hasSelection()) return held.copy;
+          && !observeRef.current && !terminalScreen(term).hasSelection()) return held.copy;
         held?.copy.cancel();
         return null;
       };
@@ -942,6 +950,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const osc = term.oscStringState();
         return osc.open && (!osc.idComplete || osc.id === 52);
       };
+      // where each output frame goes into the terminal: the browser scripts' probe counts here, whichever engine parses it
+      let writeFrame = (data: string | Uint8Array, callback: () => void): void => term.write(data, callback);
       const writeNextOutput = (): void => {
         holdingForPictures = false;
         const next = outputFrames[0];
@@ -969,7 +979,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         parsingModePane = mode?.pane ?? null;
         parsingModeGeneration = mode?.generation ?? -1;
         parsingModeLifetime = mode?.lifetime ?? -1;
-        term.write(frame.data, () => {
+        writeFrame(frame.data, () => {
           parsingReplay = false;
           parsingView = false;
           parsingCurrentPtyOutput = false;
@@ -1027,21 +1037,22 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       retireOutputRef.current = retireOutput;
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__) {
-        // browser scripts read the parse state and count xterm writes in flight (never in a release build)
+        // browser scripts read the parse state and count the output frames written and in flight (never in a release
+        // build): at the terminal's door, so the counts are the same whether xterm or libghostty parses the text
         let inFlight = 0;
         let peakInFlight = 0;
         let writes = 0;
         let written = "";
-        const write = term.write.bind(term);
-        term.write = (data, callback) => {
+        const write = writeFrame;
+        writeFrame = (data, callback) => {
           inFlight++;
           writes++;
           if (typeof data === "string") written = (written + data).slice(-4096);
           peakInFlight = Math.max(peakInFlight, inFlight);
-          write(data, () => { inFlight--; callback?.(); });
+          write(data, () => { inFlight--; callback(); });
         };
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
-          history: { scrollback: term.options.scrollback ?? 0, length: term.buffer.active.length, viewportY: term.buffer.active.viewportY, baseY: term.buffer.active.baseY },
+          history: ((rows) => ({ scrollback: term.options.scrollback ?? 0, length: rows.length, viewportY: rows.viewportY, baseY: rows.baseY }))(screenRows(term)),
           grid: { cols: term.cols, rows: term.rows } }) });
       }
 
@@ -1120,7 +1131,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       pendingScopeRef.current = session.scope;
       pendingEpochRef.current = session.epoch;
       socketRef.current = socket;
-      const releaseGhostty = captureForGhostty(term, socket, host);
+      const releaseGhostty = captureForGhostty(term, socket, host, () => mirroredRef.current === true, () => {
+        const owner = outputOwner;
+        const view = parsingView;
+        return () => !view && owner === outputOwner;
+      });
       let adjustingFaint = false;
       const clampGhosttyFaint = (): void => {
         if (adjustingFaint) return;
@@ -1216,13 +1231,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // What was typed for a new tab before it existed (lib/typeAhead.ts) waits with the keys typed here after it, as
       // a pane taken back does, and goes ahead of them: taken before the attach and before any key reaches this pane.
       // It is held for review instead, never sent by itself, when it holds a paste, when the user went elsewhere
-      // meanwhile, or when the PC's connection was not open all along since it was typed (nothing goes after a disconnect).
+      // meanwhile, or when the PC's link was not up all along since a key was typed: each key is judged by its own mark
+      // (CaughtKey.typedAt, HerdrSocket.takesKey), so keys typed after a connection was replaced are not held for one
+      // that came before (nothing goes after a disconnect).
       const adoptTypeAhead = (pane: string): void => {
-        let at = 0;
         let held = false;
         const take = (items: CaughtKey[], heldNow: boolean): void => {
-          held ||= heldNow || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+          held ||= heldNow || !socket.connected;
+          // a key typed before the link that is up now was confirmed holds every key after it, whichever way it goes
+          // (the resume queue refuses it without telling the catch)
           for (const item of items) {
+            if (!socket.linkedSince(item.typedAt)) held = true;
             // as typing here: a masked prompt on screen now makes it secret (never held, never kept for a receipt),
             // and a draft held for this pane (a late attach held what came first) takes what follows it
             const secret = secretRef.current !== null;
@@ -1239,8 +1258,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         };
         const ahead = takeTypeAhead(paneStorageId(machineId, pane), { more: take, done: takeKeyboard });
         if (ahead === null) return;
-        at = ahead.at;
-        held = ahead.held || !socket.connected || (socket.connectedSince ?? Infinity) > at;
+        held = ahead.held || !socket.connected;
         if (ahead.pasteRefused) setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
         if (!held) startResume(pane, ahead.since);
         const typed = ahead.items.length > 0;
@@ -1618,6 +1636,20 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // File paths and dropped text use xterm's programmatic paste without a DOM paste event. `typedAt`: the mark
       // (markTyped) of the pick, drop or paste it came from, so a path whose upload ends after an outage is held
       let pasteMark: number | null = null;
+      // Text an input method, dictation or a paste lets out later is dated to when it began (compositionstart, the
+      // paste), not when xterm emits it: what began before a lost link is held, what began after it goes (#4249)
+      let beganMark: number | null = null;
+      const textBegan = (): void => { beganMark ??= markTyped(); };
+      host.addEventListener("compositionstart", textBegan, true);
+      host.addEventListener("paste", textBegan, true);
+      // a plain key starts nothing that comes out later: a composition that let out nothing dates no key after it
+      const plainKey = (event: KeyboardEvent): void => {
+        if (!event.isComposing && event.keyCode !== 229 && !composingRef.current && !compositionCommitPendingRef.current) beganMark = null;
+      };
+      host.addEventListener("keydown", plainKey, true);
+      // a composition that ends with nothing let out dates nothing after it (a menu paste comes with no key first)
+      const compositionDone = (event: CompositionEvent): void => { if (!event.data) beganMark = null; };
+      host.addEventListener("compositionend", compositionDone, true);
       const pasteText = (text: string, typedAt: number): void => {
         const previous = pasting;
         pasting = true;
@@ -1690,7 +1722,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       const userInput = userInputTracker(term);
       const onData = term.onData((data) => {
         const automatic = !userInput.wasUserInput();
-        if (!touchWheelDispatching && (barKeyRef.current !== null || stopKeyRef.current || pasting)) cancelTouchRef.current();
+        if (!touchWheelDispatching && (barKeyRef.current !== null || stopKeyRef.current !== null || pasting)) cancelTouchRef.current();
         // the split half following the other half's grid of the same tab draws it only: the active
         // half's terminal answers the program's queries (a second answer would reach it as typing),
         // and a press or key here makes this half the active one before anything is typed
@@ -1698,8 +1730,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (keyboardToggleFocusRef.current && (data === "\x1b[I" || data === "\x1b[O")) return;
         const barKey = barKeyRef.current;
         barKeyRef.current = null;
-        const stopKey = stopKeyRef.current;
-        stopKeyRef.current = false;
+        // the Stop's mark is for its Escape: text xterm flushes ahead of it (a pending commit) is not the Stop's
+        const stopKey = data === "\u001b" ? stopKeyRef.current : null;
+        if (stopKey !== null) stopKeyRef.current = null;
         const physicalChord = typedChord;
         typedChord = null;
         // a modified Enter (Shift+Enter's newline, Ctrl+Enter's "send now") is decided on before its
@@ -1760,9 +1793,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // tell xterm, and there sendTyped types the arrow as xterm encoded it.
         const arrow = chord === null && !pasting && !composingRef.current && !compositionCommitPendingRef.current && key?.startsWith("Arrow")
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
-        const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret,
-          typedAt: pasteMark ?? markTyped(),
+        const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey !== null && input === "\u001b", secret,
+          // a Stop's keys are dated to the Stop: its second Escape, sent later, goes only over a link up since then
+          // xterm's own reply (automatic) belongs to no typing: it neither takes nor clears the mark
+          typedAt: pasteMark ?? stopKey ?? (automatic ? null : beganMark) ?? markTyped(),
           ...(arrow !== null ? { arrowModeEpoch: arrowModeWitness === arrowModeEpoch ? arrowModeEpoch : null } : {}), ...(automatic ? { automatic } : {}) };
+        if (!composingRef.current && !automatic) beganMark = null;
         adoptTypeAhead(current);
         // typed into a tab taking its pane back from idleness: it waits for the new attach (never a password)
         if (resumeInput !== null && resumeInput.pane !== current) takeResume();
@@ -2058,7 +2094,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
         // history this terminal keeps itself (syncHistory) scrolls here, as a real wheel scrolls it: the
         // wheel dispatched below lands past xterm's viewport, which would type arrow keys to the program
-        if ((term.options.scrollback ?? 0) > 0 && term.buffer.active.type === "normal" && term.modes.mouseTrackingMode === "none") {
+        if ((term.options.scrollback ?? 0) > 0 && !terminalScreen(term).alternate && term.modes.mouseTrackingMode === "none") {
           term.scrollLines(steps * HERDR_MOUSE_SCROLL_LINES);
           return;
         }
@@ -2218,7 +2254,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!idleReleaseRef.current || embedded || mirroredRef.current || fixedGridRef.current || observeRef.current
           || heldRef.current || stalledRef.current || endedRef.current || chatViewRef.current || followRef.current
           || cachedRef.current || !shownRef.current || !presentedRef.current || !socket.canWatch() || findOpenRef.current
-          || composingRef.current || compositionCommitPendingRef.current || secretRef.current !== null || term.hasSelection()
+          || composingRef.current || compositionCommitPendingRef.current || secretRef.current !== null || terminalScreen(term).hasSelection()
           || queueWaits(pane)) {
           noteActivity();
           armIdle();
@@ -2554,6 +2590,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("input", onTyped, true);
         host.removeEventListener("paste", onTyped, true);
         host.removeEventListener("paste", onFilePaste, { capture: true });
+        host.removeEventListener("compositionstart", textBegan, true);
+        host.removeEventListener("paste", textBegan, true);
+        host.removeEventListener("keydown", plainKey, true);
+        host.removeEventListener("compositionend", compositionDone, true);
         host.removeEventListener("dragover", onDragOver);
         host.removeEventListener("drop", onDrop);
         offDisconnect();
@@ -2568,6 +2608,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         for (const handler of queryReplies) handler.dispose();
         for (const handler of arrowModeWitnesses) handler.dispose();
         osc8.dispose();
+        webLinks.dispose();
         modifyOtherKeysSet.dispose();
         modifyOtherKeysOff.dispose();
         if (clipboardTimerRef.current !== null) window.clearTimeout(clipboardTimerRef.current);
