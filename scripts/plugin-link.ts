@@ -663,7 +663,7 @@ type CannotSign = "behind" | "not_signer" | "needs_keys" | "held";
  * command is typed here.
  */
 const approvedWords = (label: string, list: boolean, cannot: CannotSign | null = null, command = "ovis"): string => cannot === "held"
-  ? `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it, whether or not your account's list holds it. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`
+  ? `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it${list ? ", whether or not your account's list holds it" : ""}. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`
   : cannot === "behind"
   ? `${label} was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have ${label} ask again; or allow it on another device of your account.\n`
   : cannot === "needs_keys"
