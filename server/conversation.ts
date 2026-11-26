@@ -72,7 +72,7 @@ import { windowsTableWatermark } from "./windows-processes.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
+import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, type MetadataFold, parseConversationMetadata } from "./conversation-metadata.ts";
 import { catalogVersion, piCatalogVersion } from "./pi-models.ts";
@@ -1869,6 +1869,18 @@ function hookCopilotSession(paneId: string, pid: number): string | null {
   return now.state === "identified" && now.birth.value === told.birth ? told.session : null;
 }
 
+/**
+ * `told` where a Copilot's log has no lifecycle line and the session marker it holds is that session or names none
+ * (missing, more than one, unreadable): a log that names a session, read or not, is never stood in for.
+ */
+function toldStandsIn(resolution: ReturnType<typeof readCopilotProcessSession>, told: string | null): string | null {
+  if (told === null) return null;
+  const selected = resolution.session;
+  const legacy = selected !== null ? !selected.logged : resolution.diagnostic === "copilot_marker_missing"
+    || resolution.diagnostic === "copilot_marker_ambiguous" || resolution.diagnostic === "copilot_marker_unreadable";
+  return legacy && (selected === null || selected.sessionId === told) ? told : null;
+}
+
 async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[], previousClaims?: ReadonlySet<string>, peerInfo?: Map<string, Awaited<ReturnType<typeof paneProcessInfo>> | null>): Promise<{ path: string; binding: string; peerClaims: ReadonlySet<string> }> {
   const report = pane.agent_session;
   let peerClaims: Promise<ReadonlySet<string>> | undefined = previousClaims === undefined ? undefined : Promise.resolve(previousClaims);
@@ -1888,13 +1900,14 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
           claims.add(api.sessionId);
           return;
         }
-        const live = copilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
+        const resolution = readCopilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
+        const live = resolution.session;
         if (live?.logged) {
           claims.add(live.sessionId);
           return;
         }
         // what its hook told counts only where neither its API nor its log names a session now
-        const told = hookCopilotSession(peer.pane_id, processes[0].pid);
+        const told = toldStandsIn(resolution, hookCopilotSession(peer.pane_id, processes[0].pid));
         if (told !== null) claims.add(told);
       }
       if (peer.agent_session?.agent === "copilot" && peer.agent_session.kind === "id" && typeof peer.agent_session.value === "string") claims.add(peer.agent_session.value);
@@ -1972,12 +1985,8 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
       return { path, binding: `${foreground.pid}:${logged.generation}`, peerClaims: await peerClaims! };
   }
   // a log with no lifecycle line (its API answered first, above): the session the hook of this very Copilot told, with
-  // the transcript in its own store, where the session marker it holds is that one or none tells one. A log that names
-  // a session, read or not, is never stood in for
-  const legacy = selected !== null ? !selected.logged : resolution.diagnostic === "copilot_marker_missing"
-    || resolution.diagnostic === "copilot_marker_ambiguous" || resolution.diagnostic === "copilot_marker_unreadable";
-  const hooked = legacy ? hookCopilotSession(pane.pane_id, foreground.pid) : null;
-  const told = hooked !== null && (selected === null || selected.sessionId === hooked) ? hooked : null;
+  // the transcript in its own store (toldStandsIn)
+  const told = toldStandsIn(resolution, hookCopilotSession(pane.pane_id, foreground.pid));
   const toldPath = told === null ? null : copilotApiTranscript(told, environment, argv);
   if (told !== null && toldPath !== null) {
     if (await claimedByPeer(told)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict", hint);
