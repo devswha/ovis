@@ -33,13 +33,20 @@ test("an SSH add shows its stage and bar as the setup moves on, and none once it
   try {
     await act(async () => { view = create(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} })); });
     await act(async () => { view!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
-    expect(bars()).toEqual([["Connecting with SSH keys and ssh-agent…", 25, 'Step {n} of {total} {"n":1,"total":4}']]);
+    expect(bars()).toEqual([["Connecting with SSH keys and ssh-agent…", 13, 'Step {n} of {total} {"n":1,"total":4}']]);
     await moveTo(job("checking", "Checking the remote environment…"));
-    expect(bars()).toEqual([["Checking the remote environment…", 50, 'Step {n} of {total} {"n":2,"total":4}']]);
+    expect(bars()).toEqual([["Checking the remote environment…", 38, 'Step {n} of {total} {"n":2,"total":4}']]);
     await moveTo(job("installing", "Installing herdr with its own installer…"));
-    expect(bars()).toEqual([["Installing herdr with its own installer…", 75, 'Step {n} of {total} {"n":3,"total":4}']]);
+    expect(bars()).toEqual([["Installing herdr with its own installer…", 63, 'Step {n} of {total} {"n":3,"total":4}']]);
+    // a bundle on its way keeps the setup's stage: its own steps are the words and the line under the bar, never a bar going back
+    await moveTo({ ...job("installing", "Installing verified linux-x64 bundle…"), progress: { stage: "download", done: 60 * 1024 * 1024, total: 120 * 1024 * 1024, rate: null, elapsed_ms: 0 } });
+    expect(bars()).toEqual([["Downloading the bridge", 63, 'Step {n} of {total} {"n":3,"total":4}']]);
+    expect(view!.root.findAll((node) => node.props.className === "bridge-progress-detail").map((node) => node.children.join(""))).toEqual(["60 MB of 120 MB"]);
     await moveTo(job("starting", "Starting the remote bridge…"));
-    expect(bars()).toEqual([["Starting the remote bridge…", 100, 'Step {n} of {total} {"n":4,"total":4}']]);
+    expect(bars()).toEqual([["Starting the remote bridge…", 88, 'Step {n} of {total} {"n":4,"total":4}']]);
+    // ssh asks for a password: the question, not a bar
+    await moveTo({ ...job("authentication", "SSH authentication required"), challenge: { id: "secret", kind: "secret", prompt: "Password:" } });
+    expect(bars()).toEqual([]);
     await moveTo(job("connected", "Connected"));
     expect(bars()).toEqual([]);
   } finally {

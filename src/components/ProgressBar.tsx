@@ -22,9 +22,12 @@ export function ProgressLine({ label, count = null, percent, valueText, classNam
   </div>;
 }
 
-/** A wait made of known stages: the stage's own words, "Step n of total" beside them, and the bar filled to that stage. */
-export function StageProgress({ label, stage, total }: { readonly label: string; readonly stage: number; readonly total: number }) {
+/**
+ * A wait made of known stages: the stage's own words, "Step n of total" beside them, and the bar filled halfway into
+ * that stage, as a stage under way is not done: a full bar only once the wait ended.
+ */
+export function StageProgress({ label, stage, total, children }: { readonly label: string; readonly stage: number; readonly total: number; readonly children?: ReactNode }) {
   const t = useT();
   const count = t("Step {n} of {total}", { n: stage, total });
-  return <ProgressLine label={label} count={count} percent={Math.round(stage / total * 100)} valueText={count} />;
+  return <ProgressLine label={label} count={count} percent={Math.round((stage - 0.5) / total * 100)} valueText={count}>{children}</ProgressLine>;
 }

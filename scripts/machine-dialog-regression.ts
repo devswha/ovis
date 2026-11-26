@@ -334,9 +334,9 @@ try {
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
-          // the first answer is a step on its way, the polls after it the failure: each is worded from its code
-          let answers = 0;
-          await page.route("**/api/machines/setup**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(answers++ === 0 ? {
+          // a step on its way until the test saw it, then the failure: each is worded from its code
+          let seen = false;
+          await page.route("**/api/machines/setup**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(!seen ? {
             id: "older", machine_id: "fixture", target: { destination: "old-desktop" }, phase: "installing", step: "Installing verified linux-x64 bundle…",
             step_code: { code: "install_bundle", platform: "linux-x64" }, error: null, action_required: null, installations: [], challenge: null, ssh_output: null, progress: null,
           } satisfies SetupJob : {
@@ -353,7 +353,8 @@ try {
           await destination.press("Enter");
           const card = dialog.locator(".machine-progress");
           // the step on its way is a stage of four, with its bar; the failure is words alone
-          await card.locator('[role="progressbar"][aria-label="검증된 linux-x64 번들을 설치하는 중…"][aria-valuenow="75"][aria-valuetext="4단계 중 3"]').waitFor();
+          await card.locator('[role="progressbar"][aria-label="검증된 linux-x64 번들을 설치하는 중…"][aria-valuenow="63"][aria-valuetext="4단계 중 3"]').waitFor();
+          seen = true;
           await card.locator("strong", { hasText: "연결 실패" }).waitFor();
           assert.equal(await card.getByRole("progressbar").count(), 0, "a failed setup shows no bar");
           assert.deepEqual(await card.locator("p").allTextContents(), [
