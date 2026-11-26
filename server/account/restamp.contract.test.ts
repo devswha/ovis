@@ -24,7 +24,7 @@ const id = "a".repeat(16);
 const other = "b".repeat(16);
 const account = "acct_1";
 const key = () => generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({ format: "der", type: "spki" }).toString("base64url");
-const row = (created_at = FUTURE, k = key(), rowId = id) => ({ id: rowId, label: "Phone", role: "drive", token_hash: "c".repeat(64), relay_public_key: k, created_at, last_seen_at: null });
+const row = (created_at = FUTURE, k = key(), rowId = id) => ({ id: rowId, label: "Phone", role: "drive", token_hash: "c".repeat(64), relay_public_key: k, created_at, last_seen_at: null, origin: { from: "pc", how: "link", by: null, admit_no: Number.parseInt(rowId[0] ?? "0", 16) + 1, at: stamp(-DAY) } });
 const tomb = (key: string, removed_at: string, record_id = "local") => ({ key, account, removed_at, record_id });
 const revoke = (key: string, at: string) => ({ id: createHash("sha256").update(`${key}\n${account}\n${at}`).digest("hex").slice(0, 32), key, account, at });
 const dirs: string[] = [];
@@ -53,7 +53,11 @@ function dir() {
 }
 const put = (dir: string, file: string, value: unknown) => writeFileSync(join(dir, file), JSON.stringify(value), { mode: 0o600 });
 const bytes = (dir: string, file: string) => readFileSync(join(dir, file), "utf8");
-const registry = (dir: string, ...devices: ReturnType<typeof row>[]) => put(dir, "devices.json", { gate_closed_at: stamp(-DAY), devices });
+// Clock repair is for numbered Step 2 pairings. An old Step 1 time is quarantined instead.
+function registry(dir: string, ...devices: ReturnType<typeof row>[]) {
+  if (!existsSync(join(dir, "account-pc.json"))) put(dir, "account-pc.json", { v: 1, next_admit: 32 });
+  put(dir, "devices.json", { gate_closed_at: stamp(-DAY), devices });
+}
 const registered = (dir: string) => (JSON.parse(bytes(dir, "devices.json")) as { devices: ReturnType<typeof row>[] }).devices;
 const tombstones = (dir: string, ...tombstones: ReturnType<typeof tomb>[]) => put(dir, "account-tombstones.json", { v: 1, tombstones });
 const evidence = (dir: string) => parseEvidence(JSON.parse(bytes(dir, "account-removed.json")));
@@ -169,7 +173,7 @@ posix("restamp 5: resume a partial rewrite without changing the approved timesta
     const restarted = start(active);
     expect(restarted.devices.failsClosed).toBe(false);
     expect(restarted.devices.list(null)[0]?.created_at).toBe(stamp(1));
-    expect(evidence(active)?.revokes).toEqual([revoke(k, stamp(2))]);
+    expect(evidence(active)?.revokes).toEqual([{ ...revoke(k, stamp(2)), legacy_time: true }]);
     setSystemTime(NOW);
   }
 });
@@ -269,7 +273,7 @@ posix("r1 HIGH 2: clock-blocked sibling merge does not coalesce away a separate 
   const repaired = start(active, sibling);
   expect(repaired.devices.failsClosed).toBe(false);
   expect(repaired.devices.hasKey(paired.relay_public_key)).toBe(false);
-  expect(evidence(active)?.revokes).toContainEqual(revoke(paired.relay_public_key, stamp(HOUR + 2)));
+  expect(evidence(active)?.revokes).toContainEqual({ ...revoke(paired.relay_public_key, stamp(HOUR + 2)), legacy_time: true, untrusted_time: true });
   expect(evidence(active)?.markers[0]?.removals.map(({ id }) => id)).toContain("service-removal");
 });
 
@@ -368,7 +372,7 @@ posix("r1 MEDIUM: a waiting signed block contributes to the comparison floor", a
 
 posix("r1 MEDIUM: confirmation refuses a newly conflicting sibling binding", async () => {
   const [active, sibling] = [dir(), dir()];
-  const binding = (account: string, bind_id: string) => ({ v: 1, next_admit: 1, binding: { account, bind_id }, clears: [], first: null, others_ever: true, gen: 0 });
+  const binding = (account: string, bind_id: string) => ({ v: 1, next_admit: 32, binding: { account, bind_id }, clears: [], first: null, others_ever: true, gen: 0 });
   registry(active, row());
   put(active, "account-pc.json", binding(account, "a".repeat(32)));
   start(active, sibling);
@@ -509,7 +513,7 @@ posix("r2 H2b: both ledgers hold both standing denials before tombstone publicat
     if (typeof to === "string" && projections.includes(to) && readFileSync(from, "utf8").includes("service-removal")) {
       for (const folder of [active, sibling]) {
         const ledger = RemovalEvidence.open(folder, SafetyLog.open(folder));
-        expect(ledger.standingRevokes(k)).toContainEqual(revoke(k, stamp(HOUR + 2)));
+        expect(ledger.standingRevokes(k)).toContainEqual({ ...revoke(k, stamp(HOUR + 2)), legacy_time: true, untrusted_time: true });
         expect(ledger.standingMarkers(k).flatMap(({ standing }) => standing.map(({ id }) => id))).toContain("service-removal");
       }
       publications.add(to);
@@ -605,7 +609,7 @@ posix.each([false, true])("r2 M2: a row disagreeing with its binding refuses the
   const active = dir();
   const first = { ...row(), account };
   registry(active, first);
-  put(active, "account-pc.json", { v: 1, next_admit: 1, binding: { account, bind_id: "a".repeat(32) }, clears: [], first: null, others_ever: true, gen: 0 });
+  put(active, "account-pc.json", { v: 1, next_admit: 32, binding: { account, bind_id: "a".repeat(32) }, clears: [], first: null, others_ever: true, gen: 0 });
   const running = start(active);
   const preview = await askRecovery(active, { act: "restamp" }) as { confirm?: string };
   expect(preview.confirm).toBeString();
@@ -646,6 +650,7 @@ posix("r3 H2b: a journal-ended pairing cannot end the sibling's local Revoke", (
   const [active, sibling] = [dir(), dir()];
   const paired = row(stamp(-HOUR));
   const k = paired.relay_public_key;
+  put(active, "account-pc.json", { v: 1, next_admit: 32 });
   const running = start(active);
   running.devices.journalEvent({ kind: "remove", how: "pc", key: k, no: null, row: paired.id, label: paired.label, by: "pc", account: null });
   running.stop();
@@ -657,7 +662,7 @@ posix("r3 H2b: a journal-ended pairing cannot end the sibling's local Revoke", (
     keyOut: !restarted.devices.hasKey(k),
     standing: RemovalEvidence.open(active, null).standingRevokes(k),
     ended: evidence(active)?.unrevokes.some(u => u.revoke === denied.id),
-  }).toEqual({ keyOut: true, standing: [denied], ended: false });
+  }).toEqual({ keyOut: true, standing: [{ ...denied, legacy_time: true }], ended: false });
 });
 
 posix("r3 H2a: without a plan the previous identity's listed time is ignored like ordinary startup", () => {
@@ -695,7 +700,7 @@ posix("r3 H3c: a malformed plan for a provably foreign PC does not close this PC
 posix.each([false, true])("r3 M2: a pending link gets the ordinary sibling binding verdict; after queue=%p", async queued => {
   const [active, sibling, control, controlSibling] = [dir(), dir(), dir(), dir()];
   const first = { ...row(), account };
-  const bound = { v: 1, next_admit: 1, binding: { account, bind_id: "a".repeat(32) }, clears: [], first: { key: first.relay_public_key, list_key: null }, others_ever: true, gen: 0 };
+  const bound = { v: 1, next_admit: 32, binding: { account, bind_id: "a".repeat(32) }, clears: [], first: { key: first.relay_public_key, list_key: null }, others_ever: true, gen: 0 };
   const unbound = { ...bound, binding: null, first: null };
   const pendingBinding = { ...bound, binding: { ...bound.binding, pending: true } };
   registry(control, { ...first, created_at: stamp(-HOUR) });
@@ -792,7 +797,7 @@ posix.each(["preview", "confirmation", "replay"] as const)(
     const running = start(active, sibling);
     const request = { act: "restamp" } as const;
     const introduceDifferentAccounts = () => {
-      for (const folder of [active, sibling]) put(folder, "account-pc.json", { v: 1, next_admit: 1 });
+      for (const folder of [active, sibling]) put(folder, "account-pc.json", { v: 1, next_admit: 32 });
       const a = { ...row(stamp(-HOUR), key(), other), account };
       const b = { ...row(stamp(-HOUR), key(), "d".repeat(16)), account: "other_account" };
       registry(active, future, a);
@@ -867,7 +872,7 @@ posix("confirmation refuses a pending binding to a different account without wri
   start(active, sibling);
   const preview = await askRecovery(active, { act: "restamp" });
   if (!isJsonObject(preview) || typeof preview.confirm !== "string") throw new Error("Expected a restamp preview");
-  put(sibling, "account-pc.json", { v: 1, next_admit: 1,
+  put(sibling, "account-pc.json", { v: 1, next_admit: 32,
     binding: { account: "other_account", bind_id: "f".repeat(32), pending: true },
     first: { key: key(), list_key: null }, clears: [], others_ever: true, gen: 0 });
   const journal = join(active, "device-journal.json");

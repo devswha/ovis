@@ -137,6 +137,18 @@ export class RemovalEvidence {
 
   standingRevokes(key: string): Revoke[] { return this.doc.revokes.filter((r) => r.key === key && this.revokeStands(r)); }
 
+  covers(device: { relay_public_key?: string | undefined; account?: string | undefined; paired_over?: readonly string[] | undefined }, account: string | null): boolean {
+    const key = device.relay_public_key;
+    if (key === undefined) return false;
+    if (this.standingRevokes(key).length > 0) return true;
+    return this.standingMarkers(key).some(({ marker, standing }) => {
+      const ofAccount = device.account === marker.account || (device.account === undefined && account === marker.account);
+      if (!ofAccount) return false;
+      return !(device.account === undefined && standing.every((removal) => device.paired_over?.includes(removal.id)));
+    });
+  }
+
+
   get rowDrops(): readonly RowDrop[] { return this.doc.row_drops ?? []; }
 
   dropFor(row: string, admission: number): RowDrop | undefined {
@@ -167,6 +179,10 @@ export class RemovalEvidence {
 
   /** The removal ids a pairing of `key` on this PC knew: it stands over every one of them (`paired_over`). */
   pairedOver(key: string): string[] { return this.standingMarkers(key).flatMap(({ standing }) => standing.map((r) => r.id)); }
+
+  hasRemoval(key: string, account: string, id: string): boolean {
+    return this.doc.markers.some(marker => marker.key === key && marker.account === account && marker.removals.some(removal => removal.id === id));
+  }
 
   /** A signed `remove` (or, later, a block) of `key` under `account`. False when this marker already holds that removal. */
   addRemoval(key: string, account: string, removal: { id: string; at: string; records?: readonly unknown[]; drop?: RowDrop | undefined; tailnetNodes?: readonly string[] }): boolean {
@@ -218,6 +234,19 @@ export class RemovalEvidence {
   }
 
   takeIn(tombstones: readonly EvidenceTombstone[], rows: readonly { relay_public_key?: string | undefined; created_at: string; pairedHere: boolean }[], now: number): void {
+    const doc = this.intake(tombstones, rows, now);
+    if (doc !== this.doc || !this.written) this.write(doc);
+  }
+
+  /** Project removal recovery in memory; only takeIn publishes its result. */
+  static projected(path: string, doc: Doc, log: Forgettings, tombstones: readonly EvidenceTombstone[], rows: Parameters<RemovalEvidence["takeIn"]>[1]): Pick<RemovalEvidence, "covers" | "hasRemoval"> {
+    const evidence = new RemovalEvidence(path, log);
+    evidence.doc = doc;
+    evidence.doc = evidence.intake(tombstones, rows, Date.now());
+    return evidence;
+  }
+
+  private intake(tombstones: readonly EvidenceTombstone[], rows: readonly { relay_public_key?: string | undefined; created_at: string; pairedHere: boolean }[], now: number): Doc {
     let doc = this.doc;
     const at = new Date(now).toISOString();
     for (const tombstone of tombstones) {
@@ -244,7 +273,7 @@ export class RemovalEvidence {
       if (revoke.untrusted_time || doc.unrevokes.some((u) => u.revoke === revoke.id)) continue;
       if (rows.some((row) => row.relay_public_key === revoke.key && row.pairedHere && Date.parse(row.created_at) > Date.parse(revoke.at))) doc = { ...doc, unrevokes: [...doc.unrevokes, { id: randomBytes(16).toString("hex"), revoke: revoke.id, at, by: "pc" }] };
     }
-    if (doc !== this.doc || !this.written) this.write(doc);
+    return doc;
   }
 
   /** The tombstone file, as the evidence writes it: one per key, the account's over a Revoke's. */

@@ -7,7 +7,7 @@ import { isJsonObject } from "../http.ts";
 import { preparePrivateState, publishPrivateState, syncDirectory, writePrivateState } from "../private-state.ts";
 import { DeviceJournal, type JournalInput } from "./device-journal.ts";
 import { RESTAMP_PARTICIPANT as PARTICIPANT, RESTAMP_PLAN as FILE, RESTAMP_ROLLBACK as ROLLBACK } from "./restamp-files.ts";
-import { checkRestampFile, checkRestampInputs, openRestampAudit, readRestampJson, readRestampState, readSiblingMergeClock, restampAddress, restampLinks, restampRelayId, RestampTrustError, rewriteRestamp, type RestampAddress, type RestampFolders, type RestampLink, type RestampMove } from "./restamp-state.ts";
+import { checkRestampFile, checkRestampInputs, openRestampAudit, readRestampJson, readRestampState, restampAddress, restampLinks, restampRelayId, RestampTrustError, rewriteRestamp, type RestampAddress, type RestampFolders, type RestampLink, type RestampMove } from "./restamp-state.ts";
 
 const DAY = 86_400_000;
 const FOLDER_ID = "restamp-folder-id.json";
@@ -221,10 +221,6 @@ function unresolvedDigest(plan: Plan, state: ReturnType<typeof readRestampState>
     return target === link.old || target === link.new ? [] : [[link.store, link.ref, target]];
   });
   return changed.length || links.length ? digestOf([digestOf(plan), changed, links]) : undefined;
-}
-
-export function restampTombstoneMergeClock(stateDir: string, sibling: string) {
-  return readSiblingMergeClock(stateDir, sibling, Date.now() + DAY);
 }
 
 function checkRelayScope(plan: Plan): void {

@@ -28,6 +28,7 @@ export function openPcRecovery(options: {
   readonly pairings: KeyProofPairings | undefined;
   readonly sibling?: string | null | undefined;
   readonly retryRestamp?: boolean;
+  readonly restampEnabled: boolean;
   readonly relay: RelayService;
   readonly accountMailbox: AccountMailbox;
   /** the account's signed list as this PC follows it: a take that names a list joins by it */
@@ -50,7 +51,7 @@ export function openPcRecovery(options: {
     restamp: restampAct({
       stateDir, sibling: options.sibling, journal,
       install: process.env["OVIS_DESKTOP_APP"] === "1" ? "desktop" : process.env["HERDR_PLUGIN_ROOT"] ? "plugin" : "other",
-      problem: () => devices.restampRefusal(options.retryRestamp === true),
+      problem: () => options.restampEnabled ? devices.restampRefusal(options.retryRestamp === true) : "Restamp is not available on this PC.",
     }),
     pendingList: () => (pending?.list() ?? []).map(({ id, label, fingerprint }) => ({ id, label, fingerprint })),
     standing,

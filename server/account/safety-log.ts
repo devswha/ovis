@@ -272,8 +272,10 @@ export class SafetyLog {
   }
 
   /** The ids of the `forget` records of `key` under `account`, folded ones included: what P13 asks of each removal. */
-  forgets(key: string, account: string): string[] {
-    return [...this.file.entries.map((entry) => entry.record), ...this.file.base]
+  forgets(key: string, account: string): string[] { return SafetyLog.forgetsIn(this.file, key, account); }
+
+  private static forgetsIn(file: LogFile, key: string, account: string): string[] {
+    return [...file.entries.map((entry) => entry.record), ...file.base]
       .filter((record) => record.kind === "forget" && record.target === key && record.account === account).map((record) => record.id);
   }
 
@@ -410,13 +412,14 @@ export class SafetyLog {
   }
 
   /** Whether merging the parsed logs holds back sibling registry imports, without opening either writer. */
-  static projectedImportHold(own: LogFile | undefined, other: LogFile | undefined): boolean {
+  static projectedState(own: LogFile | undefined, other: LogFile | undefined) {
     const empty: LogFile = { v: 1, next: 1, base: [], entries: [], waiting: [] };
     const merge = mergeSafetyLogFiles(own ?? empty, other ?? empty);
     if ("conflict" in merge) throw new Error(`The account safety logs hold two different records under the id ${merge.conflict}`);
-    const { locked, freezes } = SafetyLog.stateOf(merge.files[0]);
-    return locked || freezes.length > 0;
+    const file = merge.files[0];
+    return { ...SafetyLog.stateOf(file), forgets: (key: string, account: string) => SafetyLog.forgetsIn(file, key, account) };
   }
+
 
   private static stateOf(file: LogFile): SafetyState {
     // an ending names the record it ends under that record's own account, and ends nothing of another

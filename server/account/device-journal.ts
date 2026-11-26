@@ -73,7 +73,7 @@ function isEntry(value: unknown): value is JournalEntry {
 }
 
 /** The journal as this PC writes it, whole: every entry, open notice and seen value, below the next number (S19). */
-function isDoc(value: unknown): value is Doc {
+export function isJournalDoc(value: unknown): value is Doc {
   if (typeof value !== "object" || value === null) return false;
   const doc = value as Partial<Doc>;
   if (doc.v !== 1 || !isCount(doc.next_seq) || doc.next_seq < 1 || !isCount(doc.trimmed) || doc.trimmed >= doc.next_seq) return false;
@@ -113,7 +113,13 @@ function documentProblem(doc: Doc, drops: readonly RowDrop[] = []): string | nul
 /** Validate on-disk journal bytes without opening a writer or changing the server's live copy. */
 export function restampJournalProblem(value: unknown, drops: readonly RowDrop[]): string | null {
   if (value === undefined) return drops.some(drop => drop.journalled !== undefined) ? "is missing beside a durable row receipt" : null;
-  return isDoc(value) ? documentProblem(value, drops) : "is not this PC's device journal";
+  return isJournalDoc(value) ? documentProblem(value, drops) : "is not this PC's device journal";
+}
+
+export function endedJournalRows(entries: readonly JournalEntry[]): Set<string> {
+  const last = new Map<string, string>();
+  for (const entry of entries) if (entry.row !== null) last.set(entry.row, entry.kind);
+  return new Set([...last].flatMap(([row, kind]) => kind === "drop" || kind === "remove" ? [row] : []));
 }
 
 export class DeviceJournal {
@@ -133,7 +139,7 @@ export class DeviceJournal {
     }
     try {
       const doc = JSON.parse(text) as Partial<Doc>;
-      if (!isDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
+      if (!isJournalDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
       else {
         const problem = documentProblem(doc);
         if (problem !== null) journal.problem = `${journal.path} ${problem}`;

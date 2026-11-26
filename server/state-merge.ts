@@ -238,7 +238,7 @@ function readRecord(dirs: string[], pair: string[]): MergeRecord | null {
  * this one, which knows nothing of the merge, stays gated on this dir too, the dir's own registry
  * gets a closed gate, its devices as they are; a damaged one is left alone (it keeps every release gated).
  */
-export function closeFailedMergeGate(active: string, now: Date, opensAll: boolean): void {
+function closeFailedMergeGate(active: string, now: Date, opensAll: boolean): void {
   const path = join(active, "devices.json");
   const own = readDeviceRegistry(path, opensAll);
   if (own.kind === "bad" || own.kind === "ok" && (own.gateClosedAt !== null || own.devices.length > 0)) return;
@@ -320,10 +320,10 @@ function registryMergeInputs([active, sibling]: readonly [string, string], [own,
 }
 
 /** The registry startup would give the active folder, without publishing a merge or its intent. */
-export function projectMergedMembers(folders: readonly [string, string], registries: readonly [DeviceRegistry, DeviceRegistry], holdImports: boolean): readonly StoredDevice[] {
+export function projectMergedMembers(folders: readonly [string, string], registries: readonly [DeviceRegistry, DeviceRegistry], rules: Pick<MergeRules, "holdImports" | "boundAccount">): readonly StoredDevice[] {
   const base = readRecord([...folders], folders.map(realpath).sort());
   const { bases, incomplete, mine, theirs } = registryMergeInputs(folders, registries, base);
-  return mergeRegistries(mine, theirs, bases, incomplete, { holdImports, dropConflictingKeys: true }).devices;
+  return mergeRegistries(mine, theirs, bases, incomplete, { ...rules, dropConflictingKeys: true }).devices;
 }
 
 function mergeDevices(active: string, sibling: string, base: MergeRecord | null, stamp: string, intend: Intent, now: Date, rules: MergeRules, identity: string | undefined, legacy: Set<string>): { blocked: string | null; ids: string[] | null; changed: number; gated?: boolean } {

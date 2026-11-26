@@ -2,17 +2,18 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isIsoTime } from "../../shared/account-records.ts";
-import { folderTombstones, parseDeviceRegistry, parseTombstones, readDeviceRegistry, type DeviceRegistry } from "../devices.ts";
+import { futureLegacyPairing, parseDeviceRegistry, parseTombstones, repairEvidenceRows, type AccountTombstone, type DeviceRegistry } from "../devices.ts";
 import { isJsonObject } from "../http.ts";
 import { privateStateRefusal } from "../private-state.ts";
 import { relayIdentityPath, savedServerId } from "../relay/identity.ts";
 import { projectMergedMembers } from "../state-merge.ts";
 import { parseAccountDevicesForIdentity } from "./account-device-state.ts";
+import { mergedRemovalEvidence } from "./account-merge.ts";
 import { ACCOUNT_DEVICES_FILE } from "./account-devices.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
-import { restampJournalProblem } from "./device-journal.ts";
-import { parsePcAccount, restampMemberProblem, rowNumberProblem } from "./pc-binding.ts";
-import { localRevokeId, parseEvidence, REMOVAL_FILE, type Unrevoke } from "./removal-evidence.ts";
+import { endedJournalRows, isJournalDoc, restampJournalProblem } from "./device-journal.ts";
+import { mergePcBinding, parsePcAccount, restampMemberProblem, rowNumberProblem } from "./pc-binding.ts";
+import { localRevokeId, parseEvidence, REMOVAL_FILE, RemovalEvidence, type Unrevoke } from "./removal-evidence.ts";
 import { DEVICE_JOURNAL_FILE, parseLog, SAFETY_LOG_FILE, SAFETY_OVERFLOW_FILE, SafetyLog } from "./safety-log.ts";
 
 export type RestampField = "created_at" | "confirmed_at" | "removed_at" | "at";
@@ -25,44 +26,12 @@ type Slot = RestampAddress & { readonly value: string; readonly row: Doc };
 
 export function readRestampJson(path: string): unknown {
   checkRestampFile(path);
-  return readStateJson(path);
-}
-
-function readStateJson(path: string): unknown {
   try { return JSON.parse(readFileSync(path, "utf8")); }
   catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
     throw new Error(`Cannot read ${path}`, { cause: error });
   }
 }
-
-/** Ordinary boot reads only the stores with own times; strict restamp trust starts with a pending plan. */
-export function readSiblingMergeClock(stateDir: string, sibling: string, limit: number) {
-  const registries = [stateDir, sibling].map(dir => {
-    const path = join(dir, "devices.json");
-    return { dir, path, registry: readDeviceRegistry(path, true, false) };
-  });
-  const unreadable = registries.find(({ registry }) => registry.kind === "bad");
-  if (unreadable) throw new MergeRegistryReadError(`Cannot read ${unreadable.path}`);
-  const carried = [...folderTombstones(stateDir), ...folderTombstones(sibling)];
-  const times = carried.filter(t => t.record_id === "local").map(t => t.removed_at);
-  for (const { dir, registry } of registries) {
-    if (registry.kind === "ok") for (const row of registry.devices) times.push(row.created_at);
-    const path = join(dir, REMOVAL_FILE);
-    const raw = readStateJson(path);
-    if (raw !== undefined) {
-      const evidence = parseEvidence(raw);
-      if (evidence === null) throw new Error(`Cannot read ${path}`);
-      for (const row of [...evidence.revokes, ...evidence.unrevokes]) times.push(row.at);
-    }
-  }
-  // DeviceStore checks listed times after it has the merged registry and knows which rows were promoted.
-  const invalid = times.find(time => !isIsoTime(time));
-  if (invalid !== undefined) throw new Error(`Invalid time this PC wrote (${invalid}): account records are refused until it is repaired.`);
-  return { carried, ahead: times.find(time => Date.parse(time) > limit) };
-}
-
-export class MergeRegistryReadError extends Error {}
 
 /** Restamp trusts the file as found. In particular, never soften the safety log's or ledger's write-mode rule. */
 export function checkRestampFile(path: string): void {
@@ -117,6 +86,8 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
   const unrevokes = new Map<string, readonly Unrevoke[]>();
   const bindings: { dir: string; path: string; pc: Exclude<ReturnType<typeof parsePcAccount>, string> | null;
     registry: Exclude<DeviceRegistry, { kind: "bad" }>; log: Exclude<ReturnType<typeof parseLog>, string> | undefined }[] = [];
+  const tombstones: AccountTombstone[] = [];
+  const ledgers: NonNullable<ReturnType<typeof parseEvidence>>[] = [];
   const journals = new Map<string, unknown>();
   let nonOwn = -Infinity;
   const floor = (value: string) => {
@@ -157,6 +128,7 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
   }
   for (const { dir, prefix } of dirs) {
     // Sibling merges share the ordinary registry and evidence; their old copies must not be imported again.
+    if (lstatSync(join(dir, "revoke-all.json"), { throwIfNoEntry: false })) throw new RestampTrustError("Finish the pending device removal before repairing the clock");
     const store = prefix + "devices.json";
     const devices = read(dir, store, "devices.json");
     const journal = readRestampJson(join(dir, DEVICE_JOURNAL_FILE));
@@ -173,7 +145,13 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
       registry = parsed;
       const orderProblem = rowNumberProblem(bindingPath, pc?.next_admit ?? null, registry.devices);
       if (orderProblem !== null) throw new Error(orderProblem);
-      rows(devices.devices, (row) => slot(store, String(row.id), "created_at", row));
+      const entries = isJournalDoc(journal) ? journal.entries : [];
+      rows(devices.devices, (row, index) => {
+        const device = parsed.devices[index];
+        if (device && device.untrusted_created_at !== device.created_at && !futureLegacyPairing(device, entries, Date.now())) {
+          slot(store, device.id, "created_at", row);
+        }
+      });
     }
     if (prefix === "" && serverId !== null) {
       const listed = read(dir, ACCOUNT_DEVICES_FILE, ACCOUNT_DEVICES_FILE);
@@ -187,7 +165,9 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
       const store = prefix + file;
       const doc = read(dir, store, file);
       if (doc === undefined) continue;
-      if (parseTombstones(doc) === null) throw new Error(`Cannot read ${store}`);
+      const found = parseTombstones(doc);
+      if (found === null) throw new Error(`Cannot read ${store}`);
+      tombstones.push(...found);
       rows(doc.tombstones, (row, index) => {
         if (row.record_id === "local") localTombstones.add(slot(store, JSON.stringify([row.key, row.account, index]), "removed_at", row));
         else if (typeof row.removed_at === "string") floor(row.removed_at);
@@ -223,16 +203,27 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
       }
       for (const { record } of parsedLog.waiting) floor(record.signed_at);
     }
+    if (parsed) ledgers.push(parsed);
     bindings.push({ dir, path: bindingPath, pc, registry, log: parsedLog });
   }
   const [active, peer] = bindings;
-  const holdImports = active !== undefined && peer !== undefined && SafetyLog.projectedImportHold(active.log, peer.log);
+  const safety = SafetyLog.projectedState(active?.log, peer?.log);
+  const holdImports = safety.locked || safety.freezes.length > 0;
+  const ledger = mergedRemovalEvidence(ledgers);
   for (const [index, { dir, path, pc, registry }] of bindings.entries()) {
     const counterpart = bindings[1 - index];
+    const binding = counterpart?.pc ? mergePcBinding(pc, counterpart.pc).binding : pc?.binding;
+    const boundAccount = pc && (!pc.counterOnly || pc.clears.length) ? binding?.account ?? null : undefined;
     const members = counterpart === undefined ? registry.kind === "ok" ? registry.devices : []
-      : projectMergedMembers([dir, counterpart.dir], [registry, counterpart.registry], holdImports);
-    const problem = restampMemberProblem(path, pc, counterpart?.pc ?? null, members);
-    if (problem !== null) throw new Error(problem);
+      : projectMergedMembers([dir, counterpart.dir], [registry, counterpart.registry], { holdImports, ...(boundAccount === undefined ? {} : { boundAccount }) });
+    const journal = journals.get(dir);
+    const ended = endedJournalRows(isJournalDoc(journal) ? journal.entries : []);
+    const kept = members.filter(row => !ended.has(row.id) && (!safety.locked || row.origin?.from === "pc"));
+    const evidence = RemovalEvidence.projected(join(dir, REMOVAL_FILE), ledger, safety, tombstones, repairEvidenceRows(kept.filter(row => !futureLegacyPairing(row, isJournalDoc(journal) ? journal.entries : [], Date.now())), Number.POSITIVE_INFINITY));
+    const retained = kept.filter(row => !evidence.covers(row, binding?.account ?? null)
+      && !safety.blocks.some(({ record }) => row.relay_public_key === record.target && record.kind === "block" && !evidence.hasRemoval(record.target, record.account, record.id)));
+    const problem = restampMemberProblem(path, pc, counterpart?.pc ?? null, retained);
+    if (problem !== null) throw new RestampTrustError(problem);
   }
   return { own, nonOwn, docs, revokes, localTombstones, unrevokes, journals };
 }

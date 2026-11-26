@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
-import { DeviceStore, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
+import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { syncDirectory } from "./private-state.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
@@ -57,7 +57,7 @@ import { HC_RELEASE, hcInstallTarget, installHc } from "./herdr-core/install.ts"
 import { userHome } from "./user-home.ts";
 import { type HerdrCoreFacts, LOCAL_MACHINE } from "../shared/machines.ts";
 import { type AlertTiming, defaultStateDir } from "./push.ts";
-import { closeFailedMergeGate, mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./state-merge.ts";
+import { mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./state-merge.ts";
 import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
@@ -92,8 +92,7 @@ import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
 import { RecoveryReleases } from "./account/recovery.ts";
 import { openPcRecovery } from "./account/recovery-server.ts";
-import { applyRestamp, restampTombstoneMergeClock } from "./account/restamp.ts";
-import { MergeRegistryReadError } from "./account/restamp-state.ts";
+import { applyRestamp } from "./account/restamp.ts";
 import { PendingRedemptions, type PendingRedemption } from "./account/pending.ts";
 import { JoinNotices } from "./join-notices.ts";
 import { askScreenForKey, KeyProofPairings } from "./account/key-proof.ts";
@@ -351,24 +350,19 @@ export function createServer(
   const damage = (dir: string) => checkedOrder(dir).strict;
   const damaged = pcAccount?.strict ?? damage(stateDir) ?? (sibling ? damage(sibling) : null);
   // a binding is trusted only once the sibling folder's clears are read: a cleared bind_id never stands again (P12, T59)
-  if (pcAccount !== null && sibling && damaged === null) pcAccount.takeSibling(sibling);
+  if (pcAccount !== null && sibling && damaged === null && restamp.problem === undefined) pcAccount.takeSibling(sibling);
   // A folder whose other folder holds a pin it does not hold itself is closed by that look (takeSibling), before
   // anything is merged: as with damage, this start then writes nothing to either folder
   const blocked = damaged ?? pcAccount?.strict ?? null;
   if (blocked !== null) console.error(blocked);
-  let clockProblem: string | null = null;
-  let clock: ReturnType<typeof restampTombstoneMergeClock> | undefined;
-  if (opensAll && sibling && blocked === null && restamp.problem === undefined) {
-    try { clock = restampTombstoneMergeClock(stateDir, sibling); }
-    catch (error) {
-      if (error instanceof MergeRegistryReadError) closeFailedMergeGate(stateDir, new Date(), opensAll);
-      clockProblem = error instanceof Error ? error.message : String(error);
-      console.error(clockProblem);
-    }
-  }
-  const untouched = blocked !== null || restamp.problem !== undefined || clockProblem !== null;
+  const untouched = blocked !== null || restamp.problem !== undefined;
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
-  const carried = clock?.carried ?? [];
+  let tombstoneProblem: string | null = null;
+  let carried: ReturnType<typeof folderTombstones> = [];
+  if (opensAll && sibling && !untouched) {
+    try { carried = [...folderTombstones(stateDir), ...folderTombstones(sibling)]; }
+    catch (error) { tombstoneProblem = error instanceof Error ? error.message : String(error); }
+  }
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
   // a sibling folder's log is merged into both before this one is read: nothing in force is lost, nothing ended comes back (T48)
   const logMerge = opensAll && sibling && !untouched ? mergeSafetyLogs(stateDir, sibling) : null;
@@ -395,9 +389,9 @@ export function createServer(
   // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
   // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
   const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
-  let accountBlocked: string | null = clockProblem ?? accountMerge;
+  let accountBlocked: string | null = tombstoneProblem ?? accountMerge;
   const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
-  if (sibling && !untouched && clock?.ahead === undefined && accountBlocked === null) {
+  if (sibling && !untouched && accountBlocked === null) {
     try {
       if (removals !== null && carried.length > 0) {
         if (safetyLog?.strict) throw new Error(safetyLog.strict);
@@ -413,7 +407,7 @@ export function createServer(
           if (!syncDirectory(dir, process.platform).directorySynced) throw new Error(`Cannot make the imported denials durable in ${dir}`);
         }
       }
-      accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll);
+      if (!carried.some(t => t.record_id === "local" && Date.parse(t.removed_at) > Date.now() + 86_400_000)) accountBlocked = mergeAccountTombstones(stateDir, sibling, opensAll);
     }
     catch (error) { accountBlocked = `cannot merge the account tombstones of ${sibling}: ${error instanceof Error ? error.message : String(error)}`; }
     if (accountBlocked !== null) console.error(accountBlocked);
@@ -461,7 +455,7 @@ export function createServer(
   }) : null;
   const devices: DeviceStore = new DeviceStore(stateDir, merge?.devicesBlocked ?? blocked, accountBlocked, {
     safety: safetyLog, pc: pcAccount, removals, journal, carried, joinedRows: rowsForDevices, held: (key) => accountMailbox.gates().held(key),
-    restampProblem: restamp.problem, restampRetry: restamp.retry === true, reconcileRestamp: restamp.reconcile === true, futureTime: clock?.ahead,
+    restampProblem: restamp.problem, restampRetry: restamp.retry === true, reconcileRestamp: restamp.reconcile === true,
     ...(siblingLegacyCredential ? { siblingLegacyCredential } : {}),
   });
   devices.attachTailnetNodes(tailnetNodes);
@@ -859,7 +853,7 @@ export function createServer(
   }) : undefined;
   const recoverySocket = recoveryReleases && journal && safetyLog ? openPcRecovery({
     stateDir, devices, pcAccount, journal, safetyLog, releases: recoveryReleases, pending: pendingRedemptions, pairings: keyProofPairings,
-    sibling, retryRestamp: restamp.retry === true,
+    sibling, restampEnabled: askedOpensAll, retryRestamp: restamp.retry === true,
     relay: ovisRelay, accountMailbox, accountList, addedRelayOnlineMs: options.accountAddRelayMs,
   }) : null;
   // the lock is written only after this PC's screen approves it, then the rows it does not let in end (T46)

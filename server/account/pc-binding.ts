@@ -191,6 +191,9 @@ function settleLink(binding: AccountBinding | null, firstKey: string | null, row
 export function restampMemberProblem(path: string, pc: (PcDoc & { counterOnly?: true }) | null, sibling: PcDoc | null, rows: readonly Member[]): string | null {
   const merge = sibling === null ? null : mergePcBinding(pc, sibling);
   if (merge?.conflict) return "The two folders bind this PC to two accounts";
+  if (merge?.inherited?.list !== undefined && (merge.ownBinding?.pending || merge.ownBinding?.list !== merge.inherited.list || merge.ownBinding.bind_id !== merge.inherited.bind_id)) {
+    return "The folders do not hold the same signed-list binding";
+  }
   if (merge?.ownBinding && merge.siblingBinding && merge.ownBinding.account !== merge.siblingBinding.account) {
     return "A pending binding names a different account from the other folder's binding";
   }
