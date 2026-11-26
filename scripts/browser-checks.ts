@@ -19,6 +19,8 @@ const MAX_CALLER_FAN_IN = 6;
 const CODE_FILE = /\.(?:[cm]?[jt]sx?)$/;
 const INDEXED_SOURCE = /^(?:src|server|shared|site\/demo)\/.*\.(?:[cm]?[jt]sx?|css)$/;
 const TEST_SOURCE = /\.(?:test|contract\.test)\.[cm]?[jt]sx?$/;
+/** CI's own script filters, which would narrow or empty the set this tool picked, and a reused check directory, whose herdr sessions the runner stops. */
+const CI_SELECTION = ["BROWSER_SHARD", "BROWSER_EXCLUDE", "BROWSER_LIVE_ONLY", "CHECK_DIR"];
 const LIVE_HERDR = ["HERDR_SOCKET", "HERDR_SOCKET_PATH", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_CONFIG_PATH", "HERDR_TEST_LIVE"];
 
 /** Shared script helpers that nearly every browser script loads; importing one does not tie a script to one feature. */
@@ -82,7 +84,7 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
   {
     id: "diff",
     summary: "Repository status, diff viewer, inline diff line notes and find-in-diff",
-    sources: /^(?:src\/components\/(?:RepoChanges|Diff)|src\/lib\/diff|server\/git)/,
+    sources: /^(?:src\/components\/(?:RepoChanges|Diff)|src\/lib\/(?:diff|useRepoDiff)|server\/git)/,
     scripts: /^scripts\/(?:repo-diff-|diff-)/,
   },
   {
@@ -136,7 +138,7 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
   {
     id: "themes",
     summary: "Built-in themes, custom Base16/Ovis theme files, first-paint bootstrap and contrast gates",
-    sources: /^(?:src\/styles\.css$|src\/lib\/themes|scripts\/(?:generate-themes|herdr-theme))/,
+    sources: /^(?:src\/styles\.css$|src\/theme-bootstrap\.ts$|src\/lib\/(?:themes|themeBoot)|scripts\/(?:generate-themes|herdr-theme))/,
     scripts: /^scripts\/(?:theme-|design-gate-)/,
   },
   {
@@ -320,16 +322,17 @@ function buildIndex(root: string): RepoIndex {
       const current = pending.pop()!;
       const text = readText(current);
       for (const dep of importsIn(current)) {
-        if (!dep.startsWith("scripts/")) {
+        if (!dep.startsWith("scripts/") || SHARED_HARNESS_SCRIPTS.has(dep)) {
           direct.add(dep);
-        } else if (!SHARED_HARNESS_SCRIPTS.has(dep) && !ownScripts.has(dep)) {
+        } else if (!ownScripts.has(dep)) {
           ownScripts.add(dep);
           pending.push(dep);
         }
       }
       for (const match of text.matchAll(/import\.meta\.dir,\s*["']([\w.-]+\.tsx?)["']/g)) {
         const child = `scripts/${match[1]!}`;
-        if (!SHARED_HARNESS_SCRIPTS.has(child) && !ownScripts.has(child) && existsSync(join(root, child))) {
+        if (SHARED_HARNESS_SCRIPTS.has(child)) direct.add(child);
+        else if (!ownScripts.has(child) && existsSync(join(root, child))) {
           ownScripts.add(child);
           pending.push(child);
         }
@@ -374,7 +377,8 @@ function normalizeTarget(root: string, raw: string): { kind: "surface"; id: stri
     }
     return { kind: "surface", id };
   }
-  const abs = isAbsolute(raw) ? raw : resolve(root, raw);
+  const path = toPosix(raw);
+  const abs = isAbsolute(path) ? path : resolve(root, path);
   const rel = toPosix(relative(root, abs)).replace(/\/+$/, "");
   if (rel === "" || rel.startsWith("..")) throw new Error(`Path must be inside the repository: ${raw}`);
   if (existsSync(abs) && statSync(abs).isDirectory()) {
@@ -390,9 +394,9 @@ export function changedFiles(root = REPO, base?: string): string[] {
     const mergeBase = git("merge-base", "HEAD", "origin/main");
     resolvedBase = mergeBase.status === 0 ? mergeBase.stdout.trim() : "HEAD";
   }
-  const tracked = git("diff", "--name-only", resolvedBase);
+  const tracked = git("diff", "--name-only", "--no-renames", resolvedBase, "--");
   if (tracked.status !== 0) throw new Error(`git diff --name-only ${resolvedBase} failed: ${tracked.stderr.trim()}`);
-  const staged = git("diff", "--name-only", "--cached");
+  const staged = git("diff", "--name-only", "--no-renames", "--cached");
   const unstaged = git("diff", "--name-only");
   const untracked = git("ls-files", "--others", "--exclude-standard");
   const all = new Set<string>();
@@ -495,7 +499,7 @@ export function findBrowserChecks(targets: readonly string[], options: { root?: 
       }
     }
     for (const hop of oneHopTargets) {
-      if (direct.has(hop)) {
+      if (direct.has(hop) && !effectivePaths.has(hop)) {
         score += 20;
         reasons.push(`imports ${hop}`);
       }
@@ -547,10 +551,14 @@ export function findBrowserChecks(targets: readonly string[], options: { root?: 
 function cleanEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !LIVE_HERDR.includes(key)) env[key] = value;
+    if (value !== undefined && !LIVE_HERDR.includes(key) && !CI_SELECTION.includes(key)) env[key] = value;
   }
   return Object.assign(env, extra);
 }
+
+/** Scripts that open the desktop shell need `bun run build:shell` first; the check runner builds only dist/. */
+const needsShellBuild = (scripts: readonly string[], root: string): boolean =>
+  scripts.some((script) => readFileSync(join(root, script), "utf8").includes("dist-shell"));
 
 function runMatched(matches: readonly BrowserMatch[], root = REPO): number {
   if (matches.length === 0) {
@@ -559,9 +567,7 @@ function runMatched(matches: readonly BrowserMatch[], root = REPO): number {
   }
   const scripts = matches.map((match) => match.script);
   const needsHerdr = matches.some((match) => match.kind === "herdr");
-  const needsShell = scripts.some((script) => readFileSync(join(root, script), "utf8").includes("dist-shell"));
-
-  if (needsShell) {
+  if (needsShellBuild(scripts, root)) {
     const shell = spawnSync(process.execPath, ["run", "build:shell"], { cwd: root, env: cleanEnv({}), stdio: "inherit" });
     if (shell.status !== 0) return shell.status ?? 1;
   }
@@ -676,7 +682,8 @@ export function runCli(argv: readonly string[], root = REPO): number {
       : allDemo
         ? `BROWSER_SCRIPTS=${list} bun scripts/ci-browser-parallel.ts`
         : `BROWSER_SCRIPTS=${list} bun run check run --build -- bun scripts/ci-browser-parallel.ts`;
-    console.log(`\nRun ${plan.matches.length === 1 ? "it" : "these"}:\n  ${quick}`);
+    const shell = needsShellBuild(plan.matches.map((match) => match.script), root) ? "bun run build:shell && " : "";
+    console.log(`\nRun ${plan.matches.length === 1 ? "it" : "these"} (or pass --run):\n  ${shell}${quick}`);
     return 0;
   }
   console.log("");
