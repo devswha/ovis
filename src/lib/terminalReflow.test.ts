@@ -82,6 +82,21 @@ describe("Ghostty erase above (ED 1 and DECSED 1)", () => {
     }
   });
 
+  it("unwraps the following row when an earlier erase already ended the cleared row's own wrap", async () => {
+    for (const erase of ["\x1b[1J", "\x1b[?1J"]) {
+      const term = await testTerminal({ cols: 5, rows: 2 });
+      try {
+        // the first erase above clears row 0 and leaves row 1 continuing it; row 0 is redrawn, then erased whole
+        term.write(`abcdefgh\x1b[2;1H${erase}\x1b[1;1HXY\x1b[1;5H${erase}`);
+        const buffer = term.buffer.active;
+        expect(wrappedRange(buffer, 1)).toEqual({ first: 1, last: 1 });
+        expect(selectionText(buffer, [0, 0], [term.cols, 1], false, "\n")).toBe("\n gh");
+      } finally {
+        term.dispose();
+      }
+    }
+  });
+
   it("keeps the following row wrapped when ED leaves text to the right of the cursor", async () => {
     const term = await testTerminal({ cols: 5, rows: 2 });
     try {
