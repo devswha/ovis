@@ -153,7 +153,7 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
       await child.client.request("_keeper/release", { sessionId: child.client.session, generation });
       await until(child.client, "the release", () => child.client.holdGeneration === null);
       expect(seen.at(-1)).toBeNull();
-      expect((await children.childrenOf("t42")).map((found) => found.id)).toEqual([child.id]);
+      expect((await children.childrenOf("t42")).ready.map((found) => found.id)).toEqual([child.id]);
     } finally {
       off();
     }
@@ -368,8 +368,8 @@ describe("AcpChildren without a keeper", () => {
       own("cccccccccccc", "t2");
       fake.spawn({ argv: ["sh"], labels: { "ovis.acp": "dddddddddddd" }, parent: "t1" });
       await children.restore();
-      expect((await children.childrenOf("t1")).map((child) => child.terminal).sort()).toEqual([first, second].sort());
-      expect(await children.childrenOf("t9")).toEqual([]);
+      expect((await children.childrenOf("t1")).ready.map((child) => child.terminal).sort()).toEqual([first, second].sort());
+      expect(await children.childrenOf("t9")).toEqual({ ready: [], opening: [] });
     } finally {
       children.close();
       connection.close();
