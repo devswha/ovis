@@ -410,14 +410,9 @@ function withRecords(records: readonly unknown[] | undefined, more: readonly unk
 }
 
 /** Every tombstone a folder holds, its pending file's included, as read before any merge coalesces them (T48). */
-export function folderTombstones(dir: string, source: "active" | "sibling"): AccountTombstone[] {
-  return ["account-tombstones.json", "account-tombstones.pending.json"].flatMap(file => {
-    const path = join(dir, file);
-    const read = readTombstones(path);
-    if (read !== null) return read;
-    if (source === "sibling" && file === "account-tombstones.pending.json") return [];
-    throw new Error(`Cannot read ${path}: account records are refused until it is restored or fixed.`);
-  });
+export function folderTombstones(dir: string): AccountTombstone[] {
+  // An unreadable file is refused where it is read for real: by mergeAccountTombstones or by its own folder's store.
+  return ["account-tombstones.json", "account-tombstones.pending.json"].flatMap((file) => readTombstones(join(dir, file)) ?? []);
 }
 
 /** The same file shape for startup recovery, without opening a DeviceStore. */
@@ -1007,7 +1002,8 @@ export class DeviceStore {
     const numbered = this.devices.flatMap((d) => d.origin === undefined || d.origin.from === "legacy" ? [] : [d.origin.admit_no]);
     try { this.pc.settlePending(rows); }
     catch (error) { this.pc.unwritten(error); return; }
-    const members = [...new Set(rows.flatMap((d) => d.account === undefined ? [] : [d.account]))];
+    // a row the journal already ended is no member, also on a start that could not replay its removal yet (P24)
+    const members = [...new Set(rows.flatMap((d) => d.account === undefined || this.journalEnded(d.id) ? [] : [d.account]))];
     if (!this.pc.migrating) {
       this.pc.checkAbove(numbered);
       this.pc.checkMembers(members);

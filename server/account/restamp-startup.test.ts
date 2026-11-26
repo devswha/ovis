@@ -40,6 +40,25 @@ posix("ordinary boot keeps an independently readable sibling Lock on a later sta
   expect(SafetyLog.open(active).state().locked).toBe(true);
 });
 
+posix("ordinary boot keeps an independently readable sibling Revoke on a later standalone start", () => {
+  const active = folder(), sibling = folder(), row = phone();
+  put(active, "devices.json", { gate_closed_at: past, devices: [row] });
+  put(sibling, "devices.json", false);
+  put(sibling, "account-tombstones.json", { v: 1, tombstones: [{ key: row.relay_public_key, account: "", removed_at: past, record_id: "local" }] });
+  start(active, sibling).stop();
+  expect(start(active).devices.hasKey(row.relay_public_key)).toBe(false);
+});
+
+posix("ordinary boot leaves a damaged sibling pending tombstone file to the sibling", () => {
+  const active = folder(), sibling = folder(), row = phone();
+  put(active, "devices.json", { gate_closed_at: past, devices: [row] });
+  put(sibling, "devices.json", { gate_closed_at: past, devices: [row] });
+  put(sibling, "account-tombstones.pending.json", false);
+  const { devices } = start(active, sibling);
+  expect(devices.accountError).toBeNull();
+  expect(devices.hasKey(row.relay_public_key)).toBe(true);
+});
+
 posix("ordinary boot uses the surviving pairing time when twin rows disagree", () => {
   const active = folder(), sibling = folder(), row = phone();
   put(active, "devices.json", { gate_closed_at: past, devices: [row] });
@@ -143,6 +162,27 @@ posix.each([false, true])("startup finishes Revoke all before evaluating the clo
   expect(existsSync(join(active, published ? "restamp-done.json" : "restamp-refused.json"))).toBe(true);
 });
 
+
+posix.each(["journal", "revoke", "lock"] as const)("restamp checks member accounts after ordinary %s removals on a cold start", async cause => {
+  const active = folder(), row = phone();
+  if (cause === "journal") {
+    const first = start(active);
+    first.devices.journalEvent({ kind: "remove", how: "pc", key: row.relay_public_key, no: null, row: row.id, label: row.label, by: "pc", account: null });
+    first.stop();
+  }
+  if (cause === "lock") expect(SafetyLog.open(active).appendLock({ account: "previous" }).outcome).toBe("applied");
+  if (cause === "revoke") RemovalEvidence.open(active, null).addRevoke(row.relay_public_key, "previous", Date.now());
+  RemovalEvidence.open(active, null).addRevoke(key(), null, future);
+  put(active, "devices.json", { gate_closed_at: past, devices: [{ ...row, account: "previous" }] });
+  const running = start(active);
+  const preview = await askRecovery(active, { act: "restamp" });
+  if (!isJsonObject(preview) || typeof preview.confirm !== "string") throw new Error(`Expected a preview: ${JSON.stringify(preview)}`);
+  expect(await askRecovery(active, { act: "restamp", confirm: preview.confirm })).toMatchObject({ queued: true });
+  running.stop();
+  const applied = start(active);
+  expect(applied.devices.accountError).toBeNull();
+  expect(applied.devices.list(null).some(device => device.id === row.id)).toBe(false);
+});
 
 posix("a Step 2 clock repair leaves a quarantined legacy pairing's time alone", async () => {
   const active = folder(), time = new Date(future).toISOString();
