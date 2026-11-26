@@ -1000,6 +1000,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     forgetPaneTranscriptState(paneId);
     bridgeAgents?.ended(paneId);
   }
+  let alertRoster = new Map<string, string | null>();
   const collector = startStatusCollector({
     onStatus,
     herdrLive: { identity: () => finishes.herdrIdentity(), onChange: (identity) => { liveHerdr = identity; } },
@@ -1022,6 +1023,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         const began = created.get(pane.pane_id);
         if (began !== undefined) push.firstStatus(pane.pane_id, began, pane.agent_status).catch(logPushError);
       }
+      // A roster may already show a terminal under its new pane ID while its move event is in transit.
+      const roster = new Map<string, string | null>();
+      const present = new Set(alerted.map((pane) => pane.pane_id));
+      for (const pane of alerted) {
+        if (pane.terminal_id) roster.set(pane.terminal_id, roster.has(pane.terminal_id) ? null : pane.pane_id);
+      }
+      for (const pane of alerted) {
+        const before = alertRoster.get(pane.terminal_id);
+        if (pane.agent_status === "blocked" && before && roster.get(pane.terminal_id) === pane.pane_id
+          && !present.has(before) && !newer.has(before) && !newer.has(pane.pane_id)) push.moved(before, pane.pane_id, "blocked");
+      }
+      alertRoster = roster;
       push.seed(alerted);
       // a tab, workspace or worktree that closed names none of its panes: the snapshot without them says they went
       push.gone(projected, newer);

@@ -1044,6 +1044,9 @@ export function createPushService(options: PushServiceOptions): PushService {
     moved(from, to, status, machineId = "local") {
       const before = paneStorageId(machineId, from);
       const after = paneStorageId(machineId, to);
+      if (before === after || !lastStatus.has(before)) return;
+      // A status change already heard at the destination is later than the move.
+      if (changes.has(after)) { forget(before); return; }
       forget(after);
       for (const state of [lastStatus, turnStart, changes, titles, workspaces, kinds, waiting] as Map<string, unknown>[]) {
         if (!state.has(before)) continue;
