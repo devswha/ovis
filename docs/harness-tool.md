@@ -26,7 +26,7 @@ The run reports are under `~/.dori-sa/reports/acp-children-open/`.
 | agy | `default` | Built-in web search; configured hooks also approved writes, commands and an MCP call. | `agy/RESULT.md`, focused and planted runs |
 | GJC | `default`, with its ordinary `prompt` permission handling | Writes, URL reads and MCP calls ran unasked even with its default prompt policy; Bash requested approval. | `gjc/RESULT.md`, baseline runs |
 | Gemini CLI (`gemini --acp`) | `default` | A file write and a shell `mkdir` each requested approval on a clean setup (0.71.1). | `server/agent-tools/fixtures/gemini-0.71.1-*` |
-| Kiro CLI (`kiro-cli acp --agent-engine=v3`) | `vibe` | A file write and a shell `mkdir` each requested approval on a clean setup (3.6.2), though its `autopilot` option reads `on` by default; consent rules the person saved still apply. | `server/agent-tools/fixtures/kiro-3.6.2-*` |
+| Kiro CLI (`kiro-cli acp --agent-engine=v3`) | `vibe` | A file write and a shell `mkdir` each requested approval on a clean setup (3.6.2), though its `autopilot` option reads `on` by default; consent rules the person saved still apply. Ovis points `KIRO_AGENT_CONFIG_DIR` at a folder that does not exist: started on V3, Kiro 3.6 otherwise rewrites the person's V2 agent files (`~/.kiro/agents`, the folder's `.kiro/agents`), so the child offers Kiro's own modes only. | `server/agent-tools/fixtures/kiro-3.6.2-*` |
 
 Claude, agy and Gemini CLI must report `default`, and Kiro `vibe`. Ovis still refuses known full-access modes such as Codex's
 `agent-full-access` and Copilot's `autopilot` / `allow-all`, and stops any start that reports no

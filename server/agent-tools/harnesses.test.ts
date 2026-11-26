@@ -54,7 +54,7 @@ it("keeps native ACP launch hygiene and selects ordinary startup permissions", (
     env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" },
   });
   expect(resolveHarness("gemini")).toEqual({ argv: [join(dir, "gemini"), "--acp"] });
-  expect(resolveHarness("kiro")).toEqual({ argv: [join(dir, "kiro-cli"), "acp", "--agent-engine=v3"] });
+  expect(resolveHarness("kiro")).toEqual({ argv: [join(dir, "kiro-cli"), "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: "/nonexistent/ovis-kiro-agents" } });
 });
 
 it("lets a child start only in Gemini CLI's and Kiro's ordinary modes", () => {

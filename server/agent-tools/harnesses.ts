@@ -12,6 +12,7 @@ export interface HarnessCommand {
   readonly sessionMeta?: unknown;
   readonly configOptions?: readonly unknown[];
 }
+const KIRO_NO_AGENTS = "/nonexistent/ovis-kiro-agents";
 /** The file a link on PATH names, or null once it is gone. */
 const resolved = (path: string | null): string | null => {
   try { return path && realpathSync(path); } catch { return null; }
@@ -27,8 +28,10 @@ export function resolveHarness(kind: string): HarnessCommand | null {
         case "agy": return { argv: [path, "--mode=default", "acp", "--disable-telemetry", "--log-file", "/dev/null"], env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" } };
         case "copilot": return { argv: [path, "--acp", "--stdio", "--no-auto-update"], env: { COPILOT_ALLOW_ALL: "false" } };
         case "gemini": return { argv: [path, "--acp"] };
-        // the V3 engine, as Kiro's own chat runs by default; it refuses V2's launch flags
-        case "kiro": return { argv: [path, "acp", "--agent-engine=v3"] };
+        // the V3 engine, as Kiro's own chat runs by default; it refuses V2's launch flags. Started on V3, Kiro 3.6
+        // rewrites the person's V2 agent files (~/.kiro/agents, the folder's .kiro/agents) unless its agent folder is
+        // elsewhere: a folder that does not exist leaves them as they are, and the child keeps Kiro's own modes
+        case "kiro": return { argv: [path, "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: KIRO_NO_AGENTS } };
       }
     }
     case "claude": case "codex": {
