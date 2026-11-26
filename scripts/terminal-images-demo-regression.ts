@@ -189,6 +189,7 @@ try {
         return { first: tops.length ? Math.min(...tops) : -1, pictures: tops.length };
       });
       assert.ok(below.first > 0, `on again: the new picture is drawn lower down, where it was printed (${JSON.stringify(below)})`);
+      assert.deepEqual(await pixel(page, 4, below.first + 4), [0, 0, 255], "on again: the new picture is drawn where it was printed");
       assert.equal(await pixel(page, 4, 4), null, "on again: the cells the first picture left draw nothing, not the new picture");
 
       // imgcat's multipart form and chafa's TIFF without a size, which the addon takes neither of by itself (#3147)

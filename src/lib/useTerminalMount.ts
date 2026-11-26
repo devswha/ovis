@@ -2432,7 +2432,17 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // libghostty stopped drawing: the terminal starts over with a new engine and the pane is attached again, so the
       // server draws it anew; once it gives up, the pane says so and takes no typing a blank grid would hide
       const onTerminalFailed = (event: Event): void => {
-        if ((event as CustomEvent<TerminalFailure>).detail.restarting) { reattach(); return; }
+        if ((event as CustomEvent<TerminalFailure>).detail.restarting) {
+          // the server replays a pane only to an attach that is new: this one lets go first, so the new engine is drawn
+          // from the pane's screen, not left blank until the program writes again
+          const current = paneRef.current;
+          if (current && !mirroredRef.current && !releasedRef.current) {
+            socket.detach(current);
+            retireOutput();
+          }
+          reattach();
+          return;
+        }
         const t = tRef.current; // the language of now, not of the attach
         setOutputError(t("This terminal could not be drawn. Reload the page to try again."));
         term.options.disableStdin = true;

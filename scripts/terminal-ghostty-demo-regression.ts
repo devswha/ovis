@@ -385,6 +385,18 @@ try {
         assert.deepEqual(errors, [], "herdr: no page errors");
         await page.context().close();
       }
+      {
+        // the module never loads: the terminal starts over a few times, then the pane says so instead of staying blank
+        const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+        await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false })));
+        await context.route(/\.wasm$/, (route) => route.abort());
+        const page = await context.newPage();
+        await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=core`);
+        await page.getByText("This terminal could not be drawn. Reload the page to try again.").waitFor({ timeout: 15000 });
+        assert.equal(await page.locator(".pane-frame.is-current .xterm-helper-textarea").evaluate((field: HTMLTextAreaElement) => field.readOnly), true, "no module: the blank grid takes no typing");
+        await context.close();
+        console.log("PASS libghostty that never loads: the pane says so and takes no typing");
+      }
       for (const kind of ["herdr", "core"] as const) {
         const { page, wasm, errors } = await open(browser, server.port, prefix, kind, { storedOff: true });
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();

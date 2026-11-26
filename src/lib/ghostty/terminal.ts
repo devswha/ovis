@@ -85,8 +85,6 @@ const TRACKING_NAME = { none: "none", x10: "x10", normal: "vt200", button: "drag
 const WRITE_BUDGET_MS = 12;
 /** how long a synchronized update may hold the screen before it is shown anyway (xterm's limit) */
 const SYNC_HOLD_MS = 1000;
-/** how long a frame waits for a picture conversion before it is acknowledged anyway */
-const PICTURE_ACK_MS = 1000;
 /** how many times a terminal starts over with a new engine before it gives up */
 const MAX_RESTARTS = 3;
 
@@ -112,6 +110,13 @@ export class GhosttyTerminal {
     const off = limits === null && this.pictureCaps !== null;
     this.pictureCaps = limits;
     if (!off || !this.vt) return;
+    this.clearPictures = true;
+    this.clearPicturesBetweenSequences();
+  }
+
+  private clearPicturesBetweenSequences(): void {
+    if (!this.clearPictures || !this.vt || !this.stream.idle()) return;
+    this.clearPictures = false;
     try { this.vt.write("\x1b_Ga=d,d=A\x1b\\"); } catch (error) { this.fail(error); }
     this.schedule();
   }
@@ -151,6 +156,9 @@ export class GhosttyTerminal {
   private drawnSelectionKey = "";
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
   private restarts = 0;
+  private broken = false;
+  /** the pictures were turned off inside a sequence: they are cleared once the stream is between sequences */
+  private clearPictures = false;
   private readonly earlyLinks: { provider: ILinkProvider; registered: Disposable | null }[] = [];
   private vt: GhosttyVt | null = null;
   private renderer: RowsRenderer | null = null;
@@ -272,6 +280,14 @@ export class GhosttyTerminal {
     this.cleanups.push(
       selection.onSelectionChange(() => this.onSelectionChangeEmitter.fire()),
       selection.onRedraw(() => this.schedule()),
+      // Linux's primary selection: the selected text is put in the textarea, focused and selected, as xterm does
+      selection.onLinuxMouseSelection((text) => {
+        const textarea = this.textarea;
+        if (!textarea) return;
+        textarea.value = text;
+        textarea.focus();
+        textarea.select();
+      }),
     );
     const input = new TerminalInput({
       element, screen,
@@ -404,6 +420,10 @@ export class GhosttyTerminal {
     if (restarting) {
       this.restarts++;
       setTimeout(() => this.restart(), 0);
+    } else {
+      // given up: a blank grid takes no typing, whatever the mount says about input later
+      this.broken = true;
+      if (this.inputLayer) this.inputLayer.disableStdin = true;
     }
     this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error, restarting } }));
   }
@@ -454,28 +474,16 @@ export class GhosttyTerminal {
 
   private parseWrite(data: string | Uint8Array, callback: (() => void) | undefined): void {
     if (this.failed !== null) { callback?.(); return; }
-    // a picture still converting holds the output after it, never its acknowledgement: past a moment the frame is
-    // acknowledged (the server goes on sending) and parsed once the picture is in, in order
-    let acknowledged = false;
-    const acknowledge = (): void => {
-      if (acknowledged) return;
-      acknowledged = true;
-      callback?.();
-    };
-    let late: ReturnType<typeof setTimeout> | null = null;
-    let parsed = false;
+    // a picture conversion past its deadline is skipped (itermPictureWriter.ts), so a frame is told parsed only once it is
     this.pictures.write(data, (part, picture) => this.parse(part, picture), () => {
-      parsed = true;
-      if (late !== null) clearTimeout(late);
       try {
         if (this.failed === null) this.afterWrite();
       } catch (error) {
         this.fail(error);
       } finally {
-        acknowledge();
+        callback?.();
       }
     });
-    if (!parsed) late = setTimeout(acknowledge, PICTURE_ACK_MS);
   }
 
   /**
@@ -493,6 +501,7 @@ export class GhosttyTerminal {
       this.selection?.refresh(top !== null ? Math.max(0, top - vt.history().viewportTop) : 0);
     } else this.selection?.refresh();
     this.viewTop = vt && this.fromBottom > 0 ? vt.history().viewportTop : null;
+    this.clearPicturesBetweenSequences();
     this.written = true;
     // the program's mouse and cursor modes may have changed: the input layer follows them now, as xterm's does
     this.inputLayer?.cursorMoved();
@@ -598,7 +607,7 @@ export class GhosttyTerminal {
         this.schedule();
         break;
       case "disableStdin":
-        if (this.inputLayer) this.inputLayer.disableStdin = this.options.disableStdin;
+        if (this.inputLayer) this.inputLayer.disableStdin = this.options.disableStdin || this.broken;
         break;
     }
   }
@@ -697,6 +706,8 @@ export class GhosttyTerminal {
       const changed = renderer.draw(selected, this.fromBottom === 0, announce);
       this.drawSelection(selected);
       if (changed) {
+        // a row a link was read from may have been written over: the link under the pointer is read again, once a frame
+        this.linkifier?.refresh();
         this.inputLayer?.cursorMoved();
         this.host?.dispatchEvent(new Event(GHOSTTY_DREW_EVENT));
       }
