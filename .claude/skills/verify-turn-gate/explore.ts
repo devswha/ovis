@@ -26,6 +26,7 @@ interface Inst {
   claim(item: Rec, automatic: boolean): boolean;
   committing(item: Rec, steeringWorkingTurn?: boolean, restartingWorkingTurn?: boolean, readMark?: number): void;
   settle(item: Rec, fault?: Fault, uncertain?: boolean, retryWhenReady?: boolean): void;
+  confirmRecorded(item: Rec, remember: () => boolean): boolean;
   discard(item: Rec): boolean;
   mark(paneId: string): number;
   current(paneId: string): St | undefined;
@@ -103,6 +104,11 @@ export const VARIANTS: Record<string, { what: string; find: string; put: string 
     find: "if (gate?.completed || (gate?.by === item.message.id && !gate.committed)) this.gates.delete(item.paneId);",
     put: "if (gate?.completed || gate?.by === item.message.id) this.gates.delete(item.paneId);",
   },
+  "uncertain-ends-wait": {
+    what: "settle() drops a committed gate when a send ends uncertain, so confirmRecorded or Dismiss lets the next message drain before the turn ends",
+    find: "if ((!uncertain && gate?.by === item.message.id) || (gate?.by === item.message.id && !gate.committed) || gate?.completed) this.gates.delete(item.paneId);",
+    put: "if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);",
+  },
   "timeout-without-hold": {
     what: "expire() drops a gate whose turn did not start in time without holding the pane's messages",
     find: "        else this.holdPane(paneId, { code: \"pending_turn_unconfirmed\", message: \"The next turn did not start in time; review and send the remaining messages explicitly\" });\n",
@@ -163,8 +169,10 @@ interface Task {
   /** its connection's lease or its pane is gone: the next check refuses */
   lost: boolean;
   hold: boolean; steering: boolean; statusAtRead: string;
-  /** PendingInputs.mark() as the read before the Enter began */
+  /** PendingInputs.mark() as the read before the Enter (or Codex app-server steer) began */
   enterMark: number;
+  /** Codex app-server steer was already tried and handed back to the terminal path (nativeItem omitted on retry) */
+  rpcTried?: boolean;
 }
 interface World {
   /** how many of the run's `via` steps the path has taken */
@@ -309,7 +317,6 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
   const uncertain = (w: World, inst: Inst, task: Task): void => {
     // pending.ts dispatchPendingText: once `wrote` is set every failure is submit_changed, which dispatchPending settles uncertain
     inst.settle(item(inst, task.id), F("submit_changed"), true, false);
-    handOver(w, inst);
     end(w, task);
   };
   const observe = (w: World, inst: Inst, task: Task, status: St): void => {
@@ -395,7 +402,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
     const timedOut = (w: World, inst: Inst): void => {
       // an Enter committed over a Codex restart not yet seen to start carries that restart's wait in the class's gate
       const latest = w.waits.at(-1);
-      const carried = latest && !latest.restart ? w.waits.slice(0, -1).findLast((wait) => wait.restart && wait.need.includes("W")) : undefined;
+      const carried = latest && !latest.restart ? w.waits.slice(0, -1).reverse().find((wait) => wait.restart && wait.need.includes("W")) : undefined;
       const gate = carried ?? latest;
       if (gate?.late && gate.need.includes("W") && !inFlight(inst, w.pane)) handOver(w, inst);
     };
@@ -434,6 +441,11 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
         out.push([`Send now on ${r.message.id}`, (w) => { w.tasks.push(fresh("steer", r.message.id, r.owner, "s0", w.pane)); }]);
       }
       out.push([`Discard ${r.message.id}`, (_w, inst) => { inst.discard(item(inst, r.message.id)); }]);
+    }
+    // ---- Native transcript confirms an uncertain row: pending.ts reconcileCodexDeliveries -> PendingInputs.confirmRecorded ----
+    if (live && free(w0.pane)) for (const r of inst0.records.values()) {
+      if (r.paneId !== w0.pane || r.inFlight || r.message.state !== "uncertain") continue;
+      out.push([`${r.message.id}: native transcript confirms it (confirmRecorded)`, (_w, inst) => { inst.confirmRecorded(item(inst, r.message.id), () => true); }]);
     }
 
     const taskSteps = (t0: Task, add: (label: string, run: Step[1]) => void): void => {
@@ -524,7 +536,54 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
       }
       if (t0.kind === "steer" && t0.pc === "sclaimed") {
         add("refused, nothing typed: held", (w, inst, task) => { inst.settle(item(inst, task.id), F("agent_blocked"), false, false); end(w, task); });
-        if (!t0.lost) add("pasted", (_w, _inst, task) => { task.pc = "pasted"; });
+        if (!t0.lost) {
+          add("pasted", (_w, _inst, task) => { task.pc = "pasted"; });
+          // pending.ts steerTarget.send: checkPane takes steerMark before pendingContext, then awaits thread/loaded/list
+          if (config.agent === "codex" && !t0.rpcTried) add("Send now reads the pane for Codex's app server", (_w, inst, task) => {
+            task.enterMark = inst.mark(task.lane); task.reading = true; task.pc = "rpc_read";
+          });
+        }
+        return;
+      }
+      if (t0.kind === "steer" && t0.pc === "rpc_read") {
+        if (t0.lost || t0.ctx !== "working") add("refused, nothing typed: held", (w, inst, task) => { inst.settle(item(inst, task.id), F("pending_target_changed"), false, false); end(w, task); });
+        else add("Send now checks Codex's loaded threads", (_w, _inst, task) => { task.pc = "rpc_loaded"; });
+        return;
+      }
+      if (t0.kind === "steer" && t0.pc === "rpc_loaded") {
+        add("refused before Codex's steer: held", (w, inst, task) => { inst.settle(item(inst, task.id), F("submit_timeout"), false, false); end(w, task); });
+        add("Codex's loaded threads changed: held, with what waits behind it", (w, inst, task) => {
+          const it = item(inst, task.id);
+          inst.holdPane(it.paneId, F("pending_target_changed"));
+          inst.settle(it, F("pending_target_changed"), false, false);
+          end(w, task);
+        });
+        if (!t0.lost) {
+          add("Codex's app server leaves the send to the terminal", (_w, _inst, task) => { task.rpcTried = true; task.enterMark = -2; task.pc = "sclaimed"; });
+          if (config.free || config.lateEvents || w0.q.length === 0) {
+            const commitRpc = (w: World, inst: Inst, task: Task): void => {
+              task.steering = true;
+              inst.committing(item(inst, task.id), true, false, task.enterMark);
+              committed(w, task, "steer");
+            };
+            if (config.free || w0.turn !== null || config.steerPastEnd) {
+              add("committing (steering via Codex's app server); steer reaches Codex", (w, inst, task) => {
+                commitRpc(w, inst, task);
+                enterLands(w, task, false);
+                task.pc = "rpc_sent";
+              });
+            }
+            add("committing (steering via Codex's app server); steer fails: uncertain", (w, inst, task) => {
+              commitRpc(w, inst, task);
+              uncertain(w, inst, task);
+            });
+          }
+        }
+        return;
+      }
+      if (t0.kind === "steer" && t0.pc === "rpc_sent") {
+        add("Codex's app server confirms the steer: sent", (w, inst, task) => { inst.settle(item(inst, task.id)); end(w, task); });
+        add("Codex's app server reply is lost: uncertain", uncertain);
         return;
       }
       if (t0.pc === "pasted") {
@@ -606,9 +665,8 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
         enterLands(w, null, false);
         await inst.resend(w.pane, id, "f", async () => ({ ok: true }));
       }]);
-      out.push([`a saved copy of ${id} is sent again: its outcome is not known`, async (w, inst) => {
-        await inst.resend(w.pane, id, "f", async () => ({ ok: false, ...F("submit_changed") }));
-        handOver(w, inst);
+      out.push([`a saved copy of ${id} is sent again: its outcome is not known`, async (_w, inst) => {
+        await inst.resend(w0.pane, id, "f", async () => ({ ok: false, ...F("submit_changed") }));
       }]);
     }
 
@@ -644,7 +702,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
   seen.add(Bun.hash(start)); parent.push(-1); via.push(""); queue.push(start);
   let broken: Result["broken"] = null;
   // VTG_STEPS=1 lists how often each kind of step was taken: a kind that never is has become unreachable
-  const kinds = process.env.VTG_STEPS ? new Map<string, number>() : null;
+  const kinds = process.env["VTG_STEPS"] ? new Map<string, number>() : null;
   const describe = (w: World): string => {
     const gate = w.c.gates.find(([pane]) => pane === w.pane)?.[1];
     const rows = w.c.records.filter((r) => r.p === w.pane).map((r) => `${r.id} ${r.f ? "on its way" : r.s}`).join(", ");
@@ -683,7 +741,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
       const hash = Bun.hash(text);
       if (seen.has(hash)) continue;
       seen.add(hash); parent.push(at); via.push(step[0]); queue.push(text);
-      if (process.env.VTG_PROGRESS && parent.length % 100_000 === 0) console.error(`${config.name}: ${parent.length} states, ${queue.length - at} to go, ${Math.round((performance.now() - started) / 1000)} s`);
+      if (process.env["VTG_PROGRESS"] && parent.length % 100_000 === 0) console.error(`${config.name}: ${parent.length} states, ${queue.length - at} to go, ${Math.round((performance.now() - started) / 1000)} s`);
       if (parent.length > limit) throw new Error(`${config.name}: more than ${limit} states; the bounds grew`);
     }
   }
