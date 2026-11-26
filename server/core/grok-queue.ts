@@ -66,19 +66,26 @@ export function showsMessage(row: string, message: string): boolean {
 /** a prompt as Grok echoes it in the transcript once sent: `     ❯ first line` (its time on the right), the rest under it */
 const ECHO_ROW = /^ {5}❯ (.*)$/;
 const ECHO_MORE = /^ {7}\S/;
+/** minimal mode echoes a prompt at column zero, `❯ first line`, the rest under it indented by two */
+const MINIMAL_ECHO_ROW = /^❯ (.*)$/;
+const MINIMAL_ECHO_MORE = /^ {2}\S/;
 
 export type GrokEcho = { readonly text: string; readonly echoes: number };
 
 export function grokEcho(screen: string): GrokEcho | null {
   const rows = stripVTControlCharacters(screen).split("\n").map((row) => row.replace(/\s+█$/, "").trimEnd());
   const box = rows.map((row) => /^\s*╭/.test(row)).lastIndexOf(true);
-  const above = rows.slice(0, box < 0 ? rows.length : box);
-  const echoes = above.map((row) => ECHO_ROW.test(row));
+  const minimal = box < 0 && grokQueue(screen)?.mode === "minimal";
+  const [echoRow, echoMore] = minimal ? [MINIMAL_ECHO_ROW, MINIMAL_ECHO_MORE] : [ECHO_ROW, ECHO_MORE];
+  // in minimal mode the last `❯` row is the live prompt, not an echo
+  const end = minimal ? rows.map((row) => /^❯(?: |$)/.test(row)).lastIndexOf(true) : box;
+  const above = rows.slice(0, end < 0 ? rows.length : end);
+  const echoes = above.map((row) => echoRow.test(row));
   const at = echoes.lastIndexOf(true);
   if (at < 0) return null;
-  const echo = [ECHO_ROW.exec(above[at]!)![1]!.replace(/\s{2,}\d{1,2}:\d{2}(?: [AP]M)?$/, "")];
+  const echo = [echoRow.exec(above[at]!)![1]!.replace(/\s{2,}\d{1,2}:\d{2}(?: [AP]M)?$/, "")];
   for (const row of above.slice(at + 1)) {
-    if (!ECHO_MORE.test(row)) break;
+    if (!echoMore.test(row)) break;
     echo.push(row);
   }
   return { text: squash(echo.join(" ")), echoes: echoes.filter(Boolean).length };
