@@ -288,6 +288,29 @@ for (const platform of ["iPhone", "MacIntel"]) describe(`xterm dictation input o
     });
   }
 
+  it("keeps a keyless append after a retrospective rewrite provisional until Enter", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "ths");
+    e.textarea.select();
+    insert(e, "this");
+    insert(e, " is");
+    jest.runOnlyPendingTimers();
+    expect(e.sent).toEqual(["ths"]);
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["ths", "\x7fis is", "\r"]);
+  });
+
+  it("corrects only the selected suffix of a sent insertion at Enter", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "test ths");
+    e.textarea.selectionStart = "test ".length;
+    insert(e, "this", "insertReplacementText");
+    jest.runOnlyPendingTimers();
+    expect(e.sent).toEqual(["test ths"]);
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["test ths", "\x7fis", "\r"]);
+  });
+
   it("corrects a sent prefix only at commit, after Backspace edits the provisional text", () => {
     const e = editor(new SafariTerminal(), SafariHelper);
     insert(e, "thi");

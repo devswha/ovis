@@ -434,7 +434,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
    constructor(
      private readonly _textarea: HTMLTextAreaElement,
      private readonly _compositionView: HTMLElement,
-@@ -50,17 +85,217 @@ export class CompositionHelper {
+@@ -50,17 +85,222 @@ export class CompositionHelper {
      @IRenderService private readonly _renderService: IRenderService
    ) {
      this._isComposing = false;
@@ -516,9 +516,13 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
 +    const { value, selectionStart, selectionEnd } = this._textarea;
 +    // WebKit selects the entire hypothesis or just the suffix it needs to correct.
 +    const rewritesDictation = wasDictation && keyless && ev.inputType === 'insertText'
-+      && this._textarea.selectionStart < this._textarea.selectionEnd
-+      && this._textarea.selectionStart >= this._compositionPosition.start && this._textarea.selectionEnd === this._compositionPosition.end;
-+    if (this._replacementComposition && ((ev.inputType === 'insertReplacementText' && (!wasDictation || keyless)) || rewritesDictation
++      && selectionStart < selectionEnd
++      && selectionStart >= this._compositionPosition.start && selectionEnd === this._compositionPosition.end;
++    // A rewrite of text already sent identifies retrospective dictation. Before that evidence,
++    // a keyless insertion at the caret can still be ordinary keyboard input.
++    const extendsDictation = wasDictation && this._dictationSent !== undefined && keyless && ev.inputType === 'insertText'
++      && !!ev.data && selectionStart === selectionEnd && selectionEnd === this._compositionPosition.end;
++    if (this._replacementComposition && ((ev.inputType === 'insertReplacementText' && (!wasDictation || keyless)) || rewritesDictation || extendsDictation
 +      || ev.inputType === 'deleteContentBackward' || ev.inputType === 'deleteContentForward')) return;
 +    // keydown() held back this key while the syllable was pending, so Terminal will treat
 +    // its insertion as already handled by keydown. Mark it to be forwarded once.
@@ -536,9 +540,10 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
 +    // A plain phone insertion may be a TUI answer or keyboard suggestion: send it now. Only
 +    // a later keyless rewrite of that known suffix is evidence of a retrospective preedit.
 +    const canDictate = keyless && !!ev.data && !this._optionsService.rawOptions.disableStdin;
-+    const rewritesSent = canDictate && lastInsert && selectionStart === lastInsert.start
-+      && selectionEnd === value.length && value.slice(selectionStart) === lastInsert.text
-+      && (ev.inputType === 'insertReplacementText' || ev.inputType === 'insertText');
++    const rewritesSent = canDictate && lastInsert && selectionStart >= lastInsert.start && selectionStart < selectionEnd
++      && selectionEnd === value.length && value.slice(lastInsert.start) === lastInsert.text
++      && (ev.inputType === 'insertReplacementText'
++        || (ev.inputType === 'insertText' && selectionStart === lastInsert.start));
 +    const dictation = canDictate && ((ev.inputType === 'insertReplacementText' && appends) || !!rewritesSent);
 +    if (hangul || dictation) {
 +      this._commitInsert = undefined;
@@ -547,7 +552,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
 +      this._dictation = dictation;
 +      if (rewritesSent) {
 +        this._compositionPosition.start = selectionStart;
-+        this._dictationSent = lastInsert.text;
++        this._dictationSent = value.slice(selectionStart, selectionEnd);
 +      }
 +    } else if (canDictate && isMobileWebKit && ev.inputType === 'insertText' && appends) {
 +      this._keylessInsertStart = selectionStart;
@@ -654,7 +659,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
      this._compositionView.textContent = '';
      this._dataAlreadySent = '';
      this._compositionView.classList.add('active');
-@@ -71,9 +306,12 @@ export class CompositionHelper {
+@@ -71,9 +311,12 @@ export class CompositionHelper {
     * @param ev The event.
     */
    public compositionupdate(ev: Pick<CompositionEvent, 'data'>): void {
@@ -667,7 +672,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
        this._compositionPosition.end = this._textarea.value.length;
      }, 0);
    }
-@@ -83,6 +321,7 @@ export class CompositionHelper {
+@@ -83,6 +326,7 @@ export class CompositionHelper {
     * the handler.
     */
    public compositionend(): void {
@@ -675,7 +680,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
      this._finalizeComposition(true);
    }
  
-@@ -92,7 +331,33 @@ export class CompositionHelper {
+@@ -92,7 +336,33 @@ export class CompositionHelper {
     * @returns Whether the Terminal should continue processing the keydown event.
     */
    public keydown(ev: KeyboardEvent): boolean {
@@ -710,7 +715,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
        if (ev.keyCode === 20 || ev.keyCode === 229) {
          // 20 is CapsLock, 229 is Enter
          // Continue composing if the keyCode is the "composition character"
-@@ -126,57 +391,60 @@ export class CompositionHelper {
+@@ -126,57 +396,60 @@ export class CompositionHelper {
     *   the command is executed.
     */
    private _finalizeComposition(waitForPropagation: boolean): void {
@@ -810,7 +815,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
    /**
     * Apply any changes made to the textarea after the current event chain is allowed to complete.
     * This should be called when not currently composing but a keydown event with the "composition
-@@ -185,25 +453,39 @@ export class CompositionHelper {
+@@ -185,25 +458,39 @@ export class CompositionHelper {
     */
    private _handleAnyTextareaChanges(): void {
      const oldValue = this._textarea.value;
@@ -867,7 +872,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..77dd051036ad6c1fbebbc1ef51d25206
    }
  
    /**
-@@ -218,27 +500,57 @@ export class CompositionHelper {
+@@ -218,27 +505,57 @@ export class CompositionHelper {
      }
  
      if (this._bufferService.buffer.isCursorInViewport) {
