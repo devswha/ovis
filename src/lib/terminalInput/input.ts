@@ -178,6 +178,14 @@ export class TerminalInput {
     this.triggerData(data, wasUserInput);
   }
 
+  /**
+   * The terminal's own answer to the program (a cursor or device report): data only, as xterm's parser sends its
+   * replies. It leaves the textarea and a composition in it alone, which input() would commit and clear.
+   */
+  public reply(data: string): void {
+    this.triggerData(data, false);
+  }
+
   public paste(text: string): void {
     this._composition.finishReplacement();
     this.pasteText(text);

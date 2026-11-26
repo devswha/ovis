@@ -313,7 +313,7 @@ export class GhosttyTerminal {
     let vt: GhosttyVt;
     try {
       vt = await GhosttyVt.create(this.cols, this.rows, {
-        onReply: (bytes) => this.inputLayer?.input(new TextDecoder().decode(bytes), false),
+        onReply: (bytes) => this.inputLayer?.reply(new TextDecoder().decode(bytes)),
         onHold: (held) => { if (!held) this.schedule(); },
       });
     } catch (error) {

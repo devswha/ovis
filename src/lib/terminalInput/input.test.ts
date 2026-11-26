@@ -83,3 +83,16 @@ test("a custom key handler can veto all three keyboard event types", () => {
     expect(sent).toEqual([]);
   } finally { term.dispose(); }
 });
+
+test("a reply to the program leaves the textarea and the user's composition alone", () => {
+  const { term } = fixture();
+  const events: string[] = [];
+  try {
+    term.onData((text) => events.push(text));
+    term.onUserInput(() => events.push("user"));
+    term.textarea.value = "한";
+    term.reply("\x1b[1;1R");
+    expect(events).toEqual(["\x1b[1;1R"]);
+    expect(term.textarea.value).toBe("한");
+  } finally { term.dispose(); }
+});
