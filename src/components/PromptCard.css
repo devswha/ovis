@@ -1,11 +1,10 @@
 /* The card sits on the composer's column, directly above the input card and outside the
    transcript (PaneTerminal places it; the column and the space under it are Composer.css's).
    Its height is budgeted, and a phone's keyboard counts (--app-height): the larger of 60% of the
-   app (80% for a question, whose options are the answer) and six touch rows, so a three-option
-   approval is never cut. Only an approval's or a plan's
-   reference text gives way (.prompt-card-body), never a question's context (.is-prose); when that
-   is not enough the card scrolls as a whole. The composer's folder strip under the input card
-   comes out of that 60% (--prompt-card-strip), so the transcript keeps what it had without one. */
+   app (80% for questions without preceding terminal words) and six touch rows. Terminal words and
+   reference text can give way, but a question's own context (.is-prose) does not; when that is not
+   enough the card scrolls as a whole. The composer's folder strip under the input card comes out
+   of that budget (--prompt-card-strip), so the transcript keeps what it had without one. */
 .prompt-card {
   --prompt-card-strip: 0px;
   --prompt-card-share: 0.6;
@@ -25,7 +24,8 @@
   background: var(--bg-elevated);
 }
 
-.prompt-card.is-question {
+/* Preceding terminal words keep the standard budget so they give way on short screens. */
+.prompt-card.is-question:not(:has(> .prompt-card-words)) {
   --prompt-card-share: 0.8;
 }
 
@@ -663,7 +663,7 @@
   }
 }
 
-/* a desktop always shows the tab strip (as herdr's TUI): the card's 60% is of what is under it,
+/* a desktop always shows the tab strip (as herdr's TUI): the card's share is of what is under it,
    so the transcript keeps two lines at 800x600. A phone hides a lone tab and keeps the rule above */
 @media (min-width: 769px) {
   .prompt-card { max-height: max(calc((var(--app-height, 100dvh) - var(--control-h)) * var(--prompt-card-share) - var(--prompt-card-strip)), calc(var(--touch-target) * 6)); }
