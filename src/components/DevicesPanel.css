@@ -102,6 +102,7 @@
 
 .devices-rename {
   flex: 1 1 auto;
+  min-width: 0;
 }
 
 .devices-row > .devices-actions {

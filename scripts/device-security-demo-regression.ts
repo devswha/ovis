@@ -676,7 +676,7 @@ try {
               const buttons = [...row.querySelectorAll(".devices-actions > *")].map((button) => button.getBoundingClientRect());
               return [...row.querySelectorAll<HTMLElement>(".devices-kind, .devices-current")].map((pill) => {
                 const box = pill.getBoundingClientRect();
-                const clearOfButtons = buttons.every((button) => box.right <= button.left + 0.5 || box.bottom <= button.top + 0.5 || box.top >= button.bottom - 0.5);
+                const clearOfButtons = buttons.every((button) => box.right <= button.left + 0.5 || box.left >= button.right - 0.5 || box.bottom <= button.top + 0.5 || box.top >= button.bottom - 0.5);
                 return { text: pill.textContent, inName: box.left >= name.left - 0.5 && box.right <= name.right + 0.5, clearOfButtons, whole: pill.scrollWidth <= pill.clientWidth + 0.5 };
               });
             });
@@ -700,6 +700,20 @@ try {
             assert.deepEqual(await overflow(page), [], "the pills fit the rows");
             await reveal(joined);
             await capture(page, `${prefix}-account`, about("account"));
+            // renaming keeps the name field and its Save and Cancel inside the row
+            await press(self.getByRole("button", { name: label("Rename {name}").replace("{name}", "iPhone · Safari"), exact: true }));
+            const renaming = page.locator(`${ROW} .devices-rename`);
+            await renaming.waitFor();
+            const outside = await renaming.evaluate((form) => {
+              const row = form.closest("li")!.getBoundingClientRect();
+              return [...form.querySelectorAll<HTMLElement>("input, button")].filter((part) => {
+                const box = part.getBoundingClientRect();
+                return box.left < row.left - 0.5 || box.right > row.right + 0.5;
+              }).map((part) => part.getAttribute("aria-label"));
+            });
+            assert.deepEqual(outside, [], `the rename field and its buttons fit the row at ${width}`);
+            await press(renaming.getByRole("button", { name: label("Cancel"), exact: true }));
+            await renaming.waitFor({ state: "detached" });
             await page.close();
           }
 
