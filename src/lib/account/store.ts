@@ -30,6 +30,8 @@ export interface AccountSession {
   readonly expires_at: number;
   /** which sign-in this is, kept by every refresh: random for one made by this build (sessionOf), a digest of the saved refresh token for one saved before sign-ins had an id (service.ts, session) */
   readonly sign_in_id?: string;
+  /** The local sign-out generation a newly issued session may be installed under. */
+  readonly sign_in_generation?: string;
   /** when this sign-in was made, in ms by this device's clock (sessionOf), kept by every refresh; absent from one saved before it was kept */
   readonly signed_in_at?: number;
 }
@@ -42,6 +44,7 @@ export interface PendingSignIn {
   readonly verifier: string;
   readonly redirect_uri: string;
   readonly started_at: number;
+  readonly generation?: string;
   /** the marked pairing this sign-in was started for (relay/shell.tsx): it goes with the sign-in, whatever its end */
   readonly pairing?: PendingPairing;
   /**
@@ -68,6 +71,7 @@ interface Records {
    */
   enc_key: MemberEncryptionKey;
   session: AccountSession;
+  generation: string;
   /** by `state`, so a return consumes only its own sign-in and two tabs can each have one */
   pending: Readonly<Record<string, PendingSignIn>>;
   /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
@@ -277,6 +281,7 @@ export const indexedAccountStore: AccountStore = {
     return name === "session" ? sessionWritten(written) : written;
   },
   updateMany(names, change) {
+    let sessionChanged = false;
     const written = transact("readwrite", (store) => {
       const current: Record<string, unknown> = {};
       let left = names.length;
@@ -287,6 +292,8 @@ export const indexedAccountStore: AccountStore = {
           if (--left > 0) return;
           const next = change(current as never) as Record<string, unknown>;
           for (const each of names) {
+            if (next[each] === current[each]) continue;
+            if (each === "session") sessionChanged = true;
             if (next[each] === undefined) store.delete(each);
             else store.put(next[each], each);
           }
@@ -294,7 +301,9 @@ export const indexedAccountStore: AccountStore = {
       }
       return () => undefined;
     });
-    return (names as readonly string[]).includes("session") ? sessionWritten(written) : written;
+    return written.then(() => {
+      if (sessionChanged) globalThis.window?.dispatchEvent?.(new Event(ACCOUNT_SESSION_EVENT));
+    });
   },
   clear(keep, options) {
     return sessionWritten(transact("readwrite", (store) => {
