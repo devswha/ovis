@@ -64,7 +64,7 @@ function statusLineOf(given: unknown, hook: { command: string; args: string[] },
   if (process.platform === "win32") return null;
   const lineOf = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value)
     && typeof (value as Record<string, unknown>)["command"] === "string" && ((value as Record<string, unknown>)["command"] as string).trim() !== "" ? value as Record<string, unknown> : null;
-  const line = lineOf(given) ?? (cwd === null ? null : configuredStatusLine(process.env["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude"), cwd, sources));
+  const line = lineOf(given) ?? (cwd === null ? null : configuredStatusLine(process.env["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude"), cwd, sources, homedir()));
   if (line === null) return null;
   const words = [hook.command, ...hook.args, "--statusline", "--statusline-command", Buffer.from(line["command"] as string).toString("base64")];
   return { ...line, type: "command", command: words.map(shellQuote).join(" ") };

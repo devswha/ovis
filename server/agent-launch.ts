@@ -153,9 +153,9 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
     if (shell && hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
     // an agent another machine of the core starts could not reach this PC's hub
     // a Claude's status line is the one its project's settings set, above the user's (server/approvals/claude.ts)
-    const cwd = kind === "claude" ? await paneGet(paneId).then((pane) => pane.cwd ?? null, () => null) : null;
+    const paneCwd = (): Promise<string | null> => kind === "claude" ? paneGet(paneId).then((pane) => pane.cwd ?? null, () => null) : Promise.resolve(null);
     const args = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
-      ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind), cwd) : agent.args as string[] | undefined;
+      ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind), await paneCwd()) : agent.args as string[] | undefined;
     await markLocalAgentLaunch(paneId, options.platform ?? process.platform);
     if (shell) {
       const shellOptions = locator ? { locator } : {};

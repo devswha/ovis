@@ -137,8 +137,11 @@ export type SettingSource = "user" | "project" | "local";
  * project's local settings, its shared settings and the user's settings (in `configDir`) that sets one with a command,
  * as Claude ranks them, of the `sources` it reads. Null when none does, or for a file that cannot be read as JSON (Claude
  * would not run it either). Managed settings rank above a `--settings`, so what they set is drawn whatever this says.
+ * The wrapper the Settings switch installs stands for the line it wraps (its install record's), or none: the switch
+ * deletes the wrapper when turned off, which a Claude started with it named would then draw no line from.
  */
-export function configuredStatusLine(configDir: string, projectDir: string, sources: readonly SettingSource[]): Record<string, unknown> | null {
+export function configuredStatusLine(configDir: string, projectDir: string, sources: readonly SettingSource[], home: string): Record<string, unknown> | null {
+  const where = locations({ home, configDir });
   const files = ([["local", join(projectDir, ".claude", "settings.local.json")], ["project", join(projectDir, ".claude", "settings.json")], ["user", join(configDir, "settings.json")]] as const)
     .filter(([source]) => sources.includes(source)).map(([, file]) => file);
   for (const file of files) {
@@ -146,7 +149,14 @@ export function configuredStatusLine(configDir: string, projectDir: string, sour
     try { value = JSON.parse(readFileSync(file, "utf8")); } catch { continue; }
     const line = isObject(value) ? value[KEY] : undefined;
     const command = commandOf(line);
-    if (command !== null && command.trim() !== "") return line as Record<string, unknown>;
+    if (command === null || command.trim() === "") continue;
+    if (!namesAWrapper(command, where.tee, home)) return line as Record<string, unknown>;
+    try {
+      const recorded = ownFile(where.record) ? (JSON.parse(readFileSync(where.record, "utf8")) as InstallRecord).statusLine : null;
+      const original: unknown = recorded === null ? null : JSON.parse(recorded);
+      const wrapped = commandOf(original);
+      return wrapped !== null && wrapped.trim() !== "" ? original as Record<string, unknown> : null;
+    } catch { return null; }
   }
   return null;
 }

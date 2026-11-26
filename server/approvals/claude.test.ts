@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import { parsedByPublicPrompt } from "../dialogs/shared.ts";
 import { ROOT } from "../entries.ts";
 import { parseInteractivePrompt } from "../prompt.ts";
 import { readStatuslineContext } from "../statusline.ts";
+import { installStatusline, removeStatusline } from "../statusline-install.ts";
 
 // the folder's and socket's modes and links are those of Linux and macOS; on Windows the hub is a named pipe
 const posix = process.platform !== "win32";
@@ -171,7 +172,7 @@ describe.skipIf(!posix)("the status line of a Claude Ovis starts", () => {
       const drawn = await new Response(run.stdout).text();
       return { line: drawn, exit: await run.exited, window: readStatuslineContext(home, SESSION, "claude-haiku-4-5-20251001", transcript) };
     };
-    return { statusLine, draw };
+    return { statusLine, draw, home, config, project };
   }
   const line = (command: string, more: Record<string, unknown> = {}) => ({ statusLine: { type: "command", command, ...more } });
 
@@ -206,6 +207,22 @@ describe.skipIf(!posix)("the status line of a Claude Ovis starts", () => {
     const { statusLine, draw } = claudeIn();
     expect(await draw(statusLine(["--settings", JSON.stringify({ ultracode: true, ...line("printf 'it''s given'; exit 3") })])!))
       .toEqual({ line: "its given", exit: 3, window: 200_000 });
+  });
+
+  it("keeps no limits or account: only the Settings switch keeps them", async () => {
+    const { statusLine, draw, home } = claudeIn({ user: line("printf mine") });
+    const limited = JSON.stringify({ ...JSON.parse(PAYLOAD), rate_limits: { five_hour: { used_percentage: 12, resets_at: 2_000_000_000 } } });
+    expect((await draw(statusLine()!, limited)).line).toBe("mine");
+    expect(existsSync(join(home, ".herdr", "statusline-last.json"))).toBe(false);
+  });
+
+  it("draws the line the Settings switch's wrapper wraps, which turning the switch off deletes", async () => {
+    const { statusLine, draw, home, config } = claudeIn({ user: line("printf wrapped") });
+    installStatusline({ home, configDir: config });
+    expect(JSON.parse(readFileSync(join(config, "settings.json"), "utf8")).statusLine.command).toContain("statusline-tee.sh");
+    const drawn = statusLine()!;
+    removeStatusline({ home, configDir: config });
+    expect((await draw(drawn)).line).toBe("wrapped");
   });
 
   it("hands the user's line a payload too large to capture whole", async () => {
