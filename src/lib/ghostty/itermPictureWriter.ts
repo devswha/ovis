@@ -242,7 +242,8 @@ export function itermPictureWriter(settings: () => PictureLimits | null, grid: (
         decoding = true;
         const conversion = image();
         pending = conversion;
-        // skipped as an overflow skips it: the next picture waits for this decode to end, the text after it does not
+        // skipped as an overflow skips it: the text after it goes on, and a picture that comes before this decode ends is
+        // dropped too (one browser decode at a time), so a slow phone may show neither
         const late = setTimeout(() => {
           if (pending !== conversion) return;
           pending = null;

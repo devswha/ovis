@@ -1060,6 +1060,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           peakInFlight = Math.max(peakInFlight, inFlight);
           write(data, () => { inFlight--; callback(); });
         };
+        Object.assign(host, { failTerminal: () => (term as unknown as GhosttyTerminal).failForTest() });
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
           history: ((rows) => ({ scrollback: term.options.scrollback ?? 0, length: rows.length, viewportY: rows.viewportY, baseY: rows.baseY }))(screenRows(term)),
           grid: { cols: term.cols, rows: term.rows } }) });
@@ -2420,10 +2421,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // The PC's connection stopped on an overload close (4008), or an attach conflicted: attach again
       // in place, as a pane pick does. The attach reconnects, and the connection's open replays every
       // pane this PC has attached; their snapshot clears what is left of the notice.
+      let terminalGaveUp = false;
       const reattach = (): void => {
         if (!presentedRef.current || !paneRef.current) return;
         stalledRef.current = false;
-        setOutputError(null);
+        // a terminal that gave up keeps saying so whatever brings the pane back
+        setOutputError(terminalGaveUp ? tRef.current("This terminal could not be drawn. Reload the page to try again.") : null);
         setEnded(false);
         resume();
         term.options.disableStdin = observeRef.current || heldRef.current;
@@ -2450,6 +2453,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           redrawFresh();
           return;
         }
+        terminalGaveUp = true;
         const t = tRef.current; // the language of now, not of the attach
         setOutputError(t("This terminal could not be drawn. Reload the page to try again."));
         term.options.disableStdin = true;

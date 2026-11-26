@@ -92,7 +92,10 @@ const RESTART_DELAY_MS = 500;
 /** an engine that drew this long without failing counts as well again: a later failure has every restart again */
 const RESTARTS_FORGOTTEN_MS = 60_000;
 
-/** told on the pane's host when libghostty stopped drawing a terminal (ghostty/terminal.ts) */
+/**
+ * told on the pane's host when libghostty stopped drawing a terminal (ghostty/terminal.ts): `restarting` once a new engine
+ * is in and the pane should be drawn again, or not when the terminal gave up
+ */
 export const TERMINAL_FAILED_EVENT = "ovis-terminal-failed";
 export interface TerminalFailure { readonly error: unknown; readonly restarting: boolean }
 
@@ -384,6 +387,8 @@ export class GhosttyTerminal {
     if (this.disposed) { vt.dispose(); return; }
     this.vt = vt;
     if (this.restarts > 0) {
+      // a new engine after a failure: the mount attaches the pane again now, so the server's replay reaches this one
+      this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error: null, restarting: true } }));
       const restarted = vt;
       setTimeout(() => { if (this.vt === restarted && this.failed === null) this.restarts = 0; }, RESTARTS_FORGOTTEN_MS);
     }
@@ -426,6 +431,7 @@ export class GhosttyTerminal {
     this.pending = false;
     if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites(), 0);
     const restarting = this.restarts < MAX_RESTARTS;
+    // the mount is told when there is something to do: attach again once the new engine is in (start), or say it gave up
     if (restarting) {
       this.restarts++;
       // a moment between attempts, longer each time: a fetch that failed for a moment (a relay's hiccup) gets its chance
@@ -435,7 +441,7 @@ export class GhosttyTerminal {
       this.broken = true;
       if (this.inputLayer) this.inputLayer.disableStdin = true;
     }
-    this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error, restarting } }));
+    if (!restarting) this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error, restarting: false } }));
   }
 
   private restart(): void {
@@ -456,6 +462,9 @@ export class GhosttyTerminal {
   }
 
   get failure(): unknown { return this.failed; }
+
+  /** test builds only (the mount's __HERDR_TEST_HOOKS__): libghostty stopping, as a trap stops it */
+  failForTest(): void { this.fail(new Error("a stop the test asked for")); }
 
   /**
    * Output is parsed in a task of its own, after the event that wrote it, as xterm's write buffer parses it: a listener

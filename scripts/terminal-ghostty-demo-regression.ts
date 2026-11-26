@@ -386,6 +386,22 @@ try {
         await page.context().close();
       }
       {
+        // libghostty stops while the pane is shown: a new engine starts and the pane is attached again, so the server
+        // (here the fixture, which paints BEFORE-LOAD on every attach) draws it anew without the program writing anything
+        const { page, errors } = await open(browser, server.port, prefix, "core");
+        await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
+        await print(page, "\x1b[H\x1b[2JBEFORE-STOP\r\n", "STOP-READY");
+        await page.waitForFunction(() => ![...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")));
+        await page.evaluate(() => (document.querySelector(".pane-frame.is-current .pane-terminal") as HTMLElement & { failTerminal(): void }).failTerminal());
+        await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row")].some((row) => row.textContent?.includes("BEFORE-LOAD")), undefined, { timeout: 10000 });
+        await page.locator(".pane-frame.is-current .pane-terminal").click();
+        await page.keyboard.type("r");
+        await page.waitForFunction(() => window.ghosttyFixture.inputs.some((frame) => frame.type === "input" && frame.text === "r"));
+        assert.deepEqual(errors.filter((error) => !error.includes("libghostty")), [], "restart: no page errors");
+        await page.context().close();
+        console.log("PASS libghostty stopping mid-session: a new engine draws the pane again and takes typing");
+      }
+      {
         // the module never loads: the terminal starts over a few times, then the pane says so instead of staying blank
         const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
         await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false })));
