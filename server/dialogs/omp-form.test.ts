@@ -164,7 +164,7 @@ const SHIP = [
   "Implement, run the related tests, check it in the browser, commit, and push the branch to fork. No PR anywhere. Recommended because you said \"personal repo\".",
   "Do the same, then open a PR into tung-dnt/ovis main.",
   "Do the same, but commit locally only, with no push.",
-];
+] as const;
 
 describe("omp 19 Ask form cut by a scrolled box", () => {
   it("says more options are in the terminal rather than offering the rows that show as the whole group", () => {
