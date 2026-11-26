@@ -121,9 +121,14 @@ describe("OpenCode 2.2.2 permission and question form events wake the prompt wat
 
   it("wakes the pane of each recorded question form's session, as it is created and as it is replied or cancelled", async () => {
     const { service, stream, woken } = await verified("forms");
-    service.send(stream, ...formEvents);
-    await woken.reach(formEvents.length);
-    expect(woken.seen).toEqual(["p_first", "p_first", "p_second", "p_second"]);
+    // each followed by the other session's recorded permission event, so a missed or a doubled wake shows in the order
+    const [ofFirst, ofSecond] = [recording.events[0]!, recording.events.at(-1)!];
+    for (const [index, event] of formEvents.entries()) {
+      const { form, sessionID } = event.data as { form?: { sessionID?: string }; sessionID?: string };
+      service.send(stream, event, (form?.sessionID ?? sessionID) === first ? ofSecond : ofFirst);
+      await woken.reach(2 * (index + 1));
+    }
+    expect(woken.seen).toEqual(["p_first", "p_second", "p_first", "p_second", "p_second", "p_first", "p_second", "p_first"]);
   });
 
   it("wakes again for a duplicate, and for a reply that comes before its ask; a session no pane holds wakes none", async () => {

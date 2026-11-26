@@ -685,6 +685,8 @@ function contentId(prompt: InteractivePrompt | null): string | undefined {
 
 const formsAnswered = new Map<string, number>();
 const FORM_SETTLE_MS = 3_000;
+/** each pane's OpenCode session whose permission request or form a read last saw go, and when */
+const openCodeClosed = new Map<string, { sessionID: string; at: number }>();
 
 const defaultOpenCodeState = new OpenCodePromptState();
 
@@ -1038,15 +1040,12 @@ async function readKnownPrompt(
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
       state.applied = issued;
-      // a request or form answered or cancelled elsewhere (its own terminal, an interrupt): OpenCode's dialog closes a
-      // moment before herdr stops reporting blocked, the same settling an answer from a card waits out, so no fallback
-      // card stands in for it meanwhile
       const permissionGone = permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id));
       const heldForm = state.listed;
       const formGone = forms !== null && heldForm !== null && !forms.some((listed) => listed.id === heldForm.id);
       if (permissionGone || formGone) {
-        formsAnswered.set(paneId, Date.now());
-        if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+        openCodeClosed.set(paneId, { sessionID, at: Date.now() });
+        if (openCodeClosed.size > 64) openCodeClosed.delete(openCodeClosed.keys().next().value!);
       }
       state.permissions = permissions;
       state.available = forms !== null;
@@ -1068,6 +1067,13 @@ async function readKnownPrompt(
       return { prompt: publicPrompt(card) };
     }
     const form = state.listed;
+    // a request or form answered or cancelled elsewhere (its own terminal, an interrupt): OpenCode's dialog closes a
+    // moment before herdr stops reporting blocked, so no fallback card stands in for it meanwhile while this session
+    // has nothing else pending
+    const closed = openCodeClosed.get(paneId);
+    if (!form && !state.permissions?.length && closed?.sessionID === sessionID && Date.now() - closed.at < FORM_SETTLE_MS) {
+      return { prompt: null, suppressFallback: true };
+    }
     if (!form || form.fields.length === 0) break native;
 
     const identity = JSON.stringify({
