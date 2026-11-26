@@ -44,7 +44,7 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
  * A choice group the scrolled box cuts is made whole from that call's HTML. Without such a call (no session to look
  * in, none open, several, one asked another way), the card shows but the read authorizes no key.
  */
-export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt; unverified?: true } {
+export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt | null; unverified?: true } {
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
   const args = open[0]?.args;
@@ -52,7 +52,8 @@ export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   if (parsed.ompFormPositionUnverified || call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") {
     return { prompt, unverified: true };
   }
-  return { prompt: publicPrompt({ ...bindFormChoiceGroup(parsed, args.html), ompCall: call }) };
+  const bound = bindFormChoiceGroup(parsed, args.html);
+  return bound ? { prompt: publicPrompt({ ...bound, ompCall: call }) } : { prompt: null, unverified: true };
 }
 
 /**

@@ -234,26 +234,34 @@ function choiceCard(group: OmpFormChoices, body: string | null, cut: boolean): F
  * and its words around the options. A checkbox group stays cut: its hidden options' ticks are not on screen, and Space
  * toggles them.
  */
-export function bindFormChoiceGroup(parsed: ParsedPrompt, html: string): ParsedPrompt {
+export function bindFormChoiceGroup(parsed: ParsedPrompt, html: string): ParsedPrompt | null {
   const window: OmpFormChoiceWindow | undefined = parsed.ompFormChoices;
   if (!window || window.shown.labels.length === 0) return parsed;
   const { shown, top, bottom } = window;
   const bare = (text: string): string => text.replace(/\s+/gu, "");
   // the Other row is drawn last: shown, the group's end shows with it
   const ends = !bottom || shown.other !== null;
+  let clippedLabel = false;
   const found = formChoiceGroups(html).flatMap((group, index) => {
-    if (group.multi !== shown.multi || group.disabled) return [];
+    if (group.multi !== shown.multi) return [];
     if (ends && group.other && shown.other === null) return [];
     const fixedOther = !group.other ? shown.other : null;
     const wanted = [...shown.labels, ...(fixedOther ? [fixedOther.label] : [])].map(bare);
     const labels = group.labels.map(bare);
     const offsets: number[] = [];
+    const last = wanted.at(-1) ?? "";
     for (let offset = 0; offset + wanted.length <= labels.length && (top || offset === 0); offset += 1) {
       if (ends && offset + wanted.length !== labels.length) continue;
-      if (wanted.every((label, index) => labels[offset + index] === label)) offsets.push(offset);
+      if (!wanted.slice(0, -1).every((label, index) => labels[offset + index] === label)) continue;
+      const full = labels[offset + wanted.length - 1];
+      if (full === last && !group.disabled) offsets.push(offset);
+      // At the bottom edge the last label may wrap offscreen. Even an exact match in a different group
+      // cannot prove that this is the whole label.
+      if (!ends && full !== last && full?.startsWith(last)) clippedLabel = true;
     }
     return offsets.map((offset) => ({ group, index, offset, fixedOther }));
   });
+  if (clippedLabel) return null;
   if (found.length !== 1) return parsed;
   const { group, index, offset, fixedOther } = found[0]!;
   const bound = group.multi ? parsed : { ...parsed, ompFormRadioGroup: index };

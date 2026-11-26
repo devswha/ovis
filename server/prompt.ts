@@ -947,7 +947,7 @@ export type OmpLookups = Map<string, { path: string; open: OmoAsks; failures: nu
 const ompLookups: OmpLookups = new Map();
 const OMP_LOOKUP_FAILURES = 3;
 
-async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean, lookups: OmpLookups): Promise<{ prompt: InteractivePrompt; unverified?: true; rebind: (prompt: InteractivePrompt) => InteractivePrompt }> {
+async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean, lookups: OmpLookups): Promise<{ prompt: InteractivePrompt | null; unverified?: true; rebind: (prompt: InteractivePrompt) => InteractivePrompt | null }> {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && parsed?.responder !== "omp-form" && !parsed?.nativeSteps) return { prompt, rebind: (card) => card };
   let path = "";
@@ -1250,9 +1250,10 @@ async function readKnownPrompt(
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
   if ((agent === "letta" || agent === "agy") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
-  let rebind = (card: InteractivePrompt): InteractivePrompt => card;
+  let rebind = (card: InteractivePrompt): InteractivePrompt | null => card;
   if (prompt && agent === "omp") {
     const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown === true, ompBindings);
+    if (!read.prompt) return { prompt: null, screen, suppressFallback: true, inputUnverified: true };
     prompt = read.prompt;
     rebind = read.rebind;
     if (read.unverified) inputUnverified = true;

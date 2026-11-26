@@ -121,6 +121,7 @@ describe("omp 19 Ask form", () => {
     const radio = card("radio-100");
     const formCall = [{ id: "call-1", wait: true, args: { html: "<form></form>" } }];
     const bound = ompFormPrompt(radio, formCall, "/s.jsonl");
+    if (!bound.prompt) throw new Error("Expected the complete radio card");
     expect(bound.unverified).toBeUndefined();
     expect(parsedByPublicPrompt.get(bound.prompt)?.ompCall).toBe(JSON.stringify(["/s.jsonl", "call-1"]));
     expect(bound.prompt.id).toBe(radio.id);
@@ -145,13 +146,18 @@ describe("omp 19 Ask form", () => {
 // omp 19.1.1 at 46 columns and 24 or 16 rows, as a phone's pane draws it: the box scrolls, and a choice group's long
 // options run past its edges. `cut` is the form the agent asked with three radio groups (`.html`, its call's `html`),
 // on Q2's first, second and Other rows; `cut-top` is one five-option group on its fourth row, with neither end shown.
+const scrolledScreen = (name: string): string => readFileSync(new URL(`../fixtures/omp-form-19.1.1-${name}.txt`, import.meta.url), "utf8");
 const scrolled = (name: string) => {
-  const prompt = parseInteractivePrompt("omp", readFileSync(new URL(`../fixtures/omp-form-19.1.1-${name}.txt`, import.meta.url), "utf8"));
+  const prompt = parseInteractivePrompt("omp", scrolledScreen(name));
   expect(prompt, name).not.toBeNull();
   return prompt!;
 };
 const html = (name: string): string => readFileSync(new URL(`../fixtures/omp-form-19.1.1-${name}.html`, import.meta.url), "utf8");
-const bound = (prompt: InteractivePrompt, form: string) => ompFormPrompt(prompt, [{ id: "call-1", wait: true, args: { html: form } }], "/s.jsonl").prompt;
+const bound = (prompt: InteractivePrompt, form: string): InteractivePrompt => {
+  const { prompt: card } = ompFormPrompt(prompt, [{ id: "call-1", wait: true, args: { html: form } }], "/s.jsonl");
+  if (!card) throw new Error("Expected a choice card");
+  return card;
+};
 const pressed = (prompt: InteractivePrompt, answer: Parameters<typeof answerKeys>[1]): (string | undefined)[] =>
   answerKeys(prompt, answer).flatMap((step) => step.keys ?? [step.text]);
 const SHIP = [
@@ -199,6 +205,16 @@ describe("omp 19 Ask form cut by a scrolled box", () => {
       "Asia Pacific, nearest the fictional support desk", "South America & the fictional archive \"cold\" tier", "Africa, for the fictional disaster-recovery copy",
     ]);
     expect(pressed(top, { option_index: 0 })).toEqual([KEY.up, KEY.up, KEY.up, KEY.enter]);
+  });
+
+  it("leaves a bottom-clipped label to the terminal even if it exactly matches another group's option", () => {
+    const screen = scrolledScreen("cut-46").split("\n").filter((row) => !row.includes('said "personal repo".')).join("\n");
+    const prompt = parseInteractivePrompt("omp", screen);
+    if (!prompt) throw new Error("Expected the fixture's visible Q2 rows to parse");
+    const prefix = SHIP[0].replace(' said "personal repo".', "");
+    const overlapping = html("cut").replace("No. Leave the running build as it is.", prefix);
+    const live = ompFormPrompt(prompt, [{ id: "call-1", wait: true, args: { html: overlapping } }], "/s.jsonl");
+    expect(live.prompt).toBeNull();
   });
 
   it("keeps the cut card when the call's HTML does not place the shown rows in exactly one group", () => {
