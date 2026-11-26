@@ -21,7 +21,7 @@ describe("useMoreMenu", () => {
   });
 
   function Probe({ pane, folded }: { pane: string; folded: boolean }) {
-    menu = useMoreMenu(pane, folded);
+    menu = useMoreMenu(pane, folded, true);
     return null;
   }
   const draw = async (pane = "local:p1", folded = false): Promise<void> => {
@@ -35,7 +35,7 @@ describe("useMoreMenu", () => {
     const button = { isConnected: true };
     const anchor = button as unknown as HTMLElement;
     await draw();
-    await act(async () => { menu.setMore({ anchor }); });
+    await act(async () => { menu.toggleMore(anchor); });
 
     await draw();
 
@@ -68,5 +68,19 @@ describe("useMoreMenu", () => {
 
     expect(menu.group).toBeNull();
     expect(menu.paneActionsInMore).toBe(true);
+  });
+
+  it.each(["closing", "changing panes"] as const)("drops the held tab actions from More after %s", async (exit) => {
+    const anchor = { isConnected: true } as unknown as HTMLElement;
+    await draw("local:p1", true);
+    await act(async () => { menu.toggleMore(anchor); });
+    await draw("local:p1", false);
+    expect(menu.paneActionsInMore).toBe(true);
+
+    if (exit === "closing") await act(async () => { menu.closeMore(); });
+    else await draw("desk:p1", false);
+    expect(menu.more).toBeNull();
+    await act(async () => { menu.toggleMore(anchor); });
+    expect(menu.paneActionsInMore).toBe(false);
   });
 });
