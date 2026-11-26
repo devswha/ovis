@@ -118,8 +118,8 @@ Beside the checks it builds the Rust PTY host (**Rust PTY host binaries**, `.git
 static Linux x64 and arm64 binaries, a universal macOS one, `ovis-pty-sidecar.json` (the version,
 the `crates/pty-sidecar` git tree they were built from, and each file's SHA-256) and `SHA256SUMS`,
 all attached when the release is created, so no tag is seen without them. `bun
-scripts/pty-sidecar.ts install` (herdr's plugin build, each update installed from the app, and
-`install.sh`) puts the binary for its PC in `bin/ovis-pty-sidecar` only when the release's crate
+scripts/pty-sidecar.ts install` (herdr's plugin build, each update installed from the app,
+`install.sh`, and `test:unit` and `test:integration` in a checkout where no host runs) puts the binary for its PC in `bin/ovis-pty-sidecar` only when the release's crate
 tree matches the checkout and the SHA-256 matches (a checkout whose crate tree no release has takes the
 daily beta's `pty-sidecar-<tree>` prerelease); otherwise that install mirrors its panes and says how to
 build one.
