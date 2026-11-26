@@ -24,7 +24,7 @@ export function ghosttyOnly(mirrored: boolean): boolean {
 
 /**
  * `screenTaken` is told once the screen held while libghostty loaded can be read: libghostty drew it, or xterm parsed
- * it after the module failed. With libghostty alone, a reader at a frame before then read xterm's rows, which held
+ * it after the module or its drawing failed. With libghostty alone, a reader at a frame before then read xterm's rows, which held
  * none of its text, and a program that waits (a password prompt) draws nothing more to be read at.
  */
 export function captureForGhostty(
@@ -113,7 +113,10 @@ export function captureForGhostty(
         questions.length = 0;
         if (stopped) { attached.dispose(false); return; }
         overlay = attached;
-        screenTaken();
+        // with libghostty alone the held output is still drawing (a picture decodes first) and may yet be handed back
+        // to xterm: an empty write through the overlay is answered behind all of it
+        if (only) term.write("", () => { if (!stopped) screenTaken(); });
+        else screenTaken();
       }, (error: unknown) => {
         handBack();
         console.warn("libghostty could not draw this terminal; xterm draws it", error);

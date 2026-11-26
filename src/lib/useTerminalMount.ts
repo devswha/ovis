@@ -1047,10 +1047,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       retireOutputRef.current = retireOutput;
       // the screen libghostty loaded for is read again once it can be (lib/ghostty/capture.ts): the frames read before
       // then read xterm's rows, which held none of their text, and a prompt that waits draws no frame after them.
-      // Only after a whole frame with none queued or parsing: those read the screen themselves when they are parsed
+      // Only with no frame queued or parsing (those read the screen themselves when they are parsed), and for a pane
+      // shown only after a whole frame; a pane only watched keeps the prompt for its typing, as a watched frame does
       const screenTaken = (): void => {
         const owner = paneRef.current;
-        if (disposed || owner === null || owner !== wholeFrameOf || releasedRef.current || writingOutput || outputFrames.length > 0) return;
+        if (disposed || owner === null || writingOutput || outputFrames.length > 0) return;
+        if (releasedRef.current) { secretRef.current = secretScreen.read(owner); return; }
+        if (owner !== wholeFrameOf) return;
         const prompt = secretScreen.read(owner);
         secretRef.current = prompt;
         showSecret(owner, prompt);
