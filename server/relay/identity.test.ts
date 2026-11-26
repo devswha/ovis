@@ -152,7 +152,7 @@ describe("relay identity", () => {
     const dir = stateDir();
     mkdirSync(join(dir, "relay"));
     // RFC 7748 section 6.1's first key pair, as identity.json has always stored it
-    const saved = { v: 1, server_id: "13b4d3cd80478aee7464bbce23620d33",
+    const saved = { v: 1 as const, server_id: "13b4d3cd80478aee7464bbce23620d33",
       public_key: "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=", secret_key: "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=" };
     writeFileSync(relayIdentityPath(dir), JSON.stringify(saved), { mode: 0o600 });
     expect(loadRelayIdentity(dir)).toEqual(saved);
