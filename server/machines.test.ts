@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describeProgress } from "../src/lib/bridgeProgress.ts";
@@ -15,7 +15,7 @@ import { MachineActionRequired, MachineManager, setupStepWords } from "./machine
 import { detectHost, psQuote, UNSUPPORTED_HOST, windowsBridgeFiles, windowsHost } from "./remote-host.ts";
 import { decodeClixml, SshConnection } from "./ssh.ts";
 import { terminalAttachSupported } from "./herdr/client.ts";
-import { attachableIdentity, isRealNode, sidecarAvailable } from "./pty/sidecar.ts";
+import { attachableIdentity, isRealNode, realNode, sidecarAvailable } from "./pty/sidecar.ts";
 import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
 import { recentSshOutput } from "./ssh.ts";
@@ -368,6 +368,8 @@ describe("machine boundaries", () => {
     for (const path of ["pane/focus", "pane/move", "layout/ratio", "tab/move"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["pane/focus/extra", "pane/move/extra", "layout/apply", "layout/ratio/extra", "layout/../auth", "agent/commands/extra", "agent/start"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     for (const path of ["agent/rename", "agent/commands"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    for (const path of ["pane/turn/cancel", "pane/turn/release", "pane/turn/cancel-children"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    expect(MACHINE_PROXY_PATH.test("pane/turn/cancel-children/extra")).toBe(false);
     // the install catalog a PC answers for itself, and an install or sign-in started on that PC; nothing else under it
     for (const path of ["agent-catalog", "agent-catalog/install", "agent-catalog/sign-in"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["agent-catalog/uninstall", "agent-catalog/install/extra", "agent-catalog/../auth"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
@@ -1060,6 +1062,23 @@ describe("terminal attach capability", () => {
       expect(isRealNode(join(dir, "absent"))).toBe(false);
       expect(isRealNode(stand("hung", "exec sleep 30"), process.env, 200)).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("shares one time budget among the Node candidates, so hung app Nodes leave time for the one on PATH", () => {
+    const home = mkdtempSync(join(tmpdir(), "herdr-sidecar-budget-"));
+    const stand = (path: string, body: string) => {
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, `#!/bin/sh\n${body}\n`);
+      chmodSync(path, 0o755);
+      return path;
+    };
+    try {
+      for (const dir of [".local/share/ovis/node", ".local/share/herdr-web-ui/node"]) stand(join(home, dir, "bin", "node"), "exec /bin/sleep 30");
+      const onPath = stand(join(home, "path", "node"), `echo 22.23.2 ${process.arch}`);
+      const started = performance.now();
+      expect(realNode({ HOME: home, PATH: join(home, "path") }, 900)).toBe(onPath);
+      expect(performance.now() - started).toBeLessThan(900 + 500);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
 

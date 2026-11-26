@@ -102,6 +102,7 @@ import { useOwnWindowPrompts } from "./lib/useOwnWindowPrompts.ts";
 import { pcHeld } from "./lib/relay/newPcHere.ts";
 import { OwnJoinCard } from "./components/OwnJoins.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
+import { ListMoveNotices } from "./components/ListMoveNotice.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
 import { FilesDialog } from "./components/FilesDialog.tsx";
 import { folderQueryFor } from "./lib/paletteFolders.ts";
@@ -1199,11 +1200,12 @@ export function App() {
         <PushHealthNotice onRepair={repairNotifications} onOpen={() => { setSettingsLinkPage("alerts"); setSettingsOpen(true); }} />
         <InstallHint />
         {setupGuide.guide !== null && setupGuide.paused && <SetupGuideResume onResume={setupGuide.resume} />}
-        {prompts.length > 0 && <RelayPairingPrompt pairings={prompts} />}
+        {prompts.length > 0 && <RelayPairingPrompt pairings={prompts} onDecided={rereadOwnJoins} />}
         {/* an account join a member could approve too: this PC's own window asks for the number itself (OwnJoinCard) */}
         {ownWindow && locked === false && <OwnJoinCard joins={ownJoins} onDecided={rereadOwnJoins} />}
         {/* always there: it keeps what an approval left to say after its request is gone from this PC */}
         <AccountApprovals pairings={remotePairings} />
+        <ListMoveNotices />
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
         {health !== null && <NewPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} ownWindowOf={ownWindowHere(health.auth) ? health.web_ui?.server_id : undefined} signIn={accountSignedIn ?? undefined} />}
@@ -1342,6 +1344,7 @@ export function App() {
                         agentStatus={item?.agent_status}
                         agentSession={item ? paneSessionKey(item) : null}
                         acpChild={item?.acp_child === true}
+                        acpHold={item?.acp_hold}
                         backgroundTasks={item?.background_tasks ?? 0}
                         plan={machine?.state === "connected" ? (item as HerdrPane | undefined)?.plan ?? null : null}
                         backgroundWait={item?.background_wait === true}

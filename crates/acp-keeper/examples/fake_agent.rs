@@ -13,7 +13,8 @@
 //!
 //! `session/load` adopts the loaded id, and fails while the file named by `--refuse-load FILE`
 //! exists; with `--no-load` the agent does not offer `loadSession`. With `--ask-on-close` it asks for one more approval as its stdin closes, and with
-//! `--linger` it stays alive after that, as an agent busy elsewhere would.
+//! `--linger` it stays alive after that, as an agent busy elsewhere would. With `--exit-after-session` it exits
+//! right after answering `session/new`.
 
 use std::io::{BufRead, Write};
 
@@ -57,23 +58,31 @@ fn helpers(_dir: &str) {}
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let refuse_load = args.iter().position(|a| a == "--refuse-load").and_then(|at| args.get(at + 1)).cloned();
+    let refuse_session = args.iter().position(|a| a == "--refuse-session").and_then(|at| args.get(at + 1)).and_then(|s| s.parse::<i64>().ok());
     let mut session = format!("fake-{}", std::process::id());
     let mut out = std::io::stdout().lock();
     let mut held: Vec<Value> = vec![];
     let mut asked: Option<Value> = None;
+    let mut always = false;
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         let id = msg.get("id").cloned().unwrap_or(Value::Null);
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         if method.is_empty() {
-            if id == json!("perm-1") {
+            if id == json!("question") {
+                if let Some(prompt) = asked.take() {
+                    send(&mut out, &chunk(&session, &msg["result"].to_string()));
+                    send(&mut out, &end_turn(&prompt));
+                }
+            } else if id == json!("perm-1") {
                 if let Some(prompt) = asked.take() {
                     let outcome = msg
                         .pointer("/result/outcome/optionId")
                         .or(msg.pointer("/result/outcome/outcome"))
                         .and_then(Value::as_str)
                         .unwrap_or("error");
+                    always |= outcome == "always";
                     send(&mut out, &chunk(&session, &format!("answered {outcome}")));
                     send(&mut out, &end_turn(&prompt));
                 }
@@ -81,6 +90,18 @@ fn main() {
             continue;
         }
         if id.is_null() {
+            if method == "fixture/ask" && asked.is_none() {
+                if let Some(prompt) = held.pop() {
+                    asked = Some(prompt);
+                    send(
+                        &mut out,
+                        &json!({"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{
+                            "sessionId":session,"toolCall":{"toolCallId":"held","title":"a deferred request","kind":"execute"},
+                            "options":[{"optionId":"reject","name":"Reject","kind":"reject_once"}]
+                        }}),
+                    );
+                }
+            }
             if method == "session/cancel" && msg.pointer("/params/sessionId").and_then(Value::as_str) == Some(&session) {
                 for prompt in held.drain(..) {
                     send(&mut out, &json!({"jsonrpc":"2.0","id":prompt,"result":{"stopReason":"cancelled"}}));
@@ -90,11 +111,22 @@ fn main() {
         }
         let result = match method {
             "initialize" => json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !args.iter().any(|a| a == "--no-load")}}),
-            "session/new" => json!({
-                "sessionId": session,
-                "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
-                "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
-            }),
+            "session/new" if refuse_session.is_some() => {
+                send(&mut out, &json!({"jsonrpc":"2.0","id":id,"error":{"code":refuse_session,"message":"session refused"}}));
+                continue;
+            }
+            "session/new" => {
+                let opened = json!({
+                    "sessionId": session,
+                    "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
+                    "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
+                });
+                if args.iter().any(|a| a == "--exit-after-session") {
+                    send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "result": opened}));
+                    std::process::exit(0);
+                }
+                opened
+            }
             "session/load" if refuse_load.as_ref().is_some_and(|f| std::path::Path::new(f).exists()) => {
                 send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the session is locked"}}));
                 continue;
@@ -108,6 +140,10 @@ fn main() {
                 let text = msg.pointer("/params/prompt/0/text").and_then(Value::as_str).unwrap_or("").to_string();
                 let mut words = text.split_whitespace();
                 match words.next().unwrap_or("") {
+                    "fixture-stop-reason" => {
+                        send(&mut out, &json!({"jsonrpc":"2.0","id":id,"result":{"stopReason":"fixture annotation"}}));
+                        continue;
+                    }
                     "echo" => send(&mut out, &chunk(&session, &format!("echo bytes={}", text.len()))),
                     "hold" => {
                         held.push(id);
@@ -119,7 +155,26 @@ fn main() {
                         }
                     }
                     "helpers" => helpers(words.next().unwrap_or(".")),
-                    "ask" | "ask-and-close-input" | "end-and-close-input" => {
+                    "elicit" => {
+                        let mut params: Value = serde_json::from_str(text.strip_prefix("elicit ").unwrap()).unwrap();
+                        params["sessionId"] = json!(session);
+                        asked = Some(id);
+                        send(&mut out, &json!({"jsonrpc":"2.0","id":"question","method":"elicitation/create","params":params}));
+                        continue;
+                    }
+                    "question" => {
+                        asked = Some(id);
+                        send(
+                            &mut out,
+                            &json!({"jsonrpc":"2.0","id":"question","method":"elicitation/create","params":{
+                            "mode":"form","sessionId":session,"toolCallId":"tool-1","message":"Questions","requestedSchema":{
+                                "type":"object","properties":{"q0":{"type":"string","title":"Color","description":"Which color?",
+                                    "oneOf":[{"const":"red","title":"Red"},{"const":"blue","title":"Blue"}]}},"required":["q0"]}}}),
+                        );
+                        continue;
+                    }
+                    "widen" if always => send(&mut out, &chunk(&session, "already allowed here")),
+                    "widen" | "ask" | "ask-and-close-input" | "end-and-close-input" => {
                         #[cfg(unix)]
                         if text.ends_with("-and-close-input") {
                             // SAFETY: this fixture owns its stdin; it stops reading after this row.
@@ -132,12 +187,20 @@ fn main() {
                             }
                         }
                         asked = Some(id);
+                        let title = if text == "widen" { "Request wider permissions" } else { "touch x" };
+                        let mut options = vec![
+                            json!({"optionId": "allow", "name": "Allow", "kind": "allow_once"}),
+                            json!({"optionId": "reject", "name": "Reject", "kind": "reject_once"}),
+                        ];
+                        if text == "widen" {
+                            options.push(json!({"optionId":"always","name":"Always allow","kind":"allow_always"}));
+                        }
                         send(
                             &mut out,
                             &json!({"jsonrpc": "2.0", "id": "perm-1", "method": "session/request_permission", "params": {
                                 "sessionId": session,
-                                "toolCall": {"toolCallId": "t1", "title": "touch x", "kind": "execute", "rawInput": {"command": "touch x"}},
-                                "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}],
+                                "toolCall": {"toolCallId": "t1", "title": title, "kind": "execute", "rawInput": {"command": title}},
+                                "options": options,
                             }}),
                         );
                         if text == "ask-and-close-input" {

@@ -44,26 +44,48 @@ import { activePluginScript } from "./plugin-runtime.ts";
 import { isBareTui, runBareTui, runTui } from "./plugin-tui.ts";
 import { parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
 import { discardTyped } from "./libc.ts";
-import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
+import { ENV_FILES, LEGACY_PLUGIN_ID, ownDir, PLUGIN_ID, pluginConfigDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
 
 // `ovis tui` comes first: the screen needs nothing of this install's state, so it starts before the work below reads the
-// state and config dirs, asks herdr for its config dir, or copies an old install's settings (adoptLegacyConfig). Its
-// --help is no run of it: runPlugin answers that with every other command's.
-const early = parseCommand(process.argv.slice(2), { account: false, tui: true });
+// state dirs or copies an old install's settings (adoptLegacyConfig).
+const words = process.argv.slice(2);
+const early = parseCommand(words, { account: false, tui: true });
+if (early.kind === "help" && (words[0] === "tui" || words[1] === "tui")) {
+  process.stdout.write(early.text);
+  process.exit(0);
+}
+if (early.kind === "run" && early.command === "agent") process.exit(await (await import("./plugin-agent.ts")).runAgent(early.args));
 if (early.kind === "run" && early.command === "tui") process.exit(await runTui(early.args));
 if (import.meta.main || COMPILED) {
-  const opened = await runBareTui(process.argv.slice(2));
+  const opened = await runBareTui(words);
   if (opened !== null) process.exit(opened);
+}
+
+let desktopPort: number | null = null;
+// help and the version are answered here without a server, so they work with the app closed
+if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && early.kind !== "version") {
+  // The app owns its server; these commands only explain how to start or stop it.
+  if (early.kind === "run" && (early.command === "start" || early.command === "stop")) {
+    process.stderr.write(early.command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
+    process.exit(1);
+  }
+  const config = process.env["HERDR_PLUGIN_CONFIG_DIR"];
+  // An installed launcher from before the app's first start after an upgrade has only cli-settings.
+  const record = process.env["OVIS_DESKTOP_COMMAND_RECORD"] ?? (config && join(dirname(config), "desktop.json"));
+  const { desktopCommandPort } = await import("../app/electron/src/children.ts");
+  desktopPort = record ? await desktopCommandPort(record) : null;
+  if (desktopPort === null || String(desktopPort) !== process.env["PORT"]) {
+    process.stderr.write("ovis: open the Ovis app first, then run this again\n");
+    process.exit(1);
+  }
 }
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
-const PLUGIN_ID = "devswha.ovis";
-const LEGACY_PLUGIN_ID = "devswha.herdr-web-ui";
 const HERDR_PLUGIN_STATE = join(herdrStateDir(process.env, platform(), homedir()), "plugins");
 const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_PLUGIN_STATE, id)).find((dir) => existsSync(dir)) ?? join(HERDR_PLUGIN_STATE, PLUGIN_ID);
 // run by hand, without herdr's HERDR_PLUGIN_STATE_DIR: a server started from a checkout keeps its
@@ -71,7 +93,7 @@ const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_P
 const REQUESTED_STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"]
   ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR);
 let STATE_DIR = runningStateDir(REQUESTED_STATE_DIR);
-const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? ownDir(join(homedir(), ".config"));
+const CONFIG_DIR = pluginConfigDir(process.env, homedir());
 adoptLegacyConfig(CONFIG_DIR);
 let PID_FILE = join(STATE_DIR, "server.pid");
 let LOG_FILE = join(STATE_DIR, "server.log");
@@ -104,25 +126,6 @@ const PHONE_AGAIN = platform() === "win32"
   : "curl -fsSL https://ovis.sh/install.sh | sh";
 
 /**
- * Run by hand (`pair` on a headless PC), herdr's env is not there to name the config dir:
- * ask herdr for it, so the PORT, HOST and token the plugin runs with are the ones used.
- */
-function herdrConfigDir(): string | null {
-  const herdr = Bun.which("herdr");
-  if (herdr === null) return null;
-  for (const id of [PLUGIN_ID, LEGACY_PLUGIN_ID]) {
-    try {
-      const result = Bun.spawnSync([herdr, "plugin", "config-dir", id], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
-      const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
-      if (dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name)))) return dir;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
  * herdr keeps a plugin's config dir by its id (`plugins/config/<id>`), so the settings and token
  * an install wrote under the old id are copied to the new id's dir the first time it has none.
  * The old dir stays: the plugin under the old id, still installed until the installer removes
@@ -146,6 +149,10 @@ const CONFIG_FILES = ENV_FILES.map((name) => join(CONFIG_DIR, name)).filter((fil
 const fileVars = CONFIG_FILES.map(readEnvFile);
 const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) => key in fileVars[1]! && fileVars[0]![key] !== fileVars[1]![key]) : [];
 const env = mergeEnvLayers([process.env, ...fileVars]);
+if (desktopPort !== null) {
+  env["PORT"] = String(desktopPort);
+  env["HOST"] = "127.0.0.1";
+}
 /**
  * The OVIS_STATE_DIR this command was run with, which a settings file may set over (stateDirWayOut). A command handed on
  * to the release Settings installed (handOn) is told it apart: its own environment is the merged one.
@@ -320,7 +327,7 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
  * null and nothing is sent, since the profile answers its TCP port with liveness only. `devices`: the groups the
  * answer lists to its owner (accountDevicesOf); `tokenRequired`: the app let the request in only with its token.
  */
-async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean; readonly relay: string | null } | null> {
+async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean; readonly strict: boolean; readonly relay: string | null } | null> {
   const door = serverDoor();
   if (machineProfile && door === null) return null;
   try {
@@ -337,6 +344,8 @@ async function appHealth(): Promise<{ readonly engineDown: string | null; readon
     return {
       engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null,
       devices: accountDevicesOf(body), tokenRequired: (body.auth as { reason?: unknown }).reason === "token_required",
+      // the PC cannot read its own account state and lets only itself in: this command is then no owner to it either
+      strict: (body.auth as { reason?: unknown }).reason === "strict",
       relay: typeof body.relay?.phase === "string" ? body.relay.phase : null,
     };
   } catch {
@@ -1354,16 +1363,37 @@ const deviceLine = (title: string, devices: readonly ShownDevice[]): string => {
   return `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${plain(device.label)} (${plain(device.id)})`).join(", ")}\n`;
 };
 
-/** This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. */
-async function accountOf(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null } | null> {
+/** What a PC pinned to its account's signed list says of it (GET /api/account/status `list`): the list, where the PC stands in it, and why it lets nobody in when it does not. */
+interface ListSummary { readonly pinned_list: string; readonly standing: string | null; readonly reason: string | null }
+
+const listSummaryOf = (value: unknown): ListSummary | null => {
+  const { pinned_list, standing, reason } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+  return typeof pinned_list === "string" && (standing === null || typeof standing === "string") && (reason === null || typeof reason === "string") ? { pinned_list, standing, reason } : null;
+};
+
+/**
+ * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
+ * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
+ */
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
   try {
     const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return null;
-    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown };
+    if (!response.ok) {
+      const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
+      return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
+    }
+    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown; migrate_time_scale?: unknown };
     if (!(typeof body.account === "string" || body.account === null) || !Number.isSafeInteger(body.members)) return null;
     // null from a server from before the field
-    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null };
+    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list),
+      scale: Number.isSafeInteger(body.migrate_time_scale) && (body.migrate_time_scale as number) > 1 ? body.migrate_time_scale as number : null };
   } catch { return null; }
+}
+
+/** This PC's account as its owner is told it; null where that does not answer, or the PC cannot read its account state. */
+async function accountOf() {
+  const told = await accountTold();
+  return told !== null && "problem" in told ? null : told;
 }
 
 /**
@@ -1373,7 +1403,9 @@ async function accountOf(): Promise<{ readonly account: string | null; readonly 
  */
 async function statusJson(): Promise<number> {
   const answer = await appHealth();
-  const account = answer?.devices == null ? null : await accountOf();
+  // a PC that cannot read its account state tells no owner anything, and says what it could not read to its own CLI
+  const told = answer !== null && (answer.devices != null || answer.strict) ? await accountTold() : null;
+  const account = told !== null && "problem" in told ? null : told;
   let serverId: string | null = null;
   if (answer !== null) {
     try {
@@ -1391,6 +1423,12 @@ async function statusJson(): Promise<number> {
     account: account?.account ?? null,
     account_known: account !== null,
     waiting_for_add: account?.waiting ?? null,
+    // a PC pinned to its account's signed list: the list, where the PC stands in it, and why it lets nobody in when it does not
+    list: account?.list ?? null,
+    // the PC cannot read its own account state, and lets only itself in: what it cannot read
+    problem: told !== null && "problem" in told ? told.problem : null,
+    // a staging run that turned the waits of a move onto the account's list down (OVIS_LIST_MIGRATE_TIME_SCALE)
+    ...(account?.scale ? { migrate_time_scale: account.scale } : {}),
   })}\n`);
   return 0;
 }
@@ -1529,12 +1567,8 @@ export async function runPlugin(): Promise<void> {
     process.exit(2);
   }
   const { command, args } = parsed;
-  // the desktop app's ovis command (app/electron/src/terminalCommand.ts): the app runs its server, with no server.pid here
-  if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && (command === "start" || command === "stop")) {
-    process.stderr.write(command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
-    process.exit(1);
-  }
   switch (command) {
+    case "agent": process.exit(await (await import("./plugin-agent.ts")).runAgent(args));
     case "start": process.exit(await start());
     case "stop": process.exit(await stop());
     case "status": process.exit(await status(args));

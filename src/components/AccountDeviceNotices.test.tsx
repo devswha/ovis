@@ -2,14 +2,28 @@ import { afterEach, expect, it, jest, spyOn } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
+import type { DeviceNotice } from "../../shared/account-devices-api.ts";
 import { parseSafetyRecord, type BlockRecord } from "../../shared/account-records.ts";
-import { ACCOUNT_SESSION_EVENT, indexedAccountStore, memoryAccountStore, newKey, type AccountSession } from "../lib/account/store.ts";
+import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { ACCOUNT_SESSION_EVENT, indexedAccountStore, memoryAccountStore, newKey, type AccountKey, type AccountSession } from "../lib/account/store.ts";
 import { DeviceNoticeWire, deviceNotice } from "../lib/deviceNoticeWire.fixture.ts";
 import { MachineSession, MachineSessionRegistry } from "../lib/machineSession.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { HerdrSocket } from "../lib/ws.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountService } from "../lib/account/service.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
+
+function noticeSockets(...wires: DeviceNoticeWire[]) {
+  return class {
+    constructor(url: string) {
+      const route = new URL(url);
+      route.searchParams.delete("receipt_resume_id"); // identifies the browser, not the destination PC
+      const wire = wires.find((candidate) => candidate.url === route.href);
+      if (!wire) throw new Error(`Unexpected WebSocket: ${url}`);
+      return wire;
+    }
+  };
+}
 
 it.each([
   ["T51, T60: retry the exact signed block after a lost response", "lost response"],
@@ -60,13 +74,7 @@ it.each([
     document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class {
-      constructor(url: string) {
-        const connection = wires.get(url);
-        if (connection === undefined) throw new Error(`Unexpected WebSocket: ${url}`);
-        return connection;
-      }
-    },
+    WebSocket: noticeSockets(...wires.values()),
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -82,6 +90,7 @@ it.each([
         server_id: row.server_id, label: row.name, added_at: new Date(0).toISOString(), last_seen_at: null,
       })) : [] });
     }
+    if (url === `${session.service}/v1/devices`) return Response.json({ methods_version: 0, devices: [] });
     if (url.startsWith("/api/machines/") && init?.method === "POST") {
       pcPosts.push(url);
       const record = parseSafetyRecord(JSON.parse(String(init.body)).records[0]);
@@ -242,7 +251,7 @@ async function setupItsMe({
     document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class { constructor(url: string) { return url === desk.url ? desk : lab; } },
+    WebSocket: noticeSockets(desk, lab),
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -533,15 +542,19 @@ it.each([
 });
 
 
-async function notMePage(options: { service: (record: BlockRecord) => Response | Promise<Response>; capable?: boolean; holdStore?: Promise<void>; failStore?: boolean; token?: () => Response | Promise<Response>; drawn?: boolean }) {
+async function notMePage(options: {
+  service: (record: BlockRecord) => Response | Promise<Response>; capable?: boolean; holdStore?: Promise<void>; failStore?: boolean; token?: () => Response | Promise<Response>; drawn?: boolean;
+  /** this sign-in's registered key (number 1), the PC's notice, and the account service's GET /v1/devices (naming no key when not given) */
+  own?: AccountKey; notice?: DeviceNotice; devices?: () => Response | Promise<Response>;
+}) {
   // with a token answer, the access token is due for a refresh at the press
   const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: options.token === undefined ? Date.now() + 3600_000 : Date.now() } as const;
-  const notice = deviceNotice({ key: (await newKey()).public_spki });
+  const notice = options.notice ?? deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
   const events = new EventTarget();
   const store = memoryAccountStore();
   await store.set("session", session);
-  await store.set("signin_key", { account: session.account, sign_in_id: session.sign_in_id, no: 1, key: await newKey() });
+  await store.set("signin_key", { account: session.account, sign_in_id: session.sign_in_id, no: 1, key: options.own ?? await newKey() });
   const page = Object.assign(new EventTarget(), { visibilityState: "visible" as "visible" | "hidden", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } });
   const replaced = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
@@ -549,7 +562,7 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
     document: page,
     navigator: { languages: ["en"] },
     getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class { constructor() { return wire; } },
+    WebSocket: noticeSockets(wire),
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -569,6 +582,7 @@ async function notMePage(options: { service: (record: BlockRecord) => Response |
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const url = String(input);
       if (url === `${session.service}/v1/pcs`) return Response.json({ pcs: [] });
+      if (url === `${session.service}/v1/devices`) return options.devices?.() ?? Response.json({ methods_version: 0, devices: [] });
       if (url === `${session.service}/v1/token` && options.token !== undefined) { order.push("token"); return options.token(); }
       expect(url).toBe(`${session.service}/v1/safety-records`);
       const record = parseSafetyRecord(JSON.parse(String(init?.body)).record) as BlockRecord;
@@ -687,6 +701,37 @@ it("S32-1: a final refusal from the service shows the line with no Try again, an
     await act(async () => { await page.button("OK")!.props.onClick(); });
     expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
+  } finally { await page.restore(); }
+});
+
+it("F6: Not me claims the account's number of the device, not the PC's own admission number, so the account service keeps the block too", async () => {
+  // an account with no list on the migrate switch, its four devices numbered by the account service; this is the first
+  const fake = new FakeAccountService();
+  fake.opensAll = true;
+  fake.listAccounts = "*";
+  fake.listMigrateAccounts = "acct";
+  const keys = await Promise.all([newKey(), newKey(), newKey(), newKey()]);
+  const tokens = keys.map(() => fake.issueToken("acct"));
+  expect(keys.map((key, at) => fake.registerSessionKey(tokens[at]!, key.public_spki, `Device ${at + 1}`))).toEqual([1, 2, 3, 4]);
+  const asFirst = (path: string, init: RequestInit = {}) => fake.fetch(new Request(`https://account.example${path}`, {
+    ...init, headers: { "content-type": "application/json", authorization: `Bearer ${tokens[0]}` },
+  }));
+  // a PC numbers its own admissions (server/account/account-devices.ts `admit_no`): one that paired a device itself
+  // before the account's came is a number ahead of the account for the fourth
+  const page = await notMePage({
+    own: keys[0], notice: deviceNotice({ key: keys[3]!.public_spki, no: 5 }),
+    devices: () => asFirst("/v1/devices"),
+    service: (record) => asFirst("/v1/safety-records", { method: "POST", body: JSON.stringify({ record }) }),
+  });
+  try {
+    await page.mount();
+    await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
+    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    expect(page.root().findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(await page.store.get("unsent_blocks")).toBeUndefined();
+    const rows = (await (await asFirst("/v1/devices")).json() as { devices: { no: number; removed: boolean }[] }).devices;
+    expect(rows.map((row) => [row.no, row.removed])).toEqual([[1, false], [2, false], [3, false], [4, true]]);
   } finally { await page.restore(); }
 });
 

@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { HERDR_MOUSE_SCROLL_LINES } from "./wheelSteps.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
 export interface TerminalWheelState {
   readonly speed: number;
@@ -15,6 +16,9 @@ interface WheelViewport {
 }
 
 const forwarded = new WeakSet<Event>();
+const gridPans = new WeakSet<WheelEvent>();
+export const wheelPansGrid = (event: WheelEvent): boolean => gridPans.has(event);
+
 export function forwardWheel(target: EventTarget, event: WheelEvent): void {
   const copy = new WheelEvent("wheel", event);
   if (event.isTrusted) forwarded.add(copy);
@@ -30,12 +34,16 @@ export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scroll
 /** herdr owns history; xterm owns encoding mouse reports for applications that use them. */
 export function attachTerminalWheel(term: Terminal, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
   term.attachCustomWheelEventHandler((event) => {
-    if (viewport.drag(event) || viewport.pan?.(event)) return false;
+    if (viewport.drag(event)) return false;
+    if (viewport.pan?.(event)) {
+      gridPans.add(event);
+      return false;
+    }
     // Observers pan locally; an interactive mirror can scroll herdr through the API.
     const mirrored = viewport.mirrored();
     if (viewport.adopted() && !mirrored) return false;
     if (mirrored && event.deltaY === 0) return false;
-    if (term.hasSelection()) term.clearSelection();
+    if (terminalScreen(term).hasSelection()) term.clearSelection();
     // OmO consumes wheel reports without acting while a question captures mouse input, so the
     // wheel moves herdr's history itself, as far as the reports below would: one three-line step
     // per event whatever its delta, repeated at the chosen speed for a real wheel only.

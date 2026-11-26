@@ -1,12 +1,23 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createConnection, Socket } from "node:net";
 import { dirname } from "node:path";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, watch } from "node:fs";
+import { join } from "node:path";
 import { KeeperClient } from "./client.ts";
 import { keeperBuilt, keeperRoot, startKeeper, until } from "./keeper.fake.ts";
 
 const prompt = (client: KeeperClient, text: string) =>
   client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text }] }) as Promise<{ stopReason: string }>;
+
+it("a disconnected caller can cancel its keeper-readiness wait before replay", async () => {
+  const client = new KeeperClient("", { connect: () => new Socket() });
+  const abort = new AbortController();
+  try {
+    const ready = client.ready(abort.signal).then(() => "ready", () => "cancelled");
+    abort.abort();
+    expect(await Promise.race([ready, new Promise(resolve => setImmediate(() => resolve("still pending")))])).toBe("cancelled");
+  } finally { client.close(); }
+});
 
 it("reserves an answer while replay is pending, without waiting for the watermark twice", async () => {
   const socket = new Socket();
@@ -26,6 +37,39 @@ it("reserves an answer while replay is pending, without waiting for the watermar
   }
 });
 
+it("ignores a question arriving after the client closes", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket, questionHarness: "claude" });
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n`);
+  const raw = JSON.stringify({ id: "late-question", method: "elicitation/create", params: { sessionId: "s", message: "What color?" } });
+
+  client.close();
+  socket.emit("data", `${JSON.stringify({ seq: 2, dir: "from-agent", raw })}\n`);
+
+  expect(client.questions.current).toBeNull();
+});
+
+it("captures the replacement session's opening selection but does not refresh it for the same session", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  let seq = 0;
+  const note = (method: string, params: object) => {
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method, params }) })}\n`);
+  };
+  try {
+    note("_keeper/selections", { mode: "agent", allowAll: false });
+    note("_keeper/session", { sessionId: "first" });
+    expect(client.initialPermissions).toEqual({ mode: "agent", allowAll: false });
+
+    note("_keeper/selections", { mode: "read-only", allowAll: true });
+    note("_keeper/session", { sessionId: "replacement" });
+    note("_keeper/selections", { mode: "read-only", allowAll: false });
+    note("_keeper/session", { sessionId: "replacement" });
+
+    expect(client.initialPermissions).toEqual({ mode: "read-only", allowAll: true });
+  } finally { client.close(); }
+});
+
 describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scripted agent", () => {
   const cleanups: (() => Promise<void> | void)[] = [];
   afterEach(async () => {
@@ -43,6 +87,21 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     cleanups.push(() => client.close());
     return client;
   }
+
+  it("names its process before its socket appears, so a client refused by a socket not listening yet waits for it", async () => {
+    const root = keeperRoot();
+    const created: string[] = [];
+    const socket = Promise.withResolvers<unknown>();
+    const watcher = watch(root, (_event, name) => {
+      if (name !== null && !created.includes(name)) created.push(name);
+      if (name === "acp.sock") socket.resolve(JSON.parse(readFileSync(join(root, "process.json"), "utf8")));
+    });
+    cleanups.push(() => watcher.close());
+    const { pid } = await keeper([], root);
+    expect(await socket.promise).toMatchObject({ keeper: pid });
+    expect(created.indexOf("process.json")).toBeGreaterThanOrEqual(0);
+    expect(created.indexOf("process.json")).toBeLessThan(created.indexOf("acp.sock"));
+  });
 
   it("replays what happened before it attached, then follows live, and reports the turn's stop reason and text", async () => {
     const { root } = await keeper();

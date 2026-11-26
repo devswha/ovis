@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -7,6 +7,7 @@ import { FakeHcCore } from "../herdr-core/core.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { HERDR, HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 import { AcpChildren, AcpStartFailed, AcpUnavailable, type AcpHc } from "./children.ts";
+import { KeeperClient } from "./client.ts";
 import { FAKE_AGENT, KEEPER_BUILD, keeperBuilt, startKeeper, until } from "./keeper.fake.ts";
 
 describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real keeper", () => {
@@ -75,11 +76,122 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(children.forPane("t999")).toBeUndefined();
   });
 
+  /**
+   * A loaded runner can read rows the replay holds before the watermark that ends it: holds the watermark back until
+   * `seen` holds for the client, and lets it go one event-loop turn later.
+   */
+  function holdWatermarkUntil(seen: (client: KeeperClient) => boolean) {
+    const client = KeeperClient.prototype as unknown as { receive(this: KeeperClient, chunk: string): void };
+    const receive = client.receive;
+    let pending = "";
+    const spy = spyOn(client, "receive").mockImplementation(function (this: KeeperClient, chunk: string) {
+      pending += chunk;
+      for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+        const line = pending.slice(0, end + 1);
+        pending = pending.slice(end + 1);
+        if (!("through" in JSON.parse(line))) receive.call(this, line);
+        else if (seen(this)) setImmediate(() => receive.call(this, line));
+        else {
+          const off = this.onChange(() => {
+            if (!seen(this)) return;
+            off();
+            setImmediate(() => receive.call(this, line));
+          });
+        }
+      }
+    });
+    cleanups.push(() => spy.mockRestore());
+  }
+
+  it("hands a child over only once its client has replayed the keeper's log, ready for its first prompt", async () => {
+    setUp();
+    holdWatermarkUntil(client => client.session !== null);
+    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
+    expect(child.client.connected).toBe(true);
+    expect(child.client.status).toBe("idle");
+  });
+
+  it("fails to start an agent whose exit the replay already showed after its session, and leaves nothing behind", async () => {
+    setUp();
+    // in a terminal, as hc runs it, the keeper outlives its agent (until Ctrl+Q)
+    fake.onStart = (program) => {
+      programs.set(program.address, Bun.spawn([...program.argv], { terminal: { cols: 80, rows: 24, data() {} } }));
+    };
+    // a core slow to answer: the client attaches once the keeper's log already holds the session and the agent's exit
+    const exited = async (root: string) => {
+      const socket = Promise.withResolvers<void>();
+      const watcher = watch(root, () => { if (existsSync(join(root, "acp.sock"))) socket.resolve(); });
+      if (existsSync(join(root, "acp.sock"))) socket.resolve();
+      await socket.promise;
+      watcher.close();
+      const observer = new KeeperClient(root);
+      await until(observer, "the agent's exit", () => observer.agentGone);
+      observer.close();
+    };
+    children = new AcpChildren(dir, { keeperBin: () => KEEPER_BUILD, sessionMs: 2_000, hc: { call: async (method, params) => {
+      const reply = await hc.call(method, params);
+      const root = method === "terminal.run" && "argv" in params ? params.argv?.[1] : undefined;
+      if (root !== undefined) await exited(root);
+      return reply;
+    } } });
+    const started = children.start({ harness: "fake", argv: [FAKE_AGENT, "--exit-after-session"], cwd: dir });
+    expect(await started.catch((error: unknown) => error)).toMatchObject({ reason: "agent_exited" });
+    const id = (runs()[0]!["labels"] as Record<string, string>)["ovis.acp"]!;
+    expect(kills()).toHaveLength(1);
+    expect(existsSync(join(dir, id))).toBe(false);
+  });
+
+  it("tells its listeners when a person holds a child and hands it back, and finds it under its parent", async () => {
+    setUp();
+    const child = await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir, parentPane: "t42" });
+    const seen: (number | null)[] = [];
+    const off = children.onStatus((changed) => { if (changed === child) seen.push(changed.client.holdGeneration); });
+    try {
+      const generation = await child.client.hold(child.client.session!);
+      await until(child.client, "the hold", () => child.client.holdGeneration === generation);
+      expect(seen).toContain(generation);
+      await child.client.request("_keeper/release", { sessionId: child.client.session, generation });
+      await until(child.client, "the release", () => child.client.holdGeneration === null);
+      expect(seen.at(-1)).toBeNull();
+      expect((await children.childrenOf("t42")).map((found) => found.id)).toEqual([child.id]);
+    } finally {
+      off();
+    }
+  });
+
   it("starts with no parent when none is given, never under the server's own terminal", async () => {
     setUp();
     await children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir });
     expect(runs()[0]).toMatchObject({ no_parent: true });
     expect(runs()[0]).not.toHaveProperty("parent");
+  });
+
+  it("opens a tool child under its caller with its MCP server and without a mode override", async () => {
+    setUp();
+    const server = { name: "ovis-agent", command: "/test/relay", args: ["--token-file", "/test/token"], env: [] };
+    const child = await children.start({ harness: "gjc", argv: [FAKE_AGENT], cwd: dir, parentPane: "t42", runId: "run", mcpServers: [server] });
+    const log = await Bun.file(join(child.root, "archive.jsonl")).text();
+    const messages = log.trim().split("\n").map(line => JSON.parse(line)).filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw));
+    expect(messages.find(m => m.method === "initialize")?.params.clientCapabilities.elicitation).toEqual({ form: {} });
+    expect(messages.find(m => m.method === "session/new")?.params).toEqual({ cwd: dir, mcpServers: [server] });
+    expect(runs()[0]).toMatchObject({ parent: "t42", labels: { "ovis.run": "run" } });
+  });
+  it("sends a launch's session options and _meta on session/new", async () => {
+    setUp();
+    const configOptions = [{ configId: "mode", value: "default" }], sessionMeta = { claudeCode: { options: { settingSources: [] } } };
+    const child = await children.start({ harness: "claude", argv: [FAKE_AGENT], cwd: dir, configOptions, sessionMeta });
+    const log = await Bun.file(join(child.root, "archive.jsonl")).text();
+    const messages = log.trim().split("\n").map(line => JSON.parse(line)).filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw));
+    expect(messages.find(m => m.method === "session/new")?.params).toEqual({ cwd: dir, mcpServers: [], _meta: sessionMeta, configOptions });
+  });
+  it("offers no reusable approval for a delegated child", async () => {
+    setUp();
+    const child = await children.start({ harness:"fixture", argv:[FAKE_AGENT], cwd:dir, askEveryTime:true });
+    await child.client.submit("widen");
+    await until(child.client, "approval", () => child.client.pending().length === 1);
+    const [card] = child.client.pending();
+    if (!card) throw new Error("No card");
+    expect(card.options.map(o=>o.kind)).toEqual(["allow_once","reject_once"]);
   });
 
   for (const lookup of ["available", "unavailable"]) {
@@ -119,6 +231,14 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(fake.terminal(terminal as string).state).not.toBe("live");
     expect(existsSync(join(dir, id))).toBe(false);
     expect(children.forPane(terminal as string)).toBeUndefined();
+  });
+
+  it("reports a session refusal from the adapter instead of waiting for the handshake deadline", async () => {
+    setUp();
+    const err = await children.start({ harness: "test", cwd: dir, argv: [FAKE_AGENT, "--refuse-session", "-32000"] }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ reason: "refused", agentCode: -32000 });
+    expect(kills()).toHaveLength(1);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   it("stops a child: its terminal is killed, its ROOT removed, and it is forgotten", async () => {
@@ -227,6 +347,31 @@ describe("AcpChildren without a keeper", () => {
       expect(await children.start({ harness: "fake", argv: ["x"], cwd: dir }).catch((error: unknown) => error)).toBeInstanceOf(AcpUnavailable);
       expect(fake.calls().filter((call) => call.method === "terminal.run")).toEqual([]);
     } finally {
+      connection.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("finds the children a pane started among its own, by the core's parent", async () => {
+    const fake = new FakeHcCore();
+    const connection = new HcConnection(() => fake.transport());
+    const dir = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "acpc-"));
+    const children = new AcpChildren(join(dir, "acp"), { hc: connection, keeperBin: () => null });
+    const own = (id: string, parent: string) => {
+      mkdirSync(join(dir, "acp", id), { recursive: true, mode: 0o700 });
+      writeFileSync(join(dir, "acp", id, "child.json"), JSON.stringify({ harness: "opencode" }));
+      return fake.spawn({ argv: ["keeper"], labels: { "ovis.acp": id }, parent }).address;
+    };
+    try {
+      const first = own("aaaaaaaaaaaa", "t1");
+      const second = own("bbbbbbbbbbbb", "t1");
+      own("cccccccccccc", "t2");
+      fake.spawn({ argv: ["sh"], labels: { "ovis.acp": "dddddddddddd" }, parent: "t1" });
+      await children.restore();
+      expect((await children.childrenOf("t1")).map((child) => child.terminal).sort()).toEqual([first, second].sort());
+      expect(await children.childrenOf("t9")).toEqual([]);
+    } finally {
+      children.close();
       connection.close();
       rmSync(dir, { recursive: true, force: true });
     }
