@@ -666,6 +666,15 @@ describe("exact store lookup", () => {
         // malformed rejects
         writeFileSync(registry, "{broken");
         expect(await resolveGrokStore(basePane)).toBeNull();
+        // the pid left the pane by the last foreground lookup (another pane's Grok reused it): never binds
+        writeFileSync(registry, JSON.stringify([
+          { session_id: secondId, pid: child.pid!, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:17:37.758289633Z" },
+        ]));
+        utimesSync(firstEvents, 100, 100);
+        expect(await resolveGrokStore(basePane)).toBe(secondTranscript);
+        info.mockResolvedValueOnce({ pane_id: basePane.pane_id, foreground_processes: [{ pid: child.pid!, name: "grok", argv: [executable] }] })
+          .mockResolvedValueOnce({ pane_id: basePane.pane_id, foreground_processes: [] });
+        expect(await resolveGrokStore(basePane)).toBeNull();
       } finally {
         info.mockRestore();
         const exited = once(child, "exit", { signal: AbortSignal.timeout(2000) });
@@ -698,7 +707,7 @@ describe("exact store lookup", () => {
         let ready = 0;
         for (let i = 0; i < count; i++) {
           const child = spawn(process.env.TEST_GROK_EXE, ["-e", "process.stdout.write('ok\\\\n'); process.stdin.resume()"], {
-            stdio: ["pipe", "pipe", "ignore", fd],
+            stdio: ["pipe", "pipe", "ignore", fd], detached: process.env.TEST_DETACHED === "1",
             env: { ...process.env, HOME: "/bridge-home", GROK_HOME: process.env.TEST_GROK_HOME },
           });
           children.push(child);
@@ -710,7 +719,7 @@ describe("exact store lookup", () => {
         process.on("SIGTERM", () => { for (const c of children) c.kill("SIGKILL"); process.exit(0); });
         process.stdin.resume();
       `;
-      const startLauncher = async (childCount: number) => {
+      const startLauncher = async (childCount: number, detached = false) => {
         const proc = spawn(process.execPath, ["-e", launcherScript], {
           stdio: ["pipe", "pipe", "ignore"],
           env: {
@@ -719,9 +728,19 @@ describe("exact store lookup", () => {
             TEST_GROK_EXE: executable,
             TEST_GROK_HOME: home,
             TEST_CHILD_COUNT: String(childCount),
+            TEST_DETACHED: detached ? "1" : "0",
           },
         });
-        const [chunk] = await once(proc.stdout!, "data", { signal: AbortSignal.timeout(10_000) }) as [Buffer];
+        let chunk: Buffer;
+        try {
+          [chunk] = await once(proc.stdout!, "data", { signal: AbortSignal.timeout(10_000) }) as [Buffer];
+        } catch (error) {
+          // a launcher that never got ready still owns its children: SIGTERM makes it kill them
+          const exited = once(proc, "exit", { signal: AbortSignal.timeout(3000) });
+          proc.kill("SIGTERM");
+          await exited.catch(() => proc.kill("SIGKILL"));
+          throw error;
+        }
         const text = chunk.toString("utf8").trim();
         const childPids = text === "none" ? [] : text.split(",").map(Number);
         return {
@@ -808,6 +827,20 @@ describe("exact store lookup", () => {
           expect(await grokHeldTranscript(basePane, undefined, "linux")).toBeNull();
         } finally { info.mockRestore(); }
       } finally { await two.stop(); }
+
+      // 5) the launcher's single Grok child moved out of its process group is not the pane's job -> null
+      const detached = await startLauncher(1, true);
+      try {
+        const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+          pane_id: basePane.pane_id,
+          foreground_processes: [{ pid: detached.launcherPid, name: "node", argv: ["node", "/home/user/.local/bin/grok"] }],
+        });
+        try {
+          expect(await resolveGrokStore(basePane)).toBeNull();
+          expect(await resolveGrokStore(reportedPane)).toBeNull();
+          expect(await grokHeldTranscript(basePane, undefined, "linux")).toBeNull();
+        } finally { info.mockRestore(); }
+      } finally { await detached.stop(); }
     },
   );
 });

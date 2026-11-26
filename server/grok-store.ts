@@ -1,4 +1,4 @@
-import { opendirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, opendirSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
@@ -260,7 +260,8 @@ function linuxChildren(pid: number): number[] | null {
 /**
  * The single Grok owner process for a pane: prefer a Grok executable in argv[0] over a bun/node
  * launcher (classic herdr lists both). When only one launcher is listed, on Linux take its single
- * direct child whose /proc/<pid>/exe is a Grok executable. Anything else is ambiguous and returns null.
+ * direct child whose /proc/<pid>/exe is a Grok executable and that stays in the launcher's process
+ * group (the pane's foreground job). Anything else is ambiguous and returns null.
  */
 export function grokOwnerPid(info: GrokProcessInfo, platform: string = process.platform): number | null {
   const direct: number[] = [];
@@ -284,21 +285,47 @@ export function grokOwnerPid(info: GrokProcessInfo, platform: string = process.p
   if (platform !== "linux") return null;
   const children = linuxChildren(launcher);
   if (children === null) return null;
-  const grokChildren = children.filter((child) => linuxGrokExecutable(child));
+  const group = linuxStatNumber(launcher, PGRP_FIELD);
+  if (group === null) return null;
+  const grokChildren = children.filter((child) => linuxGrokExecutable(child) && linuxStatNumber(child, PGRP_FIELD) === group);
   return grokChildren.length === 1 ? grokChildren[0]! : null;
 }
 
-/** Field 22 (starttime, clock ticks) of /proc/<pid>/stat, matching Grok's active_sessions.json `pid_start`. */
-function linuxPidStart(pid: number): number | null {
+/** /proc/<pid>/stat fields counted from the one after `(comm)`: 5 (pgrp) and 22 (starttime). */
+const PGRP_FIELD = 2;
+const START_FIELD = 19;
+
+function linuxStatNumber(pid: number, field: number): number | null {
   try {
     const text = readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = text.lastIndexOf(") ");
     if (close < 0) return null;
-    const raw = text.slice(close + 2).split(" ")[19];
+    const raw = text.slice(close + 2).split(" ")[field];
     if (raw === undefined || !/^\d+$/.test(raw)) return null;
-    const ticks = Number(raw);
-    return Number.isSafeInteger(ticks) ? ticks : null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) ? value : null;
   } catch { return null; }
+}
+
+/** Field 22 (starttime, clock ticks) of /proc/<pid>/stat, matching Grok's active_sessions.json `pid_start`. */
+function linuxPidStart(pid: number): number | null {
+  return linuxStatNumber(pid, START_FIELD);
+}
+
+/** The file's bytes read through one descriptor, or null when it is not a file or exceeds `max`. */
+function readBounded(path: string, max: number): Buffer | null {
+  const fd = openSync(path, "r");
+  try {
+    if (!fstatSync(fd).isFile()) return null;
+    const buffer = Buffer.alloc(max + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    return length > max ? null : buffer.subarray(0, length);
+  } finally { closeSync(fd); }
 }
 
 /**
@@ -310,12 +337,9 @@ export function grokActiveSession(home: string, pid: number, pidStart: number): 
   if (!isAbsolute(home) || !Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(pidStart) || pidStart < 0) return null;
   let parsed: unknown;
   try {
-    const path = join(home, "active_sessions.json");
-    const stat = statSync(path);
-    if (!stat.isFile() || stat.size > MAX_ACTIVE_SESSIONS_BYTES) return null;
-    const raw = readFileSync(path, "utf8");
-    if (raw.length > MAX_ACTIVE_SESSIONS_BYTES) return null;
-    parsed = JSON.parse(raw);
+    const raw = readBounded(join(home, "active_sessions.json"), MAX_ACTIVE_SESSIONS_BYTES);
+    if (raw === null) return null;
+    parsed = JSON.parse(raw.toString("utf8"));
   } catch { return null; }
   if (!Array.isArray(parsed)) return null;
   let latest: { id: string; at: number } | null = null;
@@ -397,7 +421,13 @@ export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string,
     const sessionId = reported.present ? reported.id! : grokActiveSession(home, ownerPid, pidStart!);
     if (sessionId === null) return null;
     const held = grokHeldSessions(ownerPid, home);
-    if (!reported.present && linuxPidStart(ownerPid) !== pidStart) return null;
+    if (!reported.present) {
+      // The registry names a session by pid alone: confirm the pid is still this pane's owner, the
+      // same process, after every read, so a pid reused by another pane's Grok never binds here.
+      if (linuxPidStart(ownerPid) !== pidStart) return null;
+      if (grokOwnerPid((await paneProcessInfo(pane.pane_id)) ?? {}, platform) !== ownerPid) return null;
+      if (linuxPidStart(ownerPid) !== pidStart) return null;
+    }
     return reportedSessionPath(home, sessionId, held);
   } catch { return null; }
 }
