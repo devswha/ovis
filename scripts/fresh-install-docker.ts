@@ -35,9 +35,12 @@ async function docker(args: string[], input?: string): Promise<string> {
 }
 /** as the user, in a shell like a terminal's: login (~/.local/bin) and interactive (~/.bashrc, where Bun puts itself) */
 const asUser = (script: string) => docker(["exec", "-i", "-u", "alice", "-w", "/home/alice", name, "bash", "-li"], script);
-/** the release's Rust PTY host beside the plugin's server answers and opens a pty, as every attach will */
+/**
+ * The Rust PTY host the plugin's server runs answers and opens a pty, as every attach will: in the checkout's bin/ for a
+ * source build, else in the newest release the plugin installed under .ovis/server (scripts/plugin-launch.ts).
+ */
 const ptyHostOpensPty = async () => {
-  const out = await asUser(`cd "${pluginRoot}" && timeout 10 bin/ovis-pty-sidecar 1 1 true </dev/null >/dev/null && echo PTY_OK; true`);
+  const out = await asUser(`cd "${pluginRoot}" && for h in bin/ovis-pty-sidecar $(ls -td .ovis/server/releases/*/bin/ovis-pty-sidecar 2>/dev/null); do if [ -x "$h" ]; then timeout 10 "$h" 1 1 true </dev/null >/dev/null && echo "PTY_OK $h"; break; fi; done; true`);
   assert.match(out, /PTY_OK/, `the Rust PTY host opens no pty:\n${out.slice(-1500)}`);
 };
 const step = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
