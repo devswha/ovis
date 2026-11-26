@@ -1499,7 +1499,7 @@ export function Composer({
                   </>}
                 </span>
               </span>}
-              {/* Claude Code's plan mode is the one mode the pill marks, as an icon; every other mode draws nothing */}
+              {/* plan mode (Claude Code's, or a Codex Ovis started) is the one mode the pill marks, as an icon; every other mode draws nothing */}
               {metadata?.permission_mode === "plan" && <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
                 <ClipboardList aria-hidden="true" />
               </span>}
