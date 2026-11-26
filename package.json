@@ -1,7 +1,7 @@
 {
   "name": "ovis",
   "private": true,
-  "version": "0.5.10",
+  "version": "0.5.11",
   "type": "module",
   "description": "Ovis, the browser and phone client for herdr - live herdr workspaces, panes and agents in a web UI",
   "license": "MIT",
@@ -31,7 +31,6 @@
   },
   "dependencies": {
     "@legendapp/list": "3.3.5",
-    "@lydell/node-pty": "1.1.0",
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
@@ -58,6 +57,7 @@
     "@types/react-test-renderer": "^19.1.0",
     "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^6.1.2",
+    "happy-dom": "21.0.4",
     "playwright-core": "^1.49.1",
     "react-test-renderer": "19.3.0",
     "typescript": "^7.0.2",
