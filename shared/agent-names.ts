@@ -24,7 +24,7 @@ export const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
 };
 
 export function agentDisplayName(kind: string): string {
-  return AGENT_DISPLAY_NAMES[kind] ?? kind;
+  return Object.hasOwn(AGENT_DISPLAY_NAMES, kind) ? AGENT_DISPLAY_NAMES[kind]! : kind;
 }
 
 export function agentRuns(state: AgentInstallState): boolean {
