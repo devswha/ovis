@@ -14,6 +14,7 @@ import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
 import { leaveAddEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
+import { checkNetwork } from "../lib/useOffline.ts";
 
 /** every tree a test draws, still mounted: the test's end unmounts each one, not only the last it kept */
 const drawn = new Set<ReactTestRenderer>();
@@ -995,6 +996,40 @@ describe("the hosted front page", () => {
           (navigator as { onLine?: boolean }).onLine = true;
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
+        }
+      });
+
+      it("believes the account service over a WebView that says offline: an answer takes the line away and a row opens", async () => {
+        // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7)
+        const meta = { getAttribute: (name: string) => name === "content" ? "https://account.example" : null };
+        Object.assign(document, { querySelector: (selector: string) => selector === 'meta[name="ovis-account-service"]' ? meta : null });
+        const asked: string[] = [];
+        let answers = false;
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
+          asked.push(String(input));
+          if (!answers) throw new TypeError("Failed to fetch");
+          return new Response(null, { status: 200 });
+        }, { preconnect: realFetch.preconnect });
+        try {
+          offline(true);
+          await mount(offlinePage());
+          await act(async () => { await checkNetwork(); });
+          // no answer: the device is offline, as before
+          expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
+          answers = true;
+          const before = asked.length;
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && textOf(node) === "Try again" && shown(node)).props.onClick(); });
+          await act(async () => { await checkNetwork(); });
+          expect(asked.length).toBeGreaterThan(before);
+          expect(new Set(asked)).toEqual(new Set(["https://account.example/v1/providers"]));
+          expect(alerts().filter((text) => text.includes("internet"))).toEqual([]);
+          let held = 0;
+          await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a").props.onClick({ preventDefault: () => { held++; } }); });
+          expect(held).toBe(0);
+        } finally {
+          globalThis.fetch = realFetch;
+          offline(false);
         }
       });
 
