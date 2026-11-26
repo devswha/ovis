@@ -110,7 +110,13 @@ export class GhosttyVt {
 
   /** `events`: a terminal libghostty alone parses (terminal.ts) hears its replies to the program and its holds */
   static async create(cols: number, rows: number, events?: EngineEvents): Promise<GhosttyVt> {
-    return new GhosttyVt(await loadModule(), cols, rows, events);
+    let module = await loadModule();
+    // a module that trapped makes no terminal again: a terminal starting over loads a fresh one
+    if (module.trap) {
+      modulePromise = null;
+      module = await loadModule();
+    }
+    return new GhosttyVt(module, cols, rows, events);
   }
 
   modes(): EngineModes {

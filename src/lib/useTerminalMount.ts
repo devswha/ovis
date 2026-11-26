@@ -50,7 +50,7 @@ import { RESIZE_SETTLE_MS, RELEASE_AFTER_MS, IDLE_RELEASE_MS, RESUME_INPUT_WAIT_
 import { copyOnSelect, herdrUiKnown, loadHerdrUi } from "./herdrUi.ts";
 import { captureForGhostty } from "./ghostty/capture.ts";
 import { holdForPictures } from "./terminalImages.ts";
-import { GhosttyTerminal, ownTerminalEngine } from "./ghostty/terminal.ts";
+import { GhosttyTerminal, ownTerminalEngine, TERMINAL_FAILED_EVENT, type TerminalFailure } from "./ghostty/terminal.ts";
 
 /**
  * Build-time constant: on only in the browser lane's demo build (lib/crashProbe.ts). Read it through
@@ -2429,6 +2429,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         term.options.disableStdin = observeRef.current || heldRef.current;
       };
       reattachRef.current = reattach;
+      // libghostty stopped drawing: the terminal starts over with a new engine and the pane is attached again, so the
+      // server draws it anew; once it gives up, the pane says so and takes no typing a blank grid would hide
+      const onTerminalFailed = (event: Event): void => {
+        if ((event as CustomEvent<TerminalFailure>).detail.restarting) { reattach(); return; }
+        const t = tRef.current; // the language of now, not of the attach
+        setOutputError(t("This terminal could not be drawn. Reload the page to try again."));
+        term.options.disableStdin = true;
+      };
+      if (ownEngine) host.addEventListener(TERMINAL_FAILED_EVENT, onTerminalFailed);
       const back = (): void => {
         if (!presentedRef.current) {
           if (cachedRef.current && releasedRef.current) release();
@@ -2568,6 +2577,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         typeAheadRef.current = () => {};
         cancelLeaveRef.current = () => {};
         reattachRef.current = () => {};
+        host.removeEventListener(TERMINAL_FAILED_EVENT, onTerminalFailed);
         attachFilesRef.current = () => {};
         keyboardHoldsRef.current = () => false;
         fittedRef.current = () => {};

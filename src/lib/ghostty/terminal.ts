@@ -84,6 +84,14 @@ const TRACKING_NAME = { none: "none", x10: "x10", normal: "vt200", button: "drag
 const WRITE_BUDGET_MS = 12;
 /** how long a synchronized update may hold the screen before it is shown anyway (xterm's limit) */
 const SYNC_HOLD_MS = 1000;
+/** how long a frame waits for a picture conversion before it is acknowledged anyway */
+const PICTURE_ACK_MS = 1000;
+/** how many times a terminal starts over with a new engine before it gives up */
+const MAX_RESTARTS = 3;
+
+/** told on the pane's host when libghostty stopped drawing a terminal (ghostty/terminal.ts) */
+export const TERMINAL_FAILED_EVENT = "ovis-terminal-failed";
+export interface TerminalFailure { readonly error: unknown; readonly restarting: boolean }
 
 interface Pending { readonly data: string | Uint8Array; readonly callback: (() => void) | undefined }
 
@@ -132,6 +140,7 @@ export class GhosttyTerminal {
   private selectionLayer: HTMLElement | undefined;
   private drawnSelectionKey = "";
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  private restarts = 0;
   private readonly earlyLinks: { provider: ILinkProvider; registered: Disposable | null }[] = [];
   private vt: GhosttyVt | null = null;
   private renderer: RowsRenderer | null = null;
@@ -367,16 +376,41 @@ export class GhosttyTerminal {
     } else this.schedule();
   }
 
-  /** libghostty could not start or stopped: told once, so the mount can say so and open the pane again */
+  /**
+   * libghostty could not start or stopped. What waits is still acknowledged, in order, so the server's flow control does
+   * not take the pane for a reader that stopped. The terminal starts over with a new engine (a fresh module if this one
+   * trapped) a few times, and tells the mount, which attaches the pane again so the server draws it anew; past that it
+   * tells the mount it gave up (`restarting: false`).
+   */
   private fail(error: unknown): void {
-    if (this.failed !== null) return;
+    if (this.failed !== null || this.disposed) return;
     this.failed = error;
-    console.warn("libghostty could not draw this terminal", error);
-    // what waits is still acknowledged, in order, so the server's flow control does not take the pane for a reader that
-    // stopped: the writes go through with nothing parsed
+    console.warn("libghostty stopped drawing this terminal", error);
     this.pending = false;
     if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites(), 0);
-    this.host?.dispatchEvent(new CustomEvent("ovis-terminal-failed", { detail: error }));
+    const restarting = this.restarts < MAX_RESTARTS;
+    if (restarting) {
+      this.restarts++;
+      setTimeout(() => this.restart(), 0);
+    }
+    this.host?.dispatchEvent(new CustomEvent<TerminalFailure>(TERMINAL_FAILED_EVENT, { detail: { error, restarting } }));
+  }
+
+  private restart(): void {
+    if (this.disposed) return;
+    try { this.renderer?.dispose(); } catch { /* the layer goes with the engine */ }
+    try { this.vt?.dispose(); } catch { /* a trapped engine is gone already */ }
+    this.renderer = null;
+    this.vt = null;
+    this.stream.reset();
+    this.decoder = new TextDecoder();
+    this.pictures.reset();
+    this.selection?.clearSelection();
+    this.fromBottom = 0;
+    this.viewTop = null;
+    this.failed = null;
+    this.pending = true;
+    void this.start();
   }
 
   get failure(): unknown { return this.failed; }
@@ -408,15 +442,28 @@ export class GhosttyTerminal {
 
   private parseWrite(data: string | Uint8Array, callback: (() => void) | undefined): void {
     if (this.failed !== null) { callback?.(); return; }
+    // a picture still converting holds the output after it, never its acknowledgement: past a moment the frame is
+    // acknowledged (the server goes on sending) and parsed once the picture is in, in order
+    let acknowledged = false;
+    const acknowledge = (): void => {
+      if (acknowledged) return;
+      acknowledged = true;
+      callback?.();
+    };
+    let late: ReturnType<typeof setTimeout> | null = null;
+    let parsed = false;
     this.pictures.write(data, (part, picture) => this.parse(part, picture), () => {
+      parsed = true;
+      if (late !== null) clearTimeout(late);
       try {
         if (this.failed === null) this.afterWrite();
       } catch (error) {
         this.fail(error);
       } finally {
-        callback?.();
+        acknowledge();
       }
     });
+    if (!parsed) late = setTimeout(acknowledge, PICTURE_ACK_MS);
   }
 
   /**
