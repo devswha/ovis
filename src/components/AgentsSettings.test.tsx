@@ -1,16 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
+import { act } from "react";
 
 import { AGENT_CATALOG, catalogRow } from "../../shared/agent-catalog.ts";
-import { openPage } from "../lib/page.fixture.ts";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AgentsSettings } from "./AgentsSettings.tsx";
 
-test.each([
-  { label: "known missing", installed: false, pathProblem: undefined, showsNote: true },
-  { label: "unknown", installed: null, pathProblem: undefined, showsNote: false },
-  { label: "PATH unreadable", installed: false, pathProblem: "Could not read PATH", showsNote: false },
-  { label: "installed", installed: true, pathProblem: undefined, showsNote: false },
-] as const)("shows Codex's install status without removing its launch settings ($label)", async ({ installed, pathProblem, showsNote }) => {
+async function withAgentsPage({ installed, pathProblem }: { installed: boolean | null; pathProblem?: string }, check: (page: Page) => Promise<void> | void) {
   const page = openPage();
   const agents = AGENT_CATALOG.filter(({ id }) => id === "claude" || id === "codex").map((entry) => {
     const present = entry.id === "claude" ? true : installed;
@@ -22,6 +18,7 @@ test.each([
   const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => {
     switch (String(input)) {
       case "/api/agent-catalog": return Response.json({ platform: "linux", agents, path_problem: pathProblem });
+      case "/api/agent-catalog?recheck=1": return new Response(null, { status: 503 });
       case "/api/integrations": return Response.json({ integrations: [] });
       case "/api/cliproxy": return Response.json({ configured: false });
       default: throw new Error(`Unexpected request: ${String(input)}`);
@@ -34,16 +31,7 @@ test.each([
     await page.render(<SettingsProvider>
       <AgentsSettings watching={false} onLocalLogin={noop} onOpenPane={noop} onOpenGuide={noop} />
     </SettingsProvider>);
-    const installedList = page.one('[data-section="agents-installed"]');
-    expect(installedList.querySelector('[data-agent="claude"]')).not.toBeNull();
-    expect(installedList.querySelector('[data-agent="codex"]') !== null).toBe(installed === true);
-    const group = page.container.querySelector('[data-section="agent-codex"]');
-    if (installed === true) {
-      expect(group).toBeNull();
-    } else {
-      expect(group?.querySelector("#settings-codex-launch-model")).toBeInstanceOf(page.window.HTMLInputElement);
-      expect(group?.textContent?.includes("Not installed on this PC")).toBe(showsNote);
-    }
+    await check(page);
   } finally {
     try {
       await page.close();
@@ -53,4 +41,35 @@ test.each([
       else Reflect.deleteProperty(globalThis, "ResizeObserver");
     }
   }
-});
+}
+
+test.each([
+  { label: "known missing", installed: false, showsNote: true },
+  { label: "unknown", installed: null, showsNote: false },
+  { label: "PATH unreadable", installed: false, pathProblem: "Could not read PATH", showsNote: false },
+  { label: "installed", installed: true, showsNote: false },
+] as const)("shows Codex's install status without removing its launch settings ($label)", (scenario) => withAgentsPage(scenario, (page) => {
+  const { installed, showsNote } = scenario;
+  const installedList = page.one('[data-section="agents-installed"]');
+  expect(installedList.querySelector('[data-agent="claude"]')).not.toBeNull();
+  expect(installedList.querySelector('[data-agent="codex"]') !== null).toBe(installed === true);
+  const group = page.container.querySelector('[data-section="agent-codex"]');
+  if (installed === true) {
+    expect(group).toBeNull();
+  } else {
+    expect(group?.querySelector("#settings-codex-launch-model")).toBeInstanceOf(page.window.HTMLInputElement);
+    expect(group?.textContent?.includes("Not installed on this PC")).toBe(showsNote);
+  }
+}));
+
+test("withdraws the previous Codex install status when Check again fails", () => withAgentsPage({ installed: false }, async (page) => {
+  const group = page.one('[data-section="agent-codex"]');
+  const checkAgain = page.one<HTMLButtonElement>(".agents-check-again");
+  expect(group.textContent).toContain("Not installed on this PC");
+
+  await act(async () => { checkAgain.click(); });
+
+  expect(page.one('[data-section="agents-installed"] [role="alert"]').textContent).not.toBe("");
+  expect(group.textContent).not.toContain("Not installed on this PC");
+  expect(group.querySelector("#settings-codex-launch-model")).toBeInstanceOf(page.window.HTMLInputElement);
+}));
