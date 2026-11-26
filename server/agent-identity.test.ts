@@ -27,6 +27,19 @@ describe("which agent a pane runs", () => {
     expect(paneAgent({ foreground: ["C:\\Program Files\\Claude\\Claude.EXE"] }, "windows")).toBe("claude");
   });
 
+  it("recognizes the official Hermes Python launcher, not arbitrary inline code (#4572)", () => {
+    // The identifying parts of the 0.21.5 installer's generated POSIX launcher.
+    const source = "import os, re, sys\nsys.path.insert(0, '/home/u/.hermes/hermes-agent')\n"
+      + "try:\n    import hermes_bootstrap\nexcept Exception:\n    raise\n"
+      + "from hermes_cli.main import main\nsys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\nsys.exit(main())\n";
+    const python = ["/home/u/.hermes/store/python/bin/python3", "-I", "-c"];
+    expect(paneAgent({ foreground: [...python, source, "chat"] }, "linux")).toBe("hermes");
+    expect(paneAgent({ foreground: [...python, source, "--run-module", "other"] }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: [...python, source, "--print-runtime-command"] }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: [...python, "from hermes_cli.main import main; main()"] }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: ["node", "-I", "-c", source] }, "linux")).toBeNull();
+  });
+
   it("names nothing a platform would decide when it is unknown, and no shim off Windows", () => {
     expect([["claude"], ["node", "/home/u/.bin/letta"], ["cmd"], ["C:\\Users\\u\\letta.cmd"], ["C:\\Program Files\\Claude\\Claude.EXE"]].map((foreground) => paneAgent({ foreground }, null)))
       .toEqual(["claude", "letta", null, null, null]);

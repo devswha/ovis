@@ -74,6 +74,13 @@ export function processAgent(argv: readonly string[], platform: ProgramPlatform)
 
 function agentOn(argv: readonly string[], platform: CatalogPlatform): string | null {
   const first = fileName(argv[0] ?? "", platform, true);
+  // The POSIX Hermes installer execs its generated CLI entry point as Python source, not a script path.
+  if ((first === "python3" || first === "python") && argv[1] === "-I" && argv[2] === "-c"
+    && argv[4] !== "--run-module" && argv[4] !== "--print-runtime-command") {
+    const code = argv[3] ?? "";
+    if (code.startsWith("import os, re, sys\n") && /(?:^|\n) *import hermes_bootstrap\n/.test(code)
+      && /\nfrom hermes_cli\.main import main\nsys\.argv\[0\] = [^\n]+\nsys\.exit\(main\(\)\)\n$/.test(code)) return "hermes";
+  }
   const program = INTERPRETERS.has(first) ? fileName(scriptOf(argv) ?? "", platform, false) : first;
   if (!program) return null;
   const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !candidate.detect.unreliable_on?.[platform]);
