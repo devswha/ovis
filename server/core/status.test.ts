@@ -1489,9 +1489,10 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       return fired;
     };
 
-    it.each(["claude", "codex"] as const)("does not paste or Enter when %s fails and herdr only says unknown", async (agent) => {
+    it("does not paste or Enter when Claude fails and herdr only says unknown", async () => {
       const { h, writes, submit, flush, waiting } = await delivering();
       const id = h.pane.pane_id;
+      const agent = "claude";
       const report = (status: "working" | "unknown" | "idle") => {
         h.herdrSays({ ...h.pane, agent, agent_status: status });
         handlers.onStatus(id, status, agent);
@@ -1510,6 +1511,27 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       report("idle");
       await flush();
       expect(writes).toEqual(["paste \u001b[200~not yet\u001b[201~", "keys Enter"]);
+    });
+
+    it.each(["unknown", "idle"] as const)("sends once after Codex ends a failed turn at herdr %s", async (rest) => {
+      const { h, writes, submit, flush, waiting } = await delivering();
+      const id = h.pane.pane_id;
+      const report = (status: "working" | "unknown" | "idle") => {
+        h.herdrSays({ ...h.pane, agent: "codex", agent_status: status });
+        handlers.onStatus(id, status, "codex");
+      };
+      // For idle, the short turn starts and ends without a title change.
+      report(rest === "idle" ? "idle" : "working");
+      h.status.hookTurn(id, "codex", { turn: "began", prompt: "u1" });
+      await submit(95, "after failure");
+      if (rest === "unknown") report(rest);
+      await flush();
+      expect(waiting()).toEqual(["queued"]);
+      expect(writes).toEqual([]);
+      h.status.hookTurn(id, "codex", { turn: "ended", prompt: "u1", failed: true });
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~after failure\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
     });
 
     it("does not paste or Enter into Codex's next live turn on a delayed idle title", async () => {

@@ -381,6 +381,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const codexDeferredRest = new Map<string, { status: AgentStatus; askedAt: number | undefined }>();
   const codexFailedWhileBusy = new Set<string>();
   const codexQueueHeld = (paneId: string): boolean => codexLive.get(paneId)?.turn === "began" || codexFailedWhileBusy.has(paneId);
+  // herdr reports codex/unknown at rest. It can release input after a known end, never while a served turn is open.
+  const codexInputReady = (paneId: string, status: AgentStatus): boolean => inputReady(status) || (status === "unknown"
+    && codexLive.get(paneId)?.turn !== "began" && (codexLive.has(paneId) || codexFailed.has(paneId)));
   const codexLiveFailed = (paneId: string): boolean => {
     const turn = codexLive.get(paneId);
     return turn?.turn === "ended" && turn.failed === true;
@@ -492,11 +495,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (codexFailed.size === 0 && claudeFailed.size === 0) return snapshot;
     const failed = (pane: { pane_id: string; agent?: string | null }) => (pane.agent === "codex" && codexFailed.has(pane.pane_id)) || (pane.agent === "claude" && claudeFailed.has(pane.pane_id));
     const rest = (pane: { pane_id: string; agent?: string | null; agent_status: AgentStatus }) => failed(pane)
-      && (pane.agent_status === "done" || (display && pane.agent_status !== "blocked" &&
+      && (pane.agent_status === "done" || (pane.agent === "codex" && codexInputReady(pane.pane_id, pane.agent_status)) || (display && pane.agent_status !== "blocked" &&
         (atRest(pane.agent_status) || (pane.agent === "claude" ? stoppedOnHook.get(pane.pane_id) === null : codexFailedWhileBusy.has(pane.pane_id)))));
     return { ...snapshot, panes: snapshot.panes.map((pane) => rest(pane) ? { ...pane, agent_status: "idle" } : pane), agents: snapshot.agents.map((agent) => rest(agent) ? { ...agent, agent_status: "idle" } : agent) };
   };
   const rawSnapshot = async (): Promise<SessionSnapshot> => {
+    const askedAt = Date.now();
     const titleRead = ++titleReads;
     const codexRead = ++codexReads;
     const promptCheckpoint = options.openCodeState?.checkpoint();
@@ -516,7 +520,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       noteCodexSession(pane);
       if (atRest(pane.agent_status)) {
         // A fresh rest read can stand in for the title event if the collector missed it.
-        if (afterFailure && inputReady(pane.agent_status) && codexLive.get(pane.pane_id)?.turn !== "began") codexFailedWhileBusy.delete(pane.pane_id);
+        if (afterFailure && codexLive.get(pane.pane_id)?.turn !== "began"
+          && codexInputReady(pane.pane_id, pane.agent_status) && codexFailedWhileBusy.delete(pane.pane_id)) {
+          pending.baseline(pane.pane_id, "idle", askedAt);
+          drainPending(pane.pane_id);
+        }
         if ((pane.agent_status === "done" || codexFailed.has(pane.pane_id)
           || ((codexLooked.get(pane.pane_id)?.pending || codexRetryAt.has(pane.pane_id)) && completions.current(pane.pane_id) === "done"))
           && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
@@ -865,7 +873,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       }
       codexDeferredRest.delete(paneId);
       if (raw === "working" && codexLiveFailed(paneId)) return;
-      if (inputReady(raw)) codexFailedWhileBusy.delete(paneId);
+      if (codexInputReady(paneId, raw)) codexFailedWhileBusy.delete(paneId);
     }
     // back at work, the agent has had its answer, maybe from a terminal: the same prompt on
     // its screen after this is another asking, which an answer to the old card must not take.
@@ -880,7 +888,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const claudeAnswered = claudeEnd === "answered" && claudeFailed.delete(paneId);
     const failedRest = (codexFailed.has(paneId) || (agent === "claude" && claudeFailed.has(paneId))) && raw !== "blocked";
     const status = completions.observe(paneId, failedRest || claudeAnswered ? "idle" : raw, omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent, failedRest ? "failed" : claudeAnswered ? "answered" : undefined);
-    const forQueue = failedRest && raw === "unknown" ? raw : status;
+    const forQueue = agent === "claude" && failedRest && raw === "unknown" ? raw : status;
     if (askedAt === undefined) pending.status(paneId, queueStatus(paneId, forQueue)); else pending.baseline(paneId, queueStatus(paneId, forQueue), askedAt);
     drainPending(paneId);
     const tracker = omo.runs(paneId) ? null : agent === "claude" ? claudeAgents : agent === "opencode" ? opencodeAgents : isTaskAgent(agent) ? taskAgents : null;
@@ -943,12 +951,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       codexDeferredRest.delete(paneId);
       if (event.failed) codexEnded(paneId, "failed", true);
       if (rest !== undefined) reportStatus(paneId, rest.status, "codex", rest.askedAt);
+      // A short turn may not change herdr's title. Read it after the end, not from before the turn.
+      else void rawSnapshot().catch(() => undefined);
       return;
     }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
       lateClaudeFailure.delete(paneId);
+      if (typeof claudeFailed.get(paneId) === "string") claudeWorking(paneId, true);
       hookPrompts.set(paneId, [...open, prompt]);
       hookRestEnds(paneId);
       return;
@@ -970,10 +981,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       hookPrompts.set(paneId, left);
       // Submit also fires when Claude enqueues a prompt internally. Report the failed turn without claiming that
       // the queued prompt already ran or that the pane is ready for Ovis to type into.
-      if (event.failed && at >= 0) {
-        claudeFailed.set(paneId, prompt);
-        push.onFailed(paneId, undefined, true).catch(logPushError);
-      }
+      if (event.failed && at >= 0) push.onFailed(paneId, undefined, true).catch(logPushError);
       return;
     }
     hookPrompts.delete(paneId);

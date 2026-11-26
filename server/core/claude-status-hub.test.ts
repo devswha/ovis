@@ -45,6 +45,33 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.last().status).toBe("idle");
   });
 
+  it("finishes a queued successor without a readable transcript after the preceding prompt fails", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2" });
+    handlers.onStatus(id, "done", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    expect(h.failures).toEqual([id]);
+  });
+
+  it("alerts for a queued successor's transcript failure after a named failure", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    writeFileSync(h.path, failed);
+    handlers.onStatus(id, "done", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id, id]);
+  });
+
   it("alerts for two different prompts even when herdr has not sampled working for the second", async () => {
     const h = await claudeHub(null, true);
     const id = h.pane.pane_id;

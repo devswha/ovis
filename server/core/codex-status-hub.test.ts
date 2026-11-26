@@ -42,6 +42,21 @@ function codexHub(text: string) {
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
+  it("keeps a rollout-detected failure ready for delivery at codex/unknown", async () => {
+    const h = codexHub(failed);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.herdrSays(pane("unknown"));
+      handlers.onStatus("w1:p1", "unknown", "codex");
+      await h.looked();
+      expect(h.failures).toEqual(["w1:p1"]);
+      handlers.onStatus("w1:p1", "unknown", "codex");
+      expect(h.pending.current("w1:p1")).toBe("idle");
+      expect((await h.status.deliverySnapshot()).panes[0]?.agent_status).toBe("idle");
+    } finally { h.restore(); }
+  });
+
   it("does not re-alert the same served turn after an in-flight working read outlasts herdr's done event", async () => {
     const h = codexHub(failed);
     const told = spyOn(served, "servedTurnEnd").mockReturnValue("failed");
