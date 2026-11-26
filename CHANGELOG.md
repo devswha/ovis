@@ -63,6 +63,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   given `-Headless` (`OVIS_HEADLESS=1`), which starts herdr without a desktop. A herdr that already
   runs is left as it is.
   ([#4565](https://github.com/devswha/ovis/pull/4565))
+- For Codex panes opened by Ovis, chat reflects live model, reasoning effort and Plan mode
+  between turns, including after resuming a saved conversation. On a fresh thread, the Plan
+  icon can appear only once Codex writes its first session record.
+  ([#4789](https://github.com/devswha/ovis/pull/4789))
 
 ### Removed
 - Ovis no longer ships xterm.js or its addons, and `localStorage["ovis:terminal-engine"]` no
