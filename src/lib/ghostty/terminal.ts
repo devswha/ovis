@@ -429,7 +429,7 @@ export class GhosttyTerminal {
     this.failed = error;
     console.warn("libghostty stopped drawing this terminal", error);
     this.pending = false;
-    if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites(), 0);
+    if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites());
     const restarting = this.restarts < MAX_RESTARTS;
     // the mount is told when there is something to do: attach again once the new engine is in (start), or say it gave up
     if (restarting) {
@@ -475,7 +475,7 @@ export class GhosttyTerminal {
     if (this.disposed) return;
     this.writes.push({ data, callback });
     if (this.pending || this.draining !== null) return;
-    this.draining = setTimeout(() => this.drainWrites(), 0);
+    this.draining = setTimeout(() => this.drainWrites());
   }
 
   private drainWrites(): void {
@@ -483,7 +483,7 @@ export class GhosttyTerminal {
     const start = performance.now();
     while (!this.disposed && !this.pending && this.writes.length > 0) {
       if (performance.now() - start > WRITE_BUDGET_MS) {
-        this.draining = setTimeout(() => this.drainWrites(), 0);
+        this.draining = setTimeout(() => this.drainWrites());
         return;
       }
       const { data, callback } = this.writes.shift()!;
