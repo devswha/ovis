@@ -509,7 +509,28 @@ describe("OpenCode answer ordering", () => {
       } finally { release.resolve(Response.json(f.forms)); }
     });
   }, 3_000);
+
+  it("drops the card once the form is answered or cancelled elsewhere, with no fallback card while herdr still says blocked", async () => {
+    for (const [form, gone] of questions) {
+      await fixture(async (f) => {
+        f.forms = [form];
+        const prompt = await f.read();
+        expect(prompt).toMatchObject({ agent: "opencode", options: [{ label: "Red" }, { label: "Blue" }, {}] });
+        f.forms = [];
+        expect(await f.read(), gone).toBeNull();
+        expect((await f.answer(prompt, { option_index: 0 })).status).toBe(409);
+        expect(f.replies).toEqual([]);
+      });
+    }
+  });
 });
+
+/** The question forms a real OpenCode 2.2.2 asked (server/fixtures/opencode-form-2.2.2.json), moved to the fixture's session, each with how it ended. */
+const formEvents = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-form-2.2.2.json"), "utf8")) as { events: { type: string; data: { id?: string; form?: OpenCodeFormInfo } }[] }).events;
+const questions = formEvents.filter((event) => event.type === "form.created").map((event) => [
+  { ...event.data.form!, sessionID: "ses_fixture01" },
+  formEvents.find((ended) => ended.type !== "form.created" && ended.data.id === event.data.form!.id)!.type,
+] as const);
 
 /** The permission requests a real OpenCode 2.2.2 asked (server/fixtures/opencode-permission-2.2.2.json), moved to the fixture's session. */
 const recorded: Record<string, unknown>[] = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "opencode-permission-2.2.2.json"), "utf8")) as { events: { type: string; data: Record<string, unknown> }[] })

@@ -1038,9 +1038,13 @@ async function readKnownPrompt(
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
       state.applied = issued;
-      // a request answered elsewhere (its own terminal): OpenCode's dialog closes a moment before herdr stops reporting
-      // blocked, the same settling an answer from a card waits out, so no fallback card stands in for it meanwhile
-      if (permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id))) {
+      // a request or form answered or cancelled elsewhere (its own terminal, an interrupt): OpenCode's dialog closes a
+      // moment before herdr stops reporting blocked, the same settling an answer from a card waits out, so no fallback
+      // card stands in for it meanwhile
+      const permissionGone = permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id));
+      const heldForm = state.listed;
+      const formGone = forms !== null && heldForm !== null && !forms.some((listed) => listed.id === heldForm.id);
+      if (permissionGone || formGone) {
         formsAnswered.set(paneId, Date.now());
         if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
       }
