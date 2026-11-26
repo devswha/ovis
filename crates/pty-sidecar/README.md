@@ -1,7 +1,7 @@
 # ovis-pty-sidecar
 
-A PTY host written in Rust that speaks the protocol of `server/pty/pty-host.mjs`: the same argv
-(`<cols> <rows> <command> [args...]`), the same newline-delimited JSON control frames on stdin
+The PTY host of every terminal the Ovis server runs itself (`server/pty/session.ts`), written in Rust:
+it takes `<cols> <rows> <command> [args...]`, newline-delimited JSON control frames on stdin
 (`i` input, `r` resize, `p` pause/resume output reads, `w` SIGWINCH at the current size), the pty's
 bytes on stdout, and the child's exit code. Linux and macOS only.
 
@@ -30,38 +30,30 @@ bun run server
 
 `OVIS_PTY_SIDECAR_BIN` points at a binary elsewhere (a leading `~/` is expanded, as the plugin's
 `env` file is not a shell). Name the binary itself, or a wrapper that `exec`s it, so that the
-server sees how the host ended. `OVIS_PTY_SIDECAR=node` asks for the Node sidecar instead, and
-`OVIS_PTY_SIDECAR=rust` makes a host that cannot run a warning on stderr rather than a log line.
+server sees how the host ended.
 
 ## When it cannot run
 
-The server falls back to the Node sidecar, where the PC has a Node 18 or newer, says why once, and keeps attaching:
+Before the first use (at startup), the server runs the binary twice: with no arguments it must print
+its usage line and exit 2, and `1 1 true` must exit 0. A missing file, one that is not executable or
+not for this CPU (or in a folder mounted `noexec`), another program, a host that crashes or hangs
+(3 s), or a PC where it cannot open a pty fails the check. The server then says once on stderr why,
+and how to get a host that runs, and herdr's panes are mirrored instead of attached; a private
+sign-in terminal is refused. A host that ends by a signal the server did not send (a crash, the
+out-of-memory killer) ends that attach and is said on stderr; the next attach starts a new one.
 
-- **Before the first use** (at startup), it runs the binary twice: with no
-  arguments it must print its usage line and exit 2, and `1 1 true` must exit 0. A missing file,
-  one that is not executable or not for this CPU, another program, a host that crashes or hangs
-  (3 s), or a PC where it cannot open a pty fails the check, and every attach uses Node.
-- **When it cannot be started** after passing (the file was removed or replaced), that attach
-  starts on Node.
-- **When it ends by a signal the server did not send** (a crash, the out-of-memory killer), that
-  attach ends as an attach does when its host stops, and every later one uses Node until the
-  server restarts.
-
-Other values of `OVIS_PTY_SIDECAR` than `rust` and `node` are reported once and mean Node.
-
-A PC without Node attaches its panes on this host alone. Only with neither (a host that fails its
-check and no Node) are panes mirrored. Remote PC bundles carry this host beside their own Node.
-Windows has no Rust host and mirrors.
+A checkout of main whose `crates/pty-sidecar` no release was built from has no release binary to
+install: the daily beta (`.github/workflows/beta.yml`) publishes one as the `pty-sidecar-<tree>`
+prerelease, which `bun scripts/pty-sidecar.ts install` takes, and `cargo build` above works at once.
+Remote PC bundles carry this host. Windows has no Rust host and mirrors.
 
 ## Checks
 
 ```bash
 cargo test --manifest-path crates/pty-sidecar/Cargo.toml   # frame parsing
-bun test server/pty/host.test.ts                           # the same PtySession checks on both hosts
-OVIS_PTY_SIDECAR=rust bun test server/pty/session.test.ts  # the session's own tests, on this host
-bun scripts/pty-sidecar-bench.ts                           # startup, teardown, echo, throughput, memory, a real attach
+bun test server/pty/host.test.ts server/pty/session.test.ts   # PtySession on this host
 ```
 
 The Rust checks in `server/pty/host.test.ts` are skipped when the binary has not been built. CI's
-Rust PTY host job builds it on GitHub's Ubuntu image and runs `cargo test`, `host.test.ts` and
-`session.test.ts` on it; the other jobs run without it.
+Rust PTY host job builds it and runs `cargo test`, `host.test.ts` and `session.test.ts` on it; the
+jobs whose tests attach terminals build it too (`pty-host` in `.github/actions/setup-ci`).
