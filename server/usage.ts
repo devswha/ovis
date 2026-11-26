@@ -23,7 +23,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readStatusline, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
-import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
+import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
@@ -89,6 +89,8 @@ interface Reading {
   credits?: UsageCredits | null;
   account?: Account | null;
   checkedAt?: number;
+  /** a local reading that still describes every window it named: taken before the provider is asked */
+  current?: boolean;
 }
 
 export interface UsageProvider {
@@ -105,7 +107,18 @@ export interface UsageProvider {
   recorded?: readonly RecordedSource[];
 }
 
-class UsageTooLarge extends Error {}
+/** A read that failed in a way the meter names (shared/usage.ts UsageFailure). */
+export class UsageFailed extends Error {
+  constructor(readonly failure: UsageFailure, message: string) {
+    super(message);
+  }
+}
+
+/** What a failed read ran into, as the meter names it; null when it is none of those (an HTTP status other than 5xx). */
+export function failureOf(error: unknown): UsageFailure | null {
+  if (error instanceof UsageFailed) return error.failure;
+  return error instanceof UsageHttpError && error.status >= 500 ? "upstream" : null;
+}
 
 export class UsageHttpError extends Error {
   constructor(readonly status: number, readonly retryAfterMs: number | null) {
@@ -241,14 +254,20 @@ function retryAfter(header: string | null): number | null {
 }
 
 async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
-  const response = await ctx.fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const host = new URL(url).host;
+  // the time allowed ran out (AbortSignal.timeout), else the connection itself failed (DNS, refused, dropped)
+  const unreachable = (error: unknown) => error instanceof UsageFailed ? error : new UsageFailed(
+    error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network", `${host}: ${error instanceof Error ? error.message : String(error)}`);
+  let response: Response;
+  try { response = await ctx.fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) }); } catch (error) { throw unreachable(error); }
   if (!response.ok) {
     await response.body?.cancel();
     throw new UsageHttpError(response.status, retryAfter(response.headers.get("retry-after")));
   }
-  const body = await readCapped(response.body);
-  if (body === null) throw new UsageTooLarge(`${new URL(url).host} answered more than ${MAX_READ_BYTES} bytes`);
-  return record(JSON.parse(body));
+  let body: string | null;
+  try { body = await readCapped(response.body); } catch (error) { throw unreachable(error); }
+  if (body === null) throw new UsageFailed("bad_response", `${host} answered more than ${MAX_READ_BYTES} bytes`);
+  try { return record(JSON.parse(body)); } catch { throw new UsageFailed("bad_response", `${host} answered something other than JSON`); }
 }
 
 /**
@@ -369,7 +388,7 @@ const claude: UsageProvider = {
     const local = readStatusline(ctx.home, ctx.now());
     if (!local?.account || local.account.id !== signIn.account?.id) return null;
     const windows = claudeStatuslineWindows(local);
-    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt } : null;
+    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current: !local.turnedOver } : null;
   },
   async read(ctx, signIn) {
     const body = await requestJson(ctx, "https://api.anthropic.com/api/oauth/usage", {
@@ -1303,9 +1322,9 @@ export class UsageService {
     // the last numbers stay, named by what went wrong since - unless the place now holds another
     // account's sign-in: those numbers and that name were someone else's
     const kept = previous !== null && (!found.account || previous.key === identity(null).key) ? previous : null;
-    const keep = (problem: UsageProblem, plan: string | null, wait: number) => settle({
+    const keep = (problem: UsageProblem, plan: string | null, wait: number, more: Pick<ProviderUsage, "failure" | "statusline_offer"> = {}) => settle({
       id: provider.id, ...(kept ? { key: kept.key, account: kept.account } : identity(null)),
-      plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, checked_at: kept?.checked_at ?? null,
+      plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, ...more, checked_at: kept?.checked_at ?? null,
     }, wait);
     if ("locked" in found) return keep("locked", null, FRESH_MS);
     const signIn: SignIn = found;
@@ -1315,7 +1334,8 @@ export class UsageService {
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
         windows: reading.windows, problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...resets.map((reset) => reset - now)));
     };
-    if (local && now - (local.checkedAt ?? now) < FRESH_MS) return fromLocal(local);
+    // the numbers Claude's own status line drew, while they still describe every window: no request, no token
+    if (local?.current) return fromLocal(local);
     const fallback = local !== null && !(kept?.checked_at && Date.parse(kept.checked_at) > (local.checkedAt ?? now)) ? local : null;
     if (signIn.expiresAt !== null && signIn.expiresAt <= now) return fallback ? fromLocal(fallback) : keep("expired", signIn.plan ?? null, RETRY_MS);
     const backoff = found.account ? `${provider.id}:${found.account.id}` : `${provider.id}#${createHash("sha256").update(signIn.token).digest("hex")}`;
@@ -1332,21 +1352,23 @@ export class UsageService {
       const wait = Math.max(RETRY_MS, error instanceof UsageHttpError ? error.retryAfterMs ?? FRESH_MS : 0);
       if (error instanceof UsageHttpError && error.status === 429) this.backoffs.set(backoff, now + wait);
       if (fallback) return fromLocal(fallback);
-      if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403)) {
-        const expired = keep("expired", signIn.plan ?? null, RETRY_MS);
-        // a 403 for a token that has not expired is a refusal, not an expiry: the status line can stand in
-        const refused = provider.id === "claude" && error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
+      // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
+      // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
+      // another one's status line is not wrapped
+      const offer = (): Pick<ProviderUsage, "statusline_offer"> => {
+        if (provider.id !== "claude") return {};
         const statusline = this.statusline();
-        // offered only where it can be turned on (never on Windows, never once it is on), and only for the
-        // sign-in in the config directory the switch changes: another one's status line is not wrapped
-        if (refused && expired.usage && statusline.supported && !statusline.installed && this.switchesConfigOf(found.source)) {
-          expired.usage = { ...expired.usage, statusline_offer: true };
-        }
-        return expired;
+        return statusline.supported && !statusline.installed && this.switchesConfigOf(found.source) ? { statusline_offer: true } : {};
+      };
+      if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403)) {
+        // a 403 for a token that has not expired is a refusal, not an expiry: the status line can stand in
+        const refused = error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
+        return keep("expired", signIn.plan ?? null, RETRY_MS, refused ? offer() : {});
       }
-      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, wait);
-      console.warn(`usage: ${provider.id} could not be read: ${error instanceof Error ? error.message : String(error)}`);
-      return keep("failed", signIn.plan ?? null, RETRY_MS);
+      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, wait, offer());
+      const failure = failureOf(error);
+      console.warn(`usage: ${provider.id} could not be read${failure ? ` (${failure})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+      return keep("failed", signIn.plan ?? null, RETRY_MS, { ...(failure ? { failure } : {}), ...offer() });
     }
   }
 }
@@ -1360,7 +1382,8 @@ function ownStands(own: ProviderUsage, recorded: RecordedUsage, now: number): bo
 function standingIn(own: ProviderUsage, record: RecordedUsage): ProviderUsage {
   return {
     id: own.id, key: own.key, account: own.account ?? record.account, plan: own.plan, windows: record.windows, problem: own.problem,
-    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
+    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.failure ? { failure: own.failure } : {}),
+    ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
   };
 }
 

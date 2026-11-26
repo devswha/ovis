@@ -84,6 +84,24 @@ describe("CLIProxyAPI v8", () => {
     ]);
   });
 
+  it("names why an account could not be read: the provider's error or limit, or the Hub setting it aside or failing", async () => {
+    await configure();
+    fake.files.push({ name: "claude-c.json", provider: "claude", email: "claude-c@example.test", status: "error", disabled: false, unavailable: true, auth_index: "c", id_token: null });
+    fake.answers.set("a", { status_code: 529, body: JSON.stringify({ type: "error", error: { type: "overloaded_error" } }) });
+    fake.answers.set("b", { status_code: 429, body: "{}" });
+    const rows = async () => Object.fromEntries((await service.report()).map((entry) => [entry.key, [entry.problem, entry.failure ?? null]]));
+    expect(await rows()).toEqual({
+      "claude:cliproxy:claude-a.json": ["failed", "upstream"],
+      "codex:cliproxy:codex-b.json": ["rate_limited", null],
+      "claude:cliproxy:claude-c.json": ["failed", "hub"],
+    });
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b"]);
+    // an answer the Hub itself could not give is the Hub's failure, not the provider's
+    fake.answers.set("a", { status_code: 0, body: "" });
+    service.invalidate();
+    expect((await rows())["claude:cliproxy:claude-a.json"]).toEqual(["failed", "hub"]);
+  });
+
   it("lists no account turned off in the Hub, hidden or not, until it is turned on again", async () => {
     await configure();
     const keys = async () => (await service.report()).map((entry) => entry.key);

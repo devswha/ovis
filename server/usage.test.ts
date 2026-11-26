@@ -15,7 +15,8 @@ function jwt(claims: Record<string, unknown>): string {
   return ["e30", Buffer.from(JSON.stringify(claims)).toString("base64url"), "sig"].join(".");
 }
 
-type Reply = { status?: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> };
+/** `raw`: the body as sent, in place of `body` as JSON; `error`: what fetch throws instead of answering */
+type Reply = { status?: number; body?: unknown; raw?: string; error?: Error; headers?: Record<string, string>; gate?: Promise<void> };
 
 let home: string;
 let now: number;
@@ -35,7 +36,8 @@ function context(platform: NodeJS.Platform = "linux"): UsageContext {
       const reply = replies.get(url);
       if (!reply) throw new Error(`unexpected request ${url}`);
       await reply.gate;
-      return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
+      if (reply.error) throw reply.error;
+      return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
     },
     keychain: async (service, account) => keychain.get(`${service}|${account ?? ""}`) ?? { status: "missing" },
     run: async (argv) => {
@@ -311,21 +313,53 @@ describe("providers", () => {
     expect(requests).toEqual([]);
   });
 
-  it("asks the endpoint over a capture older than five minutes, and falls back to it with its own time", async () => {
+  it("takes a capture hours old over the endpoint while its windows stand, and asks the endpoint once one started over", async () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
     const path = join(home, ".herdr", "statusline-last.json");
-    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
-    const taken = NOW - 10 * 60_000;
-    utimesSync(path, new Date(taken), new Date(taken));
+    const taken = NOW - 4 * HOUR;
+    const capture = (fiveHourResets: number) => {
+      write(path, { _herdr: { account: { id: "a" } }, rate_limits: {
+        five_hour: { used_percentage: 17, resets_at: fiveHourResets / 1000 }, seven_day: { used_percentage: 30, resets_at: (NOW + 48 * HOUR) / 1000 },
+      } });
+      utimesSync(path, new Date(taken), new Date(taken));
+    };
+    capture(NOW + HOUR);
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
+    const [standing] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(standing).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 17 }, { used_percent: 30 }] });
+    expect(requests).toEqual([]);
+    // its five hours have started over: the endpoint is asked, and refused, the week the capture still holds stands in
+    capture(NOW - 60_000);
     const [answered] = (await new UsageService(context(), only("claude")).report()).providers;
     expect(answered).toMatchObject({ problem: null, checked_at: new Date(NOW).toISOString(), windows: [{ used_percent: 42 }] });
     expect(requests).toHaveLength(1);
     replies.set(CLAUDE_USAGE, { status: 403, body: { error: { message: "Request not allowed" } } });
     const [refused] = (await new UsageService(context(), only("claude")).report()).providers;
-    expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 17 }] });
+    expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 30 }] });
     expect(requests).toHaveLength(2);
+  });
+
+  it("names what a failed Claude read ran into, and offers the status line for it and for a 429", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    const read = async (reply: Reply) => {
+      replies.set(CLAUDE_USAGE, reply);
+      return (await new UsageService(context(), only("claude")).report()).providers[0];
+    };
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect(await read({ status: 529, body: { type: "error", error: { type: "overloaded_error" } } })).toMatchObject({ problem: "failed", failure: "upstream", statusline_offer: true });
+      expect(await read({ raw: "<!DOCTYPE html><title>Just a moment...</title>" })).toMatchObject({ problem: "failed", failure: "bad_response", statusline_offer: true });
+      expect(await read({ error: new DOMException("The operation timed out.", "TimeoutError") })).toMatchObject({ problem: "failed", failure: "timeout" });
+      expect(await read({ error: Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" }) })).toMatchObject({ problem: "failed", failure: "network" });
+      const notFound = await read({ status: 404 });
+      expect(notFound).toMatchObject({ problem: "failed", statusline_offer: true });
+      expect(notFound).not.toHaveProperty("failure");
+      expect(await read({ status: 429, headers: { "retry-after": "60" } })).toMatchObject({ problem: "rate_limited", statusline_offer: true });
+      installStatusline({ home });
+      expect(await read({ status: 529 })).not.toHaveProperty("statusline_offer");
+    } finally { console.warn = warn; }
   });
 
   it("offers the status line for a 403 to a token that has not expired, never for a real expiry or once it is on", async () => {
@@ -417,9 +451,10 @@ describe("providers", () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 2 * HOUR } });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
     const path = join(home, ".herdr", "statusline-last.json");
-    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
-    utimesSync(path, new Date(NOW - 10 * 60_000), new Date(NOW - 10 * 60_000));
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
+    // a capture whose five hours started over is not taken before the endpoint
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17, resets_at: (NOW - 60_000) / 1000 }, seven_day: { used_percentage: 30 } } });
+    utimesSync(path, new Date(NOW - 10 * 60_000), new Date(NOW - 10 * 60_000));
     const service = new UsageService(context(), only("claude"));
     expect((await service.report()).providers[0]).toMatchObject({ problem: null, windows: [{ used_percent: 42 }] });
     now += 6 * 60_000;
@@ -1751,7 +1786,9 @@ describe("the service", () => {
     const warn = console.warn;
     console.warn = () => {};
     try {
-      expect((await service.report()).providers[0]!.problem).toBe("failed");
+      const [failed] = (await service.report()).providers;
+      expect(failed).toMatchObject({ problem: "failed", failure: "upstream" });
+      expect(failed).not.toHaveProperty("statusline_offer");
       now += RETRY_MS;
       replies.set(CODEX_USAGE, codexReply());
       expect((await service.report()).providers[0]!.problem).toBeNull();
@@ -1772,7 +1809,7 @@ describe("bounded reads", () => {
     const warn = console.warn;
     console.warn = () => {};
     try {
-      expect((await new UsageService(context(), only("codex")).report()).providers[0]!.problem).toBe("failed");
+      expect((await new UsageService(context(), only("codex")).report()).providers[0]).toMatchObject({ problem: "failed", failure: "bad_response" });
     } finally { console.warn = warn; }
   });
 

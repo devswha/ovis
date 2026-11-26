@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { CLIProxyStatus, ProviderUsage } from "../shared/protocol.ts";
 import { isJsonObject } from "./http.ts";
 import { writePrivateState } from "./private-state.ts";
-import { FRESH_MS, MIN_REFRESH_MS, systemUsageContext, USAGE_PROVIDERS, UsageHttpError } from "./usage.ts";
+import { failureOf, FRESH_MS, MIN_REFRESH_MS, systemUsageContext, USAGE_PROVIDERS, UsageFailed, UsageHttpError } from "./usage.ts";
 
 export class CLIProxyError extends Error {
   constructor(readonly code: string, readonly status: number, message: string) { super(message); }
@@ -609,20 +609,30 @@ export class CLIProxyService {
           return row;
         };
         if (unreadableIn(start, entry.key, identities) || unreadableIn(live, entry.key, identities)) return [Promise.resolve(held({ ...entry, problem: null }))];
-        if (file["unavailable"] === true) return [Promise.resolve(held(entry))];
+        // the hub set the account aside (its sign-in refused, or its limits reached): nothing is asked for it
+        if (file["unavailable"] === true) return [Promise.resolve(held({ ...entry, failure: "hub" }))];
         return [(async (): Promise<ProviderUsage> => {
           try {
             const reading = await provider.read({ ...ctx, fetch: async (url, init) => {
               const header = Object.fromEntries(new Headers(init.headers).entries());
               header["authorization"] = "Bearer $TOKEN$";
-              const answer = await this.call("/requests/api-call", { method: "POST", body: JSON.stringify({ auth_index: index, method: "GET", url, header }) });
-              const status = answer["status_code"];
-              if (typeof status !== "number" || status < 200 || status > 599 || typeof answer["body"] !== "string") throw proxyInvalid();
-              return new Response(answer["body"], { status });
+              try {
+                const answer = await this.call("/requests/api-call", { method: "POST", body: JSON.stringify({ auth_index: index, method: "GET", url, header }) });
+                const status = answer["status_code"];
+                if (typeof status !== "number" || status < 200 || status > 599 || typeof answer["body"] !== "string") throw proxyInvalid();
+                return new Response(answer["body"], { status });
+              } catch (error) {
+                // the hub, not the provider, failed to answer
+                throw new UsageFailed("hub", error instanceof Error ? error.message : String(error));
+              }
             } }, { token: "$TOKEN$", expiresAt: null, chatgptAccount: workspace });
             return reading ? { ...entry, plan: reading.plan, windows: reading.windows, problem: null, checked_at: new Date().toISOString() } : entry;
           } catch (error) {
-            return { ...entry, problem: error instanceof UsageHttpError && (error.status === 401 || error.status === 403) ? "expired" : "failed" };
+            const status = error instanceof UsageHttpError ? error.status : null;
+            if (status === 401 || status === 403) return { ...entry, problem: "expired" };
+            if (status === 429) return { ...entry, problem: "rate_limited" };
+            const failure = failureOf(error);
+            return failure ? { ...entry, failure } : entry;
           }
         })().then(held)];
       }));
