@@ -1115,7 +1115,7 @@ export class AccountService {
    * Invalidates this generation before waiting for the refresh lock or the service. A sign-out
    * aimed at an already replaced sign-in only revokes that old family, leaving the current one alone.
    */
-  async signOut(): Promise<void> {
+  async signOut(locallyEnded?: () => void): Promise<void> {
     let ended: AccountSession | undefined;
     let cleared = false;
     await this.options.store.updateMany(["session", "generation"], (current) => {
@@ -1129,6 +1129,7 @@ export class AccountService {
       return { generation: crypto.randomUUID() };
     });
     if (cleared && this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+    locallyEnded?.();
     const session = ended;
     if (session !== undefined) await this.lock(() => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now }));
   }

@@ -140,7 +140,7 @@ export interface AccountStore {
   updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
   /**
    * Forgets the key, the sign-in and every record but `leaving` and `own_blocks`, in one transaction: a new key is made
-   * on next use, which no PC knows. A sign-in `keep` accepts stays (one made after a leave began). With `only`,
+   * on next use, which no PC knows. A sign-in `keep` accepts stays with its generation. With `only`,
    * nothing is cleared unless it accepts the sign-in and the key stored then (read in the same transaction); the records
    * `spare` names stay as `leaving` does, and so do the unsent blocks `unsent` accepts (another sign-in's, S32-1).
    */
@@ -184,11 +184,15 @@ export function memoryAccountStore(): AccountStore {
       const session = records.get("session") as AccountSession | undefined;
       if (options?.only !== undefined && !options.only(session, records.get("key") as AccountKey | undefined)) return;
       const kept = (["leaving", "own_blocks", ...options?.spare ?? []] as const).map((name) => [name, records.get(name)] as const);
+      const generation = records.get("generation");
       const unsent = keptUnsent(records.get("unsent_blocks") as Records["unsent_blocks"] | undefined, options?.unsent);
       records.clear();
       for (const [name, value] of kept) if (value !== undefined) records.set(name, value);
       if (unsent !== undefined) records.set("unsent_blocks", unsent);
-      if (session !== undefined && keep?.(session) === true) records.set("session", session);
+      if (session !== undefined && keep?.(session) === true) {
+        records.set("session", session);
+        if (generation !== undefined) records.set("generation", generation);
+      }
     },
   };
 }
@@ -310,6 +314,7 @@ export const indexedAccountStore: AccountStore = {
       const kept = (["leaving", "own_blocks", ...options?.spare ?? []] as const).map((name) => [name, store.get(name)] as const);
       const unsent: IDBRequest<Records["unsent_blocks"] | undefined> = store.get("unsent_blocks");
       const key: IDBRequest<AccountKey | undefined> = store.get("key");
+      const generation: IDBRequest<string | undefined> = store.get("generation");
       const session: IDBRequest<AccountSession | undefined> = store.get("session");
       // requests run in order: every read is done when the last answers
       session.onsuccess = () => {
@@ -318,7 +323,10 @@ export const indexedAccountStore: AccountStore = {
         for (const [name, read] of kept) if (read.result !== undefined) store.put(read.result, name);
         const others = keptUnsent(unsent.result, options?.unsent);
         if (others !== undefined) store.put(others, "unsent_blocks");
-        if (session.result !== undefined && keep?.(session.result) === true) store.put(session.result, "session");
+        if (session.result !== undefined && keep?.(session.result) === true) {
+          store.put(session.result, "session");
+          if (generation.result !== undefined) store.put(generation.result, "generation");
+        }
       };
       return () => undefined;
     }));

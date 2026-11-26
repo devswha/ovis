@@ -72,6 +72,21 @@ it("does not redeem a sign-in that returns after sign-out", async () => {
   expect(await store.get("session")).toBeUndefined();
 });
 
+it("redeems a pending sign-in from the previous build exactly once", async () => {
+  const { fake, store } = await setup();
+  const legacy = memoryAccountStore();
+  const returned = await start(fake, legacy);
+  const pending = (await legacy.get("pending"))?.[returned.state];
+  if (pending === undefined) throw new Error("The fake sign-in is not pending");
+  const { generation: _notSavedByPreviousBuild, ...old } = pending;
+  await store.set("pending", { [returned.state]: old });
+
+  const session = await finishSignIn(returned, { store, fetch: fake.fetch });
+  expect(await store.get("session")).toEqual(session);
+  await expect(finishSignIn(returned, { store, fetch: fake.fetch })).rejects.toMatchObject({ code: "no_sign_in" });
+  expect(fake.requests.filter((request) => request === "POST /v1/token")).toHaveLength(2);
+});
+
 it("revokes a sign-in whose token answer arrives after sign-out instead of storing it", async () => {
   const { fake, store, account } = await setup();
   const returned = await start(fake, store);

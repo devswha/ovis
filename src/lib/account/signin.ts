@@ -103,19 +103,20 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
   if (now() - pending.started_at > SIGN_IN_MS) throw new SignInError("expired", "The sign-in took too long");
   if ("error" in returned && returned.error === "invalid_link") throw new SignInError("expired", "The link to add a sign-in method ran out");
   if ("error" in returned) throw new SignInError("denied", "The sign-in was cancelled or refused");
-  if (pending.generation === undefined) throw new SignedOutError();
-  await AccountService.checkGeneration(options.store, pending.generation);
+  // A pending record is consumed once. A previous build did not stamp it, so adopt the generation now.
+  const generation = pending.generation ?? await AccountService.signInGeneration(options.store);
+  await AccountService.checkGeneration(options.store, generation);
   let session: AccountSession;
   try {
     session = await requestToken(pending.service, {
       grant_type: "authorization_code", code: returned.code, code_verifier: pending.verifier, redirect_uri: pending.redirect_uri,
     }, { ...(options.fetch ? { fetch: options.fetch } : {}), now, ...(options.bearer === undefined ? {} : { bearer: options.bearer }) });
   } catch (error) {
-    await AccountService.checkGeneration(options.store, pending.generation);
+    await AccountService.checkGeneration(options.store, generation);
     if (error instanceof AccountServiceError && error.code === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
     throw error;
   }
-  return finishIssuedSignIn(session, pending.generation, options);
+  return finishIssuedSignIn(session, generation, options);
 }
 
 /** A link is installed by addMethod; other sign-ins are installed atomically against the generation. */
