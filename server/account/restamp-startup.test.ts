@@ -84,6 +84,27 @@ posix.each(["journal", "revoke", "lock"] as const)("restamp checks member accoun
 });
 
 
+posix.each(["journal", "revoke", "lock"] as const)("restamp checks member accounts after ordinary %s removals on a cold start", async cause => {
+  const active = folder(), row = phone();
+  if (cause === "journal") {
+    const first = start(active);
+    first.devices.journalEvent({ kind: "remove", how: "pc", key: row.relay_public_key, no: null, row: row.id, label: row.label, by: "pc", account: null });
+    first.stop();
+  }
+  if (cause === "lock") expect(SafetyLog.open(active).appendLock({ account: "previous" }).outcome).toBe("applied");
+  if (cause === "revoke") RemovalEvidence.open(active, null).addRevoke(row.relay_public_key, "previous", Date.now());
+  RemovalEvidence.open(active, null).addRevoke(key(), null, future);
+  put(active, "devices.json", { gate_closed_at: past, devices: [{ ...row, account: "previous" }] });
+  const running = start(active);
+  const preview = await askRecovery(active, { act: "restamp" });
+  if (!isJsonObject(preview) || typeof preview.confirm !== "string") throw new Error(`Expected a preview: ${JSON.stringify(preview)}`);
+  expect(await askRecovery(active, { act: "restamp", confirm: preview.confirm })).toMatchObject({ queued: true });
+  running.stop();
+  const applied = start(active);
+  expect(applied.devices.accountError).toBeNull();
+  expect(applied.devices.list(null).some(device => device.id === row.id)).toBe(false);
+});
+
 posix("a Step 2 clock repair leaves a quarantined legacy pairing's time alone", async () => {
   const active = folder(), time = new Date(future).toISOString();
   put(active, "devices.json", { gate_closed_at: past, devices: [{ ...phone(), created_at: time }] });
