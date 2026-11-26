@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // not the package itself: it sets up an updater for this platform as its exports are read, which needs Electron
 import { DebUpdater } from "electron-updater/out/DebUpdater";
-import { BETA_FEED, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices } from "./updates.ts";
+import { appUpdateState, BETA_FEED, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type UpdateOffer } from "./updates.ts";
 
 const packaged = { packaged: true, platform: "darwin", builtWithFeed: true, env: {} };
 
@@ -44,10 +44,13 @@ describe("updatePlan", () => {
     const appImage = { env: { APPIMAGE: "/home/u/Ovis.AppImage", APPDIR: "/tmp/.mount_OvisAb" }, execPath: "/tmp/.mount_OvisAb/ovis" };
     expect(updatePlan({ ...linux, ...appImage })).toEqual(plan("appimage"));
     expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis" })).toEqual(plan("deb"));
+    // electron-builder may leave the deb's package-type file in the AppImage too: a running AppImage stays one
     expect(updatePlan({ ...linux, ...appImage, linuxPackage: "deb" })).toEqual(plan("appimage"));
+    // started from another AppImage (a terminal, an editor): its APPIMAGE and APPDIR are not this program's
     const inherited = { APPIMAGE: "/home/u/Terminal.AppImage", APPDIR: "/tmp/.mount_TermXy" };
     expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", env: inherited })).toEqual(plan("deb"));
     expect(updatePlan({ ...linux, execPath: "/opt/Ovis/ovis", env: inherited }).enabled).toBe(false);
+    // an inherited APPDIR of / would contain every program
     expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", env: { APPIMAGE: "/home/u/Other.AppImage", APPDIR: "/" } })).toEqual(plan("deb"));
   });
 
@@ -57,6 +60,7 @@ describe("updatePlan", () => {
     expect(updatePlan({ ...appImage, writable: (folder) => { asked.push(folder); return false; } })).toEqual({ enabled: false, reason: "the AppImage is in a folder that cannot be written (/opt/ovis), so it cannot replace itself there" });
     expect(asked).toEqual(["/opt/ovis"]);
     expect(updatePlan({ ...appImage, writable: () => true })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "appimage" });
+    // it stays an AppImage: the deb's package-type file left in it does not make it a .deb install
     expect(updatePlan({ ...appImage, linuxPackage: "deb", writable: () => false }).enabled).toBe(false);
     expect(updatePlan({ ...appImage, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", writable: () => false })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "deb" });
   });
@@ -72,11 +76,13 @@ describe("updatePlan", () => {
 
 // the deb's install line is run by a POSIX shell, which a Windows runner does not have at /bin/sh
 describe.skipIf(process.platform === "win32")("debInstallCommand", () => {
+  // electron-updater's installerPath (LinuxUpdater) escapes these for one shell, but leaves ' alone
   const electronUpdaterEscaped = (path: string) => path.replace(/\\/g, "\\\\").replace(/([`$!" ;|&()<>])/g, "\\$1");
   const printed = (shellLine: string) => Bun.spawnSync(["/bin/sh", "-c", shellLine]).stdout.toString();
   const path = "/home/O'Brien/.cache/my app (1)/Ovis-linux-x64.deb";
 
   it("hands apt-get the whole path behind the prompt's bash -c '…', and when Ovis already runs as root", () => {
+    // how electron-updater runs it: `pkexec … /bin/bash -c '<command>'`, or the command alone as root, both through a shell
     const prompted = debInstallCommand(electronUpdaterEscaped(path), true).at(-1);
     expect(printed(`/bin/bash -c 'printf %s ${prompted}'`)).toBe(path);
     const asRoot = debInstallCommand(electronUpdaterEscaped(path), false).at(-1);
@@ -103,8 +109,9 @@ describe("checkForUpdates", () => {
       process.on("unhandledRejection", onUnhandled);
       try {
         const lines: string[] = [];
-        await checkForUpdates(updater, (line) => lines.push(line));
+        expect(await checkForUpdates(updater, (line) => lines.push(line))).toEqual({ is: "failed", error: "connection reset" });
         expect(await failed).toBe("connection reset");
+        // a rejection nobody handles is reported once the turn's own work is done
         await new Promise((resolve) => setImmediate(resolve));
         expect(unhandled).toEqual([]);
         expect(lines).toEqual([]);
@@ -132,17 +139,18 @@ describe("checkForUpdates", () => {
   it("logs a check that fails, and downloads nothing", async () => {
     const lines: string[] = [];
     let downloads = 0;
-    await checkForUpdates({ checkForUpdates: () => Promise.reject(new Error("feed is down")), downloadUpdate: async () => { downloads += 1; return []; } }, (line) => lines.push(line));
+    const outcome = await checkForUpdates({ checkForUpdates: () => Promise.reject(new Error("feed is down")), downloadUpdate: async () => { downloads += 1; return []; } }, (line) => lines.push(line));
+    expect(outcome).toEqual({ is: "failed", error: "feed is down" });
     expect(lines).toEqual(["Update check failed: feed is down"]);
     expect(downloads).toBe(0);
   });
 
   it("downloads the version a check found, and nothing when the feed has no newer one", async () => {
     const newer = feed("0.5.3");
-    await checkForUpdates(newer.updater, () => {});
+    expect(await checkForUpdates(newer.updater, () => {})).toEqual({ is: "downloaded" });
     expect(newer.asked).toEqual({ checks: 1, downloads: 1 });
     const same = feed(null);
-    await checkForUpdates(same.updater, () => {});
+    expect(await checkForUpdates(same.updater, () => {})).toEqual({ is: "latest" });
     expect(same.asked).toEqual({ checks: 1, downloads: 0 });
   });
 
@@ -152,13 +160,14 @@ describe("checkForUpdates", () => {
     const held = { version: "0.5.3", file: "/cache/pending/Ovis-linux-x64.AppImage" };
     const versions: string[] = [];
     for (let hour = 0; hour < 3; hour += 1) {
-      await checkForUpdates(updater, () => {}, (version) => { versions.push(version); return downloadsUpdate({ found: version, held, failed: false, exists: () => true }); });
+      expect(await checkForUpdates(updater, () => {}, (version) => { versions.push(version); return downloadsUpdate({ found: version, held, failed: false, exists: () => true }); })).toEqual({ is: "skipped" });
     }
     expect(asked).toEqual({ checks: 3, downloads: 0 });
     expect(versions).toEqual(["0.5.3", "0.5.3", "0.5.3"]);
   });
 
   it("logs a download that fails before it begins, which the updater reports with no event", async () => {
+    // electron-updater's downloadUpdate is not async: a feed that names a version with no file for this app throws out of it
     const { updater } = feed("0.5.3");
     const broken = { ...updater, downloadUpdate: (): Promise<string[]> => { throw new Error("No files provided: latest-linux.yml"); } };
     const unhandled: unknown[] = [];
@@ -166,13 +175,40 @@ describe("checkForUpdates", () => {
     process.on("unhandledRejection", onUnhandled);
     try {
       const lines: string[] = [];
-      await checkForUpdates(broken, (line) => lines.push(line));
+      expect(await checkForUpdates(broken, (line) => lines.push(line))).toEqual({ is: "failed", error: "No files provided: latest-linux.yml" });
       await new Promise((resolve) => setImmediate(resolve));
       expect(lines).toEqual(["Update download failed: No files provided: latest-linux.yml"]);
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+describe("appUpdateState", () => {
+  const v4 = { version: "0.5.4", file: "/cache/pending/Ovis-mac-arm64.zip" };
+  const phase = (enabled: boolean, check: AppCheck, offer: UpdateOffer) => appUpdateState("0.5.3", enabled, check, offer);
+
+  it("names the running version, and offers no check where the app does not update itself", () => {
+    expect(phase(false, { is: "latest" }, { staging: null, ready: v4 })).toEqual({ version: "0.5.3", phase: "off", update: null, percent: null, error: null });
+  });
+
+  it("shows a check or a download under way before what the app holds", () => {
+    const held = { staging: null, ready: v4 };
+    expect(phase(true, { is: "checking" }, held).phase).toBe("checking");
+    expect(phase(true, { is: "downloading", version: "0.5.5", percent: 42 }, held)).toMatchObject({ phase: "downloading", update: "0.5.5", percent: 42 });
+  });
+
+  it("counts a Mac's download as downloading until Squirrel holds it, then offers it", () => {
+    expect(phase(true, { is: "idle" }, { staging: v4, ready: null })).toMatchObject({ phase: "downloading", update: "0.5.4", percent: null });
+    expect(phase(true, { is: "idle" }, { staging: null, ready: v4 })).toMatchObject({ phase: "ready", update: "0.5.4" });
+  });
+
+  it("keeps a held update on offer after a later check failed, and says how a check ended otherwise", () => {
+    expect(phase(true, { is: "failed", error: "feed is down" }, { staging: null, ready: v4 }).phase).toBe("ready");
+    expect(phase(true, { is: "failed", error: "feed is down" }, NO_OFFER)).toMatchObject({ phase: "failed", error: "feed is down" });
+    expect(phase(true, { is: "latest" }, NO_OFFER).phase).toBe("latest");
+    expect(phase(true, { is: "idle" }, NO_OFFER).phase).toBe("idle");
   });
 });
 
@@ -220,6 +256,7 @@ describe("nextOffer", () => {
   });
 
   it("never offers a Mac's download that Squirrel could not take, and offers it when a later try works", () => {
+    // run from the disk image or translocated, a signature it refuses: Squirrel's error comes after "update-downloaded"
     const failed = after("darwin", { is: "downloaded", update: v3 }, { is: "error" });
     expect(failed).toEqual(NO_OFFER);
     expect(nextOffer(failed, { is: "staged" }, "darwin")).toEqual(NO_OFFER);

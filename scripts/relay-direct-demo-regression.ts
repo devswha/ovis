@@ -6,6 +6,7 @@ import { chromium, type Browser } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
@@ -23,19 +24,24 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await openSettingsPage(page, "Devices and PCs");
   await openSettingsFolds(page);
   const group = page.locator('[data-section="devices-more"]');
-  await group.getByText("Same Wi-Fi direct connection on", { exact: true }).waitFor();
-  await group.getByText("Only devices paired through the relay can sign in there; nothing new pairs.", { exact: false }).waitFor();
-  const toggle = group.getByRole("switch", { name: "Same Wi-Fi direct connection" });
-  assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: on by default`);
+  const row = group.locator(".settings-row", { has: page.getByRole("switch", { name: "Direct connection" }) });
+  const toggle = row.getByRole("switch", { name: "Direct connection" });
+  await row.getByText("Direct connection", { exact: true }).waitFor();
+  await row.getByText("Relay connections stay on the relay.", { exact: true }).waitFor();
+  assert.equal(await toggle.getAttribute("aria-checked"), "false", `${tag}: off by default`);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);
-  await group.scrollIntoViewIfNeeded();
+  await row.scrollIntoViewIfNeeded();
   if (EVIDENCE) await group.screenshot({ path: join(EVIDENCE, `relay-direct-${width}-${theme}.png`) });
 
   await toggle.click();
-  await group.getByText("Same Wi-Fi direct connection off", { exact: true }).waitFor();
-  assert.equal(await toggle.getAttribute("aria-checked"), "false", `${tag}: turned off`);
+  await row.getByText("The Ovis app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a direct connection: faster, and this PC listens for it on those addresses.", { exact: true }).waitFor();
+  assert.equal(await toggle.getAttribute("aria-checked"), "true", `${tag}: turned on`);
+  await row.getByText("Direct connection", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll, on`);
+  if (EVIDENCE) await group.screenshot({ path: join(EVIDENCE, `relay-direct-on-${width}-${theme}.png`) });
   await toggle.click();
-  await group.getByText("Same Wi-Fi direct connection on", { exact: true }).waitFor();
+  await row.getByText("Relay connections stay on the relay.", { exact: true }).waitFor();
+  assert.equal(await toggle.getAttribute("aria-checked"), "false", `${tag}: turned off again`);
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();
   console.log(`PASS relay direct ${tag}`);
@@ -60,17 +66,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const prefix = "/herdr-web-ui/demo/app/";
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

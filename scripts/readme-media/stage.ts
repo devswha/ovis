@@ -4,6 +4,8 @@
  * their agent worktrees and the release shell tab, and curated chats served in place of real
  * transcripts. The real hostname never reaches the page.
  */
+// with HERDR_TEST_LIVE=1 test-herdr.ts leaves the session alone, and staging would close every workspace in the one you work in
+if (process.env["HERDR_TEST_LIVE"] === "1") throw new Error("readme-media/stage.ts stages its own herdr session: unset HERDR_TEST_LIVE");
 process.env["HERDR_TEST_SESSION"] = "ovis-demo";
 await import("../test-herdr.ts");
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -36,6 +38,7 @@ function releaseRepo(dir: string) {
   sh("git commit -q --allow-empty -m 'chore(release): 1.4.0' && git tag v1.4.0");
 }
 
+/** An empty repository with one commit, so herdr can add worktrees to it. */
 function gitRepo(dir: string) {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
@@ -50,6 +53,7 @@ export async function stage() {
   const panes: DemoPane[] = [];
   const byKey = (key: string | undefined) => panes.find((p) => p.key === key);
   // a worktree is herdr's own (under the demo root, so no home path shows), and a tab joins its
+  // repository's workspace
   for (const spec of SPECS) {
     const parent = byKey(spec.worktreeOf ?? spec.tabOf);
     let pane: string, workspace: string, cwd: string;

@@ -31,7 +31,7 @@ export const COPILOT_UNAVAILABLE_REASONS = [
   "copilot_api_foreground_changed", "copilot_api_no_foreground", "copilot_api_transcript_unproved",
 ] as const;
 const COPILOT_SETTLED = new Set<string>(["copilot_session_unregistered", "copilot_peer_conflict", "copilot_report_mismatch",
-  "copilot_api_no_foreground", "copilot_api_foreground_changed"]);
+  "copilot_api_no_foreground", "copilot_api_foreground_changed", "copilot_api_unsupported_protocol"]);
 export const copilotRecoverable = (diagnostic: string | undefined): boolean =>
   diagnostic !== undefined && diagnostic.startsWith("copilot_") && !COPILOT_SETTLED.has(diagnostic);
 export const UNAVAILABLE_DIAGNOSTICS = [...COPILOT_UNAVAILABLE_REASONS, "agent_cwd_missing", "devin_current_session_unverified"] as const;
@@ -63,12 +63,17 @@ export class ConversationReadPending extends Error {
 
 /**
  * A file as it was authorized: its device and inode, exact (bigint, as a bigint stat gives them) or as numbers,
- * which round 64-bit file indexes (Windows') and so tell only as much as a number stat does.
+ * which round 64-bit file indexes (Windows') and so tell only as much as a number stat does. A bigint stat may
+ * give a value past 2^63 (an NFS inode) as negative, where a number stat gives it unsigned (#4089).
  */
 export interface FileIdentity { dev: number | bigint; ino: number | bigint }
 
 function sameFile(identity: FileIdentity, opened: FileIdentity): boolean {
-  const same = (a: number | bigint, b: number | bigint) => typeof a === "bigint" && typeof b === "bigint" ? a === b : Number(a) === Number(b);
+  const unsigned = (value: number | bigint) => typeof value === "bigint" ? BigInt.asUintN(64, value) : value;
+  const same = (a: number | bigint, b: number | bigint) => {
+    const left = unsigned(a), right = unsigned(b);
+    return typeof left === "bigint" && typeof right === "bigint" ? left === right : Number(left) === Number(right);
+  };
   return same(identity.dev, opened.dev) && same(identity.ino, opened.ino);
 }
 
@@ -105,10 +110,12 @@ export function bindFile(path: string, identity: FileIdentity): void {
   if (boundFiles !== null && !boundFiles.has(path)) boundFiles.set(path, { dev: identity.dev, ino: identity.ino });
 }
 
+/** Refuses `fd`, opened from `path`, when `path` is bound to another file: the read is pending. */
 export function checkBound(path: string, fd: number): void {
   if (boundFiles?.has(path) === true) checkBoundFile(path, fstatSync(fd, { bigint: true }));
 }
 
+/** Refuses `opened`, a file opened from `path` (its stats), when `path` is bound to another file: the read is pending. */
 export function checkBoundFile(path: string, opened: FileIdentity): void {
   const identity = boundFiles?.get(path);
   if (identity !== undefined && !sameFile(identity, opened)) throw new ConversationReadPending();
@@ -140,18 +147,23 @@ export class HistoryChanged extends Error {
 
 export type RecognizedConversation = {
   activity?: "thinking" | "working" | "idle";
-  source: "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript";
+  source: "acp" | "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript";
   turns: ConversationTurn[];
   metadata: ConversationMetadata;
   screen?: true;
   cursor: string | null;
+  /**
+   * Turns the file holds on paths a `/tree` walked away from, which no page of this conversation
+   * can reach; absent for every agent that keeps no entry tree. pi moves its leaf without writing
+   * anything, so the chat would otherwise drop those turns with no sign they were ever there.
+   */
   abandoned?: { count: number; branches: number; summary: string | null };
   transcript_bytes?: number;
   history_id: string;
   version: string;
 };
 
-export type StreamSource = Exclude<RecognizedConversation["source"], "opencode-transcript" | "devin-transcript" | "hermes-transcript" | "dsh-transcript" | "kiro-transcript">;
+export type StreamSource = Exclude<RecognizedConversation["source"], "acp" | "opencode-transcript" | "devin-transcript" | "hermes-transcript" | "dsh-transcript" | "kiro-transcript">;
 
 const PROCESS_VERSION = randomUUID();
 

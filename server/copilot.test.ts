@@ -78,6 +78,7 @@ it.skipIf(process.platform !== "linux")("reads a log Copilot opens a second time
     appendFileSync(log, register(session));
     const before = fixture.binding();
     expect(before?.sessionId).toBe(session);
+    // Copilot 1.0 reads its open log on a second descriptor while it copies it for a rotation
     await fixture.command("reread");
     expect(fixture.binding()).toEqual(before);
     appendFileSync(log, register(other));
@@ -156,10 +157,11 @@ it.skipIf(process.platform !== "linux")("never reuses cached handoff unregister 
   try {
     appendFileSync(log, register(session) + register(session, "Unregistering"));
     expect(read()?.sessionId).toBe(session);
-    writeFileSync(log, register(other));
+    fs.truncateSync(log, 0);
     const missing = spyOn(processOwner, "readProcessBirth").mockImplementation((current) => current === pid ? { state: "unknown" } : realBirth(current));
     try { expect(read()).toBeNull(); } finally { missing.mockRestore(); }
     expect(read()).toBeNull();
+    appendFileSync(log, register(other));
     expect(copilotProcessSession(environment, ["copilot"], pid)?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
@@ -365,6 +367,7 @@ it.skipIf(process.platform !== "linux")("keeps a binding the copies carried on w
     appendFileSync(log, "later output\n");
     const before = fixture.binding();
     expect(before?.sessionId).toBe(session);
+    // then refreshes the log's timestamps, as it does every 15 minutes
     const stat = statSync(log);
     fs.utimesSync(log, stat.atime, new Date(stat.mtimeMs + 1000));
     expect(fixture.binding()).toEqual(before);
@@ -399,6 +402,7 @@ it.skipIf(process.platform !== "linux")("never keeps a binding when the log is e
 });
 
 it.skipIf(process.platform !== "linux")("never keeps a binding when a switch lost to a rewrite is followed by Copilot's timestamp refresh", async () => {
+  // Copilot keeps holding the previous session's marker after a switch
   const fixture = await logFixture([session, other]);
   const { environment, log, pid } = fixture;
   const copy = log.replace(/\.log$/, ".1.log");
@@ -571,6 +575,60 @@ it.skipIf(process.platform !== "linux")("lets a pruned log's latest copied regis
     expect(fixture.binding()?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
+
+it.skipIf(process.platform !== "linux")("does not take a lone held marker when the log starts after launch and records no session", async () => {
+  const fixture = await logFixture([session]);
+  const { log, environment, pid } = fixture;
+  try {
+    for (let index = 1; index <= 4; index++) {
+      writeFileSync(log.replace(/\.log$/, `.${index}.log`), "1970-01-01T00:00:06.000Z [INFO] later output\n");
+    }
+    appendFileSync(log, "ordinary output\n");
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_gap" });
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("does not replay an older registration after a shorter same-inode log loses an observed switch", async () => {
+  const fixture = await logFixture([session]);
+  const { log, environment, pid } = fixture;
+  try {
+    const old = register(session);
+    appendFileSync(log, old);
+    expect(fixture.binding()?.sessionId).toBe(session);
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+    writeFileSync(log, old);
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_truncated" });
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+for (const variant of ["release", "rotation gap"] as const) {
+  it.skipIf(process.platform !== "linux")(`does not replay an older registration after a cut with a ${variant}`, async () => {
+    const fixture = await logFixture([session]);
+    const { log, environment, pid } = fixture;
+    const read = () => readCopilotProcessSession(environment, ["copilot"], pid);
+    try {
+      const old = register(session);
+      appendFileSync(log, old + register(other));
+      expect(read().session?.sessionId).toBe(other);
+      if (variant === "release") {
+        appendFileSync(log, register(other, "Unregistering"));
+        expect(read().diagnostic).toBe("copilot_session_unregistered");
+      } else {
+        writeFileSync(log.replace(/\.log$/, ".2.log"), "older archive\n");
+      }
+      writeFileSync(log, old);
+      expect(read().session).toBeNull();
+      if (variant === "rotation gap") fs.unlinkSync(log.replace(/\.log$/, ".2.log"));
+      appendFileSync(log, register(other));
+      expect(read().session?.sessionId).toBe(other);
+    } finally { await fixture.close(); }
+  });
+}
 
 it.skipIf(process.platform !== "linux")("proves the copies again while the open log is empty, so two rotations never leave the earlier session", async () => {
   const fixture = await logFixture([]);
@@ -803,6 +861,7 @@ for (const between of ["output", "another registration"] as const) {
       writeFileSync(copy(1), readFileSync(log));
       fs.truncateSync(log, 0);
       appendFileSync(log, "after the first rotation\n");
+      // Copilot 1.0 moves the copies up before it renames the new one into place
       fs.renameSync(copy(1), copy(2));
       expect(read().diagnostic).toBe("copilot_log_read_raced");
       expect(read().diagnostic).toBe("copilot_log_read_raced");
@@ -1466,6 +1525,9 @@ it.skipIf(process.platform !== "linux")("answers nothing from another session's 
   const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
     panes: [{ pane_id: "own", agent: "copilot", cwd: root }], agents: [],
   } as unknown as SessionSnapshot);
+  // Each pinned open (O_NOFOLLOW, as openCopilotFile opens) finds the other folder in place, held there
+  // until that descriptor closes, so its own checks against the path pass; the page's verified open, which
+  // follows a link, and the identity checks around the read see the pane's own.
   let armed = false;
   const swapped = new Set<number>();
   const away = join(root, "away");

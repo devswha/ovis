@@ -10,7 +10,12 @@ import { KO } from "../src/lib/i18n.ko.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// Update consent on the unmodified app over the demo's fixture transport: Settings' Update and
+// restart and the header's Update send the revision of the offer they were drawn with, a release
+// that moves under them installs nothing and is checked first, and a server that cannot install by
+// revision is sent no install. The demo itself is unmanaged; the managed status, notes and install
 // answers come from this script, through a fetch of its own layered over the demo's, so nothing is
 // built, installed or restarted. All files and HTTP traffic stay in this disposable, loopback-only
 // app; no herdr session is opened.
@@ -44,6 +49,7 @@ class Fixture {
   notes: UpdateNotes = notesFor(A, "9.9.9");
   held = new Map<string, UpdateStatus>();
   posts: Post[] = [];
+  /** `watch`: a device paired to watch only, which the server refuses every mutation (server/index.ts) */
   role: "drive" | "watch" = "drive";
   unreachable = false;
   private waiters: Array<{ path: string; resolve: (post: Post) => void }> = [];
@@ -324,6 +330,7 @@ async function behaviour(browser: Browser, url: string): Promise<Record<string, 
     receipts["restart_recovered"] = { refused: unbound.code, after_restart: { body: recovered.body, status: recovered.status } };
     console.log("PASS a refusal for want of the capability ends once the server reports it again");
 
+    // observe-only: a watching device sees the offer, and its press changes nothing on the server
     fixture.status = offer();
     fixture.notes = notesFor(A, "9.9.9");
     fixture.role = "watch";
@@ -526,18 +533,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${UPDATE_FETCH}${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   console.log(`fixture server pid=${process.pid} port=${server.port}`);
   const port = server.port;
   const url = `http://127.0.0.1:${port}/herdr-web-ui/demo/app/`;

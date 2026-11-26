@@ -4,8 +4,10 @@ import { CoreAttachSession } from "./attach-session.ts";
 import { encodeFrame, FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_FACTS, FRAME_FOCUS, FRAME_RESIZE, type Frame, HcConnection, type HcTransport, makeFrameReader } from "./connection.ts";
 
 const CHANNEL = 7;
+/** what the session asks the viewers' terminal on attach, as `hc attach` asks its own */
 const ASKED = "\x1b[?1004h\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]12;?\x1b\\\x1b[16t\x1b[c";
 const ASKED_AGAIN = ASKED.slice("\x1b[?1004h".length);
+/** what goes ahead of hc's first bytes: the viewer's last attach's scrollback is erased, on the main screen, before hc replays it */
 const CLEARED = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
 
 class FakeCore implements HcTransport {
@@ -20,6 +22,7 @@ class FakeCore implements HcTransport {
   private readonly frames = makeFrameReader((frame) => this.onFrame(frame), () => {});
   private heldReply: (() => void) | null = null;
 
+  /** `paintFirst`: the first paint goes out before the attach's reply, as hc's writer may send it. */
   constructor(private readonly options: { paintFirst?: string; holdReply?: boolean; answerClose?: boolean; features?: readonly string[]; confirmAutomatic?: boolean } = {}) {
     this.readable = new ReadableStream({ start: (controller) => { this.controller = controller; } });
   }
@@ -99,6 +102,23 @@ function attach(onData: (data: string) => void = () => {}, options: ConstructorP
   return { core, session, exits, exited: exited.promise };
 }
 
+/** An attached session whose program prints in hc frames: `program` resolves once the session has heard them all. */
+async function attachedProgram() {
+  const seen: string[] = [];
+  // the attach's own questions come first, or they would land between the program's frames
+  const next = { want: ASKED, hit: Promise.withResolvers<void>() };
+  const attached = attach((data) => { seen.push(data); if (next.want && seen.join("").includes(next.want)) next.hit.resolve(); });
+  await next.hit.promise;
+  const program = async (...frames: string[]) => {
+    next.want = frames.join("");
+    next.hit = Promise.withResolvers<void>();
+    for (const frame of frames) attached.core.output(frame);
+    await next.hit.promise;
+  };
+  const typed = () => attached.core.of(FRAME_DATA).map((frame) => new TextDecoder().decode(frame.payload));
+  return { ...attached, program, typed };
+}
+
 describe("CoreAttachSession", () => {
   it("attaches at the viewer's grid with its history, and types what was written before hc answered, in order", async () => {
     const { core, session } = attach();
@@ -113,6 +133,7 @@ describe("CoreAttachSession", () => {
     const { core, session } = attach();
     session.resize(100, 30);
     await core.until(FRAME_RESIZE, 1);
+    // a same-size RESIZE would make this viewer hc's active one and take the size from whoever works there
     session.winch();
     session.write("x");
     await core.until(FRAME_DATA, 1);
@@ -160,6 +181,7 @@ describe("CoreAttachSession", () => {
     await core.attached;
     await painted.promise;
     expect(seen.join("")).toBe(`${CLEARED}first screen`);
+    // and credits it, or hc would hold the stream at its window
     await core.until(FRAME_CREDIT, 1);
   });
 
@@ -196,6 +218,7 @@ describe("CoreAttachSession", () => {
     const asked = Promise.withResolvers<void>();
     const { core, session } = attach((data) => { seen.push(data); if (data.includes(ASKED)) asked.resolve(); });
     await asked.promise;
+    // xterm's answers, then a typed key: the answers are hc's, the key the program's
     session.write("\x1b]10;rgb:eeee/eeee/eeee\x1b\\\x1b]11;rgb:1818/1818/1818\x07\x1b[6;17;9t\x1b[?62;22ca");
     await core.until(FRAME_DATA, 1);
     expect(core.of(FRAME_DATA).map((frame) => new TextDecoder().decode(frame.payload))).toEqual(["a"]);
@@ -221,9 +244,60 @@ describe("CoreAttachSession", () => {
     next.hit = Promise.withResolvers<void>();
     core.output("off\x1b[?1004l");
     await next.hit.promise;
+    // re-enabling focus reports inline never splits an escape sequence cut across a 16 KiB frame boundary
+    const marker = "\x1b[?9001l";
+    for (let split = 1; split < marker.length; split++) {
+      const start = seen.length;
+      next.want = `END_${split}`;
+      next.hit = Promise.withResolvers<void>();
+      core.output(`\x18\x1b[!p\x1b[?1004lbody${marker.slice(0, split)}`);
+      core.output(`${marker.slice(split)}END_${split}`);
+      await next.hit.promise;
+      expect(seen.slice(start).join("")).toContain(`${marker}END_${split}`);
+    }
+    session.kill();
+  });
+
+  it("types a lone cursor key in the cursor mode hc's stream last set, not the one the viewer's terminal still believed in", async () => {
+    const { core, session, program, typed } = await attachedProgram();
+    // application cursor keys, its sequence split across two of hc's frames: an arrow and Home typed as CSI reach it as SS3
+    await program("less\x1b[?", "1h");
+    session.write("\x1b[A");
+    session.write("\x1b[H");
+    // a subparameter 1 is mode 1004's, no DECCKM; a chord and a typed line are no lone cursor key
+    await program("\x1b[?1004:1l");
+    session.write("\x1b[B");
+    session.write("\x1b[1;5A");
+    session.write("\x1b[A\r");
+    // back to normal mode: an arrow the viewer encoded as SS3 just before it heard reaches the program as CSI
+    await program("\x1b[?1l$ ");
+    session.write("\x1bOA");
+    await core.until(FRAME_DATA, 6);
+    expect(typed()).toEqual(["\x1bOA", "\x1bOH", "\x1bOB", "\x1b[1;5A", "\x1b[A\r", "\x1b[A"]);
+    session.kill();
+  });
+
+  it("puts cursor keys back in normal mode on a terminal reset, and reads a mode list split anywhere or zero-padded", async () => {
+    const { core, session, program, typed } = await attachedProgram();
+    // `reset` after a program left application cursor keys on: RIS, then DECSTR
+    await program("\x1b[?1h", "\x1bc$ ");
+    session.write("\x1b[A");
+    await program("\x1b[?1h", "\x1b[!p$ ");
+    session.write("\x1b[H");
+    // a mode list hc split far from its ESC, then one written with leading zeros
+    await program("x\x1b[?1000;1006;1015;", "1", "h");
+    session.write("\x1b[A");
+    await program("\x1b[?0", "01l");
+    session.write("\x1bOB");
+    await program("\x1b[?01h");
+    session.write("\x1b[F");
+    await core.until(FRAME_DATA, 5);
+    expect(typed()).toEqual(["\x1b[A", "\x1b[H", "\x1bOA", "\x1b[B", "\x1bOF"]);
+    session.kill();
   });
 
   it("does not keep asking viewers whose terminal answers every focus-reports switch with a focus-in (#2815)", async () => {
+    // two focused xterm.js tabs on the pane: each answers `ESC[?1004h` with ESC [ I
     const answers: string[] = [];
     const asked = Promise.withResolvers<void>();
     const { session } = attach((data) => {
@@ -256,6 +330,7 @@ describe("HcConnection streams", () => {
 });
 
 describe("CoreAttachSession, automatic input", () => {
+  /** a cursor position report: an answer the program asked for, which reaches it (DA1 would answer the session's own question) */
   const REPLY = "\x1b[5;10R";
   const decode = (frames: Frame[]) => frames.map((frame) => new TextDecoder().decode(frame.payload));
 

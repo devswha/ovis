@@ -1,3 +1,7 @@
+/**
+ * the pairings are written into the page's IndexedDB as lib/relay/device.ts writes
+ * them, with a real non-extractable key.
+ */
 import type { Page } from "playwright-core";
 import type { FakePc } from "../shared/account-service-fake.ts";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
@@ -93,18 +97,11 @@ export function directoryOf(fleet: Fleet, now: number): FakePc[] {
   }));
 }
 
+/**
+ * Signed in (`account`), under the account's own key, the listed ones linked to the account; signed out, under a
+ * fresh non-extractable key of their own.
+ */
 export async function seedPairings(page: Page, seeds: readonly Seed[], account: string | null): Promise<void> {
-  if (account !== null) await page.waitForFunction(() => new Promise<boolean>((resolve) => {
-    const request = indexedDB.open("ovis-account", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("account");
-    request.onerror = () => resolve(false);
-    request.onsuccess = () => {
-      const db = request.result;
-      const read = db.transaction("account", "readonly").objectStore("account").get("key");
-      read.onsuccess = () => { db.close(); resolve(read.result !== undefined); };
-      read.onerror = () => { db.close(); resolve(false); };
-    };
-  }));
   await page.evaluate(async ({ seeds, account }) => {
     const open = (name: string, version: number, upgrade: (db: IDBDatabase) => void) => new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(name, version);

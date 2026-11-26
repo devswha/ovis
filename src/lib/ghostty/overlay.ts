@@ -1,32 +1,31 @@
 // allow: SIZE_OK - the overlay's drawing and cleanup share its terminal and renderer state.
 /**
  * libghostty-vt draws every xterm terminal's screen, Kitty graphics pictures included, while xterm stays
- * the engine under it. xterm draws by itself only where this layer cannot: a module that does not load or
- * fails, and an iTerm2 or sixel picture (Pictures in the terminal), which libghostty does not take.
+ * the engine under it. xterm draws by itself if the module fails, or when it parses the same output
+ * and an iTerm2 or sixel picture would move its cursor. In `only` mode libghostty draws those too.
  *
- * xterm still takes every key, IME syllable, paste, click, selection, link, search and scroll, and
- * still answers the program's queries: everything Ovis built on it keeps working. Its text layer
- * is hidden (PaneTerminal.css `[data-renderer="ghostty"]`), and a layer of plain DOM text, one div per
- * row, is drawn over its screen at its cell size from the same bytes, in the same order. libghostty
- * answers nothing: a reply it made to a replayed stream would reach the program as typing.
+ * libghostty answers nothing: a reply it made to a replayed stream would reach the program as typing.
  */
 import type { IDisposable, Terminal } from "@xterm/xterm";
-import { terminalDrawsPictures } from "../terminalImages.ts";
+import { terminalDrawsPictures, terminalPictureLimits } from "../terminalImages.ts";
 import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminalGlyphs.ts";
 import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
 import { requestShownFrame } from "../shownFrame.ts";
-import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
-import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
+import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
+import { controlsWriter, currentQuestions, fallbackOutput, type DeferredQuestions, type RetainedOutput } from "./controls.ts";
+import { itermPictureWriter } from "./itermPictureWriter.ts";
+import { type ScreenLine, holdScreenRows, terminalScreen, type ScreenRows } from "../terminalScreen.ts";
+import { holdSelection } from "./selection.ts";
+import { ghosttyRows } from "./screenRows.ts";
+import { wheelPansGrid } from "../terminalWheel.ts";
+import { GhosttyVt, rgb, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
 const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;"));
 
-export interface GhosttyOverlay { dispose(): void }
+/** `dispose(handOver)`: false when the terminal itself goes, so nothing is handed to xterm to draw */
+export interface GhosttyOverlay { dispose(handOver?: boolean): void }
 
-/**
- * The lines a frame added: when the screen scrolled up by some rows, the rows that moved are not new, only
- * the ones that came in at the bottom and any row that changed in place.
- */
 export function newLines(before: readonly string[], after: readonly string[]): string[] {
   const rows = after.length;
   let best = 0;
@@ -49,38 +48,39 @@ const POWERLINE_GLYPH = /^[\ue0a4-\ue0d6]$/u;
 const MEASURED_MAX = 4096;
 
 const latin1 = new TextDecoder("latin1");
-/** an iTerm2 inline picture (OSC 1337 File=, or MultipartFile= as imgcat sends it) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
-export function hasXtermPicture(data: string | Uint8Array): boolean {
+const XTERM_PICTURE = /\x1b\]1337;(?:File|MultipartFile)=|\x1bP[0-9;]*q/g;
+/** Pictures xterm's addon draws when both parsers receive the original output. */
+export function hasXtermPicture(data: string | Uint8Array, carried = 0): boolean {
   const text = typeof data === "string" ? data : latin1.decode(data);
-  return text.includes("\x1b]1337;File=") || text.includes("\x1b]1337;MultipartFile=") || /\x1bP[0-9;]*q/.test(text);
+  for (const match of text.matchAll(XTERM_PICTURE)) {
+    if (match.index + match[0].length > carried) return true;
+  }
+  return false;
 }
 
-/** hasXtermPicture over a stream of writes: a picture's start split between two writes is told too */
 export function xtermPictureScanner(): (data: string | Uint8Array) => boolean {
   let tail = "";
   return (data) => {
+    const carried = tail.length;
     const text = tail + (typeof data === "string" ? data : latin1.decode(data));
     // longer than any start it looks for (`ESC ] 1337 ; MultipartFile =`, a sixel DCS with its parameters)
     tail = text.slice(-64);
-    return hasXtermPicture(text);
+    return hasXtermPicture(text, carried);
   };
 }
 
 /** how long after a wheel or a swipe a frame is taken for herdr's repaint of the scrolled screen, not for output */
 const VIEW_REPAINT_MS = 1000;
-/** a wheel or swipe, and herdr's view moved by the viewport tools (TerminalViewportTools.tsx) */
 const VIEW_GESTURES = ["wheel", "touchmove", VIEW_MOVED_EVENT];
 
-/** lines of one frame read out, so a flood does not drown the reader */
 const ANNOUNCED_LINES = 20;
 
 interface XtermRowRenderer { renderRows(start: number, end: number): void }
 
 type BufferPoint = readonly [x: number, y: number];
-/** xterm's render service: its renderer, and the selection it draws, which a drag moves before onSelectionChange (mouseup) */
+/** xterm's render service: its renderer, and the hook that hears the selection it draws change */
 interface XtermRenderService {
   _renderer?: { value?: XtermRowRenderer };
-  _selectionState?: { start?: BufferPoint; end?: BufferPoint; columnSelectMode?: boolean };
   handleSelectionChanged?: (start?: BufferPoint, end?: BufferPoint, columnSelectMode?: boolean) => void;
 }
 
@@ -132,20 +132,25 @@ function themeColors(term: Terminal): GhosttyColors {
   return { foreground: theme.foreground ?? "#d4d4d4", background: theme.background ?? "#1e1e1e", cursor: theme.cursor ?? theme.foreground ?? "#d4d4d4", ansi };
 }
 
+/** the output kept, with `only`, to hand xterm whole if libghostty stops drawing (the oldest goes past it) */
+const KEPT_BYTES_MAX = 8 * 1024 * 1024;
+
 /**
- * Draws `term` with libghostty from now on, until disposed; resolves once the module is loaded, or
- * null when `takeBacklog` (the bytes xterm was given so far, called once the module is ready) has none
- * to give.
+ * In `only` mode libghostty is the sole parser of screen output. xterm parses only the sequences its
+ * input side reads, with its cursor kept on libghostty's (controls.ts). The history libghostty keeps is scrolled here, and every
+ * reader takes libghostty's rows (terminalScreen.ts viewRows).
  */
-export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, takeBacklog: () => (string | Uint8Array)[] | null): Promise<GhosttyOverlay | null> {
+export async function attachGhosttyOverlay(
+  term: Terminal, host: HTMLElement, takeBacklog: () => (string | Uint8Array)[] | null,
+  startup?: { readonly questions: readonly DeferredQuestions[] },
+): Promise<GhosttyOverlay | null> {
+  const only = startup !== undefined;
   const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
   if (!screen) throw new Error("ghostty overlay: the terminal is not open");
   const vt = await GhosttyVt.create(term.cols, term.rows);
   const backlog = takeBacklog();
-  // a picture only xterm draws already moved xterm's rows: xterm keeps drawing this pane (#2980)
-  // one scanner from the first byte on, so a picture's start split across the backlog and a later write is told
-  const pictureIn = xtermPictureScanner();
-  if (!backlog || (terminalDrawsPictures(term) && backlog.some(pictureIn))) {
+  const pictureIn = only ? null : xtermPictureScanner();
+  if (!backlog || (pictureIn && terminalDrawsPictures(term) && backlog.some(pictureIn))) {
     vt.dispose();
     return null;
   }
@@ -160,8 +165,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   above.className = "ghostty-images is-above";
   const cursor = document.createElement("div");
   cursor.className = "ghostty-cursor";
-  // xterm's rows are hidden, and with them what a screen reader read: these rows are read instead, and
-  // lines the program writes are announced (as xterm's screen reader mode does), never the pictures
   for (const decoration of [below, above, cursor]) decoration.setAttribute("aria-hidden", "true");
   const announcer = document.createElement("div");
   announcer.className = "visually-hidden";
@@ -170,21 +173,16 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   screen.append(layer);
 
   let rowEls: HTMLDivElement[] = [];
-  // each row's text, kept with rowHtml through a rebuild: a row the next frame leaves alone is not new (#2963)
   let rowText: string[] = [];
-  // the screen a pane opens on is what is there already: read, not announced
   let primed = false;
-  // bytes reached libghostty since the last frame: a frame without any only scrolled the view, which announces nothing
   let written = false;
   // on herdr's own server xterm keeps no history: a wheel or a swipe scrolls herdr's screen, which comes back as
   // written bytes (TerminalViewportTools.tsx). Frames until a moment after the gesture tell nothing
   let viewMovedUntil = 0;
   const viewMoved = (): void => { if (!term.options.scrollback) viewMovedUntil = performance.now() + VIEW_REPAINT_MS; };
-  // the screen at the bottom as the last frame there drew it
   let bottomText: string[] = [];
   // what each row shows: libghostty hands over only the rows that changed, so fresh row elements are refilled from it
   let rowHtml: string[] = [];
-  // the runs each row was drawn from, to draw it again once a late face changes what its glyphs measure
   const rowRuns: GhosttyRun[][] = [];
   let cellW = 0;
   let cellH = 0;
@@ -216,8 +214,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     layer.style.letterSpacing = `${cellW - advance}px`;
   };
 
-  /** what a screen reader hears: the frame's new lines, the newest kept when a program floods. Only the latest
-   *  message stays in the region: NVDA read a growing log whole, every earlier message again */
+  /** Only the latest message stays in the region: NVDA read a growing log whole, every earlier message again */
   const announce = (lines: string[]): void => {
     if (lines.length === 0) return;
     announcer.textContent = lines.slice(-ANNOUNCED_LINES).join("\n");
@@ -235,24 +232,19 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
   };
 
-  /** every row drawn again from its runs: a new cell size or a late face changes how its glyphs fit */
   const redrawRows = (): void => {
     const selection = currentSelection();
     rowRuns.forEach((runs, y) => paintRow(y, runs, selection));
   };
 
   const renderService = xtermRenderService(term);
-  const currentSelection = (): Selection | null => {
-    const state = renderService?._selectionState;
-    return state?.start && state.end ? { start: state.start, end: state.end, column: state.columnSelectMode === true } : null;
-  };
-  // the selected columns each row was last drawn with: a selection that moves redraws only the rows it changed on
+  const reader = terminalScreen(term);
+  const currentSelection = (): Selection | null => reader.drawnSelection();
   const rowSelected: string[] = [];
-  /** draws row `y` from its runs; false when it came out as it was */
   const paintRow = (y: number, runs: GhosttyRun[], selection: Selection | null): boolean => {
     const row = rowEls[y];
     if (!row) return false;
-    const selected = selectedColumns(selection, term.buffer.active.viewportY + y, term.cols);
+    const selected = selectedColumns(selection, reader.viewportY + y, term.cols);
     rowSelected[y] = String(selected);
     let html = "";
     for (const run of runs) html += runHtml(run, selected);
@@ -263,14 +255,16 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   };
 
   let grid = "";
+  let replayRemaining = backlog.length;
+  const heldQuestions = [...(startup?.questions ?? [])];
   const fit = (): void => {
     metrics();
-    // a new grid redraws every row; a cell-size change alone redraws none, so the rebuilt rows refill from rowHtml
     const now = `${term.cols}x${term.rows}@${cellW}x${cellH}`;
     if (now === grid) return;
     grid = now;
     vt.resize(term.cols, term.rows, cellW, cellH);
-    // rows past a shorter grid are gone
+    // xterm reflows its own (empty) rows: its cursor, where the IME stands, goes back to libghostty's
+    if (only && replayRemaining === 0) writeOnly.syncCursor();
     rowRuns.length = Math.min(rowRuns.length, term.rows);
     rebuildRows();
     redrawRows();
@@ -303,7 +297,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     return width;
   };
-  /** a cell drawn in a box of its own, or null for plain text; `glyph` is the inherited style its glyph takes (runHtml) */
   const fittedCell = ({ text, wide }: GhosttyRun["cells"][number], flags: number, glyph: string): string | null => {
     if (!wide && !PRIVATE_USE.test(text)) return null;
     // each character asks for its faces once a font, as xterm's rows do
@@ -334,7 +327,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     redrawRows();
   });
 
-  /** a run in pieces the selection does or does not cover, each drawn on its own */
   const runHtml = (run: GhosttyRun, selected: readonly [number, number] | null): string => {
     if (!selected) return pieceHtml(run, false);
     const pieces: { run: GhosttyRun; inside: boolean }[] = [];
@@ -358,6 +350,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // xterm draws the selection under this layer: a selected cell leaves its background out so the selection shows, as
     // over a plain cell (#3407), and its text is made readable on the selection, as xterm's rows make it
     const under = selected ? term.options.theme?.selectionBackground ?? theme.background : bg ?? theme.background;
+    // with `only` xterm's selection layer sizes its cells by a buffer with no text (a wide glyph is one column there):
+    // the layer paints the selection itself
+    const paintsSelection = selected && only;
     // xterm's minimumContrastRatio, as its own rows and a folded mirror draw it (terminalFold.ts cellStyle)
     const drawn = fg;
     if (fg !== null || bg !== null || selected) {
@@ -368,9 +363,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     // a box, block or Powerline glyph is part of a drawing, its colour against the next one's: xterm keeps it as written
     // (treatGlyphAsBackgroundColor), and so does this layer
     const keepsColour = (text: string): boolean => fg !== drawn && (isBoxGlyph(text) || POWERLINE_GLYPH.test(text));
-    // what the run's box alone takes
     const box = [`left:calc(var(--ghostty-cw)*${run.x})`];
     if (bg && !selected) box.push(`background:${bg}`);
+    if (paintsSelection) box.push(`background:${under}`);
     if (run.flags & STYLE_BOLD) box.push("font-weight:bold");
     // what its text inherits: a faint run dims its text, not its background, as xterm and a folded mirror draw it
     const colours = (colour: string | null): string[] => {
@@ -447,7 +442,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
   };
 
-  // font, theme and history follow xterm's options, which the font and theme effects set in place
   let options: unknown[] = [];
   const optionsChanged = (): boolean => {
     const now = [term.options.fontFamily, term.options.fontSize, term.options.theme, term.options.scrollback];
@@ -461,7 +455,6 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     try {
       drawFrame();
     } catch (error) {
-      // the module failed (a trap, out of memory): xterm draws from here on
       console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
       overlay.dispose();
     }
@@ -477,8 +470,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       fit();
     }
     // xterm's own history (a herdr-core server's `terminal-history`): the layer shows the rows xterm shows
-    const buffer = term.buffer.active;
-    vt.scrollFromBottom(buffer.baseY - buffer.viewportY);
+    const buffer = reader.active();
+    const rowsAbove = only ? fromBottom : buffer.baseY - buffer.viewportY;
+    vt.scrollFromBottom(rowsAbove);
     const selection = currentSelection();
     const changed = vt.frame((y, runs) => {
       if (!rowEls[y]) return;
@@ -493,7 +487,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     });
     // lines are told from the screen at the bottom, the one a program writes to: a view scrolled back holds a
     // write until it is back there, and a frame that only moved the view tells nothing (#2963)
-    if (buffer.viewportY === buffer.baseY) {
+    if (rowsAbove === 0) {
       const screenText = rowText.slice(0, term.rows);
       // a grid that changed height keeps its bottom rows, as xterm does: the baseline lines up with them
       const before = Array.from({ length: term.rows }, (_, y) => bottomText[bottomText.length - term.rows + y] ?? "");
@@ -503,6 +497,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       written = false;
       bottomText = screenText;
     }
+    if (changed) host.dispatchEvent(new Event(GHOSTTY_DREW_EVENT));
     if (changed) {
       const c = vt.cursor();
       Object.assign(cursor.style, c.visible
@@ -511,8 +506,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     }
     const images = vt.placedImages();
     if (images) drawImages(images);
-    // xterm may make a new renderer (a font or theme change): that one draws nothing either. A folded mirror
-    // (lib/terminalFold.ts) hides this layer and reads xterm's rows and cursor, so xterm draws while folded
+    // xterm may make a new renderer (a font or theme change): that one draws nothing either.
     if (host.hasAttribute("data-folded")) {
       if (muted) { unmuteXtermRows(); term.refresh(0, term.rows - 1); }
     } else muteXtermRows();
@@ -527,55 +521,149 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   };
   const cancelPaint = (): void => { cancelFrame?.(); };
 
-  // every byte xterm is given, libghostty is given first, in the same order
   const write = term.write.bind(term);
+  // a view scrolled back over libghostty's history (only) stays on its rows while new ones push the history up, as xterm's does
+  let fromBottom = 0;
+  const writeOnly = controlsWriter({
+    write: (data) => {
+      const before = fromBottom > 0 ? vt.history().scrollback : 0;
+      vt.write(data);
+      if (fromBottom > 0) fromBottom += vt.history().scrollback - before;
+    },
+    screenCursor: () => vt.screenCursor(),
+  }, (data, callback) => write(data, callback));
+  const pictures = only ? itermPictureWriter(
+    () => terminalPictureLimits(term),
+    () => ({ cols: term.cols, rows: term.rows, cellW, cellH }),
+    // libghostty doesn't expose the current SGR background; use the terminal's default.
+    () => rgb(themeColors(term).background) ?? [0, 0, 0],
+  ) : null;
+  const finishStartup = (): void => {
+    if (writeOnly.syncCursor(currentQuestions(heldQuestions))) heldQuestions.length = 0;
+  };
+  const emitOnly = (frame: RetainedOutput, captured = false) => (data: string | Uint8Array, picture: boolean, end: number): void => {
+    if (disposed) return;
+    try {
+      const send = captured ? writeOnly.seed : writeOnly;
+      if (picture) {
+        const { x } = vt.screenCursor();
+        send(data);
+        // xterm's default sixelScrolling (also used for iTerm2) ends on the last image row
+        // at the original column. Kitty ends on that row too, but moves to the right.
+        // This follows the default, not xterm's fixed-position DECSDM mode.
+        if (vt.screenCursor().x !== x) send(`\x1b[${x + 1}G`);
+      } else send(data);
+      if (!captured) {
+        frame.sent = end;
+        if (replayRemaining === 0 && heldQuestions.length) finishStartup();
+      }
+      written = true;
+    } catch (error) { readFailed(error); }
+  };
+  // Keep the raw output to reconstruct xterm's screen. Image conversion can leave a frame only partly submitted.
+  const kept: RetainedOutput[] = [];
+  let keptBytes = 0;
+  const keep = (frame: RetainedOutput): void => {
+    kept.push(frame);
+    keptBytes += frame.data.length;
+    while (keptBytes > KEPT_BYTES_MAX && kept.length > 1) keptBytes -= kept.shift()!.data.length;
+  };
   term.write = ((data: string | Uint8Array, callback?: () => void) => {
+    if (pictures && !disposed) {
+      const frame = { data, sent: 0 };
+      keep(frame);
+      pictures.write(data, emitOnly(frame), () => {
+        // xterm holds no rows and may skip rendering a cursor move. An open DEC 2026
+        // update still waits for the render that ends it.
+        write("", () => {
+          if (!term.modes.synchronizedOutputMode) schedule();
+          callback?.();
+        });
+      });
+      return;
+    }
     // libghostty takes Kitty pictures but not iTerm2 or sixel ones: when xterm draws one (Pictures in the terminal),
     // its cursor moves past the picture and libghostty's would not, so the text after it would sit on other rows.
     // xterm draws the pane from that picture on (#2980)
-    if (!disposed && pictureIn(data) && terminalDrawsPictures(term)) overlay.dispose();
+    if (!disposed && pictureIn?.(data) && terminalDrawsPictures(term)) overlay.dispose();
     if (!disposed) {
       try {
         vt.write(data);
         written = true;
       } catch (error) {
-        // the module failed (a trap, out of memory): xterm draws from here on, and its write still runs
         console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
         overlay.dispose();
       }
     }
     write(data, callback);
   }) as Terminal["write"];
+  // with `only` xterm keeps no history: a wheel, a swipe or a jump to the newest rows moves libghostty's view
+  const { scrollLines, scrollToBottom } = term;
+  const moveView = (rows: number): void => {
+    if (rows === fromBottom) return;
+    fromBottom = rows;
+    schedule();
+    term.element?.dispatchEvent(new Event(GHOSTTY_VIEW_EVENT));
+  };
+  if (only) {
+    ownView(term, () => fromBottom);
+    term.scrollLines = (amount: number) => moveView(Math.max(0, Math.min(Math.min(vt.history().scrollback, vt.scrollback), fromBottom - amount)));
+    term.scrollToBottom = () => moveView(0);
+  }
   const reset = term.reset.bind(term);
+  // a wheel over history this terminal keeps scrolls xterm's own viewport, which with `only` holds no rows: it
+  // moves libghostty's view instead, as far as xterm's would (a line a line, or the pixels of one row)
+  let wheelPixels = 0;
+  const onWheel = (event: WheelEvent): void => {
+    if (disposed || wheelPansGrid(event) || (term.options.scrollback ?? 0) === 0 || term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none") return;
+    wheelPixels += event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * cellH : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * cellH * term.rows : event.deltaY;
+    const lines = cellH > 0 ? Math.trunc(wheelPixels / cellH) : 0;
+    if (lines === 0) return;
+    wheelPixels -= lines * cellH;
+    term.scrollLines(lines);
+  };
+  if (only) host.addEventListener("wheel", onWheel, { passive: true });
+  const restoreTerm = (): void => {
+    if (only) host.removeEventListener("wheel", onWheel);
+    term.write = write;
+    term.reset = reset;
+    if (only) {
+      Object.assign(term, { scrollLines, scrollToBottom });
+      ownView(term, null);
+      term.element?.dispatchEvent(new Event(GHOSTTY_VIEW_EVENT));
+    }
+  };
   term.reset = () => {
     if (!disposed) {
       vt.reset();
       decoded.clear();
     }
+    kept.length = 0;
+    keptBytes = 0;
+    heldQuestions.length = 0;
+    writeOnly.reset();
     reset();
+    pictures?.reset();
   };
 
-  // at xterm's grid and cell size, so a picture in the backlog is placed as xterm's cells are. Any of it failing
-  // gives the terminal back to xterm, its own write and reset included: no write waits on a failed module
   try {
     optionsChanged();
     colors();
     vt.setScrollback(term.options.scrollback ?? 0);
     fit();
-    for (const chunk of backlog) vt.write(chunk);
-    written = backlog.length > 0;
+    if (!only) {
+      for (const chunk of backlog) vt.write(chunk);
+      written = backlog.length > 0;
+    }
   } catch (error) {
-    // the caller falls back to xterm: it gets its own write and reset back, so nothing reaches the freed module
     disposed = true;
     cancelPaint();
-    term.write = write;
-    term.reset = reset;
+    restoreTerm();
     lateFaces.stop();
     layer.remove();
     vt.dispose();
     throw error;
   }
-  // a resize the module fails gives the pane back to xterm, as a failed frame does
   const refit = (): void => {
     if (disposed) return;
     try {
@@ -620,16 +708,69 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   muteXtermRows();
 
   host.dataset["renderer"] = "ghostty";
+  // libghostty has every byte xterm was given by now, and each later one before xterm parses it
+  // A read that fails gives the terminal back to xterm, which has every byte too: a reader runs in xterm's write
+  // callback, where a throw would leave the output behind it queued
+  const readFailed = (error: unknown): void => {
+    console.warn("libghostty stopped drawing this terminal; xterm draws it", error);
+    overlay.dispose();
+  };
+  const heldRows = (): ScreenRows | null => {
+    if (disposed) return null;
+    try {
+      const rows = ghosttyRows(vt);
+      // xterm's line, read into xterm's own cells: a reader may hold one of libghostty's cells as its scratch
+      const xtermLine = (y: number): ScreenLine | undefined => {
+        const line = term.buffer.active.getLine(y);
+        return line && { isWrapped: line.isWrapped, length: line.length, translateToString: (trimRight?: boolean, start?: number, end?: number) => line.translateToString(trimRight, start, end), getCell: (x: number) => line.getCell(x) };
+      };
+      return {
+        ...rows,
+        getLine: (y) => {
+          if (disposed) return xtermLine(y);
+          try {
+            const line = rows.getLine(y);
+            if (!line) return line;
+            // a line's styled cells are read when first asked: a failure there falls back the same way
+            return {
+              ...line,
+              getCell: (x, cell) => {
+                if (!disposed) {
+                  try { return line.getCell(x, cell); } catch (error) { readFailed(error); }
+                }
+                return xtermLine(y)?.getCell(x);
+              },
+            };
+          } catch (error) {
+            readFailed(error);
+            return xtermLine(y);
+          }
+        },
+      };
+    } catch (error) {
+      readFailed(error);
+      return null;
+    }
+  };
+  holdScreenRows(term, heldRows, only);
+  const releaseSelection = holdSelection(term);
   const overlay: GhosttyOverlay = {
-    dispose: () => {
+    dispose: (handOver = true) => {
       if (disposed) return;
       disposed = true;
       cancelPaint();
       delete host.dataset["renderer"];
+      holdScreenRows(term, null);
+      releaseSelection();
       unmuteXtermRows();
       term.refresh(0, term.rows - 1);
-      term.write = write;
-      term.reset = reset;
+      restoreTerm();
+      // Reset in parse order, behind the last controls xterm was sent and ahead of any discarded frame's callback.
+      // CAN aborts an unfinished OSC before RIS; ESC alone would dispatch the OSC.
+      if (only && handOver) write("\x18\x1bc" + fallbackOutput(kept, currentQuestions(heldQuestions)));
+      pictures?.reset();
+      kept.length = 0;
+      heldQuestions.length = 0;
       for (const subscription of subscriptions) subscription.dispose();
       if (renderService && handleSelectionChanged) renderService.handleSelectionChanged = handleSelectionChanged;
       screenResize.disconnect();
@@ -640,5 +781,19 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       vt.dispose();
     },
   };
+  if (pictures) {
+    const frames = backlog.map((data) => ({ data, sent: data.length }));
+    for (const frame of frames) keep(frame);
+    for (const frame of frames) {
+      if (disposed) break;
+      pictures.write(frame.data, emitOnly(frame, true), () => {
+        replayRemaining--;
+        if (!disposed) {
+          if (replayRemaining === 0) finishStartup();
+          schedule();
+        }
+      });
+    }
+  }
   return overlay;
 }

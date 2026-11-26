@@ -35,6 +35,8 @@ function frame(screen: string): Frame | null {
   const bottom = findLastIndex(lines.slice(0, hintIndex), line => RULE_RE.test(line));
   const top = findLastIndex(lines.slice(0, bottom), line => RULE_RE.test(line));
   if (top < 0 || bottom < 0) return null;
+  // Notes editors add their own rules; side-by-side previews add a second column. Neither
+  // is a complete, unambiguous row list in a plain screen mirror.
   if (lines.slice(top + 1, bottom).some(line => /[│┌┐└┘]|^\s*(?:Notes:|Global note:|Note for this answer:)/.test(line))) return null;
   return { lines, rawLines, hint: lines[hintIndex]!.trim(), top, bottom, hintIndex };
 }
@@ -117,7 +119,7 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
       can_step_next: navigable && tabs.steps[tabs.index! + 1]?.can_navigate === true } : {}),
   }, {
     ...(navigable ? { piAskForm: { identity: `${expected?.id ?? ""}\0${tabs!.identity}`, index: tabs!.index! } } : {}),
-    ...(typing ? { piAskTyping: true as const } : {}),
+    ...(typing ? { piAskTyping: true as const, piAskDraft: other.label.trim() } : {}),
     responder: "pi-ask-question", menuLabels: [...options.map(option => option.label), OTHER, ...(next ? [next.label] : [])],
     selectedIndex, checkedOptionIndices: checked, customMenuIndex: multi ? null : custom, rejectWithEscapeIndex: null,
     ...(!multi ? { customSteps: (text: string): AnswerStep[] => [

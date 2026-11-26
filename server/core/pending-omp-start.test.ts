@@ -23,7 +23,7 @@ function omp(setup: { startedAgo?: number; argv?: readonly string[]; reported?: 
   const calls: string[] = [], frames: Frame[] = [];
   const pane: Record<string, unknown> = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "omp", agent_status: "idle", focused: false, revision: 0,
     ...(setup.reported ? { agent_session: SESSION } : {}) };
-  const hooks: { look?: (looks: number) => void; read?: (reads: number) => void | Promise<void>;
+  const hooks: { look?: (looks: number) => void; read?: (reads: number) => void | Promise<void>; authorize?: () => void;
     processes?: (start: boolean) => "fail" | "empty" | undefined } = {};
   let looks = 0, reads = 0, asked = 0, allowed = true, skew = 0, typedCount = 0;
   const herdrNow = { silent: false, paneGone: false };
@@ -60,7 +60,7 @@ function omp(setup: { startedAgo?: number; argv?: readonly string[]; reported?: 
     submitText: setup.realSubmit
       ? createSubmitText({ options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => true, SUBMIT_DEADLINE_MS: 45_000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 1, SUBMIT_DELAY_MS: 0 })
       : async () => { calls.push("immediate"); },
-    authorizeSocket: () => { if (!allowed) throw new herdr.HerdrError("read_only", "this device may only watch"); },
+    authorizeSocket: () => { hooks.authorize?.(); if (!allowed) throw new herdr.HerdrError("read_only", "this device may only watch"); },
     clientSnapshot: async () => {
       if (herdrNow.silent) throw new herdr.HerdrError("herdr_unavailable", "herdr did not answer");
       return { panes: herdrNow.paneGone ? [] : [pane] };
@@ -119,6 +119,8 @@ type Way = "a queue request typed at once" | "Send now of a held message" | "a n
 const WAYS: Way[] = ["a queue request typed at once", "Send now of a held message", "a new pane's first message"];
 const BY_HAND: Way[] = ["a queue request typed at once", "Send now of a held message"];
 
+// omp draws its input box, and herdr shows it at rest, seconds before it takes an Enter: a message typed meanwhile stays
+// in the box and never runs, while its row says sent.
 it.each(WAYS)("types %s into an omp still starting only once its session is reported", async (way) => {
   const d = omp();
   d.hooks.look = (looks) => {
@@ -626,6 +628,8 @@ it.each(["immediate", "queue"] as const)("sends a %s message as before once a fi
   await d.settled();
   expect(d.typed()).toEqual(["typed in the terminal", PASTE, "Enter"]);
   d.advance(5_000);
+  // herdr reads the Send now's turn and its end: a message sent to the queue goes behind no open wait (#4118)
+  d.delivery.pending.status("p", "working"); await d.rest();
   await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: delivery === "immediate" ? "second words" : "unused", delivery } as never);
   await d.settled();
   expect(d.result("submit-result", 5)?.["pending"]).toBeUndefined();
@@ -702,4 +706,179 @@ it("holds a new pane's first message when its terminal was typed into before the
   d.report();
   await d.rest();
   expect(d.typed()).toEqual(["typed in the terminal"]);
+});
+
+it.each([
+  ["its page left", "pending_lease_lost"],
+  ["its deadline passed", "submit_timeout"],
+] as const)("refuses a queue request typed at once when %s during the last look of a wait for omp that ran out before its first poll", async (what, code) => {
+  const d = omp();
+  // the send's own read finds omp at work; its start then runs out between the look at the process and the first
+  // poll, so the wait returns the pane it was given after one more process read, during which this happens
+  let step: "start" | "ran out" | "last look" | "done" = "start";
+  d.hooks.read = (reads) => { if (reads === 2) d.pane["agent_status"] = "working"; };
+  d.hooks.processes = (start) => {
+    if (start && step === "start") step = "ran out";
+    else if (!start && step === "last look") {
+      step = "done";
+      if (what === "its page left") { d.delivery.holdPending(d.owner as never, "p"); d.facts.member = false; } else d.advance(20_000);
+    }
+    return undefined;
+  };
+  d.hooks.authorize = () => { if (step === "ran out") { step = "last look"; d.advance(31_000); } };
+  expect(await d.ways["a queue request typed at once"]()).toMatchObject({ ok: false, code });
+  expect(step as string).toBe("done");
+  expect(d.delivery.pending.list(d.owner as never, "p"), "queued after all, its row would say it waits for the agent's turn").toEqual([]);
+  expect(d.typed()).toEqual([]);
+});
+
+const SECOND = "\u001b[200~second words\u001b[201~";
+const atOnce = (id = 5) => ({ type: "submit", id, pane_id: "p", text: "second words", payload: "second words", delivery: "immediate" }) as never;
+
+/** a second page on the pane, behind a first message that waits for omp */
+async function secondPage() {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  const told: Frame[] = [];
+  const other = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { told.push(JSON.parse(value) as Frame); return 1; } };
+  other.data.attached.set("p", { keepSize: false });
+  d.clients.add(other);
+  // the harness's facts are every connection's: a page whose attach is still starting has no ready attachment
+  const starting = (yes: boolean): void => { Object.assign(d.facts, { attached: !yes, member: !yes, ready: !yes }); };
+  const ahead = Promise.withResolvers<void>();
+  void d.serialize("p", () => ahead.promise);
+  return { d, other, starting, ahead, answer: () => told.find((frame) => frame.type === "submit-result" && frame.id === 5) };
+}
+async function firstSentThenTurnEnds(d: ReturnType<typeof omp>): Promise<void> {
+  d.report();
+  await d.eventually("the first message's send", () => d.calls.includes("Enter"));
+  d.pane["agent_status"] = "working"; d.delivery.pending.status("p", "working"); d.delivery.drainPending("p"); await d.settled();
+  d.pane["agent_status"] = "idle";
+  await d.rest();
+}
+
+it.each(["ready", "not ready yet"])("refuses a chat message sent at once that would wait behind a starting omp when its page, %s as the frame came, left the pane and came back while the frame waited its turn", async (as) => {
+  const { d, other, starting, ahead, answer } = await secondPage();
+  starting(as !== "ready");
+  const sent = d.delivery.pendingFrames.submit(other as never, atOnce());
+  // what terminals.ts detach() does; its new attach is ready before the frame's turn
+  d.delivery.holdPending(other as never, "p");
+  starting(false);
+  ahead.resolve();
+  await sent;
+  await d.settled();
+  expect(answer()).toMatchObject({ ok: false, code: "pending_lease_lost" });
+  expect(d.delivery.pending.list(other as never, "p")).toEqual([]);
+  await firstSentThenTurnEnds(d);
+  expect(d.typed()).toEqual([PASTE, "Enter"]);
+});
+
+it("queues a chat message sent at once behind a starting omp from a page that stayed while its attach became ready, and holds it once the page leaves", async () => {
+  const { d, other, starting, ahead, answer } = await secondPage();
+  starting(true);
+  const sent = d.delivery.pendingFrames.submit(other as never, atOnce());
+  starting(false);
+  ahead.resolve();
+  await sent;
+  await d.settled();
+  expect(answer()).toMatchObject({ ok: true, pending: { state: "queued", text: "second words" } });
+  d.delivery.holdPending(other as never, "p");
+  await firstSentThenTurnEnds(d);
+  expect(d.delivery.pending.list(other as never, "p").map((row) => [row.state, row.error?.code])).toEqual([["held", "pending_lease_lost"]]);
+  expect(d.typed()).toEqual([PASTE, "Enter"]);
+});
+
+it("neither lists nor types again a chat message sent at once, queued behind a starting omp and discarded, when its frame comes twice", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  await d.settled();
+  const row = d.result("submit-result", 5) as unknown as { pending: { id: string } };
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 6, pane_id: "p", pending_id: row.pending.id, action: "discard" } as never);
+  expect(d.result("pending-result", 6)).toMatchObject({ ok: true });
+  await d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  await d.settled();
+  expect(d.frames.filter((frame) => frame.type === "submit-result" && frame.id === 5).at(-1)).toMatchObject({ ok: true });
+  expect(d.delivery.pending.list(d.owner as never, "p")).toEqual([]);
+  await firstSentThenTurnEnds(d);
+  expect(d.typed()).toEqual([PASTE, "Enter"]);
+});
+
+it("does not type again a chat message sent at once, queued behind a starting omp and sent at its turn, when its frame comes twice", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  await d.settled();
+  await firstSentThenTurnEnds(d);
+  expect(d.typed()).toEqual([PASTE, "Enter", SECOND, "Enter"]);
+  await d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  await d.settled();
+  expect(d.typed()).toEqual([PASTE, "Enter", SECOND, "Enter"]);
+});
+
+it("types once a chat message sent at once whose frame comes again before its turn, when omp reports between the two", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  const ahead = Promise.withResolvers<void>();
+  void d.serialize("p", () => ahead.promise);
+  const once = d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  // a task in the lane meanwhile, during which omp reports and the queue's wait for it ends (its poll runs outside the lane)
+  void d.serialize("p", async () => {
+    d.report();
+    for (const deadline = performance.now() + 4_000; d.delivery.pending.waiting("p");) {
+      if (performance.now() > deadline) throw new Error("the wait for omp did not end");
+      await Bun.sleep(1);
+    }
+  });
+  const again = d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  ahead.resolve();
+  await once; await again; await d.settled();
+  expect(d.frames.filter((frame) => frame.type === "submit-result" && frame.id === 5)).toMatchObject([{ ok: true }, { ok: true }]);
+  await firstSentThenTurnEnds(d);
+  expect(d.typed()).toEqual([PASTE, "Enter", SECOND, "Enter"]);
+});
+
+it("pastes nothing when the deadline passed while the paste's herdr connection opened", async () => {
+  const d = omp({ reported: true });
+  // herdrRpc asks the guard once the connection is open, here 46 s after the call
+  spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text, _socket, guard) => {
+    d.advance(46_000);
+    if (guard && !guard()) throw new herdr.HerdrError("cancelled", "herdr pane.send_text was not sent: the sender may no longer send");
+    d.calls.push(text);
+  });
+  const answer = await d.ways["a queue request typed at once"]();
+  expect([answer, d.typed()]).toMatchObject([{ ok: false, code: "submit_timeout" }, []]);
+});
+
+it("refuses a chat message sent at once that waited past its deadline where it would be queued behind a terminal typed into while omp started", async () => {
+  const d = omp();
+  const ahead = Promise.withResolvers<void>();
+  void d.serialize("p", () => ahead.promise);
+  const first = d.delivery.queueFirstMessage("p", "first words", "omp", d.owner.data.connectionId, 41001);
+  void d.type();
+  const sent = d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  d.advance(46_000);
+  ahead.resolve();
+  await first; await sent; await d.settled();
+  expect(d.result("submit-result", 5)).toMatchObject({ ok: false, code: "submit_timeout" });
+  expect(d.delivery.pending.list(d.owner as never, "p")).toEqual([]);
+});
+
+it("refuses, and never types, a chat message sent at once that waited past its deadline behind a first message waiting for omp", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  const ahead = Promise.withResolvers<void>();
+  void d.serialize("p", () => ahead.promise);
+  const sent = d.delivery.pendingFrames.submit(d.owner as never, atOnce());
+  d.advance(46_000);
+  ahead.resolve();
+  await sent; await d.settled();
+  expect(d.result("submit-result", 5)).toMatchObject({ ok: false, code: "submit_timeout" });
+  await firstSentThenTurnEnds(d);
+  expect(d.typed()).toEqual([PASTE, "Enter"]);
 });

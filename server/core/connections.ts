@@ -9,21 +9,34 @@ import { crossingMs, OUTPUT_HARD_BYTES, OUTPUT_LOW_BYTES, OUTPUT_STALL_MS, type 
 import type { PendingInputs } from "../pending-input.ts";
 import { PaneWatch, type PaneWatchOptions } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
+import type { Machine, MachineEvent } from "../../shared/machines.ts";
 
 export interface SocketData {
   /** Only the connection server grants this document; remote terminal relays do not. */
   machineEvents?: MachineEventDocument;
+  /** A listed drive row may receive this PC, never the multi-PC document or its pairing subscriptions. */
+  localRoster?: (send: (machines: Machine[]) => void) => () => void;
+  /** Beside that roster, on a PC pinned to its account's list: the joins that wait here, for a device of the list that may let one in (remotePairingEvents). */
+  listJoins?: (send: (event: MachineEvent) => void) => () => void;
   deviceId?: string;
+  provedKey?: string;
   readOnly?: boolean;
   /** let in by the open LAN alone, while nothing was paired (access.ts `via: "open"`): no device, token, sign-in or
    * bridge token stands behind it, so it ends when the pairing gate closes (admit) */
   open?: boolean;
   relay?: MachineRelay;
   bridge?: boolean;
+  /** A managed machine's own bearer can correlate submissions; it grants no bridge-only API access. */
+  managedReceipts?: boolean;
+  commandBrowser?: string;
   surface?: TelemetrySurface;
   ingress?: TelemetryIngress;
+  /** a visitor Portal signed in: the socket is closed after this many ms, and the page's reconnect meets Portal's sign-in again (server/portal.ts `recheckMs`) */
   recheckMs?: number;
+  /** let in on a grant a lock refuses: it ends when the screen's approval writes a lock (server/lock-boundary.ts LockSignal) */
+  untilLock?: (close: () => void) => () => void;
   connectionId: string;
+  /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
   attached: Map<string, { keepSize: boolean; receiptResumeId?: string }>;
   conversationInterests: Set<string>;
   conversationWatches: Set<string>;
@@ -44,12 +57,14 @@ interface ConnectionState {
   waiting: Map<string, { cols: number; rows: number }>;
   unwatchDevice?: () => void;
   unwatchGate?: () => void;
+  unwatchLock?: () => void;
   recheck?: ReturnType<typeof setTimeout>;
   excused?: { frames: ExcusedFrame[]; last: number };
 }
 
 interface ExcusedFrame { ahead: number; frame: number; timer: ReturnType<typeof setTimeout> }
 
+/** Keyed by the very `data` object the upgrade passed, which Bun hands to every handler of the connection. */
 const states = new WeakMap<SocketData, ConnectionState>();
 
 function stateOf(client: Client): ConnectionState {
@@ -58,7 +73,8 @@ function stateOf(client: Client): ConnectionState {
   return state;
 }
 
-export function connectionData(fields: { machineEvents?: MachineEventDocument; relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; open?: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number }): SocketData {
+/** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
+export function connectionData(fields: { machineEvents?: MachineEventDocument; localRoster?: SocketData["localRoster"]; listJoins?: SocketData["listJoins"]; relay?: MachineRelay; deviceId: string | undefined; provedKey?: string; readOnly: boolean; open?: boolean; bridge?: boolean; managedReceipts?: boolean; commandBrowser?: string; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number; untilLock?: (close: () => void) => () => void }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), conversationWatches: new Set<string>(), promptWatches: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneView>(), waiting: new Map() });
   return data;
@@ -71,7 +87,9 @@ export function connectionOf(client: Client): Readonly<Pick<ConnectionState, "cl
 export function setMachineEvents(client: Client, enabled: boolean, compactAgents = false): void {
   const state = stateOf(client);
   if (!enabled) { state.stopMachineEvents?.(); state.stopMachineEvents = undefined; return; }
-  if (state.closing || state.stopMachineEvents || !client.data.machineEvents) return;
+  if (state.closing || state.stopMachineEvents) return;
+  const { machineEvents, localRoster, listJoins } = client.data;
+  if (!machineEvents && !localRoster) return;
   state.compactMachineAgents = compactAgents;
   let stop: (() => void) | undefined;
   let overflowed = false;
@@ -82,9 +100,15 @@ export function setMachineEvents(client: Client, enabled: boolean, compactAgents
     try { client.send(JSON.stringify({ type: "machine-events-ended" } satisfies ServerMessage)); } catch { }
   };
   const overflow = () => { overflowed = true; if (stop) end(); };
-  stop = subscribeMachineEvents(client.data.machineEvents, (event) => {
+  const tell = (event: MachineEvent) => {
     if (!overflowed) send(client, { type: "machine-event", event }, overflow);
-  });
+  };
+  if (localRoster) {
+    const stopRoster = localRoster(machines => tell({ type: "machines", machines }));
+    const stopJoins = listJoins?.(tell);
+    stop = () => { stopRoster(); stopJoins?.(); };
+  } else stop = machineEvents && subscribeMachineEvents(machineEvents, tell);
+  if (!stop) return;
   if (state.closing) stop();
   else if (overflowed) end();
   else state.stopMachineEvents = stop;
@@ -193,6 +217,10 @@ function expire(client: Client, frame: ExcusedFrame): void {
   if (state.excused?.frames.includes(frame)) client.close(OUTPUT_STALLED_CLOSE_CODE, "terminal output transport stalled");
 }
 
+/**
+ * Each watch is a `herdr terminal session observe` process with three descriptors, and a watching device may ask
+ * for one: without a bound, frames alone could take the PC's processes and descriptors.
+ */
 const WATCHES = 64;
 
 interface PaneView {
@@ -223,6 +251,11 @@ export function createConnections({ clients, present, pending, devices, detachCl
     if (client.data.readOnly || state.mode === "observe") throw new HerdrError("read_only", "this connection can only watch");
   }
 
+  /**
+   * Ends the connection when its device is revoked, at once for one revoked already: then it is not admitted. One
+   * the open LAN let in ends when the pairing gate closes (the first device paired, the relay turned on), as its
+   * requests are refused from then on; it is not admitted either when the gate closed while its upgrade was pending.
+   */
   function admit(client: Client): boolean {
     const state = stateOf(client);
     if (client.data.open) {
@@ -232,6 +265,10 @@ export function createConnections({ clients, present, pending, devices, detachCl
     if (client.data.deviceId) {
       state.unwatchDevice = devices.onRevoke(client.data.deviceId, () => end(client, "revoked"));
       if (!state.revoked && !client.data.readOnly && !devices.canDrive(client.data.deviceId)) end(client, "revoked");
+      if (state.revoked) return false;
+    }
+    if (client.data.untilLock) {
+      state.unwatchLock = client.data.untilLock(() => end(client, "revoked"));
       if (state.revoked) return false;
     }
     if (client.data.recheckMs !== undefined) state.recheck = setTimeout(() => client.close(1000, "Portal sign-in check"), client.data.recheckMs);
@@ -258,6 +295,9 @@ export function createConnections({ clients, present, pending, devices, detachCl
     if (waiting.has(paneId)) { waiting.set(paneId, geometry); return; }
     const current = watches.get(paneId);
     if (current && wanted(current)) {
+      // A pane has one process at a time: started at each frame, frames naming one pane over and over would each
+      // hold a process until the event loop turned, past any count of panes. herdr's observe process is gone within
+      // a millisecond of being asked, and one that is not is killed (watch.ts)
       current.next = geometry;
       stopView(current);
       return;
@@ -364,6 +404,7 @@ export function createConnections({ clients, present, pending, devices, detachCl
         state.excused = undefined;
         state.unwatchDevice?.();
         state.unwatchGate?.();
+        state.unwatchLock?.();
         clearTimeout(state.recheck);
         state.closing = true;
         present.delete(client);

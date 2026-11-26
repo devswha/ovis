@@ -177,6 +177,7 @@ describe("telemetry receiver", () => {
       const columns = migrated.query("PRAGMA table_info(events)").all().map((row) => (row as { name: string }).name);
       expect(columns).toContain("changed_settings");
       expect(columns).not.toContain("settings");
+      // An existing D1 cannot take the new INSERT until its columns are added.
       await expect(send(sqlite(migrated), event, "KR")).rejects.toThrow(/country|settings/);
       const alters = [...readme.matchAll(/"(ALTER TABLE events ADD COLUMN (?:country|settings) TEXT)"/g)].map((match) => match[1]!);
       expect(alters).toEqual(["ALTER TABLE events ADD COLUMN country TEXT", "ALTER TABLE events ADD COLUMN settings TEXT"]);
@@ -252,6 +253,7 @@ describe("telemetry receiver", () => {
 
   test("refuses an oversized body before it ends", async () => {
     const { env, rows } = fakeDb();
+    // More than the 8 KB cap arrive and the stream never closes: do not wait for the rest.
     const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(8193).fill(0x20)); } });
     const request = new Request("https://receiver.test/v1/events", { method: "POST", headers: { "content-type": "application/json" }, body, duplex: "half" } as RequestInit);
     expect((await handle(request, env, now)).status).toBe(413);
@@ -343,6 +345,7 @@ describe("telemetry receiver: active", () => {
 
   test("active: readActive takes a message with the day's usage, and an older sender's without it", () => {
     expect(readActive({ ...active, usage }, now)?.usage).toEqual(usage);
+    expect(readActive({ ...active, usage: { ...usage, ingress: ["lan", "portal", "relay"] } }, now)?.usage?.ingress).toEqual(["lan", "portal", "relay"]);
     expect(readActive(active, now)?.usage).toBeNull();
   });
 
@@ -374,6 +377,33 @@ describe("telemetry receiver: active", () => {
     expect(JSON.parse(usageOf()!)).toEqual(usage);
     expect((await send(active)).status).toBe(204);
     expect(JSON.parse(usageOf()!)).toEqual(usage);
+  });
+
+  test("active: a newer sender's usage adds its agents and answers, and keeps them as sent; an older sender's still goes", async () => {
+    const withAgents: TelemetryUsage = { ...usage, agents: { claude: { ovis: 1, other: 2, versions: ["2.1", "2.10"] }, codex: { ovis: 0, other: 1, versions: [] } }, answers: { native: 1, screen: 2, terminal: 4 } };
+    expect(readActive({ ...active, usage: withAgents }, now)?.usage).toEqual(withAgents);
+    expect(readActive({ ...active, usage }, now)?.usage).toEqual(usage);
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    const env: Env = { DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } };
+    expect((await handle(postActive(JSON.stringify({ ...active, usage: withAgents })), env, now)).status).toBe(204);
+    expect(JSON.parse((db.query("SELECT usage FROM active").get() as { usage: string }).usage)).toEqual(withAgents);
+  });
+
+  test("active: agents and answers come together, from the fixed lists, with counts, at most four major.minor versions and buckets", () => {
+    const agents = { claude: { ovis: 0, other: 1, versions: ["2.1"] } };
+    for (const bad of [
+      { ...usage, agents },
+      { ...usage, answers: {} },
+      { ...usage, agents: { gemini: { ovis: 0, other: 1, versions: [] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: ["2.1.330"] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: ["2.2", "2.1"] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: ["1.0", "1.1", "1.2", "1.3", "1.4"] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: -1, other: 1, versions: [] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: [], pane: "w1:p1" } }, answers: {} },
+      { ...usage, agents, answers: { screen: 5 } },
+      { ...usage, agents, answers: { keys: 1 } },
+    ]) expect(readActive({ ...active, usage: bad }, now)).toBeNull();
   });
 
   test("active: an existing table takes the usage only after the README's ALTER, keeping its rows", async () => {

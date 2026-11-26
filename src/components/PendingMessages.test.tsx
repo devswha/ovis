@@ -1,10 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { GROK_QUEUED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import * as settingsModule from "../lib/settings.ts";
 import { PendingMessages } from "./PendingMessages.tsx";
 
 const render = (code: string, message: string, languages: string[], serverOwned = true, state: "held" | "uncertain" = "held"): string => {
@@ -23,6 +25,30 @@ const render = (code: string, message: string, languages: string[], serverOwned 
 };
 
 describe("a pending row's refusal note", () => {
+  it.each([true, false])("the real uncertain row X connected=%p carries display-only intent without Send or Edit", async (connected) => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    let mounted: ReactTestRenderer | undefined;
+    const calls: unknown[] = [];
+    const settings = spyOn(settingsModule, "useSettings").mockReturnValue({ resolvedLanguage: "en" } as ReturnType<typeof settingsModule.useSettings>);
+    try {
+      await act(async () => { mounted = create(createElement(PendingMessages, {
+        messages: [{ id: "uncertain-id", request_id: 1, text: "/thinking high", state: "uncertain", created_at: "2026-11-17T00:00:00Z", serverOwned: true }],
+        connected, blocked: true, unsaved: false, isBusy: () => false,
+        onSendNow: async (id) => { calls.push(["send", id]); }, onEdit: async (id) => { calls.push(["edit", id]); },
+        onDiscard: async (id, displayOnly) => { calls.push([id, displayOnly]); },
+      })); });
+      expect(mounted!.root.findAllByProps({ className: "icon-button pending-message-action pending-message-send" })).toHaveLength(0);
+      const discard = mounted!.root.findByProps({ title: "Discard saved copy" });
+      expect(discard.props.disabled).toBe(false);
+      await act(async () => { discard.props.onClick({ detail: 1, currentTarget: { closest: () => null, isConnected: true } }); });
+      expect(calls).toEqual([["uncertain-id", true]]);
+    } finally {
+      await act(async () => { mounted?.unmount(); });
+      settings.mockRestore();
+      if (saved) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", saved); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    }
+  });
   it("does not offer Edit on another tab's saved held copy", () => {
     const html = render("held_input", "held", ["en"], false);
     expect(html).not.toContain("Edit queued message");
@@ -74,7 +100,6 @@ describe("a pending row's refusal note", () => {
   });
 
   it("says why a message is held for a screen waiting in the terminal in the reader's language, not the bridge's English", () => {
-    // what the bridge holds a queued message with when one of Codex's own screens has the input (server/core/pending.ts)
     const reason = "Codex has one of its own screens open in the terminal; close it there, then send";
     for (const language of ["ko", "ja", "zh"] as const) {
       const note = translate(language, "Not sent: the agent is waiting for an answer in the terminal. Answer it first.");
@@ -119,7 +144,6 @@ describe("a pending row's refusal note", () => {
     }
   });
 
-  // #511: a held message whose paste was left in the terminal's input line tells where it is, in every language
   it("says plainly that a held message sits in the terminal's input line", () => {
     for (const language of ["en", "ko", "ja", "zh"] as const) {
       const html = render("pasted_not_sent", "The message is in the terminal's input line, not sent; clear it or press Enter there", [language], true, "uncertain");

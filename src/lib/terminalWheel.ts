@@ -1,14 +1,13 @@
 import type { Terminal } from "@xterm/xterm";
 import { HERDR_MOUSE_SCROLL_LINES } from "./wheelSteps.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
-/** Live settings/status read by the handler attached once for a terminal's lifetime. */
 export interface TerminalWheelState {
   readonly speed: number;
   readonly omoQuestion: boolean;
 }
 
 interface WheelViewport {
-  /** A selecting drag owns its wheel before any application routing. */
   readonly drag: (event: WheelEvent) => boolean;
   readonly adopted: () => boolean;
   readonly mirrored: () => boolean;
@@ -16,9 +15,10 @@ interface WheelViewport {
   readonly scroll: (lines: number) => void;
 }
 
-/** wheels a view drawn over the grid passes on to it (lib/terminalFold.ts): as real as the wheel they came from */
 const forwarded = new WeakSet<Event>();
-/** A wheel on a view that covers the grid, passed on to the grid's own handler, which reads a real wheel at the chosen speed. */
+const gridPans = new WeakSet<WheelEvent>();
+export const wheelPansGrid = (event: WheelEvent): boolean => gridPans.has(event);
+
 export function forwardWheel(target: EventTarget, event: WheelEvent): void {
   const copy = new WheelEvent("wheel", event);
   if (event.isTrusted) forwarded.add(copy);
@@ -26,7 +26,6 @@ export function forwardWheel(target: EventTarget, event: WheelEvent): void {
 }
 const real = (event: WheelEvent): boolean => event.isTrusted || forwarded.has(event);
 
-/** A fixed grid larger than its mount pans locally before scrolling shared history. */
 export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scrollHeight" | "clientHeight">, delta: number): boolean {
   // DOM heights round to integers; a fractional physical edge must still release history scrolling.
   return delta < 0 ? view.scrollTop > 1 : delta > 0 && view.scrollTop < view.scrollHeight - view.clientHeight - 1;
@@ -35,13 +34,16 @@ export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scroll
 /** herdr owns history; xterm owns encoding mouse reports for applications that use them. */
 export function attachTerminalWheel(term: Terminal, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
   term.attachCustomWheelEventHandler((event) => {
-    if (viewport.drag(event) || viewport.pan?.(event)) return false;
+    if (viewport.drag(event)) return false;
+    if (viewport.pan?.(event)) {
+      gridPans.add(event);
+      return false;
+    }
     // Observers pan locally; an interactive mirror can scroll herdr through the API.
     const mirrored = viewport.mirrored();
     if (viewport.adopted() && !mirrored) return false;
-    // a sideways wheel or trackpad on a mirror pans its wide grid in the browser, as before
     if (mirrored && event.deltaY === 0) return false;
-    if (term.hasSelection()) term.clearSelection();
+    if (terminalScreen(term).hasSelection()) term.clearSelection();
     // OmO consumes wheel reports without acting while a question captures mouse input, so the
     // wheel moves herdr's history itself, as far as the reports below would: one three-line step
     // per event whatever its delta, repeated at the chosen speed for a real wheel only.

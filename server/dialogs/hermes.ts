@@ -1,5 +1,5 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, onePerPass, type AnswerStep, KEY, type ParsedPrompt, type PromptDraft, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
+import { ANSI_RE, onePerPass, type AnswerStep, type CardWords, KEY, type ParsedPrompt, type PromptDraft, editorRowsMatch, englishOf, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
 import type { NativeSteps } from "./step-navigate.ts";
 
 /**
@@ -68,7 +68,9 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   if (hintIndex < 0) return null;
   const askIndex = findLastIndex(lines.slice(0, hintIndex), (line) => HERMES_ASK_RE.test(line.trim()));
   if (askIndex < 0) return null;
-  const block = lines.slice(askIndex + 1, hintIndex).filter((line) => line.trim());
+  const rawBlock = lines.slice(askIndex + 1, hintIndex);
+  const occupied = rawBlock.flatMap((line, index) => line.trim() ? [index] : []);
+  const block = occupied.map((index) => rawBlock[index]!);
   const indent = (line: string) => line.length - line.trimStart().length;
   const at = block.findIndex((line) => line.trimStart().startsWith("▸ ") && !HERMES_ROW_RE.test(line.trim()));
   if (at < 0) return null;
@@ -88,6 +90,7 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   const switches = HERMES_SWITCH_RE.test(lines[hintIndex]!);
   if (member[0]?.startsWith(">")) {
     const { nativeSteps, ...navigation } = hermesNavigation(block, base, at, switches);
+    const questionStep = (step: { readonly label: CardWords; readonly current: boolean; readonly answered: boolean }) => [englishOf(step.label), step.current, step.answered];
     return finishPrompt("hermes", {
       kind: "question", title: own("Question"), question, body,
       options: [{ label: own("Type your answer"), description: null }], multi_select: false, custom_option_index: 0,
@@ -96,6 +99,18 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
       ...(nativeSteps ? { nativeSteps } : {}),
       responder: "hermes-input", menuLabels: [], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 0,
       rejectWithEscapeIndex: null, customSteps: typed,
+      customEditorMatches: ({ prompt, text }) => {
+        const start = occupied[end];
+        if (start === undefined || question !== prompt.question || (total! > 1 && prompt.steps?.length !== total)
+          || JSON.stringify(navigation.steps?.map(questionStep)) !== JSON.stringify(prompt.steps?.map(questionStep))
+          || lines.slice(hintIndex + 1).some((line) => /^\s*[❯›>$]/.test(line))) return false;
+        const input = rawBlock.slice(start, occupied[end + member.length]);
+        const first = /^(\s*> )(.*)$/.exec(input[0] ?? "");
+        if (!first) return false;
+        const indent = " ".repeat(first[1]?.length ?? 0);
+        return input.slice(1).every((line) => line === "" || line.startsWith(indent))
+          && editorRowsMatch([first[2] ?? "", ...input.slice(1).map((line) => line.slice(indent.length))], text);
+      },
     });
   }
   const rows: { label: string; selected: boolean; box: boolean; checked: boolean }[] = [];
@@ -117,6 +132,7 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
   return finishPrompt("hermes", {
     kind: "question", title: own("Question"), question, body,
     options: choices.map((row) => ({ label: row.label.replace(/ \(Recommended\)$/i, ""), description: null })),
+    // typed text on a multi-select question joins the ticks, which the card has no way to say
     multi_select: multi, custom_option_index: multi ? null : choices.length,
     ...navigation,
   }, {
@@ -254,7 +270,9 @@ function hermesInputLine(lines: string[]): number {
 
 /**
  * Whether a modal of Hermes's holds the pane's input, read or not: no generic card is offered over it.
- * Its Enter takes the row under the cursor, Allow once as an approval opens.
+ * Its Enter takes the row under the cursor, Allow once as an approval opens, and the countdown on its hint
+ * changes the generic card's id every second anyway. An approval this reader leaves out (cut, in another
+ * language, a pane too narrow for its hint) and a command's confirmation alike stay for the terminal.
  */
 export function hermesModalWaits(screen: string): boolean {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
@@ -286,6 +304,9 @@ function parseHermesApproval(screen: string): ParsedPrompt | null {
   if (top < 0 || !/^╭─+╮$/u.test(lines[top]!) || [...lines[top]!].length !== width) return null;
   const [title, ...rows] = lines.slice(top + 1, bottom).map((line) => line.slice(2, -1).trimEnd());
   if (!HERMES_APPROVAL_TITLE_RE.test(title ?? "")) return null;
+  // the choices: rows numbered from 1, a label wrapped onto the rows under it at four spaces in. They are the last
+  // such block, over the warning; a command or warning that reads like a choice anywhere else is no card, since its
+  // rows could stand in for Hermes's own and move the cursor's meaning
   let first = rows.length - 1;
   while (first >= 0 && HERMES_APPROVAL_ROW_RE.exec(rows[first]!)?.[2] !== "1") first -= 1;
   if (first < 1) return null;
@@ -451,7 +472,7 @@ export function hermesEchoOf(line: string, command: string): boolean {
  * its timer ticking), the rule, the `❯` input line, and the closing rule when the pane shows it, with
  * nothing but blank lines under them. Also the input line alone at the bottom, with no rule above or under it (under
  * the status bar when that is drawn): Hermes redraws its input area that way while a terminal attaches, slowly on a
- * loaded host.
+ * loaded host (F3 r2 D1). -1 for any other bottom: a rule is chrome only directly above the input line.
  */
 export function hermesChromeStart(lines: string[]): number {
   const rule = (line: string | undefined): boolean => line !== undefined && /^─{8,}$/u.test(line);

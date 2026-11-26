@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import type { Machine, RelayPairingRequest } from "../shared/machines.ts";
 import { chromePath } from "./chrome-path.ts";
+import { sheetRisen } from "./settings-page.ts";
 
 // A built client with an in-memory API; no relay, no herdr and no user session. The PC's prompt for a
 // device waiting for approval (src/components/RelayPairingPrompt.tsx), told over the event stream as
@@ -91,17 +92,20 @@ try {
     Date.now = () => qa.at ?? real();
   });
   await page.goto(server.url.href);
-  await page.locator(".app-header").first().waitFor({ timeout: 10_000 });
   const prompt = page.locator('[data-testid="relay-pairing-prompt"]');
   const sentence = prompt.locator(":scope > span > span").first();
   const settings = page.locator(".settings-dialog");
   const settled = () => page.evaluate(() => fetch("/api/health").then(() => undefined));
+  const openSettings = async () => {
+    await page.locator(".sidebar-footer-settings").click();
+    await sheetRisen(page);
+    await settings.locator("button:visible").first().focus();
+    assert.equal(await focus(page), "settings");
+  };
 
-  await page.keyboard.press("ControlOrMeta+Shift+Comma");
-  await settings.waitFor();
-  await page.waitForFunction(() => document.querySelector(".settings-dialog")?.getAnimations().length === 0);
-  await settings.locator("button:visible").first().focus();
-  assert.equal(await focus(page), "settings");
+  // A key that presses Approve the moment the prompt is there (typed for what was under it) approves nothing:
+  // a click no pointer made is what Enter or Space on the button gives
+  await openSettings();
   await page.evaluate(() => {
     const watch = new MutationObserver(() => {
       const approve = document.querySelector<HTMLElement>(".relay-pairing-prompt .btn-primary");
@@ -134,6 +138,7 @@ try {
   assert.ok((await focus(page)).startsWith("settings"), "Tab past Decline goes back to Settings, never nowhere");
   await page.keyboard.press("Shift+Tab");
   assert.equal(await focus(page), "prompt", "Shift+Tab from Settings' first stop goes back into the prompt, on the prompt itself: never onto Decline and then Approve");
+  // a key on Approve within a second of the focus coming into the prompt approves nothing, though the prompt has waited
   await clock.stop(page);
   await clock.pass(page, 5000);
   await page.keyboard.press("Shift+Tab");
@@ -151,6 +156,7 @@ try {
   withdraw();
   await prompt.waitFor({ state: "detached" });
 
+  // The keys of that walk, pressed the moment the prompt is there (typed for the field), end on Approve and approve nothing
   const field = settings.locator("input:visible, select:visible, textarea:visible").first();
   await field.focus();
   assert.equal(await focus(page), "settings field");
@@ -237,6 +243,7 @@ try {
   await prompt.waitFor({ state: "detached" });
   assert.deepEqual(decided.slice(1), [{ id: second.id, decision: "decline" }]);
 
+  // 5. a label the device chose cannot cut the sentence
   await page.evaluate(() => (document.querySelector(".qa-field") as HTMLElement).focus());
   ask({ local_only: true, label: "evil\u0000{digits}" });
   await prompt.waitFor();
@@ -246,16 +253,11 @@ try {
   withdraw();
   await prompt.waitFor({ state: "detached" });
 
+  // A Tab and an Enter typed by habit right then approve nothing: the second's guard starts again when it is handed
+  // the focus, though its own arrival is long past
   await page.evaluate(() => document.querySelector(".qa-field")?.remove());
   decided.length = 0;
   const count = (n: number) => page.waitForFunction((want) => document.querySelectorAll(".relay-pairing-prompt").length === want, n);
-  const openSettings = async () => {
-    await page.keyboard.press("ControlOrMeta+Shift+Comma");
-    await settings.waitFor();
-    await page.waitForFunction(() => document.querySelector(".settings-dialog")?.getAnimations().length === 0);
-    await settings.locator("button:visible").first().focus();
-    assert.equal(await focus(page), "settings");
-  };
   await openSettings();
   const handedA = ask({ local_only: true });
   await count(1);
@@ -287,6 +289,9 @@ try {
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "detached" });
 
+  // 7. a double-click on the top prompt's Approve: its first click approves that device, the prompt below
+  //    moves up under the pointer, and the second click lands on that one's Approve. It approves nothing,
+  //    and neither does a single click there until the moved prompt has been in its place for half a second
   const clickedA = ask({ local_only: true });
   await count(1);
   const clickedB = ask({ local_only: true });
@@ -313,6 +318,7 @@ try {
   await settled();
   assert.equal(decided.length, 1, "a click in the moved prompt's first half second approves nothing");
   await clock.pass(page, 1 + PRESS_AGE_MS);
+  // a double-click's second click never approves, however long the prompt has been there
   await page.mouse.down({ clickCount: 2 });
   await page.mouse.up({ clickCount: 2 });
   await settled();

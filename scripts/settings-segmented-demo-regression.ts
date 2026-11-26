@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContextOptions, type Locator, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
-import { openSettingsPage } from "./settings-page.ts";
-import { PAGES, SETTINGS, openSettings } from "./settings-pages-harness.ts";
+import { openSettingsPage, sheetRisen } from "./settings-page.ts";
+import { PAGES, SETTINGS } from "./settings-pages-harness.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-segmented-"));
 
 type Language = "en" | "ko" | "ja" | "zh";
@@ -93,9 +95,8 @@ async function settingsIn(browser: Browser, url: string, language: Language, wid
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(url);
-  await page.locator(".conn-live").waitFor({ state: "attached" });
-  await openSettings(page);
+  await page.goto(`${url}?settings=appearance`);
+  await sheetRisen(page);
   return { page, errors, close: () => context.close() };
 }
 
@@ -156,17 +157,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   const url = `http://127.0.0.1:${server.port}${prefix}`;
   try {
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });

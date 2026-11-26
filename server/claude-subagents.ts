@@ -2,7 +2,47 @@ import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, open
 import { basename, dirname, join, sep } from "node:path";
 import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
+import { hcNotes } from "./transcript-records.ts";
 
+/**
+ * Claude keeps, beside the session's
+ * transcript `<project>/<session>.jsonl`, a folder `<session>/subagents/` with one pair per
+ * subagent: `agent-<id>.meta.json` (description, agent type, the tool call that started it) and
+ * `agent-<id>.jsonl`, its own transcript. Whether it ended is told only by the parent
+ * transcript: a background subagent by the `<task-notification>` Claude queues when it stops (a
+ * teammate of an agent team gets none, and one's notice may not be written yet: its own file
+ * ending in an `end_turn` answer or in the answer approving its lead's shutdown request, with
+ * no message to it after, says it stopped), a synchronous one by the tool_result of its call
+ * (the "Async agent launched" acknowledgement of a background call is no answer).
+ *
+ * A notification is carried up to three times (a user entry, a queue-operation, a queued_command
+ * attachment) and the same agent notifies again each time it is resumed, so notices are kept per
+ * agent, the newest of notice and answer wins, and an agent whose own file has entries newer than
+ * that was resumed and is running again. A running agent lives inside the Claude process that
+ * started it: one last written before the process now in the pane started is lost.
+ *
+ * Reading is cheap enough to run every few seconds per Claude pane: the parent transcript and
+ * each subagent file are read only from where the last read stopped, at most READ_BUDGET bytes
+ * per file per call (the first read of a parent covers its last PARENT_WINDOW bytes); a file whose
+ * size did not change is not opened; the folder listing is kept until the folder changes; only
+ * files touched in the last day are looked at, at most MAX_AGENTS of them, and one found older is
+ * checked again only every STALE_RECHECK_MS (a long-lived session keeps thousands, #2510); only
+ * plain files are read; ids that become paths are plain words. Prompts and answers stay here.
+ *
+ * `tokens` is the total Claude's own footer shows for a subagent: what its last request held,
+ * input + cache read + cache creation + output tokens of the last assistant entry (checked
+ * against `totalTokens` in the tool result of a finished agent). Summing every entry instead
+ * would count the cached context again on each turn.
+ *
+ * Background commands are listed with them, as Claude Code's footer counts both: a `Bash` call
+ * whose answer carries a `backgroundTaskId` (`run_in_background`, Ctrl+B, or a call moved there
+ * when it ran past its timeout), by the session or by a subagent. One ends with the
+ * `<task-notification>` of its task id, in any transcript of the session, or with the answer
+ * of the `TaskStop` (`KillShell` in older Claude Code) that stopped it, which no notice follows.
+ * It lives in the Claude process that started it, as a running agent does. A `Workflow` run or a
+ * `Monitor` counts as one such command: its call answers at once with a task id, and the same
+ * notice ends it, so a turn waits on it as on a suite.
+ */
 const READ_BUDGET = 8 * 1024 * 1024;
 export const PARENT_WINDOW = 16 * 1024 * 1024;
 const MAX_META_BYTES = 64 * 1024;
@@ -14,6 +54,7 @@ const STALE_RECHECK_MS = 60_000;
 const TAIL_BYTES = 64 * 1024;
 /** a process's start is known to the second, and the clock can step: only an agent quiet this long before the start is taken for another process's */
 const START_SLACK_MS = 60_000;
+/** an agent id is a file name's part: nothing that could leave the folder */
 const AGENT_ID = /^[A-Za-z0-9_-]+$/;
 
 type Row = Record<string, unknown>;
@@ -46,6 +87,7 @@ export function taskNotification(content: string): TaskNotification | null {
   const raw = tag("status");
   const summary = tag("summary");
   if (taskId === null || !AGENT_ID.test(taskId) || raw === null || summary === null) return null;
+  // the answer may quote the closing tag itself: it runs to the last one
   const from = block.indexOf("<result>");
   const to = block.lastIndexOf("</result>");
   return {
@@ -67,6 +109,7 @@ function blocksIn(entry: Row): string[] {
   if (entry["type"] !== "user") return [];
   const content = row(entry["message"])?.["content"];
   if (typeof content === "string") return [content];
+  // only what the person's side wrote as text: a tool result that quotes a block is not one
   return (Array.isArray(content) ? content : []).flatMap((value) => { const block = row(value); return block?.["type"] === "text" && typeof block["text"] === "string" ? [block["text"]] : []; });
 }
 
@@ -111,6 +154,11 @@ export function readLines(path: string, from: number, file: { size: number; exac
   } catch { return { offset: from, skipping, more: true, failed: true }; } finally { closeSync(fd); }
 }
 
+/**
+ * A plain file at `path` as one look sees it: `id`, `size` and `mtimeMs` in the number form the versions share
+ * (historyVersion), and `exact`, its identity as BigInt, which a read's open must find (openPlain): two NTFS file IDs
+ * can round to one number.
+ */
 export function plain(path: string, max = Infinity): { size: number; mtimeMs: number; id: string; exact: string } | null {
   try {
     const stat = lstatSync(path, { bigint: true });
@@ -122,6 +170,11 @@ export function plain(path: string, max = Infinity): { size: number; mtimeMs: nu
   } catch { return null; }
 }
 
+/**
+ * `path` opened as the plain file whose identity `plain` looked at (`exact`), of at most `max` bytes: its descriptor
+ * and size, or null. Not waited on, not followed: a FIFO or a link put in the file's place after the look neither hangs
+ * the read nor leads elsewhere, and another file put there is not the one looked at.
+ */
 function openPlain(path: string, exact: string, max = Infinity): { fd: number; size: number } | null {
   let fd: number;
   try { fd = detailIo.openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); } catch { return null; }
@@ -204,6 +257,10 @@ function scanCommands(commands: Commands, entry: Row, at: number | null, notices
   }
 }
 
+/**
+ * A row naming another session (`session`: the transcript's name) ends none of this one's commands;
+ * Claude Code writes `sessionId` on its rows, and a row without one is taken as this session's.
+ */
 export function commandTerminals(line: string, session: string): CommandEnd[] {
   if (!line.includes("<task-notification>") && !line.includes('"task_id"') && !line.includes('"shell_id"')) return [];
   let entry: Row | null;
@@ -221,11 +278,17 @@ export function commandTerminals(line: string, session: string): CommandEnd[] {
  * another session, an interruption and Claude Code's own records are not: Claude Code 2.1.2xx
  * marks the person's prompts with `origin` `human`, and older versions with a permission mode,
  * which the others lack. A prompt typed while a turn works is handed to that turn on the way
- * (a `queued_command` attachment): the same turn.
+ * (a `queued_command` attachment): the same turn. An hc note (hcNotes) is typed into the terminal,
+ * so Claude records it as `human`, but it is another session's message: a text-only prompt that is only notes,
+ * once Claude's paste wrapper is taken off, as the chat reads it.
  */
 function prompted(entry: Row): boolean {
   if (entry["type"] !== "user" || entry["isMeta"] === true || entry["isCompactSummary"] === true || entry["isSidechain"] === true) return false;
   const content = row(entry["message"])?.["content"];
+  const textOnly = !Array.isArray(content) || content.every((block) => row(block)?.["type"] === "text");
+  const text = textOnly ? blocksIn(entry).join("\n") : "";
+  // the chat takes Claude's paste wrapper off (unwrapPastes); a prompt that is only notes is the same without its tags
+  if (text.includes("<hc") && hcNotes(text.replace(/<\/?pasted_content id="[^"\r\n]{1,64}">/g, "")) !== null) return false;
   if (Array.isArray(content) && content.some((block) => row(block)?.["type"] === "tool_result")) return false;
   const origin = entry["origin"];
   const kind = typeof origin === "string" ? origin : row(origin)?.["kind"];
@@ -246,6 +309,11 @@ interface Parent {
   calls: Set<string>;
   results: Map<string, { at: number; error: boolean }>;
   commands: Commands;
+  /**
+   * `TaskStop` calls not answered yet, by call id: the task they name. A teammate is named by
+   * the name it was spawned with, and the answer then carries a task id of its own that no file
+   * of it holds, so the stop is kept under the name asked for as well as under that id.
+   */
   stopCalls: Map<string, string>;
   stops: Map<string, number>;
   promptAt: number | null;
@@ -256,6 +324,15 @@ interface Parent {
   loopAt: number | null;
   loopTime: number | null;
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
+  /** the session's last entry of its own is the answer that ended its turn (endsTurn), with no request or prompt after it */
+  answered: boolean;
+  /** that answer is the last of its turn but its Stop hooks' feedback: a summary of hooks that stopped the turn ends it there */
+  stopping: boolean;
+  /**
+   * The last turn of the session to end ran Stop hooks: it wrote their summary after its answer. Its next answer is
+   * then no rest until their summary too. One that ended with none (a /goal's hook gone with its goal) ends that.
+   */
+  hooked: boolean;
 }
 interface Start { end: number; at: number | null; turn: boolean }
 
@@ -273,7 +350,7 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, echo: null };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, echo: null, answered: false, stopping: false, hooked: false };
   }
   parent.version = stat;
   remember(parents, path, parent, 256);
@@ -290,7 +367,7 @@ function scanParent(path: string): Parent | null {
     state.skipping = read.skipping;
     state.behind = read.more;
     state.whole = read.offset >= stat.size && !read.skipping;
-    if (read.skipping) { state.restAt = null; state.echo = null; openTurn(state, read.offset, null); }
+    if (read.skipping) { state.restAt = null; state.echo = null; state.answered = false; state.stopping = false; openTurn(state, read.offset, null); }
     left -= consumed;
     if (consumed === 0) break;
   }
@@ -390,6 +467,27 @@ function selfResumed(parent: Parent, line: string, end: number): void {
   } catch {}
 }
 
+/**
+ * The session's own answer that ends its turn: Claude Code writes the model's last message of a turn with stop reason
+ * `end_turn`, one entry per block. An answer that calls a tool goes on, and an API error's (claudeTurnEnd) or a Code
+ * Mode script's (`isVirtual`) is none.
+ */
+function endsTurn(line: string): boolean {
+  if (!line.includes('"stop_reason":"end_turn"')) return false;
+  try {
+    const entry = row(JSON.parse(line));
+    const message = row(entry?.["message"]);
+    const content = message?.["content"];
+    return entry?.["type"] === "assistant" && entry["isSidechain"] !== true && entry["isApiErrorMessage"] !== true && entry["isVirtual"] !== true
+      && message?.["stop_reason"] === "end_turn" && !(Array.isArray(content) && content.some((block) => row(block)?.["type"] === "tool_use"));
+  } catch { return false; }
+}
+
+function rests(parent: Parent, written: number | null, end: number): void {
+  parent.restAt = written === null ? null : end;
+  if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; }
+}
+
 function scanParentLine(parent: Parent, line: string, end: number): void {
   const user = line.includes('"type":"user"');
   // Claude writes a local command's caveat and output with neither `origin` nor a permission mode, as a
@@ -397,6 +495,9 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
   const own = !line.includes('"origin":') && !line.includes('"permissionMode":');
   const local = !line.includes('"isSidechain":true') && ((user && own && (LOCAL_OUTPUT_RE.test(line) || BASH_RE.test(line) || (LOCAL_CAVEAT_RE.test(line) && line.includes('"isMeta":true')))) || line.includes('"subtype":"local_command"'));
   // Claude closes the session's turn with a `turn_duration` entry; a next turn writes its request, prompt or answer first.
+  // Claude Code 2.1.326 writes none while an in-process teammate runs (an idle one too) or a detached tool call awaits
+  // its result, until that work is over, and reports itself working meanwhile: the turn then ends at its answer
+  // (endsTurn), and in a session that runs Stop hooks at their summary, written once they ran.
   // A `progress` entry carries a subagent's message inside it: the subagent's, not the session's
   if (local) {
     if (line.includes('"content":"<bash-input>')) addStart(parent, { end, at: stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]), turn: false });
@@ -413,8 +514,25 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
     try {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
-        parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
-        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; }
+        if (parent.answered) parent.hooked = false;
+        parent.answered = false;
+        parent.stopping = false;
+        rests(parent, stamp(entry["timestamp"]), end);
+      }
+    } catch {}
+  } else if (line.includes('"subtype":"stop_hook_summary"')) {
+    // a hook that blocked the stop wrote its feedback as a prompt before this summary, which took the answer back, and
+    // one that gave the model context has the turn go on with it, unless a hook stopped it outright
+    try {
+      const entry = row(JSON.parse(line));
+      if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
+        const context = entry["hookAdditionalContext"];
+        const stopped = entry["preventedContinuation"] === true;
+        parent.hooked = true;
+        if (!stopped && Array.isArray(context) && context.length > 0) parent.restAt = null;
+        else if (parent.answered || (stopped && parent.stopping)) rests(parent, stamp(entry["timestamp"]), end);
+        parent.answered = false;
+        parent.stopping = false;
       }
     } catch {}
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
@@ -423,7 +541,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system") {
         const written = stamp(entry["timestamp"]);
-        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; }
+        if (entry["isSidechain"] !== true) { parent.loopAt = end; parent.loopTime = written; parent.answered = false; parent.stopping = false; }
         if (entry["taskKind"] === "loop") {
           parent.echo = null;
           parent.restAt = null;
@@ -434,20 +552,34 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
   } else if (user && line.includes('"isCompactSummary":true')) {
     // a compaction's summary is Claude Code's own: \`/compact\` is told by its command, an idle compaction runs no turn
   } else if (/"type":"(?:user|assistant|api-request)"/.test(line) && !line.includes('"isSidechain":true') && !line.includes('"type":"progress"')) {
+    // a command's echo, and its line as typed before it (\`/compact\`): its output takes back what the
+    // first of them began. Only the same command's: another's echo between them begins a turn of its own
     // Claude Code writes both with neither \`origin\` nor a permission mode: a prompt quoting them is the person's
     const echo = user && own && (COMMAND_ECHO_RE.test(line) || SLASH_RE.test(line));
     const command = echo ? commandOf(line) : null;
     parent.echo = !echo ? null : parent.echo !== null && parent.echo.command === command ? parent.echo
       : { command, restAt: parent.restAt, promptAt: parent.promptAt, turnOpen: parent.turnOpen, starts: parent.starts.map((start) => ({ ...start })) };
     parent.restAt = null;
-    openTurn(parent, end, stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]));
+    const written = stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]);
+    openTurn(parent, end, written);
     if (user && SELF_RESUMED_RE.test(line)) selfResumed(parent, line, end);
+    // a request or a prompt after an answer with no summary between them: that turn ran no Stop hook. A hook's
+    // feedback is a meta prompt written before its summary
+    if (parent.answered && (line.includes('"type":"api-request"') || (user && !line.includes('"isMeta":true')))) parent.hooked = false;
+    parent.answered = endsTurn(line);
+    parent.stopping = parent.answered || (parent.stopping && user && line.includes('"isMeta":true') && !SELF_RESUMED_RE.test(line));
+    if (parent.answered && !parent.hooked) rests(parent, written, end);
   } else if (line.includes('"queued_command"') && !line.includes('"isSidechain":true')) {
     try {
       const entry = row(JSON.parse(line));
-      if (entry?.["type"] === "attachment" && row(entry["attachment"])?.["type"] === "queued_command") {
+      const attachment = row(entry?.["attachment"]);
+      if (entry?.["type"] === "attachment" && attachment?.["type"] === "queued_command") {
         addStart(parent, { end, at: stamp(entry["timestamp"]), turn: false });
         parent.echo = null;
+        parent.answered = false;
+        parent.stopping = false;
+        // a prompt taken into the turn after its answer: that turn goes on with it (claudeTurnEnd)
+        if (attachment["commandMode"] === "prompt") parent.restAt = null;
       }
     } catch {}
   }
@@ -675,6 +807,7 @@ const subagentsDir = (parentPath: string): string => join(parentPath.replace(/\.
 function folderVersion(dir: string): { sig: string; latestMs: number } {
   try {
     const stat = lstatSync(dir);
+    // a link leads to another session's folder, whose agents are none of this one's
     if (!stat.isDirectory()) return { sig: "-", latestMs: 0 };
     return { sig: `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}`, latestMs: Math.max(stat.mtimeMs, stat.ctimeMs) };
   } catch { return { sig: "-", latestMs: 0 }; }
@@ -689,8 +822,11 @@ const listings = new Map<string, { sig: string; readAt: number; ids: string[]; c
 function agentIds(parentPath: string, folder: Folder | null): string[] {
   const dir = subagentsDir(parentPath);
   const { sig, latestMs } = folderVersion(dir);
+  // the session's own folder only, as the detail read opens it: a link on the way, or one swapped in, lists nothing
   if (sig === "-" || folder === null) { listings.delete(dir); return []; }
   const known = listings.get(dir);
+  // and only while each folder on the way is still the one listed: a session folder moved and replaced with a link to it
+  // leaves the subagents folder as it was, and lists nothing as the detail read opens nothing
   if (known?.sig === sig && known.readAt - latestMs >= 1000 && known.chain.every((step) => folderId(step.path) === step.id)) return known.ids;
   const ids: string[] = [];
   let listing: Dir | undefined;
@@ -702,6 +838,7 @@ function agentIds(parentPath: string, folder: Folder | null): string[] {
       const id = /^agent-(.+)\.meta\.json$/.exec(entry.name)?.[1];
       if (id !== undefined && AGENT_ID.test(id)) ids.push(id);
     }
+    // a folder on the way swapped while it was listed: what was listed may be another folder's
     if (!intact(folder)) return [];
   } catch { return []; } finally { listing?.closeSync(); }
   remember(listings, dir, { sig, readAt: Date.now(), ids, chain: folder.chain }, 256);
@@ -729,10 +866,12 @@ export interface SubagentDetail {
   agent: string | null;
 }
 
+/** The subagents named, by agent id, as their meta files say. An id that is not a plain word is none. */
 export function subagentDetails(parentPath: string, ids: Iterable<string>): Map<string, SubagentDetail> {
   const found = new Map<string, SubagentDetail>();
   const wanted = [...new Set(ids)].filter((id) => AGENT_ID.test(id));
   if (wanted.length === 0) return found;
+  // opened as the detail read opens them: another session's folder, linked or swapped in, titles nothing
   const folder = sessionFolder(parentPath);
   if (typeof folder === "string") return found;
   try {
@@ -785,6 +924,7 @@ const DETAIL_HEAD_BYTES = 64 * 1024;
 const DETAIL_TAIL_BYTES = DETAIL_LIMITS.max_read_bytes - DETAIL_HEAD_BYTES;
 const DETAIL_RECORD_BYTES = 64 * 1024;
 const DETAIL_ID_LENGTH = 128;
+/** where the kernel names each open descriptor's file; absent off Linux */
 const FD_DIR = "/proc/self/fd";
 const fdPaths = ((): boolean => { try { return process.platform === "linux" && lstatSync(FD_DIR).isDirectory(); } catch { return false; } })();
 
@@ -792,6 +932,7 @@ export const detailIo = { openSync, readSync };
 
 export type DetailRefusal = "not_found" | "unavailable";
 
+/** Whether `id` can name a subagent's files: the scanner's word, and no longer than DETAIL_ID_LENGTH. */
 export const validDetailId = (id: string): boolean => id.length > 0 && id.length <= DETAIL_ID_LENGTH && AGENT_ID.test(id);
 
 type DetailEvent = PaneBackgroundAgentDetail["events"][number];
@@ -802,6 +943,7 @@ type DetailEvent = PaneBackgroundAgentDetail["events"][number];
  */
 const identity = (stat: { dev: bigint; ino: bigint }): string => `${stat.dev}:${stat.ino}`;
 
+/** A folder's identity: a folder that is no link, or null (a link, a file, nothing). */
 function folderId(path: string): string | null {
   try {
     const stat = lstatSync(path, { bigint: true });
@@ -809,11 +951,13 @@ function folderId(path: string): string | null {
   } catch { return null; }
 }
 
+/** Whether an error says only that nothing is there (a missing entry, or a missing folder on its way), not that it cannot be read. */
 const absent = (error: unknown): boolean => {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   return code === "ENOENT" || code === "ENOTDIR";
 };
 
+/** What is at `path`, not followed: a plain folder or file with its identity, nothing, something else, or an error that is no answer. */
 function look(path: string): { kind: "folder" | "file"; id: string; size: number } | "missing" | "other" | "error" {
   try {
     const stat = lstatSync(path, { bigint: true });
@@ -827,6 +971,7 @@ function fdPath(fd: number): string | null {
   try { return readlinkSync(`${FD_DIR}/${fd}`); } catch { return null; }
 }
 
+/** The subagents folder of a session, as looked at: each folder on the way and its identity; open where descriptors name their files. */
 interface Folder { path: string; fd: number | null; chain: Array<{ path: string; id: string }> }
 
 function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
@@ -863,6 +1008,7 @@ function heldFolder(parentPath: string): { folder: Folder | null; [Symbol.dispos
   return { folder, [Symbol.dispose]: () => { if (folder !== null && folder.fd !== null) closeSync(folder.fd); } };
 }
 
+/** Whether the folder is still the one looked at: every folder on the way the same, and the open one where it was. */
 function intact(folder: Folder): boolean {
   return folder.chain.every((step) => folderId(step.path) === step.id) && (folder.fd === null || fdPath(folder.fd) === folder.path);
 }
@@ -874,9 +1020,11 @@ function intact(folder: Folder): boolean {
  */
 function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRefusal {
   const path = join(folder.path, name);
+  // inside the open folder itself where the kernel allows: a folder put in its place leads nowhere else
   const where = folder.fd === null ? path : `${FD_DIR}/${folder.fd}/${name}`;
   const looked = look(where);
   if (looked === "missing") return "not_found";
+  // a link, no plain file, or one over its size is none of this agent's; one that cannot be looked at is a store not readable now
   if (looked === "error") return "unavailable";
   if (looked === "other" || looked.kind !== "file" || looked.size > max) return "not_found";
   let fd: number;
@@ -894,6 +1042,11 @@ function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRe
 
 interface Opened { fd: number; size: number; id: string; path: string; where: string }
 
+/**
+ * Whether an opened file is still the one looked at, where it was looked at, after its read: the same identity at its
+ * path, and its descriptor still there (where the kernel names a descriptor's file). A file moved out of the session
+ * or its path replaced while it was read may have been read as another file.
+ */
 function stillThere(file: Opened): boolean {
   const seen = look(file.where);
   if (typeof seen === "string" || seen.kind !== "file" || seen.id !== file.id) return false;
@@ -925,6 +1078,10 @@ function cut(text: string, max: number): string {
   return Buffer.from(text, "utf8").subarray(0, max).toString("utf8").replace(/\uFFFD+$/, "");
 }
 
+/**
+ * `foreign`: a record says it is another session's or another agent's,
+ * or no sidechain's; then the file is not this agent's, and nothing of it may be answered.
+ */
 function readDetailRecords(fd: number, size: number, sessionId: string, agentId: string): { prompt: string | null; events: DetailEvent[]; truncated: boolean; incomplete: boolean; foreign: boolean } {
   const gap = size > DETAIL_LIMITS.max_read_bytes;
   let incomplete = false;
@@ -994,6 +1151,8 @@ export function backgroundAgentDetail(parentPath: string, agentId: string): { de
   try {
     const meta = openIn(folder, `agent-${agentId}.meta.json`, MAX_META_BYTES);
     if (typeof meta === "string") return { refusal: meta };
+    // a read that fails, or a file moved or replaced while it was read, is a store not readable now; a meta file
+    // being written says nothing of the agent yet, and one that names no agent type is no subagent's
     let bytes: Buffer;
     try { bytes = readAt(meta.fd, 0, meta.size); if (!stillThere(meta)) return { refusal: "unavailable" }; } catch { return { refusal: "unavailable" }; } finally { closeSync(meta.fd); }
     let record: Row | null;
@@ -1006,6 +1165,7 @@ export function backgroundAgentDetail(parentPath: string, agentId: string): { de
       read = readDetailRecords(file.fd, file.size, sessionId, agentId);
       if (!stillThere(file)) return { refusal: "unavailable" };
     } catch { return { refusal: "unavailable" }; } finally { closeSync(file.fd); }
+    // a folder on the way replaced while it was read: what was read may be another folder's
     if (!intact(folder)) return { refusal: "unavailable" };
     if (read.foreign) return { refusal: "not_found" };
     const { prompt, events, truncated } = fitDetail(read.prompt, read.events, read.truncated);
@@ -1041,6 +1201,11 @@ export function fitDetail(prompt: string | null, events: DetailEvent[], truncate
   return { prompt, events, truncated };
 }
 
+/**
+ * Whether the session's transcripts started `id` as a background command (a `Bash` call's
+ * `backgroundTaskId`): the parent's, and those of its agents the scanner has read. A command has
+ * no transcript of its own, whatever files bear its id.
+ */
 export function backgroundCommand(parentPath: string, id: string): boolean {
   if (scanParent(parentPath)?.commands.launches.has(id)) return true;
   const dir = `${subagentsDir(parentPath)}${sep}`;
@@ -1054,6 +1219,8 @@ const previous = new Map<string, Map<string, OmoTask>>();
 
 export function claudeSubagentState(parentPath: string, live: boolean, now = Date.now(), since: number | null = null, history?: HistoryEvidence | null): { tasks: OmoTask[]; historyNeeded: boolean; historyPending: boolean; settled: boolean; behind: boolean; watch: string[]; running: number; turnRunning: number; promptAt: number | null; resting: boolean } {
   const dir = subagentsDir(parentPath);
+  // every file is read inside the folder listed, held open for the whole read (where the kernel names a descriptor's
+  // file): a folder on the way swapped after the listing leads nowhere else. Elsewhere the look after the read stands for it
   using held = heldFolder(parentPath);
   const folder = held.folder;
   const inFolder = (name: string): string => folder === null ? join(dir, name) : folder.fd === null ? join(folder.path, name) : `${FD_DIR}/${folder.fd}/${name}`;
@@ -1132,6 +1299,8 @@ export function claudeSubagentState(parentPath: string, live: boolean, now = Dat
     };
     keep(task, Math.max(tail.dispatchAt ?? 0, work.dispatchAt ?? 0, firstAt ?? 0));
   }
+  // a folder on the way swapped while its files were read: what was read, and kept, may be another folder's, and an
+  // agent found old there may be a recent one here
   if (folder !== null && !intact(folder)) {
     listings.delete(dir);
     staleAgents.delete(dir);
@@ -1241,10 +1410,22 @@ let taskReadSequence = 0;
 
 export type BusySource = "herdr" | "chat";
 
+/**
+ * A busy signal, and what places its turn in the transcript: for a chat send, when its Enter was
+ * sent (`sentAt`; Claude dates the entry it writes for it no earlier); for herdr's, the
+ * transcript's size at herdr's last word that the pane did no work (`quiet`).
+ */
 interface Signal { source: BusySource; at: number; sentAt?: number; quiet?: { id: string; size: number } }
 
 interface Barrier { size: number; at: number }
 
+/**
+ * How long a signal holds the pane shown working while its turn is not written. Claude writes a
+ * turn's first entry as the turn begins, so one that has none by then most likely began no turn (a
+ * message taken into a turn already at work, a status herdr repeated). Most likely is no proof:
+ * the queue stays held on it (`held`) until a rest is written past it or herdr says the pane does
+ * no work.
+ */
 const BUSY_HOLD_MS = 5000;
 
 interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
@@ -1330,6 +1511,18 @@ export class ClaudeSubagentStatus {
     return this.panes.get(paneId)?.looping ?? false;
   }
 
+  /**
+   * restsOn, with the session's transcript read again first: a turn begun since the last poll (a teammate's message,
+   * a prompt typed in the terminal) ends the rest the queue goes by before its keys go.
+   */
+  restsOnNow(paneId: string): boolean {
+    const tracked = this.panes.get(paneId);
+    const turns = !this.stopped && tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
+    const parent = turns ? scanParent(turns.path) : null;
+    if (tracked?.resting && parent && (parent.id !== turns!.id || parent.restAt === null)) this.poll(paneId);
+    return this.restsOn(paneId);
+  }
+
   loopHoldsNow(paneId: string): boolean {
     const tracked = this.panes.get(paneId);
     const turns = !this.stopped && tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
@@ -1343,7 +1536,8 @@ export class ClaudeSubagentStatus {
 
   /**
    * The session's own turn ended while subagents or commands still run: Claude keeps its busy
-   * title up while a background subagent works, and herdr reads that as `working` (#2069). The
+   * title up while a background subagent works, and herdr reads that as `working` (#2069), as
+   * Claude Code 2.1.326's own report is while a teammate works (scanParentLine). The
    * last of that work ending keeps the rest until a turn begins: herdr's working may be from before.
    */
   restsOn(paneId: string): boolean {
@@ -1351,6 +1545,10 @@ export class ClaudeSubagentStatus {
     return tracked !== undefined && tracked.resting && (tracked.running > 0 || tracked.restedOnWork === true);
   }
 
+  /**
+   * Claude writes a turn's prompt to its transcript as the turn begins, but a signal can come
+   * before that entry or after the whole turn.
+   */
   busy(paneId: string, source: BusySource, sentAt?: number): void {
     const tracked = this.panes.get(paneId);
     const signal: Signal = { source, at: this.now(), ...(sentAt !== undefined ? { sentAt } : {}) };
@@ -1473,6 +1671,7 @@ export class ClaudeSubagentStatus {
     tracked.live = false;
     tracked.reset = true;
     tracked.restedOnWork = false;
+    // Leaving Claude retains the old transcript for the lost-task list, but a new Claude session cannot read it.
     if (session !== null) {
       tracked.path = null;
       tracked.startedAt = null;
@@ -1518,6 +1717,9 @@ export class ClaudeSubagentStatus {
           settle(turns, parent, this.now());
           if (parent.loopAt === null) turns.loop.since = null;
           else if (parent.loopAt !== turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
+          // a clock set back to before the hold began would let it outlive its time: it holds from this read at the
+          // latest. One set back by less is not told from a clock that was not: the hold stands for what that clock
+          // leaves of its time, so no longer than LOOP_HOLD_MS past this read either way
           else if (turns.loop.since !== null && turns.loop.since > this.now()) turns.loop.since = this.now();
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
@@ -1526,11 +1728,16 @@ export class ClaudeSubagentStatus {
         }
         tracked.watch = state.watch;
         const after = subagentsSignature(tracked.path, tracked.watch, this.now());
+        // Certify only the versions and dependency set read, never a concurrent append's newer signature.
+        // Coarse file clocks require every input to have been quiet before the scan began.
         tracked.sig = !waiting && !this.loopHolds(paneId) && state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
           ? `${after.sig}:${tracked.startedAt}` : null;
       }
       const holding = this.holdsQueue(paneId);
       const looping = this.loopHolds(paneId);
+      // a hold this poll finds over is over for good, by its rest or by its time. Left standing in the pane's turns,
+      // one whose time ran out would hold again once this PC's clock is set back, told to no one; and where the
+      // pane's files stay as they were (the read skipped above), no poll would say when that time was up again
       if (!looping && tracked.turns) tracked.turns.loop.since = null;
       if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false) && looping === (tracked.looping ?? false)) continue;
       tracked.holding = holding;

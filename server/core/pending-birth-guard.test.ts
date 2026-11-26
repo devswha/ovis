@@ -64,7 +64,10 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   });
 
   const agent = mode === "skill" || mode === "missing" ? "gjc" : mode === "codex-queued" ? "codex" : mode === "devin-queued" ? "devin" : mode;
-  const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
+  const pane = {
+    pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0,
+    ...(mode === "pi" ? { agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: "/fixture/session-a.jsonl" } } : {}),
+  } as HerdrPane;
   const frames: ServerMessage[] = [];
   told = frames;
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
@@ -152,6 +155,20 @@ it("withholds Pi's Enter from another process that took its PID during the last 
   expect(await drain({ mode: "pi", afterPaste: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 7) pane.birth = 5_000; }; } })).toEqual(["paste"]);
 });
 
+it("types no OpenCode skill once the deadline passed while the first write's herdr connection opened", async () => {
+  const pasted: string[] = [];
+  const listedAfter = await drain({ mode: "skill", after: () => {
+    // herdrRpc asks the guard once the connection is open, here 2 s after the call (the deadline is 1 s)
+    spyOn(client, "paneSendText").mockImplementation(async (_pane, text, _socket, guard) => {
+      setSystemTime(new Date(Date.now() + 2_000));
+      if (guard && !guard()) throw new client.HerdrError("cancelled", "herdr pane.send_text was not sent: the sender may no longer send");
+      pasted.push(text);
+    });
+  } }).then(() => listed());
+  expect(pasted).toEqual([]);
+  expect(listedAfter[0]?.slice(0, 2)).toEqual(["held", "submit_timeout"]);
+});
+
 it("types no OpenCode skill into a masked prompt that comes up during the check before it", async () => {
   expect(await drain({ mode: "skill", after: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads === 4) pane.screen = PROMPT; }; } })).toEqual([]);
 });
@@ -161,6 +178,7 @@ it("sends no steering Escape into a masked prompt that comes up during the steer
 });
 
 const CODEX_COMPOSER = "› Ask Codex to do anything\n  GPT-6-Astra default fast · main · Context 100% left\n  ← for agents · ? for shortcuts\n";
+// Codex's update menu, as its start draws it: "Update now" runs npm under Codex's own process
 const CODEX_UPDATE_MENU = "  Update available · 0.167.0 → 0.167.2\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip\n";
 const CODEX_OWN_SCREENS = {
   "/rename's field": "  Name thread\n› Type a name and press Enter\n  enter submit · esc back\n",
@@ -270,6 +288,7 @@ it("types no queued message into a screen of Codex's own that opens during the l
   expect(listed()).toEqual(HELD_FOR_SCREEN);
 });
 
+// Devin's folder trust (Devin 3000.12.43), which herdr reports as Devin at rest: a paste and its Enter would pick "Yes, trust"
 const DEVIN_TRUST = readFileSync(join(import.meta.dir, "../fixtures/devin-3000.12.43-trust.txt"), "utf8");
 const DEVIN_COMPOSER = readFileSync(join(import.meta.dir, "../fixtures/devin-3000.12.43-composer.txt"), "utf8");
 const HELD_FOR_PICKER: ReturnType<typeof listed> = [["held", "agent_blocked", composer.AGENT_PICKER_MESSAGE]];

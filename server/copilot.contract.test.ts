@@ -108,7 +108,7 @@ if (api) createServer((socket) => {
       if (!["connect", "session.getForeground"].includes(message.method)
         || Object.keys(message.params).length !== 0) throw new Error("unexpected API write or credentials");
       const response = apiReject ? { error: { code: -32001, message: "Unauthorized" } }
-        : { result: message.method === "connect" ? { protocolVersion: 3 } : { sessionId: selected } };
+        : { result: message.method === "connect" ? { ok: true, protocolVersion: 4 } : { sessionId: selected } };
       const reply = frame({ jsonrpc: "2.0", id: message.id, ...response });
       if (apiRace && message.method === "session.getForeground" && ++apiReads % 2 === 0)
         socket.write(Buffer.concat([reply, lifecycleEvent("session.background"), lifecycleEvent("session.foreground")]));
@@ -755,6 +755,7 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     try {
       const peer = duplicate.root_pane.pane_id;
       await startFixture(peer, resumed, `--resume=${resumed} --lifecycle`);
+      // herdr names the peer before it logs its Registering line: until then the first pane still owns the log
       const peerUrl = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(peer)}`;
       for (const [who, target] of [["the first pane", url], ["the peer", peerUrl]] as const) {
         for (const deadline = Date.now() + 5000;;) {

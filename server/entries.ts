@@ -1,5 +1,11 @@
+/**
+ * The server's entry points by name. From source each is its own file that Bun runs; in the compiled
+ * binary (scripts/build-server.ts) all of them are one file, `ovis-server <name>` (server/main.ts).
+ */
 import { dirname, join } from "node:path";
 
+// Each entry's file only: what runs it is in server/main.ts, so a module that starts an entry (the supervisor, which an
+// update copies and runs by what it imports) does not import every entry's code with this table
 export const ENTRIES = {
   serve: "server/index.ts",
   managed: "server/managed.ts",
@@ -9,6 +15,10 @@ export const ENTRIES = {
   plugin: "scripts/plugin.ts",
   askpass: "server/ssh-askpass.ts",
   "windows-launch": "server/windows-launch.ts",
+  "browser-mcp": "server/browser-mcp.ts",
+  "agent-mcp": "server/agent-tools/mcp.ts",
+  "approval-hook": "server/approvals/relay.ts",
+  tui: "tui/main.ts",
 } as const;
 
 export type EntryName = keyof typeof ENTRIES;
@@ -34,4 +44,10 @@ export const BUN_ENV: Record<string, string> = COMPILED ? { BUN_BE_BUN: "1" } : 
 
 export function entryCommand(name: EntryName, root = ROOT, compiled = COMPILED): [string, string] {
   return [process.execPath, compiled ? name : join(root, ENTRIES[name])];
+}
+
+/** A relay started in a project must not load that project's .env or preloads. */
+export function projectSafeCommand(name: EntryName, root = ROOT, compiled = COMPILED): string[] {
+  const [bun, entry] = entryCommand(name, root, compiled);
+  return compiled ? [bun, entry] : [bun, `--config=${join(root, "bunfig.toml")}`, "--no-env-file", entry];
 }

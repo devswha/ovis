@@ -2,14 +2,14 @@
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { BrowserContext, Page } from "playwright-core";
 import { startBunRelay } from "../relay/bun.ts";
 import { fileInfo, fileResponse, pagePolicy } from "../server/file-view.ts";
-import { herdrRpc, sessionSnapshot, subscribeEvents, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { opencodeImage } from "../server/opencode.ts";
 import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 import { relayResourcePath } from "../shared/relay-mux.ts";
@@ -20,6 +20,7 @@ import { chromePath } from "./chrome-path.ts";
 import { loadPagesSite, pagesResponse } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
+import { startRelayMediaOpenCode } from "./relay-media-opencode.ts";
 
 export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
@@ -124,23 +125,8 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     const workspace = await workspaceCreate({ cwd: dir, label: name });
     workspaces.push(workspace.workspace.workspace_id);
     const pane = workspace.root_pane.pane_id;
-    const standIn = join(dir, "opencode");
-    writeFileSync(standIn, "#!/bin/sh\nwhile read -r line; do :; done\n");
-    chmodSync(standIn, 0o755);
-    const watching = Promise.withResolvers<void>();
-    const running = Promise.withResolvers<void>();
-    const subscription = subscribeEvents([{ type: "pane.updated", pane_id: pane }, { type: "pane.agent_status_changed", pane_id: pane }], {
-      onStarted: watching.resolve,
-      onError: running.reject,
-      onEvent: () => { void sessionSnapshot().then((snapshot) => {
-        if (snapshot.panes.some((candidate) => candidate.pane_id === pane && candidate.agent === "opencode")) running.resolve();
-      }, running.reject); },
-    });
-    try {
-      await bounded(watching.promise, "agent event subscription");
-      await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${JSON.stringify(standIn)}\n` });
-      await bounded(running.promise, "stand-in OpenCode foreground process");
-    } finally { subscription.close(); }
+    // A session report is accepted only while the actual foreground process holds the pane.
+    await startRelayMediaOpenCode(pane, dir);
     await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:opencode", agent: "opencode",
       agent_session_id: "ses_media", session_start_source: "select" });
     const reported = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane);
@@ -152,13 +138,14 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) synced.resolve(); });
       return socket;
     } });
-    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, opencodeDb: dbPath });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service, opencodeDb: dbPath, accountOpensAll: false });
     const logger = app.context.services.requestLog;
     const handle = logger.handle.bind(logger);
     logger.handle = async (request, dispatch) => {
       record(name, request);
       let response = await handle(request, dispatch);
       const path = new URL(request.url).searchParams.get("path") ?? "";
+      // A compromised PC omits all isolation headers, even for files advertised as PDFs.
       if (response && new URL(request.url).pathname.endsWith("/fs/file")
         && /(?:page\.html|evil\.svg|hostile-(?:html|svg)\.pdf)$/.test(path)) {
         const headers = new Headers(response.headers);
@@ -265,6 +252,10 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`, "relay"));
     await page.locator(".file-reader").waitFor();
   }
+  /**
+   * A page over the relay is drawn without its scripts first: the render host puts it in a frame of its own that
+   * runs none, and nothing in it has run. The press runs it in the render host itself.
+   */
   async function runPageScripts(page: Page, heading: string): Promise<void> {
     const host = page.locator("iframe.file-viewer-page");
     await host.waitFor();
@@ -393,6 +384,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     const manager = first.app.context.services.core.machines;
     assert.ok(manager);
     const endpoint = manager.endpoint.bind(manager);
+    // machine-api selects by the literal path segment; the SW must not decode or re-encode it.
     manager.endpoint = (id) => id === encodeURIComponent(remoteId) ? { url: `http://127.0.0.1:${remote?.port}`, token: "media-remote-token" } : endpoint(id);
     const remoteProbe = await fetch(`http://127.0.0.1:${first.app.port}/api/machines/${encodeURIComponent(remoteId)}/fs/stat?path=%2Fremote%2Fpicture.png`);
     const remoteProbeBody = await remoteProbe.text();
@@ -459,6 +451,8 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
           await image(page);
           assert.equal(await page.evaluate(() => (window as Window & { isolationResults: unknown[] }).isolationResults.length), 0, "SVG image scripts never run");
         }
+        // Execute the SVG's script inside the same opaque render host, proving its attempted APIs
+        // fail too, rather than counting the image decoder's non-execution as those three attempts.
         const svg = readFileSync(join(first.dir, "evil.svg"), "utf8");
         const rendered = page.waitForEvent("framenavigated", { predicate: (frame) => frame.url().endsWith("~render") });
         await page.evaluate((html) => {
@@ -609,6 +603,8 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       await closeContext(ctx);
     }
 
+    // Removing the SW's CSP must make this negative control fail: no iframe sandbox attribute
+    // here, so only the forwarded response policy is capable of isolating the navigation.
     for (const mutate of [false, true]) {
       workerMode = mutate ? "drop-csp" : "current";
       const ctx = await context();

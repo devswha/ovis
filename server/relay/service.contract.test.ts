@@ -4,7 +4,8 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../../relay/bun.ts";
 import { Room } from "../../relay/core.ts";
-import { openClientSecureChannel } from "../../shared/relay-e2ee.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { importPublicKey, openClientSecureChannel } from "../../shared/relay-e2ee.ts";
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, validateOffer } from "../../shared/relay-offer.ts";
 import { normalizePairCode, PairCodeExpiredError, PairCodeGuest, splitPairCode } from "../../shared/relay-pair-code.ts";
@@ -26,11 +27,15 @@ import { loadRelayIdentity, relayIdentityPath } from "./identity.ts";
 import { handleRelayRequest } from "./routes.ts";
 import { RelayService } from "./service.ts";
 import type { RelayServiceOptions } from "./service.ts";
+import { MIN_SUPPORTED_CLIENT_VERSION } from "./client-floor.ts";
 import { bounded, deferred, TestClock } from "./test-helpers.ts";
 import { relayClock } from "./session.ts";
 import { unitHerdrOnly } from "../../scripts/test-herdr.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../herdr/client.ts";
+import { MachineCodeForAccountError } from "../machine-profile.ts";
+import { ask, ended, linkRecord, pairingPc, sendLink, setUpFor, signedInWith, vouchFor, type Pc } from "../account/pairing.test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -81,8 +86,11 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     }, ...options,
   };
   let service = new RelayService(relayOptions);
-  let app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null,
-    sidecar: false, tailscaleServeOnly: serveOnly, ...appOptions, relay: service });
+  // The transport fixtures use the released Step 1 QR/code admission, not screen-confirmed Step 2 grants.
+  const account = new FakeAccountService();
+  const accountService = { url: "https://account.fixture.test", fetch: (request: Request) => account.fetch(request) };
+  let app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, accountOpensAll: false,
+    sidecar: false, tailscaleServeOnly: serveOnly, accountService, ...appOptions, relay: service });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   return {
     stateDir,
@@ -94,10 +102,14 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     get controlLost() { return controlLost.promise; },
     opened, heard, warmOpened: warmOpened.map((entry) => entry.promise),
     get base() { return `http://127.0.0.1:${app.port}`; },
-    async request(path = "", method = "GET", guarded = true) {
+    async request(path = "", method = "GET", guarded = true, headers: Record<string, string> = {}) {
       const guard: Record<string, string> = guarded ? { "x-herdr-update": "1" } : {};
-      if (appOptions.profile === "machine") return fetch("http://localhost/api/relay" + path, { method, unix: join(stateDir, "serve.sock"), headers: { origin: "http://localhost", ...guard } });
-      return fetch(this.base + "/api/relay" + path, { method, headers: { origin: this.base, ...guard } });
+      return this.local("/api/relay" + path, { method, headers: { ...guard, ...headers } });
+    },
+    /** A call from this PC itself. The machine profile's local owner is the caller on its socket in the state folder. */
+    local(path: string, init: { method?: string; headers?: Record<string, string> } = {}) {
+      if (appOptions.profile === "machine") return fetch("http://localhost" + path, { method: init.method, unix: join(stateDir, "serve.sock"), headers: { origin: "http://localhost", ...init.headers } });
+      return fetch(this.base + path, { method: init.method, headers: { origin: this.base, ...init.headers } });
     },
     async start() {
       const response = await this.request("/start", "POST");
@@ -119,7 +131,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
       app.stop();
       synced = deferred<void>();
       service = new RelayService(relayOptions);
-      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, ...appOptions, relay: service });
+      app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, accountOpensAll: false, accountService, ...appOptions, relay: service });
     },
     async interruptRelay(clock: TestClock) {
       synced = deferred<void>();
@@ -203,10 +215,12 @@ async function client(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffer,
   }
   const principal = (await bounded(admitted.promise)).payload;
   return {
-    device: { id: principal.device_id, keys }, error: error.promise, goaway: goaway.promise, closed: closed.promise, mux: engine,
+    device: { id: principal.device_id, keys }, welcome: greeting, error: error.promise, goaway: goaway.promise, closed: closed.promise, mux: engine,
     close: () => channel.close(),
-    async http(target: string, init: Partial<Omit<HttpRequest, "target" | "device_id">> = {}) {
+    /** `body`: sent as the request's body, which `init.body` then says is a stream */
+    async http(target: string, init: Partial<Omit<HttpRequest, "target" | "device_id">> = {}, body?: string) {
       const stream = engine.openHttp({ target, method: "GET", headers: [], body: "none", ...init });
+      if (body !== undefined) void stream.sendBody(new Blob([body]).stream()).catch(() => {});
       const response = deferred<Response>();
       stream.onHeaders = ({ status, headers }) => response.resolve(new Response(stream.noBody ? null : stream.body, {
         status, headers: headers.map(([name, value]) => [name, value]),
@@ -319,37 +333,75 @@ it("ends the relay offer's code, and a typed code, with the paired device that a
     const ask = (path: string) => fetch(`${f.base}/api/relay${path}`, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", authorization: `Device ${token}` } });
     return { id, ask };
   };
+  // the offer it asks for starts a code: that code goes when the device is revoked
   const laptop = await pairHere("Laptop");
   expect(devices.activePairing()).toBeNull();
   expect((await laptop.ask("/offer")).status).toBe(200);
   expect(devices.activePairing()).not.toBeNull();
   devices.revoke(laptop.id);
   expect(devices.activePairing()).toBeNull();
+  // so does this PC's own code once a device was handed it in an offer
   const tablet = await pairHere("Tablet");
   const own = await f.offer();
   const handed = decodeOffer((await (await tablet.ask("/offer")).json() as { url: string }).url);
   expect(handed?.code).toBe(own.code);
   devices.revoke(tablet.id);
   expect(devices.activePairing()).toBeNull();
+  // and the code to type it asked for, with the six digits behind it
   const phone = await pairHere("Phone");
   expect((await phone.ask("/code")).status).toBe(200);
   expect(devices.activePairing()).not.toBeNull();
   devices.revoke(phone.id);
   expect(devices.activePairing()).toBeNull();
+  // a code this PC asked for itself outlives the removal of a device that never had it
   const other = await pairHere("Other");
   const kept = await f.offer();
   devices.revoke(other.id);
   expect(devices.activePairing()?.code).toBe(kept.code);
+  // a device revoked while its request was on its way is handed nothing and starts nothing
   for (const path of ["/api/relay/offer", "/api/relay/code"]) {
     const late = await handleRelayRequest(new Request(f.base + path, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1" } }), path, f.app.context, other.id);
     expect([path, late.status, await late.json()]).toEqual([path, 401, { error: { code: "unauthorized", message: "this device is no longer paired" } }]);
   }
 });
 
+it("makes the relay tab's QR code only once an account was named for the PC, says in its state whether one is, and names it in the offer", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
+    headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
+  const named = async () => (await (await f.request()).json() as RelayStatus).account_named;
+  // a code another place shows as digits is pending
+  const pending = devices.startPairing().code;
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  expect(await named()).toBe(false);
+  const refused = await ask(true);
+  expect([refused.status, (await refused.json() as { error: { code: string } }).error.code]).toEqual([409, "no_account_named"]);
+  // no code was started for it, and the one pending is as it was: an offer asked for without the header carries it
+  expect([started, devices.activePairing()?.code]).toEqual([0, pending]);
+  const plain = await ask(false);
+  expect([plain.status, decodeOffer((await plain.json() as { url: string }).url)?.code, started]).toEqual([200, pending, 0]);
+  // the owner names the account, as adding the PC on its own page or `ovis add` does
+  const naming = await fetch(`${f.base}/api/account/relay-account`, { method: "POST",
+    headers: { origin: f.base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ account: "acct_1" }) });
+  expect(naming.status).toBe(204);
+  expect(await named()).toBe(true);
+  const offered = await ask(true);
+  expect(offered.status).toBe(200);
+  const answer = await offered.clone().json() as { account?: string | null };
+  expect(answer.account).toBe("acct_1");
+  // the QR code gets a code of its own, started for it
+  expect([started, devices.activePairing()?.code]).toEqual([1, decodeOffer((await offered.json() as { url: string }).url)?.code]);
+});
+
 it("makes the relay tab's QR code only for a PC in no account, and takes it back when the PC joins one", async () => {
   const f = await fixture();
   await f.start();
   const devices = f.app.context.services.devices;
+  // an account was named for the PC, as that QR code needs (the test above)
+  expect(f.service.setRelayAccount("acct_1")).toBe(true);
   const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
     headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
   const codeOf = async (response: Response) => {
@@ -359,18 +411,152 @@ it("makes the relay tab's QR code only for a PC in no account, and takes it back
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const key = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
   const laptop = devices.pairRelay(devices.startPairing().code, "Laptop", key)!.device;
+  // a code another place shows as digits is never the one the QR code carries
   devices.startPairing();
   let started = 0;
   devices.onPairingStarted(() => { started++; });
   const qr = await codeOf(await ask(true));
   expect([started, devices.activePairing()?.code]).toEqual([1, qr]);
-  expect([await codeOf(await ask(true)), await codeOf(await ask(false)), started]).toEqual([qr, qr, 1]);
+  expect([await codeOf(await ask(true)), started]).toEqual([qr, 1]);
+  // the page's other relay QR codes never carry it: their offer starts a code of its own, which replaces it
+  const other = await codeOf(await ask(false));
+  expect([started, devices.activePairing()?.code]).toEqual([2, other]);
+  // and the QR code, asked for again, is given a code of its own once more
+  const again = await codeOf(await ask(true));
+  expect([started, devices.activePairing()?.code]).toEqual([3, again]);
   expect(devices.linkAccountKey(laptop.id, key, key, "acct_1")).not.toBeNull();
+  // the PC is in an account: the code is taken back, and a page that still shows the QR code is refused a new one
   expect(devices.activePairing()).toBeNull();
   const refused = await ask(true);
   expect([refused.status, await refused.json()]).toEqual([409, { error: { code: "in_account", message: "This PC is already in an Ovis account. Sign in to that account on the device to add it." } }]);
   expect(devices.activePairing()).toBeNull();
   expect(await codeOf(await ask(false))).toMatch(/^\d{6}$/);
+});
+
+/**
+ * A device that paired with the relay tab's QR code made for `account` and sent its link, vouched for by that account,
+ * whose approval the account service is still reading: the read is held open until `release`. `judged` settles once
+ * the link was judged on that approval (the link awaited the same answer first).
+ */
+async function linkHeldOnApproval(account: string) {
+  let holding = false;
+  const held = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const f = await pairingPc({ accountFetch: async (request, service) => {
+    if (holding && new URL(request.url).pathname === "/v1/pc/mailbox") { held.resolve(); await release.promise; }
+    return service.fetch(request);
+  } });
+  cleanup.push(() => f.close());
+  await setUpFor(f, account);
+  const code = await f.tabCode();
+  const pairing = f.devices.pairingId();
+  const device = await signedInWith(f, code);
+  await vouchFor(f, account, device.key);
+  const mailbox = f.app.context.services.accountMailbox;
+  const vouch = mailbox.vouch;
+  const asked = Promise.withResolvers<{ answer: Promise<unknown> }>();
+  mailbox.vouch = (...args) => { mailbox.vouch = vouch; const answer = vouch.apply(mailbox, args); asked.resolve({ answer }); return answer; };
+  let revoked = false;
+  f.devices.onRevoke(device.id, () => { revoked = true; });
+  holding = true;
+  void sendLink(device.session, await linkRecord(device.id, account, device.key)).catch(() => undefined);
+  await held.promise;
+  expect(f.devices.provisionalStands(device.id)).toBe(true);
+  return { f, code, pairing, device, revoked: () => revoked, release: () => release.resolve(), judged: async () => { await (await asked.promise).answer; } };
+}
+
+/** Nothing of the link was written: the PC has no member, and nothing is on disk. */
+async function noMember(f: Pc): Promise<void> {
+  expect(await f.status()).toMatchObject({ account: null, members: 0 });
+  expect(f.stored()).toEqual([]);
+}
+
+it("ends the relay tab's QR code, and the rows that wait to link under it, when another account is named for the PC", async () => {
+  const { f, code, pairing, device, revoked, release, judged } = await linkHeldOnApproval("acct_a");
+  // the same account named again (the add-me screen repeats it) changes nothing: the row's session stays open, and the
+  // code still pairs
+  await setUpFor(f, "acct_a");
+  expect([f.devices.pairingId(), f.devices.provisionalStands(device.id), revoked()]).toEqual([pairing, true, false]);
+  expect((await ask(device.session, "/api/account/status")).status).toBe(200);
+  expect((await signedInWith(f, code)).role).toBe("watch");
+  // a device that paired under the code made while acct_a was named is never taken into acct_b
+  await setUpFor(f, "acct_b");
+  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id), revoked()]).toEqual([null, false, true]);
+  // acct_a's approval, answered only now, writes no member, and the row's sessions end with its link
+  release();
+  await judged();
+  await noMember(f);
+  expect(await ended(device.session)).toBe("auth_revoked");
+  // the QR code asked for again is a new one, for the account named now
+  const again = await f.local("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+  expect(again.body.account).toBe("acct_b");
+  expect((again.body.pairing as { id: string }).id).not.toBe(pairing);
+});
+
+it("ends the code pending, and the rows that wait to link under it, when it resets the relay identity", async () => {
+  const { f, device, revoked, release, judged } = await linkHeldOnApproval("acct_a");
+  await f.app.context.services.relay.resetIdentity();
+  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id), revoked()]).toEqual([null, false, true]);
+  // an approval asked under the old identity, answered only now, writes no member
+  release();
+  await judged();
+  await noMember(f);
+});
+
+/** The saved account can no longer be read, as after a lost or damaged state file: the next naming reads as a first one. */
+const loseSavedAccount = (f: Pc): void => { writeFileSync(join(f.stateDir, "relay", "account.json"), "{"); };
+
+it("holds the relay tab's code to the account it was made under when another is named after the saved one could not be read", async () => {
+  const f = await pairingPc();
+  cleanup.push(() => f.close());
+  await setUpFor(f, "acct_a");
+  const code = await f.tabCode();
+  const toB = await signedInWith(f, code), toA = await signedInWith(f, code);
+  loseSavedAccount(f);
+  await setUpFor(f, "acct_b");
+  // the code and its rows are still there: what keeps them out of acct_b is the account the code was made under
+  expect([f.devices.provisionalStands(toB.id), f.devices.provisionalStands(toA.id)]).toEqual([true, true]);
+  await vouchFor(f, "acct_b", toB.key);
+  const intoB = await sendLink(toB.session, await linkRecord(toB.id, "acct_b", toB.key));
+  expect([intoB.status, intoB.body.error?.code]).toEqual([409, "account_mismatch"]);
+  // nor is a row taken into acct_a while acct_b is named
+  await vouchFor(f, "acct_a", toA.key);
+  const intoA = await sendLink(toA.session, await linkRecord(toA.id, "acct_a", toA.key));
+  expect([intoA.status, intoA.body.error?.code]).toEqual([409, "account_mismatch"]);
+  expect([f.devices.provisionalStands(toB.id), f.devices.provisionalStands(toA.id)]).toEqual([false, false]);
+  await noMember(f);
+});
+
+it("takes no row of the relay tab's code into the account it was made under while the saved name cannot be read, before the approval", async () => {
+  const f = await pairingPc();
+  cleanup.push(() => f.close());
+  await setUpFor(f, "acct_a");
+  const device = await signedInWith(f, await f.tabCode());
+  loseSavedAccount(f);
+  await vouchFor(f, "acct_a", device.key);
+  const refused = await sendLink(device.session, await linkRecord(device.id, "acct_a", device.key));
+  expect([refused.status, refused.body.error?.code]).toEqual([409, "account_mismatch"]);
+  expect(f.devices.provisionalStands(device.id)).toBe(false);
+  await noMember(f);
+});
+
+it("takes no row of the relay tab's code into the account it was made under when the saved name cannot be read by the time the approval comes", async () => {
+  const { f, device, release, judged } = await linkHeldOnApproval("acct_a");
+  loseSavedAccount(f);
+  release();
+  await judged();
+  await noMember(f);
+  expect(f.devices.provisionalStands(device.id)).toBe(false);
+});
+
+it("refuses after the approval too when another is named, past a saved account that could not be read, while the approval is out", async () => {
+  const { f, device, release, judged } = await linkHeldOnApproval("acct_a");
+  loseSavedAccount(f);
+  await setUpFor(f, "acct_b");
+  expect(f.devices.provisionalStands(device.id)).toBe(true);
+  release();
+  await judged();
+  await noMember(f);
+  expect(f.devices.provisionalStands(device.id)).toBe(false);
 });
 
 it("names the PC in the relay offer as Ovis lists it", async () => {
@@ -395,12 +581,14 @@ it("closes the pairing window on request, and keeps it closed for the next start
   await f.start();
   expect((await f.request("/link", "POST")).status).toBe(200);
   expect(f.service.approvals.windowOpen()).toBe(true);
+  // Given the request does not come from this app's relay controls, it changes nothing
   expect((await f.request("/link/close", "POST", false)).status).toBe(403);
   expect(f.service.approvals.windowOpen()).toBe(true);
   const closed = await f.request("/link/close", "POST");
   expect(closed.status).toBe(200);
   expect(await closed.json()).toEqual({ ok: true });
   expect(f.service.approvals.windowOpen()).toBe(false);
+  // Then a restart does not bring it back
   await f.restart();
   expect(f.service.approvals.windowOpen()).toBe(false);
   expect(await (await f.request("/link/close", "POST")).json()).toEqual({ ok: true });
@@ -490,6 +678,15 @@ it("starts, decodes an offer, pairs, authenticates, and carries full HTTP and WS
   }
 });
 
+it("names the oldest client it supports in its WELCOME: the one floor, or the one a test gives it", async () => {
+  const f = await fixture();
+  await f.start();
+  expect((await client(f, await f.offer())).welcome.min_supported_client).toBe(MIN_SUPPORTED_CLIENT_VERSION);
+  const raised = await fixture(false, { minSupportedClient: "9.8.7" });
+  await raised.start();
+  expect((await client(raised, await raised.offer())).welcome.min_supported_client).toBe("9.8.7");
+});
+
 it("hands a phone the PC's proven warm socket, so the PC opens none for it, and keeps the next one ready", async () => {
   const f = await fixture();
   await f.start();
@@ -574,6 +771,23 @@ it("rejects CSRF before connecting or closing the device gate", async () => {
   expect(f.app.context.services.devices.gated).toBe(false);
 });
 
+it("a bound PC with an unreadable registry refuses identity reset before closing its relay or changing its binding", async () => {
+  const f = await fixture(false, {}, { accountOpensAll: true });
+  await f.start();
+  f.app.context.services.devices.bindByService("acct_fixture");
+  const binding = () => readFileSync(join(f.stateDir, "account-pc.json"), "utf8");
+  const identity = () => readFileSync(relayIdentityPath(f.stateDir), "utf8");
+  const before = [binding(), identity()];
+  const registry = join(f.stateDir, "devices.json");
+  writeFileSync(registry, "not JSON", { mode: 0o600 });
+  await f.restart();
+  expect(f.app.context.services.devices.error).not.toBeNull();
+  const priorPhase = f.service.status().phase;
+  const response = await f.request("/reset-identity", "POST");
+  expect([response.status, (await response.json()).error?.code, f.service.status().phase, binding() === before[0],
+    identity() === before[1], readFileSync(registry, "utf8") === "not JSON"]).toEqual([503, "gate_unavailable", priorPhase, true, true, true]);
+});
+
 it("rotates identity, closes old sessions, revokes only relay devices and reconnects", async () => {
   const f = await fixture();
   await f.start();
@@ -604,6 +818,7 @@ it("fails closed on corrupt saved state and on an unreadable identity", async ()
   loadRelayIdentity(f.stateDir);
   writeFileSync(join(f.stateDir, "relay", "state.json"), "{bad");
   await f.restart();
+  // nothing goes through the relay: off, with the reason
   expect(f.service.status()).toMatchObject({ phase: "off", error: "Could not start the relay.", error_code: "start_failed" });
   expect(f.attempts).toBe(0);
   writeFileSync(relayIdentityPath(f.stateDir), "{bad");
@@ -725,6 +940,7 @@ it("closes relay clients that never sign in, so they cannot hold the PC's slots"
   await f.start();
   const offer = await f.offer();
   const squatters = [];
+  // seven: the eighth would already push the oldest out (below)
   for (let index = 0; index < 7; index += 1) squatters.push(await squatter(f, offer));
   clock.advance(14_999);
   expect(squatters.every((squatting) => squatting.socket.readyState === WebSocket.OPEN)).toBe(true);
@@ -783,6 +999,7 @@ it("lets a new client in when every place holds a client that never signed in, e
   const offer = await f.offer();
   const squatters = [];
   for (let index = 0; index < 8; index += 1) squatters.push(await squatter(f, offer));
+  // the eighth arrival pushes the oldest out at once (well before a squatter closes on its own, about 10 s in)
   await bounded(squatters[0]!.closed, 2_000);
   const peer = await client(f, offer);
   await bounded(squatters[1]!.closed, 2_000);
@@ -794,6 +1011,7 @@ it("never evicts a signed-in session to make room", async () => {
   const f = await fixture(false, { clock: new TestClock() });
   await f.start();
   const first = await client(f, await f.offer());
+  // each used before the next: used, a session counts as the device's for good; one never used could give way to a later racing carrier
   expect((await first.http("/api/relay")).status).toBe(200);
   const signedIn = [first];
   for (let index = 0; index < 3; index += 1) {
@@ -838,7 +1056,7 @@ async function regionalFixture({ rtt = { global: 130, regional: 13 } as { global
       return socket;
     },
   });
-  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: service, accountOpensAll: false });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = `http://127.0.0.1:${app.port}`;
   const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
@@ -1014,6 +1232,26 @@ it("a new six-digit code takes the typed code off the relay", async () => {
   expect(await typeCode(f, minted.code)).toEqual({ close: PAIR_CLOSE.NO_HOST });
 });
 
+it("a typed code made for an account: its answer names the account and the code, the offer for that account carries the same code, and the device that types it waits to link", async () => {
+  const f = await fixture(false, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const ask = (path: string, account?: string) => fetch(`${f.base}/api/relay${path}`, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", ...(account ? { "x-ovis-expect-account": account } : {}) } });
+  // without the header the answer is what it always was, and names its code by its id
+  expect(Object.keys(await mintCode(f)).sort()).toEqual(["code", "expires_at", "pairing", "server_id"]);
+  const minted = await (await ask("/code", "acct_owner")).json() as { code: string; expect_account: string; pairing: { id: string } };
+  expect(minted.expect_account).toBe("acct_owner");
+  const devices = f.app.context.services.devices;
+  const offered = await (await ask("/offer", "acct_owner")).json() as { url: string; expect_account: string; pairing: { id: string } };
+  expect([decodeOffer(offered.url)?.code, offered.pairing.id]).toEqual([devices.activePairing()!.code, minted.pairing.id]);
+  const typed = validateOffer(JSON.parse((await typeCode(f, minted.code)).offer!));
+  expect(typed.code).toBe(devices.activePairing()!.code);
+  // the offer the typed code delivers carries the mark, as the QR code's does
+  expect([typed.admission, decodeOffer(offered.url)?.admission]).toEqual([1, 1]);
+  const paired = await client(f, typed);
+  expect(devices.list(null)).toEqual([]);
+  expect((await paired.http("/api/health")).status).toBe(403);
+});
+
 it("a relay that is not Ovis's own has no codes to type", async () => {
   const f = await fixture();
   await f.start();
@@ -1033,11 +1271,118 @@ it("end to end: the hosted app's code screen finds the PC through the relay and 
   expect(f.app.context.services.devices.list(null).some((device) => device.via_relay)).toBe(true);
 });
 
-function machineFixture(appOptions: NonNullable<Parameters<typeof createServer>[0]> = {}, relayOptions: Partial<RelayServiceOptions> = {}) {
+async function machineFixture(appOptions: NonNullable<Parameters<typeof createServer>[0]> = {}, relayOptions: Partial<RelayServiceOptions> = {}) {
   const account = new FakeAccountService();
   const options = { profile: "machine" as const, accountService: { url: "https://account.test", fetch: account.fetch }, ...appOptions };
-  return fixture(false, { accountService: "https://account.test", accountFetch: account.fetch, ...relayOptions }, options);
+  const f = await fixture(false, { accountService: "https://account.test", accountFetch: account.fetch, ...relayOptions }, options);
+  return Object.assign(f, {
+    account,
+    async offer(): Promise<RelayOffer> {
+      const identity = loadRelayIdentity(f.stateDir);
+      return { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: `wss://127.0.0.1:${f.localRelay.port}`,
+        code: f.app.context.services.devices.startPairing().code };
+    },
+  });
 }
+
+const errorCode = async (response: Response) => (await response.json() as { error?: { code: string } }).error?.code;
+
+it.each(["an ordinary server", "the machine profile"])("pairing codes on %s in no account: a machine makes one only for an account, an ordinary server as today", async (kind) => {
+  const machine = kind === "the machine profile";
+  const f = machine ? await machineFixture({}, { pairCodeRelay: "wss://pair.test" }) : await fixture(false, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const peer = await client(f, await f.offer());
+  const pending = devices.startPairing().code;
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  const plain = { "x-ovis-no-account-only": "1" };
+  const answers: [string, number, string | undefined][] = [];
+  for (const [path, headers] of [["/offer", {}], ["/offer", plain], ["/code", {}], ["/code", plain]] as const) {
+    const response = await f.request(path, "POST", true, headers);
+    answers.push([`${path} ${JSON.stringify(headers)}`, response.status, await errorCode(response)]);
+  }
+  const local = await f.local("/api/devices/pair/start", { method: "POST", headers: { "x-herdr-machine": "1" } });
+  answers.push(["pair/start on this PC", local.status, await errorCode(local)]);
+  const relayed = await peer.http("/api/devices/pair/start", { method: "POST", headers: [["x-herdr-machine", "1"]] });
+  answers.push(["pair/start through the relay", relayed.status, await errorCode(relayed)]);
+  if (machine) {
+    expect(answers).toEqual(answers.map(([call]) => [call, 409, "machine_profile"]));
+    // nothing was made, and the code pending stays as it was
+    expect([started, devices.activePairing()?.code]).toEqual([0, pending]);
+  } else {
+    expect(answers).toEqual([['/offer {}', 200, undefined], ['/offer {"x-ovis-no-account-only":"1"}', 409, "no_account_named"], ['/code {}', 200, undefined],
+      ['/code {"x-ovis-no-account-only":"1"}', 200, undefined], ["pair/start on this PC", 200, undefined], ["pair/start through the relay", 200, undefined]]);
+  }
+  // a code for an account is made as on any PC
+  for (const path of ["/offer", "/code"]) {
+    const named = await f.request(path, "POST", true, { "x-ovis-expect-account": "acct_owner" });
+    expect([path, named.status, (await named.json() as { expect_account?: string }).expect_account]).toEqual([path, 200, "acct_owner"]);
+  }
+});
+
+it("machine profile refuses a code for no account while its relay reconnects, and the code pending for an account stays", async () => {
+  const clock = new TestClock();
+  const f = await machineFixture({}, { clock, random: () => 0.5, pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const named = await f.request("/offer", "POST", true, { "x-ovis-expect-account": "acct_owner" });
+  expect(named.status).toBe(200);
+  const pending = decodeOffer((await named.json() as { url: string }).url)!.code;
+  expect(devices.activePairing()?.code).toBe(pending);
+  const lost = f.controlLost;
+  await f.localRelay.stop();
+  await bounded(lost);
+  expect(f.service.status().phase).toBe("error");
+  // the answer is the profile's, whatever the relay's state: the command line takes nothing back after it
+  const answers: [string, number, string | undefined][] = [];
+  for (const path of ["/code", "/offer"]) {
+    const response = await f.request(path, "POST");
+    answers.push([path, response.status, await errorCode(response)]);
+  }
+  expect(answers).toEqual([["/code", 409, "machine_profile"], ["/offer", 409, "machine_profile"]]);
+  expect(devices.activePairing()?.code).toBe(pending);
+});
+
+it("machine profile: the relay service itself makes no code and no offer for no account, whoever calls it", async () => {
+  const f = await machineFixture({}, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const pending = devices.startPairing().code;
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  expect(() => f.service.offer()).toThrow(MachineCodeForAccountError);
+  expect(() => f.service.offer(null, { noAccountOnly: true })).toThrow(MachineCodeForAccountError);
+  await expect(f.service.pairCode()).rejects.toBeInstanceOf(MachineCodeForAccountError);
+  expect([started, devices.activePairing()?.code]).toEqual([0, pending]);
+});
+
+it("machine profile takes a device in with a code made for its account: the device links itself into that account", async () => {
+  const f = await machineFixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  // the call `ovis add` makes on the machine's socket
+  const made = await f.request("/offer", "POST", true, { "x-ovis-expect-account": "acct_owner" });
+  expect(made.status).toBe(200);
+  const offer = decodeOffer((await made.json() as { url: string }).url)!;
+  const paired = await client(f, offer);
+  expect(devices.list(null)).toEqual([]);
+  const session = await client(f, offer, false, paired.device);
+  const key = Buffer.from(await crypto.subtle.exportKey("spki", paired.device.keys.publicKey)).toString("base64url");
+  // the device's account vouches for its key first, as an app does for an offer with the mark
+  expect(offer.admission).toBe(1);
+  const token = f.account.issueToken("acct_owner");
+  const accountCall = (path: string, method: string, body: unknown) => f.account.fetch(new Request(`https://account.test${path}`, { method, headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }));
+  expect((await accountCall(`/v1/pcs/${offer.server_id}`, "PUT", { label: "Machine", public_key: bytesToHex(importPublicKey(offer.server_public_key)), relay: "wss://relay.ovis.sh" })).status).toBe(200);
+  expect((await accountCall("/v1/admissions", "POST", { server_id: offer.server_id, label: "Phone", key })).status).toBe(200);
+  const record = await signAccountRecord({ v: 1, kind: "link", account: "acct_owner", key, server_id: offer.server_id, device_id: paired.device.id,
+    old_key: key, issued_at: new Date().toISOString(), id: newRecordId(), signer: key }, paired.device.keys.privateKey);
+  const linked = await session.http("/api/account/link", { method: "POST", headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]], body: "stream" },
+    JSON.stringify({ record }));
+  expect(linked.status).toBe(200);
+  expect(devices.account()).toBe("acct_owner");
+  expect(devices.list(null).map((device) => device.id)).toEqual([paired.device.id]);
+});
 
 it.each(["missing HTTP", "missing WS", "wrong"])("machine profile refuses %s proof over the real relay", async (scenario) => {
   const f = await machineFixture();
@@ -1048,6 +1393,7 @@ it.each(["missing HTTP", "missing WS", "wrong"])("machine profile refuses %s pro
   if (scenario === "wrong") peer.mux.sendSession({ type: FrameType.AUTH, flags: 0, stream_id: 0,
     payload: { scheme: "device-key", device_id: allowed.device.id, signature: Buffer.alloc(64, 9).toString("base64url") } });
   else {
+    // The malicious client claims local admission so it can send OPEN; the server has granted none.
     peer.mux.authenticate(allowed.device.id);
     if (scenario.endsWith("HTTP")) peer.mux.openHttp({ target: "/api/session", method: "GET", headers: [], body: "none" });
     else peer.mux.openWs({ target: "/ws", protocols: [], headers: [] });
@@ -1105,6 +1451,9 @@ it("machine profile reuses its key, saved state and paired device across a resta
 it("machine profile opens no direct listener even when the relay service is given one", async () => {
   let bound = 0;
   const f = await machineFixture({ token: "owner-token" }, { direct: { addresses: () => { bound++; return ["127.0.0.1"]; }, peerAllowed: () => true, preferredPort: 0 } });
+  // turned on, as an ordinary PC's owner could: the profile, not the default, keeps the listener closed
+  mkdirSync(join(f.stateDir, "relay"), { recursive: true });
+  writeFileSync(join(f.stateDir, "relay", "direct.json"), '{"on":true}');
   f.service.start();
   expect(f.service.directAvailable).toBe(false);
   expect(bound).toBe(0);
@@ -1164,6 +1513,7 @@ it("machine profile gives a plugin run's state to a device that drives it and re
   await f.start();
   const offer = await f.offer();
   const drive = await client(f, offer);
+  // a driving device reaches the route (it asks for a run with no log id, which the route itself refuses)
   const driving = await drive.http("/api/plugin/action");
   expect([driving.status, (await driving.json() as { error: { code: string } }).error.code]).not.toEqual([403, "read_only"]);
   f.app.context.services.devices.update(drive.device.id, { role: "watch" });

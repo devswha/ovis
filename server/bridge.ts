@@ -15,7 +15,12 @@ import { attachableIdentity, sidecarAvailable } from "./pty/sidecar.ts";
  * `generation` and `birth` identify the registering process beyond its PID; older bridges wrote neither.
  * `port` is on 127.0.0.1, the only address the app's SSH tunnel goes to (`loopbackRelay`).
  */
-export interface BridgeDescriptor { managed_remote?: boolean; port: number; token: string; pid: number; generation?: string; birth?: ProcessBirth; socket_path: string; bridge_protocol: number; bundle_version: string }
+/**
+ * `recover_socket`: the owner-only recovery socket of a PC's own Ovis (server/account/recovery.ts), named only by an
+ * independent server: another PC of its user reaches it over SSH to add it to an account (docs/account.md, "Adding a PC
+ * over SSH"). Older servers and bridges this app started name none.
+ */
+export interface BridgeDescriptor { managed_remote?: boolean; port: number; token: string; pid: number; generation?: string; birth?: ProcessBirth; socket_path: string; bridge_protocol: number; bundle_version: string; recover_socket?: string }
 /**
  * The bridges' folder. On Windows, Ovis's state migration leaves a junction at the legacy folder (to
  * `.config\\ovis`), and a process an SSH session started may not traverse it ("untrusted mount point"):
@@ -70,10 +75,16 @@ function liveIn(reading: { text: string } | null): boolean {
   try { return descriptorLive(JSON.parse(reading.text) as BridgeDescriptor); } catch { return false; }
 }
 
-export function registerBridge(port: number, token = randomBytes(32).toString("hex"), options: { path?: string; sampled?(): void } = {}): { token: string; registered: boolean; close(): void } {
+/**
+ * `registered` says whether this server's descriptor was written: it is not while another live
+ * bridge holds the descriptor, when the descriptor changed while this one started, or when its
+ * guard cannot be taken.
+ */
+export function registerBridge(port: number, token = randomBytes(32).toString("hex"), options: { path?: string; sampled?(): void; recoverSocket?: string } = {}): { token: string; registered: boolean; close(): void } {
   const path = options.path ?? descriptorPath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const unregistered = { token, registered: false, close() {} };
+  // Registration never overwrites a live bridge. Its credential remains reusable.
   const seen = readDescriptor(path);
   if (liveIn(seen)) return unregistered;
   options.sampled?.();
@@ -83,7 +94,8 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
       const now = readDescriptor(path);
       if (now?.id !== seen?.id || now?.text !== seen?.text || liveIn(now)) return false;
       const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["OVIS_REMOTE"] === "1", port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
+      const managed = process.env["OVIS_REMOTE"] === "1";
+      writeFileSync(tmp, JSON.stringify({ managed_remote: managed, port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, ...(!managed && options.recoverSocket ? { recover_socket: options.recoverSocket } : {}) } satisfies BridgeDescriptor), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, path);
       return true;
@@ -93,6 +105,7 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
     // a guard that could not be released (OwnerGuardReleaseFailed) fails the start: this process
     // must not keep serving on a guard it may still hold
     if (!(error instanceof OwnerGuardUnavailable)) throw error;
+    // fails closed: this server runs unregistered and the descriptor is left as it was
     console.error(`This bridge was not registered (descriptor ${path}): ${error.message}`);
     return unregistered;
   }
@@ -126,6 +139,10 @@ export function relayTarget(hostname: string): string | null {
   return name;
 }
 
+/**
+ * How far a client may get ahead of a server that is not reading before the relay cuts both off: the
+ * largest request body the server reads (a picture at the attachment limit), twice over.
+ */
 export const RELAY_CLIENT_AHEAD_BYTES = 2 * MAX_IMAGE_BODY_BYTES;
 interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; queued: number; closed?: boolean; ending?: boolean }
 function send(socket: Socket<Relayed>, chunk: Uint8Array): number {
@@ -189,6 +206,8 @@ export function loopbackRelay(target: string, port: number): { port: number; sto
       if (peer && send(peer, chunk) > RELAY_CLIENT_AHEAD_BYTES) { client.terminate(); peer.terminate(); }
     },
     drain,
+    // nothing a departed client sent still matters, and a server that reads nothing would hold the
+    // queue forever: its side goes at once (a server's own close still lets the client read the rest)
     close(client) { client.data.closed = true; client.data.peer?.terminate(); },
     error(client) { client.data.closed = true; client.data.peer?.terminate(); },
   } });

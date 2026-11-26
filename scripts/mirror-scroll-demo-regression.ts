@@ -9,6 +9,7 @@ import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 import { shownRows } from "./shown-rows.ts";
 import { FLING_STOPPED_MS } from "../src/lib/touchFling.ts";
+import { serveDemo } from "./demo-server.ts";
 
 interface Frame { type: string; pane_id?: string; text?: string; mode?: string }
 interface MirrorFixture {
@@ -79,17 +80,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installMirrorFixture.toString()})()</script>\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -134,6 +125,7 @@ try {
                 `${kind}: ${step}: ${cause instanceof Error ? cause.message : String(cause)}; observed=${observed}`,
                 { cause },
               );
+              // The browser lane recognizes TimeoutError when extracting its failure summary.
               if (cause instanceof Error) error.name = cause.name;
               throw error;
             }
@@ -149,6 +141,7 @@ try {
           const terminal = page.locator(".pane-frame.is-current .pane-terminal");
           const box = await terminal.boundingBox();
           assert.ok(box);
+          // the 40-row grid must fit its pane here, or the wheel pans it locally instead (taller fonts need the height)
           assert.ok(await terminal.evaluate((node) => node.scrollHeight <= node.clientHeight + 1), "the desktop grid fits its pane");
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 3);
           await page.mouse.wheel(0, -120);
@@ -158,6 +151,7 @@ try {
             await page.mouse.wheel(0, 120);
             await waitForStep("native wheel down reaches offset 0", () => page.waitForFunction(() => (window as FixtureWindow).mirrorFixture.offset === 0));
           } else {
+            // a mirror carries no mouse modes: nothing says the program reads wheel reports, Pi's included
             await settled(page);
             assert.deepEqual((await state(page)).inputs, [], `${kind}: a program's own screen receives no guessed input`);
           }
@@ -212,6 +206,8 @@ try {
           }), pane);
           await waitForStep("local pan start frame rendered", () => page.waitForFunction((rows) => document.querySelector(rows)?.textContent?.includes("LOCAL-PAN-START"), shownRows()));
           await terminal.evaluate((node: HTMLElement) => { node.style.height = "200px"; node.style.maxHeight = "200px"; node.style.flex = "none"; node.scrollTop = 80; });
+          // ResizeObserver follows the cursor after its resize debounce, not after two paint frames.
+          // Wait for that adjustment before placing the grid between its local edges for the wheel.
           await waitForStep("resize follows cursor away from scrollTop 80", () => page.waitForFunction(() => document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop !== 80));
           await terminal.evaluate((node) => { node.scrollTop = 80; });
           assert.equal(await terminal.evaluate((node) => node.scrollTop), 80, "the oversized grid starts between its local edges");
@@ -232,6 +228,7 @@ try {
           assert.deepEqual((await state(page)).inputs, beforePan.inputs, "new mirror output sends no application input");
           assert.deepEqual((await state(page)).offsets, beforePan.offsets, "new mirror output does not request shared history scrolling");
 
+          // A mirrored observer can pan its grid, but never changes the shared viewport or types.
           await page.evaluate(() => (window as FixtureWindow).mirrorFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "observe" })));
           await settled(page);
           const beforeObserve = await state(page);

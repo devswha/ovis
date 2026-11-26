@@ -8,7 +8,9 @@ import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openMoreGroup } from "./header-more.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-deep-link-demo-"));
 const INFRA = panes.omp;
 const DOCS = panes.hermes;
@@ -52,17 +54,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, `<script src="./demo-transport.js"></script>${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
 
   try {
@@ -139,6 +131,9 @@ try {
       });
       console.log("PASS opening another pane is a history entry and a lens switch is not; Back and Forward return to each pane in its lens");
 
+      // Back and Forward land on the entry's pane when a listener before the address bar's changes what
+      // is shown (Settings closing, the file viewer's file leaving): React draws that before the entry
+      // is read, and the place shown must not be written over the entry meanwhile.
       await withPage(browser, `?ws=${wsOf(INFRA)}&pane=${encodeURIComponent(INFRA)}&view=chat`, async (page) => {
         await waitSelected(page, INFRA);
         await openPane(page, DOCS);
@@ -379,6 +374,8 @@ try {
       });
       console.log("PASS Copy link puts the address on the clipboard");
 
+      // a link to the New workspace dialog fills its fields and creates nothing by itself; the
+      // address follows what is typed, and closing the dialog takes it off
       await withPage(browser, `?new=workspace&cwd=${encodeURIComponent("/home/demo/infra")}&name=Fix%20backup&agent=codex`, async (page) => {
         const dialog = page.getByRole("dialog", { name: /New workspace/ });
         const nameField = dialog.getByRole("textbox", { name: "Optional workspace label", exact: true });

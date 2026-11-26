@@ -11,7 +11,8 @@ export const SHARED_SETTING_KEYS = [
   "theme", "palette", "darkTheme", "lightTheme", "customThemes", "language", "sidebarRows", "agentOrder", "agentMarks", "agentLocks", "lockedAgents", "opencodeParentEnds", "ompHeldFiles", "restoreReplacedServer", "agentNamedGroups", "agentGroupNames", "agentGroupOf", "autoSendQueued", "autoTabNames",
   "showThinking", "quickReplies", "showQuickReplies", "showUsage", "usageCount",
   "usageGlance", "usageOrder", "usageHidden", "claudeLaunchMode", "codexLaunchMode",
-  "claudeLaunchModel", "claudeLaunchEffort", "codexLaunchModel", "codexLaunchEffort",
+  "claudeLaunchModel", "claudeLaunchEffort", "codexLaunchModel", "codexLaunchEffort", "agentBrowserTools",
+  "builtInBrowser", "browserBlockedSites", "agentHarnessTool",
 ] as const;
 export type SharedSettingKey = (typeof SHARED_SETTING_KEYS)[number];
 
@@ -105,6 +106,9 @@ export function normalizeThemeChange(stored: SharedPreferences["settings"], chan
     if (mode === "dark") settings.darkTheme = settings.palette;
     if (mode === "light") settings.lightTheme = settings.palette;
   }
+  // A legacy document has only `palette`. Once this change brings in a side, the stored palette
+  // first takes the side it was drawn on (light only in light mode, as mirrorPalette reads it), so
+  // the side nobody picked is not filled with amber and the user's synced look is not lost.
   const legacyStored = !("darkTheme" in stored) && !("lightTheme" in stored) && "palette" in stored;
   if (legacyStored && ("darkTheme" in settings || "lightTheme" in settings)) {
     const side = stored.theme === "light" ? "lightTheme" : "darkTheme";

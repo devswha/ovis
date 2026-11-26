@@ -1,6 +1,5 @@
 {
   "scripts/android-ime-regression.ts": 1,
-  "scripts/application-paging-regression.ts": 2,
   "scripts/chat-size-regression.ts": 5,
   "scripts/droplet-regression.ts": 4,
   "scripts/key-bar-hold-repeat-regression.ts": 7,
@@ -24,7 +23,6 @@
   "server/mirror.test.ts": 4,
   "server/output.contract.test.ts": 6,
   "server/pending-input.contract.test.ts": 2,
-  "server/prompt.contract.test.ts": 3,
   "server/prompt.ts": 1,
   "server/pty/session.test.ts": 4,
   "server/reattach.contract.test.ts": 1,

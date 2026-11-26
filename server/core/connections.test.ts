@@ -14,6 +14,7 @@ import type { SharedPreferences } from "../../shared/preferences.ts";
 import type { AgentInfo, HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
 import { expandMachineEvent, type WireMachineEvent } from "../../shared/compact-agents.ts";
 import type { MachineEvent } from "../../shared/machines.ts";
+import { LockSignal, untilLockFrom } from "../lock-boundary.ts";
 import { backlog, type Client, connectionData, connectionOf, createConnections, send, setMachineEvents } from "./connections.ts";
 
 function harness({ deviceId, readOnly = false, relay, revokedAlready = false, store, machineEvents, open = false }: { deviceId?: string; readOnly?: boolean; relay?: MachineRelay; revokedAlready?: boolean; store?: DeviceStore; open?: boolean; machineEvents?: MachineEventDocument } = {}) {
@@ -67,6 +68,14 @@ function watching() {
   return { started, frames, client, next, ...connections };
 }
 const GRID = { cols: 80, rows: 24 };
+
+it("T46/S24: a lock fired between the upgrade and opening prevents admission", () => {
+  const opened = harness();
+  const signal = new LockSignal();
+  opened.client.data.untilLock = untilLockFrom(signal);
+  signal.fire();
+  expect(opened.admit(opened.client)).toBe(false);
+});
 
 it("holds no more than 64 observe processes for one connection, and ends the view of a pane past them at once", async () => {
   const w = watching();
@@ -147,6 +156,8 @@ it("holds no more than 64 processes for frames that ask for panes and give them 
 it("runs one observe process for a pane at a time: watched again, it starts once the last has exited, at the grid asked for last", async () => {
   const w = watching();
   w.watchPane(w.client, "w1:p1", GRID);
+  // frames naming one pane over and over, in one read: started at each, every process would live until the event
+  // loop turned (3,000 frames were 3,000 processes and 9,000 descriptors), past any count of panes
   for (let cols = 81; cols <= 400; cols++) w.watchPane(w.client, "w1:p1", { cols, rows: 24 });
   expect(w.started.map((process) => [process.cols, process.killed])).toEqual([[80, 1]]);
   await w.started[0]!.exit();
@@ -478,6 +489,7 @@ it("ends a connection the open LAN let in once the gate closes, and admits none 
     const relay = { close: () => relayed.push("relay closed") } as unknown as MachineRelay;
     const stranger = harness({ open: true, store });
     const proxied = harness({ open: true, relay, store });
+    // let in another way (this PC itself, a token, a Tailscale login): not the gate's to end
     const local = harness({ store });
     const gone = harness({ open: true, store });
     for (const each of [stranger, proxied, local, gone]) expect(each.admit(each.client)).toBe(true);
@@ -500,6 +512,7 @@ it("ends a connection the open LAN let in once the gate closes, and admits none 
     store.revokeAll();
     await Promise.resolve();
     expect(stranger.log).toHaveLength(3);
+    // an upgrade the open LAN passed just before the gate closed is not admitted
     const late = harness({ open: true, store });
     expect(late.admit(late.client)).toBe(false);
     expect(late.log.at(-1)).toBe("closed 1008 Pairing required");

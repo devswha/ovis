@@ -9,6 +9,7 @@ import { LARGE_REPLY_BYTES } from "./herdr/client.ts";
 
 const SERVICE_RESTART_CLOSE_CODE = 1012;
 
+/** Unlinkable receipt identities for one connection server lifetime; no browser-controlled namespace crosses PCs or devices. */
 export class RelayReceiptIds {
   private readonly key = randomBytes(32);
 
@@ -51,6 +52,7 @@ export class RelayStallClock {
   }
 }
 
+/** The phone sees an upstream 4008 as is (the remote bridge's ACK window stalled); any other end is 1012. */
 export function upstreamCloseCode(code: number): number {
   return code === OUTPUT_STALLED_CLOSE_CODE ? code : SERVICE_RESTART_CLOSE_CODE;
 }
@@ -72,10 +74,13 @@ export class MachineRelay {
    * server's sidebar rows hide (#2160). Other frames pass as they came.
    */
   constructor(manager: MachineManager, id: string, private readonly readOnly: boolean, private readonly browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot,
-    private readonly receiptId?: (browser: string) => string | undefined) {
+    private readonly receiptId?: (browser: string) => string | undefined, browser?: string) {
     const endpoint = manager.endpoint(id);
     if (!endpoint) throw new Error("This PC is disconnected");
-    this.upstream = authenticatedWebSocket(endpoint.url.replace("http:", "ws:") + "/ws", endpoint.token);
+    const target = new URL(endpoint.url.replace("http:", "ws:") + "/ws");
+    const scoped = !readOnly && browser ? receiptId?.(browser) : undefined;
+    if (scoped) target.searchParams.set("receipt_resume_id", scoped);
+    this.upstream = authenticatedWebSocket(target.href, endpoint.token);
     this.untrack = manager.trackTerminal(id, () => this.close(SERVICE_RESTART_CLOSE_CODE, "PC disconnected"));
     this.ready = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => { this.close(); reject(new Error("Remote websocket timed out")); }, 15_000);
@@ -110,6 +115,7 @@ export class MachineRelay {
     if (!raw.includes('"tokens"') && !pasteDir) return raw;
     let message: ServerMessage;
     try { message = JSON.parse(raw) as ServerMessage; } catch { return raw; }
+    // a watch-only browser is not told the PC's upload folder (server/core/socket.ts), whatever its bridge says
     if (message.type === "features" && pasteDir) { const { paste_dir: _folder, ...features } = message; return JSON.stringify(features); }
     if (message.type !== "snapshot") return raw;
     const snapshot = this.browserSnapshot(message.snapshot);
@@ -132,6 +138,10 @@ export class MachineRelay {
     if (this.closed || !this.client) return;
     if (this.client.send(raw) === 0) this.close(OUTPUT_STALLED_CLOSE_CODE, "output delivery failed");
   }
+  /**
+   * Forwards browser frames with scoped resume IDs only for controlling attachments; raw browser
+   * resume IDs and observer resume IDs are stripped. Malformed frames remain upstream's responsibility.
+   */
   message(raw: string | Buffer): void {
     if (this.closed) return;
     if (this.upstream.readyState !== WebSocket.OPEN) { this.close(); return; }

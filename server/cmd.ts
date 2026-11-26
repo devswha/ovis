@@ -47,6 +47,7 @@ export async function cmdTranscriptPath(
     && typeof session.value === "string") ? session.value : null;
   if (candidate === null) return null;
   // foreground_cwd can belong to a helper when herdr cannot read the group leader's cwd.
+  // Each cwd is only a store candidate; the reported session must validate inside it.
   for (const cwd of new Set([agent.foreground_cwd, agent.cwd])) {
     if (typeof cwd !== "string" || cwd.length === 0) continue;
     const projectDir = defaultCmdProjectDir(cwd);
@@ -63,7 +64,7 @@ export async function cmdTranscriptPath(
  * cached catalog. On `main` pi-models only consults models.json, which never
  * names commandcode's models, so cmd resolves its own window here.
  */
-let cmdCatalogCache: { path: string; mtimeMs: number; windows: Map<string, number> } | null = null;
+let cmdCatalogCache: { path: string; version: string; windows: Map<string, number> } | null = null;
 
 const MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 
@@ -79,9 +80,13 @@ function readCatalog(path: string): string | null {
 }
 
 export function cmdContextWindow(model: string, catalogPath = cmdModelCatalogPath()): number | null {
-  let mtimeMs: number;
-  try { mtimeMs = statSync(catalogPath).mtimeMs; } catch { return null; }
-  if (cmdCatalogCache === null || cmdCatalogCache.path !== catalogPath || cmdCatalogCache.mtimeMs !== mtimeMs) {
+  // the version the chat's live cache checks too (catalogVersion), so both see the same edits
+  let version: string;
+  try {
+    const stat = statSync(catalogPath);
+    version = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+  } catch { return null; }
+  if (cmdCatalogCache === null || cmdCatalogCache.path !== catalogPath || cmdCatalogCache.version !== version) {
     const text = readCatalog(catalogPath);
     if (text === null) return null;
     let parsed: unknown;
@@ -100,7 +105,7 @@ export function cmdContextWindow(model: string, catalogPath = cmdModelCatalogPat
         }
       }
     }
-    cmdCatalogCache = { path: catalogPath, mtimeMs, windows };
+    cmdCatalogCache = { path: catalogPath, version, windows };
   }
   return cmdCatalogCache.windows.get(model) ?? null;
 }

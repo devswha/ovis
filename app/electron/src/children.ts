@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ovisName } from "../../../server/legacy-env.ts";
+import { desktopListenerMatches } from "../../../server/desktop-listener.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -33,7 +34,9 @@ export function layout(root: string, platform: NodeJS.Platform = process.platfor
   return { bun: join(root, "bin", `bun${exe}`), hc: join(root, "bin", `herdr-core${exe}`), server: join(root, "server"), serverBinary: join(root, "server", `ovis-server${exe}`) };
 }
 
+/** hc's session for the app's own core, apart from the `default` one another hc client may run. */
 export const HC_SESSION = "ovis";
+export const coreSession = (env: Env): string => env["HC_SESSION"]?.trim() || HC_SESSION;
 
 /** the lists an AppImage's AppRun puts its own folders in front of */
 const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"];
@@ -46,7 +49,8 @@ const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_S
  * AppImage's settings the app was merely started under stay, as for any other program.
  */
 export function coreEnv(base: Env, execPath: string = process.execPath): Env {
-  const env: Env = { ...base, HC_SESSION: base["HC_SESSION"]?.trim() || HC_SESSION };
+  const env: Env = { ...base, HC_SESSION: coreSession(base) };
+  // the app's own core: never one another client named with HC_SOCKET
   delete env["HC_SOCKET"];
   delete env["ELECTRON_RUN_AS_NODE"];
   delete env["ELECTRON_NO_ATTACH_CONSOLE"];
@@ -64,17 +68,25 @@ export function coreEnv(base: Env, execPath: string = process.execPath): Env {
   return env;
 }
 
+/**
+ * The server's environment: herdr-core as its runtime, through the bundled hc, on loopback only,
+ * with its state in the app's own folder. A herdr plugin's or supervisor's settings the app was
+ * started under are dropped: this server is neither.
+ */
 export function serverEnv(base: Env, options: { hc: string; stateDir: string; port: number }): Env {
   const env: Env = {
     ...coreEnv(base),
     OVIS_RUNTIME: "herdr-core",
     OVIS_HC_BIN: options.hc,
+    // the app's own hc, not one the user named: one that does not answer leaves the server to find another, and say so
+    OVIS_HC_BIN_BUNDLED: "1",
     OVIS_STATE_DIR: options.stateDir,
     HOST: "127.0.0.1",
     PORT: String(options.port),
     OVIS_DESKTOP_APP: "1",
   };
   const dropped = new Set(["HERDR_PLUGIN_ROOT", "HERDR_SOCKET", "OVIS_MANAGED", "OVIS_BOOT_ID", "OVIS_TOKEN"]);
+  // the server would take a dropped setting back from its name before the rename (server/legacy-env.ts)
   for (const name of Object.keys(env)) if (dropped.has(name) || dropped.has(ovisName(name) ?? "")) delete env[name];
   return env;
 }
@@ -196,6 +208,7 @@ export function startServer(layout: Layout, env: Env, log: WriteStream, timeoutM
   });
 }
 
+/** Asks the server to stop, and ends it when it has not after `graceMs` (its own shutdown takes about 2 seconds). */
 export async function stopServer(server: Pick<RunningServer, "child" | "exited">, graceMs = 8_000): Promise<void> {
   if (server.child.exitCode !== null || server.child.signalCode !== null) return;
   server.child.kill("SIGTERM");
@@ -231,6 +244,10 @@ async function freePort(): Promise<number> {
   });
 }
 
+/**
+ * The port the server takes: the one it had last time while it is free, so the page keeps its
+ * address (and the browser storage that goes with it), else a free one the system gives.
+ */
 export async function choosePort(saved: number | null): Promise<number> {
   if (saved !== null && Number.isInteger(saved) && saved > 1024 && saved < 65536 && await portFree(saved)) return saved;
   return freePort();
@@ -238,7 +255,11 @@ export async function choosePort(saved: number | null): Promise<number> {
 
 export interface Saved {
   port: number | null;
-  server: { pid: number; bun: string; started: string | null } | null;
+  /**
+   * the server it ran last, so a run after a crash can end one left behind; `started` is its start time (`ps -o lstart=`).
+   * `bun` is the program it ran: the server's binary, or the bundled Bun of an app from before the binary.
+   */
+  server: { pid: number; bun: string; started: string | null; ready?: boolean } | null;
 }
 
 export function readSaved(path: string): Saved {
@@ -246,7 +267,11 @@ export function readSaved(path: string): Saved {
     const value = JSON.parse(readFileSync(path, "utf8")) as Partial<Saved>;
     const port = typeof value.port === "number" ? value.port : null;
     const server = value.server && typeof value.server.pid === "number" && typeof value.server.bun === "string"
-      ? { pid: value.server.pid, bun: value.server.bun, started: typeof value.server.started === "string" ? value.server.started : null }
+      ? {
+        pid: value.server.pid, bun: value.server.bun,
+        started: typeof value.server.started === "string" ? value.server.started : null,
+        ...(typeof value.server.ready === "boolean" ? { ready: value.server.ready } : {}),
+      }
       : null;
     return { port, server };
   } catch {
@@ -260,6 +285,14 @@ export function writeSaved(path: string, saved: Saved): void {
   renameSync(`${path}.tmp`, path);
 }
 
+/** A port remembered for the next start isn't an address the CLI can use. */
+export async function desktopCommandPort(path: string): Promise<number | null> {
+  const { port, server } = readSaved(path);
+  if (port === null || !Number.isInteger(port) || port < 1 || port > 65535
+    || server?.ready !== true || !Number.isSafeInteger(server.pid) || server.pid <= 0 || server.started === null) return null;
+  return await processStart(server.pid) === server.started && desktopListenerMatches(path, server.pid) ? port : null;
+}
+
 export interface ProcessProbe {
   command: (pid: number) => Promise<string | null>;
   started: (pid: number) => Promise<string | null>;
@@ -267,14 +300,24 @@ export interface ProcessProbe {
 
 const SERVES = /^"? serve$/;
 
-export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = { command: processCommand, started: processStart }): Promise<boolean> {
+/**
+ * Only the same process is ended: it still runs this app's Bun on its
+ * server and started at the recorded time. A pid the system has since
+ * given to another program, or to another server, is left alone.
+ */
+export async function endLeftover(saved: Saved["server"], probe?: ProcessProbe): Promise<boolean> {
   if (saved === null) return false;
-  const line = await probe.command(saved.pid);
+  const line = await (probe?.command ?? processCommand)(saved.pid);
   // Windows writes the program's path in quotes when it has a space in it: `"C:\…\bun.exe" …`
   if (line === null) return false;
   const command = line.startsWith('"') ? line.slice(1) : line;
+  // the binary's `serve`, or the server's source on Bun as an app from before the binary ran it
   if (!command.startsWith(saved.bun) || !(SERVES.test(command.slice(saved.bun.length)) || command.includes(join("server", "index.ts")))) return false;
-  if (saved.started === null || await probe.started(saved.pid) !== saved.started) return false;
+  // without a start time it cannot be told from another process that got the pid since: left alone
+  if (saved.started === null) return false;
+  // Records made before the CLI used them stored ps's time in the desktop app's local time zone.
+  const started = probe ? await probe.started(saved.pid) : await processStart(saved.pid, saved.ready === undefined ? "legacy" : "utc");
+  if (started !== saved.started) return false;
   try { process.kill(saved.pid, "SIGTERM"); } catch { return false; }
   return true;
 }
@@ -300,15 +343,15 @@ export async function processCommand(pid: number): Promise<string | null> {
 export function processStartSync(pid: number): string | null {
   try {
     const [command, args] = psStart(pid);
-    const output = execFileSync(command, args, { env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: WINDOWS ? 15_000 : 5_000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
+    const output = execFileSync(command, args, { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, encoding: "utf8", timeout: WINDOWS ? 15_000 : 5_000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
     return output === "" ? null : output;
   } catch {
     return null;
   }
 }
 
-export async function processStart(pid: number): Promise<string | null> {
-  const { code, output } = await run(...psStart(pid), { ...process.env, LC_ALL: "C" }, null, WINDOWS ? 15_000 : 5_000);
+export async function processStart(pid: number, zone: "utc" | "legacy" = "utc"): Promise<string | null> {
+  const { code, output } = await run(...psStart(pid), { ...process.env, LC_ALL: "C", ...(zone === "utc" ? { TZ: "UTC" } : {}) }, null, WINDOWS ? 15_000 : 5_000);
   return code === 0 && output.trim() !== "" ? output.trim() : null;
 }
 

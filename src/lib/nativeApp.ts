@@ -5,26 +5,22 @@
  */
 interface CapacitorBridge {
   isNativePlatform?: () => boolean;
-  /** "ios" or "android" in the app */
   getPlatform?: () => string;
   nativePromise?: (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown>;
   /** the app's native plugins, announced to the page before its first script runs */
   PluginHeaders?: ReadonlyArray<{ name?: unknown; methods?: ReadonlyArray<{ name?: unknown }> }>;
 }
 
-/** The app's push plugin: app/ios/App/App/OvisPushPlugin.swift and app/android/ovis-push. */
 export const PUSH_PLUGIN = "OvisPush";
 
 function bridge(): CapacitorBridge | undefined {
   return (globalThis as { Capacitor?: CapacitorBridge }).Capacitor;
 }
 
-/** Whether this page runs inside the iOS app rather than a browser. */
 export function inNativeApp(): boolean {
   return bridge()?.isNativePlatform?.() === true;
 }
 
-/** Whether this page runs in Ovis for Mac's own window (app/mac), which names itself in the user agent. */
 export function inMacApp(): boolean {
   return typeof navigator !== "undefined" && /\bOvisMac\//.test(navigator.userAgent);
 }
@@ -42,9 +38,9 @@ export function hasNativePlugin(name: string): boolean {
   return inNativeApp() && (bridge()?.PluginHeaders ?? []).some((header) => header.name === name);
 }
 
-/** Whether the app around this page has `method` in its native plugin `plugin`: one built before the method came has not. */
-export function hasNativeMethod(plugin: string, method: string): boolean {
-  return inNativeApp() && (bridge()?.PluginHeaders ?? []).some((header) => header.name === plugin && (header.methods ?? []).some((entry) => entry.name === method));
+/** Whether the app's plugin `name` has `method`: an app built before the method was added has the plugin without it. */
+export function hasNativeMethod(name: string, method: string): boolean {
+  return inNativeApp() && (bridge()?.PluginHeaders ?? []).some((header) => header.name === name && (header.methods ?? []).some((each) => each.name === method));
 }
 
 /** Calls `method` of the app's plugin `plugin`; a refusal rejects with the plugin's `code` on the error. */
@@ -54,7 +50,25 @@ export async function callNative<T>(plugin: string, method: string, options: Rec
   return await call(plugin, method, options) as T;
 }
 
-/** Back to the app's list of PCs (app/ios/App/App/HerdrShellPlugin.swift, `disconnect`). */
 export async function changePc(): Promise<void> {
   await bridge()?.nativePromise?.("HerdrShell", "disconnect", {});
+}
+
+/** The app's connect screen with this PC kept until another is picked; an app built before that leaves this PC for it. */
+export async function chooseAnotherPc(): Promise<void> {
+  if (hasNativeMethod("HerdrShell", "chooseAnother")) await callNative("HerdrShell", "chooseAnother");
+  else await changePc();
+}
+
+/**
+ * Tells the phone app which PC this page is, for the saved PC the app opened it as (HerdrShell identify): its relay ID,
+ * as this PC's own health says it (`web_ui.server_id`), and its name. The app records them for that saved PC alone, so
+ * its My PCs puts a PC saved by several ways (the relay, its Tailscale address, SSH) on one row. `serverId` "": the
+ * health was read and names none, so the app drops one it kept (the address now reaches another Ovis); undefined: not
+ * read yet, nothing said of it. Nothing to an app without identify: on iOS a call to a method the app lacks never settles.
+ */
+export function tellAppWhichPc(pc: { readonly serverId?: string | undefined; readonly name?: string | undefined }): void {
+  const name = pc.name?.replace(/\.local$/i, "").trim();
+  if (!hasNativeMethod("HerdrShell", "identify") || (pc.serverId === undefined && !name)) return;
+  void callNative("HerdrShell", "identify", { ...(pc.serverId === undefined ? {} : { server_id: pc.serverId }), ...(name ? { name } : {}) }).catch(() => undefined);
 }

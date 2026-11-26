@@ -11,7 +11,6 @@ import { drawnPng } from "./clipboard.ts";
 import { callNative, hasNativeMethod, hasNativePlugin, inAndroidApp, inNativeApp } from "./nativeApp.ts";
 import { getTransport } from "./transport.ts";
 
-/** Whether a download link here would load the file over the app instead of saving it. */
 export function downloadLeavesApp(): boolean {
   if (typeof navigator === "undefined") return false;
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || (inNativeApp() && !inAndroidApp());
@@ -33,7 +32,6 @@ export async function imageFile(src: string, name: string, shown: HTMLImageEleme
   return new File([await drawnPng(shown)], name, { type: "image/png" });
 }
 
-/** The Android app's plugin that saves a picture to Downloads (app/android/.../SaveImagePlugin.java). */
 export const SAVE_PLUGIN = "OvisSave";
 
 /** The app's limit (SavedImage.MAX_BYTES), checked here before the bytes are copied into base64. */
@@ -87,7 +85,6 @@ export async function saveInApp(file: File, method: "saveImage" | "saveFile" = "
     const { saved } = await callNative<{ saved?: string }>(SAVE_PLUGIN, method, { name: file.name, type: file.type, data: base64(new Uint8Array(await file.arrayBuffer())) });
     return saved === "downloads" ? "saved" : "shared";
   } catch {
-    // the app refused it (not a picture, too large) or could not write it: the viewer says so
     return "failed";
   }
 }

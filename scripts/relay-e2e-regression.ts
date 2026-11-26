@@ -116,7 +116,7 @@ async function main(): Promise<void> {
       socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) synced.resolve(); });
       return socket;
     } });
-    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, relay: service, pushLoopbackHttp: true });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, relay: service, pushLoopbackHttp: true, accountOpensAll: false });
     const base = `http://127.0.0.1:${app.port}`;
     const post = (path: string) => fetch(`${base}/api/relay${path}`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } });
     const pc = {
@@ -145,6 +145,10 @@ async function main(): Promise<void> {
 
   interface Opened { context: BrowserContext; page: Page }
 
+  /**
+   * `blob` takes the service worker away, as a
+   * native WebView has none, so resources load as blobs.
+   */
   async function open(options: { width?: number; blob?: boolean; trace?: boolean } = {}): Promise<Opened> {
     assert.ok(browser);
     const width = options.width ?? 1440;
@@ -300,7 +304,9 @@ async function main(): Promise<void> {
     const fresh = await tab(main.context);
     await fresh.goto(deskScope);
     await state(fresh, "relay-unreachable").waitFor();
-    await fresh.getByRole("heading", { name: "The relay could not be reached" }).waitFor();
+    await fresh.getByRole("heading", { name: "Could not reach this machine" }).waitFor();
+    // the heading is shared with a PC that did not finish connecting: the explanation names the cause
+    assert.equal(await fresh.locator(`main[data-relay-state="relay-unreachable"] .relay-shell-copy`).innerText(), "This device could not reach the relay. Check this device's network, then try again.");
     if (evidence) await fresh.screenshot({ path: join(evidence, "task-23-relay-down.png"), animations: "disabled" });
     note(`relay down: relay stopped mid-session -> "Reconnecting to Ovis…" after ${graceRan} ms of page time (the grace), with "${marker}" held; a second tab opening the paired PC shows relay-unreachable`);
     relay = startBunRelay(relayOptions);
@@ -336,6 +342,7 @@ async function main(): Promise<void> {
     {
       const removed = await fetch(`${desk.base}/api/devices/${deskDevice.device_id}`, { method: "DELETE", headers: { origin: desk.base, "x-herdr-machine": "1" } });
       assert.equal(removed.status, 204, await removed.text());
+      // the session ends; the app's next sign-in, a page timer away, is refused for good
       await frames(page, "the revoked screen", async () => await state(page, "revoked").count() === 1, 60_000);
       await page.getByRole("heading", { name: "This device was removed from Desk PC" }).waitFor();
       assert.equal(await page.locator(".app").count(), 0, "the app is gone once the PC turned the phone away");

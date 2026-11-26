@@ -147,7 +147,8 @@ class ForegroundClient {
           await Bun.sleep(5);
         }
         const result = await this.request("connect");
-        if (!record(result) || result.protocolVersion !== 3) throw new Unavailable("unsupported_protocol");
+        if (!record(result) || (result.protocolVersion !== 3 && result.protocolVersion !== 4)) throw new Unavailable("unsupported_protocol");
+        if (result.ok !== true) throw new Unavailable("malformed_rpc");
       } finally { clearTimeout(timer); }
     })();
   }
@@ -165,6 +166,8 @@ class ForegroundClient {
     if (clients.get(this.expected.pid) === this) clients.delete(this.expected.pid);
   }
 
+  // Ownership reads the whole network-namespace TCP table, which can take hundreds of ms on a busy
+  // host, so it is proven once on connect and once at the end of each read, not around every request.
   private check(): void {
     if (this.failure !== null) throw this.failure;
   }

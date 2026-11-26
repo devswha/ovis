@@ -1,4 +1,8 @@
 name: Rust PTY host binaries
+# For Release, and for a repair run dispatched from the tag it builds, the attest job then signs each
+# binary's build provenance (gh attestation verify --repo devswha/ovis), so an install can tell the bytes
+# came from this workflow and not only that they match the manifest beside them; a called workflow may
+# not ask for more permissions than its caller grants, so both callers grant id-token and attestations.
 on:
   pull_request:
     paths:
@@ -38,7 +42,7 @@ jobs:
         env:
           HOME: ${{ runner.temp }}/setup-bun-home
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - name: Rust toolchain
         run: |
@@ -80,7 +84,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
           no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -93,7 +97,8 @@ jobs:
           name: ovis-pty-sidecar
           path: pty-sidecar/*
           if-no-files-found: error
-  # The provenance names the run's own ref and commit, so a repair dispatched from another ref than the
+  # Pull requests build without signing; a release cannot publish until this job has attested. The
+  # provenance names the run's own ref and commit, so a repair dispatched from another ref than the
   # tag it builds attests nothing rather than a source the binaries were not built from.
   attest:
     needs: manifest
@@ -111,4 +116,6 @@ jobs:
           path: pty-sidecar
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: pty-sidecar/ovis-pty-sidecar-*
+          subject-path: |
+            pty-sidecar/ovis-pty-sidecar-*
+            pty-sidecar/ovis-acp-keeper-*

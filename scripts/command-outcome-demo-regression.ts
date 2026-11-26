@@ -8,7 +8,9 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openLens } from "./header-lens.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-command-outcome-demo-"));
 const evidence = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "command-outcome");
@@ -24,17 +26,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = (pane: string): string => `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(pane)}`;
   mkdirSync(evidence, { recursive: true });
 
@@ -105,6 +97,9 @@ try {
           await page.screenshot({ path: shot("context-done"), animations: "disabled" });
           console.log(`PASS ${label}: /context shows accepted, then done on the transcript, on one bubble`);
 
+          // /btw is answered on the screen alone: one send opens a peek of the terminal over the
+          // chat, and returning leaves one quiet command row, without an outcome chip or an
+          // unconfirmed screen preview.
           await send(page, "/btw is the retry test flaky on CI too?");
           await peekStack(page, panes.flaky).waitFor();
           await page.locator(".terminal-banner-command").waitFor();
@@ -117,6 +112,8 @@ try {
           assert.equal(await btw.locator(".chat-outcome, .chat-bubble, details").count(), 0);
           assert.equal(await back.locator(".chat-turn-user:not(.chat-terminal-command)").count(), turnsBefore + 1);
           await page.screenshot({ path: shot("btw-returned"), animations: "disabled" });
+          // the answer is still open in the terminal, where the next message would be typed and do
+          // nothing: the composer says so (src/lib/inputRow.ts), and dismissing it there clears that
           const stillOpen = chatStack(page, panes.flaky).locator(".composer-notice", { hasText: "/btw is still open in the terminal" });
           await stillOpen.waitFor();
           await stillOpen.getByRole("button", { name: "Show terminal", exact: true }).click();

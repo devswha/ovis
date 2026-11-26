@@ -1,80 +1,12 @@
-import type { IBuffer, ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
+import type { ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
+import { terminalPathMatches } from "../../shared/terminal-links.ts";
+import { isWebLink } from "./externalLink.ts";
 import { isCodeName } from "./filePaths.ts";
-import { inMacApp, inNativeApp } from "./nativeApp.ts";
+import type { ScreenRows } from "./terminalScreen.ts";
 
-/**
- * Whether this page can keep a browser tab to reuse. The iOS, Android, Mac and desktop apps hand an
- * external address to the system browser, so the window they give back is never that tab.
- */
-export function canReuseExternalLinkTab(): boolean {
-  return !inNativeApp() && !inMacApp() && !(typeof navigator !== "undefined" && /\bElectron\//.test(navigator.userAgent));
-}
-
-/** what a name is made of: letters, digits and the marks that complete them (a decomposed `é` is two) */
-const NAME = "\\p{L}\\p{N}\\p{M}_";
-/**
- * A path, optionally followed by an agent's line/column or #L reference, kept for the viewer.
- * A path with a folder in it opens on a plain click. A bare name (`README.md`) opens only on
- * Cmd+click, Ctrl+click off a Mac (`bareNameLinks`): a terminal is full of them (`ls`, `git status`, a
- * compiler's output), a tap or a click to focus the pane lands on one, and the file viewer
- * would open over the terminal for it. A chat's plain text is read the same way (BARE_PATH in
- * filePaths.ts). The character before it is matched too, not looked behind at
- * (shared/lookbehind.ts): group 1 is the link, group 2 its path.
- */
-const FILE_PATH = new RegExp(`(?:^|[^${NAME}/.@~:-])(((?:~\\/|\\.{1,2}\\/|\\/)?(?:[${NAME}@.+-]+\\/)*[${NAME}@+-][${NAME}@.+-]*\\.[A-Za-z0-9]{1,8})(?::\\d+(?::\\d+)?|#L\\d+(?:-L?\\d+)?)?)(?![${NAME}/])`, "gu");
-/** `name.ext(` is a call, not a file, unless the parenthesis holds a compiler's line and column: `App.tsx(120,8)` */
-const CALL = /\s*\((?!\d+(?:,\d+)?\))/y;
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
-/** A logical line longer than this is not prose with paths in it (a minified bundle, a blob): it is left alone. */
 const MAX_LINE_CHARS = 8192;
-
-/**
- * A URI this app opens in a new tab: an http(s) address and nothing else. Both link paths in
- * PaneTerminal answer to it, so a line crafted to look like a link cannot hand the browser a
- * scheme of its own choosing (`javascript:`, `data:`, an OS handler).
- */
-export function isWebLink(uri: string): boolean {
-  return /^https?:\/\//i.test(uri);
-}
-
-/**
- * Makes an http(s) link opener. Each instance owns at most one reusable tab. A browser lets a page
- * steer a tab of another site only as its opener, so the reused tab keeps its opener: the site in it
- * can see and navigate this tab. That is why reuse is a setting, off by default; a new tab has none.
- */
-export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
-  let reusable: Window | null = null;
-  const newTab = (uri: string): void => {
-    const link = document.createElement("a");
-    link.href = uri;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.click();
-  };
-  return (uri, reuse) => {
-    if (!reuse || !canReuseExternalLinkTab()) {
-      newTab(uri);
-      return;
-    }
-    try {
-      if (reusable === null || reusable.closed) {
-        reusable = window.open(uri, "_blank");
-        if (reusable === null) newTab(uri);
-        return;
-      }
-      reusable.location.href = uri;
-      reusable.focus();
-    } catch {
-      // the browser refused to open or steer that tab (say, it no longer counts this page as its opener): a click never does nothing
-      reusable = null;
-      newTab(uri);
-    }
-  };
-}
-
-/** Opens links from coding-agent chat and terminal output. */
-export const openWebLink = createWebLinkOpener();
 
 /**
  * The OSC 8 handler that keeps a hyperlink this app cannot open from being drawn as one (#739).
@@ -148,12 +80,10 @@ interface LogicalLine {
   text: string;
   /** the cell each UTF-16 unit of `text` sits in (1-based, as xterm's link ranges are) and its width */
   positions: { x: number; y: number; width: number }[];
-  /** the line's beginning scrolled off the top: its first word is the end of something longer */
   clipped: boolean;
 }
 
-/** The whole wrapped line that buffer row `lineNumber` (1-based) is part of. */
-function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
+function logicalLine(buffer: ScreenRows, lineNumber: number): LogicalLine | null {
   let first = lineNumber - 1;
   while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
   let text = "";
@@ -175,24 +105,10 @@ function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
   return { text, positions, clipped: buffer.getLine(first)?.isWrapped === true };
 }
 
-/** The runs of `text` that hold `://`, each from the whitespace before to the whitespace after: one pass. */
-function addresses(text: string): [number, number][] {
-  const spans: [number, number][] = [];
-  let end = 0;
-  for (let at = text.indexOf("://"); at !== -1; at = text.indexOf("://", end)) {
-    let start = at;
-    while (start > end && !/\s/.test(text[start - 1]!)) start--;
-    end = at + 3;
-    while (end < text.length && !/\s/.test(text[end]!)) end++;
-    spans.push([start, end]);
-  }
-  return spans;
-}
-
 type FileLink = Omit<ILink, "activate"> & { activate: (event: MouseEvent) => void };
 
-/** With `bare`, bare names are links too, followed only with its key; without it only paths with a folder are. */
-export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): FileLink[] {
+/** `now`: the rows as they are at a click, read again then (a reader's rows can be held as they were when it was made) */
+export function terminalFileLinks(buffer: ScreenRows, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks, now: () => ScreenRows = () => buffer): FileLink[] {
   const line = logicalLine(buffer, lineNumber);
   if (line === null) return [];
   const { text, positions } = line;
@@ -205,16 +121,15 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
     const last = positions[index + shown.length - 1];
     if (!start || !last || index < lead || lineNumber < start.y || lineNumber > last.y) return;
     const found: FileLink = {
-      // a wide character's last cell is the link's end, not its first
       range: { start: { x: start.x, y: start.y }, end: { x: last.x + last.width - 1, y: last.y } },
       text: shown,
       // xterm keeps a row's links until the pointer leaves the row: the row is read again at the
       // click, and it opens only if the same whole link is still there (`foo.ts` grown to `foo.tsx` is not)
       activate: (event) => {
         if (keyed && !keyed.pressed(event)) return;
-        const same = terminalFileLinks(buffer, lineNumber, () => {}, bare).some((now) => now.text === shown
-          && now.range.start.x === start.x && now.range.start.y === start.y
-          && now.range.end.x === last.x + last.width - 1 && now.range.end.y === last.y);
+        const same = terminalFileLinks(now(), lineNumber, () => {}, bare).some((found) => found.text === shown
+          && found.range.start.x === start.x && found.range.start.y === start.y
+          && found.range.end.x === last.x + last.width - 1 && found.range.end.y === last.y);
         if (same) open(path, event);
       },
     };
@@ -230,25 +145,22 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
     const path = fileUriPath(uri);
     if (path) link(match.index, uri, path);
   }
-  // Web addresses belong to WebLinksAddon, and a file URI was read above.
-  const spans = addresses(text);
-  let span = 0;
-  for (const found of text.matchAll(FILE_PATH)) {
-    const linked = found[1]!;
-    const match = { index: found.index! + found[0].length - linked.length, 0: linked };
-    const path = found[2];
-    const folder = path?.includes("/") === true;
-    if (!path || (!folder && !bare) || !/\p{L}/u.test(path.replace(/\.[A-Za-z0-9]{1,8}$/, ""))) continue;
-    if (/^v?\d+(?:\.\d+)+$/.test(path) || (!folder && isCodeName(path))) continue;
-    CALL.lastIndex = match.index + match[0].length;
-    if (CALL.test(text)) continue;
-    while (span < spans.length && spans[span]![1] <= match.index) span++;
-    if (span < spans.length && spans[span]![0] <= match.index) continue;
-    link(match.index, match[0], match[0], folder ? undefined : bare);
+  // A bare name is opt-in: plain pane clicks must not open a file viewer on names from ordinary output.
+  for (const match of terminalPathMatches(text, bare !== undefined)) {
+    if (!match.folder && isCodeName(match.path)) continue;
+    link(match.index, match.link, match.link, match.folder ? undefined : bare);
   }
   return links;
 }
 
-export function terminalFileLinkProvider(buffer: () => IBuffer, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
-  return { provideLinks: (line, callback) => callback(terminalFileLinks(buffer(), line, open, bare)) };
+export function terminalFileLinkProvider(buffer: () => ScreenRows, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
+  // a click reads the rows again (libghostty's are held as they were read), on the screen the link was found on: a
+  // full-screen program that came up between the press and the release does not take the link away
+  const screenOf = (rows: ScreenRows): boolean => ("alternate" in rows ? rows.alternate === true : (rows as { type?: string }).type === "alternate");
+  return {
+    provideLinks: (line, callback) => {
+      const found = buffer();
+      callback(terminalFileLinks(found, line, open, bare, () => { const now = buffer(); return screenOf(now) === screenOf(found) ? now : found; }));
+    },
+  };
 }

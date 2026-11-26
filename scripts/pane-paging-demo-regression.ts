@@ -7,6 +7,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { appFaces } from "./app-faces.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "herdr-pane-paging-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -24,6 +25,9 @@ const scrollGeometry = (page: Page) => page.evaluate(() => {
     returnControls: [...document.querySelectorAll<HTMLElement>(".pane-frame.is-current .chat-new-messages")].map((button) => ({ label: button.getAttribute("aria-label"), text: button.textContent, className: button.className, height: button.getBoundingClientRect().height })),
     loading: node.querySelector(".chat-inline-state")?.textContent ?? null };
 });
+// The demo's api pane opens mid-turn and ends that turn 4.5 s later (site/demo/transport.ts): the
+// answer lands and the work block folds, so the transcript's height changes under the reader. Paging
+// asserts exact scroll positions, so it starts only once that turn has ended and its fold has settled.
 async function demoTurnEnded(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const transcript = document.querySelector(".pane-frame.is-current .chat-view");
@@ -68,17 +72,7 @@ try {
   })();</script>`;
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n${record}\n<script type="module"`));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -285,8 +279,14 @@ try {
           await openSettingsPage(page, "Shortcuts");
           await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).selectOption("default");
           await page.keyboard.press("Escape");
-          await transcript.evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll", { bubbles: true })); });
-          await settled(page);
+          await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor({ state: "hidden" });
+          for (let pages = 0; ; pages++) {
+            assert.ok(pages < 128, "repeated upward pages reach the history start within a bound");
+            await page.keyboard.press("Meta+Shift+PageUp");
+            await settled(page);
+            if (await transcript.evaluate((node) => node.scrollTop === 0)) break;
+          }
+          await returnControl(page).waitFor();
           await page.keyboard.press("Meta+Shift+PageUp");
           await settled(page);
           assert.equal(await transcript.evaluate((node) => node.scrollTop), 0, "PageUp at the history start has no movement");

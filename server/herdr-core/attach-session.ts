@@ -18,6 +18,10 @@ export const CLEAR_HISTORY = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
  * tail of in-place updates cannot draw it again (hc has no repaint), and the tail's lines land once.
  */
 export const CLEAR_JOINER_HISTORY = "\x1b[?1049l\x1b[3J";
+/** One unmodified cursor or Home/End key, in either cursor mode's form. */
+export const CURSOR_KEY = /^\x1b[[O]([ABCDHF])$/;
+/** The key a CURSOR_KEY names, as hc's `terminal.keys` names it. */
+export const CURSOR_KEY_NAMES: Record<string, string> = { A: "up", B: "down", C: "right", D: "left", H: "home", F: "end" };
 
 type Display = { fg?: string; bg?: string; cursor?: string; cell?: [number, number] };
 
@@ -27,6 +31,7 @@ function rgb(body: string): string | undefined {
   return `#${parts.slice(1).map((part) => part.slice(0, 2).padEnd(2, part[0]!)).join("").toLowerCase()}`;
 }
 
+/** Ported from `hc attach`'s take_replies. */
 export function takeReplies(input: string, display: Display): { rest: string; focus: boolean[] } {
   let rest = "";
   const focus: boolean[] = [];
@@ -73,7 +78,16 @@ export interface CoreAttachOptions {
   onExit: (code: number | null) => void;
 }
 
+/**
+ * It answers the calls the server makes on a PtySession:
+ * keystrokes are DATA, a size is hc's RESIZE, and pausing holds back hc's credit, which stops the
+ * stream once hc's window is spent.
+ *
+ * The viewer keeps the scrollback (`terminal-history`): each attach starts with the terminal's last
+ * TERMINAL_HISTORY_LINES lines, main screen only, as `hc attach --history` shows them.
+ */
 export class CoreAttachSession {
+  /** goes ahead of a joiner's cut main-screen replay, which lost the first attach's CLEAR_HISTORY */
   readonly replayPrefix = CLEAR_JOINER_HISTORY;
   readonly exited: Promise<void>;
   private channel: Channel | null = null;
@@ -92,6 +106,14 @@ export class CoreAttachSession {
   private cols: number;
   private rows: number;
   private readonly end: (code: number | null) => void;
+  /**
+   * The program's cursor mode (DECCKM) as hc's stream last said. The viewer's terminal learns it a link's round trip
+   * later: a key typed in between was encoded in the old mode.
+   */
+  private applicationCursor = false;
+  /** where hc's stream stands in a sequence that may change the cursor mode, carried from frame to frame */
+  private modeParse: "ground" | "escape" | "csi" | "private" | "bang" = "ground";
+  private modeParams = "";
 
   constructor(options: CoreAttachOptions) {
     this.cols = options.cols;
@@ -117,12 +139,14 @@ export class CoreAttachSession {
         this.owed += payload.length;
         this.settle();
         let text = decoder.decode(payload, { stream: true });
+        this.trackCursorMode(text);
         if (text && first) {
           first = false;
           text = CLEAR_HISTORY + text;
         }
-        // a program turning focus reports off would leave hc without this viewer's focus
-        if (text) options.onData(text.includes(FOCUS_OFF) ? text + FOCUS_ON : text);
+        // a program turning focus reports off would leave hc without this viewer's focus;
+        // insert right after FOCUS_OFF so a trailing incomplete escape sequence at a 16 KiB chunk boundary stays intact
+        if (text) options.onData(text.includes(FOCUS_OFF) ? text.replaceAll(FOCUS_OFF, FOCUS_OFF + FOCUS_ON) : text);
       },
       onClose: (reason) => this.end(typeof reason?.["exit_code"] === "number" ? reason["exit_code"] : null),
     }).then(({ channel }) => {
@@ -136,8 +160,10 @@ export class CoreAttachSession {
       this.typed = [];
       this.settle();
       this.report();
+      // the viewer's terminal answers through write(), as it answered `hc attach`
       this.ask(true);
     }, (error: unknown) => {
+      // the old `hc attach` printed why in the pane; the server log is where it goes now
       console.error(`herdr-core attach for ${options.terminal} failed: ${error instanceof Error ? error.message : String(error)}`);
       this.end(null);
     });
@@ -158,9 +184,53 @@ export class CoreAttachSession {
       if (focused) this.ask();
     }
     if (!rest) return true;
-    if (this.channel) this.send(rest, automatic);
-    else this.typed.push({ data: rest, automatic });
+    // a lone cursor key goes in the form the program reads now, whichever the viewer's terminal still believed in
+    const key = automatic ? null : CURSOR_KEY.exec(rest);
+    const typed = key ? `${this.applicationCursor ? "\x1bO" : "\x1b["}${key[1]}` : rest;
+    if (this.channel) this.send(typed, automatic);
+    else this.typed.push({ data: typed, automatic });
     return true;
+  }
+
+  /**
+   * Follows DECCKM as xterm does: `CSI ? … 1 … h/l` with 1 a top-level parameter (`?01h` too, `?1004:1h` is mode
+   * 1004's), and the resets that put it back to normal mode, RIS (`ESC c`) and DECSTR (`CSI ! p`).
+   */
+  private trackCursorMode(text: string): void {
+    let at = this.modeParse === "ground" ? text.indexOf("\x1b") : 0;
+    while (at !== -1 && at < text.length) {
+      const char = text[at]!;
+      if (char === "\x1b") this.modeParse = "escape";
+      else {
+        switch (this.modeParse) {
+          case "ground":
+            break;
+          case "escape":
+            if (char === "c") this.applicationCursor = false;
+            this.modeParse = char === "[" ? "csi" : "ground";
+            break;
+          case "csi":
+            this.modeParams = "";
+            this.modeParse = char === "?" ? "private" : char === "!" ? "bang" : "ground";
+            break;
+          case "bang":
+            if (char === "p") this.applicationCursor = false;
+            this.modeParse = "ground";
+            break;
+          case "private":
+            if (/[\d;:]/.test(char)) {
+              if (this.modeParams.length < 256) this.modeParams += char;
+              break;
+            }
+            if ((char === "h" || char === "l") && this.modeParams.split(";").some((param) => /^\d+$/.test(param) && Number(param) === 1)) {
+              this.applicationCursor = char === "h";
+            }
+            this.modeParse = "ground";
+            break;
+        }
+      }
+      at = this.modeParse === "ground" ? text.indexOf("\x1b", at + 1) : at + 1;
+    }
   }
 
   private send(data: string, automatic: boolean): void {
@@ -180,6 +250,14 @@ export class CoreAttachSession {
    */
   winch(): void {}
 
+  /**
+   * Whether the cursor mode this attach parsed is hc's latest: while the stream is paused (a viewer behind on output
+   * holds hc's credit back), hc may hold output that changed the mode, and only hc's `terminal.keys` reads it.
+   */
+  get modeCurrent(): boolean {
+    return !this.paused;
+  }
+
   pause(): void {
     this.paused = true;
   }
@@ -189,10 +267,19 @@ export class CoreAttachSession {
     this.settle();
   }
 
+  /**
+   * Detaches; `exited` settles when `Channel.close` does. When hc answered, a next attach cannot
+   * overlap this one; when the close gave up after 10 s with no answer, it may.
+   */
   kill(): void {
     if (this.closed) return;
     this.closed = true;
     if (this.channel) void this.channel.close().then(() => this.end(null));
+  }
+
+  /** As `kill`: hc reads the close after what was typed, both going over the one connection in the order written. */
+  leave(): void {
+    this.kill();
   }
 
   private report(): void {

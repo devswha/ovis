@@ -9,7 +9,10 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// A second, tall form (steps, reference text, descriptions, a
+// custom answer) is answered by this script in the transport's place, for the "web" pane, and a
 // prompt of another pane the same way (window.panePrompts). All files and HTTP traffic stay in
 // this disposable, loopback-only app; no herdr session is opened.
 // PROMPT_DOCK_SHOTS=<dir> also saves a screenshot of each state there.
@@ -42,6 +45,14 @@ const ANSWERS_REVIEW = {
   multi_select: false, custom_option_index: null,
 };
 const PLAN = { ...FORM, id: "demo-plan", kind: "plan", title: "Ready to code?", steps: undefined };
+/** hook-vs-screen's long command ① as its hook request carries it: one line, wider than a desktop's card */
+const LONG_COMMAND = "find /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'";
+const LONG_APPROVAL = {
+  id: "demo-long-command", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
+  body: `List the newest docs\n${LONG_COMMAND}`,
+  options: [{ label: "Yes", description: null }, { label: "Yes, and don't ask again for: find", description: null }, { label: "No", description: null }],
+  multi_select: false, custom_option_index: null,
+};
 const NEXT = { ...PLAN, id: "demo-next", title: "One more thing", question: "Which region should the counters live in?" };
 const OTHER = { ...PLAN, id: "demo-other", agent: "omo", title: "Proofread", question: "Which chapters should the proofread cover?" };
 const LONG_LABEL = "Approve with the changes the reviewer listed: keep the rate limit per user and report, move the counters to the shared store, and return Retry-After. ".repeat(15).slice(0, 2166);
@@ -168,6 +179,8 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
+  // Each pane has its own prompt, as on the server: one pane's read
+  // or answer never touches another's.
   const form = `<script>(() => {
     const demo = window.fetch;
     const web = ${JSON.stringify(panes.web)};
@@ -176,6 +189,7 @@ try {
     window.formAnswers = [];
     window.formNext = null;
     window.formDelay = 0;
+    window.formAnswerGate = null;
     window.formReturned = 0;
     window.formReadFails = false;
     window.formFailedReads = 0;
@@ -204,7 +218,8 @@ try {
           window.formNext = null;
           if (next === null) { if (answer.pane_id === web) window.formPrompt = null; else delete window.panePrompts[answer.pane_id]; }
           // window.formDelay: the answer takes that long to come back, as send_keys and the re-read do
-          return new Promise((done) => setTimeout(done, window.formDelay || 0)).then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
+          const gate = window.formAnswerGate ?? new Promise((done) => setTimeout(done, window.formDelay || 0));
+          return gate.then(() => { if (next !== null) window.formPrompt = next; window.formReturned += 1; return json({ ok: true }); });
         }
       }
       return demo(input, init);
@@ -212,17 +227,7 @@ try {
   })();</script>`;
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${form}\n    <script type="module"`));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}`;
   if (shots !== null) mkdirSync(shots, { recursive: true });
   try {
@@ -245,6 +250,8 @@ try {
           window.matchMedia = (query) => media(query === "(pointer: coarse)" ? "not all" : query);
         });
         await context.addInitScript(([owner, messages, settings]) => {
+          // The demo's opening turn is in another pane. Its completion droplet can cover this card.
+          Reflect.set(window, "__ovisDemoHoldTurn", true);
           localStorage.setItem("ovis:settings", settings!);
           const enterSends: unknown = JSON.parse(settings!).enterSends;
           if (typeof enterSends === "boolean") localStorage.setItem("ovis:enter-sends", String(enterSends));
@@ -333,6 +340,27 @@ try {
         }
       }
       console.log("PASS the approval card sits outside the transcript, directly over the input card on its column, at 1440 and 390, dark and light");
+
+      for (const size of [{ width: 1280, height: 800 }, { width: 390, height: 844, touch: true }]) {
+        const { page, errors, shot, close } = await open({ ...size, theme: "light", prompt: LONG_APPROVAL });
+        try {
+          const body = page.locator(".prompt-card-body");
+          assert.equal(await body.textContent(), LONG_APPROVAL.body);
+          // the end of the command is in the box, not pushed out past its right edge
+          const fit = await body.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const range = document.createRange();
+            range.setStart(node.firstChild!, node.firstChild!.textContent!.length - 1);
+            range.setEnd(node.firstChild!, node.firstChild!.textContent!.length);
+            const end = range.getBoundingClientRect();
+            return { overflows: node.scrollWidth > node.clientWidth + 1, endInside: end.right <= box.right && end.left >= box.left };
+          });
+          assert.deepEqual(fit, { overflows: false, endInside: true }, `${size.width}: the long command wraps inside the card`);
+          assert.deepEqual(errors, []);
+          await shot(`approval-long-command-${size.width}-light`);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+      }
+      console.log("PASS a long one-line command wraps inside the approval card to its end, at 1280 and 390");
 
       {
         const { page, errors, close } = await open({ width: 1440, height: 900 });
@@ -559,13 +587,19 @@ try {
       {
         const { page, errors, close } = await open({ width: 1440, height: 900, prompt: FORM });
         try {
-          await page.evaluate(() => { (window as unknown as { formDelay: number }).formDelay = 600; });
+          await page.evaluate(() => {
+            const formAnswerGate = new Promise<void>((resolve) => {
+              window.addEventListener("qa-release-form-answer", () => resolve(), { once: true });
+            });
+            Object.assign(window, { formAnswerGate });
+          });
           await page.locator(".prompt-card").getByRole("button", { name: /^1\. In memory/ }).click();
           await page.locator(".prompt-card-options[aria-busy=true]").waitFor();
           const elsewhere = page.locator(".app-header button:not([disabled]):visible").first();
           await elsewhere.focus();
           assert.equal(await elsewhere.evaluate((node) => document.activeElement === node), true);
           assert.equal(await page.locator(".prompt-card-options").getAttribute("aria-busy"), "true", "the answer is still on its way");
+          await page.evaluate(() => { window.dispatchEvent(new Event("qa-release-form-answer")); });
           await page.locator(".prompt-card").getByText(FORM.question).waitFor({ state: "detached" });
           assert.equal((await answersOf(page)).length, 1);
           assert.equal(await elsewhere.evaluate((node) => document.activeElement === node), true, "focus stays where the user put it while the answer was on its way");

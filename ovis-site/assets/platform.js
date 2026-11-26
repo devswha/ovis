@@ -23,7 +23,8 @@
   }
 
   /**
-   * Every Mac browser's userAgent says "Intel Mac OS X", so without the hint it is Apple silicon.
+   * The CPU of a Mac, for its dmg: Intel only when Chromium's architecture hint says "x86". Every
+   * Mac browser's userAgent says "Intel Mac OS X", so without the hint it is Apple silicon.
    * @param {string} [architecture]
    * @returns {"x64" | "arm64"}
    */
@@ -32,8 +33,9 @@
   }
 
   /**
-   * Chromium's architecture hint wins, since its userAgent says "Linux x86_64" on any CPU; Firefox
-   * writes "aarch64".
+   * Chromium's architecture hint ("arm" or "x86", from userAgentData.getHighEntropyValues) wins,
+   * since its userAgent says "Linux x86_64" on any CPU; without it, arm64 when the userAgent says
+   * so (Firefox writes "aarch64"), else x64.
    * @param {{ userAgent?: string }} nav
    * @param {string} [architecture]
    * @returns {"x64" | "arm64"}
@@ -45,6 +47,9 @@
   }
 
   /**
+   * The download button's label on a desktop whose CPU is a guess: without Chromium's architecture
+   * hint (Safari, Firefox) nothing corrects the build later, so the button names the CPU it
+   * downloads, and an Intel Mac or arm64 Linux visitor looks to the other builds under it.
    * @param {ReturnType<typeof downloadPlatform>} platform
    * @param {{ userAgentData?: { getHighEntropyValues?: unknown }, userAgent?: string }} nav
    * @returns {string | undefined}
@@ -56,8 +61,31 @@
     return undefined;
   }
 
+  // every desktop installer the download rows link, each through _redirects to releases/latest/download/
+  const INSTALLERS = ["Ovis-mac-arm64.dmg", "Ovis-mac-x64.dmg", "Ovis-win-x64.exe", "Ovis-linux-x64.deb", "Ovis-linux-arm64.deb", "Ovis-linux-x64.AppImage", "Ovis-linux-arm64.AppImage"];
+
+  /**
+   * The line under the download rows, from GitHub's latest release: the one the download links'
+   * releases/latest/download/ addresses (_redirects) hand out. Only a release that holds every
+   * installer the rows link gets a line (mac-dmg.yml and windows-app.yml can make a release latest
+   * with only Ovis.dmg and Ovis.exe), so it never names a version whose files are not there.
+   * @param {{ tag_name?: unknown, published_at?: unknown, assets?: unknown } | null} release the answer of GET /repos/devswha/ovis/releases/latest
+   * @returns {{ text: string, href: string } | undefined}
+   */
+  function releaseLine(release) {
+    const tag = release?.tag_name, published = release?.published_at, assets = release?.assets;
+    if (typeof tag !== "string" || !/^v\d+\.\d+\.\d+$/.test(tag)) return undefined;
+    if (typeof published !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(published)) return undefined;
+    const day = new Date(published);
+    if (Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== published.slice(0, 10)) return undefined;
+    // an upload that has not finished ("open") or failed ("starter") is listed too, as an empty file
+    const attached = new Set(Array.isArray(assets) ? assets.filter((asset) => asset?.state === "uploaded").map((asset) => asset.name) : []);
+    if (!INSTALLERS.every((name) => attached.has(name))) return undefined;
+    return { text: `${tag} · ${published.slice(0, 10)}`, href: `https://github.com/devswha/ovis/releases/tag/${tag}` };
+  }
+
   if (typeof module === "object" && module.exports) {
-    module.exports = { downloadPlatform, guessedCpuLabel, linuxArch, macArch };
+    module.exports = { INSTALLERS, downloadPlatform, guessedCpuLabel, linuxArch, macArch, releaseLine };
     return;
   }
 
@@ -68,6 +96,7 @@
     linux: (cpu) => ({ href: `https://ovis.sh/Ovis-linux-${cpu}.deb`, tip: `Debian, Ubuntu · ${cpu}` }),
     mac: (cpu) => ({ href: `https://ovis.sh/Ovis-mac-${cpu}.dmg` }),
   };
+  // the line under the download row on Windows: the desktop app is not code-signed yet, so SmartScreen asks first
   const WINDOWS_ALT = "If Windows shows 'Windows protected your PC', choose More info → Run anyway.";
   const LINUX_ALT = 'Not on Debian or Ubuntu? Get the AppImage for <a href="https://ovis.sh/Ovis-linux-x64.AppImage">x64</a> or <a href="https://ovis.sh/Ovis-linux-arm64.AppImage">arm64</a>.';
   const BUTTONS = {
@@ -80,6 +109,26 @@
     if (platform === "linux") alt.innerHTML = LINUX_ALT;
     else if (platform === "windows") alt.textContent = WINDOWS_ALT;
     else if (platform !== "mac" && platform !== "unknown") alt.hidden = true;
+  }
+
+  // a phone's button opens the store, whose app is versioned on its own: no line there
+  if (platform !== "ios" && platform !== "android") {
+    fetch("https://api.github.com/repos/devswha/ovis/releases/latest").then((r) => (r.ok ? r.json() : null)).then((release) => {
+      const line = releaseLine(release);
+      if (!line) return;
+      const show = () => {
+        for (const note of document.querySelectorAll(".dl-version")) {
+          const notes = document.createElement("a");
+          notes.href = line.href;
+          notes.textContent = window.ovisT ? window.ovisT("What's new") : "What's new";
+          note.replaceChildren(`${line.text} · `, notes);
+          note.hidden = false;
+        }
+      };
+      show();
+      // the language picker sets <html lang>: the link's text follows it
+      new MutationObserver(show).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
+    }).catch((error) => console.warn("ovis.sh: could not read the latest release", error));
   }
 
   const button = BUTTONS[platform];
@@ -110,6 +159,8 @@
     }
   }
 
+  // Chromium's architecture hint comes later, and only over https; until then the guess above
+  // stands (the shipped Mac button is Apple silicon's).
   const desktop = platform === "linux" || platform === "mac" ? platform : undefined;
   if (!desktop || !navigator.userAgentData?.getHighEntropyValues) return;
   navigator.userAgentData.getHighEntropyValues(["architecture"]).then(({ architecture }) => {

@@ -1,18 +1,26 @@
 import { constants, fstatSync, closeSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { directoryEntries } from "./directory-entries.ts";
 import { uptime } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { herdrRpc } from "./herdr/client.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
-import { processStartedAt, processStartedAtAsync } from "./process-start.ts";
+import { processAlive, processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
 
 const OMO_PROCESS = /(^|\/)omo(\.js)?$|\/omo-ai\//;
+/** node and bun run a script: the program is then the script, the first word that is not a flag */
 const JS_RUNTIME = /(^|\/)(node|nodejs|bun)$/;
 const SENPI_ENTRY = /\/@code-yeongyu\/senpi\/dist\/(bundle\/)?cli\.js$/;
 const OMO_EXTENSION = /\/omo-ai\/plugin\/?$/;
 /**
+ * Only the program counts: argv[0] (omo's native binary, its SDK's claude), or the script a
+ * JS runtime runs (`bun …/omo-ai/…/cli.js`, `node …/bin/omo`). An omo-ai path handed to another
+ * program (`grep -q …/omo-ai/x`, `cat …/bin/omo`) is that program's argument, not omo. The word
+ * is one path: a PATH list that names omo-ai's bin directory (`printf %s\n $PATH` in an rc
+ * file) made a fresh shell pass for omo for a moment.
+ *
  * A global bun install hoists omo's engine next to omo-ai instead of inside it
  * (`bun …/node_modules/@code-yeongyu/senpi/dist/bundle/cli.js --extension …/node_modules/omo-ai/plugin`):
  * the script is then senpi's own entry, and omo-ai shows only as the extension it loads.
@@ -31,6 +39,10 @@ export function isOmoProcess(argv: readonly string[]): boolean {
   return options.some((word, index) => options[index - 1] === "--extension" && !isPathList(word) && OMO_EXTENSION.test(word));
 }
 
+/**
+ * A Windows PC's process words read as the same paths: backslashes as slashes, and a program's
+ * .exe/.cmd dropped (`C:\Users\me\.bun\bin\bun.exe` is bun, `omo.cmd` is omo).
+ */
 function windowsPath(word: string): string {
   if (!/\\|^[A-Za-z]:[\\/]|\.(exe|cmd|bat)$/i.test(word)) return word;
   return word.replace(/\\/g, "/").replace(/\.(exe|cmd|bat)$/i, "");
@@ -46,14 +58,29 @@ export interface OmoRuntime {
   startedAt: number | null;
   paths: string[];
   ids: string[];
+  /**
+   * The canonical sessions roots this pane's own processes write to. A path or id
+   * evidence matches only inside them: the same session id in another pane's store is
+   * another session.
+   */
   stores?: string[];
+  /**
+   * The sessions the pane's processes hold now, each bound to the canonical store that
+   * holds it (undefined: an unscoped caller claim matching by id alone; null: the store
+   * could not be resolved, so the claim matches no file). A claim whose file is missing
+   * or unreadable still binds, so it never resolves to another store's same-id session.
+   */
   claims?: { id: string; store?: string | null }[];
+  /** Recognized only by verified native holders: hints and cwd/time inference never apply. */
   custom?: boolean;
   ambiguous?: boolean;
+  incompleteStore?: boolean;
 }
 
 /** A session is never selected by mtime: tool activity is not evidence of pane ownership. */
 export function selectOmoTranscript(paneId: string, candidates: OmoCandidate[], runtimes: OmoRuntime[], now = Date.now()): string | null {
+  // A structured held claim matches only inside the store that holds it (an unresolved
+  // store matches nothing); a legacy unscoped claim still matches by id alone.
   const held = (runtime: OmoRuntime, file: OmoCandidate): boolean => (runtime.claims ?? []).some((claim) =>
     claim.id === file.id && (claim.store === undefined || claim.store === file.store));
   const direct = (runtime: OmoRuntime): OmoCandidate[] => candidates.filter((file) =>
@@ -64,6 +91,7 @@ export function selectOmoTranscript(paneId: string, candidates: OmoCandidate[], 
   const owned = (file: OmoCandidate) => target.stores === undefined || (file.store !== undefined && target.stores.includes(file.store));
   const exact = direct(target);
   const claimed = new Set(runtimes.filter((runtime) => runtime !== target).flatMap((runtime) => direct(runtime).map((file) => file.path)));
+  if (target.incompleteStore && (exact.length !== 1 || !target.paths.includes(exact[0]!.path))) return null;
   if (target.paths.length > 0 || target.ids.length > 0) {
     if (exact.length !== 1 || claimed.has(exact[0]!.path)) return null;
     // A launch ID can outlive /new. Without a current descriptor, a later unclaimed
@@ -76,7 +104,9 @@ export function selectOmoTranscript(paneId: string, candidates: OmoCandidate[], 
   // store: it names that session alone — never another store's same-id file, and no
   // cwd/time inference.
   if (target.claims !== undefined && target.claims.length > 0) return null;
+  // A custom runtime is only ever its holders: no cwd/time inference, no launch hints.
   if (target.custom) return null;
+  // A second process (or an unreadable peer) sharing cwd blocks inference entirely.
   if (runtimes.length !== 1 || target.startedAt === null) return null;
   const fresh = candidates.filter((file) => owned(file) && file.createdAt !== null && file.createdAt >= target.startedAt! - 1000 && file.createdAt <= now + 1000);
   return fresh.length === 1 ? fresh[0]!.path : null;
@@ -111,7 +141,9 @@ function candidate(path: string, roots: readonly string[], cwd: string): OmoCand
 
 /**
  * omo's engine (senpi) keeps its sessions under its agent directory, which the first of
- * these that is set moves, as pi's PI_CODING_AGENT_DIR moves pi's.
+ * these that is set moves, as pi's PI_CODING_AGENT_DIR moves pi's: a launcher that gives
+ * each profile its own state (`OMO_CODING_AGENT_DIR=~/.local/state/<profile>/.omo/agent`)
+ * writes no session under ~/.omo, so the chat found none there and showed nothing.
  */
 const AGENT_DIR_ENV = ["OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"];
 export const defaultOmoAgentDir = (home: string) => join(home, ".omo", "agent");
@@ -129,6 +161,7 @@ export function omoAgentDir(environ: readonly string[] | null, home: string, cwd
   return defaultOmoAgentDir(home);
 }
 
+/** A process's environment as it started, where the system tells it (Linux). */
 export function processEnviron(pid: number): string[] | null {
   try { return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0"); } catch { return null; }
 }
@@ -214,7 +247,11 @@ export function hostBootAt(now = Date.now()): number | null {
 /**
  * omo keeps no descriptor on its session file, but every process with a session open
  * publishes <session dir>/session-holders/<encoded id>/<pid>.json and removes it on
- * release (/new, /resume, exit). A crashed process leaves its record behind.
+ * release (/new, /resume, exit). A crashed process leaves its record behind, so one
+ * counts only for the live pid it names and, where our start time is readable, only
+ * if it started when that pid did: a reused pid starts later than the crashed holder,
+ * so a record from before this pid's start is refused, and one up to a minute after it
+ * is this process's own, read late, when it was written on this host since its boot.
  */
 export function heldSessionIds(dir: string, pid: number, startedAt: number | null, cwd?: string, bootAt: number | null = hostBootAt()): string[] {
   const holders = join(dir, "session-holders");
@@ -239,13 +276,20 @@ export function heldSessionIds(dir: string, pid: number, startedAt: number | nul
 }
 
 /**
+ * A runtime as the sessions its processes hold now (`held`, by id) tell it: the held one
+ * outranks a launch --session-id and herdr's session path or id, which /new leaves behind.
  * omo writes a session's file with its first message, so one held with no file yet is a
- * conversation not begun (/new, nothing typed since).
+ * conversation not begun (/new, nothing typed since): it names that id alone, never a file
+ * from before.
  */
 export function heldRuntime(runtime: OmoRuntime, held: readonly (string | { id: string; store: string | null })[], files: readonly OmoCandidate[]): OmoRuntime {
   if (held.length === 0) return runtime;
   const claims: { id: string; store?: string | null }[] = held.map((heldId) => typeof heldId === "string" ? { id: heldId, store: undefined } : heldId);
   const ambiguous = new Set(claims.map((claim) => JSON.stringify([claim.store, claim.id]))).size > 1 || runtime.ambiguous === true;
+  // A held id counts only in the store that holds it: another store's file of the same
+  // id is a different session that happens to share the name. The claims stay on the
+  // runtime so a missing or unreadable header still binds; only an unscoped claim — a
+  // caller that knows no store — joins the store-wide id evidence.
   const current = files.filter((file) => claims.some((claim) => claim.id === file.id && (claim.store === undefined || file.store === claim.store))).map((file) => file.path);
   const ids = current.length > 0 ? [] : [...new Set(claims.filter((claim) => claim.store === undefined).map((claim) => claim.id))];
   return { ...runtime, paths: current, ids, claims, ambiguous };
@@ -270,22 +314,54 @@ export function earliestStart(starts: readonly (number | null)[]): number | null
   return known.length > 0 ? Math.min(...known) : null;
 }
 
-export function omoCandidates(cwd: string, home: string, exactPaths: string[] = [], agentDirs: readonly string[] = [defaultOmoAgentDir(home)]): OmoCandidate[] {
+const SESSION_ENTRY_LIMIT = 8192;
+const SESSION_TRANSCRIPT_LIMIT = 4096;
+
+function sessionListing(dir: string): { transcripts: string[]; capped: boolean } | null {
+  try {
+    const transcripts: string[] = [];
+    let count = 0;
+    for (const name of directoryEntries(dir)) {
+      if (++count >= SESSION_ENTRY_LIMIT) return { transcripts: [], capped: true };
+      if (name.endsWith(".jsonl")) transcripts.push(name);
+    }
+    return { transcripts, capped: false };
+  } catch { return null; }
+}
+
+export function omoCandidates(cwd: string, home: string, exactPaths: string[] = [], agentDirs: readonly string[] = [defaultOmoAgentDir(home)]): {
+  files: OmoCandidate[]; capped: Set<string>; listings: ReadonlyMap<string, readonly string[]>;
+} {
   const roots = canonicalRoots(agentDirs.map((agentDir) => join(agentDir, "sessions")));
   const paths = new Set(exactPaths);
+  const capped = new Set<string>();
+  const listings = new Map<string, readonly string[]>();
+  const scanned = new Set<string>();
   for (const agentDir of new Set(agentDirs)) {
-    const dir = sessionDir(cwd, agentDir);
-    let names: string[] = [];
-    try { names = readdirSync(dir); } catch { /* only explicit evidence may remain */ }
-    // Never choose a subset when the directory is too large to inspect safely.
-    if (names.length <= 4096) for (const name of names) if (name.endsWith(".jsonl")) paths.add(join(dir, name));
+    let dir: string;
+    try { dir = realpathSync(sessionDir(cwd, agentDir)); } catch { continue; }
+    if (scanned.has(dir)) continue;
+    scanned.add(dir);
+    const listing = sessionListing(dir);
+    if (listing === null) {
+      for (const root of canonicalRoots([join(agentDir, "sessions")])) capped.add(root);
+      continue;
+    }
+    const { transcripts } = listing;
+    if (!listing.capped) listings.set(dir, transcripts);
+    // Bound transcript reads without counting sidecars or guessing from a partial set.
+    if (!listing.capped && transcripts.length <= SESSION_TRANSCRIPT_LIMIT) {
+      for (const name of transcripts) paths.add(join(dir, name));
+    } else {
+      for (const root of canonicalRoots([join(agentDir, "sessions")])) capped.add(root);
+    }
   }
   const found = new Map<string, OmoCandidate>();
   for (const path of paths) {
     const file = candidate(path, roots, cwd);
     if (file) found.set(file.path, file);
   }
-  return [...found.values()];
+  return { files: [...found.values()], capped, listings };
 }
 
 function resumedIds(argv: string[]): string[] {
@@ -298,27 +374,70 @@ function resumedIds(argv: string[]): string[] {
   return result;
 }
 
+const LAUNCH_SHELL = /(^|\/)(cmd|pwsh|powershell)$/i;
+const PACKAGE_RUNNER = /\/(npm|npx)-cli\.js$/i;
+const CONSOLE_HOST = /(^|\/)(conhost|openconsole)(\.exe)?(\s|$)/i;
+/** what herdr may name as a Windows pane's launcher in front of OmO (#886); never another agent */
+const NAMED_LAUNCHER = /(^|\/)pi$/i;
+
+/** A shell or a JS package runner (`cmd /c omo.cmd`, `node …/npx-cli.js omo-ai`): it starts a program and is nothing itself. */
+function isLaunchStep(argv: readonly string[]): boolean {
+  const words = argv.map(windowsPath);
+  if (LAUNCH_SHELL.test(words[0] ?? "")) return true;
+  if (!JS_RUNTIME.test(words[0] ?? "")) return false;
+  const script = words.slice(1).find((word) => !word.startsWith("-"));
+  return script !== undefined && PACKAGE_RUNNER.test(script);
+}
+
 export type ProcessInfo = { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } } | null;
 
 /**
  * herdr on Windows names only the pane's launcher in foreground_processes, not what the launcher
- * starts (windows-processes.ts).
+ * starts (windows-processes.ts). Only processes below this pane's own shell
+ * count, and one herdr already named is not added twice.
  */
-export function withOmoDescendants(info: ProcessInfo, rows: readonly ProcessRow[]): ProcessInfo {
+export function withOmoDescendants(info: ProcessInfo, rows: readonly ProcessRow[], alive: (pid: number) => boolean = () => true): ProcessInfo {
   const shell = info?.process_info?.shell_pid;
   if (shell === undefined) return info;
   const foreground = info?.process_info?.foreground_processes ?? [];
-  const omo = descendantProcesses(rows, shell).filter((entry) =>
-    isOmoProcess(entry.argv) && !foreground.some((existing) => existing.pid === entry.pid));
+  const named = new Set(foreground.map((entry) => entry.pid));
+  const below = descendantProcesses(rows, shell);
+  const byPid = new Map(below.map((entry) => [entry.pid, entry]));
+  const parentOf = new Map(rows.map((row) => [row.pid, row.parent]));
+  // A process started in a console of its own (`Start-Process omo`) has its own console host as a
+  // child; one in the pane shares the pane's, which herdr hosts (live-verified, Windows 11).
+  const startedOf = new Map(rows.map((row) => [row.pid, row.started]));
+  const ownConsole = new Set(rows.filter((row) => {
+    if (!CONSOLE_HOST.test(windowsPath(row.path ?? row.commandLine ?? ""))) return false;
+    // a host older than the process now holding its parent's number was that number's earlier owner's
+    const parentStarted = startedOf.get(row.parent);
+    return row.started === undefined || parentStarted === undefined || row.started >= parentStarted;
+  }).map((row) => row.parent));
+  // An OmO that another program started (a Claude running `omo` as a tool) is that program's, not
+  // the pane's: between the shell and the OmO only a shell, a package runner, a process herdr names
+  // for this pane (a launcher such as pi.exe) or OmO itself may sit, and none in another console.
+  const reached = (pid: number): boolean => {
+    if (ownConsole.has(pid)) return false;
+    for (let at = parentOf.get(pid), steps = 0; at !== shell; at = parentOf.get(at!), steps++) {
+      const step = at === undefined ? undefined : byPid.get(at);
+      if (step === undefined || steps > below.length || ownConsole.has(step.pid)) return false;
+      const launcher = named.has(step.pid) && NAMED_LAUNCHER.test(windowsPath(step.argv[0] ?? ""));
+      if (!launcher && !isOmoProcess(step.argv) && !isLaunchStep(step.argv)) return false;
+    }
+    return true;
+  };
+  // the table is a few seconds old (recentProcessTable): an OmO that exited since is not added
+  const omo = below.filter((entry) =>
+    isOmoProcess(entry.argv) && !named.has(entry.pid) && reached(entry.pid) && alive(entry.pid));
   return omo.length === 0 ? info : { ...info, process_info: { ...info?.process_info, foreground_processes: [...foreground, ...omo] } };
 }
 
-const processInfo = async (paneId: string): Promise<ProcessInfo> => {
+export const processInfo = async (paneId: string): Promise<ProcessInfo> => {
   const [info, rows] = await Promise.all([
     herdrRpc<NonNullable<ProcessInfo>>("pane.process_info", { pane_id: paneId }).catch(() => null),
     process.platform === "win32" ? recentProcessTable() : Promise.resolve([]),
   ]);
-  return withOmoDescendants(info, rows);
+  return withOmoDescendants(info, rows, processAlive);
 };
 
 /**
@@ -339,6 +458,10 @@ async function processStarts(infos: Iterable<ProcessInfo>): Promise<(pid: number
  * An argv-silent custom OmO's bundled Claude SDK child, listed after it, looks like omo by its path
  * but comes and goes with each turn. herdr may list two holders in another order from one sample to
  * the next, so `prefer` (the process a send is already bound to) wins while it holds one (#2190).
+ * A process herdr gives no cwd for is
+ * placed in the pane's, as discovery places it (macOS has no /proc to ask). Starts are read without holding the event
+ * loop; `started` is the start its holder record was checked against, so a pid reused after the check is not taken
+ * for it.
  */
 export async function heldOmoProcess(
   pane: HerdrPane,
@@ -394,6 +517,13 @@ function resolvePaneRuntime(pane: HerdrPane, info: ProcessInfo, home: string, en
 const inCwdGroup = (resolved: PaneResolution, cwd: string): boolean =>
   resolved.cwd === cwd || (resolved.ambiguous && resolved.omos.some((omo) => omo.cwd === cwd));
 
+/**
+ * Same-cwd peers are inspected even when herdr calls omo's SDK child `claude` and when a
+ * custom launcher's argv says nothing (omoProcessIdentity). Every piece of evidence —
+ * held ids, open descriptors, herdr's report, a launch hint — binds only inside the
+ * canonical stores that pane's own processes resolved; another store's file of the same
+ * id is a different session, and a pending holder never borrows it.
+ */
 function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], home: string, startOf: (pid: number) => number | null = processStartedAt): Map<string, { path: string | null; pending: string | null; startedAt: number | null; identity?: string }> {
   const runtimes: OmoRuntime[] = [];
   const agentDirs = new Set([defaultOmoAgentDir(home)]);
@@ -417,7 +547,9 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     held.set(pane.pane_id, omos.flatMap(({ identity }, index) => identity.heldIds.map((id) => ({ id, dir: dirs[index]!, store: stores[index] ?? null }))));
     for (const [index, { process, identity }] of omos.entries()) {
       if (!identity.custom) ids.push(...resumedIds(process.argv ?? []));
-      // omo also holds its background tasks' logs (<cwd>/.omo/senpi-task/logs/*.jsonl) open
+      // Only an open file in the session store is evidence: omo also holds its background
+      // tasks' logs (<cwd>/.omo/senpi-task/logs/*.jsonl) open, and one of those pinned the
+      // pane to a path no candidate matches, so the chat lost the transcript mid-session.
       let store = join(owned[index]!, "sessions");
       try { store = realpathSync(store); } catch { /* no store yet: no descriptor can be in it */ }
       let descriptors: string[] = [];
@@ -436,21 +568,32 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     }
     runtimes.push({ paneId: pane.pane_id, startedAt: starts.every((start) => start !== null) ? Math.min(...(starts as number[])) : null, paths, ids, stores: stores.filter((store): store is string => store !== null), custom, ambiguous: resolved.ambiguous });
   }
-  const files = omoCandidates(cwd, home, runtimes.flatMap((runtime) => runtime.paths), [...agentDirs]);
+  const { files, capped, listings } = omoCandidates(cwd, home, runtimes.flatMap((runtime) => runtime.paths), [...agentDirs]);
+  // Match canonical candidates even when /proc names a symlink into the store, and drop a
+  // path that no store of this pane contains: it is another pane's or a stale report.
   for (const runtime of runtimes) {
     runtime.paths = runtime.paths.flatMap((path) => { try { return [realpathSync(path)]; } catch { return []; } });
     if (runtime.stores !== undefined) runtime.paths = runtime.paths.filter((path) => runtime.stores!.some((root) => inStore(path, root)));
   }
-  const current = runtimes.map((runtime) => heldRuntime(runtime, held.get(runtime.paneId) ?? [], files));
+  const current = runtimes.map((runtime) => {
+    const claims = held.get(runtime.paneId) ?? [];
+    const resolved = heldRuntime(runtime, claims, files);
+    // A scoped holder names its own store. Launch IDs and time inference have no such proof.
+    const stores = claims.length === 0 ? runtime.stores ?? [] : claims.flatMap(({ store }) => store === null ? [] : [store]);
+    const incompleteStore = stores.some((store) => capped.has(store));
+    return incompleteStore ? { ...resolved, paths: resolved.paths.filter((path) => runtime.paths.includes(path)), incompleteStore } : resolved;
+  });
+  // That held session's file comes with its first message: until then the pane is a conversation
+  // with nothing in it, not an unreadable one.
   const unwritten = (paneId: string): string | null => {
     const entries = held.get(paneId) ?? [];
     if (new Set(entries.map((entry) => entry.id)).size !== 1) return null;
     const id = entries[0]!.id;
     if (files.some((file) => file.id === id && entries.some((entry) => entry.store !== null && entry.store === file.store))) return null;
     for (const dir of new Set(entries.map((entry) => entry.dir))) {
-      let names: string[];
-      try { names = readdirSync(dir); } catch { return null; }
-      if (names.some((name) => name === `${id}.jsonl` || name.endsWith(`_${id}.jsonl`))) return null;
+      let names: readonly string[] | undefined;
+      try { names = listings.get(realpathSync(dir)); } catch { return null; }
+      if (names === undefined || names.some((name) => name === `${id}.jsonl` || name.endsWith(`_${id}.jsonl`))) return null;
     }
     return id;
   };
@@ -473,6 +616,7 @@ export async function omoSessionForPane(paneId: string, cwd: string, panes: Herd
   const startOf = await processStarts(infos.values());
   const resolved = candidates.map((pane) => resolvePaneRuntime(pane, infos.get(pane.pane_id) ?? null, home, processEnviron, startOf));
   const target = resolved.find((entry) => entry.pane.pane_id === paneId);
+  // two holder-owning cwds fail closed: the pane cannot be bound to either
   if (target?.ambiguous) return { path: null, pending: null };
   const session = omoTranscriptsResolved(target?.cwd ?? cwd, resolved, home, startOf).get(paneId);
   return { path: session?.path ?? null, pending: session?.pending ?? null, ...(session?.identity === undefined ? {} : { identity: session.identity }) };

@@ -2,8 +2,13 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import type { WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
-import type { WorktreeInfo } from "../herdr/client.ts";
+import type { WorktreeInfo } from "../herdr/worktree-info.ts";
 
+/**
+ * herdr's worktree calls, answered with git on a herdr-core PC: hc has no worktrees, so Ovis runs
+ * `git worktree` itself and opens a checkout as a workspace of its own, as New workspace does
+ * there.
+ */
 export const WORKTREE_LABEL = "ovis.worktree";
 
 /** herdr's default folder for new checkouts (its `worktree_directory`): `<dir>/<repository>/<branch, slashes as dashes>` */
@@ -13,6 +18,7 @@ export const defaultCheckoutPath = (repoName: string, branch: string): string =>
 /** the branch as a folder and workspace name, as herdr makes them */
 export const worktreeFolder = (branch: string): string => branch.trim().replaceAll("/", "-");
 
+/** A refusal in herdr's words for its worktree calls (not_git_worktree, worktree_create_failed, …). */
 export class WorktreeError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -60,6 +66,7 @@ export function realPath(path: string): string {
   }
 }
 
+/** One checkout of a repository, as `git worktree list` says it; the first is the repository's own. */
 export type Checkout = Pick<WorktreeInfo, "path" | "branch" | "is_bare" | "is_detached" | "is_prunable">;
 
 export interface Repository {
@@ -74,6 +81,7 @@ export interface Repository {
 function gitEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
+    // a repository the server itself was started inside is not the one asked about
     if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR") continue;
     env[name] = value;
   }
@@ -122,7 +130,18 @@ export function parseCheckouts(porcelain: string, end: "\0" | "\n" = "\0"): Chec
   return checkouts;
 }
 
-export async function repositoryOf(folder: string): Promise<Repository> {
+/** How git is run and a path named: this PC's own by default; another machine's through the core (adapter.ts). */
+export interface RepositoryReads {
+  run?: typeof git;
+  real?: (path: string) => string;
+}
+const runGit = (cwd: string, args: string[]) => git(cwd, args);
+const realPathOf = (path: string) => realPath(path);
+
+/** The repository a folder is in and its checkouts; `not_git_worktree` for a folder outside git. */
+export async function repositoryOf(folder: string, reads: RepositoryReads = {}): Promise<Repository> {
+  const git = reads.run ?? runGit;
+  const realPath = reads.real ?? realPathOf;
   const where = await git(folder, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"]);
   const [top, common, own] = where.stdout.split("\n");
   if (!where.ok || !top || !common || !own) throw new WorktreeError("not_git_worktree", `${folder} is not in a git worktree`);

@@ -6,7 +6,9 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// Only this disposable demo fixture is rewritten; no live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-context-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const patch = `(() => {
@@ -51,15 +53,7 @@ try {
   writeFileSync(join(app, "sidebar-context.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-context.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -70,6 +64,8 @@ try {
           : { viewport: { width: 1280, height: 900 }, locale: "en-US", colorScheme: theme });
         try {
           await context.addInitScript((value) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value })), theme);
+          // the demo's opening turn would finish the api agent on its own timer, and a resting agent folds under +N resting
+          await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
@@ -114,6 +110,26 @@ try {
             return badge.width > 0 && badge.left >= outer.left && badge.right <= outer.right && badge.top >= outer.top && badge.bottom <= outer.bottom;
           });
           assert.ok(inside, "the ring is drawn inside its row");
+          if (!phone) {
+            for (const target of [panes.api, panes.web]) {
+              const item = row(page, target);
+              await item.hover();
+              const clear = await item.evaluate((node) => {
+                const badge = node.querySelector(".context-count")!.getBoundingClientRect();
+                const button = node.querySelector(".agent-actions button")!.getBoundingClientRect();
+                const state = node.querySelector(".agent-row-state")!.getBoundingClientRect();
+                return {
+                  badgeWidth: badge.width,
+                  buttonWidth: button.width,
+                  noOverlap: badge.right <= button.left + 0.5,
+                  beforeState: Math.abs(button.right - state.left) <= 0.5,
+                };
+              });
+              assert.ok(clear.badgeWidth > 0 && clear.buttonWidth > 0 && clear.noOverlap && clear.beforeState,
+                `${label} (${target}): hover ⋯ sits beside the context ring without covering it (${JSON.stringify(clear)})`);
+            }
+            await page.mouse.move(1270, 890);
+          }
           if (evidence) {
             mkdirSync(evidence, { recursive: true });
             await page.locator(".agents-sidebar").screenshot({ path: join(evidence, `context-ring-${phone ? "390" : "1280"}-${theme}.png`) });

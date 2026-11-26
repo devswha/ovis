@@ -46,6 +46,7 @@ describe("environments", () => {
       GSETTINGS_SCHEMA_DIR: `${mount}/usr/share/glib-2.0/schemas:/opt/schemas`,
     }, `${mount}/ovis`);
     for (const name of ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH"]) expect(env).not.toHaveProperty(name);
+    // the user's own empty entry (the current folder) stays
     expect(env["PATH"]).toBe("/usr/bin::/bin");
     expect(env["XDG_DATA_DIRS"]).toBe("/usr/local/share:/usr/share:/usr/share/gnome:/usr/local/share/:/usr/share/");
     expect(env["GSETTINGS_SCHEMA_DIR"]).toBe("/opt/schemas");
@@ -63,7 +64,7 @@ describe("environments", () => {
 
   it("runs the server on herdr-core through the bundled hc, on loopback, in the app's state folder", () => {
     const env = serverEnv({ PATH: "/bin", HOST: "0.0.0.0", HERDR_PLUGIN_ROOT: "/p", OVIS_MANAGED: "1", HERDR_SOCKET: "/s", OVIS_TOKEN: "t" }, { hc: "/app/bin/herdr-core", stateDir: "/data/server", port: 4321 });
-    expect(env).toMatchObject({ PATH: "/bin", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: "/app/bin/herdr-core", OVIS_STATE_DIR: "/data/server", HOST: "127.0.0.1", PORT: "4321", HC_SESSION: "ovis", OVIS_DESKTOP_APP: "1" });
+    expect(env).toMatchObject({ PATH: "/bin", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: "/app/bin/herdr-core", OVIS_HC_BIN_BUNDLED: "1", OVIS_STATE_DIR: "/data/server", HOST: "127.0.0.1", PORT: "4321", HC_SESSION: "ovis", OVIS_DESKTOP_APP: "1" });
     for (const name of ["HERDR_PLUGIN_ROOT", "OVIS_MANAGED", "HERDR_SOCKET", "OVIS_TOKEN"]) expect(env).not.toHaveProperty(name);
   });
 
@@ -78,6 +79,7 @@ describe("environments", () => {
 describe("withoutInherited", () => {
   it.if(process.platform === "linux")("starts a program without the descriptors its parent left open", () => {
     const [command, args] = withoutInherited("ls", ["/proc/self/fd"]);
+    // the parent holds fd 9 and 23 open across exec, as Chromium does
     const listed = spawnSync("/bin/bash", ["-c", 'exec 9</dev/null 23</dev/null; exec "$@"', "parent", command, ...args], { encoding: "utf8" });
     const fds = listed.stdout.split("\n");
     expect(fds).toContain("2");
@@ -312,11 +314,13 @@ describe("endLeftover", () => {
     const binary = programs.serverBinary;
     const ours = { command: async () => `${binary} serve`, started: async () => "then" };
     expect(await endLeftover({ pid, bun: binary, started: "then" }, { ...ours, command: async () => `/other/ovis-server serve` })).toBe(false);
+    // the same binary running another entry is not the app's server
     expect(await endLeftover({ pid, bun: binary, started: "then" }, { ...ours, command: async () => `${binary} plugin status` })).toBe(false);
     expect(await endLeftover({ pid, bun: binary, started: "then" }, { ...ours, command: async () => null })).toBe(false);
     expect(await endLeftover({ pid, bun: binary, started: "then" }, { ...ours, started: async () => "later" })).toBe(false);
     expect(await endLeftover({ pid, bun: binary, started: null }, ours)).toBe(false);
     expect(server.child.exitCode).toBeNull();
+    // Windows quotes a program path with a space in it; a quoted other program is still not ours
     expect(await endLeftover({ pid, bun: binary, started: "then" }, { ...ours, command: async () => `"/other/ovis-server" serve` })).toBe(false);
     expect(await endLeftover({ pid, bun: binary, started: "then" }, { ...ours, command: async () => `"${binary}" serve` })).toBe(true);
     expect(await server.exited).toBe(0);
@@ -336,6 +340,7 @@ describe("endLeftover", () => {
   });
 
   it("reads a live process's start time and command, and nothing for one that is gone", async () => {
+    // ps's `Wed Nov  4 08:00:00 2026`, or CIM's UTC `2026-11-04T08:00:00.1234560Z` on Windows
     expect(await processStart(process.pid)).toMatch(process.platform === "win32" ? /^\d{4}-\d\d-\d\dT.*Z$/ : /\d{4}$/);
     expect(processStartSync(process.pid)).toBe(await processStart(process.pid));
     expect(await processCommand(process.pid)).toContain("bun");

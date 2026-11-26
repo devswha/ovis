@@ -1,17 +1,11 @@
-/**
- * The input-row recognizers (shared/input-row.ts) read from the pane's xterm buffer, and when a frame
- * of it may be read (FrameGate).
- */
-
-import type { IBuffer, IBufferCell } from "@xterm/xterm";
 import type { ScreenCell, ScreenRow, ScreenSnapshot } from "../../shared/input-row.ts";
+import type { ScreenCell as GridCell, ScreenRows } from "./terminalScreen.ts";
 
 export { inputRowState, readsInputRow, type InputRowRecognizer, type InputRowState, type ScreenCell, type ScreenRow, type ScreenSnapshot } from "../../shared/input-row.ts";
 
-/** The screen's rows as the recognizers read them: the live screen's, top to bottom, from the buffer. */
-export function readScreen(buffer: IBuffer, cols: number, rows: number): ScreenSnapshot {
+export function readScreen(buffer: ScreenRows, cols: number, rows: number): ScreenSnapshot {
   const out: ScreenRow[] = [];
-  let cell: IBufferCell | undefined;
+  let cell: GridCell | undefined;
   for (let y = 0; y < rows; y++) {
     const line = buffer.getLine(buffer.baseY + y);
     const cells: ScreenCell[] = [];
@@ -33,12 +27,10 @@ export function readScreen(buffer: IBuffer, cols: number, rows: number): ScreenS
   return { cols, rows: out };
 }
 
-/** The live screen as logical lines, preserving spaces across xterm wraps (as in useTerminalMount). */
-export function readScreenLines(buffer: IBuffer, rows: number): string[] | null {
+export function readScreenLines(buffer: ScreenRows, rows: number): string[] | null {
   const lines: string[] = [];
   for (let y = 0; y < rows; y++) {
     const line = buffer.getLine(buffer.baseY + y);
-    // A clipped first line or missing row cannot prove what the screen says.
     if (!line || (y === 0 && line.isWrapped)) return null;
     const text = line.translateToString(y === rows - 1 || !buffer.getLine(buffer.baseY + y + 1)?.isWrapped);
     if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
@@ -47,65 +39,207 @@ export function readScreenLines(buffer: IBuffer, rows: number): string[] | null 
   return lines;
 }
 
-// ---- when a frame may be read ---------------------------------------------------------------------
-
-/** Where the stream stood when a chunk of it was handed to xterm (FrameGate.enqueue). */
 export interface FrameStamp {
   readonly epoch: number;
-  /** no synchronized-update block is open after this chunk: the screen is a whole frame once it is parsed */
   readonly boundary: boolean;
-  /** the chunk closed a block it opened in this epoch, or the stream draws without blocks */
   readonly whole: boolean;
-  /** the grid this terminal draws matched the pane's (pane-geometry) as the chunk came */
+  readonly synchronized: boolean;
   readonly geometry: boolean;
 }
 
-const SYNC = /\u001b\[\?2026([hl])/g;
+type GateParse = "ground" | "can" | "can-esc" | "can-csi" | "can-bang" | "esc" | "csi" | "bang" | "private";
+/** xterm 6 Params capacity (node_modules/@xterm/xterm/src/common/parser/Params.ts). */
+const XTERM_MAX_CSI_PARAMS = 32;
 
 /**
- * Whether the screen xterm has parsed is a frame the recognizers may read. herdr wraps each frame
- * it draws in a synchronized-update block (`CSI ? 2026 h` … `l`). xterm 6 holds its drawing until a
+ * herdr wraps each frame it draws in a synchronized-update block (`CSI ? 2026 h` … `l`, including
+ * combined private-mode switches such as `CSI ? 25;2026 h`). xterm 6 holds its drawing until a
  * block closes, but what it has parsed can still end inside one: a frame is read only once its
- * block has closed. A grid resized here (a fit, a phone peek's narrower grid, a pane's grid
- * adopted) holds the old screen until the agent draws again for the new one: from the resize on, nothing is read until a
- * whole frame has come for the new grid, written after the pane's grid said it was that size. When
- * the pane's grid itself changes size, herdr may first draw the old screen again, reflowed for the
- * new size (an idle box cut at its borders reads as gone), before the agent's own redraw, or both
- * may come as one frame: the first frame after it is `reflowing`, read when asked but never taken
- * as a change of screen. A stream drawn without blocks (a mirrored pane's whole screens) counts each
- * chunk as a frame.
+ * block has closed. An unmatched `CSI ? 2026 l` outside a herdr-core paint (such as ReplayBuffer's
+ * restored mode prefix on a truncated 128 KiB replay) still marks the stream as synchronized so a
+ * truncated diff never settles as a complete screen. herdr-core's attach and same-channel recovery
+ * paints start with CAN + DECSTR (`\x18\x1b[!p`) followed by `CSI ? 2026 l` and end with
+ * `CSI ? 9001 [hl]`, so the paint stays unboundary across split 16 KiB chunks and settles as a
+ * complete screen (resetting prior synchronized state) only once `?9001[hl]` closes a paint that
+ * both started and ended on the current grid geometry. RIS (`ESC c`) and standalone DECSTR
+ * (`CSI ! p`) clear synchronized state just as xterm 6 does. When the pane's grid itself changes
+ * size, herdr may first draw the old screen again, reflowed for the new size (an idle box cut at
+ * its borders reads as gone), before the agent's own redraw, or both may come as one frame: the
+ * first frame after it is `reflowing`, read when asked but never taken as a change of screen.
  *
- * `enqueue` is called as a chunk is written (xterm parses later, in order), `settle` in its write
- * callback, `resized` on every resize of the grid, `reflowed` when the pane's grid changes size and
- * `reset` where the stream starts over.
+ * `enqueue` is called as a chunk is written (xterm parses later, in order), `settle` in its write callback, `resized` on
+ * every resize of the grid, `reflowed` when the pane's grid changes size and `reset` where the stream starts over.
  */
 export class FrameGate {
   private open = false;
-  private carry = "";
   private synced = false;
   private openedIn = -1;
+  private openedGeometry = false;
+  private painting = false;
+  private paintEpoch = -1;
+  private paintGeometry = false;
   private epoch = 0;
   private settledEpoch = -1;
   private last = false;
   private reflow = false;
   private reflowFrame = false;
+  private parse: GateParse = "ground";
+  private paramVal = 0;
+  private paramDigits = false;
+  private paramSub = false;
+  private paramCount = 0;
+  private saw2026 = false;
+  private saw9001 = false;
 
-  enqueue(data: string, geometry: boolean): FrameStamp {
-    const text = this.carry + data;
-    let whole = false;
-    for (const match of text.matchAll(SYNC)) {
-      this.synced = true;
-      if (match[1] === "h") { this.open = true; this.openedIn = this.epoch; }
-      else { if (this.open && this.openedIn === this.epoch) whole = true; this.open = false; }
-    }
-    // an escape cut at the chunk's end is read again with the next chunk
-    const escape = text.lastIndexOf("\u001b");
-    const tail = escape < 0 ? "" : text.slice(escape);
-    this.carry = tail.length < 8 && !/^\u001b\[\?2026[hl]/.test(tail) ? tail : "";
-    return { epoch: this.epoch, boundary: !this.open, whole: whole || !this.synced, geometry };
+  private resetParser(): void {
+    this.parse = "ground";
+    this.paramVal = 0;
+    this.paramDigits = false;
+    this.paramSub = false;
+    this.paramCount = 0;
+    this.saw2026 = false;
+    this.saw9001 = false;
   }
 
-  /** after the chunk's parse; `ready`: the stream is current and the grid still matches the pane's */
+  private flushParam(): void {
+    if (this.paramCount < XTERM_MAX_CSI_PARAMS) {
+      if (this.paramDigits) {
+        if (this.paramVal === 2026) this.saw2026 = true;
+        else if (this.paramVal === 9001) this.saw9001 = true;
+      }
+      this.paramCount++;
+    }
+    this.paramVal = 0;
+    this.paramDigits = false;
+    this.paramSub = false;
+  }
+
+  enqueue(data: string, geometry: boolean): FrameStamp {
+    let syncWhole = false;
+    let paintWhole = false;
+    let stalePaintClose = false;
+    for (let i = 0; i < data.length; i++) {
+      const code = data.charCodeAt(i);
+      if (code === 0x18) {
+        this.resetParser();
+        this.parse = "can";
+        continue;
+      }
+      if (code === 0x1a) {
+        this.resetParser();
+        continue;
+      }
+      if (code === 0x1b) {
+        const next: GateParse = this.parse === "can" ? "can-esc" : "esc";
+        this.resetParser();
+        this.parse = next;
+        continue;
+      }
+      if (this.parse === "ground") continue;
+      if (code < 0x20) {
+        if (this.parse === "can") this.resetParser();
+        continue;
+      }
+      switch (this.parse) {
+        case "can":
+          this.parse = "ground";
+          break;
+        case "can-esc":
+          if (code === 0x5b) this.parse = "can-csi";
+          else {
+            if (code === 0x63) { this.open = false; if (!this.painting) this.synced = false; }
+            this.parse = "ground";
+          }
+          break;
+        case "can-csi":
+          if (code === 0x21) this.parse = "can-bang";
+          else if (code === 0x3f) this.parse = "private";
+          else this.parse = "ground";
+          break;
+        case "can-bang":
+          if (code === 0x70) {
+            this.painting = true;
+            this.paintEpoch = this.epoch;
+            this.paintGeometry = geometry;
+            this.open = false;
+          }
+          this.parse = "ground";
+          break;
+        case "esc":
+          if (code === 0x5b) this.parse = "csi";
+          else {
+            if (code === 0x63) { this.open = false; if (!this.painting) this.synced = false; }
+            this.parse = "ground";
+          }
+          break;
+        case "csi":
+          if (code === 0x3f) this.parse = "private";
+          else if (code === 0x21) this.parse = "bang";
+          else this.parse = "ground";
+          break;
+        case "bang":
+          if (code === 0x70) {
+            this.open = false;
+            if (!this.painting) this.synced = false;
+          }
+          this.parse = "ground";
+          break;
+        case "private":
+          if (code >= 0x30 && code <= 0x39) {
+            if (!this.paramSub) {
+              this.paramVal = Math.min(this.paramVal * 10 + (code - 0x30), 99999);
+              this.paramDigits = true;
+            }
+            break;
+          }
+          if (code === 0x3a) {
+            this.paramSub = true;
+            break;
+          }
+          if (code === 0x3b) {
+            this.flushParam();
+            break;
+          }
+          this.flushParam();
+          if (code === 0x68 || code === 0x6c) {
+            const wasPainting = this.painting;
+            if (this.saw9001 && this.painting) {
+              this.painting = false;
+              if (this.paintEpoch === this.epoch && this.paintGeometry && geometry) {
+                paintWhole = true;
+                this.synced = false;
+              } else {
+                stalePaintClose = true;
+              }
+            }
+            if (this.saw2026) {
+              if (code === 0x68) {
+                this.synced = true;
+                this.open = true;
+                this.openedIn = this.epoch;
+                this.openedGeometry = geometry;
+              } else if (this.open) {
+                if (this.openedIn === this.epoch && this.openedGeometry && geometry) syncWhole = true;
+                this.open = false;
+                this.painting = false;
+              } else if (!wasPainting) {
+                this.synced = true;
+              }
+            }
+          }
+          this.resetParser();
+          break;
+      }
+    }
+    return {
+      epoch: this.epoch,
+      boundary: !this.open && !this.painting,
+      whole: syncWhole || paintWhole || (!this.synced && !stalePaintClose),
+      synchronized: syncWhole,
+      geometry,
+    };
+  }
+
   settle(stamp: FrameStamp, ready: boolean): boolean {
     let settled = ready && stamp.geometry && stamp.boundary && stamp.epoch === this.epoch;
     if (settled && this.settledEpoch !== this.epoch) {
@@ -124,22 +258,24 @@ export class FrameGate {
     this.last = false;
   }
 
-  /** the pane's grid changed size (pane-geometry): the next frame that settles is `reflowing` */
   reflowed(): void {
     this.reflow = true;
     this.last = false;
   }
 
-  /** the stream starts over (another pane, a reconnect, a terminal reset): a block it cut is gone */
   reset(): void {
     this.open = false;
-    this.carry = "";
     this.synced = false;
+    this.openedIn = -1;
+    this.openedGeometry = false;
+    this.painting = false;
+    this.paintEpoch = -1;
+    this.paintGeometry = false;
     this.reflow = false;
+    this.resetParser();
     this.resized();
   }
 
-  /** the screen as parsed so far is a settled frame: the last chunk settled, and nothing resized since */
   get current(): boolean {
     return this.last;
   }

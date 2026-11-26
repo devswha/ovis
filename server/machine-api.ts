@@ -1,12 +1,14 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
 import { wireMachine, wireMachineEvent, type WireMachine } from "../shared/compact-agents.ts";
-import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcInstallJob, PcInstallRequest, PcUpdateAll, PcUpdateStarted, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest } from "../shared/machines.ts";
+import { LOCAL_MACHINE, type DevicePairedEvent, type DevicePairedSeenEvent, type DeviceRemovedEvent, type Machine, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateStarted, type PendingRedemptionsEvent, type RelayPairingsEvent, type RemotePairingsEvent, type SetupAction, type SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
 import type { SeenFinish } from "../shared/seen.ts";
+import type { DeviceStore } from "./devices.ts";
 import { AccountPcError, MachineActionRequired, MachineManager, PcUpdateRefused, type AccountPcFailure } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
+import { TargetAccountPcError } from "../shared/relay-channel.ts";
 import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
@@ -15,15 +17,31 @@ import { crossSiteFileRead, FILE_POLICY, pagePolicy } from "./file-view.ts";
 import { snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 import { answerCode, moveAll, moveAllPlans, PC_MOVE_PATH, PC_UPDATE_REQUIRED, tooOldToMove } from "./remote-move.ts";
+import { ADDRESS_PC_WORDS, AddressPcError } from "./address-pc.ts";
 
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
+
+/** The PCs an account-joined device is told, over its terminal socket or GET /api/machines: this PC's own row alone. */
+export const accountRoster = (layout: AgentRowTokens | null, machines: Machine[]): Machine[] =>
+  withoutHiddenTokens(layout, machines.filter((machine) => machine.id === LOCAL_MACHINE));
+/**
+ * Updating this PC's PCs, as switching its own runtime (dispatch.ts): only its owner, from this app's own page (the
+ * update header, same origin, no query).
+ */
 const OWNER_ONLY = "Only the owner's own signed-in or paired devices can change this PC's PCs, from this app's own page.";
 const MOVE_OWNER_ONLY = "Only the owner, from a device signed in or paired to drive this PC, can move another PC";
 const MOVE_FROM_PAGE = "A move must come from this app's own page";
+/** Who may have a PC pair itself with another PC of the account: this PC's own routes (dispatch.ts) and another PC's through it. */
+export const ACCOUNT_PC_OWNER_ONLY = "Add PCs of your account on this PC itself, or from a device paired with it.";
+/**
+ * Another PC's own "Adding a PC of your account" routes (docs/account.md), asked through this PC: that PC answers by
+ * this server's row there, which for a PC added from the account only watches (read_only), as for any write.
+ */
+const ACCOUNT_PC_PATH = /^machines\/relay\/account\/(?:check|start|pair)$/;
 
 /** POST /api/machines/relay/account/*: the status each refusal answers, as `account_pc_<failure>`. */
 const ACCOUNT_PC_STATUS: Record<AccountPcFailure, number> = {
-  invalid: 400, added: 409, self: 409, outdated: 409, offline: 502, gone: 410, busy: 409, refused: 403, declined: 403, cancelled: 499,
+  invalid: 400, added: 409, self: 409, outdated: 409, offline: 502, gone: 410, busy: 409, refused: 403, declined: 403, unanswered: 504, cancelled: 499,
 };
 
 /** POST /api/machines/relay/code: why a typed code found no PC, as `typed_code_<failure>` (the app words each one). */
@@ -37,6 +55,13 @@ const CODE_FAILURES: Record<TypedCodeFailure, [string, number]> = {
   forged: ["The answer did not come from a PC this app can pair with", 502],
 };
 
+/**
+ * How far one browser's machine events may fall behind before its stream is ended (it reconnects and
+ * reads the roster afresh). Counted in bytes, not frames: a burst of status changes from 20 or more
+ * agents queues more small frames than a frame count allowed before the browser has read any.
+ * A frame larger than this (the roster of thousands of panes) is let through on top of it while it
+ * is still queued, never afterwards, so a stream opening with one does not end at its next frame.
+ */
 export const MACHINE_EVENTS_QUEUE_BYTES = 4 * 1024 * 1024;
 export const MACHINE_EVENTS_TOTAL_BYTES = 32 * 1024 * 1024;
 export const MACHINE_EVENTS_STALL_MS = 30_000;
@@ -69,10 +94,20 @@ export const machineEventsQueuedBytes = (): number => {
   return total;
 };
 
+/**
+ * A PC route whose answer can take longer than the proxy's usual 75 s: a worktree's creation waits on
+ * git and then an agent's start, and a resume on the agent's start and then the check of its store.
+ */
+// runtime/move/install waits 200 s here: that PC holds the request up to 180 s (dispatch.ts), so an install that ends late is still told
 export const slowMachinePath = (path: string): boolean => path === "worktree/create" || path === "sessions/resume" || path === "runtime/move/install";
 
+/**
+ * A path no route is spelled as: an empty segment (`//`, or a trailing `/`) or an encoded separator.
+ * Path checks match the canonical spelling, and the PC proxy drops empty segments before it
+ * forwards, so such a path must be no route at all rather than "some other route".
+ */
 export const nonCanonicalPath = (pathname: string): boolean => pathname.includes("//") || (pathname.length > 1 && pathname.endsWith("/")) || /%2f|%5c/i.test(pathname);
-export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|summary|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
+export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|summary|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|turn\/(?:cancel(?:-children)?|release)|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
 
 
 function transportFailure(id: string, path: string, error: unknown): Response {
@@ -83,6 +118,10 @@ function transportFailure(id: string, path: string, error: unknown): Response {
     : fail("machine_unavailable", "The PC connection was interrupted; retry after reconnecting", 502);
 }
 
+/**
+ * An answer this app will not pass on: too large to hold, or unreadable where it must be redacted.
+ * Its fixed message names none of it; the browser shows it in the UI language by the code (src/lib/api.ts).
+ */
 function unusableAnswer(id: string, path: string, error: RemoteResponseTooLarge | RemoteResponseInvalid): Response {
   const tooLarge = error instanceof RemoteResponseTooLarge;
   console.error(`machine proxy ${id}${path}: ${tooLarge ? "answer too large" : "answer unreadable"}`);
@@ -93,33 +132,56 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   preferences?: { get(): SharedPreferences; subscribe(listener: (preferences: SharedPreferences) => void): () => void }, readOnly = false,
   herdrSidebar?: { get(): AgentRowTokens | null; subscribe(listener: (agents: AgentRowTokens | null) => void): () => void },
   seen?: { list(): SeenFinish[]; subscribe(listener: (finish: SeenFinish) => void): () => void },
-  pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent) => void): () => void },
+  /** durable device enrollments (server/devices.ts), already without the ones this stream's own device made, and relay pairings waiting for approval */
+  pairings?: { subscribe(listener: (event: DevicePairedEvent | DevicePairedSeenEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent | PendingRedemptionsEvent) => void): () => void },
   relayBudget?: EventStreamBudget,
-  owner = false): Promise<Response> {
+  /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
+  owner = false,
+  /** OVIS_ACCOUNT_OPENS_ALL is on here: only then does the roster carry a block to another PC's account records */
+  accountOpensAll = false, source?: Pick<DeviceStore, "accountPolicyActive" | "accountError">,
+  /** an account-joined device (DeviceStore.isAccountRow): its roster is accountRoster, and no PC's boot is proved for it */
+  accountRow = false): Promise<Response> {
   const url = new URL(request.url);
   // A PC's file opens as this PC's /api/fs/file does, from any navigation: reading it changes
   // nothing, and Chrome on Android shows a PDF in the viewer's frame as an "Open" button whose
   // navigation is cross-site. Every other PC route still answers only this app.
   const fileRead = ["GET", "HEAD"].includes(request.method) && /^\/api\/machines\/[^/]+\/fs\/file$/.test(url.pathname);
   if (!fileRead && !sameOrigin(request)) return fail("invalid_origin", "Use PC controls from this app", 403);
+  // a navigation may open a PC's file from anywhere; another page loading it as a picture may not
   if (fileRead && crossSiteFileRead(request)) return fail("cross_site", "A file is read from this app or opened in a tab, not loaded by another page", 403);
   if (!["GET", "HEAD"].includes(request.method) && request.headers.get("x-herdr-machine") !== "1") return fail("invalid_machine_request", "Use PC controls from this app", 403);
   // an empty segment is never a route: dropping it would forward `<id>//fs/file` as `fs/file`
   if (nonCanonicalPath(url.pathname)) return fail("not_found", "not found", 404);
   const parts = url.pathname.slice("/api/machines".length).split("/").filter(Boolean);
-  const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !(parts.length >= 2 && MACHINE_PROXY_PATH.test(parts.slice(1).join("/")));
+  // one rule for every change to this PC's PCs (adding, setting up, approving, updating, turning on or off, removing,
+  // its settings): the owner from any device he signed in or paired himself, from this app's own page. A PC's own
+  // routes (its panes, workspaces and files, MACHINE_PROXY_PATH) are driven as this PC's are, and keep their rules
+  const path = parts.slice(1).join("/");
+  const accountRecords = accountOpensAll && request.method === "POST" && path === "account/records";
+  // that PC would pair itself with the PC named, by this server's word: only this PC's owner asks it, as for this PC's
+  // own routes (dispatch.ts); a watching device was refused before (read_only)
+  const accountPc = request.method === "POST" && ACCOUNT_PC_PATH.test(path);
+  const proxyPath = MACHINE_PROXY_PATH.test(path) || accountRecords || accountPc;
+  if (accountRecords && !owner) return fail("owner_only", "Manage the account from this PC itself, or from a paired device.", 403);
+  if (accountPc && !owner) return fail("owner_only", ACCOUNT_PC_OWNER_ONLY, 403);
+  const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !proxyPath;
   if (managing && !(owner && updateRequestAllowed(request))) return fail("forbidden", OWNER_ONLY, 403);
+  if (request.method === "POST" && (parts.join("/") === "relay" || parts.join("/") === "relay/code" || parts.join("/") === "tailnet") && source?.accountPolicyActive()) {
+    if (source.accountError !== null) return fail("pc_add_account_unavailable", "Can't add a PC right now. Try again in a moment.", 409);
+    return fail("pc_add_source_bound", "This PC is in an account. Add PCs from your account.", 409);
+  }
   try {
     if (!parts.length && request.method === "GET") {
       setRequestRoute("/api/machines");
       const asked = url.searchParams.getAll("verify_source_boot");
       // as the machine events tell it, for every answer below: without the token values herdr's rows hide
       // (withoutHiddenTokens), and without a PC's own agent_refs (wireMachine)
-      const shown = () => withoutHiddenTokens(herdrSidebar?.get() ?? null, manager.list()).map((machine) => wireMachine(machine, false));
+      const shown = () => (accountRow ? accountRoster : withoutHiddenTokens)(herdrSidebar?.get() ?? null, manager.list()).map((machine) => wireMachine(machine, false));
       if (asked.length === 0) {
         if (url.searchParams.get("compact_agents") !== "1") return jsonResponse({ machines: shown() } satisfies MachineRoster);
         return jsonResponse({ machines: shown().map((machine) => wireMachine(machine, true)) } satisfies { machines: WireMachine[] });
       }
+      if (accountRow) return fail("local_only", "An account-joined device cannot do this from afar", 403);
       if (asked.length > 1 || asked[0] === "") return fail("invalid_query", "verify_source_boot names one PC", 400);
       const machineId = asked[0]!;
       const proof = await manager.verifySourceBoot(machineId, request.signal);
@@ -155,7 +217,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         start(controller) {
           let closed = false;
           close = () => { if (closed) return; closed = true; cleanup(); try { controller.close(); } catch {} };
+          // fallen behind, refused or gone: an error, not a close, so what waits is dropped instead of still delivered
           drop = () => { if (closed) return; closed = true; cleanup(); try { controller.error(new Error("machine events: stream ended")); } catch {} };
+          // a revoked device that keeps up gets a clean end; one with a backlog waiting is not reading it, so that is dropped
           unwatchDevice = onRevoke?.(() => { if ((queue?.queued() ?? 0) > 0) drop(); else close(); });
           if (closed) return;
           const queued = () => MACHINE_EVENTS_QUEUE_BYTES - (controller.desiredSize ?? MACHINE_EVENTS_QUEUE_BYTES);
@@ -228,6 +292,20 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (!isJsonObject(body)) return fail("invalid_body", "Expected a pairing link", 400);
       return jsonResponse({ machine: await manager.addRelay(body.link, body.name, body.found) }, 201);
     }
+    // Add a connection → Direct, an https address: only a window direct to this PC that drives it gets here (dispatch.ts)
+    if (parts[0] === "address" && parts.length === 1 && request.method === "POST") {
+      setRequestRoute("/api/machines/address");
+      // the code that PC shows is a secret, like an SSH password
+      if (!canSendSecret(request)) return fail("https_required", "A pairing code requires HTTPS or localhost", 403);
+      const body: unknown = await request.json().catch(() => null);
+      if (!isJsonObject(body)) return fail("invalid_body", "Expected an address and a code", 400);
+      try { return jsonResponse({ machine: await manager.addAddress(body.address, body.code, body.name) }, 201); }
+      catch (error) {
+        if (!(error instanceof AddressPcError)) throw error;
+        const [message, status] = ADDRESS_PC_WORDS[error.failure];
+        return fail(`address_pc_${error.failure}`, message, status);
+      }
+    }
     if (parts[0] === "relay" && parts[1] === "code" && parts.length === 2 && request.method === "POST") {
       setRequestRoute("/api/machines/relay/code");
       // the code is a secret, and what it finds holds the other PC's one-time pairing code, which stays on this server
@@ -241,6 +319,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         return fail(`typed_code_${error.failure}`, message, status);
       }
     }
+    // Add a connection → Ovis relay: another PC of the account, vouched for by this window's admission (docs/account.md,
+    // "Adding a PC of your account"). Only a device that drives this PC, directly or over the relay, gets here (dispatch.ts)
     if (parts[0] === "relay" && parts[1] === "account" && parts.length === 3) {
       setRequestRoute(`/api/machines/relay/account/${parts[2]}`);
       if (readOnly) return fail("read_only", "this device can only watch", 403);
@@ -264,7 +344,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             const line = (value: unknown): void => { try { controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`)); } catch {} };
-            void manager.pairAccountPc(body.ticket, (digits) => line({ digits }), request.signal)
+            void manager.pairAccountPc(body.ticket, () => line({ waiting: true }), request.signal)
               .then((machine) => line({ machine }), (error: unknown) => {
                 if (error instanceof AccountPcError) line({ error: { code: `account_pc_${error.failure}`, message: error.message } });
                 else line({ error: { code: "internal_error", message: error instanceof Error ? error.message : String(error) } });
@@ -278,12 +358,14 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "ssh-candidates" && parts.length === 1) {
       setRequestRoute("/api/machines/ssh-candidates");
+      // adding a PC is a driving device's; a watching one is not told which hosts this PC knows either
       if (readOnly) return fail("read_only", "this device can only watch", 403);
       if (request.method !== "GET") return fail("method_not_allowed", "Use GET", 405);
       return jsonResponse({ pcs: await manager.listSshCandidates() }, 200, { "cache-control": "no-store" });
     }
     if (parts[0] === "tailnet" && parts.length === 1) {
       setRequestRoute("/api/machines/tailnet");
+      // adding a PC is a driving device's; a watching one is not told which PCs are there either
       if (readOnly) return fail("read_only", "this device can only watch", 403);
       if (request.method === "GET") return jsonResponse({ pcs: await manager.listTailnet() }, 200, { "cache-control": "no-store" });
       if (request.method !== "POST") return fail("method_not_allowed", "Use GET or POST", 405);
@@ -303,6 +385,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (parts.length === 1 && request.method === "POST") {
         setRequestRoute("/api/machines/setup");
         const body = await request.json() as SetupRequest;
+        // a setup that updates what runs there is an update of that PC: the owner's only, as above
+        // the addresses its one-job-per-PC check compares, resolved first (ssh -G, off the event loop, 3 s at most)
         await manager.resolveFor(body);
         return jsonResponse(manager.setup(body), 202);
       }
@@ -329,6 +413,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       return jsonResponse(manager.updateSettings(patch));
     }
     if (parts[0] === "install" && parts.length <= 2) {
+      // its jobs name SSH addresses and PCs: read by the owner only (the change itself takes the guard above)
       if (!owner) return fail("forbidden", OWNER_ONLY, 403);
       if (parts.length === 1) {
         setRequestRoute("/api/machines/install");
@@ -395,18 +480,22 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       manager.patch(id, patch); return jsonResponse({ ok: true });
     }
     if (parts.length === 1 && request.method === "DELETE") { setRequestRoute("/api/machines/:machine_id"); manager.remove(id); return jsonResponse({ ok: true }); }
-    const path = parts.slice(1).join("/");
     // earlier sessions carry their first prompts, and a folder's command files name what is in it (the new-tab
     // dialog's agent commands, a pane's command rows), as do the paths under a pane's folder and a plugin run's
     // output, and a repository's checkouts: never asked for a watching device with the PC's credential
     if (readOnly && (path === "sessions/history" || path === "agent/commands" || path === "pane/commands" || path === "pane/files" || path === "pane/docs" || path === "plugin/action" || path === "worktree/list" || path === "worktree/inventory")) return fail("read_only", "this device can only watch", 403);
     const movePath = PC_MOVE_PATH.test(path);
+    // a move's plan names every pane's folder and conversation, and the rest move or end them: a driving device's only
     if (readOnly && movePath) return fail("read_only", "this device can only watch", 403);
     if (movePath && !owner) return fail("forbidden", MOVE_OWNER_ONLY, 403);
+    // that PC refuses a move route with a query (updateRequestAllowed), which would read as an Ovis too old below
     if (movePath && url.search !== "") return fail("invalid_query", "The move routes take no query", 400);
     if (movePath && request.method !== "GET" && !updateRequestAllowed(request)) return fail("forbidden", MOVE_FROM_PAGE, 403);
-    if (MACHINE_PROXY_PATH.test(path) || movePath) {
+    if (proxyPath || movePath) {
+      // `path` is a finite endpoint literal, never the machine id or an arbitrary suffix.
       setRequestRoute(`/api/machines/:machine_id/${path}`);
+      // a connection that may only watch is refused here as well as at the access check, by the same rule
+      // (index.ts `mutating`): it writes nothing on another PC
       if (readOnly && !["GET", "HEAD", "OPTIONS"].includes(request.method)) return fail("read_only", "this device can only watch", 403);
       const endpoint = manager.endpoint(id);
       if (!endpoint) {
@@ -420,9 +509,13 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (contentType) headers.set("content-type", contentType);
       const ifNoneMatch = request.headers.get("if-none-match");
       if (ifNoneMatch) headers.set("if-none-match", ifNoneMatch);
-      if (movePath) headers.set("x-herdr-update", "1");
+      // The receiver's app mutation markers; this server has already checked the caller.
+      if (movePath || accountPc) headers.set("x-herdr-update", "1");
+      if (accountRecords || accountPc) headers.set("x-herdr-machine", "1");
       const abort = new AbortController();
       if (path === "fs/file") {
+        // a file (a video, say) streams through, with its ranges, never held here; it can
+        // play for longer than any request timeout
         const range = request.headers.get("range");
         if (range) headers.set("range", range);
         try {
@@ -448,6 +541,18 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           return new Response(response.body, { status: response.status, headers: passed });
         } catch (error) { return transportFailure(id, path, error); }
       }
+      if (accountPc) {
+        // passed on as it comes, never held: `pair` is a stream of lines whose first, `waiting`, tells the person to approve
+        // on another device while that PC waits for a member's approval, up to 180 s there (dispatch.ts); held 200 s here
+        try {
+          const response = await fetch(`${endpoint.url}/api/${path}`, { method: "POST", headers, body: request.body, redirect: "error",
+            signal: AbortSignal.any([request.signal, AbortSignal.timeout(path.endsWith("/pair") ? 200_000 : 75_000)]) });
+          return new Response(response.body, { status: response.status, headers: {
+            "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "no-store", "x-accel-buffering": "no",
+            "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'",
+          } });
+        } catch (error) { return transportFailure(id, path, error); }
+      }
       // A watching device gets a plan card as the PC's screen shows it, never Claude's plan file:
       // the PC is asked for that (`plan=0`), and a PC that ignores the ask loses the file here.
       const watchedPrompt = readOnly && path === "pane/prompt";
@@ -464,11 +569,14 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         const etag = response.headers.get("etag");
         const serverTime = response.headers.get("x-server-time");
         const retryAfter = response.status === 503 ? response.headers.get("retry-after") : null;
+        // held whole before it is passed on (and parsed, for a watcher's prompt), so only up to a size
         let body: Uint8Array<ArrayBuffer> | null = response.status === 304 ? null : await readCapped(response, watchedPrompt ? REMOTE_LIMITS.watchedPrompt : REMOTE_LIMITS.proxy);
         if (movePath && tooOldToMove(manager.list().find((machine) => machine.id === id)?.kind, response.status, answerCode(body))) return fail("pc_update_required", PC_UPDATE_REQUIRED, 409);
         if (watchedPrompt && response.ok && body) {
           const answer = parseJson<PanePromptResponse>(body);
           if (answer.prompt?.plan_file !== undefined) {
+            // the body is the plan file's text and the screen's is not in the answer: the card keeps
+            // its question and options, without a body
             const { plan_file: _planFile, ...card } = answer.prompt;
             answer.prompt = { ...card, body: null };
           }
@@ -495,5 +603,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       finally { untrack(); }
     }
     return fail("not_found", "Unknown PC endpoint", 404);
-  } catch (e) { return fail("machine_request_failed", e instanceof Error ? e.message : String(e), 400); }
+  } catch (e) {
+    if (e instanceof TargetAccountPcError) return fail("pc_add_target_bound", e.message, 409);
+    return fail("machine_request_failed", e instanceof Error ? e.message : String(e), 400);
+  }
 }

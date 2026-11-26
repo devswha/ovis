@@ -38,10 +38,12 @@ describe("an OmO turn, read from its session file", () => {
   });
 
   it("is over at an answer that ended in an error, and runs again when a retry answers", () => {
+    // seen in real files: an error, OmO's stop record 2 ms later, then a retry 2 to 16 s later all the same
     expect(omoTurnStatus(lines(message("user"), message("assistant", "error")))).toBe("idle");
     expect(omoTurnStatus(lines(message("user"), message("assistant", "error"), bookkeeping("senpi.hooks.stop-state"), message("assistant", "error")))).toBe("idle");
     expect(omoTurnStatus(lines(message("user"), message("assistant", "error"), message("assistant", "toolUse")))).toBe("working");
     expect(omoTurnStatus(lines(message("user"), message("assistant", "error"), bookkeeping("senpi.hooks.stop-state"), runtime("goal-continuation")))).toBe("working");
+    // OmO's stop record says nothing of the turn: it is held back while a background task runs
     expect(omoTurnStatus(lines(message("user"), message("assistant", "toolUse"), bookkeeping("senpi.hooks.stop-state")))).toBe("working");
   });
 
@@ -392,6 +394,9 @@ describe("OmO panes' status in place of herdr's", () => {
     expect(shown).toEqual(["working", "idle", "working", "idle"]);
     for (let i = 0; i < 3; i++) { state.clock += 10_000; expect(statuses(await served())["omo"]).toBe("omo/idle"); }
     expect(completions.current("omo")).toBe("idle");
+    // It
+    // goes straight to DONE: a RUN told just before would make it a turn of no length, which the
+    // default alerts (a finish after a long turn) leave untold; a turn whose start was not seen is told
     append(message("assistant", "stop", LATER));
     omo.poll(); settle();
     expect(shown.slice(4)).toEqual(["done"]);
@@ -401,6 +406,123 @@ describe("OmO panes' status in place of herdr's", () => {
     append(message("assistant", "stop"));
     omo.poll(); settle();
     expect(shown.slice(5)).toEqual(["working", "done"]);
+  });
+
+  it("keeps running a turn whose run OmO's extension told began, through the errors OmO retries, until it told the run ended", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    expect(told).toEqual([["omo", "working", 0, true]]);
+    // OmO 5.1.81 retried a refused request five times over 33 s and then gave up (fixtures/omo-agent-runs-5.1.81.json)
+    omo.told("omo", "began");
+    for (let retry = 0; retry < 5; retry++) {
+      append(failure("Connection error."), bookkeeping("senpi.hooks.stop-state"));
+      state.clock += 9_000;
+      omo.poll();
+    }
+    expect(told).toHaveLength(1);
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told.at(-1)).toEqual(["omo", "idle", 0, true, "failed"]);
+    // a retry that answers: no failure is told at all
+    append(message("user"));
+    omo.told("omo", "began");
+    omo.poll();
+    append(failure("Connection error."));
+    omo.poll();
+    append(message("assistant", "stop", LATER));
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told.slice(2)).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
+  });
+
+  it("holds the rest until a read of the file covers what it held when the run's end was told", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(failure("Connection error."));
+    omo.poll();
+    // the retry answered; the read after its end was told fails, and sees only the error
+    append(message("assistant", "stop", LATER));
+    state.failing = true;
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true]]);
+    state.failing = false;
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
+  });
+
+  it("holds no rest the file published before a run's start was told, until the file reads a turn running", async () => {
+    const { omo, told, append } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    append(message("assistant", "stop"));
+    omo.poll();
+    omo.told("omo", "began");
+    omo.poll();
+    omo.told("omo", "ended");
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true], ["omo", "idle", 0, true]]);
+    // a start told late in a turn that went on: its rest is held
+    omo.told("omo", "began");
+    append(message("user"));
+    omo.poll();
+    append(failure("Connection error."));
+    omo.poll();
+    expect(told.slice(2)).toEqual([["omo", "working", 0, true]]);
+  });
+
+  it("counts the minute of rest from the start of OmO's latest retry, which may write nothing while it runs", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(failure("Connection error."));
+    omo.poll();
+    for (let retry = 0; retry < 5; retry++) {
+      state.clock += 11_000;
+      omo.told("omo", "began");
+      omo.poll();
+    }
+    state.clock += 59_000;
+    omo.poll();
+    expect(told).toHaveLength(1);
+    state.clock += 1_000;
+    omo.poll();
+    expect(told.at(-1)).toEqual(["omo", "idle", 0, true, "failed"]);
+  });
+
+  it("holds nothing of a run told for another session file than the pane's now", async () => {
+    const { omo, told, append, state, files } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(failure("Connection error."));
+    omo.poll();
+    expect(told).toHaveLength(1);
+    // OmO started anew in the pane, on another session file, which reads a turn that ran and ended
+    const other = "/s/2026_01a0f88b-0000-7139-8125-c9cd453b9e17.jsonl";
+    files[other] = lines(message("user"), message("assistant", "stop", LATER));
+    state.discovered.set("omo", { path: other, startedAt: null });
+    state.clock += 10_000;
+    await omo.refresh(herdr().panes);
+    expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/idle");
+  });
+
+  it("lets the session file's rest stand a minute after it, when the end of the run is never told", async () => {
+    const { omo, told, append, state } = setup(lines(message("user")));
+    await omo.refresh(herdr().panes);
+    omo.told("omo", "began");
+    append(message("assistant", "stop"));
+    omo.poll();
+    state.clock += 59_000;
+    omo.poll();
+    expect(told).toEqual([["omo", "working", 0, true]]);
+    state.clock += 1_000;
+    omo.poll();
+    expect(told.at(-1)).toEqual(["omo", "idle", 0, true]);
+    // nor does a pane that ended keep what its extension told
+    omo.told("omo", "began");
+    omo.ended("omo");
+    await omo.refresh(herdr().panes);
+    expect(statuses(omo.apply(herdr()))["omo"]).toBe("omo/idle");
   });
 
   it("drops a DONE kept from before when the turn after it ended on a model error (#687)", async () => {

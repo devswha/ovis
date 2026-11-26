@@ -24,11 +24,8 @@ import { displayPaneTitle } from "./Sidebar.tsx";
 
 interface Props {
   machines: readonly Machine[];
-  /** the pane whose menu opened recovery, even when a different pane is selected */
   target: { machineId: string; pane: HerdrPane };
-  /** the pane has a message box (an agent's): Put in message box is offered */
   canRecover: boolean;
-  /** false: the box took the text but could not save it, so the record stays here too */
   onRecover: (text: string, agentOnly: boolean) => boolean;
   onClose: () => void;
 }
@@ -43,11 +40,17 @@ export function UnsentTextDialog({ machines, target, canRecover, onRecover, onCl
   const items = useSyncExternalStore(paneLifetimes.subscribe, paneLifetimes.unsent);
   const undoable = useSyncExternalStore(paneLifetimes.subscribe, paneLifetimes.undoable);
   const [copied, setCopied] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const liveIds = new Set(items.map((item) => item.id));
   const pendingDiscards = undoable.filter((item) => !liveIds.has(item.id));
   const discardedIds = new Set(pendingDiscards.map((item) => item.id));
   const allItems = [...items, ...pendingDiscards].sort((a, b) => b.at - a.at);
   const firstActiveId = items[0]?.id ?? null;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -59,7 +62,6 @@ export function UnsentTextDialog({ machines, target, canRecover, onRecover, onCl
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
-  // the last one recovered or discarded (with no undoable item left in view): nothing is left to show
   useEffect(() => { if (items.length === 0 && pendingDiscards.length === 0) onClose(); }, [items.length, pendingDiscards.length, onClose]);
 
   const pcName = (item: UnsentText): string => machines.find((machine) => machine.id === item.machine_id)?.name ?? item.machine_id;
@@ -69,7 +71,7 @@ export function UnsentTextDialog({ machines, target, canRecover, onRecover, onCl
   const dialogTitle = t("Unsent text · {destination}", { destination });
   const exactWhen = (at: number): string => new Date(at).toLocaleString(resolvedLanguage, { dateStyle: "medium", timeStyle: "short" });
   const relativeWhen = (at: number): string => {
-    const diffSec = Math.round((at - Date.now()) / 1000);
+    const diffSec = Math.round((at - now) / 1000);
     const absSec = Math.abs(diffSec);
     try {
       const rtf = new Intl.RelativeTimeFormat(resolvedLanguage, { numeric: "auto" });

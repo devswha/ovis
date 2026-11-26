@@ -55,6 +55,11 @@ export function cachedPaneCommands(pane: HerdrPane): { agent: string | null; com
   return cached?.identity === catalogIdentity(pane) ? cached : undefined;
 }
 
+/**
+ * How long one request waits for its scan, counted from when the request arrived (its herdr lookups
+ * included), before it is answered 503: under the minute a signed-in API request may go without a
+ * byte before Bun closes it (`index.ts`), with room for what the route does after the scan.
+ */
 export const COMMANDS_WAIT_MS = 45_000;
 export const UNCLAIMED_SCAN_MS = 35_000;
 let waitMs = COMMANDS_WAIT_MS;
@@ -176,5 +181,8 @@ export function paneCommands(agent: string | null | undefined, cwd: string | nul
     if (trigger === "/" && source.skillsOverrideBuiltins && builtins.delete(found.name)) command.shadows = "builtin";
     commands.push(command);
   }
-  return [...builtins.values(), ...commands].sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source));
+  return [...builtins.values(), ...commands]
+    .map<SlashCommand>((command) => command.source === "builtin" && source.chatPaletteHidden?.includes(command.name)
+      ? { ...command, chatPaletteHidden: true } : command)
+    .sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source));
 }

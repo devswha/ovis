@@ -1,3 +1,7 @@
+/**
+ * `--runs` reads through `gh` and changes nothing there: the runs' browser-main-* and
+ * browser-other-* artifacts go to a temporary folder that is removed again.
+ */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,17 +46,23 @@ export function refreshTimings(listed: readonly string[], existing: Readonly<Rec
   return Object.fromEntries(rows.sort((a, b) => b.seconds - a.seconds || a.index - b.index).map(({ script, seconds }) => [script, seconds]));
 }
 
-async function gh(args: string[]): Promise<string> {
+export async function gh(args: string[]): Promise<string> {
   const child = Bun.spawn(["gh", ...args], { cwd: repo, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error(stderr.trim() || stdout.trim() || `gh ${args[0]} ${args[1]} exited ${code}`);
   return stdout;
 }
 
-export function lastAttemptArtifacts(names: readonly string[]): string[] {
+/**
+ * Of a run's artifact names, the logs of each job's last attempt: by default the browser lanes'.
+ * A run that was run again keeps the artifacts of every attempt (`browser-main-<run>-<attempt>`,
+ * `browser-other-<shard>-<run>-<attempt>`), and an earlier attempt would count the run twice.
+ * `kind` captures the job's name and run, then the attempt.
+ */
+export function lastAttemptArtifacts(names: readonly string[], kind = /^(browser-(?:main|other-\d+)-\d+)-(\d+)$/): string[] {
   const last = new Map<string, { name: string; attempt: number }>();
   for (const name of names) {
-    const match = /^(browser-(?:main|other-\d+)-\d+)-(\d+)$/.exec(name);
+    const match = kind.exec(name);
     if (!match) continue;
     const attempt = Number(match[2]);
     if (attempt > (last.get(match[1]!)?.attempt ?? 0)) last.set(match[1]!, { name, attempt });
@@ -60,6 +70,12 @@ export function lastAttemptArtifacts(names: readonly string[]): string[] {
   return [...last.values()].map(({ name }) => name).sort();
 }
 
+/**
+ * Downloads the browser logs of the newest `runs` green pushes to main into `dir`; returns their
+ * summary.json files. A run without such logs is passed over (one that changed only docs ran no
+ * browser job, and an old run's artifacts have expired); a read or download that fails ends the
+ * refresh, so the table is never written from part of the runs asked for.
+ */
 async function downloadSummaries(runs: number, dir: string): Promise<string[]> {
   const found: { databaseId: number }[] = JSON.parse(await gh([
     "run", "list", "--workflow", "ci.yml", "--branch", "main", "--event", "push", "--status", "success", "--limit", String(runs), "--json", "databaseId",

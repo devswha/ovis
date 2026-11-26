@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { defaultRustSidecar, installedHostVouched, probeRustHost, resetPtyHostForTests, RUST_SIDECAR_BUILD, rustSidecar, rustSidecarPath } from "./host.ts";
-import { PtySession, type PtySessionOptions } from "./session.ts";
+import { LEAVE_WITHIN_MS, PtySession, type PtySessionOptions } from "./session.ts";
 import { nodeSidecarAvailable, resetSidecarForTests, sidecarAvailable } from "./sidecar.ts";
 
 const RUST_HOST = rustSidecar({ ...process.env, OVIS_PTY_SIDECAR: "rust" });
@@ -79,6 +79,7 @@ describe("rustSidecar", () => {
       const installed = join(dir, "bin", "ovis-pty-sidecar");
       writeFileSync(installed, "host");
       const digest = createHash("sha256").update("host").digest("hex");
+      // a whole second, so both writes carry exactly the same mtime, as on a coarse file clock
       const tick = 1_700_000_000;
       writeFileSync(`${installed}.json`, JSON.stringify({ sha256: digest, version: "0.0.1" }));
       utimesSync(`${installed}.json`, tick, tick);
@@ -280,6 +281,7 @@ describe.skipIf(process.platform === "win32")("PtySession Rust fallback", () => 
     resetSidecarForTests();
   });
 
+  /** A PC without Node, as `bun run` leaves one: the `node` on PATH is Bun itself. Nothing here may run pty-host.mjs on it. */
   function withoutNode(): void {
     const dir = mkdtempSync(join(fixtures, "bun-as-node-"));
     symlinkSync(process.execPath, join(dir, "node"));
@@ -317,6 +319,7 @@ describe.skipIf(process.platform === "win32")("PtySession Rust fallback", () => 
     } finally { spawn.mockRestore(); }
   });
 
+  // #596: the installer no longer links its Node into ~/.local/bin, and herdr's PATH may hold a Node older than 18 first
   for (const where of [".local/share/ovis/node", ".local/share/herdr-web-ui/node"]) {
     it(`runs the Node the installer put in ~/${where} over an older one first on PATH, probed and spawned at one path`, async () => {
       const real = Bun.which("node");
@@ -501,6 +504,7 @@ async function appears(path: string): Promise<void> {
 
 const sleepTag = () => `sleep ${5000 + Math.floor(Math.random() * 4000)}.${String(Math.random()).slice(2, 10)}`;
 
+/** Whether every process whose command line holds `tag` is gone within 3 s (a SIGKILLed one takes a moment). */
 async function gone(tag: string): Promise<boolean> {
   for (const deadline = Date.now() + 3000; ;) {
     if (Bun.spawnSync(["pgrep", "-f", tag]).stdout.length === 0) return true;
@@ -509,6 +513,32 @@ async function gone(tag: string): Promise<boolean> {
   }
 }
 
+const LEAVE = { keys: "\x02q", notAfter: /\x02$/ };
+const bytes = (text: string): string => [...Buffer.from(text)].map((byte) => `<${byte.toString(16).padStart(2, "0")}>`).join("");
+/**
+ * Stands where `herdr terminal attach` stands: reads its terminal raw and says each byte it read (`<61>`), and reads
+ * nothing before `gate` is there. One that `leaves` exits at LEAVE's keys.
+ */
+const READS = (gate: string | null, leaves: boolean) => ["-e", `
+  const fs = require("fs");
+  const gate = ${JSON.stringify(gate)};
+  process.stdin.setRawMode(true);
+  let read = "", reading = false;
+  function start() {
+    if (reading || (gate && !fs.existsSync(gate))) return;
+    reading = true;
+    process.stdin.on("data", (data) => {
+      const now = [...data].map((byte) => "<" + byte.toString(16).padStart(2, "0") + ">").join("");
+      read += now;
+      process.stdout.write(now, () => { if (${leaves} && read.includes("<02><71>")) process.exit(0); });
+    });
+  }
+  if (gate) fs.watch(require("path").dirname(gate), start);
+  start();
+  process.stdout.write("READY");
+`];
+
+/** A command in a process group of its own whose members ignore SIGHUP: a hangup alone never ends it. */
 const STUBBORN_GROUP = (tag: string, then: string) => ["-c", `trap '' HUP; ${tag} & printf READY; ${then}`];
 
 function parity(host: "node" | "rust") {
@@ -565,6 +595,7 @@ function parity(host: "node" | "rust") {
       } finally { burst.session.kill(); }
     }, 15_000);
 
+    // a signal's end is never the 0 of a success: told as a shell tells it
     it.skipIf(process.platform === "win32")("reports a command a signal ended as 128 plus the signal's number", async () => {
       const ended = run("sh", ["-c", "kill -TERM $$"]);
       try {
@@ -572,22 +603,17 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
-    // that wait ends the moment the command has exited: a plain exit is not held for it. Time is the behaviour
-    // here, and it is counted from the command's own last act, not from the host's start: the start is most of
-    // a run, and it is what a busy machine stretches. The act is a file the command leaves, not output: the
-    // Node host reads a last byte together with the hangup, and ends that pty another way. The file's own time
-    // is the start of the count, the system's word for when the command wrote it: whatever this process does
-    // late only makes the span longer, never shorter. From the file the exit is about 20 ms away on the Node
-    // host, and 200 ms more when the wait is run out.
+    // Neither the host's grace deadline nor node-pty's fallback may release the hold:
+    // the same exit check used in production must observe the command's end.
     it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
-      const leaving = join(mkdtempSync(join(fixtures, "leaving-")), "now");
-      const ended = run("sh", ["-c", ': > "$1"; exit 7', "sh", leaving]);
+      const ended = run("sh", ["-c", "exit 7"], { env: { OVIS_TEST_PTY_NO_CLOSE_DEADLINE: "1" } });
       try {
         expect(await ended.exited).toBe(7);
-        expect(Date.now() - statSync(leaving).mtimeMs).toBeLessThan(150);
       } finally { ended.session.kill(); }
     }, 15_000);
 
+    // the host waits (EXIT_QUIET) for a command that closed its terminal, as a dying one does, before hanging it up:
+    // time is the behaviour here, a command exiting 50 ms after it closed its terminal is well within that wait
     it.skipIf(process.platform === "win32")("lets a command that closed its terminal exit with its own code", async () => {
       const ended = run("sh", ["-c", "exec 0<&- 1>&- 2>&-; sleep 0.05; exit 3"]);
       try {
@@ -696,6 +722,48 @@ function parity(host: "node" | "rust") {
       } finally { echo.session.kill(); }
     }, 15_000);
 
+    it.skipIf(process.platform === "win32")("lets a command that leaves at its own keys read everything written before them, however late it reads (#4174)", async () => {
+      const gate = join(mkdtempSync(join(fixtures, "gate-")), "open");
+      const leaving = run("node", READS(gate, true), { leaveAt: LEAVE });
+      try {
+        await leaving.until("READY", (output) => output.includes("READY"));
+        const typed = ["a", ...Array.from({ length: 6 }, (_, wheel) => `\x1b[<64;10;${wheel + 1}M`)];
+        for (const text of typed) expect(leaving.session.write(text)).toBe(true);
+        leaving.session.leave();
+        expect(leaving.session.write("b")).toBe(false);
+        writeFileSync(gate, "");
+        await leaving.session.exited;
+        expect(leaving.output()).toBe(`READY${bytes(typed.join("") + LEAVE.keys)}`);
+      } finally { leaving.session.kill(); }
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("ends a command with its keys unwritten behind input they would not be read as its way out after", async () => {
+      const held = run("node", READS(null, true), { leaveAt: LEAVE });
+      try {
+        await held.until("READY", (output) => output.includes("READY"));
+        held.session.write("\x02");
+        await held.until("the chord's first key", (output) => output.includes("<02>"));
+        held.session.leave();
+        await held.session.exited;
+        expect(held.output()).toBe("READY<02>");
+      } finally { held.session.kill(); }
+    }, 15_000);
+
+    // time is the behaviour here: a command that does not leave is ended as a kill ends it, once it has had
+    // LEAVE_WITHIN_MS for it and well after a kill at once would have (some 250 ms)
+    it.skipIf(process.platform === "win32")("ends a command that has not left at its keys within LEAVE_WITHIN_MS", async () => {
+      const staying = run("node", READS(null, false), { leaveAt: LEAVE });
+      try {
+        await staying.until("READY", (output) => output.includes("READY"));
+        staying.session.write("a");
+        const asked = performance.now();
+        staying.session.leave();
+        await staying.session.exited;
+        expect(performance.now() - asked).toBeGreaterThan(LEAVE_WITHIN_MS / 2);
+        expect(staying.output()).toBe(`READY${bytes(`a${LEAVE.keys}`)}`);
+      } finally { staying.session.kill(); }
+    }, 15_000);
+
     it("reaps both processes when killed with output paused", async () => {
       const tag = `ovis-pty-reap-${crypto.randomUUID()}`;
       const flood = run("node", ["-e", `/* ${tag} */ setInterval(() => process.stdout.write("x".repeat(4096)), 5);`]);
@@ -734,8 +802,11 @@ function parity(host: "node" | "rust") {
       }
     }, 15_000);
 
+    // the Node host kills the group once node-pty's exit timer ends, also while it holds paused output; the Rust
+    // host hangs it up at the exit and kills it after the drain
     it.skipIf(host !== "node" || process.platform === "win32")("kills what is left of the command's process group when the command exits, while output is paused", async () => {
       const tag = sleepTag();
+      // the tag's seconds as an argument: the host's own command line must not match `tag`
       const leaving = run("sh", ["-c", `trap '' HUP; sleep "$1" & printf READY; read -r _; exit 4`, "sh", tag.slice("sleep ".length)]);
       try {
         await leaving.until("READY", (output) => output.includes("READY"));
@@ -782,6 +853,7 @@ parity("node");
 parity("rust");
 
 function direct(args: string[]) {
+  // exec keeps the host's pid; no core dump when a test aborts it (NO_CORE)
   const proc = Bun.spawn(["sh", "-c", `${NO_CORE}; exec "$0" "$@"`, RUST_HOST ?? "", "40", "5", ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let output = "";
   const waiters = new Set<() => void>();
@@ -813,6 +885,7 @@ function direct(args: string[]) {
   return { proc, until, peakMiB, errorLines };
 }
 
+/** Reports each resize, and never reads its input: what it is sent piles up in the pty (raw, so the line discipline keeps it). */
 const UNREAD = ["sh", "-c", 'stty raw -echo; exec node -e "$1"', "sh", `
   const out = process.stdout;
   process.on("SIGWINCH", () => out.write("WINCH " + out.columns + "x" + out.rows));

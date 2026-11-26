@@ -58,6 +58,24 @@ function store(session = "ses_test1") {
   return { path, db, session, add, prompt, answer, idle };
 }
 
+function storeV24() {
+  const s = store();
+  s.db.exec(`
+    UPDATE session_v2 SET version = '2.4.1';
+    CREATE TABLE session_part (
+      message_id text NOT NULL, session_id text NOT NULL, ordinal integer NOT NULL,
+      type text NOT NULL, call_id text, time_created integer NOT NULL, time_updated integer NOT NULL,
+      data text NOT NULL, PRIMARY KEY (message_id, ordinal)
+    );
+    CREATE INDEX session_part_session_message_idx ON session_part (session_id, message_id, ordinal);
+  `);
+  const part = (messageId: string, ordinal: number, data: Record<string, unknown>, updated = T0) => {
+    s.db.query("INSERT OR REPLACE INTO session_part (message_id, session_id, ordinal, type, call_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(messageId, s.session, ordinal, String(data.type), typeof data.id === "string" ? data.id : null, T0, updated, JSON.stringify(data));
+  };
+  return { ...s, part };
+}
+
 // OpenCode 1.x's own tables, as its service creates them (columns the reader never touches left out):
 // one `message` row per user prompt or assistant step, its blocks in `part` rows, ordered by time.
 const SCHEMA_V1 = `
@@ -124,8 +142,10 @@ describe("where OpenCode keeps its store", () => {
   it("follows the paths OpenCode resolves for itself, the same on every platform", () => {
     const home = join(root, "home");
     const data = join(root, "data");
+    // OpenCode has no per-platform data dir: macOS and Windows use ~/.local/share too
     expect(opencodeDatabasePath({}, home)).toBe(join(home, ".local", "share", "opencode", "opencode.db"));
     expect(opencodeDatabasePath({ XDG_DATA_HOME: data }, home)).toBe(join(data, "opencode", "opencode.db"));
+    // OPENCODE_DB names a file relative to the data dir, or anywhere
     expect(opencodeDatabasePath({ OPENCODE_DB: "other.db" }, home)).toBe(join(home, ".local", "share", "opencode", "other.db"));
     const elsewhere = join(root, "elsewhere", "x.db");
     expect(opencodeDatabasePath({ OPENCODE_DB: elsewhere, XDG_DATA_HOME: data }, home)).toBe(resolve(elsewhere));
@@ -169,8 +189,8 @@ describe("OpenCode's rows as a conversation", () => {
       {
         role: "assistant", ts: new Date(T0 + 10).toISOString(), end_ts: new Date(T0 + 60).toISOString(), parts: [
           { kind: "thinking", text: "Write it, then read it." },
-          { kind: "tool", name: "write", summary: "hello.txt", input: JSON.stringify({ path: "hello.txt", content: "hi\n" }, null, 2), output: "Created file successfully: hello.txt", state: "ok" },
-          { kind: "tool", name: "shell", summary: "cat hello.txt", input: JSON.stringify({ command: "cat hello.txt" }, null, 2), output: "hi\n", state: "ok" },
+          { kind: "tool", name: "write", call_id: "call_1", summary: "hello.txt", input: JSON.stringify({ path: "hello.txt", content: "hi\n" }, null, 2), output: "Created file successfully: hello.txt", state: "ok" },
+          { kind: "tool", name: "shell", call_id: "call_1", summary: "cat hello.txt", input: JSON.stringify({ command: "cat hello.txt" }, null, 2), output: "hi\n", state: "ok" },
           { kind: "text", text: "It says hi.", phase: "final_answer" },
         ],
       },
@@ -182,6 +202,7 @@ describe("OpenCode's rows as a conversation", () => {
       time: { created: T0 }, text: "expanded prompt", metadata: { displayText: "look at [Image 1] @review" },
       files: [
         { data: PNG.toString("base64"), mime: "image/png", source: { type: "inline" }, name: "clipboard" },
+        // a file attached by path is never read from disk, and only image types are shown
         { mime: "image/png", source: { type: "file", path: "/etc/shot.png" }, name: "shot.png" },
         { data: "PGh0bWw+", mime: "text/html", source: { type: "inline" } },
       ],
@@ -337,6 +358,7 @@ describe("OpenCode's rows as a conversation", () => {
       [{ kind: "notice", text: "$ git diff\ndiff --git a/x b/x", source: "shell" }],
       [{ kind: "text", text: "commit it" }],
     ]);
+    // a Windows shell ends its lines with \r\n
     const windows = record("shell", { time: { created: T0 }, command: "dir", output: { output: "a.txt\r\nb.txt\r\n" } });
     expect(windows !== null && windows.role === "user" && windows.parts).toEqual([{ kind: "notice", text: "$ dir\na.txt\r\nb.txt", source: "shell" }]);
   });
@@ -359,6 +381,7 @@ describe("a page of an OpenCode session", () => {
     expect(answer.cursor).toBeNull();
     expect(answer.history_id).toBe("opencode-ses_test1");
     expect(answer.turns.map((turn) => turn.parts)).toEqual([[{ kind: "text", text: "hello" }], [{ kind: "text", text: "hi", phase: "final_answer" }]]);
+    // input + output + reasoning + both cache tiers, as the footer counts them; no window is stated
     expect(answer.metadata).toEqual({ model: "deepseek-v4.1-flash", reasoning_effort: null, context: { used: 116, window: null } });
   });
 
@@ -456,6 +479,8 @@ describe("a page of an OpenCode session", () => {
   });
 
   it("sees a row rewritten twice in one millisecond once anything else is written", () => {
+    // every update moves a row's time_updated, to the millisecond: a second write in the same one
+    // leaves it where it was, and only the row's size says the row changed
     const s = store();
     s.prompt("go");
     const step = s.answer("work", { finish: undefined });
@@ -469,6 +494,8 @@ describe("a page of an OpenCode session", () => {
   });
 
   it("keeps the page it showed while the store is held, and the terminal before it showed one", () => {
+    // OpenCode runs its store in WAL, where a reader waits only while it recovers; a store in
+    // rollback-journal mode is held by any writer, which is the case reproduced here
     const s = store();
     s.prompt("hello"); s.answer("hi"); s.idle();
     s.db.exec("PRAGMA journal_mode = DELETE");
@@ -533,6 +560,236 @@ describe("a page of an OpenCode session", () => {
   });
 });
 
+describe("OpenCode 2.4 split assistant content", () => {
+  it("reads old inline content and new ordered parts, including their tool output and images", () => {
+    const s = storeV24();
+    s.prompt("Check the log");
+    const step = s.answer("", { content: [] });
+    const output = "y".repeat(6000);
+    s.part(step, 2, { type: "text", text: "Checked" });
+    s.part(step, 1, tool("read", {
+      status: "completed",
+      input: { path: "a.log" },
+      content: [{ type: "text", text: output }, { type: "file", uri: `data:image/png;base64,${PNG.toString("base64")}` }],
+    }));
+    s.part(step, 0, { type: "reasoning", text: "Read the log first" });
+    s.idle();
+    s.prompt("Old turn in the same store");
+    s.answer("Inline");
+
+    const newest = page(opencodeConversation(s.path, s.session, { prompts: 1 }));
+    expect(newest.turns[1]?.parts).toEqual([{ kind: "text", text: "Inline", phase: "final_answer" }]);
+    const older = page(opencodeConversation(s.path, s.session, { before: newest.cursor! }));
+    expect(older.turns[1]?.parts).toEqual([
+      { kind: "thinking", text: "Read the log first" },
+      expect.objectContaining({ kind: "tool", name: "read", call_id: "call_1", state: "ok", output_ref: `${step}:1` }),
+      { kind: "text", text: "Checked", phase: "final_answer" },
+    ]);
+    expect(opencodeToolOutput(s.path, s.session, `${step}:1`)).toBe(output);
+    expect(opencodeImage(s.path, s.session, `opencode:${step}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+  });
+
+  it("omits the call ID when a split tool has no usable ID", () => {
+    const s = storeV24();
+    s.prompt("Check the log");
+    const step = s.answer("", { content: [] });
+    const state = { status: "completed", input: { path: "a.log" } };
+    s.part(step, 0, { type: "tool", name: "read", state });
+    s.part(step, 1, tool("read", state, ""));
+
+    const parts = page(opencodeConversation(s.path, s.session)).turns[1]?.parts;
+    expect(parts).toHaveLength(2);
+    for (const part of parts ?? []) {
+      expect(part.kind).toBe("tool");
+      expect(part).not.toHaveProperty("call_id");
+    }
+  });
+
+  it("keeps inline blocks after split blocks when a message has both", () => {
+    const s = storeV24();
+    s.prompt("Go");
+    const step = s.answer("Inline");
+    s.part(step, 0, { type: "text", text: "Split" });
+    expect(page(opencodeConversation(s.path, s.session)).turns[1]?.parts).toEqual([
+      { kind: "text", text: "Split" },
+      { kind: "text", text: "Inline", phase: "final_answer" },
+    ]);
+  });
+
+  it("refreshes the newest page when only a part changes", () => {
+    const s = storeV24();
+    s.prompt("Go");
+    const step = s.answer("", { content: [] });
+    s.part(step, 0, { type: "text", text: "First" });
+    s.part(step, 1, { type: "text", text: "Last" }, T0 + 2);
+    const first = page(opencodeConversation(s.path, s.session));
+    expect(first.turns[1]?.parts).toEqual([
+      { kind: "text", text: "First" },
+      { kind: "text", text: "Last", phase: "final_answer" },
+    ]);
+    expect(opencodeConversation(s.path, s.session)).toBe(first);
+
+    s.part(step, 0, { type: "text", text: "Ready" }, T0 + 1);
+    const second = page(opencodeConversation(s.path, s.session));
+    expect(second.history_id).toBe(first.history_id);
+    expect(second.signature).not.toBe(first.signature);
+    expect(second.turns[1]?.parts).toEqual([
+      { kind: "text", text: "Ready" },
+      { kind: "text", text: "Last", phase: "final_answer" },
+    ]);
+  });
+
+  it("counts part bytes when choosing which prompts to read", () => {
+    const s = storeV24();
+    s.prompt("Earlier prompt");
+    const earlier = s.answer("", { content: [] });
+    s.part(earlier, 0, { type: "text", text: "é".repeat(5_000_000) });
+    s.prompt("Newest prompt");
+    const latest = s.answer("", { content: [] });
+    s.part(latest, 0, { type: "text", text: "é".repeat(5_000_000) });
+    for (const rowSize of Object.values(OPENCODE_ROW_SIZE)) {
+      forgetOpencodeState();
+      const newest = page(opencodeConversation(s.path, s.session, {}, rowSize));
+      expect(newest.turns.filter((turn) => turn.role === "user").flatMap((turn) => turn.parts)).toEqual([{ kind: "text", text: "Newest prompt" }]);
+    }
+  });
+
+  it("invalidates page and parsed-record caches on same-millisecond growing and equal-length part rewrites", () => {
+    const s = storeV24();
+    s.db.exec("CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);");
+    const bumpRevision = (seq: number) => {
+      s.db.query("INSERT OR REPLACE INTO event_sequence (aggregate_id, seq) VALUES (?, ?)").run(s.session, seq);
+    };
+    s.prompt("Go");
+    const step = s.answer("", { content: [] });
+    s.part(step, 0, { type: "text", text: "A" }, T0 + 3);
+    bumpRevision(1);
+    const first = page(opencodeConversation(s.path, s.session));
+    expect(first.turns[1]?.parts).toEqual([{ kind: "text", text: "A", phase: "final_answer" }]);
+
+    // Growing write in the same millisecond (even without moving time_updated)
+    s.part(step, 0, { type: "text", text: "AB" }, T0 + 3);
+    bumpRevision(2);
+    const grown = page(opencodeConversation(s.path, s.session));
+    expect(grown.signature).not.toBe(first.signature);
+    expect(grown.turns[1]?.parts).toEqual([{ kind: "text", text: "AB", phase: "final_answer" }]);
+
+    // Equal-length rewrite in the same millisecond
+    s.part(step, 0, { type: "text", text: "CD" }, T0 + 3);
+    bumpRevision(3);
+    const rewritten = page(opencodeConversation(s.path, s.session));
+    expect(rewritten.signature).not.toBe(grown.signature);
+    expect(rewritten.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
+
+    // Equal-length rewrite on an older split row when a newer split row exists & event_sequence advances
+    s.prompt("Second");
+    const step2 = s.answer("", { content: [] });
+    s.part(step2, 0, { type: "text", text: "Newer" }, T0 + 10);
+    bumpRevision(4);
+    const withTwo = page(opencodeConversation(s.path, s.session));
+    expect(withTwo.turns[1]?.parts).toEqual([{ kind: "text", text: "CD", phase: "final_answer" }]);
+    s.part(step, 0, { type: "text", text: "EF" }, T0 + 3);
+    bumpRevision(5);
+    const olderRewritten = page(opencodeConversation(s.path, s.session));
+    expect(olderRewritten.turns[1]?.parts).toEqual([{ kind: "text", text: "EF", phase: "final_answer" }]);
+
+    // Also without event_sequence: growing write, equal-length UTF-8 byte expansion (AA -> éé), and equal-length write followed by idle row
+    const noSeq = storeV24();
+    noSeq.prompt("Go");
+    const noSeqStep = noSeq.answer("", { content: [] });
+    noSeq.part(noSeqStep, 0, { type: "text", text: "AA" }, T0 + 3);
+    const n1 = page(opencodeConversation(noSeq.path, noSeq.session, {}, OPENCODE_ROW_SIZE.bytes));
+    noSeq.part(noSeqStep, 0, { type: "text", text: "éé" }, T0 + 3);
+    const nUtf8 = page(opencodeConversation(noSeq.path, noSeq.session, {}, OPENCODE_ROW_SIZE.bytes));
+    expect(nUtf8.signature).not.toBe(n1.signature);
+    expect(nUtf8.turns[1]?.parts).toEqual([{ kind: "text", text: "éé", phase: "final_answer" }]);
+    noSeq.part(noSeqStep, 0, { type: "text", text: "ABC" }, T0 + 3);
+    const n2 = page(opencodeConversation(noSeq.path, noSeq.session));
+    expect(n2.signature).not.toBe(nUtf8.signature);
+    expect(n2.turns[1]?.parts).toEqual([{ kind: "text", text: "ABC", phase: "final_answer" }]);
+    noSeq.part(noSeqStep, 0, { type: "text", text: "CDE" }, T0 + 3);
+    noSeq.idle();
+    const n3 = page(opencodeConversation(noSeq.path, noSeq.session));
+    expect(n3.turns[1]?.parts).toEqual([{ kind: "text", text: "CDE", phase: "final_answer" }]);
+  });
+
+  it("reads tool images stored as media:<sha256> blobs scoped by session and message blob_ref", () => {
+    const s = storeV24();
+    s.db.exec(`
+      CREATE TABLE blob (hash text PRIMARY KEY, mime text NOT NULL, bytes integer NOT NULL, width integer, height integer, data blob NOT NULL, time_created integer NOT NULL);
+      CREATE TABLE blob_ref (session_id text NOT NULL, message_id text NOT NULL, hash text NOT NULL, seq integer NOT NULL, PRIMARY KEY (session_id, message_id, hash));
+    `);
+    const hash = "a".repeat(64);
+    const otherHash = "b".repeat(64);
+    s.db.query("INSERT INTO blob VALUES (?, 'image/png', ?, 1, 1, ?, ?)").run(hash, PNG.length, PNG, T0);
+    s.db.query("INSERT INTO blob VALUES (?, 'image/png', ?, 1, 1, ?, ?)").run(otherHash, PNG.length, PNG, T0);
+    s.prompt("Show chart");
+    const step = s.answer("", { content: [] });
+    s.db.query("INSERT INTO blob_ref VALUES (?, ?, ?, 2)").run(s.session, step, hash);
+    s.db.query("INSERT INTO blob_ref VALUES ('ses_other', 'msg_other', ?, 2)").run(otherHash);
+    s.part(step, 0, tool("read", {
+      status: "completed",
+      input: { path: "chart.png" },
+      content: [
+        { type: "file", uri: `media:${hash}`, mime: "image/png" },
+        { type: "file", uri: `media:${otherHash}`, mime: "image/png" },
+      ],
+    }, "call_blob"));
+
+    const conv = page(opencodeConversation(s.path, s.session));
+    const toolPart = conv.turns[1]?.parts.find((p) => p.kind === "tool");
+    expect(toolPart && toolPart.kind === "tool" ? toolPart.images : []).toEqual([
+      { media_type: "image/png", ref: `opencode:${step}:0` },
+    ]);
+    expect(opencodeImage(s.path, s.session, `opencode:${step}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+    expect(opencodeImage(s.path, s.session, `opencode:${step}:1`)).toBeNull();
+  });
+
+  it("does not overflow SQLite integer sum on extreme session_part timestamps", () => {
+    const s = storeV24();
+    s.prompt("Huge timestamps");
+    const step = s.answer("", { content: [] });
+    // Two values whose direct SUM overflows SQLite 64-bit signed integer (2^63 - 1 = 9223372036854775807)
+    const huge = 5_000_000_000_000_000_000;
+    s.part(step, 0, { type: "text", text: "One" }, huge);
+    s.part(step, 1, { type: "text", text: "Two" }, huge + 1);
+    const conv = page(opencodeConversation(s.path, s.session));
+    expect(conv.turns[1]?.parts).toEqual([
+      { kind: "text", text: "One" },
+      { kind: "text", text: "Two", phase: "final_answer" },
+    ]);
+  });
+
+  it("serves tool output and images for forked message IDs with numeric suffixes", () => {
+    const s = storeV24();
+    s.prompt("Forked turn");
+    const forkedId = "msg_event_2";
+    const longOutput = `${"forked-line\n".repeat(400)}tail`;
+    s.add("assistant", {
+      time: { created: T0 + 1, completed: T0 + 2 },
+      content: [],
+      finish: "stop",
+    }, { id: forkedId });
+    s.part(forkedId, 0, tool("read", {
+      status: "completed",
+      input: { path: "fork.png" },
+      content: [
+        { type: "text", text: longOutput },
+        { type: "file", uri: `data:image/png;base64,${PNG.toString("base64")}`, mime: "image/png" },
+      ],
+    }, "call_fork"));
+
+    const conv = page(opencodeConversation(s.path, s.session));
+    const toolPart = conv.turns[1]?.parts.find((p) => p.kind === "tool");
+    expect(toolPart && toolPart.kind === "tool" ? toolPart.output_ref : null).toBe(`${forkedId}:0`);
+    expect(toolPart && toolPart.kind === "tool" ? toolPart.images : []).toEqual([
+      { media_type: "image/png", ref: `opencode:${forkedId}:0` },
+    ]);
+    expect(opencodeToolOutput(s.path, s.session, `${forkedId}:0`)).toBe(longOutput);
+    expect(opencodeImage(s.path, s.session, `opencode:${forkedId}:0`)?.bytes).toEqual(new Uint8Array(PNG));
+  });
+});
+
 describe("where a page starts", () => {
   it("pages a store the same way through the fallback that measures rows without octet_length", () => {
     const s = store();
@@ -550,6 +807,7 @@ describe("where a page starts", () => {
   });
 
   it("measures a row in bytes without octet_length too", () => {
+    // macOS's own SQLite, which Bun uses there, can predate octet_length (3.43): the fallback must count bytes
     const s = store();
     s.prompt("ascii");
     s.prompt("multibyte: é ü 한국어 🦀");
@@ -616,6 +874,7 @@ describe("what a page refers to", () => {
   });
 
   it("answers nothing for an output or a picture while the store is held, rather than failing", () => {
+    // as for the page itself: rollback-journal mode is held by any writer, WAL only while it recovers
     const s = store();
     s.prompt("look");
     const step = s.add("assistant", {

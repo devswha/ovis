@@ -10,6 +10,7 @@ import { contextMenuKey } from "./context-menu-key.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { AgentStatus, ConversationResponse, ServerMessage } from "../shared/protocol.ts";
 import { openLens } from "./header-lens.ts";
+import { serveDemo } from "./demo-server.ts";
 
 declare global {
   interface Window {
@@ -222,6 +223,7 @@ function installSidebarFixture(): void {
   };
 }
 
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-activity-demo-"));
 
 const API = "Idempotent payments";
@@ -242,6 +244,10 @@ const outputParsed = (page: Page, text: string) => page.waitForFunction((expecte
 const waitStatus = (page: Page, title: string, status: string) => agent(page, title).locator(`.sidebar-status[data-status="${status}"]`).waitFor({ timeout: 10_000 });
 const waitAgentAt = (page: Page, index: number, title: string) => page.waitForFunction(([at, name]) =>
   [...document.querySelectorAll(".agents-sidebar .agent-item .agent-title")][at as number]?.textContent === name, [index, title] as const, { timeout: 5_000 });
+const drawerAtRest = (page: Page) => page.waitForFunction(() => {
+  const drawer = document.querySelector("#workspace-drawer.is-open");
+  return drawer !== null && drawer.getBoundingClientRect().left === 0 && drawer.getAnimations().length === 0;
+});
 
 async function withPage(browser: Browser, settings: object, run: (page: Page) => Promise<void>, mobile = false): Promise<void> {
   const context = await browser.newContext({
@@ -285,17 +291,7 @@ try {
   writeFileSync(join(app, "sidebar-fixture.js"), `(${installSidebarFixture.toString()})();`);
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./sidebar-fixture.js"></script>\n    <script type="module"'));
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
 
   try {
@@ -573,6 +569,8 @@ try {
           await input.fill(kind === "composer" ? "/" : "@missing");
           await page.locator(".menu.composer-menu").waitFor();
           await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 101), panes.omp);
+          // The answer has actually arrived for this finish. Otherwise readiness alone could
+          // keep the dot briefly and let this test pass without the popup coverage gate.
           await page.waitForFunction((id) => [...document.querySelectorAll("[data-pane-content]")].some((node) => {
             const key = JSON.parse(node.getAttribute("data-pane-content") ?? "null");
             return key?.[1] === id && key[5] === 101;
@@ -591,7 +589,7 @@ try {
       if (!finishCase || finishCase === "drawer") {
         await withPage(browser, {}, async (page) => {
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}&sidebar=shown`);
-          await page.locator(".sidebar.is-open").waitFor();
+          await drawerAtRest(page);
           await page.locator(".agents-sidebar .agent-section-toggle").tap();
           await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.omp);
           await waitStatus(page, INFRA, "working");
@@ -605,7 +603,13 @@ try {
             mkdirSync(evidence, { recursive: true });
             await page.screenshot({ path: join(evidence, "finish-drawer-phone.png") });
           }
-          await page.touchscreen.tap(page.viewportSize()!.width - 8, page.viewportSize()!.height / 2);
+          const scrim = page.locator(".scrim.is-open");
+          const outside = await scrim.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return { x: rect.right - 8, y: rect.top + rect.height / 2 };
+          });
+          await page.waitForFunction(({ x, y }) => document.elementFromPoint(x, y)?.matches(".scrim.is-open"), outside);
+          await page.touchscreen.tap(outside.x, outside.y);
           await page.locator("#workspace-drawer.is-open").waitFor({ state: "detached" });
           await agent(page, INFRA).locator('.sidebar-status[data-status="idle"]').waitFor({ state: "attached" });
         }, true);
@@ -614,15 +618,24 @@ try {
       if (!finishCase || finishCase === "hidden-composer") {
         await withPage(browser, {}, async (page) => {
           await page.evaluate(({ a, b }) => window.sidebarFixture.split(b, a), { a: panes.omp, b: panes.api });
+          // This case owns the sibling's finish. The demo's timed finish can claim it first.
+          await page.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}`);
           await page.getByRole("textbox", { name: "Message", exact: true }).fill("/");
           await page.locator(".menu.composer-menu").waitFor();
+          // Selecting through its real sidebar handler avoids navigating/reloading, which would silently discard the popup.
           await agent(page, API).locator(".agent-select").evaluate((button: HTMLElement) => button.click());
           const hidden = page.locator(`[data-layout-pane="${panes.omp}"].is-hidden`);
           await hidden.waitFor({ state: "attached" });
           assert.equal(await hidden.locator(".menu.composer-menu").count(), 1);
           await page.locator(`[data-layout-pane="${panes.api}"]:not(.is-hidden)`).waitFor();
-          await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 2), panes.api);
+          const answer: ConversationResponse = { source: "claude-transcript", history_id: "visible-sibling", turns: [
+            { role: "assistant", ts: "2026-10-19T00:00:00Z", parts: [{ kind: "text", text: "The visible sibling finished.", phase: "final_answer" }] },
+          ] };
+          await page.evaluate(({ id, answer }) => {
+            window.sidebarFixture.conversation(id, answer);
+            return window.sidebarFixture.finish(id, "done", 2);
+          }, { id: panes.api, answer });
           await page.waitForFunction((id) => [...document.querySelectorAll("[data-pane-content]")].some((node) => {
             const key = JSON.parse(node.getAttribute("data-pane-content") ?? "null");
             return key?.[1] === id && key[5] === 2;
@@ -765,6 +778,8 @@ try {
                 if (event.target === node) event.stopImmediatePropagation();
               }, true);
               node.addEventListener("scroll", () => { node.dataset.unexpectedScroll = "true"; });
+              // Virtual rows not drawn yet still have estimates; leave enough room for
+              // their actual wrapped heights when the enlarged viewport renders them all.
               return node.scrollHeight * 3 + 2000;
             });
             await page.setViewportSize({ width: 390, height });
@@ -1003,8 +1018,9 @@ try {
       console.log("PASS the Agents list keeps herdr's order through a finish, and an opened DONE reads as ready");
 
       await withPage(browser, {}, async (page) => {
-        const drawerToggle = page.locator('button[aria-controls="workspace-drawer"]');
+        const drawerToggle = page.locator("#drawer-toggle");
         await drawerToggle.tap();
+        await drawerAtRest(page);
         const agentToggle = page.locator(".agents-sidebar .agent-section-toggle");
         assert.equal(await agentToggle.getAttribute("aria-expanded"), "false", "the phone's Agents section still starts folded");
         await agentToggle.tap();
@@ -1015,12 +1031,17 @@ try {
         assert.ok(await more.isVisible(), "the ⋯ is visible on touch");
         await more.tap();
         const sheet = page.getByRole("dialog", { name: API, exact: true });
-        await sheet.waitFor();
+        await page.waitForFunction(() => {
+          const sheet = document.querySelector(".row-sheet");
+          return sheet !== null && sheet.getAnimations().length === 0;
+        });
         await sheet.getByRole("button", { name: "Pin agent" }).tap();
         await page.waitForFunction((key) => JSON.parse(localStorage.getItem("ovis:sidebar-agent-pins") ?? "[]").includes(key), `local:${panes.api}`);
         await sheet.waitFor({ state: "detached" });
+        const pinnedSelect = agentSelect.and(page.locator(".agent-list-pinned .agent-select"));
+        await pinnedSelect.waitFor();
         assert.deepEqual(await page.locator(".agents-sidebar .agent-list-pinned .agent-title").allTextContents(), [API], "the pinned row stands in the pinned list");
-        await agentSelect.tap();
+        await pinnedSelect.tap();
         await page.waitForFunction((paneId) => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "{}").pane_id === paneId, panes.api, { timeout: 5_000 });
         assert.equal(await agentSelect.getAttribute("aria-current"), "true", "a tap still selects the agent");
         assert.equal(await page.locator(".row-menu, .row-sheet").count(), 0, "a tap opens no agent action sheet");
@@ -1036,6 +1057,7 @@ try {
         await waitAgentAt(page, 1, API);
 
         await agent(page, INFRA).locator(".agent-select").click();
+        // Rows keep their order while the pointer is over Agents; leave it before checking activity order.
         await page.locator(".composer-text").click();
         await page.locator(".composer-text").fill("Check the plan again");
         await page.locator(".composer-text").press("Enter");

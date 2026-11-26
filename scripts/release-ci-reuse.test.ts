@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -154,6 +154,7 @@ describe("the run's jobs", () => {
     expect(why(jobsFinding(passed([...SELF_HOSTED, "Fast checks"]), completed, commit))).toBe(`run ${RUN}: the jobs are not ci.yml's (not ci.yml's, or there twice: "Fast checks")`);
     expect(why(jobsFinding(passed(SELF_HOSTED.map((name) => (name === "Fast checks" ? "fast checks" : name))), completed, commit)))
       .toBe(`run ${RUN}: the jobs are not ci.yml's (missing "Fast checks"; not ci.yml's, or there twice: "fast checks")`);
+    // a job of a called workflow is listed under its caller's name
     expect(jobsFinding(passed(SELF_HOSTED.map((name) => `validate / ${name}`)), completed, commit).answer).toBe("no");
   });
 
@@ -613,6 +614,7 @@ describe("the script as the reuse job runs it", () => {
       expect([result.stdout, result.code]).toEqual(["green=false\nrun=\n", 0]);
       expect(result.stderr).toBe(`::${level} title=Release validation::${message}\n`);
       expect(result.summary).toBe(`### Release validation\n\n${message}\n`);
+      // the same as a rule: the message is one line, and the annotation's own is the only command
       expect(message).not.toMatch(/[\r\n]/);
       expect(result.stderr.match(/^\s*::/gm)).toEqual(["::"]);
       expect(result.summary.match(/^\s*::/gm)).toBeNull();
@@ -696,16 +698,19 @@ describe("ci.yml", () => {
   });
 
   it("gives a job only a condition that a push run meets", () => {
-    const met = [undefined, "needs.changes.outputs.code == 'true'", "always()"];
+    const met = [undefined, "needs.changes.outputs.code == 'true'", "needs.changes.outputs.code == 'true' && needs.changes.outputs.browser != 'false'", "needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'", "always()"];
     const conditional = Object.entries(ci.jobs).filter(([, job]) => !met.includes(job.if)).map(([id, job]) => `${id}: ${job.if}`);
     expect(conditional, "A push run of main may skip these jobs, and a skipped job is not a passed one: a Release run would then never take main's run. Give the job a condition a push always meets, or teach scripts/release-ci-reuse.ts which jobs a push run skips").toEqual([]);
     expect(ci.jobs["changes"]!.if).toBeUndefined();
-    expect(ci.jobs["changes"]!.outputs).toMatchObject({ code: "${{ steps.filter.outputs.code }}", draft: "${{ steps.filter.outputs.draft }}" });
+    expect(ci.jobs["changes"]!.outputs).toMatchObject({ code: "${{ steps.filter.outputs.code }}", browser: "${{ steps.filter.outputs.browser }}", draft: "${{ steps.filter.outputs.draft }}" });
   });
 
   const HOSTED_ONLY_READS = [
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.fast) }}",
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}",
+    "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.integration) }}",
+    "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.rust) }}",
+    "${{ inputs.hosted_only && 'windows-latest' || fromJSON(needs.changes.outputs.windows) }}",
     "${{ inputs.hosted_only && 'none' || 'save' }}",
     "${{ inputs.hosted_only && 'none' || 'restore' }}",
     "needs.changes.outputs.draft != 'true' && !inputs.hosted_only",
@@ -741,11 +746,14 @@ describe("ci.yml", () => {
     "concurrency.group": "validation-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && '-manual' || '' }}",
     "concurrency.cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
     "jobs.changes.runs-on": LIGHT,
-    "jobs.herdr-core-live.runs-on": LIGHT,
+    // GitHub-hosted unless CI_HC_LIVE_LABELS moves it; the event only keeps a fork's pull request hosted
+    "jobs.herdr-core-live.runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(vars.CI_HC_LIVE_LABELS || '\"ubuntu-24.04\"') }}",
     "jobs.integration-browser.runs-on": LIGHT,
     "jobs.macos-session.runs-on": "${{ inputs.hosted_only && 'macos-15' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(github.workflow == 'CI' && vars.CI_MAC_LABELS || '\"macos-15\"') }}",
     "jobs.changes.steps.route.env.EVENT_NAME": "${{ github.event_name }}",
     "jobs.changes.steps.route.env.HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}",
+    // only which machine a draft's Native Windows install fails on: empty for a push to main and for a Release run alike
+    "jobs.changes.steps.route.env.PR_DRAFT": "${{ github.event.pull_request.draft }}",
     "jobs.changes.steps.route.env.REQUESTED_LABELS": "${{ inputs.self_hosted_labels }}",
     "jobs.changes.steps.filter.env.EVENT_NAME": "${{ github.event_name }}",
     "jobs.changes.steps.filter.env.PR_DRAFT": "${{ github.event.pull_request.draft }}",
@@ -764,6 +772,7 @@ describe("ci.yml", () => {
     expect([...reads].sort()).toEqual([
       `ci.yml: runs-on: ${String((ci.jobs["macos-session"] as CiJob & { "runs-on"?: string })["runs-on"])}`,
       `pty-sidecar.yml: ${pullRequestOnly}`,
+      `remote-bundles-platforms.yml: ${pullRequestOnly}`,
       `remote-bundles.yml: ${pullRequestOnly}`,
     ]);
     const ciRead = reads.find((read) => read.startsWith("ci.yml: "))!;
@@ -795,6 +804,10 @@ describe("ci.yml", () => {
   });
 
   const EVENT_VARIABLE_READS = [
+    // A release that takes main's run takes that restored build for
+    // the Integration and Browser jobs (docs/development.md#releasing); an entry is one a job of
+    // that same run built, named after the commit and everything else the build reads, and a
+    // restore checks every file's sha256
     "scripts/build-cache.ts",
     "scripts/check-report.ts", "scripts/check.ts",
     "scripts/self-hosted-runner/job-started.sh",
@@ -803,13 +816,13 @@ describe("ci.yml", () => {
   ];
 
   it("reads the event from the runner's environment only where a push run may differ from Release's own", () => {
-    const reading = files("{src,shared,server,scripts,telemetry,push-relay,relay,integrations}/**/*.{ts,tsx,js,mjs,cjs,sh}")
+    const reading = files("{src,shared,server,scripts,telemetry,push-relay,relay,integrations,tui}/**/*.{ts,tsx,js,mjs,cjs,sh}")
       .filter((file) => file !== "scripts/release-ci-reuse.test.ts" && /\bGITHUB_EVENT_(?:NAME|PATH)\b/.test(read(file)));
     expect(reading, "A script or a test reads the event from the runner's environment somewhere new, or no longer where it did. What it does with it differs between main's push run and the Release run's own ci.yml: list the file in EVENT_VARIABLE_READS with why a Release run may still take main's run").toEqual([...EVENT_VARIABLE_READS].sort());
     expect(read(".github/actions/setup-ci/action.yml")).not.toMatch(/\bgithub\.event|\bGITHUB_EVENT_/);
   });
 
-  it.skipIf(process.platform === "win32")("decides code=true and draft=false for a push, as for the Release run's own call, even after a docs-only commit", async () => {
+  it.skipIf(process.platform === "win32")("runs CI for pushes and server fixture changes and skips heavy checks for docs-only PRs", async () => {
     const filter = ci.jobs["changes"]!.steps!.find((step) => step.id === "filter")!;
     expect(filter.env).toEqual({ EVENT_NAME: "${{ github.event_name }}", PR_DRAFT: "${{ github.event.pull_request.draft }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
     const dir = mkdtempSync(join(tmpdir(), "release-ci-reuse-filter-"));
@@ -822,6 +835,9 @@ describe("ci.yml", () => {
       git("init", "-q");
       git("commit", "-q", "--allow-empty", "-m", "code");
       const base = git("rev-parse", "HEAD");
+      mkdirSync(join(dir, "scripts"));
+      copyFileSync(join(root, "scripts/ci-browser-reach.sh"), join(dir, "scripts/ci-browser-reach.sh"));
+      copyFileSync(join(root, "scripts/ci-server-reach.sh"), join(dir, "scripts/ci-server-reach.sh"));
       mkdirSync(join(dir, "docs"));
       writeFileSync(join(dir, "docs/guide.md"), "# Guide\n");
       git("add", "docs/guide.md");
@@ -833,9 +849,56 @@ describe("ci.yml", () => {
         expect(result.code).toBe(0);
         return readFileSync(output, "utf8");
       };
-      for (const event of ["push", "workflow_dispatch"]) expect(await decided({ EVENT_NAME: event, PR_DRAFT: "", BASE_SHA: "" })).toBe("draft=false\ncode=true\n");
-      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: base })).toBe("draft=false\ncode=false\n");
-      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "true", BASE_SHA: base })).toBe("draft=true\ncode=false\n");
+      for (const event of ["push", "workflow_dispatch"]) expect(await decided({ EVENT_NAME: event, PR_DRAFT: "", BASE_SHA: "" })).toBe("draft=false\ncode=true\nbrowser=true\n");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: base })).toBe("draft=false\ncode=false\nbrowser=true\nserver=true\n");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "true", BASE_SHA: base })).toBe("draft=true\ncode=false\nbrowser=true\nserver=true\n");
+
+      const docsCommit = git("rev-parse", "HEAD");
+      mkdirSync(join(dir, "server/fixtures"), { recursive: true });
+      writeFileSync(join(dir, "server/fixtures/prompt.txt"), "Continue?\n");
+      git("add", "server/fixtures/prompt.txt");
+      git("commit", "-q", "-m", "update prompt fixture");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: docsCommit })).toBe("draft=false\ncode=true\nbrowser=true\nserver=true\n");
+
+      const fixtureCommit = git("rev-parse", "HEAD");
+      git("mv", "server/fixtures/prompt.txt", "docs/prompt.txt");
+      git("commit", "-q", "-m", "move prompt to docs");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: fixtureCommit })).toBe("draft=false\ncode=true\nbrowser=true\nserver=true\n");
+
+      const moved = git("rev-parse", "HEAD");
+      mkdirSync(join(dir, "server"), { recursive: true });
+      writeFileSync(join(dir, "server/store.test.ts"), "export {};\n");
+      git("add", "server/store.test.ts");
+      git("commit", "-q", "-m", "a unit test");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: moved })).toBe("draft=false\ncode=true\nbrowser=false\nserver=true\n");
+      const tested = git("rev-parse", "HEAD");
+      mkdirSync(join(dir, "src"));
+      writeFileSync(join(dir, "src/App.tsx"), "export {};\n");
+      git("add", "src/App.tsx");
+      git("commit", "-q", "-m", "client code");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: tested })).toBe("draft=false\ncode=true\nbrowser=true\nserver=false\n");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: moved })).toBe("draft=false\ncode=true\nbrowser=true\nserver=true\n");
+
+      // The base moved after the pull request last saw it: the run's merge commit is made on the later base, and
+      // what another pull request brought there in between is not this one's change.
+      const seen = git("rev-parse", "HEAD");
+      const merged = (branch: string, path: string, others: string): void => {
+        git("switch", "-q", "-c", branch);
+        writeFileSync(join(dir, path), "export {};\n");
+        git("add", path);
+        git("commit", "-q", "-m", "this pull request");
+        git("switch", "-q", "-");
+        writeFileSync(join(dir, others), "export {};\n");
+        git("add", others);
+        git("commit", "-q", "-m", "another pull request, merged meanwhile");
+        git("merge", "-q", "--no-ff", "-m", "the run's merge commit", branch);
+      };
+      merged("unit-test-only", "server/other.test.ts", "src/Other.tsx");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: seen })).toBe("draft=false\ncode=true\nbrowser=false\nserver=true\n");
+      merged("docs-only", "docs/other.md", "src/Another.tsx");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: seen })).toBe("draft=false\ncode=false\nbrowser=true\nserver=true\n");
+      merged("client-code", "src/Mine.tsx", "docs/theirs.md");
+      expect(await decided({ EVENT_NAME: "pull_request", PR_DRAFT: "false", BASE_SHA: seen })).toBe("draft=false\ncode=true\nbrowser=true\nserver=false\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 // On the unmodified app over the demo's fixture transport: no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-render-crash-demo-"));
@@ -18,6 +20,7 @@ async function open(browser: Browser, search: string, { phone = false, clipboard
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" }
     : { viewport: { width: 1280, height: 800 }, locale: "en-US" });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", fileOpen: "panel" })));
+  // a plain-HTTP LAN address: no clipboard API, and the old copy command refused too
   if (clipboardRefused) await context.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
     document.execCommand = () => false;
@@ -50,15 +53,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, `<script src="./demo-transport.js"></script>${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   port = server.port ?? 0;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -197,6 +192,9 @@ try {
         await dialog.getByText("Density", { exact: true }).waitFor();
         await page.waitForFunction(() => (window.history.state as Record<string, { depth?: number } | undefined> | null)?.["ovis:settings"]?.depth === 2, undefined, { timeout: 5000 });
         const compact = dialog.getByText("Compact", { exact: true });
+        // Arm the failure on the actual tap, before React handles the density change.
+        // Setting the URL earlier lets a content-readiness or roster render replace the
+        // button with the crash fallback before Playwright can dispatch that tap.
         await compact.evaluate((button) => button.addEventListener("click", () => {
           const url = new URL(window.location.href);
           url.searchParams.set("crash", "settings");
@@ -235,8 +233,11 @@ try {
         assert.equal(await page.locator(".app-crash").count(), 0, "the page is not blanked");
         await page.getByRole("button", { name: "Open workspace list", exact: true }).tap();
         await page.locator("#workspace-drawer.is-open .sidebar-shell").waitFor();
+        await page.waitForFunction((key) => typeof history.state?.[key] === "string", SHEET_HISTORY_KEY, { timeout: 5_000 });
         await page.touchscreen.tap(page.viewportSize()!.width - 8, page.viewportSize()!.height / 2);
         await page.locator("#workspace-drawer.is-open").waitFor({ state: "detached" });
+        // The drawer's Back lands after it closes and can restore the crash flag from the entry underneath.
+        await page.waitForFunction((key) => history.state?.[key] === undefined, SHEET_HISTORY_KEY, { timeout: 5_000 });
         await stopCrashing(page);
         await notice.getByRole("button", { name: "Try again", exact: true }).tap();
         await page.locator(".pane-frame.is-current").waitFor();

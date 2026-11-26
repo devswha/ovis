@@ -1,14 +1,29 @@
 import type { PaneLayoutRect, PaneLayoutSplit } from "../../shared/herdr-api.generated.ts";
 import { isRecord } from "./snapshot.ts";
 
+/**
+ * Which tab a terminal is in stays in its `herdr.space` and `herdr.tab` labels, so a Herdr app
+ * started later adopts it.
+ *
+ * Geometry flows top down: a tab is a fixed LAYOUT_AREA square cut by its splits' ratios, never
+ * the terminals' own grids (a viewer sizes the terminal to its cell, and a grid read back as the
+ * cell made panes shrink each other, #2812).
+ */
+
 export const OVIS_LAYOUT_DOC = "ovis-layout";
 export const OVIS_LAYOUT_SCHEMA = 1;
 export const LAYOUT_AREA: PaneLayoutRect = Object.freeze({ x: 0, y: 0, width: 1000, height: 1000 });
 
 export type SplitDirection = "right" | "down";
 export type LayoutNode = { leaf: string } | { split: SplitDirection; ratio: number; first: LayoutNode; second: LayoutNode };
-export interface TabLayout { id: string; root: LayoutNode; zoomed: string | null }
-export interface WorkspaceLayout { id: string; tabs: TabLayout[] }
+/**
+ * `passthrough`: the tab's panes whose right press goes to the program that asked for the mouse instead of opening the
+ * terminal screen's menu (herdr's "Send right-clicks to pane"); absent when none. The browser reads nothing of it. The
+ * setting is the pane's: `reconcile` lists it under whichever tab holds the pane now.
+ */
+export interface TabLayout { id: string; root: LayoutNode; zoomed: string | null; passthrough?: string[] }
+/** `collapsed`: a repository's workspace whose worktree workspaces the terminal screen's sidebar folds; absent when not. */
+export interface WorkspaceLayout { id: string; tabs: TabLayout[]; collapsed?: true }
 export interface OvisLayout { schema: typeof OVIS_LAYOUT_SCHEMA; workspaces: WorkspaceLayout[] }
 
 export interface Grouping { id: string; tabs: { id: string; panes: readonly string[] }[] }
@@ -38,9 +53,10 @@ export function parseOvisLayout(value: unknown): OvisLayout | null {
     for (const tab of workspace["tabs"]) {
       if (!isRecord(tab) || typeof tab["id"] !== "string") continue;
       const root = parseNode(tab["root"]) ?? { leaf: "" };
-      tabs.push({ id: tab["id"], root, zoomed: typeof tab["zoomed"] === "string" ? tab["zoomed"] : null });
+      const passthrough = Array.isArray(tab["passthrough"]) ? tab["passthrough"].filter((pane): pane is string => typeof pane === "string" && pane !== "") : [];
+      tabs.push({ id: tab["id"], root, zoomed: typeof tab["zoomed"] === "string" ? tab["zoomed"] : null, ...(passthrough.length > 0 ? { passthrough } : {}) });
     }
-    workspaces.push({ id: workspace["id"], tabs });
+    workspaces.push({ id: workspace["id"], tabs, ...(workspace["collapsed"] === true ? { collapsed: true as const } : {}) });
   }
   return { schema: OVIS_LAYOUT_SCHEMA, workspaces };
 }
@@ -73,10 +89,14 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
     const ids = new Set(known.map((entry) => entry.id));
     return [...known.map((entry) => ({ live: byId.get(entry.id)!, kept: entry })), ...live.filter((entry) => !ids.has(entry.id)).map((entry) => ({ live: entry, kept: undefined }))];
   };
+  // a pane moves to another tab by its labels alone, and no writer of this document hears of it: what is kept for a
+  // pane is read from whichever tab listed it and written under the tab that holds it now
+  const passing = new Set((doc?.workspaces ?? []).flatMap((workspace) => workspace.tabs.flatMap((tab) => tab.passthrough ?? [])));
   return {
     schema: OVIS_LAYOUT_SCHEMA,
     workspaces: order(doc?.workspaces ?? [], shown).map(({ live, kept }) => ({
       id: live.id,
+      ...(kept?.collapsed ? { collapsed: true as const } : {}),
       tabs: order(kept?.tabs ?? [], live.tabs).filter(({ live: tab }) => tab.panes.length > 0).map(({ live: tab, kept: stored }) => {
         const panes = new Set(tab.panes);
         const seen = new Set<string>();
@@ -89,7 +109,9 @@ export function reconcile(doc: OvisLayout | null, shown: readonly Grouping[]): O
           root = { split: "right", ratio: clampRatio(before / (before + orphans.length)), first: root, second: sideBySide(orphans) };
         }
         const zoomed = stored?.zoomed && panes.has(stored.zoomed) ? stored.zoomed : null;
-        return { id: tab.id, root, zoomed };
+        const own = (stored?.passthrough ?? []).filter((pane) => panes.has(pane));
+        const passthrough = [...own, ...tab.panes.filter((pane) => passing.has(pane) && !own.includes(pane))];
+        return { id: tab.id, root, zoomed, ...(passthrough.length > 0 ? { passthrough } : {}) };
       }),
     })),
   };
@@ -127,6 +149,7 @@ export function place(root: LayoutNode, area: PaneLayoutRect = LAYOUT_AREA): Pla
   return placed;
 }
 
+/** The pane's leaf turned into a split: the pane first, `made` second, half each (herdr's split). */
 export function splitLeaf(root: LayoutNode, target: string, made: string, direction: SplitDirection): LayoutNode | null {
   let found = false;
   const walk = (node: LayoutNode): LayoutNode => {

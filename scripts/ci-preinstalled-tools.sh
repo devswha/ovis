@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Self-hosted jobs use the immutable runner image, never a download fallback.
 set -euo pipefail
 
 fail() {
@@ -22,6 +23,14 @@ if [[ "${NEED_HERDR:-false}" == true ]]; then
   herdr_path="$(command -v herdr)" || fail "The runner image must provide herdr 0.9.3."
   echo "18a8dc65f1c2fa485884344356dea1cfd911c6f06cf46fa78e193f4087f4dba7  $herdr_path" |
     sha256sum --check --status || fail "The runner image must provide the checksum-pinned herdr 0.9.3."
+fi
+
+# RUST_VERSION in scripts/self-hosted-runner/Dockerfile
+EXPECTED_RUST_VERSION=1.100.0
+if [[ "${NEED_RUST:-false}" == true ]]; then
+  rust_version="$(rustc --version 2>/dev/null)" || fail "The runner image must provide Rust $EXPECTED_RUST_VERSION."
+  [[ "$rust_version" == "rustc $EXPECTED_RUST_VERSION "* ]] && cargo --version >/dev/null 2>&1 ||
+    fail "The runner image must provide Rust $EXPECTED_RUST_VERSION, not ${rust_version#rustc }."
 fi
 
 echo "Using verified tools from the self-hosted runner image"

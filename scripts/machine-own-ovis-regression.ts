@@ -82,6 +82,8 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: `${shots}/failed-mobile.png` });
   await page.setViewportSize({ width: 1280, height: 900 });
+  // the drawer, opened at the phone's width, held a history entry: widened, it steps off it, and a
+  // reload asked for before that step lands is dropped (net::ERR_ABORTED)
   await sheetEntryLeft(page);
 
   roster = [local, refused(null)];
@@ -146,8 +148,11 @@ try {
     await page.waitForFunction(() => document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running"));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: `${shots}/choose-${width}.png` });
-    assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)", "Use work", "Use Default session", "Start a new herdr here"]);
+    // beside the PC's Ovis its herdr sessions wait under a closed Advanced settings fold
+    assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)"]);
     assert.equal(await answers.first().evaluate((button) => button.classList.contains("btn-primary")), true);
+    await card.locator("summary").click();
+    assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)", "Use work", "Use Default session", "Start a new herdr here"]);
     assert.equal(await card.evaluate((element) => element.classList.contains("is-setup")), true, "the choice is drawn as a question, not as an error");
     const section = page.locator(".machine-group").filter({ has: card });
     assert.equal(await section.locator(".machine-dot.is-error").count(), 0, "the PC's dot does not say error while it waits for a choice");

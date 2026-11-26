@@ -1,9 +1,13 @@
 import { join } from "node:path";
 import { COMPILED, ROOT } from "../entries.ts";
-import { disableRustHost, rustSidecar, spawnErrorReason } from "./host.ts";
+import { spawnErrorReason } from "../native-binary.ts";
+import { disableRustHost, rustSidecar } from "./host.ts";
 import { nodeSidecarAvailable, realNode } from "./sidecar.ts";
 
+// a file Node runs, never compiled in: beside the binary, or beside this one from source
 const HOST_SCRIPT = COMPILED ? join(ROOT, "pty-host.mjs") : join(import.meta.dir, "pty-host.mjs");
+/** How long a command asked to leave by itself (`leave`) has for it: what either host gives one to end after a hangup (KILL_AFTER). */
+export const LEAVE_WITHIN_MS = 2000;
 
 export interface PtySessionOptions {
   command: string;
@@ -13,7 +17,13 @@ export interface PtySessionOptions {
   onData: (data: string) => void;
   onExit: (code: number | null) => void;
   env?: Record<string, string>;
+  /** A private CLI gets only its supplied environment, not the server's credentials and hooks. */
   inheritEnv?: boolean;
+  /**
+   * The command's own way out, for `leave`: the keys it leaves at once it has read them, and what the input written
+   * last may not end with for them to be read as that.
+   */
+  leaveAt?: { keys: string; notAfter: RegExp };
 }
 
 /** Writes a line to a child's stdin. On Windows a pipe write settles later, so a child that already
@@ -28,12 +38,20 @@ export function writeLine(sink: import("bun").FileSink, line: string): boolean {
   }
 }
 
+/**
+ * A command running on a real PTY, hosted by the Rust host or, as the fallback, the Node sidecar (see pty-host.mjs for
+ * why output flow control currently needs node-pty, and why it is the prebuilt
+ * @lydell/node-pty distribution of it).
+ */
 export class PtySession {
   readonly host: "node" | "rust";
   readonly exited: Promise<void>;
   private readonly proc: ReturnType<typeof Bun.spawn>;
   private closed = false;
   private paused = false;
+  /** the input written last, which `leaveAt.notAfter` is asked about */
+  private last = "";
+  private leaving: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly options: PtySessionOptions) {
     // The bridge's bearer token is for browsers; neither the sidecar nor the attach needs it.
@@ -42,6 +60,7 @@ export class PtySession {
     delete env["HERDR_WEB_TOKEN"];
     const args = [String(options.cols), String(options.rows), options.command, ...options.args];
     const spawnOptions = { stdin: "pipe", stdout: "pipe", stderr: "inherit", env } as const;
+    // only a real Node runs pty-host.mjs: `bun run` puts a `node` that is Bun on a PC without one
     const node = () => {
       const executable = nodeSidecarAvailable() ? realNode(options.inheritEnv === false ? process.env : env) : null;
       if (!executable) throw new Error("no PTY host: the Rust host cannot run and this PC has no Node for the PTY sidecar");
@@ -64,7 +83,10 @@ export class PtySession {
       this.host = "node";
     }
 
+    // Process exit can precede the final stdout read. Deliver every byte before
+    // onExit lets the server remove the attachment.
     this.exited = Promise.all([this.proc.exited, this.pump()]).then(([code]) => {
+      // with no Node to fall back to, switching the Rust host off would leave every later attach without a host
       if (this.host === "rust" && !this.closed && this.proc.signalCode !== null) {
         if (nodeSidecarAvailable()) disableRustHost(`the Rust PTY host ended by ${this.proc.signalCode}`);
         else console.error(`Rust PTY host: ended by ${this.proc.signalCode}; kept, as this PC has no Node for the PTY sidecar`);
@@ -85,6 +107,7 @@ export class PtySession {
         const { done, value } = await reader.read();
         if (done) break;
         if (!value) continue;
+        // stream:true keeps a multi-byte character split across reads intact
         const text = decoder.decode(value, { stream: true });
         if (text) this.options.onData(text);
       }
@@ -104,7 +127,9 @@ export class PtySession {
   }
 
   write(data: string): boolean {
-    return this.send({ t: "i", d: data });
+    if (!this.send({ t: "i", d: data })) return false;
+    if (data) this.last = data;
+    return true;
   }
 
   resize(cols: number, rows: number): void {
@@ -131,8 +156,33 @@ export class PtySession {
     this.send({ t: "p", paused: false });
   }
 
-  kill(): void {
+  /**
+   * Lets the command leave by itself, with nothing more written to it: `leaveAt.keys` go in after everything written
+   * so far, on the same stream, so a command that leaves when it reads them has read all of that first. A hangup
+   * ends it with whatever it had not read yet. Killed as `kill` does when it has not left within LEAVE_WITHIN_MS, and
+   * at once when it has no such keys or they would not be read as its way out.
+   */
+  leave(): void {
     if (this.closed) return;
+    // paused, the command may be stuck writing output nobody reads, and never get to its input
+    this.resume();
+    const at = this.options.leaveAt;
+    if (!at || at.notAfter.test(this.last) || !this.send({ t: "i", d: at.keys })) {
+      this.kill();
+      return;
+    }
+    this.closed = true;
+    this.leaving = setTimeout(() => this.kill(), LEAVE_WITHIN_MS);
+    void this.proc.exited.then(() => {
+      clearTimeout(this.leaving);
+      this.leaving = undefined;
+    });
+  }
+
+  kill(): void {
+    if (this.closed && this.leaving === undefined) return;
+    clearTimeout(this.leaving);
+    this.leaving = undefined;
     this.closed = true;
     const sink = this.proc.stdin;
     try {

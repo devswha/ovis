@@ -31,12 +31,37 @@ interface Session {
   pane: string;
   frames: Array<{ type: string; text?: string; keys?: string[] }>;
   received: () => string;
+  ready: () => boolean;
   point: (x: number, y: number) => Promise<{ x: number; y: number }>;
   close: () => Promise<void>;
 }
 
+/**
+ * Waits until xterm reports the mouse, as herdr's attach asks it to: until then a press is a plain
+ * selection that the page never hands on as a click. The attach's first output can be parsed after
+ * the pane says it takes input.
+ */
 async function mouseReporting(s: Session): Promise<void> {
   await s.page.locator(".xterm.enable-mouse-events").waitFor();
+}
+
+async function pressReaches(s: Session, point: { x: number; y: number }, what: string): Promise<void> {
+  // A report the pane cannot take is dropped by sendTyped. Check readiness and the hit target in
+  // the same poll right before pressing: the pane can stop taking input while the hit test waits.
+  let under = "";
+  await until(async () => {
+    if (!s.ready()) {
+      under = "a pane that does not take input";
+      return false;
+    }
+    under = await s.page.evaluate(({ x, y }) => {
+      const at = document.elementFromPoint(x, y);
+      return at?.closest(".pane-frame.is-current .xterm.enable-mouse-events") ? "" : at ? `${at.tagName.toLowerCase()}.${[...at.classList].join(".")}` : "nothing";
+    }, point);
+    // readiness can drop while the hit test is pending: accept the poll only if it still holds
+    if (under === "" && !s.ready()) under = "a pane that stopped taking input";
+    return under === "";
+  }, () => `${what} lands on this pane's grid while it takes input (found ${under})`);
 }
 
 const MARK = "z";
@@ -85,7 +110,9 @@ async function open(browser: Browser, server: ReturnType<typeof createServer>, n
   });
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   await until(() => ready, `${name}: terminal accepts input`);
-  await page.locator(".xterm-screen").waitFor();
+  const current = ".pane-frame.is-current";
+  const screen = page.locator(`${current} .xterm-screen`);
+  await page.locator(shownRow(current), { hasText: "PROBE READY plain" }).waitFor({ timeout: 10_000 });
   let read = 0;
   return {
     page, pane, frames,
@@ -95,8 +122,10 @@ async function open(browser: Browser, server: ReturnType<typeof createServer>, n
       read = all.length;
       return Buffer.from(fresh, "hex").toString("latin1");
     },
+    ready: () => ready,
     point: async (x, y) => {
-      const box = (await page.locator(".xterm-screen").boundingBox())!;
+      const box = await screen.boundingBox();
+      assert.ok(box, `${name}: the current pane's terminal grid`);
       return { x: box.x + x, y: box.y + y };
     },
     close: () => context.close(),
@@ -106,10 +135,13 @@ async function open(browser: Browser, server: ReturnType<typeof createServer>, n
 try {
   const attached = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "state-attached"), token: "" });
   servers.push(attached);
+  // a PC without Node for the PTY sidecar: the pane is mirrored, and xterm never learns a mouse mode
   const mirrored = createServer({ port: 0, hostname: "127.0.0.1", stateDir: join(root, "state-mirrored"), token: "", sidecar: false });
   servers.push(mirrored);
   const browser = launched = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox", "--accept-lang=en-US"] });
 
+  // 1. Application cursor keys: less, git log and vim ask for them, and herdr's attach stream
+  // never says so to the browser. The program must read SS3 (ESC O A), not CSI (ESC [ A).
   {
     const s = await open(browser, attached, "decckm", "\\033[?1049h\\033[?1h");
     const input = s.page.locator(".xterm-helper-textarea");
@@ -135,6 +167,13 @@ try {
     const s = await open(browser, attached, "normal", "\\033[?1049h");
     const input = s.page.locator(".xterm-helper-textarea");
     await input.focus();
+    // An arrow goes through herdr's RPC, around the attach pty the letter before it was typed into.
+    // herdr has no barrier for bytes in that pty, so the server holds the arrow KEY_SETTLE_MS after the
+    // letter (TYPED_SETTLE_MS after an ESC, which herdr holds ~150ms): a margin, not an
+    // acknowledgement (#634), which a stall on a busy PC outlasts. server/core/key-settle.test.ts
+    // proves the hold with the shipped settle values; here the letter is read before its arrow is
+    // pressed. A letter typed while the arrow waits goes behind it in the pane's queue, which is order
+    // by construction: pressed at once.
     let got = "";
     for (let round = 0; round < 5; round += 1) {
       await s.page.keyboard.press("a");
@@ -144,6 +183,8 @@ try {
       await until(() => (got += s.received()).length >= round * 5 + 5, "an arrow and the letter after it received");
     }
     assert.equal(got, "a\x1b[Db".repeat(5), "an arrow between two letters arrives between them");
+    // The first letter goes through the attach pty and the rest may go through herdr, so no mark typed after
+    // them can vouch for it: all five bytes are read, in whatever order, before the next step.
     let together = "";
     await s.page.keyboard.press("a");
     await s.page.keyboard.press("ArrowLeft");
@@ -170,6 +211,8 @@ try {
     await s.page.keyboard.press("Alt+ArrowLeft");
     assert.equal((await mark(s, "Alt+ArrowLeft", altBefore)).read, altLeft, "Alt+ArrowLeft moves a word");
 
+    // A held arrow: keyboard autorepeat (~30/s) with letters typed between some of the repeats.
+    // Keep the autorepeat pacing; shared-runner latency is diagnostic, not a correctness threshold.
     const tokens: Array<{ text: string; sent: number; arrived?: number }> = [];
     let buffer = "";
     const poll = setInterval(() => {
@@ -226,6 +269,7 @@ try {
     burst += (await mark(s, "the burst")).read;
     assert.equal(burst, expected, "the burst arrives complete and in order");
 
+    // a program that did not ask for the mouse gets nothing from a click (herdr keeps it)
     await mouseReporting(s);
     const box = (await s.page.locator(".xterm-screen").boundingBox())!;
     await s.page.mouse.click(box.x + 120, box.y + 90);
@@ -236,10 +280,11 @@ try {
   {
     const s = await open(browser, attached, "mouse", "\\033[?1049h\\033[?1000h\\033[?1006hhttps://example.test/621 notes.md\\r\\n");
     writeFileSync(join(root, "mouse", "notes.md"), "# Notes\n");
-    const at = await s.point(100, 70);
     await mouseReporting(s);
+    const at = await s.point(100, 70);
     let got = "";
     const click = /\x1b\[<0;(\d+);(\d+)M[\s\S]*\x1b\[<0;(\d+);(\d+)m/;
+    await pressReaches(s, at, "the left click's press");
     await s.page.mouse.click(at.x, at.y);
     await until(() => click.test(got += s.received()), "left click received as press and release");
     const first = click.exec(got)!;
@@ -259,8 +304,12 @@ try {
     await until(async () => (await s.page.locator(".xterm-screen.xterm-cursor-pointer").count()) === 1, "the link is under the pointer");
     await s.page.mouse.click(link.x, link.y);
     assert.doesNotMatch((await mark(s, "a link click")).read, /\x1b\[<0;/, "a click on a link sends the program no button");
+    // in a new tab, as a chat link: window.open with a features string ("noopener" too) opens a popup window
     assert.deepEqual(await s.page.evaluate(() => (window as unknown as { opened: unknown[] }).opened), [["link", "https://example.test/621", "_blank", "noopener noreferrer"]], "and opens the link once, in a new tab with no opener or referrer");
 
+    // herdr's attach reports the mouse for every pane, so nothing tells a program that wants Cmd/Ctrl+click
+    // from a shell: a plain click on the name is the program's, as on any text, and Cmd+click (Ctrl+click off a
+    // Mac), the key that draws the name as a link, opens it and sends the program no button.
     const name = await s.page.evaluate((shown) => {
       const row = document.querySelector(shown)!;
       const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
@@ -278,6 +327,7 @@ try {
     await s.page.mouse.move(name.x, name.y);
     await until(async () => (await s.page.locator(".xterm-screen.xterm-cursor-pointer").count()) === 0, "a bare name is no link without the key");
     got = "";
+    await pressReaches(s, name, "the plain click on a bare name");
     await s.page.mouse.click(name.x, name.y);
     await until(() => click.test(got += s.received()), "a plain click on a bare name received by the program");
     assert.equal(await s.page.locator(".file-viewer").count(), 0, "a plain click on a bare name opens nothing");
@@ -294,6 +344,7 @@ try {
 
     // the keys held with a click go with it: Ctrl adds 16 to the button
     await s.page.keyboard.down("Control");
+    if (process.platform !== "darwin") await pressReaches(s, at, "the Ctrl+click's press");
     await s.page.mouse.click(at.x, at.y);
     await s.page.keyboard.up("Control");
     got = "";
@@ -310,14 +361,17 @@ try {
 
     const second = await s.point(400, 200);
     got = "";
+    await pressReaches(s, second, "the later click's press");
     await s.page.mouse.click(second.x, second.y);
     await until(() => click.test(got += s.received()), "a later click received");
     const later = click.exec(got)!;
     assert.ok(Number(later[1]) > Number(first[1]) && Number(later[2]) > Number(first[2]), "at its own cell, right of and below the first");
 
     const grid = (await s.page.locator(".xterm-screen").boundingBox())!;
+    const topRight = { x: grid.x + grid.width - 3, y: grid.y + 3 };
     got = "";
-    await s.page.mouse.click(grid.x + grid.width - 3, grid.y + 3);
+    await pressReaches(s, topRight, "the click on the top right cell");
+    await s.page.mouse.click(topRight.x, topRight.y);
     await until(() => click.test(got += s.received()), "a click on the top right cell received");
     const corner = click.exec(got)!;
     assert.equal(corner[2], "1", "on the top row");
@@ -340,6 +394,8 @@ try {
     await s.close();
   }
 
+  // 4. OpenCode reads the mouse and selects inside the panel a drag starts in (#2362): a plain drag is
+  // its own, as a click is, and the selection modifier still asks for the selection here.
   {
     const s = await open(browser, attached, "opencode", "\\033[?1049h\\033[?1000h\\033[?1002h\\033[?1006hchat column text | side panel\\r\\n", "opencode");
     await s.page.locator(`.agent-item[data-pane="${s.pane}"]`).waitFor();
@@ -352,13 +408,11 @@ try {
       await s.page.mouse.move(end.x, end.y, { steps: 4 });
       await s.page.mouse.up();
     };
-    const dragged = async (): Promise<void> => {
-      await s.page.mouse.move(from.x, from.y);
-      await dragFromHere(from, to);
-    };
     const drag = /\x1b\[<0;\d+;\d+M(?:[\s\S]*?\x1b\[<32;\d+;\d+M)+[\s\S]*?\x1b\[<0;(\d+);(\d+)m/;
     let got = "";
-    await dragged();
+    await s.page.mouse.move(from.x, from.y);
+    await pressReaches(s, from, "the plain drag's press");
+    await dragFromHere(from, to);
     await until(() => drag.test(got += s.received()), () => `a plain drag received as press, moves and release (read ${JSON.stringify(got)})`);
     assert.equal(await s.page.locator(".xterm-selection div").count(), 0, "a plain drag selects nothing here");
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-plain-drag.png") });
@@ -367,12 +421,16 @@ try {
     const selecting = await s.page.evaluate(() => /Mac/.test(navigator.platform)) ? "Alt" : "Shift";
     got = "";
     await s.page.keyboard.down(selecting);
-    await dragged();
+    await s.page.mouse.move(from.x, from.y);
+    await dragFromHere(from, to);
     await s.page.keyboard.up(selecting);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) > 0, `${selecting}+drag selects`);
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-modifier-drag.png") });
 
+    // Nothing reaches xterm in between: a key, or a buttonless move (a hover report), would clear the
+    // selection first, so the press is where the modifier drag let go.
     assert.ok((await s.page.locator(".xterm-selection div").count()) > 0, "the selection is still up when the plain drag starts");
+    await pressReaches(s, to, "the plain drag's press");
     await dragFromHere(to, from);
     await until(() => drag.test(got += s.received()), () => `a plain drag after a selection received (read ${JSON.stringify(got)})`);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) === 0, "the earlier selection is cleared");

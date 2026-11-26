@@ -8,7 +8,13 @@ import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import type { PlanStep, PlanSummary } from "../shared/protocol.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// The plan chip's step in progress (#1040) on the unmodified app over the demo's fixture transport:
+// the Claude pane's plan as the demo keeps it, then every state the chip and its list can be in,
+// pushed as the server would push them (a pane-status frame on the machine events, the roster and
+// the plan answer rewritten alike) in this disposable, loopback-only copy of the demo. No herdr
+// session is opened and nothing is typed.
 const app = mkdtempSync(join(tmpdir(), "herdr-plan-chip-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 if (evidence) mkdirSync(evidence, { recursive: true });
@@ -265,16 +271,7 @@ try {
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
   writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${hook}\n    <script type="module"`));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -418,6 +415,8 @@ try {
         await close(page);
         await hook.answer(undefined);
         await rest(page);
+        // an observer gets no composer (PaneTerminal draws its observing notice instead), so no chip:
+        // the plan stays the sidebar's count until the connection interacts again
         await hook.role("observe");
         await chipOf(page).waitFor({ state: "detached" });
         assert.equal(await page.locator(".composer-surface").count(), 0, `${what}: an observer has no composer to hold the chip`);

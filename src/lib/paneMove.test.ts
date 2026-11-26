@@ -24,7 +24,6 @@ it("carries the chat draft, the held terminal input and the picked lens to the p
   expect(drafts.read("ovis:composer-draft:w1:p1").text).toBe("");
   expect(data.get("ovis:terminal-draft:w2:p4")).toBe(JSON.stringify({ text: "echo held", at: 1 }));
   expect(data.get("ovis:view:w2:p4")).toBe("terminal");
-  // the comments waiting on its replies go with it (#511)
   expect(data.get("ovis:reply-comments:w2:p4")).toBe(JSON.stringify([{ id: "c1", quote: "q", comment: "c" }]));
   expect([...data.keys()].filter((key) => key.endsWith(":w1:p1"))).toEqual([]);
   expect(data.get("ovis:view:w1:p2")).toBe("chat");
@@ -56,18 +55,15 @@ it("moves every waiting comment with the pane, and a send begun before the move 
   comments.add(before, "selected first", "send this");
   expect(drafts.begin("ovis:composer-draft:w1:p1", "go")).toBe(true);
   const carried = comments.read(before);
-  // saved while that message is on its way: it waits for the next one
   comments.add(before, "selected second", "save for next message");
   carryPaneState("local", "w1:p1", "w2:p4", drafts, storage, comments);
   expect(comments.read(after).map((item) => item.comment)).toEqual(["send this", "save for next message"]);
-  // the send is acknowledged under the ID it went with
   comments.removeSent(before, carried);
   expect(comments.read(after).map((item) => item.comment)).toEqual(["save for next message"]);
   expect(comments.read(before)).toEqual([]);
 });
 it("removes the comments a send carried after another tab moved the pane during it (#2356)", () => {
   const { data, storage } = fixture();
-  // two tabs of one browser: each has its own stores over the same storage
   const sender = { drafts: new ComposerDraftStore(storage), comments: new ReplyCommentStore(storage) };
   const mover = { drafts: new ComposerDraftStore(storage), comments: new ReplyCommentStore(storage) };
   const before = "ovis:reply-comments:w1:p1", after = "ovis:reply-comments:w2:p4";
@@ -78,12 +74,9 @@ it("removes the comments a send carried after another tab moved the pane during 
   sender.comments.reserve(carried);
   mover.comments.add(before, "later", "for the next message");
   carryPaneState("local", "w1:p1", "w2:p4", mover.drafts, storage, mover.comments);
-  // the moved pane's next message in the tab that moved it carries none of them while that send is on its way
   expect(mover.comments.unreserved(mover.comments.read(after))).toEqual([]);
-  // acknowledged in the tab that sent it, under the ID it went with
   sender.comments.removeSent(before, carried);
   sender.drafts.end("ovis:composer-draft:w1:p1", sender.drafts.sendOf("ovis:composer-draft:w1:p1"));
-  // its storage event reaches the tab that moved the pane
   mover.drafts.refresh("ovis:composer-draft:w1:p1");
   expect(mover.comments.unreserved(mover.comments.read(after)).map((item) => item.comment)).toEqual(["for the next message"]);
   expect(mover.comments.read(after).map((item) => item.comment)).toEqual(["for the next message"]);
@@ -97,7 +90,6 @@ describe("comments moved while a send in another tab is on its way (#2356)", () 
     const tab = () => ({ drafts: new ComposerDraftStore(storage, () => 0), comments: new ReplyCommentStore(storage) });
     return { data, storage, tab };
   }
-  // as Composer's Send: the free comments, claimed with the draft and reserved for the send
   function send(tab: { drafts: ComposerDraftStore; comments: ReplyCommentStore }, pane: string, text: string) {
     const carried = tab.comments.unreserved(tab.comments.read(list(pane)));
     tab.drafts.set(draft(pane), text);
@@ -151,7 +143,6 @@ describe("comments moved while a send in another tab is on its way (#2356)", () 
     b.drafts.end(draft("w2:p2"), b.drafts.sendOf(draft("w2:p2")));
     b.comments.release(second);
     expect(b.comments.unreserved(b.comments.read(list("w3:p3")))).toEqual([]);
-    // that send ends too: the comment is free
     a.drafts.end(draft("w1:p1"), a.drafts.sendOf(draft("w1:p1")));
     expect(b.comments.unreserved(b.comments.read(list("w3:p3"))).map((item) => item.comment)).toEqual(["first"]);
   });
@@ -218,7 +209,6 @@ it("carries what this page alone keeps for a PC that names no herdr, and writes 
   const window = Object.getOwnPropertyDescriptor(globalThis, "window");
   Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage() } });
   try {
-    // an older bridge names no herdr: its panes' state lives in the page (lib/paneLifetime.ts)
     paneLifetimes.observe([{ id: "older", snapshot: { panes: [] } } as unknown as Machine], (item) => item.pane_id);
     const before = paneStorageId("older", "w1:p1");
     const after = paneStorageId("older", "w2:p4");
@@ -242,12 +232,10 @@ it("keeps the comments a send on its way carries out of a second send from the m
   const carried = comments.read(before);
   comments.reserve(carried);
   carryPaneState("local", "w1:p1", "w2:p4", drafts, storage, comments);
-  // the moved pane's own next message, before the first is acknowledged, carries none of them
   expect(drafts.read("ovis:composer-draft:w2:p4").sending).toBe(false);
   expect(comments.unreserved(comments.read(after))).toEqual([]);
   comments.add(after, "later", "for the next message");
   expect(comments.unreserved(comments.read(after)).map((item) => item.comment)).toEqual(["for the next message"]);
-  // refused: they are free again, on the moved pane, none lost (as Composer ends a send: its lease, then its reservation)
   drafts.end("ovis:composer-draft:w1:p1", drafts.sendOf("ovis:composer-draft:w1:p1"));
   comments.release(carried);
   expect(comments.unreserved(comments.read(after)).map((item) => item.comment)).toEqual(["carried", "for the next message"]);
@@ -261,4 +249,102 @@ it("takes the view of a pane moved elsewhere to its new ID in any slot, and noth
   // the same pane ID on another PC is another pane
   expect(movedView({ machineId: "other", paneId: "w1:p1" }, null, "pc", "w1:p1", "w2:p1")).toEqual({ selection: null, split: null });
   expect(movedView({ machineId: "pc", paneId: "w3:p1" }, null, "pc", "w1:p1", "w2:p1")).toEqual({ selection: null, split: null });
+});
+
+it("carries unsent card text across pane moves with write-first and keep-on-conflict (#3458)", () => {
+  const { data, drafts, storage } = fixture();
+  const payload = (paneId: string, text: string) => JSON.stringify({ machineId: "local", paneId, session: "s1", promptId: "q1", text });
+  data.set("ovis:card-text:w1:p1", payload("w1:p1", "draft answer"));
+  carryPaneState("local", "w1:p1", "w2:p4", drafts, storage);
+  expect(data.get("ovis:card-text:w1:p1")).toBeUndefined();
+  expect(JSON.parse(data.get("ovis:card-text:w2:p4")!)).toEqual({ machineId: "local", paneId: "w2:p4", session: "s1", promptId: "q1", text: "draft answer" });
+
+  // keep-on-conflict: if destination already holds card text, preserve both
+  data.set("ovis:card-text:w3:p1", payload("w3:p1", "source"));
+  data.set("ovis:card-text:w4:p2", payload("w4:p2", "existing dest"));
+  carryPaneState("local", "w3:p1", "w4:p2", drafts, storage);
+  expect(JSON.parse(data.get("ovis:card-text:w3:p1")!).text).toBe("source");
+  expect(JSON.parse(data.get("ovis:card-text:w4:p2")!).text).toBe("existing dest");
+
+  // write-first: if writing destination fails, keep source intact
+  data.set("ovis:card-text:w5:p1", payload("w5:p1", "keep me"));
+  const failingStorage = () => ({
+    ...storage(),
+    setItem(key: string, value: string) {
+      if (key === "ovis:card-text:w6:p2") throw new DOMException("Quota exceeded", "QuotaExceededError");
+      storage().setItem(key, value);
+    },
+  });
+  carryPaneState("local", "w5:p1", "w6:p2", new ComposerDraftStore(failingStorage), failingStorage);
+  expect(JSON.parse(data.get("ovis:card-text:w5:p1")!).text).toBe("keep me");
+  expect(data.get("ovis:card-text:w6:p2")).toBeUndefined();
+});
+
+it("prefers fresher cached card text over stale storage and keeps concurrent source edits (#3458)", async () => {
+  const { setCardText } = await import("./cardText.ts");
+  const { data, drafts, storage } = fixture();
+  const payload = (paneId: string, text: string) => JSON.stringify({ machineId: "local", paneId, session: "s1", promptId: "q1", text });
+
+  // failed edit write leaves stale text in storage, fresher text in memory
+  data.set("ovis:card-text:w7:p1", payload("w7:p1", "older stored"));
+  const failSourceWrite = () => ({
+    ...storage(),
+    setItem(key: string, value: string) {
+      if (key === "ovis:card-text:w7:p1") throw new DOMException("Quota exceeded", "QuotaExceededError");
+      storage().setItem(key, value);
+    },
+  });
+  setCardText("w7:p1", { machineId: "local", paneId: "w7:p1", session: "s1", promptId: "q1", text: "newer memory" }, failSourceWrite);
+  carryPaneState("local", "w7:p1", "w8:p2", drafts, storage);
+  expect(data.get("ovis:card-text:w7:p1")).toBeUndefined();
+  expect(JSON.parse(data.get("ovis:card-text:w8:p2")!).text).toBe("newer memory");
+
+  // concurrent source update during destination write is not deleted
+  data.set("ovis:card-text:w9:p1", payload("w9:p1", "before race"));
+  const racingStorage = () => ({
+    ...storage(),
+    setItem(key: string, value: string) {
+      storage().setItem(key, value);
+      if (key === "ovis:card-text:w10:p2") {
+        data.set("ovis:card-text:w9:p1", payload("w9:p1", "written concurrently"));
+      }
+    },
+  });
+  carryPaneState("local", "w9:p1", "w10:p2", new ComposerDraftStore(racingStorage), racingStorage);
+  expect(JSON.parse(data.get("ovis:card-text:w10:p2")!).text).toBe("before race");
+  expect(JSON.parse(data.get("ovis:card-text:w9:p1")!).text).toBe("written concurrently");
+});
+
+it("carries the card text another tab stored over this tab's older cached copy, and drops the copy once it moved (#3458)", async () => {
+  const { getMemoryCardText, heldCardTextFor } = await import("./cardText.ts");
+  const { data, drafts, storage } = fixture();
+  const payload = (paneId: string, text: string) => JSON.stringify({ machineId: "local", paneId, session: "s1", promptId: "q1", text });
+
+  // this tab drew the card and cached its text; another tab then typed more under the same ID
+  data.set("ovis:card-text:w11:p1", payload("w11:p1", "seen here"));
+  expect(heldCardTextFor("w11:p1", storage)?.text).toBe("seen here");
+  data.set("ovis:card-text:w11:p1", payload("w11:p1", "typed in another tab"));
+  carryPaneState("local", "w11:p1", "w12:p2", drafts, storage);
+  expect(JSON.parse(data.get("ovis:card-text:w12:p2")!).text).toBe("typed in another tab");
+  expect(heldCardTextFor("w12:p2", storage)?.text).toBe("typed in another tab");
+  expect(data.get("ovis:card-text:w11:p1")).toBeUndefined();
+
+  // the other tab heard of the move first and carried it: this tab's cached copy under the old ID goes,
+  // so a later herdr replacement does not offer the same words twice
+  data.set("ovis:card-text:w13:p1", payload("w13:p1", "carried by the other tab"));
+  expect(heldCardTextFor("w13:p1", storage)?.text).toBe("carried by the other tab");
+  data.delete("ovis:card-text:w13:p1");
+  data.set("ovis:card-text:w14:p2", payload("w14:p2", "carried by the other tab"));
+  carryPaneState("local", "w13:p1", "w14:p2", drafts, storage);
+  expect(getMemoryCardText("w13:p1")).toBeUndefined();
+  expect(heldCardTextFor("w14:p2", storage)?.text).toBe("carried by the other tab");
+
+  // another tab cleared the card (its prompt was answered): this tab's cached copy is not written back
+  data.set("ovis:card-text:w15:p1", payload("w15:p1", "answered elsewhere"));
+  expect(heldCardTextFor("w15:p1", storage)?.text).toBe("answered elsewhere");
+  data.delete("ovis:card-text:w15:p1");
+  carryPaneState("local", "w15:p1", "w16:p2", drafts, storage);
+  expect(data.get("ovis:card-text:w16:p2")).toBeUndefined();
+  expect(getMemoryCardText("w15:p1")).toBeUndefined();
+  expect(getMemoryCardText("w16:p2")).toBeUndefined();
 });

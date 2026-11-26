@@ -1,3 +1,11 @@
+/**
+ * What an OpenCode v2 pane's own service says, read only from a service that already runs and that
+ * /api/info proves is the one service.json names (never started or ensured here): the command and
+ * skill rows for the pane's directory, the skill-activation and turn-completion events of the
+ * pane's exact session, which settle a Chat send's outcome as native evidence (and, for the TUI's own
+ * /compact, the compaction it asked for), and the permission
+ * events that tell a prompt watch to read the pane's requests again.
+ */
 import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
 import { resolveAgent, typingRoots } from "./pane-context.ts";
 import { paneProcessRoots } from "./conversation.ts";
@@ -24,6 +32,8 @@ const CATALOG_MAX = 64;
 interface Watch {
   paneId: string; sessionID: string; at: number;
   sendId?: string; texts?: ReadonlySet<string>; skills?: ReadonlySet<string>;
+  /** a /compact the TUI runs itself, enqueuing no message of its text: its result is the compaction it started */
+  compact?: { inputID?: string };
   early: OpenCodeEvent[]; inboxID?: string; delivered: boolean;
   verified: boolean;
 }
@@ -32,9 +42,15 @@ const WATCH_MS = 10 * 60_000;
 const WATCH_MAX = 64;
 const EARLY_MAX = 256;
 export const PANE_VERIFIED_MS = 5_000;
+/**
+ * The panes that keep the shared event stream open: each verified to run OpenCode v2 on the stream's
+ * service with its session there. A pane's end, its agent changing, or a verification that now fails
+ * releases it; the stream closes when no verified pane uses its service.
+ */
 const verifiedPanes = new Map<string, { sessionID: string; key: string; until: number; generation: number; pid: number | null; started: number }>();
 let verificationGeneration = 0;
 export function openCodeVerificationCheckpoint(): number { return verificationGeneration; }
+/** A cancelled verification opens no stream and caches nothing. */
 type Verification = { cancelled: boolean; started: number };
 const inFlight = new Set<Verification>();
 const inFlightByPane = new Map<string, Set<Verification>>();
@@ -109,7 +125,8 @@ function enqueuedMessage(data: Record<string, unknown>): { inboxID: string; text
 const sameSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean => left.size === right.size && [...left].every((item) => right.has(item));
 
 function step(watch: Watch, event: OpenCodeEvent): void {
-  if (event.type === "session.inbox.enqueued" && watch.inboxID === undefined) {
+  if (watch.compact !== undefined) compactStep(watch, watch.compact, event);
+  else if (event.type === "session.inbox.enqueued" && watch.inboxID === undefined) {
     const message = enqueuedMessage(event.data);
     if (message && watch.texts!.has(message.text) && sameSet(message.skills, watch.skills!)) watch.inboxID = message.inboxID;
   } else if (event.type === "session.inbox.delivered" && watch.inboxID !== undefined && event.data.inboxID === watch.inboxID) watch.delivered = true;
@@ -118,6 +135,22 @@ function step(watch: Watch, event: OpenCodeEvent): void {
     noteCommandEvidence(watch.paneId, watch.sendId!, { kind: "native", at: event.created! });
   } else if ((event.type === "session.execution.failed" || event.type === "session.execution.interrupted") && watch.delivered) {
     watches.splice(watches.indexOf(watch), 1);
+  }
+}
+
+/**
+ * A /compact's own compaction, as recorded on 2.2.2 (server/fixtures/opencode-result-events-2.2.2.json): the first
+ * `session.compaction.started` the user asked for (`reason: "manual"`) after the send names its input, a failure of that
+ * input drops the watch, and the `session.compaction.ended` that follows it, which names no input, is the result. A
+ * compaction begun before the send (an earlier /compact still running) or by OpenCode itself (`auto`) is not this one.
+ */
+function compactStep(watch: Watch, compact: { inputID?: string }, event: OpenCodeEvent): void {
+  if (event.data.reason !== "manual") return;
+  if (event.type === "session.compaction.started" && compact.inputID === undefined && typeof event.data.inputID === "string") compact.inputID = event.data.inputID;
+  else if (event.type === "session.compaction.failed" && compact.inputID !== undefined && event.data.inputID === compact.inputID) watches.splice(watches.indexOf(watch), 1);
+  else if (event.type === "session.compaction.ended" && compact.inputID !== undefined) {
+    watches.splice(watches.indexOf(watch), 1);
+    noteCommandEvidence(watch.paneId, watch.sendId!, { kind: "native", at: event.created! });
   }
 }
 
@@ -132,6 +165,26 @@ function onEvent(event: OpenCodeEvent): void {
   }
 }
 
+/**
+ * Told the verified panes whose permission requests changed: `permission.asked` and `permission.replied` (recorded on
+ * 2.2.2, server/fixtures/opencode-permission-2.2.2.json) name the session. Each stream's open names every pane on it,
+ * as events missed while it was down are gone. Only a wake: the listener reads the requests again from the service.
+ */
+const permissionListeners = new Set<(paneId: string) => void>();
+const PERMISSION_EVENTS = new Set(["permission.asked", "permission.replied"]);
+
+export function onOpenCodePermissionChange(listener: (paneId: string) => void): () => void {
+  permissionListeners.add(listener);
+  return () => { permissionListeners.delete(listener); };
+}
+
+function wakePanes(key: string, sessionID?: string): void {
+  for (const [paneId, entry] of verifiedPanes) {
+    if (entry.key !== key || (sessionID !== undefined && entry.sessionID !== sessionID)) continue;
+    for (const listener of permissionListeners) listener(paneId);
+  }
+}
+
 function ensureStream(service: OpenCodeService): Stream {
   const key = JSON.stringify(service.config);
   if (stream?.key === key) return stream;
@@ -141,9 +194,18 @@ function ensureStream(service: OpenCodeService): Stream {
   for (const [paneId, entry] of verifiedPanes) if (entry.key !== key) verifiedPanes.delete(paneId);
   const next: Stream = { key, connected: false, close: () => {} };
   const subscription = subscribeOpenCodeEvents(service.config, {
-    onOpen: () => { catalogs.clear(); next.connected = true; },
-    onClose: () => { catalogs.clear(); next.connected = false; },
-    onEvent,
+    onOpen: () => { catalogs.clear(); next.connected = true; if (stream === next) wakePanes(key); },
+    onClose: () => {
+      catalogs.clear();
+      next.connected = false;
+      // a compaction's end may have gone by while the stream was down: a later one is not this send's
+      for (let index = watches.length - 1; index >= 0; index--) if (watches[index]!.compact !== undefined) watches.splice(index, 1);
+    },
+    onEvent: (event) => {
+      onEvent(event);
+      const sessionID = event.data.sessionID;
+      if (stream === next && PERMISSION_EVENTS.has(event.type) && typeof sessionID === "string") wakePanes(key, sessionID);
+    },
   });
   next.close = () => subscription.close();
   stream = next;
@@ -224,6 +286,7 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   let pid: number | null = null;
   try {
     const found = paneId ? await paneProcessRoots(paneId, label) : null;
+    // a pid herdr did not report comes back as -1: unknown, not a process
     pid = found?.pid != null && found.pid > 0 ? found.pid : null;
     const roots = found ? typingRoots(found) : null;
     if (verification.cancelled || resolveAgent(pane, roots).agent !== "opencode") return null;
@@ -239,17 +302,17 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
     if (own?.size === 0) inFlightByPane.delete(paneId!);
   }
   if (verification.cancelled || released) return null;
+  // a newer verification already bound the pane: this older one neither releases it nor replaces its session, its
+  // process or its stream
+  const superseded = paneId !== undefined && (verifiedPanes.get(paneId)?.started ?? 0) > verification.started;
   if (!held) {
-    if (paneId !== undefined && verifiedPanes.has(paneId)) releaseOpenCodePane(paneId);
+    if (paneId !== undefined && verifiedPanes.has(paneId) && !superseded) releaseOpenCodePane(paneId);
     return null;
   }
-  if (paneId === undefined) return { service: service!, sessionID };
+  if (paneId === undefined || superseded) return { service: service!, sessionID };
   const live = ensureStream(service!);
-  const earlier = verifiedPanes.get(paneId);
-  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid : pid;
-  const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid, started: verification.started });
   for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();
   return { service: service!, sessionID };
@@ -325,6 +388,7 @@ export async function openCodeSkillsToType(pane: HerdrPane, sent: Sent, text: st
   const { bound, rows } = await boundCatalog(pane, cold ? cwd : null, CATALOG_SOURCE_BUDGET_MS, stateDir);
   if (cold) {
     const native = rows?.filter((row) => row.source !== "builtin").map((row): SlashCommand => ({ ...row, forms: row.forms ?? [...UNKNOWN_FORMS], visibility: row.visibility ?? "offered", provenance: { transport: "native", verified: true } }));
+    // A synchronous scan cannot be interrupted by the lookup timer.
     record = commandSendFrom(pane, "opencode", [...builtinCommands("opencode"), ...(native ?? [])], text, screen);
     if (!native) return { sent: record, skills: [] };
   }
@@ -376,6 +440,8 @@ export function startOpenCodeWatch(pane: HerdrPane, sent: CommandSend | undefine
       if (!watches.includes(watch) || watch.sendId !== undefined) return;
       if (final.form?.interaction === "terminal") { remove(); return; }
       watch.sendId = final.id;
+      // only the command alone, as typed: with anything around it the TUI sends it as a prompt (or a server command)
+      if (final.text === "/compact") watch.compact = {};
       watch.texts = openCodePromptTexts(prompt);
       watch.skills = new Set(attached);
       flush();

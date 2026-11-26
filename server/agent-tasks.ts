@@ -29,6 +29,7 @@ import type { HerdrPane } from "../shared/protocol.ts";
  */
 const POLL_MS = 2000;
 const RESOLVE_MS = 30_000;
+/** how long after a lookup that failed the pane is asked again: every snapshot would ask, and two failures in one moment say no more than one */
 const RETRY_MS = 10_000;
 const START_SLACK_MS = 60_000;
 const DUE_GRACE_MS = 120_000;
@@ -105,7 +106,8 @@ export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string
 export function taskCount(state: SessionTasks, started: number | null, now: number): TaskCount {
   const live = [...state.tasks.values()].filter((task) => (started === null || task.at >= started - START_SLACK_MS) && (task.due === null || now < task.due + DUE_GRACE_MS));
   const turn = live.filter((task) => state.promptAt === null || task.at >= state.promptAt);
-  return { running: live.length, turnRunning: turn.length, promptAt: state.promptAt, capped: turn.length === 0 || turn.some((task) => task.due === null) };
+  // a timer surely resumes the turn when it is due, whatever runs beside it; commands alone are held to the limit
+  return { running: live.length, turnRunning: turn.length, promptAt: state.promptAt, capped: !turn.some((task) => task.due !== null) };
 }
 
 interface Tracked extends SessionTasks {
@@ -140,11 +142,19 @@ export interface AgentTaskDeps {
   now?: () => number;
 }
 
+/**
+ * A grok session is found by the id herdr reports, so another id is another session's file; an agy
+ * one is found by the pane's process, whatever the pane says of a session.
+ */
 const sessionOf = (pane: HerdrPane): string | null => pane.agent === "grok" ? pane.agent_session?.value ?? null : null;
+/** `reported` runs another agent or session than the one looked up; a grok pane herdr names no session for names no other one */
+const outran = (reported: HerdrPane, agent: TaskAgent, session: string | null): boolean =>
+  reported.agent !== agent || (sessionOf(reported) !== session && !(agent === "grok" && reported.agent_session == null));
 
 export class AgentTaskStatus {
   private readonly panes = new Map<string, Tracked>();
-  private readonly resolving = new Set<string>();
+  /** the agent and session each lookup in flight is for */
+  private readonly resolving = new Map<string, { agent: TaskAgent; session: string | null }>();
   private readonly asked = new Map<string, HerdrPane>();
   private readonly lifetimes = new Map<string, number>();
   private readonly failed = new Map<string, { agent: TaskAgent; at: Map<string | null, number> }>();
@@ -195,12 +205,17 @@ export class AgentTaskStatus {
     const pane = agent === "grok" && reported.agent_session == null && known?.agent === agent ? { ...reported, agent_session: known.pane.agent_session } : reported;
     const session = sessionOf(pane);
     const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent, session) : known.agent === agent && sessionOf(known.pane) === session && !this.stale(pane.pane_id);
-    if (recent) return;
-    if (this.resolving.has(pane.pane_id)) {
-      if (!spaced) this.asked.set(pane.pane_id, reported);
+    // a lookup in flight is squared with this snapshot first, even for a pane known lately: it may be for another session
+    const inFlight = this.resolving.get(pane.pane_id);
+    if (recent && inFlight === undefined) return;
+    if (inFlight !== undefined) {
+      // a snapshot naming what is in flight already asks nothing new; one naming another agent or session does.
+      // The newest snapshot is the truth: one naming what is in flight again takes back what an earlier one asked
+      if (!spaced || outran(reported, inFlight.agent, inFlight.session)) this.asked.set(pane.pane_id, reported);
+      else this.asked.delete(pane.pane_id);
       return;
     }
-    this.resolving.add(pane.pane_id);
+    this.resolving.set(pane.pane_id, { agent, session });
     const lifetime = this.lifetimes.get(pane.pane_id);
     let found: { path: string; started: number | null; owner: string | null } | null;
     try { found = await this.deps.resolve({ ...pane, agent }); } catch { found = null; } finally { this.resolving.delete(pane.pane_id); }
@@ -209,11 +224,20 @@ export class AgentTaskStatus {
     if (this.lifetimes.get(pane.pane_id) !== lifetime) return;
     const current = this.panes.get(pane.pane_id);
     if (found === null) {
+      // the process is gone or its session cannot be read: what it ran, a timer too, holds nothing. One
+      // failure does not tell that (herdr was busy, a process read timed out), so what the pane holds is
+      // dropped on the second in a row, and at once when it is another agent's or another session's:
+      // what the pane holds was never that one's
       const again = this.missAt(pane.pane_id, agent, session) !== undefined;
       if (current !== undefined && (again || current.agent !== agent || sessionOf(current.pane) !== session)) this.letGo(pane.pane_id);
       else if (current !== undefined) current.pane = { ...pane, agent };
       if (spaced || current !== undefined) this.miss(pane.pane_id, agent, session);
       if (asked !== undefined) await this.track(asked);
+      return;
+    }
+    // the pane runs another agent or session by now: what was found is not what it runs
+    if (asked !== undefined && outran(asked, agent, session)) {
+      await this.track(asked);
       return;
     }
     this.failed.delete(pane.pane_id);
@@ -233,7 +257,10 @@ export class AgentTaskStatus {
       if (only !== undefined && paneId !== only) continue;
       readOn(tracked);
       const count = taskCount(tracked, tracked.started, this.now());
-      if ((!count.capped || this.failed.has(paneId)) && this.now() - tracked.resolvedAt >= RESOLVE_MS) void this.track(tracked.pane).catch(() => undefined);
+      // a timer is held past the hold's limit only while its process lasts: no event tells that of a pane at rest.
+      // Nor does any bring the lookup after one that failed, which keeps what the pane holds or lets it go
+      // a lookup in flight answers for the pane already, and may be for the agent a newer snapshot names
+      if ((!count.capped || this.failed.has(paneId)) && this.now() - tracked.resolvedAt >= RESOLVE_MS && !this.resolving.has(paneId)) void this.track(tracked.pane).catch(() => undefined);
       const told = `${count.running}:${count.turnRunning}:${count.promptAt}:${count.capped}`;
       if (told === tracked.told) continue;
       tracked.told = told;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -60,6 +60,11 @@ const HARNESS_LAUNCH = {
 } as const;
 type Isolation = keyof typeof HARNESS_LAUNCH;
 
+/**
+ * Where the hook's kill tests may run here: the first guard hook-test-harness.sh proves from inside, starting
+ * nothing before it. Any failure (no unshare, a namespace refused, no marker) only moves to the next guard
+ * or skips them, with every reason: never a reason to run them anywhere else.
+ */
 function probeIsolation(): { ok: true; mode: Isolation } | { ok: false; reason: string } {
   if (process.platform !== "linux") return { ok: false, reason: `no PID namespace or runner container on ${process.platform}` };
   const reasons: string[] = [];
@@ -79,11 +84,19 @@ function probeIsolation(): { ok: true; mode: Isolation } | { ok: false; reason: 
 
 type HookParent = "worker" | "nested" | "renamed" | "posing" | "gone" | "leaves" | `named:${string}`;
 
+/**
+ * What answers the hook's ps where it finds no /proc, as on macOS: procps itself, or a stub that fails, prints
+ * nothing, or names the parent like the worker but not quite.
+ */
 type HookPs = "procps" | "fails" | "silent" | "lookalike";
 
 /**
+ * Runs the hook under hook-test-harness.sh behind the guard `mode`, which reports what happened: the
+ * parent's exit status (137: SIGKILL) or whether it still runs, whether the hook ended or blocks, whether the
+ * step after it ran, whether the decoys (another Runner.Worker, a Runner.Worker2) live, and whether every process
  * above the harness still runs. `output` is what the hook wrote; `pidOne` what it wrote to PID 1's stderr (in a
  * namespace, the harness's own; in a container, the container's output, which the test cannot see); `logged` what it sent to
+ * `logger` (the Mac's system log); `psCalls` every ps it ran.
  */
 async function runHookIsolated(
   mode: Isolation,
@@ -155,12 +168,20 @@ async function runHookIsolated(
   }
 }
 
+type Peer = { name: string; labels: string; worker?: boolean; age?: number; repo?: string };
+
 function runRunner(options: {
   count?: number;
   ghTokenExitCode?: number;
   dockerExitCode?: number;
   failedSlot?: number;
-  envFile?: "present" | "missing" | "bare" | "secret" | "nul" | "twice" | "shards";
+  envFile?: "present" | "missing" | "bare" | "secret" | "nul" | "twice" | "shards" | "offer" | "offer-refused" | "offer-zero";
+  offer?: boolean;
+  offerPause?: string;
+  offerPoll?: string;
+  offerDir?: string;
+  psi?: { cpu?: string; memory?: string } | "absent";
+  peers?: Peer[];
   grepReadError?: boolean;
   args?: string[];
   cacheHome?: string;
@@ -180,6 +201,7 @@ function runRunner(options: {
   addrs?: string[];
   routeGet?: "none" | "table" | "until-retry" | "lost-after-rm";
   networkBlock?: string;
+  selinux?: "on" | "chcon-fails";
 } = {}) {
   const { tempDir, args, env, logPath, envFile } = prepareRunner(options);
   try {
@@ -193,8 +215,53 @@ function runRunner(options: {
 
 type RunnerOptions = NonNullable<Parameters<typeof runRunner>[0]>;
 
+/**
+ * A launcher left running, for what only shows while it waits: its stderr and its docker/gh calls
+ * are read as they come, and the caller releases what holds it rather than waiting out a timer.
+ */
+function launchRunner(options: RunnerOptions) {
+  const prepared = prepareRunner(options);
+  const { tempDir, args, env, logPath } = prepared;
+  const stdout = openSync(join(tempDir, "stdout"), "w");
+  const stderr = openSync(join(tempDir, "stderr"), "w");
+  // its own process group, so stop() reaches the slot loops too, and nothing else
+  const child = spawn("bash", args, { env, stdio: ["ignore", stdout, stderr], detached: true });
+  const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+  const calls = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
+  const stderrText = () => (existsSync(join(tempDir, "stderr")) ? readFileSync(join(tempDir, "stderr"), "utf8") : "");
+  const until = async (pattern: RegExp, what: string, source: () => string = calls) => {
+    const deadline = Date.now() + LOADED_BOUND_MS;
+    while (!pattern.test(source()) && Date.now() < deadline) await Bun.sleep(25);
+    if (!pattern.test(source())) throw new Error(`the launcher never ${what}:\ncalls: ${calls()}\nstderr: ${stderrText()}`);
+    return source();
+  };
+  return {
+    ...prepared,
+    child,
+    calls,
+    stderr: stderrText,
+    until,
+    ended: () => Promise.race([exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running" as const)]),
+    async stop() {
+      // the whole group: its slot loops outlive a SIGKILL of the launcher alone (no EXIT trap runs) and would
+      // poll the fixtures deleted below
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+      await exited;
+      closeSync(stdout);
+      closeSync(stderr);
+      rmSync(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
+/** The hung stub (120 s) outlasts it, so a launcher that waits for the hang still ends late. */
 const LOADED_BOUND_MS = 30_000;
 const HUNG_RUN_MS = 3 * LOADED_BOUND_MS;
+/** A stop "at once": under the 5 s after which run.sh's timeouts kill what ignored the stop. */
 const STOP_AT_ONCE_MS = 4_000;
 
 async function endsWithin(argv: string[], ms: number) {
@@ -331,14 +398,48 @@ case "$1" in
       [ "$(wc -l < "$RUNNER_TEST_LOG.keeper-looks")" -ge 3 ] || { echo false; exit 0; }
       : > "$RUNNER_TEST_LOG.keeper"; echo true; exit 0 ;;
     esac
+    # a runner container a test names in RUNNER_TEST_PEERS: its environment, as docker prints it
+    case "$*" in
+      *Config.Env*)
+        if [ -n "\${RUNNER_TEST_PEERS:-}" ] && [ -f "$RUNNER_TEST_PEERS" ]; then
+          peer="$(awk -F'\t' -v n="$last" '$1 == n { print $2 }' "$RUNNER_TEST_PEERS")"
+          repo="$(awk -F'\t' -v n="$last" '$1 == n { print $5 }' "$RUNNER_TEST_PEERS")"
+          if [ -n "$peer" ]; then
+            printf 'RUNNER_URL=https://github.com/%s\nRUNNER_NAME=%s\nRUNNER_LABELS=%s\n' "\${repo:-owner/repo}" "$last" "$peer"
+            exit 0
+          fi
+        fi ;;
+    esac
+    # any other look at a runner container a test names in RUNNER_TEST_PEERS: it exists, running
+    if [ -n "\${RUNNER_TEST_PEERS:-}" ] && [ -f "$RUNNER_TEST_PEERS" ] && awk -F'\t' -v n="$last" '$1 == n { found = 1 } END { exit !found }' "$RUNNER_TEST_PEERS"; then echo true; exit 0; fi
     # a slot's container an earlier launcher left running, while this file exists
     # (its State.Running is the file's content: true while it runs its job, false once it stopped)
     [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && { cat "$RUNNER_TEST_SLOT_HELD"; exit 0; }; exit 1 ;;
+  # this host's runner containers as the offer gate lists them (RUNNER_TEST_PEERS: name, labels,
+  # and 1 for one running a job): what docker ps --filter name=... --format {{.Names}} prints
+  ps)
+    [ -n "\${RUNNER_TEST_PEERS:-}" ] && [ -f "$RUNNER_TEST_PEERS" ] || exit 0
+    awk -F'\t' 'NF > 0 { print $1 }' "$RUNNER_TEST_PEERS" ;;
+  # a runner container's processes, as ps prints them in it: a job's Runner.Worker line with the
+  # seconds it has run (RUNNER_TEST_PEERS: name, labels, 1 for a job, and how many seconds ago it started)
+  top)
+    # as docker does: ps options without a pid column are refused; with -eo pid,etimes,args, a header and
+    # one line per process
+    case " $* " in *" -eo "*pid*) ;; *" -eo "*) echo "Error response from daemon: Couldn't find PID field in ps output" >&2; exit 1 ;; esac
+    printf 'PID                 ELAPSED             COMMAND\n'
+    printf '4170136             600                 tini -- /entrypoint.sh\n'
+    printf '4173958             600                 /home/runner/actions-runner/bin/Runner.Listener run\n'
+    [ -n "\${RUNNER_TEST_PEERS:-}" ] && [ -f "$RUNNER_TEST_PEERS" ] || exit 0
+    if [ "$(awk -F'\t' -v n="$2" '$1 == n { print $3 }' "$RUNNER_TEST_PEERS")" = 1 ]; then
+      age="$(awk -F'\t' -v n="$2" '$1 == n { print ($4 == "" ? 600 : $4) }' "$RUNNER_TEST_PEERS")"
+      printf '4181708             %s                 /home/runner/actions-runner/bin/Runner.Worker spawnclient 151 154\n' "$age"
+    fi ;;
   # removing slot 1's own container (the launcher's other docker rm calls name the Bun cache build's)
   rm) case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
   run)
     # docker's own refusal of a CPU list the host does not have
     case " $* " in *" --cpuset-cpus 0-500 "*) echo "docker: Requested CPUs are not available" >&2; exit 125 ;; esac
+    case " $* " in *" --cgroup-parent missing "*) echo "docker: cgroup-parent for systemd cgroup should be a valid slice" >&2; exit 125 ;; esac
     # the launcher's check of its CPU list, and the check slots' keeper: neither reads a token
     case " $* " in
       *" --entrypoint true "*) exit 0 ;;
@@ -477,6 +578,19 @@ if [ -n "\${RUNNER_TEST_NO_BACKOFF:-}" ] && [ "$*" = 30 ]; then printf 'sleep 30
 exec "${sleep}" "$@"
 `);
     chmodSync(join(binDir, "sleep"), 0o755);
+    // SELinux is off unless a test turns it on, whatever the host running the tests has
+    writeFileSync(join(binDir, "selinuxenabled"), `#!/bin/sh
+[ -n "\${RUNNER_TEST_SELINUX:-}" ]
+`);
+    // as SELinux does, refuses to relabel a file of another user (here: a file named "foreign")
+    writeFileSync(join(binDir, "chcon"), `#!/bin/sh
+printf 'chcon %s\\n' "$*" >> "$RUNNER_TEST_LOG"
+[ "\${RUNNER_TEST_SELINUX:-}" != chcon-fails ] || exit 1
+depth=0; [ "$1" = -R ] && depth=99
+for arg; do case "$arg" in /*) [ -z "$(find "$arg" -maxdepth "$depth" -name foreign -print -quit)" ] || exit 1 ;; esac; done
+`);
+    chmodSync(join(binDir, "selinuxenabled"), 0o755);
+    chmodSync(join(binDir, "chcon"), 0o755);
     chmodSync(join(binDir, "gh"), 0o755);
     chmodSync(join(binDir, "docker"), 0o755);
     chmodSync(join(binDir, "git"), 0o755);
@@ -490,6 +604,9 @@ exec "${sleep}" "$@"
     if (options.envFile === "nul") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nCHECK_HOST_TEST_SHARDS=6\u0000\n");
     if (options.envFile === "twice") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=3\nCHECK_HOST_TEST_SHARDS=6\nCHECK_HOST_MAX_RUNS=5\n");
     if (options.envFile === "shards") writeFileSync(envFile, "CHECK_HOST_TEST_SHARDS=6\n");
+    if (options.envFile === "offer") writeFileSync(envFile, "CHECK_HOST_OFFER_CPU_PSI=10\nCHECK_HOST_OFFER_MEMORY_PSI=5\n");
+    if (options.envFile === "offer-zero") writeFileSync(envFile, "CHECK_HOST_OFFER_CPU_PSI=00\nCHECK_HOST_OFFER_MEMORY_PSI=5\n");
+    if (options.envFile === "offer-refused") writeFileSync(envFile, "CHECK_HOST_OFFER_CPU_PSI=10\nCHECK_HOST_OFFER_MEMORY_PSI=5.5\nCHECK_HOST_OFFER_DISK=1\n");
     if (options.grepReadError) {
       writeFileSync(join(binDir, "grep"), "#!/bin/sh\necho 'grep: read error' >&2\nexit 2\n");
       chmodSync(join(binDir, "grep"), 0o755);
@@ -503,6 +620,7 @@ exec "${sleep}" "$@"
       "--count",
       String(options.count ?? 1),
       ...(options.args ?? []),
+      ...(options.offer ? ["--offer-when-room"] : []),
       ...(options.envFile ? ["--env-file", envFile] : []),
     ];
     const env: Record<string, string> = {
@@ -523,6 +641,8 @@ exec "${sleep}" "$@"
       ...(options.addrs ? { RUNNER_TEST_ADDRS: options.addrs.join("\n") } : {}),
       ...(options.routeGet ? { RUNNER_TEST_ROUTE_GET: options.routeGet } : {}),
       ...(options.networkBlock !== undefined ? { OVIS_CI_NETWORK_BLOCK: options.networkBlock } : {}),
+      // never what the shell running the tests exports: SELinux is off unless a test turns it on
+      RUNNER_TEST_SELINUX: options.selinux ?? "",
       RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
       RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
       XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
@@ -532,13 +652,31 @@ exec "${sleep}" "$@"
       GH_TOKEN_EXIT_CODE: String(options.ghTokenExitCode ?? 0),
       DOCKER_EXIT_CODE: String(options.dockerExitCode ?? 42),
       DOCKER_FAIL_SLOT: String(options.failedSlot ?? ""),
+      ...(options.offer || options.offerPause !== undefined || options.offerPoll !== undefined || options.offerDir !== undefined || options.psi !== undefined
+        ? { OVIS_RUNNER_OFFER_DIR: options.offerDir ?? join(tempDir, "offer"), OVIS_RUNNER_OFFER_POLL: options.offerPoll ?? "1", OVIS_RUNNER_OFFER_PAUSE: options.offerPause ?? "0" }
+        : {}),
+      ...(options.psi === undefined ? {} : { OVIS_RUNNER_PSI_DIR: join(tempDir, "psi") }),
+      ...(options.peers === undefined ? {} : { RUNNER_TEST_PEERS: join(tempDir, "peers") }),
     };
+    if (options.psi !== undefined && options.psi !== "absent") {
+      mkdirSync(join(tempDir, "psi"), { recursive: true });
+      const psi = (avg10: string) => `some avg10=${avg10} avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n`;
+      for (const resource of ["cpu", "memory"] as const) {
+        const value = options.psi[resource];
+        if (value !== undefined) writeFileSync(join(tempDir, "psi", resource), psi(value));
+      }
+    }
+    if (options.peers !== undefined) writePeers(join(tempDir, "peers"), options.peers);
     if (options.networkBlock === undefined) delete env.OVIS_CI_NETWORK_BLOCK;
-    return { tempDir, args, env, logPath, envFile };
+    return { tempDir, args, env, logPath, envFile, peers: join(tempDir, "peers") };
   }
 }
 
-const runnerRun = /^docker run (?:--cpuset-cpus \S+ )?--rm -i /;
+function writePeers(path: string, peers: Peer[]) {
+  writeFileSync(path, peers.map((peer) => `${peer.name}\t${peer.labels}\t${peer.worker ? 1 : 0}\t${peer.age ?? ""}\t${peer.repo ?? "owner/repo"}\n`).join(""));
+}
+
+const runnerRun = /^docker run (?:--cpuset-cpus \S+ )?(?:--cgroup-parent \S+ )?--rm -i /;
 const commitSha = "1".repeat(40);
 const lockBlob = "2".repeat(40);
 const otherCommit = "3".repeat(40);
@@ -546,6 +684,13 @@ const otherLock = "4".repeat(40);
 const cacheBuild = /^docker run --rm --init --name herdr-ci-.+-cache /;
 
 describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () => {
+  it("prints its header as --help, and no shell of its own", () => {
+    const result = spawnSync("bash", [script, "--help"], { encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("[--offer-when-room]");
+    expect(result.stdout).not.toContain("set -euo pipefail");
+  });
+
   it("runs without CPU or memory quotas by default", () => {
     const { result, calls } = runRunner();
     expect(result.status).toBe(0);
@@ -579,7 +724,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(result.status).toBe(0);
     const runs = calls.split("\n").filter((call) => runnerRun.test(call));
     expect(runs).toHaveLength(2);
-    for (const run of runs) expect(run).toContain("--ulimit core=0");
+    for (const run of runs) expect(run).toContain("--ulimit core=0:1 ");
   });
 
   it("hands a host env file to every runner container, never to the check slots' keeper", () => {
@@ -612,6 +757,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
         const name = /--name (\S+)/.exec(call)![1]!;
         expect(call).toContain(`-v ${root}/entries:/build-cache:ro -v ${locks}:/build-cache-locks -v ${outboxes}/${name}:/build-cache-outbox `);
         expect(call).toContain("-e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox -e OVIS_BUILD_CACHE_WRITER=devswha ");
+        // the cache itself is never mounted writable, nor anything under it
         expect(call).not.toMatch(/entries:\/build-cache(?!:ro)/);
         expect(call).not.toContain(`-v ${root}/used`);
       }
@@ -627,6 +773,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
       expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
       expect(again.calls.split("\n").filter((call) => call.includes(`--cap-add DAC_OVERRIDE --user 0:0 -v ${outboxes}/.taken:/taken `)).length).toBeGreaterThanOrEqual(1);
+      // an outbox that cannot be emptied (here: one this user may not write) still holds the earlier job's claim:
+      // its runner starts without the build cache, so nothing reads that claim as the new job's
       writeFileSync(join(first, `${"a".repeat(64)}.claim`), "7 1\n");
       chmodSync(first, 0o555);
       try {
@@ -645,6 +793,42 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     }
   });
 
+  it("labels the build cache and its outboxes for containers under SELinux, and runs without the cache when it cannot", () => {
+    const home = mkdtempSync(join(tmpdir(), "herdr-runner-build-cache-selinux-test-"));
+    try {
+      const stateHome = join(home, "state");
+      const args = ["--build-cache", join(home, "cache")];
+      const outboxes = join(stateHome, "ovis-ci-runner/build-outbox/owner/repo");
+      const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
+      const slot = join(outboxes, `herdr-ci-${host}-1`);
+      const runs = (calls: string) => calls.split("\n").filter((call) => runnerRun.test(call));
+
+      const off = runRunner({ stateHome, args });
+      expect(off.calls).not.toContain("chcon");
+      expect(runs(off.calls)[0]).toContain(":/build-cache:ro ");
+
+      // an earlier job's directory the launcher could not empty, holding a file this user may not relabel
+      mkdirSync(join(slot, "left"), { recursive: true });
+      writeFileSync(join(slot, "left/foreign"), "x");
+      const on = runRunner({ stateHome, args, selinux: "on" });
+      expect(on.result.status).toBe(0);
+      const lines = on.calls.split("\n");
+      const before = (call: string) => lines.indexOf(call) >= 0 && lines.indexOf(call) < lines.findIndex((line) => runnerRun.test(line));
+      expect(before(`chcon -R -t container_file_t -l s0 ${join(home, "cache/owner/repo")}`)).toBe(true);
+      expect(before(`chcon -t container_file_t -l s0 ${outboxes}`)).toBe(true);
+      expect(before(`chcon -t container_file_t -l s0 ${slot}`)).toBe(true);
+      expect(on.result.stderr).not.toContain("container_file_t for SELinux");
+      expect(runs(on.calls)[0]).toContain(":/build-cache:ro ");
+
+      const refused = runRunner({ stateHome, args, selinux: "chcon-fails" });
+      expect(refused.result.status).toBe(0);
+      expect(refused.result.stderr).toContain("container_file_t for SELinux: running without it");
+      expect(runs(refused.calls)[0]).not.toMatch(/:\/build-cache|OVIS_BUILD_CACHE_/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("pins every container it starts to --cpuset-cpus, and none without it", () => {
     const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-95"] });
     expect(result.status).toBe(0);
@@ -653,6 +837,27 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(runs.filter((call) => runnerRun.test(call))).toHaveLength(2);
     for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 ");
     expect(runRunner().calls).not.toContain("--cpuset-cpus");
+  });
+
+  it("puts every container it starts under --cgroup-parent, after --cpuset-cpus, and none without it", () => {
+    const { result, calls } = runRunner({ count: 2, args: ["--cgroup-parent", "ovis-ci.slice", "--cpuset-cpus", "0-95"] });
+    expect(result.status).toBe(0);
+    const runs = calls.split("\n").filter((call) => call.startsWith("docker run "));
+    expect(runs.filter((call) => runnerRun.test(call))).toHaveLength(2);
+    for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 --cgroup-parent ovis-ci.slice ");
+    expect(runRunner().calls).not.toContain("--cgroup-parent");
+    const built = runRunner({ args: ["--build", "--cgroup-parent", "ovis-ci.slice"] }).calls.split("\n").filter((call) => call.startsWith("docker build "));
+    expect(built).toHaveLength(1);
+    expect(built[0]).toStartWith("docker build --cgroup-parent ovis-ci.slice -t ");
+    expect(runRunner({ args: ["--build"] }).calls).not.toContain("--cgroup-parent");
+  });
+
+  it("refuses a cgroup parent docker cannot use before starting anything", () => {
+    const { result, calls } = runRunner({ count: 2, args: ["--cgroup-parent", "missing"] });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--cgroup-parent missing");
+    expect(calls).not.toContain("registration-token");
+    expect(calls.split("\n").filter((call) => runnerRun.test(call) || call.includes(" -d "))).toEqual([]);
   });
 
   it("refuses a CPU list docker cannot give before starting anything", () => {
@@ -783,6 +988,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(runners).toHaveLength(2);
     const networks = runners.map(({ call, index }) => {
       const network = `${call.match(/--name (\S+)/)![1]!}-net`;
+      // its own, and no other: not the host's, not another container's namespace
       expect(call.match(/--network \S+/g)).toEqual([`--network ${network}`]);
       const slot = Number(network.match(/-(\d+)-net$/)![1]);
       const made = lines.indexOf(`docker network create --driver bridge --subnet 10.213.0.${16 * (slot - 1)}/28 ${network}`);
@@ -898,6 +1104,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   }, HUNG_RUN_MS);
 
   it("removes and makes no network while the kernel has no route to the internet, by its own answer", async () => {
+    // none, as at boot before the LAN is up (an unreachable, prohibit or blackhole route fails the lookup the same way): a network from before the block stays too
     const none = runRunner({ routeGet: "none", network: "0 172.18.0.0/16" });
     expect(none.result.status).toBe(1);
     expect(none.result.stderr).toMatch(/\[herdr-ci-\S+-1\] this host has no default route yet.*; retrying in 30s/);
@@ -949,6 +1156,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
         expect(result.stderr).toMatch(/\[herdr-ci-\S+-1\] .*herdr-ci-\S+-1-net \(\S.*; retrying in 30s/);
         const calls = readFileSync(logPath, "utf8");
         expect(calls).not.toContain("docker network create");
+        // the launcher's stop alone asks docker to remove it, and docker keeps it while a container is on it
         expect(changesBeforeStop(calls)).toEqual([]);
         expect(calls).toMatch(/^docker network rm herdr-ci-\S+-1-net$/m);
         expect(readdirSync(tempDir).filter((file) => file.includes(".network-rm-"))).toEqual([]);
@@ -992,6 +1200,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const lines = calls.split("\n");
     const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
     const slots = `herdr-ci-${host}-check-slots`;
+    // RAM, small, and root's directory: a job cannot remove or replace a file in it
     const volume = lines.indexOf(`docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=1m,mode=0755,uid=0,gid=0 ${slots}`);
     expect(volume).toBeGreaterThanOrEqual(0);
     const keepers = lines.map((call, index) => ({ call, index })).filter(({ call }) => call.startsWith("docker run -d "));
@@ -1042,6 +1251,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   });
 
   it("makes the check slots' files in the keeper another slot's loop started in the same moment, once it runs", () => {
+    // This launcher's own start fails on the name, and the keeper that holds it does not run yet at the first two
+    // looks: docker refuses to make the files in it until it does.
     const { result, calls } = runRunner({ slots: "started-elsewhere" });
     expect(result.status).toBe(0);
     const lines = calls.split("\n");
@@ -1132,6 +1343,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const setup = lines.find((call) => call.includes(" config remote.origin.url "))!.match(/^git -C (\S+) /)![1]!;
       expect(setup).toStartWith(join(cacheDir, "git/.new-"));
       expect(lines).toContain(`git -C ${setup} config remote.origin.url https://github.com/owner/repo.git`);
+      // a job reads the mirror's objects in place: git never collects one on its own
       for (const setting of ["gc.pruneExpire never", "gc.auto 0", "maintenance.auto false", "fetch.unpackLimit 1"]) expect(lines).toContain(`git -C ${setup} config ${setting}`);
       expect(existsSync(join(mirror, "objects"))).toBe(true);
       expect(existsSync(setup)).toBe(false);
@@ -1145,6 +1357,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
         expect(fetched).toBeGreaterThanOrEqual(0);
         expect(call).toContain(`-v ${cacheDir}:/cache:ro `);
         expect(call).toContain("-e GIT_ALTERNATE_OBJECT_DIRECTORIES=/cache/git/repo.git/objects ");
+        // no other mount of the host's: the check slots are a docker volume
         expect(call.match(/-v \S+/g)).toEqual([expect.stringMatching(/^-v herdr-ci-\S+-check-slots:\/check-slots$/), `-v ${cacheDir}:/cache:ro`]);
         expect(call).toContain("--security-opt no-new-privileges --cap-drop ALL --pids-limit 8192 ");
         expect(call).toEndWith(" herdr-ci-runner:local");
@@ -1260,6 +1473,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(mount(first.calls)).toBe(join(cacheHome, "ovis-ci-runner/owner/repo"));
       expect(mount(second.calls)).toBe(join(cacheHome, "ovis-ci-runner/other/repo"));
       expect(second.calls).toContain("config remote.origin.url https://github.com/other/repo.git");
+      // a mirror whose origin is another repository's is not reused
       const mirror = join(cacheHome, "ovis-ci-runner/owner/repo/git/repo.git");
       writeFileSync(join(mirror, "config.remote.origin.url"), "https://github.com/someone/else.git\n");
       const again = runRunner({ cacheHome });
@@ -1344,6 +1558,243 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     }
   });
 
+  describe("the offer gate", () => {
+    const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
+    const runnerRuns = (calls: string) => calls.split("\n").filter((call) => runnerRun.test(call));
+    const peer = (slot: number, labels = "self-hosted-ovis", worker = false, age?: number) => ({ name: `herdr-ci-${host}-${slot}`, labels, worker, age });
+    /** A pool as the gate names it: the runner's repository URL and its labels. */
+    const pool = (labels: string, repo = "owner/repo") => `https://github.com/${repo} ${labels}`;
+
+    it("starts every slot at once without --offer-when-room, whatever this host runs and how loaded it is", () => {
+      const { result, calls } = runRunner({ count: 2, psi: { cpu: "99.00", memory: "99.00" }, peers: [peer(9)] });
+      expect(result.status).toBe(0);
+      expect(runnerRuns(calls)).toHaveLength(2);
+      expect(calls).not.toContain("docker top");
+      expect(result.stderr).not.toContain("waiting for room");
+    });
+
+    it("holds a slot while a runner of its own pool on this host is idle, and starts it once that is offered a job", async () => {
+      // pr-9 is another launcher copy's runner on this host: every launcher copy's runners count
+      const copy = (worker = false) => ({ ...peer(9, "self-hosted-ovis", worker), name: `herdr-ci-${host}-pr-9` });
+      const runner = launchRunner({ count: 1, offer: true, offerPause: undefined, peers: [copy()] });
+      try {
+        await runner.until(/waiting for room on this host: the runner herdr-ci-\S+-pr-9 of this pool is idle/, "saw the idle runner", runner.stderr);
+        expect(runner.stderr()).toContain(`[herdr-ci-${host}-1] waiting for room on this host`);
+        expect(runner.calls()).not.toContain("registration-token");
+        expect(runnerRuns(runner.calls())).toEqual([]);
+        // the idle runner takes a job: no runner of this pool is idle any more
+        writePeers(runner.peers, [copy(true)]);
+        expect(await runner.ended()).toBe(0);
+        expect(runnerRuns(runner.calls())).toHaveLength(1);
+        expect(runner.stderr()).toContain(`[herdr-ci-${host}-1] there is room on this host: starting a runner`);
+        expect(runner.calls()).toContain("docker top herdr-ci-");
+      } finally {
+        await runner.stop();
+      }
+    }, HUNG_RUN_MS);
+
+    it("ignores an idle runner of another pool, and the check slots' keeper", () => {
+      const { result, calls } = runRunner({ count: 1, offer: true, peers: [peer(9, "self-hosted-ovis-main"), { name: `herdr-ci-${host}-check-slots`, labels: "" }] });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("waiting for room");
+      expect(runnerRuns(calls)).toHaveLength(1);
+    });
+
+    it("ignores an idle runner of another repository with the same labels: it never takes this repository's jobs", () => {
+      const { result, calls } = runRunner({ count: 1, offer: true, peers: [{ ...peer(9), name: `herdr-ci-${host}-appb-9`, repo: "owner/app" }] });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("waiting for room");
+      expect(runnerRuns(calls)).toHaveLength(1);
+    });
+
+    it("holds a slot while a job started on this host less than 30 s ago, whatever pool it belongs to", async () => {
+      // a runner of the other pool has just taken a job: its pressure shows up late, so the offer waits
+      const runner = launchRunner({ count: 1, offer: true, offerPause: "30", peers: [peer(9, "self-hosted-ovis-main", true, 5)] });
+      try {
+        await runner.until(/waiting for room on this host: a job started on this host \d+s ago, less than 30s/, "saw the young job", runner.stderr);
+        expect(runner.calls()).not.toContain("registration-token");
+        writePeers(runner.peers, [peer(9, "self-hosted-ovis-main", true, 3600)]);
+        expect(await runner.ended()).toBe(0);
+        expect(runnerRuns(runner.calls())).toHaveLength(1);
+      } finally {
+        await runner.stop();
+      }
+    }, HUNG_RUN_MS);
+
+    it("holds a slot while this host's CPU or memory pressure is over its threshold, and starts it when both are under", async () => {
+      const runner = launchRunner({
+        count: 1, offer: true, offerPause: undefined, envFile: "offer",
+        psi: { cpu: "50.00", memory: "1.00" },
+      });
+      try {
+        await runner.until(/waiting for room on this host: CPU pressure is 50\.00% \(this host's limit is under 10%\)/, "saw the CPU pressure", runner.stderr);
+        expect(runner.calls()).not.toContain("registration-token");
+        writeFileSync(join(runner.tempDir, "psi", "cpu"), "some avg10=9.99 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n");
+        writeFileSync(join(runner.tempDir, "psi", "memory"), "some avg10=4.99 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n");
+        expect(await runner.ended()).toBe(0);
+        expect(runnerRuns(runner.calls())).toHaveLength(1);
+        // the memory threshold is the other half: over it, the slot waits again for that reason
+        const memory = launchRunner({ count: 1, offer: true, offerPause: undefined, envFile: "offer", psi: { cpu: "0.00", memory: "5.01" } });
+        try {
+          await memory.until(/waiting for room on this host: memory pressure is 5\.01% \(this host's limit is under 5%\)/, "saw the memory pressure", memory.stderr);
+          expect(memory.calls()).not.toContain("registration-token");
+        } finally {
+          await memory.stop();
+        }
+      } finally {
+        await runner.stop();
+      }
+    }, HUNG_RUN_MS);
+
+    it("holds a slot for 30 s after this host started a runner container, and starts it once that is over", async () => {
+      const offerDir = mkdtempSync(join(tmpdir(), "herdr-runner-offer-state-"));
+      try {
+        const stamp = join(offerDir, `offer-${host}.started`);
+        // a start in the future (a clock that went back) counts as now, so the hold lasts however slow this run is
+        writeFileSync(stamp, `${Math.floor(Date.now() / 1000) + 3600}\n`);
+        const runner = launchRunner({ count: 1, offer: true, offerPause: "30", offerDir });
+        try {
+          await runner.until(/waiting for room on this host: this host started a runner \d+s ago, less than 30s/, "saw the recent start", runner.stderr);
+          expect(runner.calls()).not.toContain("registration-token");
+          writeFileSync(stamp, `${Math.floor(Date.now() / 1000) - 3600}\n`);
+          expect(await runner.ended()).toBe(0);
+          expect(runnerRuns(runner.calls())).toHaveLength(1);
+        } finally {
+          await runner.stop();
+        }
+      } finally {
+        rmSync(offerDir, { recursive: true, force: true });
+      }
+    }, HUNG_RUN_MS);
+
+    it("holds a slot while another slot of its pool has claimed room and not started its container yet", async () => {
+      const offerDir = mkdtempSync(join(tmpdir(), "herdr-runner-offer-state-"));
+      try {
+        const claim = join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-7`);
+        writeFileSync(claim, `${pool("self-hosted-ovis")}\n`);
+        writeFileSync(join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-8`), `${pool("self-hosted-ovis-main")}\n`);
+        writeFileSync(join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-6`), `${pool("self-hosted-ovis", "owner/app")}\n`);
+        const stale = join(offerDir, `offer-${host}.claim.herdr-ci-${host}-pr-9`);
+        writeFileSync(stale, `${pool("self-hosted-ovis")}\n`);
+        utimesSync(stale, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+        const runner = launchRunner({ count: 1, offer: true, offerPause: undefined, offerDir, peers: [] });
+        try {
+          await runner.until(/waiting for room on this host: the slot herdr-ci-\S+-pr-7 of this pool is starting its runner/, "saw the claim", runner.stderr);
+          expect(runner.calls()).not.toContain("registration-token");
+          // pr-7's container shows up: its claim goes, and the slot no longer waits for it
+          writePeers(runner.peers, [{ ...peer(7, "self-hosted-ovis", true), name: `herdr-ci-${host}-pr-7` }]);
+          expect(await runner.ended()).toBe(0);
+          expect(existsSync(claim)).toBe(false);
+          expect(existsSync(stale)).toBe(false);
+          expect(runnerRuns(runner.calls())).toHaveLength(1);
+          expect(existsSync(join(offerDir, `offer-${host}.claim.herdr-ci-${host}-1`))).toBe(false);
+        } finally {
+          await runner.stop();
+        }
+      } finally {
+        rmSync(offerDir, { recursive: true, force: true });
+      }
+    }, HUNG_RUN_MS);
+
+    it("does not start a runner while the gate cannot write its state", async () => {
+      const offerDir = mkdtempSync(join(tmpdir(), "herdr-runner-offer-state-"));
+      try {
+        writeFileSync(join(offerDir, `offer-${host}.lock`), "");
+        chmodSync(offerDir, 0o555);
+        const runner = launchRunner({ count: 1, offer: true, offerPause: undefined, offerDir, peers: [] });
+        try {
+          await runner.until(/waiting for room on this host: the gate cannot write its state/, "saw the write fail", runner.stderr);
+          expect(runner.calls()).not.toContain("registration-token");
+          chmodSync(offerDir, 0o755);
+          expect(await runner.ended()).toBe(0);
+          expect(runnerRuns(runner.calls())).toHaveLength(1);
+        } finally {
+          await runner.stop();
+        }
+      } finally {
+        chmodSync(offerDir, 0o755);
+        rmSync(offerDir, { recursive: true, force: true });
+      }
+    }, HUNG_RUN_MS);
+
+    it("refuses a pressure threshold of 0, under which no pressure ever is", () => {
+      const { result, calls } = runRunner({ count: 1, offer: true, envFile: "offer-zero" });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("CHECK_HOST_OFFER_CPU_PSI must be 1 or more");
+      expect(calls).not.toContain("registration-token");
+    });
+
+    it("starts a reserved slot at once, with the gate on and an idle runner of the pull request pool waiting", async () => {
+      const runner = launchRunner({ count: 2, args: ["--reserved", "1"], offer: true, offerPause: undefined, peers: [peer(9)] });
+      try {
+        await runner.until(/\[herdr-ci-\S+-2\] waiting for room on this host/, "saw the pull request slot wait", runner.stderr);
+        // the reserved slot is not gated: it starts while the other waits
+        await runner.until(/--name herdr-ci-\S+-1 /, "started the reserved slot", runner.calls);
+        const started = runnerRuns(runner.calls());
+        expect(started).toHaveLength(1);
+        expect(started[0]).toContain(`--name herdr-ci-${host}-1 `);
+        expect(started[0]).toContain("-e RUNNER_LABELS=self-hosted-ovis-main ");
+        expect(runner.stderr()).not.toContain(`[herdr-ci-${host}-1] waiting for room`);
+        writePeers(runner.peers, []);
+        expect(await runner.ended()).toBe(0);
+        expect(runnerRuns(runner.calls())).toHaveLength(2);
+      } finally {
+        await runner.stop();
+      }
+    }, HUNG_RUN_MS);
+
+    it("fetches a slot's registration token only after the gate passes", async () => {
+      const runner = launchRunner({ count: 1, offer: true, offerPause: undefined, peers: [peer(9)] });
+      try {
+        await runner.until(/waiting for room on this host/, "saw the gate hold the slot", runner.stderr);
+        expect(runner.calls()).not.toContain("registration-token");
+        expect(runner.calls()).not.toMatch(/docker network (create|inspect)/);
+        writePeers(runner.peers, []);
+        expect(await runner.ended()).toBe(0);
+        const lines = runner.calls().split("\n");
+        expect(lines.filter((call) => call.includes("registration-token"))).toHaveLength(1);
+        expect(lines.indexOf("docker ps --filter name=herdr-ci-" + host + "- --format {{.Names}}")).toBeGreaterThanOrEqual(0);
+        expect(lines.findIndex((call) => call.includes("registration-token"))).toBeGreaterThan(lines.lastIndexOf("docker ps --filter name=herdr-ci-" + host + "- --format {{.Names}}"));
+        expect(runnerRuns(runner.calls())).toHaveLength(1);
+      } finally {
+        await runner.stop();
+      }
+    }, HUNG_RUN_MS);
+
+    it("skips the pressure condition where the kernel has no /proc/pressure, and says so once", () => {
+      const { result, calls } = runRunner({ count: 1, offer: true, envFile: "offer", psi: "absent" });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain("[offer] PSI is off on this host");
+      expect(result.stderr.split("[offer] PSI is off on this host")).toHaveLength(2);
+      expect(runnerRuns(calls)).toHaveLength(1);
+    });
+
+    it("takes the two offer thresholds in the host env file and still refuses any other CHECK_HOST name", () => {
+      const { result, calls } = runRunner({ envFile: "offer" });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("refused line");
+      expect(runnerRuns(calls)).toHaveLength(1);
+      const refused = runRunner({ envFile: "offer-refused" });
+      expect(refused.result.status).toBe(2);
+      expect(refused.result.stderr).toContain("refused line(s): 2,3\n");
+      expect(refused.result.stderr).not.toContain("CHECK_HOST_OFFER_DISK");
+      expect(refused.calls).not.toContain("docker run");
+    });
+
+    it("needs a whole poll interval and a lock file it can use before it will gate anything", () => {
+      // an empty variable is the default, as for every other setting here: only a named, wrong value is refused
+      for (const poll of ["0", "x"] as const) {
+        const { result, calls } = runRunner({ offer: true, offerPoll: poll });
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain("OVIS_RUNNER_OFFER_POLL");
+        expect(calls).toBe("");
+      }
+      const { result } = runRunner({ offer: true, offerDir: "/proc/1/nope" });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("OVIS_RUNNER_OFFER_DIR");
+    });
+  });
+
   it("propagates a failed slot's status when multiple one-shot slots run", () => {
     for (const failedSlot of [1, 2]) {
       const { result } = runRunner({ count: 2, dockerExitCode: 42, failedSlot });
@@ -1352,6 +1803,9 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   });
 });
 
+// The hook as the runner runs it. Only a job it allows runs on the host: every refusal may kill, so every test that
+// can reach one runs isolated (runHookIsolated: a PID namespace of its own or a container of an image that carries the
+// marker, hook-test.Dockerfile's), or not at all.
 describe.skipIf(process.platform === "win32")("self-hosted runner job-started hook", () => {
   it("runs a job from this repository", () => {
     // without jq the hook would refuse (and, under runJobStarted's parent, block): fail before it starts
@@ -1376,6 +1830,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner job-started ho
 const isolation = probeIsolation();
 if (!isolation.ok) console.warn(`job-started hook kill tests skipped, as they run only in a PID namespace of their own or a container of an image that carries the marker (hook-test.Dockerfile): ${isolation.reason}`);
 
+// The runner image is Linux, where the hook proves its parent through /proc; the Mac runner (README "Mac runner")
+// runs the same file, which asks ps there: the copies with { ps } run that path here, on Linux.
 describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", () => {
   const mode = isolation.ok ? isolation.mode : "namespace";
   const runHook = (eventName: string, payload: unknown, event?: Parameters<typeof runHookIsolated>[3]) => runHookIsolated(mode, eventName, payload, event);
@@ -1390,6 +1846,7 @@ describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", 
     expect(run.above).toBe("alive");
     if (output === "said") {
       expect(run.output).toContain("::error::");
+      // Linux writes it to PID 1's output (a container's), never to logger
       if (mode === "namespace") expect(run.pidOne).toContain("[job-started] ");
       expect(run.logged).toBe("");
     }
@@ -1414,6 +1871,7 @@ describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", 
       ["pull_request", { pull_request: { head: { repo: null } } }],
       ["workflow_run", { workflow_run: { head_repository: { full_name: "someone/ovis" } } }],
       ["workflow_run", { workflow_run: { head_repository: null } }],
+      // only this repository's name, exactly: no other case, space, look-alike letter or character
       ["pull_request", named("Devswha/Ovis")],
       ["pull_request", named("devswha/ovis ")],
       ["pull_request", named("devswha/\u043evis")],
@@ -1482,10 +1940,13 @@ describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", 
     const runs = await Promise.all(
       (
         [
+          // a live parent that is not the worker, as when a user's systemd manager adopted an earlier version of the hook
           { parent: "named:systemd" },
           { parent: "named:Runner.Worker2" },
           { parent: "named:Runner.Worke" },
+          // the worker is an ancestor, not the parent: never walked to
           { parent: "nested" },
+          // a name is not an executable: both must be Runner.Worker
           { parent: "renamed" },
           { parent: "posing" },
           { ps: "fails" },
@@ -1542,6 +2003,7 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
         chmodSync(join(dist, "assets"), 0o755);
       }
       writeFileSync(join(outbox, `${key}.claim`), claim);
+      // more claims in the same outbox: a job flooding the launcher's GitHub quota
       for (let i = 0; i < extraClaims; i++) {
         const other = String(i).padStart(64, "e");
         spawnSync("tar", ["-cf", join(outbox, `${other}.tar`), "-C", dist, "."]);
@@ -1772,6 +2234,7 @@ PATH="\${PATH#*:}" exec stat "$@"
     expect(moved.stderr).toContain("the container that built it is no longer the slot's");
     expect(moved.callsBefore[0]).toBeGreaterThan(0);
     expect(moved.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+    // a slot without a running container: nothing GitHub says could be about the claim's job, so it is not asked
     for (const container of ["none", "created", "stopped"] as const) {
       const none = promote({ container });
       expect(none.status).toBe(0);
@@ -1796,11 +2259,13 @@ PATH="\${PATH#*:}" exec stat "$@"
   });
 
   it("is not told a leftover is new by a second name of it: removing one changes the file's time", () => {
+    // the earlier job gave its claim and its build a second name each, as restore markers, which the promoter removes
     const marked = promote({ linked: "marker" });
     expect(marked.status).toBe(0);
     expect(marked.runs).toEqual([]);
     expect(marked.ghCalls).toEqual([]);
     expect(marked.outbox).toEqual([`judged-${key}`]);
+    // and a claim or a build with a second name is not taken at all, whenever it was written
     for (const linked of ["claim", "tar"] as const) {
       const spare = promote({ linked });
       expect(spare.runs).toEqual([]);
@@ -1810,11 +2275,15 @@ PATH="\${PATH#*:}" exec stat "$@"
   });
 
   it("refuses a claim naming the run of a killed container's job, which GitHub still lists as running on the runner the next container took over", () => {
+    // the container before was killed 13.5 minutes ago with its job running; this one registered over its
+    // runner and kept the id (config.sh --replace), so the name, the status and the runner all fit
     const dead = promote({ jobStarted: -810 }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"]);
     expect(dead.stderr).toContain("started before the slot's container did");
     expect(dead.runs).toEqual([]);
     expect(dead.callsBefore[0]).toBe(1);
     expect(dead.ghCalls).toHaveLength(1);
+    // to the second: run.sh waits two before a slot's next container, so a job even one second older than
+    // this container is the one before's, and one that started in the container's own second is its own
     expect(promote({ jobStarted: -2 }).runs).toEqual([]);
     expect(promote({ jobStarted: -1 }).runs).toEqual([]);
     expect(promote({ jobStarted: 0 }).entries).toEqual([`7/${key}`]);

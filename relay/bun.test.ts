@@ -72,6 +72,7 @@ describe("relay over HTTP", () => {
       const refused = await fetch(url.replace("ws://", "http://"), upgrade);
       expect(refused.status).toBe(429);
       expect(refused.headers.get("retry-after")).toBe("60");
+      // one address over its limit never uses up the cap every address shares
       expect(asked).toEqual(["address:127.0.0.1"]);
 
       perAddress.allow = true;
@@ -120,6 +121,21 @@ describe("relay sockets", () => {
     expect(await data.next()).toBe("after");
   });
 
+  test("reads no Origin: the hosted shell's, the iOS app's own copy's, another app's and none are each let through to the PC", async () => {
+    const id = newServer();
+    const urls = relayUrls(base, id);
+    const control = await openServer(urls.control, id);
+    await control.json("sync");
+    const clients: Peer[] = [];
+    for (const origin of ["https://app.ovis.sh", "capacitor://app.ovis.sh", "capacitor://localhost", null]) {
+      const client = new Peer(new WebSocket(urls.client, (origin === null ? {} : { headers: { origin } }) as never));
+      clients.push(client);
+      const { connection_id } = await client.json(`assigned with ${origin ?? "no"} origin`) as { connection_id: string };
+      expect(await control.json(`connected with ${origin ?? "no"} origin`)).toMatchObject({ type: "connected", connection_id });
+    }
+    for (const client of clients) client.socket.close();
+  });
+
   test("holds a client's frames until its data socket attaches, then hands them over in order", async () => {
     const id = newServer();
     const urls = relayUrls(base, id);
@@ -151,6 +167,7 @@ describe("relay sockets", () => {
 
     const big = await Peer.open(urls.client);
     await big.json("assigned");
+    // 17 frames of 60 KiB fit in 1 MiB, the 18th does not
     for (let index = 0; index < 18; index++) big.socket.send(randomBytes(60 * 1024));
     expect(await big.closeCode("too many bytes")).toBe(CLOSE.TRY_AGAIN);
   });
@@ -353,6 +370,7 @@ describe("relay pass on the Bun relay", () => {
       const withPass = (key: string, header: string) => new Peer(new WebSocket(pairUrl(key), { headers: { [RELAY_PASS_HEADER]: header } } as unknown as string[]));
       expect(await (await Peer.open(pairUrl("role=host"))).closed).toEqual({ code: 4402, reason: "relay pass required" });
       expect(await (await Peer.open(pairUrl(keyed))).closed).toEqual({ code: 4402, reason: "relay pass required" });
+      // a pass alone, for a key the host does not offer, opens nothing
       expect(await withPass("role=host", token).closed).toEqual({ code: 4402, reason: "relay pass required" });
       const other = newServer();
       expect(await withPass(`role=host&server_id=${other.serverId}&public_key=${other.publicKey}`, token).closed).toEqual({ code: 4402, reason: "relay pass invalid" });

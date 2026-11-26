@@ -24,6 +24,7 @@ const environmentOf = (candidate: unknown): unknown => {
 
 test("only the sign job names the environment release-signing or reads its key", () => {
   expect(allJobs.filter(({ job: candidate }) => environmentOf(candidate) === "release-signing").map(({ where }) => where)).toEqual(["release.yml:server-binary-sign"]);
+  // a job that deploys reads its own environment, never the key's
   expect(allJobs.filter(({ job: candidate }) => JSON.stringify(candidate).includes("OVIS_SERVER_SIGNING_KEY")).map(({ where }) => where)).toEqual(["release.yml:server-binary-sign"]);
 });
 
@@ -42,7 +43,7 @@ test("the signing key reaches one step, on GitHub's runner, with no package inst
   expect(runs).not.toContain("setup-ci");
 });
 
-const SERVER_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, "ovis-server.json", "ovis-server.json.sig", "ovis-server.SHA256SUMS"];
+const SERVER_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, "ovis-server.json", "ovis-server.json.sig", "ovis-server.SHA256SUMS", "ovis-acp-keeper-server.json", "ovis-acp-keeper-server.json.sig"];
 const sources = { server: "a".repeat(40), shared: "b".repeat(40) };
 
 function signedFolder(temp: string): { publicKey: string; privateKeyPem: string } {
@@ -50,6 +51,7 @@ function signedFolder(temp: string): { publicKey: string; privateKeyPem: string 
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, `ovis-acp-keeper-${build}`), `keeper ${build}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
   writeManifest(dir, { version: "1.2.3", sources });
   const { privateKeyPem, publicKey } = generateKeyPair();
@@ -63,7 +65,7 @@ function trusting(script: string, publicKey: string): string {
   return copy;
 }
 
-function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust = true, builtHost?: string): { code: number; attached: string[]; err: string } {
+function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust = true, replaced?: string): { code: number; attached: string[]; err: string } {
   const temp = mkdtempSync(join(tmpdir(), "ovis-attach-step-"));
   try {
     const { publicKey, privateKeyPem } = signedFolder(temp);
@@ -71,7 +73,8 @@ function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust 
     mkdirSync(join(temp, "pty-sidecar"));
     writeFileSync(join(temp, "pty-sidecar", "ovis-pty-sidecar.json"), "{}");
     for (const build of PTY_ASSETS) if (existsSync(join(temp, "server-binary", ptyFile(build)))) copyFileSync(join(temp, "server-binary", ptyFile(build)), join(temp, "pty-sidecar", ptyFile(build)));
-    if (builtHost !== undefined) writeFileSync(join(temp, "pty-sidecar", ptyFile("linux-x64")), builtHost);
+    for (const build of PTY_ASSETS) copyFileSync(join(temp, "server-binary", `ovis-acp-keeper-${build}`), join(temp, "pty-sidecar", `ovis-acp-keeper-${build}`));
+    if (replaced) writeFileSync(join(temp, "pty-sidecar", replaced), "another binary\n");
     mkdirSync(join(temp, "stub"));
     writeFileSync(join(temp, "stub", "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(temp, "gh-args")}"\n`);
     chmodSync(join(temp, "stub", "gh"), 0o755);
@@ -108,14 +111,15 @@ test("publish attaches nothing else that lands in the server folder, such as a k
   expect(runAttach((dir) => writeFileSync(join(dir, "ovis-server-extra"), "x")).attached).toEqual([]);
 });
 
-test("publish attaches no PTY host but the one ovis-server.json signed", () => {
-  const result = runAttach(() => {}, true, "another host\n");
+test.each(["ovis-pty-sidecar-linux-x64", "ovis-acp-keeper-linux-x64"])("publish attaches no %s but the one its own signed manifest names", (file) => {
+  const result = runAttach(() => {}, true, file);
   expect(result.code).not.toBe(0);
   expect(result.attached).toEqual([]);
 });
 
 
 test("publish refuses server files signed for another version than the one it releases", () => {
+  // signed again by the same key: the signature holds, only the version check can refuse it
   const { code, err, attached } = runAttach((dir, privateKeyPem) => {
     writeManifest(dir, { version: "1.2.2", sources });
     signManifest(dir, privateKeyPem);
@@ -131,6 +135,7 @@ function runSignStep(key: string, trust?: string): { code: number; err: string; 
   mkdirSync(dir);
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, `ovis-acp-keeper-${build}`), `keeper ${build}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
   writeManifest(dir, { version: "1.2.3", sources });
   const script = step("server-binary-sign", "Sign the manifest").run!;
@@ -171,6 +176,7 @@ test("with the key it expects, the sign step writes a signature that key verifie
   try {
     expect(code).toBe(0);
     expect(verifyRelease(dir, publicKey, { version: "1.2.3" })).toEqual({ ok: true, problems: [] });
+    // no file the step leaves behind, in the uploaded folder or beside it, holds any line of the private key
     const keyLines = privateKeyPem.split("\n").filter((line) => line.length > 20 && !line.startsWith("-----"));
     for (const file of filesUnder(join(dir, ".."))) for (const line of keyLines) expect(readFileSync(file, "utf8")).not.toContain(line);
   } finally {

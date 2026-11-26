@@ -5,8 +5,13 @@ import java.util.ArrayDeque;
 import java.util.Base64;
 
 final class SavedImage {
+    /**
+     * Far above any chat picture, and low enough that the bytes and their base64 copies stay a
+     * small part of a phone's memory.
+     */
     static final int MAX_BYTES = 20 * 1024 * 1024;
 
+    /** Saves a page may start in one minute: a user tapping Download stays far below it. */
     static final int MAX_PER_MINUTE = 10;
 
     static final int MAX_PER_RUN = 100;
@@ -47,6 +52,11 @@ final class SavedImage {
         }
     }
 
+    /**
+     * `name`'s last path part, without characters a file name in Downloads cannot hold or a leading
+     * dot (a hidden file), cut to MAX_NAME_BYTES in UTF-8 with its extension kept; "image" when
+     * nothing is left.
+     */
     static String fileName(String name) {
         return fileName(name, "image");
     }
@@ -75,6 +85,7 @@ final class SavedImage {
         return text.getBytes(StandardCharsets.UTF_8).length;
     }
 
+    /** Saves started in the last minute and in this run, so a page cannot write to Downloads without end. */
     static final class Budget {
         private final ArrayDeque<Long> started = new ArrayDeque<>();
 

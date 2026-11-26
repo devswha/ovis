@@ -6,7 +6,7 @@ import { CoreAttachSession } from "../herdr-core/attach-session.ts";
 import { type SightingFacts, sightingFacts } from "../input-guard.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, OutputWindow, wireBytes } from "../output-window.ts";
 import { backlog, type Client, connectionOf, send } from "./connections.ts";
-import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type PaneAttachment } from "./terminal-process.ts";
+import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type PaneAttachment, type PtyAttachment } from "./terminal-process.ts";
 
 const DETACHED_CONVERSATION_WATCHES = 32;
 
@@ -22,6 +22,7 @@ export interface TerminalSighting {
   readonly pty: unknown;
   readonly claim: unknown;
   facts(): SightingFacts;
+  /** `automatic`: the viewer's terminal made the bytes itself; only a herdr-core stream can tell hc so. */
   write(data: string, automatic?: boolean): boolean | void;
 }
 
@@ -55,6 +56,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   const pendingAttachments = new Map<string, Promise<PaneAttachment>>();
   // herdr releases its exclusive attach slot only after the old process exits.
   const retiringAttachments = new Map<string, Promise<void>>();
+  // A viewer that gave up its claim still owns any input its attach is draining.
+  const drainingAttachments = new Map<string, { readonly owner: Client; readonly process: PtyAttachment["process"] }>();
 
   function follows(client: Client, paneId: string): boolean {
     return !connectionOf(client).closing && client.readyState === WebSocket.OPEN
@@ -81,7 +84,10 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       const window = client.data.output.get(paneId);
       const buffered = backlog(client);
       if (window) {
-        const verdict = window.check(buffered, Date.now(), client.getBufferedAmount() - buffered);
+        // A PTY host gives up an exited attach's unread output 15 s into a pause (pty-host.mjs EXIT_HELD_LIMIT_MS):
+        // only a herdr-core attach, paused by withholding hc's credit, may be held for the longer bound.
+        const alone = attachment.clients.size === 1 && attachment.process instanceof CoreAttachSession;
+        const verdict = window.check(buffered, Date.now(), client.getBufferedAmount() - buffered, alone);
         if (verdict === "stop") end(client, "stalled");
         else if (verdict === "pause") paused = true;
         continue;
@@ -126,7 +132,19 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
 
   const { spawnAttachment } = createSpawnAttachment({ herdrFailure: options.herdrFailure, attachments, retiringAttachments, terminalAttach, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor });
 
-  function closeAttachment(paneId: string): void {
+  /**
+   * `leftBy`: its last viewer left on its own. What that viewer typed and was answered for may still be on its way
+   * through the attach, which a kill would end with it unread, so the attach is asked to leave by itself, after all
+   * of it. Nothing more is written to it either way, and the next attach waits for its exit as after a kill.
+   */
+  function closeAttachment(paneId: string, leftBy?: Client): void {
+    if (!leftBy) {
+      const draining = drainingAttachments.get(paneId);
+      if (draining) {
+        drainingAttachments.delete(paneId);
+        draining.process.kill();
+      }
+    }
     const attachment = attachments.get(paneId);
     if (!attachment) return;
     for (const member of attachment.clients) holdPending(member, paneId);
@@ -135,15 +153,30 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     clearTimeout(attachment.relookup);
     clearTimeout(attachment.recovery);
     clearTimeout(attachment.repaint);
+    // its members hold nothing on this pane any more (a pty that exited leaves them on
+    // the "terminal ended" screen): a stale entry would read as a live claim in
+    // releaseUnclaimed and keep a later, empty pty on this pane running
     for (const member of attachment.clients) member.data.attached.delete(paneId);
     for (const member of attachment.clients) member.data.conversationInterests.delete(paneId);
     for (const member of attachment.clients) member.data.output.delete(paneId);
     releaseConversation(paneId);
+    // Only a ready attach this bridge holds took any typing.
+    const draining = leftBy && attachment.kind === "pty" && attachment.ready && !attachment.held
+      ? { owner: leftBy, process: attachment.process } : undefined;
     const retired = attachment.process.exited.finally(() => {
       if (retiringAttachments.get(paneId) === retired) retiringAttachments.delete(paneId);
+      if (draining && drainingAttachments.get(paneId) === draining) drainingAttachments.delete(paneId);
     });
     retiringAttachments.set(paneId, retired);
-    attachment.process.kill();
+    if (draining) {
+      drainingAttachments.set(paneId, draining);
+      draining.process.leave();
+    } else attachment.process.kill();
+  }
+
+  function closeAttachments(): void {
+    for (const paneId of attachments.keys()) closeAttachment(paneId);
+    for (const paneId of drainingAttachments.keys()) closeAttachment(paneId);
   }
 
   /**
@@ -152,6 +185,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
    */
   function paneMoved(from: string, to: string): void {
     if (from === to) return;
+    if (drainingAttachments.has(from)) closeAttachment(from);
     const retire = (): Promise<void> | undefined => {
       if (attachments.has(from)) {
         broadcast(from, { type: "pty-exit", pane_id: from, code: null });
@@ -217,6 +251,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   function ensureAttachment(paneId: string, cols: number, rows: number, forObserver: boolean): Promise<PaneAttachment> {
     const existing = attachments.get(paneId);
     if (existing) return Promise.resolve(existing);
+    // a second attach arriving while the first is still resolving the terminal joins
+    // that creation: two creations would spawn two ptys, and the orphaned one keeps
+    // streaming into the surviving attachment and kills it when it exits
     const pending = pendingAttachments.get(paneId);
     if (pending) return pending;
 
@@ -225,24 +262,28 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     return created;
   }
 
-  function detach(paneId: string, client: Client): void {
+  /** `own`: the client asked to leave (its `detach`), where a closed, stalled or revoked connection is taken out. */
+  function detach(paneId: string, client: Client, own = false): void {
     holdPending(client, paneId);
     client.data.conversationInterests.delete(paneId);
     client.data.output.delete(paneId);
     releaseConversation(paneId);
     const attachment = attachments.get(paneId);
     if (!attachment) return;
-    attachment.clients.delete(client);
+    const wasAttached = attachment.clients.delete(client);
     attachment.stalled.delete(client);
     attachment.grids.delete(client);
     if (attachment.kind === "mirror") attachment.unscreened.delete(client);
     if (attachment.driver === client) attachment.driver = undefined;
-    if (attachment.clients.size === 0) closeAttachment(paneId);
+    if (attachment.clients.size === 0) closeAttachment(paneId, own && wasAttached ? client : undefined);
     else reconcileOutput(paneId);
   }
 
   function detachClaimed(client: Client): void {
     for (const paneId of client.data.attached.keys()) detach(paneId, client);
+    for (const [paneId, draining] of drainingAttachments) {
+      if (draining.owner === client) closeAttachment(paneId);
+    }
   }
 
   function dropClaims(client: Client): void {
@@ -295,6 +336,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
         send(client, { type: "error", code: "invalid_geometry", message: "cols and rows must be integers in 1..1000" });
         return;
       }
+      // record the pane before the await: a detach (switching panes) or a close
+      // that lands while the terminal is looked up must cancel this attach, and
+      // neither can see a client that only joins the attachment afterwards
       const claim = client.data.attached.get(message.pane_id) ?? { keepSize: false };
       claim.keepSize = message.keep_size === true;
       // An opaque, bounded presentation correlator only: never used by input guards.
@@ -325,15 +369,27 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       const alreadyAttached = attachment.clients.has(client);
       attachment.clients.add(client);
       if (!alreadyAttached && message.flow_control === "ack") client.data.output.set(message.pane_id, new OutputWindow());
+      // a mirrored screen is drawn for the pane's own grid: the client takes that size
+      // before the screen, or the rows would wrap in a grid of another width
       if (attachment.kind === "mirror") send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows, fixed: true });
+      // so is a herdr-core pty's screen, for a client that does not size it: its replay is the program's bytes for this grid
+      const drives = connectionOf(client).mode === "interact" && !claim.keepSize;
+      if (attachment.kind !== "mirror" && !drives) send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows });
       const tail = attachment.kind === "mirror" ? attachment.process.current ?? "" : attachment.replay.text();
+      // a herdr-core joiner keeps the history it already holds: a tail that lost the attach's clear would double
+      // it. A tail on the alternate screen gets the clear where it leaves that screen (leaving it first would blank
+      // what the tail restores there), so the main-screen lines after it land once
       const clear = attachment.kind === "pty" && attachment.replay.truncated && "replayPrefix" in attachment.process ? attachment.process.replayPrefix : "";
       const alternate = attachment.kind === "pty" && attachment.replay.alternateScreen;
       const replay = !tail || !clear ? tail : alternate ? tail.replace("\x1b[?1049l", clear) : clear + tail;
+      // the members heard `input-ready: false` when the stream ended; a newcomer is told the replay
+      // is the screen from before in a frame of its own, as an early negative receipt would pass for
+      // the attach-complete barrier queued input waits on
       if (!alreadyAttached && attachment.recovering) send(client, { type: "output-recovering", pane_id: message.pane_id });
       if (!alreadyAttached && replay) {
         const ahead = backlog(client);
         client.data.output.get(message.pane_id)?.join(replay, ahead, Date.now(), client.getBufferedAmount() - ahead);
+        // marked as the screen from before: the client draws it but takes no new clipboard write from it
         sendOutput(client, message.pane_id, replay, true);
         if (attachment.kind !== "mirror" && attachment.ready && !attachment.held && attachment.replay.truncated) requestRepaint(message.pane_id);
       }
@@ -344,17 +400,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       if (attachment.ready && !attachment.held) send(client, { type: "input-ready", pane_id: message.pane_id });
       if (!alreadyAttached) attached(client, message.pane_id);
       if (attachment.kind === "mirror") return;
-      if (connectionOf(client).mode === "interact" && !claim.keepSize) {
-        drivePty(message.pane_id, client, geometry.cols, geometry.rows);
-      } else {
-        attachment.grids.delete(client);
-        send(client, {
-          type: "pane-geometry",
-          pane_id: message.pane_id,
-          cols: attachment.cols,
-          rows: attachment.rows,
-        });
-      }
+      if (drives) drivePty(message.pane_id, client, geometry.cols, geometry.rows);
+      else attachment.grids.delete(client);
       return;
     },
     "take-over"(client: Client, message: Frame<"take-over">): void {
@@ -368,7 +415,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     },
     detach(client: Client, message: Frame<"detach">): void {
       client.data.attached.delete(message.pane_id);
-      detach(message.pane_id, client);
+      detach(message.pane_id, client, true);
       return;
     },
     "conversation-watch"(client: Client, message: Frame<"conversation-watch">): void {
@@ -425,6 +472,9 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
         send(client, { type: "error", code: "invalid_geometry", message: "cols and rows must be integers in 1..1000" });
         return;
       }
+      // the pty is still being created (an attach from the chat lens, then the switch to the
+      // terminal lens before the terminal was looked up): the resize waits for it. Dropped,
+      // it would leave the pty at the pane's own grid under a terminal fitted to another.
       const claim = client.data.attached.get(message.pane_id);
       if (claim) claim.keepSize = false;
       const creating = attachments.has(message.pane_id) ? undefined : pendingAttachments.get(message.pane_id);
@@ -439,6 +489,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       if (connectionOf(client).mode !== "interact") return;
       const claim = client.data.attached.get(message.pane_id);
       if (!claim) return;
+      // Remember the release before looking up the attachment: its initial creation can
+      // still be awaiting herdr, and must not revive this hidden grid when it completes.
       claim.keepSize = true;
       const attachment = typeof message.pane_id === "string" ? attachments.get(message.pane_id) : undefined;
       if (!attachment || attachment.kind === "mirror") return;
@@ -453,5 +505,5 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   };
 
   const views: ReadonlyMap<string, AttachmentView> = attachments;
-  return { attachments: views, conversations, reconcileOutput, closeAttachment, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
+  return { attachments: views, conversations, reconcileOutput, closeAttachment, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
 }

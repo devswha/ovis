@@ -1,4 +1,4 @@
-import "./test-herdr.ts";
+import "./test-herdr.ts"; // a herdr session of its own: the server never reads the user's
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -113,13 +113,17 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
       changes.push(request.postDataJSON() as TelemetryChange);
     });
 
-    await page.goto(origin);
     // the notice by its role, not its sentence: a new notice version rewords it, and the version is asserted below
     const notice = page.locator(".update-notice.is-telemetry[role='status']").first();
-    await notice.waitFor({ state: "visible" });
+    const [acknowledgement] = await Promise.all([
+      page.waitForRequest((request) => request.method() === "POST"
+        && new URL(request.url()).pathname === "/api/telemetry"
+        && (request.postDataJSON() as TelemetryChange).notice_seen === true, { timeout: 15_000 }),
+      page.goto(origin).then(() => notice.waitFor({ state: "visible" })),
+    ]);
     assert.ok((await notice.locator(".update-notice-text").innerText()).trim().length > 0, "the notice says something, whatever its wording");
     await until(async () => (await statusAt(origin)).notice_seen, "the visible notice is reacknowledged");
-    await until(async () => changes.some((change) => change.notice_seen === true && change.notice_version === NOTICE_VERSION), "the browser acknowledges exactly the current notice version");
+    assert.equal((acknowledgement.postDataJSON() as TelemetryChange).notice_version, NOTICE_VERSION, "the browser acknowledges exactly the current notice version");
     assert.equal(changes.findIndex((change) => change.settings !== undefined), changes.findIndex((change) => change.notice_seen === true),
       "no settings snapshot leaves the browser before the notice is acknowledged; the first rides with the acknowledgement");
     await until(async () => {
@@ -179,6 +183,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
     const updatedPreview = JSON.parse(await preview.innerText()) as TelemetryEvent;
     assert.equal(updatedPreview.settings?.palette, "charcoal", "the preview refreshes with the server's updated snapshot");
     const themed: TelemetrySettings = { ...updatedPreview.settings!, palette: "tokyo-night", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" };
+    // a page tells its settings with the counting generation it heard: the server keeps none from before an off it missed
     const postSettings = async (settings: unknown) => fetch(`${origin}/api/telemetry`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ settings, generation: (await statusAt(origin)).counts_generation }) });
     assert.equal((await postSettings(themed)).status, 200, "the server takes a snapshot with herdr theme ids and the theme keys");
     assert.deepEqual((await statusAt(origin)).next?.settings, themed);
@@ -199,6 +204,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
     fixtureNow += SEND_GRACE_MS + 1;
     await telemetry.report();
     assert.deepEqual(sent, [], "the grace period and fixture-only transport prevent outgoing telemetry");
+    // turned off, a page keeps its settings to itself: the status is read, nothing is told
     const beforeReload = changes.length;
     const statusRead = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/telemetry" && response.request().method() === "GET");
     await page.reload();

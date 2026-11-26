@@ -8,7 +8,8 @@ import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { SCROLL_POLL_BUSY_MS, SCROLL_POLL_SETTLE_MS, scrollPollDelay, validScroll, visibleFindRects, type FindCellRect } from "../lib/terminalViewport.ts";
-import { VIEW_MOVED_EVENT } from "../lib/ghostty/viewMoved.ts";
+import { GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ghosttyRowsAbove } from "../lib/ghostty/viewMoved.ts";
+import { viewRows } from "../lib/terminalScreen.ts";
 import "./TerminalViewportTools.css";
 
 export interface TerminalSearchState { query: string; result: PaneFindResponse }
@@ -27,9 +28,7 @@ interface Props {
 }
 
 /** UI over the attach stream. History belongs to herdr; xterm still has zero scrollback. */
-/** how long a page asked for on stale metrics waits for the read that tells history from a program's screen */
 const HELD_PAGE_MS = 1000;
-/** how late that read may answer: a slow read still serves a key pressed in time, but never seconds after the user stopped expecting it */
 const HELD_PAGE_RETURN_MS = 3 * HELD_PAGE_MS;
 
 export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageScroll, lineScroll, onApplicationPage, enabled, interactive, search, onError }: Props) {
@@ -60,9 +59,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     let writing = false;
     let desired: number | null = null;
     let dirty = false;
-    // something other than output (a resize, a scroll, coming into view, a refresh) moved since the read began
     let urgent = false;
-    // metrics reads in a row with nothing in between that could move them: the poll backs off
     let idle = 0;
     let version = 0;
     let outputVersion = 0;
@@ -70,14 +67,9 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     // history back, and until the next read says so its zero-history metrics must not turn a page into
     // keys for the shell. A page asked for meanwhile waits for that read, briefly.
     let metricsOutput = -1;
-    // when the read behind the current metrics began
     let metricsAt = 0;
-    // output timing: the first output after a quiet spell reads at the busy cadence, only sustained output slows down
     let outputAt = -Infinity, burstFrom = -Infinity;
-    // until when a wheel or swipe keeps the poll off the follow pace: its output may come after the read it woke
     let gestureUntil = 0;
-    // pages asked for on stale metrics (steps: their sum, signed like a direction); strict: one was held on
-    // zero-history metrics, so they run only on metrics read after the latest output
     let heldPage: { steps: number; at: number; strict: boolean } | null = null;
     let heldLines: { lines: number; at: number } | null = null;
     let data: PaneFindResponse | null = null;
@@ -86,15 +78,14 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       && getComputedStyle(terminal.element).visibility !== "hidden";
     const clearHits = () => { data = null; lastKey = ""; setHits((old) => old.length ? [] : old); };
     const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+    // the rows drawn: libghostty's while it holds the screen
+    const rows = () => viewRows(terminal);
     const mount = terminal.element?.parentElement;
-    /** Box geometry: only a resize, a mount scroll or a refresh moves it, never a rendered frame. */
     const paintBox = () => {
       if (!alive || !showing()) return;
       const parent = layer.current?.parentElement;
       if (!screen || !parent) return;
       const rect = screen.getBoundingClientRect(), outer = parent.getBoundingClientRect();
-      // The jump button sits at the grid's bottom-right corner clipped to what the mount shows: an adopted
-      // grid (a mirror, an observer) is wider than the mount and scrolls inside it.
       const view = mount?.getBoundingClientRect();
       const right = Math.min(rect.right, outer.right, mount && view ? view.left + mount.clientLeft + mount.clientWidth : Infinity);
       const bottom = Math.min(rect.bottom, outer.bottom, mount && view ? view.top + mount.clientTop + mount.clientHeight : Infinity);
@@ -102,8 +93,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         anchorX: right - outer.left, anchorY: bottom - outer.top };
       setBox((old) => old && Object.keys(next).every((key) => old[key as keyof Box] === next[key as keyof Box]) ? old : next);
     };
-    /** Find rectangles: the cells under them change with every frame, so this runs on render, and
-     * reads nothing from the layout unless a search has a result to place. */
     const paintHits = () => {
       if (!alive) return;
       const active = searchRef.current;
@@ -114,12 +103,11 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (!showing()) return;
       const matches = data?.matches ?? [];
       const nativeScroll = data?.scroll;
-      // A newer native window revalidates the same range before it can stay current;
-      // local buffer validation below still refuses stale or moved cells. Navigation retains
-      // its original revision and is rejected server-side if that revision no longer exists.
+      // the rows drawn, read once a paint (each read of libghostty's is a row read from wasm)
+      const buffer = rows();
       const rectangles = active && data && validScroll(nativeScroll) ? visibleFindRects(matches, nativeScroll, active.query, terminal.cols, terminal.rows,
         (row, col) => {
-          const cell = terminal.buffer.active.getLine(terminal.buffer.active.viewportY + row)?.getCell(col);
+          const cell = buffer.getLine(buffer.viewportY + row)?.getCell(col);
           return cell ? { chars: cell.getChars(), width: cell.getWidth() } : undefined;
         }, active.result.match) : [];
       const key = JSON.stringify(rectangles);
@@ -143,7 +131,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const revision = version;
       const output = outputVersion;
       const cols = terminal.cols, rows = terminal.rows;
-      // A failed read must not borrow the last valid metrics used by the idle-reset comparison.
       let readMetrics: PaneScrollInfo | null = null;
       try {
         let found: PaneFindResponse | null = null;
@@ -156,7 +143,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         readMetrics = metrics;
         setScroll((old) => validScroll(metrics) ? old && old.offset_from_bottom === metrics.offset_from_bottom && old.max_offset_from_bottom === metrics.max_offset_from_bottom && old.viewport_rows === metrics.viewport_rows ? old : metrics : null);
         if (validScroll(metrics)) {
-          // metrics that moved without output (another client, history growing under a held view) mean the pane is not idle
           const last = scrollRef.current;
           if (last && (last.offset_from_bottom !== metrics.offset_from_bottom || last.max_offset_from_bottom !== metrics.max_offset_from_bottom)) idle = 0;
           scrollRef.current = metrics; metricsOutput = output; metricsAt = startedAt;
@@ -164,9 +150,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         data = output === outputVersion ? found : null;
         // also the box: a pane shown again by its visibility style, not its size, gets no ResizeObserver call
         paint();
-        // a page held on stale metrics runs on the first read after the latest output, one held only for a
-        // fresh read on a read that began after it; either while that read began soon after the press and
-        // answered within HELD_PAGE_RETURN_MS (a slow herdr or relay must not lose the key)
         if (heldPage && validScroll(metrics) && (output === outputVersion || (!heldPage.strict && heldPage.at <= startedAt))) {
           const held = heldPage;
           heldPage = null;
@@ -179,21 +162,16 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
           if (startedAt - held.at < HELD_PAGE_MS) scrollLines(held.lines, true);
         }
       } catch {
-        // a failed read retries on the first step, not the idle backoff: page keys wait on it
         if (alive && revision === version) { clearHits(); if (!query) setScroll(null); idle = 0; }
       } finally {
         pending = false;
-        // an idle pane at the bottom backs off; output, a scroll, a resize, moved metrics or coming back into view resets it
-        // a held page or line scroll retries at the busy cadence, well inside its hold
         if (alive) schedule(scrollPollDelay(dirty || !!heldPage || !!heldLines, idle++, readMetrics, following()));
       }
     };
-    // only output moved since the last read, and it has been arriving for a while: a view at the bottom reads at the follow pace
     const following = () => {
       const now = Date.now();
       return !urgent && !query && !heldPage && !heldLines && now >= gestureUntil && now - burstFrom >= SCROLL_POLL_SETTLE_MS;
     };
-    /** Holds a page until a fresh read; presses add up, so two quick pages still move two. */
     const holdPage = (direction: -1 | 1, strict: boolean) => {
       const now = Date.now();
       const live = heldPage && now - heldPage.at < HELD_PAGE_MS ? heldPage : null;
@@ -236,7 +214,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       previewRef.current = desired;
       void flush();
     };
-    /** `fresh`: the metrics were read after the page was asked for, however long that read took. */
     const scrollPage = (direction: -1 | 1, fresh = false) => {
       const metrics = scrollRef.current;
       if (!interactive || !alive || viewportIntent.isSearching() || !showing()) return;
@@ -254,18 +231,30 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         holdPage(direction, false); return;
       }
       if (validScroll(metrics)) writeRef.current((previewRef.current ?? metrics.offset_from_bottom) - direction * pageScrollDistance(metrics.viewport_rows, 1, PAGE_OVERLAP_ROWS));
-      // no metrics (a failed read): ask for a fresh read now rather than at the next poll
       else { dirty = true; idle = 0; schedule(0); }
     };
     if (pageScroll) pageScroll.current = scrollPage;
-    /** `fresh` as for a page: metrics overtaken by output and older than the busy cadence may clamp the
-     * lines to a history size that has since changed, so they are read again first. */
     const scrollLines = (lines: number, fresh = false) => {
       if (!interactive || !alive || viewportIntent.isSearching() || !showing()) return;
       const metrics = scrollRef.current;
       const stale = !fresh && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS;
-      if (validScroll(metrics) && !stale) writeRef.current((previewRef.current ?? metrics.offset_from_bottom) + lines);
-      else {
+      if (validScroll(metrics) && !stale) {
+        // lines held on stale metrics go out with a line these metrics are fresh enough for: the read that would release
+        // them waits while the wheel's own writes run back to back, past the hold. The hold stays, empty, so the poll and
+        // that read (and its write) come as they would have: page keys keep their timing. They wait for that read as
+        // before behind a held page, which it hands out first; past the top these metrics know (the history may have
+        // grown since); against this line's direction; and behind a write still out, whose failure drops what is queued
+        // after it. At the bottom they stop, as the wheel would have.
+        const from = previewRef.current ?? metrics.offset_from_bottom;
+        const top = metrics.max_offset_from_bottom;
+        let held = 0;
+        if (heldLines && !heldPage && !writing && heldLines.lines * lines >= 0 && Date.now() - heldLines.at < HELD_PAGE_MS
+          && from + heldLines.lines <= top && from + heldLines.lines + lines <= top) {
+          held = heldLines.lines;
+          heldLines = { lines: 0, at: heldLines.at };
+        }
+        writeRef.current((held ? Math.max(0, from + held) : from) + lines);
+      } else {
         heldLines = { lines: (heldLines && Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0) + lines, at: Date.now() };
         dirty = true; idle = 0; schedule(0);
       }
@@ -277,7 +266,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       clearHits();
     });
     refreshRef.current = () => { dirty = true; urgent = true; idle = 0; paint(); schedule(0); };
-    // output alone: a view following the bottom only learns the history grew, so it reads at the follow pace
     const parsed = terminal.onWriteParsed(() => {
       outputVersion++; clearHits(); dirty = true; idle = 0;
       const now = Date.now();
@@ -287,10 +275,13 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     });
     // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
     const readLocal = () => {
-      const buffer = terminal.buffer.active;
-      setLocalBack(buffer.viewportY < buffer.baseY);
+      // xterm's own view: the overlay follows it (overlay.ts), and moves libghostty's view only when it next draws.
+      // When libghostty parses alone, xterm keeps no rows and libghostty's view is the one
+      const rowsAbove = ghosttyRowsAbove(terminal);
+      setLocalBack(rowsAbove === null ? terminal.buffer.active.viewportY < terminal.buffer.active.baseY : rowsAbove > 0);
     };
     const scrolled = terminal.onScroll(readLocal);
+    terminal.element?.addEventListener(GHOSTTY_VIEW_EVENT, readLocal);
     const rendered = terminal.onRender(() => { readLocal(); paintHits(); });
     // a wheel or swipe that xterm sends to herdr as mouse reports comes back only as output, from a view
     // that left the bottom: read at the busy cadence, not the follow pace
@@ -304,7 +295,6 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     };
     const observer = new ResizeObserver(() => { paint(); wake(); });
     if (layer.current?.parentElement) observer.observe(layer.current.parentElement);
-    // the screen's own size follows the renderer's cell metrics (a font load, a zoom), not only the mount
     if (screen) observer.observe(screen);
     mount?.addEventListener("scroll", paint, { passive: true });
     document.addEventListener("visibilitychange", visibility);
@@ -316,6 +306,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       previewRef.current = null;
       unregisterCancellation();
       if (timer !== null) clearTimeout(timer);
+      terminal.element?.removeEventListener(GHOSTTY_VIEW_EVENT, readLocal);
       parsed.dispose(); scrolled.dispose(); rendered.dispose(); resized.dispose(); observer.disconnect();
       mount?.removeEventListener("scroll", paint);
       terminal.element?.removeEventListener("wheel", gesture, { capture: true });

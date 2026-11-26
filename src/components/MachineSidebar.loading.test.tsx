@@ -9,14 +9,12 @@ import { MachineSidebar } from "./MachineSidebar.tsx";
 
 const actions = new Proxy({}, { get: () => () => {} }) as AppActions;
 const activity = { seqs: () => new Map<string, number>(), status: () => undefined };
-// the test renderer draws no DOM: a node stands in for every element its refs read
 const node = (): HTMLElement => ({
   isConnected: true, offsetWidth: 200, offsetHeight: 100, dataset: {}, style: {},
   getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
   querySelector: () => null, querySelectorAll: () => [], contains: () => false, closest: () => null,
   focus() {}, addEventListener() {}, removeEventListener() {},
 }) as unknown as HTMLElement;
-/** a PC that answered, whose roster has not come yet (server/machines-refresh.contract.test.ts's slow fixture) */
 const connectedNoRoster = (id: string, kind: Machine["kind"], name: string): Machine =>
   ({ id, kind, name, state: "connected", snapshot: null, error: null, action_required: null, remote_ovis: null }) as unknown as Machine;
 
@@ -34,7 +32,6 @@ beforeEach(() => {
   define("HTMLElement", class HTMLElement {});
   define("localStorage", storage);
   define("navigator", { languages: ["en-US"], platform: "Linux", userAgent: "test" });
-  // a frame comes at once: the loading words are filled one frame after their region (lib/useAnnouncedText.ts)
   define("window", { localStorage: storage, sessionStorage: storage, location: { pathname: "/", search: "", hash: "" }, matchMedia: () => media, innerWidth: 1280, innerHeight: 800, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: (run: FrameRequestCallback) => { run(0); return 1; }, cancelAnimationFrame() {}, setTimeout, clearTimeout, setInterval, clearInterval });
   define("document", { visibilityState: "visible", activeElement: null, querySelectorAll: () => [], body: { nodeType: 1, children: [], createNodeMock: node }, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, getElementById: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
   define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
@@ -83,6 +80,33 @@ it("counts its Settings gear as a button, and opens Settings even when the count
       await act(async () => { gear.props.onClick(); });
     } finally { logged.mockRestore(); }
     expect([told, opened]).toEqual([failing ? [] : ["settings:button"], ["settings"]]);
+    await act(async () => renderer?.unmount());
+    renderer = undefined;
+  }
+});
+
+it("draws Inbox beside the Settings gear, which opens the inbox and shows the sessions waiting as its badge", async () => {
+  for (const inbox of [{ waiting: 3 }, { waiting: 0 }, null]) {
+    const opened: string[] = [];
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, null, createElement(MachineSidebar, {
+        machines: [connectedNoRoster("local", "local", "Laptop")], selectedMachineId: "local", selectedPaneId: null, activity, actions,
+        inbox: inbox === null ? null : { waiting: inbox.waiting, open: () => opened.push("inbox") },
+        onSelect: () => {}, onNew: () => {}, onSetup: () => {}, onUsageLogin: () => {},
+      })), { createNodeMock: node });
+    });
+    const row = renderer!.root.findAll((found) => found.type === "div" && found.props.className === "sidebar-footer-row")[0]!;
+    const buttons = row.findAll((found) => found.type === "button").map((found) => String(found.props.className));
+    const entry = row.findAll((found) => found.type === "button" && String(found.props.className).includes("sidebar-footer-inbox"))[0];
+    if (inbox === null) {
+      expect(entry).toBeUndefined();
+    } else {
+      expect(buttons.findIndex((name) => name.includes("sidebar-footer-inbox"))).toBe(buttons.findIndex((name) => name.includes("sidebar-footer-settings")) + 1);
+      expect([entry!.props.type, entry!.props.title, entry!.props["aria-label"]]).toEqual(["button", "Inbox", inbox.waiting > 0 ? "Inbox · 3 waiting for you" : "Inbox"]);
+      expect(entry!.findAll((found) => found.props.className === "header-more-dot is-waiting").map((found) => found.props["data-count"])).toEqual(inbox.waiting > 0 ? ["3"] : []);
+      await act(async () => { entry!.props.onClick(); });
+      expect(opened).toEqual(["inbox"]);
+    }
     await act(async () => renderer?.unmount());
     renderer = undefined;
   }

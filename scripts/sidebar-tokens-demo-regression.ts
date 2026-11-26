@@ -6,7 +6,14 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// The demo roster with what herdr plugins report on its panes (#1209): the Quota plugin's usage and
+// a summary on checkout-api's Claude, a task's progress on web-dashboard's Codex, a plugin's line for
+// the OMP agent (display_agent), and markup that must stay text. Only this disposable demo fixture is
+// rewritten; no live session is read. A roster the page reads carries the same as one pushed to it:
+// the page reads it again every 30 seconds, and a read without them would take them off the rows
+// until the next push.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-tokens-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const LONG = "reviewing the authentication middleware and the session refresh path before the release branch is cut";
@@ -82,15 +89,7 @@ try {
   writeFileSync(join(app, "sidebar-tokens.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-tokens.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {

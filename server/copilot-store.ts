@@ -33,6 +33,7 @@ const unavailable = (diagnostic: StoreDiagnostic): Extract<ForegroundState, { ki
 interface ForegroundCheckpoint {
   dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
   hash: Hash; epoch: string; selection: ForegroundState; readConflict?: true;
+  // The newest copy when this was read: Copilot makes a new one on every rotation.
   newestCopy: CopyStamp | null;
 }
 interface CopyStamp { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }
@@ -54,6 +55,7 @@ function currentForeground({ selection, pendingSwitch }: ForegroundCheckpoint): 
   return unavailable(selection.kind === "unregistered" ? "copilot_session_unregistered" : "copilot_log_partial");
 }
 
+/** Revalidate every consumed byte: unchanged boundary samples cannot prove an append. */
 function logPrefix(fd: number, size: number): Hash | null {
   const bytes = Buffer.alloc(HEADER_BYTES);
   const hash = createHash("sha256");
@@ -80,6 +82,7 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
       if (match[1] === FOREGROUND_PREFIXES[0]) {
         selected = { kind: "selected", binding: { sessionId: match[2]!, generation: generation(position) } };
       } else {
+        // A legacy parent's complete log may first name its session when releasing it to a child.
         const released: ForegroundBinding | null = selected.kind === "selected" && selected.binding.sessionId === match[2] ? selected.binding : selected.kind === "legacy"
           ? { sessionId: match[2]!, generation: generation(position) } : null;
         selected = { kind: "unregistered", binding: released };
@@ -99,7 +102,7 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
  * one is still there is that moment, so only the open log can decide this lookup; without a
  * lifecycle line there, the next one compares with the same bytes read.
  */
-function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: bigint, pid: number): ForegroundState | typeof LOG_READ_CHANGED | typeof ROTATION_GAP | null {
+function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: bigint, pid: number): { selection: ForegroundState; continued: boolean } | typeof LOG_READ_CHANGED | typeof ROTATION_GAP | null {
   const archives: { fd: number; size: number; dev: bigint; ino: bigint }[] = [];
   try {
     const consumed = cached.hash.copy().digest("hex");
@@ -117,6 +120,7 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
       archives.push(archive);
       const stat = fstatSync(fd, { bigint: true });
       Object.assign(archive, { size: Number(stat.size), dev: stat.dev, ino: stat.ino });
+      // Copilot writes its copies as the user that owns the open log: another user's file in a shared folder is none.
       if (!stat.isFile() || stat.uid !== uid) return null;
       // The newest copy when the bytes were read, and those older, came before them. Moving a copy up
       // changes only its ctime; one written over in place is another copy.
@@ -126,7 +130,10 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
       if ((hashed += cached.size) > LOG_HASH_BYTES) return null;
       if (logPrefix(fd, cached.size)?.digest("hex") === consumed) continued = archives.length - 1;
     }
-    if (continued < 0) return cached.selection.kind === "unregistered" ? { kind: "unregistered", binding: null } : null;
+    // No copy carries on from the bytes read (an older one could revive a session left since):
+    // what was logged in between is unknown, so the rejection stands.
+    if (continued < 0) return cached.selection.kind === "unregistered"
+      ? { selection: { kind: "unregistered", binding: null }, continued: false } : null;
     let replayed = 0;
     for (let index = continued; index >= 0; index--) replayed += archives[index]!.size;
     if (replayed > LOG_HASH_BYTES) return null;
@@ -137,15 +144,20 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
       const start = index === continued ? cached.size : 0;
       const bytes = Buffer.alloc(size - start);
       if (readSync(fd, bytes, 0, bytes.length, start) !== bytes.length || fstatSync(fd).size !== size) return LOG_READ_CHANGED;
+      // Copilot writes whole lines; a copy ending inside one was not a rotation.
       if (bytes.length > 0 && bytes[bytes.length - 1] !== 0x0a) return null;
       const next = applyLifecycle(selected, bytes.toString("utf8"), start, (position) => `${pid}:${dev}:${ino}:${epoch}:${position}`);
       if (next === null) return null;
       selected = next;
     }
-    return selected;
+    return { selection: selected, continued: true };
   } finally { for (const { fd } of archives) closeSync(fd); }
 }
 
+/**
+ * A missing copy with an older one still there is
+ * Copilot moving them up: only the open log can decide that lookup.
+ */
 function archivedLifecycle(target: string, open: { uid: bigint; size: number }, pid: number)
   : ForegroundState | typeof LOG_READ_CHANGED | typeof ROTATION_GAP | null {
   const started = Number(LOG_NAME.exec(basename(target))?.[1]);
@@ -163,6 +175,7 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
           if (olderLogCopy(target, index)) return ROTATION_GAP;
           break;
         }
+        // A copy this reader may not open, or a link, proves no chain.
         if (code === "EACCES" || code === "EPERM" || code === "ELOOP") return null;
         throw error;
       }
@@ -175,7 +188,8 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
     const oldest = archives.at(-1);
     if (oldest === undefined || !Number.isSafeInteger(started)) return null;
     let selected: ForegroundState = legacy;
-    let proven = true;
+    let startsAtLaunch = true;
+    let startsAfterLaunch = false;
     for (let index = archives.length - 1; index >= 0; index--) {
       const { fd, size, dev, ino, mtimeNs, ctimeNs } = archives[index]!;
       const bytes = Buffer.alloc(size);
@@ -184,8 +198,9 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       if (after.size !== BigInt(size) || after.mtimeNs !== mtimeNs || after.ctimeNs !== ctimeNs) return LOG_READ_CHANGED;
       if (index === archives.length - 1) {
         const first = Date.parse(LOG_LINE_TIME.exec(bytes.subarray(0, 64).toString("utf8"))?.[1] ?? "");
-        proven = first >= started && first - started <= LOG_START_MARGIN_MS;
-        if (!proven) selected = unavailable("copilot_log_gap");
+        startsAtLaunch = first >= started && first - started <= LOG_START_MARGIN_MS;
+        startsAfterLaunch = first - started > LOG_START_MARGIN_MS;
+        if (!startsAtLaunch) selected = unavailable("copilot_log_gap");
       }
       // Copilot renames each copy into place whole: one ending inside a line is not its copy.
       if (size > 0 && bytes[size - 1] !== 0x0a) return null;
@@ -199,7 +214,8 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       if (now?.dev !== dev || now.ino !== ino) return LOG_READ_CHANGED;
     }
     if (lstatSync(`${base}.${archives.length + 1}.log`, { throwIfNoEntry: false })) return LOG_READ_CHANGED;
-    return proven || selected.kind !== "unavailable" ? selected : null;
+    // A copy that starts after launch may have lost a session switch. A held marker cannot fill that gap.
+    return startsAtLaunch || startsAfterLaunch || selected.kind !== "unavailable" ? selected : null;
   } finally { for (const { fd } of archives) closeSync(fd); }
 }
 
@@ -242,6 +258,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
         }
       }
     }
+    // Dropping live denial state would make stale report/marker fallback eligible again.
     if (foregroundLogProcesses.size >= 256) return unavailable("copilot_reader_capacity");
     owner = { started, observed: false };
     foregroundLogProcesses.set(pid, owner);
@@ -346,6 +363,8 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
             // written back to the same bytes, which hid whatever was logged in between, fails closed.
             : size === cached.size && (stat.mtimeNs !== cached.mtimeNs || stat.ctimeNs !== cached.ctimeNs)
               && !(size > 0 && cached.observedSize === size && stat.mtimeNs !== stat.ctimeNs
+                // A rewrite followed by a timestamp refresh passes the stat check, but every switch
+                // opens the new session's marker and Copilot keeps holding the old one.
                 && refreshKeeps(cached.selection, held))
               ? "copilot_log_metadata_changed" : undefined;
           const same = cached !== undefined && changed === undefined;
@@ -361,6 +380,9 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
           const bytes = Buffer.alloc(size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
           const initial = owner.initialRead;
+          // A raced bootstrap is still initial only while the bytes this read returned begin with
+          // every byte already seen, in the same process-owned file. Judged from those bytes, not
+          // a separate read, so a rewrite between two reads cannot pass. A lost/replaced log revokes it.
           const initialContinues = initial !== undefined && start === 0 && initial.dev === stat.dev && initial.ino === stat.ino
             && initial.path === target && read >= initial.size
             && createHash("sha256").update(bytes.subarray(0, initial.size)).digest("hex") === initial.hash;
@@ -388,14 +410,18 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
           const previous: ForegroundState = same ? cached.selection
             : fromCopies ? chain
             : initialLog ? legacy
-            : rotated ?? unavailable(changed ?? owner.denial?.diagnostic ?? (start > 0 ? "copilot_log_gap" : "copilot_log_read_raced"));
+            : rotated?.selection ?? unavailable(changed ?? owner.denial?.diagnostic ?? (start > 0 ? "copilot_log_gap" : "copilot_log_read_raced"));
           const position = start + Buffer.byteLength(text.slice(0, skip));
-          const selected = applyLifecycle(previous, complete, position, (at) => `${pid}:${stat.dev}:${stat.ino}:${epoch}:${at}`);
+          // A same-inode cut that loses complete bytes without a continuing copy can leave an older registration behind.
+          const lostCompleteLines = cached !== undefined && changed === "copilot_log_truncated" && size < cached.size && rotated?.continued !== true;
+          const selected = lostCompleteLines ? previous : applyLifecycle(previous, complete, position, (at) => `${pid}:${stat.dev}:${stat.ino}:${epoch}:${at}`);
           if (selected === null) return deny("copilot_log_unreadable");
           if (rotation === ROTATION_GAP && selected === previous) {
             cached!.readConflict = true;
             return LOG_READ_CHANGED;
           }
+          // Inside Copilot's shift of its copies, a lookup without a lifecycle line of the open log's own
+          // decides nothing: the reader stays as fresh as it was, to prove the chain once the copy is in place.
           if (archived === ROTATION_GAP && selected === previous) {
             owner.observed = observedBefore;
             return LOG_READ_CHANGED;
@@ -411,7 +437,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, selection: selected,
             newestCopy: newest,
           };
-          if ((rotated === null && !fromCopies) || checkpoint.size > 0) owner.checkpoint = checkpoint;
+          if (lostCompleteLines || (rotated === null && !fromCopies) || checkpoint.size > 0) owner.checkpoint = checkpoint;
           if (selected.kind === "unavailable") owner.denial = selected;
           else if (selected.kind === "selected" || selected.kind === "legacy") delete owner.denial;
           delete owner.initialRead;
@@ -441,6 +467,7 @@ export function openCopilotFile(file: string): number {
     if (!stat.isFile() || pathStat.dev !== stat.dev || pathStat.ino !== stat.ino) {
       throw new Error("Copilot transcript is not a regular canonical file");
     }
+    // the file a read is bound to as it was authorized, not only the one the path names now
     checkBound(file, fd);
     const session = basename(dirname(file));
     if (SESSION_ID.test(session)) {
@@ -458,6 +485,7 @@ export function openCopilotFile(file: string): number {
   }
 }
 
+/** Only an actual PID-owned, open and canonical marker proves this process still holds a session. */
 function scanHeldSessions(pid: number, store: string): Set<string> | null | undefined {
   const sessions = new Set<string>();
   const directory = opendirSync(`/proc/${pid}/fd`);
@@ -546,6 +574,7 @@ function copilotStoreLayout(environment: readonly string[] | null, argv: readonl
   } catch { return null; }
 }
 
+/** The API names the session; its file must still belong to this process's canonical store. */
 export function copilotApiTranscript(sessionId: string, environment: readonly string[] | null, argv: readonly string[]): string | null {
   if (!SESSION_ID.test(sessionId)) return null;
   const layout = copilotStoreLayout(environment, argv);

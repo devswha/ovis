@@ -42,18 +42,22 @@ const PI_MODEL_FILTER_RE = /^[\u203a>\u276f]\s*$/;
 const PI_MODEL_DEFAULT_RE = /\s*\u00b7\s*default$/;
 
 /**
- * pi separates a dialog's rows from its own words with a blank line and ends the block with its hint.
- * The rule over the dialog stands over the whole thing, title included, and a confirm indents its
- * message level with its own options.
+ * The rows a dialog takes its answer from, and its own words over them. pi separates the two
+ * with a blank line and ends the block with its hint, so the run of lines directly above the
+ * hint is what its arrow keys move through, and what sits above the blank over it is what the
+ * dialog asks. The rule over the dialog is no use for this: it stands over the whole thing,
+ * title included, and a confirm indents its message level with its own options.
  *
  * A pane narrower than an option wraps it, and the rest of the label lands on a line of its own.
  * pi sets a row three columns in (` → ` on the cursor's, three spaces on the others) and the
- * wrapped rest one column in (measured on pi 0.87.1 at 46 columns). The title and a confirm's
- * message wrap the same way.
+ * wrapped rest one column in, which is all that tells them apart: read as a row of its own, the
+ * rest became one more option, and tapping it pressed Down once more than pi has rows, onto the
+ * option after it (measured on pi 0.87.1 at 46 columns). The title and a confirm's message wrap
+ * the same way, so they are read as one run of lines, the title first.
  */
 const PI_WRAPPED_REST_RE = /^ (?![\u2192\u276f\u279c])\S/;
 
-function piDialogRows(lines: string[], hintIndex: number): { rows: { line: string; cursor: boolean }[]; title: string[] } {
+function piDialogRows(lines: string[], hintIndex: number): { rows: { line: string; cursor: boolean }[]; title: string[]; top: number } {
   const rows: { line: string; cursor: boolean }[] = [];
   let index = hintIndex - 1;
   while (index >= 0 && !cleanLine(lines[index]!)) index -= 1;
@@ -66,7 +70,11 @@ function piDialogRows(lines: string[], hintIndex: number): { rows: { line: strin
     rows.unshift({ line: [line, ...rest].join(" "), cursor: /^[\u2192\u276f\u279c]\s*\S/.test(line) });
     rest = [];
   }
+  // lines one column in with no row over them are not a wrapped option (the slash palette's own
+  // first line, for one): they stand as rows without the cursor, which a first read refuses; a
+  // `moved` read keeps them as options, and the answer route then finds the card's id changed
   rows.unshift(...rest.map((line) => ({ line, cursor: false })));
+  const top = index + 1;
   const title: string[] = [];
   for (; index >= 0 && title.length < 8; index -= 1) {
     if (isDivider(lines[index]!)) break;
@@ -77,19 +85,54 @@ function piDialogRows(lines: string[], hintIndex: number): { rows: { line: strin
     }
     title.unshift(line);
   }
-  return { rows, title };
+  return { rows, title, top };
+}
+
+const PERMISSION_HEADER = "Permission required: bash";
+const PERMISSION_COMMAND_RE = /^\s*Command: \$ /;
+
+/**
+ * The shell command of OmO's permission dialog (its permission system's prompt), and of the one Ovis's pi extension
+ * draws like it (server/approvals/pi.ts), for the approval hub to bind a held request to: `Permission required: bash`,
+ * a blank line, OmO's `Description:` line, `Command: $ ` and the command over as many lines as it takes (the pane
+ * wraps a long one), then OmO's blank line, `Patterns:` and its list, over the blank line above the rows. Undefined for
+ * any other dialog; null for one whose top is above the pane: its rows are a permission's, but its command is not on
+ * the screen whole.
+ */
+function permissionCommand(lines: string[], top: number, labels: string[]): string | null | undefined {
+  let end = top;
+  while (end > 0 && !cleanLine(lines[end - 1]!)) end -= 1;
+  let start = end;
+  while (start > 0 && !isDivider(cleanLine(lines[start - 1]!))) start -= 1;
+  const block = lines.slice(start, end);
+  const header = findLastIndex(block, (line) => cleanLine(line) === PERMISSION_HEADER);
+  if (header < 0) return start === 0 && labels[0] === "Allow once" && labels.includes("Deny") ? null : undefined;
+  const first = block.findIndex((line, index) => index > header && PERMISSION_COMMAND_RE.test(line));
+  if (first < 0) return undefined;
+  // OmO's patterns, in OmO's dialog only (its options go past Allow once and Deny; pi's extension draws none): the last
+  // `Patterns:` line after a blank one with only list items under it. In pi's, such lines are the command's own
+  let last = block.length;
+  const patterns = labels.includes("Allow always") ? findLastIndex(block, (line) => cleanLine(line) === "Patterns:") : -1;
+  if (patterns > first + 1 && !cleanLine(block[patterns - 1]!) && block.slice(patterns + 1).every((line) => /^\s*- \S/.test(line))) last = patterns - 1;
+  const command = [block[first]!.replace(PERMISSION_COMMAND_RE, ""), ...block.slice(first + 1, last)];
+  while (command.length > 1 && !cleanLine(command.at(-1)!)) command.pop();
+  return command.join("\n");
 }
 
 function parsePiModel(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = findLastIndex(lines, (_, index) => PI_MODEL_HINT_RE.test(wrapped(lines, index)));
   if (hintIndex < 0) return null;
+  // the filter line is the anchor: the catalogue is what sits under it, and anything above
+  // belongs to whatever the pane showed before `/model` was typed
   const filterIndex = findLastIndex(lines.slice(0, hintIndex), (line) => PI_MODEL_FILTER_RE.test(cleanLine(line)));
   if (filterIndex < 0) return null;
   const rows = piModelRows(lines, filterIndex + 1);
   if (rows === null) return null;
   const selectedIndex = rows.findIndex((row) => row.cursor);
   const labels = rows.map((row) => row.label);
+  // the card names the model answering now, because the answer switches it and whoever taps
+  // should know what they are switching from; pi's tick is the only mark that says so
   const current = rows.find((row) => row.current);
   const question = current
     ? own("Select model (currently {model})", { model: current.label.replace(PI_MODEL_DEFAULT_RE, "") })
@@ -110,6 +153,7 @@ function parsePiModel(screen: string): ParsedPrompt | null {
 
 export const PI_THINKING_HINT_LINES = 6;
 
+/** Thinking uses the model selector's footer, but only visibly offered level rows are choices. */
 function parsePiThinking(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = findLastIndex(lines, (_, index) => PI_MODEL_HINT_RE.test(wrapped(lines, index, PI_THINKING_HINT_LINES)));
@@ -145,6 +189,7 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
   if (hintIndex < 0) return null;
   const block = piDialogRows(lines, hintIndex);
   if (block.rows.length === 0) return null;
+  // pi wants text on a `>` line: there is nothing to pick, and the answer is typed into it
   if (PI_INPUT_HINT_RE.test(wrapped(lines, hintIndex))) {
     if (!block.rows.every((row) => PI_INPUT_LINE_RE.test(row.line))) return null;
     const text = (words: string[]) => ({ title: restOf(words) ?? "", question: ownLine(words) });
@@ -154,7 +199,9 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
     }, { responder: "pi-input", menuLabels: [], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 0, rejectWithEscapeIndex: null },
     text(uncounted(block.title)));
   }
-  // pi sets its command palette out in two columns, and ends it in a row count of its own, not this hint
+  // every line of the block must be a row, and a row must be a single label: pi sets its
+  // command palette out in two columns, and offering those as options would run a slash
+  // command on a click. The palette ends in a row count of its own, not this hint.
   const rows = block.rows.map((row) => row.line.match(PI_ROW_RE)).filter((row): row is RegExpMatchArray => row !== null && row[2] !== undefined);
   if (rows.length !== block.rows.length || rows.length < 2) return null;
   if (rows.some((row) => /\s{2,}/.test(row[2]!))) return null;
@@ -165,13 +212,17 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
   if (moved ? cursor < 0 : cursor !== 0) return null;
   const labels = rows.map((row) => row[2]!.trim());
   const confirming = labels.length === 2 && /^yes\b/i.test(labels[0]!) && /^no\b/i.test(labels[1]!);
+  const approvalCommand = confirming ? undefined : permissionCommand(lines, block.top, labels);
+  // a permission dialog asks what its header says, about the command it shows, which is the card's body and in its id:
+  // a card read for one command is never another's. The lines over its rows are only the end of its command or patterns
+  const permission = typeof approvalCommand === "string";
   const text = (words: string[]) => confirming
     ? { title: ownLine(words), question: restOf(words) ?? ownLine(words) }
-    : { title: "", question: words.join(" ") };
+    : permission ? { title: "", question: PERMISSION_HEADER, body: approvalCommand } : { title: "", question: words.join(" ") };
   return finishPrompt("pi", {
     kind: confirming ? "approval" : "question",
-    ...text(block.title),
     body: null,
+    ...text(block.title),
     options: labels.map((label) => ({ label, description: null })),
     multi_select: false,
     custom_option_index: null,
@@ -182,10 +233,14 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
     // "No" is pressed, not cancelled: pi's own Yes/No answers the question false, which is
     // what a confirmation means, where Escape would leave it unanswered
     rejectWithEscapeIndex: null,
+    ...(approvalCommand === undefined ? {} : { approvalCommand }),
   }, text(uncounted(block.title)));
 }
 
 const dialogRead = onePerPass((screen) => parsePiDialog(screen));
+
+/** herdr names an OmO pane pi while it waits on its user; herdr-core names it omo all along. */
+const DIALOG_AGENTS = ["pi", "omo"];
 
 export const readers: readonly DialogReader[] = [
   {
@@ -208,7 +263,7 @@ export const readers: readonly DialogReader[] = [
     },
   },
   {
-    id: "pi-question", agents: ["pi"], priority: 90,
+    id: "pi-question", agents: DIALOG_AGENTS, priority: 90,
     reread: "none", list: "none",
     parse: (screen, ctx) => {
       const parsed = dialogRead(screen, ctx);
@@ -216,7 +271,7 @@ export const readers: readonly DialogReader[] = [
     },
   },
   {
-    id: "pi-confirm", agents: ["pi"], priority: 90,
+    id: "pi-confirm", agents: DIALOG_AGENTS, priority: 90,
     reread: "none", list: "none",
     parse: (screen, ctx) => {
       const parsed = dialogRead(screen, ctx);
@@ -224,7 +279,7 @@ export const readers: readonly DialogReader[] = [
     },
   },
   {
-    id: "pi-input", agents: ["pi"], priority: 90,
+    id: "pi-input", agents: DIALOG_AGENTS, priority: 90,
     reread: "none", list: "none",
     parse: (screen, ctx) => {
       const parsed = dialogRead(screen, ctx);

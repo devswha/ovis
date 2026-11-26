@@ -79,10 +79,13 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
 export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" || open.length !== 1) return prompt;
+  // the whole question, never a prefix omp cut: another call's question may start the same way
   const matches = (askedQuestions("ask", open[0]!.args) ?? []).filter(asked => questionShown(prompt, asked));
   if (matches.length !== 1) return prompt;
   const asked = matches[0]!;
   const options = asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null }));
+  // options the card would show alike (`Keep **production**` and `Keep  **production**`, one link's words to two addresses):
+  // the terminal's rows tell them apart by place alone, and so does the card as drawn (#2233)
   const shown = options.map((option) => alike(cardDrawn(option.label, false) ?? option.label));
   if (new Set(shown).size !== shown.length) return prompt;
   return publicPrompt({ ...parsed, question: asked.question, options, text_format: "markdown" });
@@ -98,6 +101,7 @@ function callLabels(input: unknown, questions: readonly AskedQuestion[]): string
   });
 }
 
+/** The same drawn question and ordered options must authorize both Markdown and tab moves. */
 function questionShown(prompt: InteractivePrompt, asked: AskedQuestion): boolean {
   return asked.multi === prompt.multi_select
     && asked.options.length === prompt.options.length
@@ -110,7 +114,7 @@ function questionShown(prompt: InteractivePrompt, asked: AskedQuestion): boolean
     && shows(prompt.question, drawn(asked.question, true));
 }
 
-const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
+export const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
 
 /** omp adds ` (Recommended)` to the recommended option's label; the card read off the screen drops it (dialogs/omp.ts), and so does this one */
 const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
@@ -118,11 +122,13 @@ const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
 const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
 /**
+ * Whether the screen's text is `drawn`, character for character but for how much spacing there is:
  * omp wraps at the pane's width and pads its rows, so a run of spaces or a line break is one space
- * (flat). Only a question omp says it cut (`cut`, dialogs/omp.ts) may show just the start of the
- * call's question, followed by omp's `…`.
+ * (flat). The space itself counts (`Use local socket` is not `Use localsocket`), as do case, digits
+ * and every mark, so a call that differs from the menu by one `/`, `*`, `_` or letter is another call. Only a question omp says it cut (`cut`, dialogs/omp.ts)
+ * may show just the start of the call's question, followed by omp's `…`.
  */
-function shows(screen: string, drawn: string | null, cut = false): boolean {
+export function shows(screen: string, drawn: string | null, cut = false): boolean {
   if (drawn === null) return false;
   const shown = flat(screen);
   const asked = flat(drawn);
@@ -137,13 +143,13 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
  * a backslash before an escaped mark, so the card would show other words than omp, and an option could
  * read as another one. Where they part, null: the card stays as drawn.
  */
-function drawn(markdown: string, question: boolean): string | null {
+export function drawn(markdown: string, question: boolean): string | null {
   const omp = ompDrawn(markdown, question);
   const card = cardDrawn(markdown, question);
   return omp !== null && card !== null && flat(omp) === flat(card) ? omp : null;
 }
 
-function cardDrawn(markdown: string, question: boolean): string | null {
+export function cardDrawn(markdown: string, question: boolean): string | null {
   try {
     return question ? parseMarkdown(markdown, 0, false).map(cardBlock).join("\n") : cardInline(parseInline(markdown, false), false);
   } catch (error) {
@@ -156,6 +162,8 @@ function cardBlock(block: MarkdownBlock): string {
   switch (block.type) {
     case "paragraph": return block.lines.map((line) => cardInline(line, true)).join("\n");
     case "heading": return `${block.level > 2 ? `${"#".repeat(block.level)} ` : ""}${cardInline(block.content, true)}`;
+    // the chat draws a ```mermaid fence as a diagram, a ```svg one as a figure and a ```math one as a formula
+    // (src/components/Markdown.tsx), not the code omp shows (#2233)
     case "code": return block.language === "mermaid" || block.language === "math" || block.language.toLowerCase() === "svg" ? undrawn() : block.value;
     case "list": return block.items.map((item, index) => item.checked !== undefined ? undrawn()
       : `${block.ordered ? `${item.number ?? (block.start ?? 1) + index}. ` : "- "}${cardInline(item.content, true)}\n${(item.blocks ?? []).map(cardBlock).join("\n")}`).join("\n");
@@ -163,6 +171,7 @@ function cardBlock(block: MarkdownBlock): string {
   }
 }
 
+/** omp draws a picture's alt text, the card the picture or `!` and its address; math too is drawn otherwise (shownText's null) */
 function cardInline(nodes: InlineNode[], addresses: boolean): string {
   return shownText(nodes, addresses) ?? undrawn();
 }

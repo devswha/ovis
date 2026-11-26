@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStart } from "./check.ts";
 import { parseLaneLog } from "./ci-flakes.ts";
-import { programName, processName, failureSite, longestFirst, scriptTimeoutSeconds, serialBrowserScripts, shardScripts, stopReport, stopRun } from "./ci-browser-parallel.ts";
+import { demoOnlyScripts, programName, processName, failureSite, longestFirst, quarantineNote, quarantineStatus, scriptTimeoutSeconds, serialBrowserScripts, shardScripts, stopReport, stopRun } from "./ci-browser-parallel.ts";
+import { QUARANTINE, QUARANTINE_MAX_DAYS } from "./ci-browser-quarantine.ts";
 import type { StopIo } from "./ci-browser-parallel.ts";
 
 /** A killed process that its parent (a subreaper, say) has not reaped yet is a zombie: not alive. */
@@ -24,6 +25,14 @@ const commandLine = (pid: number): string[] | null => {
   return ps.status === 0 ? ps.stdout.trim().split(/\s+/) : null;
 };
 
+/**
+ * The stand-in a record names, while that very process still runs, else null. The stub writes the
+ * record, "<pid> <start>", as soon as it has started the stand-in: its own child, which it has not
+ * reaped, so that pid cannot belong to anything else yet. A pid alone proves nothing later: once the
+ * stand-in has ended, its number may be given to any other process of this user. So the process
+ * must still have started when the record says (processStart: the boot and clock tick on Linux),
+ * not be a zombie, and run the stand-in's command.
+ */
 function standIn(record: string): number | null {
   const match = /^(\d+) (.+)\n$/.exec(record);
   if (!match) throw new Error(`not a stand-in record: ${JSON.stringify(record)}`);
@@ -32,11 +41,17 @@ function standIn(record: string): number | null {
   return alive(pid) && commandLine(pid)?.join(" ") === STAND_IN.join(" ") && processStart(pid) === match[2] ? pid : null;
 }
 
+/** Ends the stand-in a record names, only when standIn proves it is still that process. */
 function stopStandIn(record: string): void {
   const pid = standIn(record);
   if (pid !== null) process.kill(pid, "SIGKILL");
 }
 
+/**
+ * The stub's shell function that prints what processStart says of pid $1 (here a child of the
+ * stub's own): on Linux the boot id and the start in clock ticks, /proc/<pid>/stat's field 22,
+ * read after the command name in parentheses; on macOS ps's start, in its clock and words.
+ */
 const STARTED = [
   "started() {",
   "  if [ -r /proc/$1/stat ]; then printf '%s:%s\\n' \"$(cat /proc/sys/kernel/random/boot_id)\" \"$(sed 's/.*) //' /proc/$1/stat | cut -d' ' -f20)\"",
@@ -79,7 +94,8 @@ async function runStub(end: string, timeoutSeconds: string) {
   } finally {
     try {
       for (const file of [leftover, stubborn]) {
-        try { if (existsSync(file)) stopStandIn(readFileSync(file, "utf8")); } catch {}
+        // a record that cannot be read proves nothing: it is left alone, and the error the run raised for it stands
+        try { if (existsSync(file)) stopStandIn(readFileSync(file, "utf8")); } catch { /* unproven: left alone */ }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -107,7 +123,9 @@ describe("parallel browser script deadline", () => {
     expect(run.leftAlive).toEqual([]);
   }, 20_000);
 
+  // A process whose parent has exited is found through /proc: Linux only, as CI's runners are.
   it.skipIf(process.platform !== "linux")("fails a script that exits but leaves a process holding its output, without waiting for the bound", async () => {
+    // the bound is past the stub run's own 15 s limit: only the exit can end this run in time
     const run = await runStub("exit 0", "60");
     expect(run.signal).toBeNull();
     expect(run.code).toBe(1);
@@ -137,6 +155,7 @@ describe("parallel browser script deadline", () => {
     expect(sent).toEqual(["SIGTERM 11", "SIGTERM 12", "SIGTERM 13", "SIGKILL 12", "SIGKILL 13"]);
     expect(stop).toEqual({ stopped: 2, survivors: ["13 (stub-13)"], unsure: false });
     expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 2 processes; could NOT stop: 13 (stub-13).");
+    // one that ends on SIGKILL only once the kernel runs it again: waited for, and not named
     const late = new Set([21]);
     let killed = false;
     const lateIo = stubIo({
@@ -171,6 +190,7 @@ describe("parallel browser script deadline", () => {
     const stop = await stopRun(io, ran);
     expect(sent).toEqual(["SIGTERM 12", "SIGKILL 12", "SIGKILL 14", "SIGKILL 15"]);
     expect(stop).toEqual({ stopped: 2, survivors: ["15 (stub-15)"], unsure: false });
+    // 31 ends on SIGKILL and its pid is taken by an unrelated process, which is not the run's (no mark)
     let ended = false;
     const reuseIo = stubIo({
       processes: async () => (ended ? [] : [31]),
@@ -182,6 +202,7 @@ describe("parallel browser script deadline", () => {
   });
 
   it("does not take a signal the system refused (EPERM) for a stop", async () => {
+    // 41 is refused every signal and its liveness check is refused too, so it reads as not running; 42 ends on SIGTERM
     const alive = new Set([41, 42]);
     const io = stubIo({
       processes: async () => [...alive],
@@ -196,6 +217,7 @@ describe("parallel browser script deadline", () => {
   });
 
   it("does not signal a process whose mark is gone by the signal, and names it as not stopped", async () => {
+    // 12 forks 14 on SIGKILL; by the next signal 14's pid belongs to an unrelated process (its mark is gone)
     const alive = new Set([12]);
     const found = new Set([12]);
     const sent: string[] = [];
@@ -265,17 +287,24 @@ describe("parallel browser script deadline", () => {
   });
 
   it.skipIf(process.platform !== "linux")("takes a process's name from its executable, never from the argv[0] it sets", async () => {
+    // a process this test starts, which calls itself by a credential
     for (const argv0 of ["user:SECRET@host", "curl https://user:SECRET@h", "https://x-access-token:SECRET@h/x"]) {
-      const child = Bun.spawn(["sleep", "1000"], { argv0, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      const child = Bun.spawn(["cat"], { argv0, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
       try {
+        // Spawn can return before /proc/<pid>/exe changes. Only cat can echo the byte after exec.
+        const ready = child.stdout.getReader().read();
+        child.stdin.write(Uint8Array.of(1));
+        child.stdin.flush();
+        expect((await ready).value).toEqual(Uint8Array.of(1));
         const name = processName(child.pid);
-        expect(name).toBe("sleep");
+        expect(name).toBe("cat");
         expect(name).not.toContain("SECRET");
       } finally {
         child.kill("SIGKILL");
         await child.exited;
       }
     }
+    // no /proc/<pid>/exe to read (no such process): the pid stands alone
     expect(processName(2 ** 22 + 1)).toBe("");
   });
 
@@ -292,6 +321,7 @@ describe("parallel browser script deadline", () => {
   });
 
   it("lets no command text reach the flake issue's parser, so a stopped row keeps its own failure", () => {
+    // hostile program names: the words the parser reads a timeout from, a FAILED header, a path in a stack frame
     const hostile = ["Timed out after 600s", "(exit 124", "FAILED scripts/injected.ts (exit 1)", "x\nFAILED scripts/injected.ts (exit 124)", "/w/ovis/scripts/other.ts:9:1"];
     for (const name of hostile) {
       const detail = stopReport("Exited 1, but a process it started still held its output", { stopped: 1, survivors: [`9 (${programName(`/bin/${name}`)})`], unsure: false });
@@ -304,6 +334,7 @@ TypeError: closed
   });
 
   it("keeps naming a process that refused a signal after a later scan no longer finds it", async () => {
+    // 61 is another user's and refuses SIGTERM; 62 ends on it. The script then ends, and no scan finds 61's tree again
     let found = [61, 62];
     const io = stubIo({
       processes: async () => found,
@@ -341,12 +372,14 @@ TypeError: closed
     expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 2 processes; processes started at the last moment may not be listed.");
   });
 
+  // A stand-in the stub records that standIn could never prove would read as gone, and leftAlive would pass unchecked.
   it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("records a start exactly as processStart names it", () => {
     const own = processStart(process.pid);
     expect(own).not.toBeNull();
     expect(spawnSync("sh", ["-c", `${STARTED}\nstarted ${process.pid}`], { encoding: "utf8" }).stdout).toBe(`${own}\n`);
   });
 
+  // Every process here is one this test started for the purpose, its handle kept: nothing else is signalled.
   it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("ends a recorded stand-in only, never another process its pid names", async () => {
     const start = (command: string[]) => Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const recorded = start(STAND_IN);
@@ -387,6 +420,8 @@ describe("parallel browser script order", () => {
     expect(longestFirst(["a.ts", "b.ts"], {})).toEqual(["a.ts", "b.ts"]);
   });
 
+  // Nobody has measured it: counted as a typical script, relay-e2e (300 s) started 124th of 184
+  // and ran on alone for four minutes after every other script had ended.
   it("starts a script the table does not hold before the longest one it does", () => {
     const timings = { "a.ts": 10, "b.ts": 300, "c.ts": 50 };
     expect(longestFirst(["a.ts", "new.ts", "c.ts", "b.ts"], timings)).toEqual(["new.ts", "b.ts", "c.ts", "a.ts"]);
@@ -496,5 +531,147 @@ describe("parallel browser output timestamps", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("browser flake quarantine", () => {
+  const entry = { until: "2026-12-02", issue: 4026 };
+
+  it("excuses a listed script through its end date, and no longer after it", () => {
+    expect(quarantineStatus("scripts/a.ts", {}, "2026-11-18")).toEqual({ state: "unlisted" });
+    expect(quarantineStatus("scripts/a.ts", { "scripts/a.ts": entry }, "2026-12-02")).toEqual({ state: "quarantined", entry });
+    expect(quarantineStatus("scripts/a.ts", { "scripts/a.ts": entry }, "2026-12-03")).toEqual({ state: "ended", entry });
+  });
+
+  it("names the issue of a quarantined script, and the fix for one that fails the lane", () => {
+    expect(quarantineNote({ state: "quarantined", entry })).toContain("until 2026-12-02 (#4026)");
+    for (const status of [{ state: "unlisted" } as const, { state: "ended", entry } as const]) {
+      expect(quarantineNote(status)).toContain("fails the lane");
+      expect(quarantineNote(status)).toContain("scripts/ci-browser-quarantine.ts");
+    }
+    expect(quarantineNote({ state: "ended", entry })).toContain("ran out after 2026-12-02");
+  });
+
+  it("lists only scripts the lane runs, each with its issue and an end date at most the limit ahead", () => {
+    const lane = serialBrowserScripts();
+    const today = new Date().toISOString().slice(0, 10);
+    const limit = new Date(Date.parse(`${today}T00:00:00Z`) + QUARANTINE_MAX_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const wrong = Object.entries(QUARANTINE).flatMap(([script, { until, issue }]) => [
+      ...(lane.includes(script) ? [] : [`${script}: not in scripts/ci-browser.sh`]),
+      ...(/^\d{4}-\d\d-\d\d$/.test(until) && !Number.isNaN(Date.parse(`${until}T00:00:00Z`)) && new Date(`${until}T00:00:00Z`).toISOString().startsWith(until) ? [] : [`${script}: until "${until}" is not a YYYY-MM-DD date`]),
+      ...(until <= limit ? [] : [`${script}: until ${until} is more than ${QUARANTINE_MAX_DAYS} days ahead (${limit} at most)`]),
+      ...(Number.isInteger(issue) && issue > 0 ? [] : [`${script}: issue ${issue} is not an issue number`]),
+    ]);
+    expect(wrong).toEqual([]);
+  });
+
+  it("fails the lane when a script that is not quarantined passes only on its second run", async () => {
+    const script = serialBrowserScripts().find((name) => !(name in QUARANTINE))!;
+    const name = script.replace(/^scripts\//, "").replace(/\.ts$/, "");
+    const dir = mkdtempSync(join(tmpdir(), "browser-parallel-test-"));
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "bash"), '#!/bin/sh\nprintf "/stub/chrome\\\\n"\n', { mode: 0o755 });
+    writeFileSync(join(bin, "bun"), `#!/bin/sh\nif [ "$1" = scripts/demo-build.ts ]; then exit 0; fi\nif [ -e ${dir}/ran ]; then echo "PASS on the second run"; exit 0; fi\ntouch ${dir}/ran\necho "AssertionError: a stub race"\nexit 1\n`, { mode: 0o755 });
+    try {
+      const child = Bun.spawn([process.execPath, "scripts/ci-browser-parallel.ts"], {
+        cwd: join(import.meta.dir, ".."),
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, BROWSER_SCRIPTS: script, BROWSER_EXCLUDE: "", BROWSER_SHARD: "", BROWSER_RETRY: "", CHECK_DIR: dir, GITHUB_ACTIONS: "", GITHUB_STEP_SUMMARY: "" },
+        stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15_000,
+      });
+      const [text, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(code).toBe(1);
+      expect(text).toContain(`FLAKY ${script} (`);
+      expect(text).toContain("It is not quarantined, so it fails the lane");
+      expect(parseLaneLog(text)).toEqual([{ script, outcome: "flaky", site: null, message: "AssertionError: a stub race" }]);
+      const summary = JSON.parse(readFileSync(join(dir, "browser-logs", "summary.json"), "utf8"));
+      expect(summary.flaky).toEqual([script]);
+      expect(summary.notQuarantined).toEqual([script]);
+      expect(existsSync(join(dir, "browser-logs", `${name}.attempt-1.log`))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the scripts a change to the server alone leaves out", () => {
+  /** A repository of `files`, with the demo app's entries unless `files` names them. */
+  const repoOf = (files: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "demo-only-"));
+    const app = { "scripts/demo-build.ts": "", "vite.config.ts": "import './scripts/plugin.ts';", "scripts/plugin.ts": "", "src/main.tsx": "import '../shared/protocol.ts';", "src/pwa.ts": "", "site/demo/transport.ts": "import '../../src/lib/api';", "src/lib/api.ts": "", "shared/protocol.ts": "" };
+    for (const [file, text] of Object.entries({ ...app, ...files })) {
+      mkdirSync(join(root, file, ".."), { recursive: true });
+      writeFileSync(join(root, file), text);
+    }
+    return root;
+  };
+  const withRepo = (files: Record<string, string>, check: (root: string) => void): void => {
+    const root = repoOf(files);
+    try { check(root); } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+
+  it("are the demo scripts that load no file of the server through any chain", () => {
+    withRepo({
+      "scripts/pure-demo-regression.ts": "import { x } from './lib/page.ts'; import '../shared/protocol.ts';",
+      "scripts/lib/page.ts": "import '../../src/lib/api';",
+      "scripts/deep-demo-regression.ts": "import './lib/helper';",
+      "scripts/lib/helper.ts": "export const load = () => import('../../server/http.ts');",
+      "scripts/direct-demo-regression.ts": "import { createServer } from '../server/index';",
+      "scripts/spawn-demo-regression.ts": "Bun.spawn(['bun', join(repo, 'server', 'index.ts')]);",
+      "scripts/path-demo-regression.ts": "const fixture = readFileSync('server/fixtures/a.json');",
+      "scripts/missing-demo-regression.ts": "import './lib/gone';",
+      "scripts/computed-demo-regression.ts": "const helper = './lib/page.ts'; await import(helper);",
+      "scripts/spaced-demo-regression.ts": "const helper = './lib/page.ts'; await import /* loader */ (helper);",
+      "scripts/template-demo-regression.ts": "const access = readFileSync(`${process.cwd()}/server/access.ts`);",
+      "scripts/rooted-demo-regression.ts": "import { x } from '/server/http.ts';",
+      "scripts/glob-demo-regression.ts": "const all = import.meta.glob('../src/*.ts');",
+      "scripts/shell-demo-regression.ts": "Bun.spawnSync(['sh', '-c', 'cat server/http.ts']);",
+      "scripts/broken-demo-regression.ts": "import { x } from './lib/page.ts'; const = ;",
+      "scripts/typed-demo-regression.ts": "const page: typeof import('./lib/page.ts') = await import('./lib/page.ts'); await import(`data:text/javascript;base64,${code}`);",
+      "scripts/pure-regression.ts": "",
+      "server/http.ts": "", "server/index.ts": "",
+    }, (root) => {
+      const all = ["pure-demo", "deep-demo", "direct-demo", "spawn-demo", "path-demo", "missing-demo", "computed-demo", "spaced-demo", "template-demo", "rooted-demo", "glob-demo", "shell-demo", "broken-demo", "typed-demo", "pure"].map((name) => `scripts/${name}-regression.ts`);
+      expect(demoOnlyScripts(all, root)).toEqual(["scripts/pure-demo-regression.ts", "scripts/typed-demo-regression.ts"]);
+    });
+  });
+
+  it("are none when the demo app itself loads a file of the server, or one it names as it runs", () => {
+    withRepo({ "scripts/pure-demo-regression.ts": "", "site/demo/transport.ts": "import { x } from '../../server/entries';", "server/entries.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "src/pwa.ts": "const worker = './sw.ts'; void import(worker);" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    // an entry vite.config.ts's plugin bundles, and a config that reads a server file as it builds
+    withRepo({ "scripts/pure-demo-regression.ts": "", "scripts/plugin.ts": "const entry = new URL('../src/boot.ts', import.meta.url);", "src/boot.ts": "import { on } from '../server/flags';", "server/flags.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "scripts/plugin.ts": "const name = '../src/boot.ts'; const entry = new URL(name, import.meta.url);", "src/boot.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "vite.config.ts": "const revision = readFileSync('server/app-revision.ts', 'utf8');" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+  });
+
+  const lane = (env: Record<string, string>) => spawnSync("bun", ["scripts/ci-browser-parallel.ts"], {
+    cwd: join(import.meta.dir, ".."),
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { ...process.env, BROWSER_SCRIPTS: "scripts/sidebar-filter-demo-regression.ts,scripts/sidebar-spacing-demo-regression.ts", BROWSER_SHARD: "2/2", BROWSER_LIVE_ONLY: "", ...env },
+  });
+
+  it("let a part they leave empty pass without starting a browser, and a part empty before them fail", () => {
+    const empty = lane({ BROWSER_LIVE_ONLY: "true" });
+    expect(empty.status, empty.stderr).toBe(0);
+    expect(empty.stdout).toContain("no script left for this part (shard 2/2)");
+    expect(empty.stdout).not.toContain("Building demo app");
+    const unexplained = lane({ BROWSER_SCRIPTS: "scripts/sidebar-filter-demo-regression.ts" });
+    expect(unexplained.status).toBe(1);
+    expect(unexplained.stderr).toContain("No browser scripts selected for shard 2/2");
+    const emptyAnyway = lane({ BROWSER_LIVE_ONLY: "true", BROWSER_SHARD: "3/3", BROWSER_SCRIPTS: "scripts/sidebar-filter-demo-regression.ts,scripts/ui-regression.ts" });
+    expect(emptyAnyway.status).toBe(1);
+    expect(emptyAnyway.stderr).toContain("No browser scripts selected for shard 3/3");
   });
 });

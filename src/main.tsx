@@ -14,8 +14,11 @@ import { App } from "./App.tsx";
 import { AppCrash, CrashProbe } from "./components/AppCrash.tsx";
 import { FileReader } from "./components/FileReader.tsx";
 import { RenderBoundary } from "./components/RenderBoundary.tsx";
+import { SignInReturn } from "./components/SignInReturn.tsx";
+import { CALLBACK_PATH, takeReturn } from "./lib/account/ownWindow.ts";
 import { readerFromSearch, reloadWhenReaderChanges } from "./lib/fileReader.ts";
 import { pageSearch } from "./lib/pageQuery.ts";
+import { reloadRestoredAppPage } from "./lib/pageRestore.ts";
 import { bootRelayShell } from "./lib/relay/boot.ts";
 import { SettingsProvider } from "./lib/settings.ts";
 import { shellMode } from "./lib/shellMode.ts";
@@ -23,19 +26,18 @@ import { isReportableWindowError } from "./lib/uncaughtErrors.ts";
 import "./lib/viewport.ts";
 import { watchSheetExits } from "./lib/sheets.ts";
 
-// a phone's sheets drop back down however they close (lib/sheets.ts)
 watchSheetExits();
+reloadRestoredAppPage();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("#root is missing from index.html");
 const mount: HTMLElement = container;
 
-// a markdown file opened in a tab of its own is that page alone, not the app (FileReader)
+// the provider's return to a sign-in this PC's own window started (lib/account/ownWindow.ts): read once, then out of the address
+const signInReturn = shellMode() !== "relay" && window.location.pathname === CALLBACK_PATH ? takeReturn(window.location, window.history) : null;
 const reader = readerFromSearch(pageSearch());
 reloadWhenReaderChanges(reader);
 
-// an error nothing else caught still reaches the console under one name, where a bug report can find it
-// (but not the browser's benign ResizeObserver loop notice: lib/uncaughtErrors.ts)
 window.addEventListener("error", (event) => {
   if (isReportableWindowError(event.error, event.message)) console.error("Ovis: uncaught error", event.error ?? event.message);
 });
@@ -51,7 +53,7 @@ function renderApp(): Root {
       <RenderBoundary resetKey={null} fallback={(_retry, error) => <AppCrash error={error} />}>
         <CrashProbe region="root" />
         <SettingsProvider>
-          {reader !== null ? <FileReader target={reader} /> : <App />}
+          {signInReturn !== null ? <SignInReturn params={signInReturn} /> : reader !== null ? <FileReader target={reader} /> : <App />}
         </SettingsProvider>
       </RenderBoundary>
     </StrictMode>,

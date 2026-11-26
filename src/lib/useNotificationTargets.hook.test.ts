@@ -7,9 +7,6 @@ import { linkTarget, type NotificationTarget } from "./notificationTarget.ts";
 import { getTransport, setTransport } from "./transport.ts";
 import { useNotificationTargets, useSelectTarget } from "./useSelection.ts";
 
-// The real hook: a desktop link selects its pane only once the roster lists it in the link's
-// workspace (lib/deepLink.ts resolveLink); before that it selects its PC alone and waits as the
-// address's own link does, so no pane it may not mean is drawn or attached meanwhile.
 describe("a desktop link's landing", () => {
   let saved: PropertyDescriptor | undefined;
   let renderer: ReactTestRenderer | undefined;
@@ -18,7 +15,6 @@ describe("a desktop link's landing", () => {
   let selected: [string, string | null, string | undefined][];
   let waits: number;
 
-  // workspace 3 is "alpha"; herdr handed pane t3 to workspace 4 ("beta")
   const roster = [{
     id: "local",
     state: "connected",
@@ -54,7 +50,6 @@ describe("a desktop link's landing", () => {
       const rosterSeq = useRef(0);
       const [, setLinkLanded] = useState(true);
       const [, setLinkTick] = useState(0);
-      // as App's selectTarget: a pick drops the link waiting
       const selectTargetRef = useRef((machineId: string, paneId: string | null, view?: string) => { selected.push([machineId, paneId, view]); pendingLink.current = null; });
       take = useNotificationTargets({
         machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick,
@@ -112,16 +107,15 @@ describe("a desktop link's landing", () => {
   });
 });
 
-// The real selection and its landing effect, wired as App wires them: a link to a pane the cached
-// roster lacks clears the selection while this PC is asked, and always ends on a pane.
 describe("a desktop link to a pane the cached roster lacks", () => {
   const transport = getTransport();
   let saved: PropertyDescriptor | undefined;
   let renderer: ReactTestRenderer | undefined;
   let take: (target: NotificationTarget) => void;
+  let pick: (machineId: string, paneId: string | null) => void;
   let shown: { pane: string | null; note: LinkNote | "copied" | null };
   let misses: number;
-  let reads: number;
+  let reads = 0;
   let landed: Promise<void>;
 
   // workspace 3 "alpha" (t1 selected, t2 in front), workspace 4 "beta" (t4, herdr's focus), and
@@ -135,7 +129,6 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   };
   const machines = [{ id: "local", name: "This PC", kind: "local", enabled: true, state: "connected", error: null, snapshot }] as unknown as Machine[];
 
-  /** what this PC answers when asked for its session: its roster, or a failed read */
   function answer(read: "roster" | "fails"): void {
     setTransport({ ...transport, async fetch() {
       reads += 1;
@@ -160,7 +153,6 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   });
 
   async function mount(): Promise<void> {
-    // the link settles (setLinkLanded(true)) after it waited (setLinkLanded(false))
     let settle = () => {};
     landed = new Promise((resolve) => { settle = resolve; });
     let waiting = false;
@@ -185,7 +177,7 @@ describe("a desktop link to a pane the cached roster lacks", () => {
       const selectionSince = useRef(0);
       const movingPanes = useRef(new Set<string>());
       const selectedMachine = machines.find((machine) => machine.id === selectedMachineId);
-      const { selectTargetRef } = useSelectTarget({
+      const { selectTargetRef, selectTarget } = useSelectTarget({
         selectedMachineId, setConnected: noop, setConnectedBefore: noop, setSelectedMachineId, setSelectedPaneId, setAutoSelected: noop,
         setDrawerOpen: noop, setOutputStopped: noop, setNotificationViewTarget: noop, setTerminalPeek: noop, pendingLink, pendingFile,
         setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot: selectedMachine?.snapshot ?? null, selectedMachine, selectedPaneId,
@@ -194,6 +186,7 @@ describe("a desktop link to a pane the cached roster lacks", () => {
       take = useNotificationTargets({
         machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load: async () => {},
       } as Parameters<typeof useNotificationTargets>[0]).takeNotificationTarget;
+      pick = selectTarget;
       shown = { pane: selectedPaneId, note: headerNote };
       return null;
     }
@@ -247,7 +240,6 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   });
 
   it("selects a live pane by its hyphenated workspace id when that workspace was renamed and its old name given to another", async () => {
-    // the app wrote `?ws=<gamma>-alpha` while gamma was "alpha"; gamma is now "gamma", and "alpha" is workspace 3
     answer("roster");
     await mount();
     await act(async () => { take(linkTarget(`?ws=${gamma}-alpha&pane=t5`)!); });
@@ -269,5 +261,56 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(shown).toEqual({ pane: "t2", note: null });
     expect(reads).toBe(0);
     expect(misses).toBe(0);
+  });
+
+  it("keeps a landing's note while the same link comes again, as a tapped notification's second delivery does, though its own read fails", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    const asked = reads;
+    answer("fails");
+    await act(async () => { take(linkTarget(`?ws=${gamma}-gamma&pane=t99`)!); });
+    expect(reads).toBeGreaterThan(asked);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+  });
+
+  it("keeps a landing's note when a link the roster lists selects another pane: a link selects, not the user", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { take(linkTarget("?ws=3-alpha&pane=t2")!); });
+    expect(shown).toEqual({ pane: "t2", note: "pane-closed" });
+  });
+
+  it("keeps a landing's note through a tapped notification's second delivery, though that delivery's read fails", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    answer("fails");
+    await act(async () => { take({ machine_id: "local", pane_id: "t99", view: "chat", workspace_id: gamma }); });
+    expect(shown.note).toBe("pane-closed");
+  });
+
+  it("keeps a landing's note when a tapped notification names a pane the roster lists: a notification selects, not the user", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { take({ machine_id: "local", pane_id: "t2", view: "chat", workspace_id: "3" }); });
+    expect(shown).toEqual({ pane: "t2", note: "pane-closed" });
+  });
+
+  it("keeps a landing's note when the user picks the pane already shown, and takes it away when they pick another", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { pick("local", "t5"); });
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    await act(async () => { pick("local", "t2"); });
+    expect(shown).toEqual({ pane: "t2", note: null });
   });
 });

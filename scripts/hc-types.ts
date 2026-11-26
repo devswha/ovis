@@ -1,4 +1,6 @@
 /**
+ * TypeScript types for the herdr-core (`hc`) API, generated from hc's own OpenRPC document
+ * (`hc schema`, herdr-core's schema/hc.openrpc.json, Apache-2.0).
  * - String enums widen with `(string & {})`, as herdr's do: hc grows its vocabulary between
  *   releases, and a word from a newer core must still flow through.
  */
@@ -52,6 +54,8 @@ function tsType(def: unknown, indent: string): string {
   // `true` (and `{}`) is JSON Schema for "any value"
   if (def === true || !def || typeof def !== "object" || Object.keys(def).length === 0) return "unknown";
   const node = def as Json;
+  if (Object.hasOwn(node, "const")) return JSON.stringify(node.const);
+  if (typeof node.$ref === "string" && node.$ref.startsWith("#/$defs/")) return node.$ref.slice(8);
   if (node.$ref) return refName(node.$ref);
   if (node.enum) {
     const literals = [...node.enum].sort().map((value: unknown) => JSON.stringify(value));
@@ -116,6 +120,11 @@ function renderObject(def: Json, indent: string): string {
 function declaration(name: string, def: Json): string {
   if (def.type === "object" && def.properties) return `export interface ${name} ${renderObject(def, "")}`;
   return `export type ${name} = ${tsType(def, "")};`;
+}
+
+export function generateHarnessTypes(schema: { $defs: Record<string, Json> }): string {
+  return ["/** Generated from shared/harness-contract.schema.json by bun run generate:types. */",
+    ...Object.entries(schema.$defs).map(([name, def]) => declaration(name, def))].join("\n\n") + "\n";
 }
 
 export function generateHcTypes(schema: Json): string {

@@ -6,6 +6,7 @@ import { chromium, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import panes from "../site/demo/fixtures/panes.json";
+import { serveDemo } from "./demo-server.ts";
 
 const screenshotDir = process.env.SHORTCUT_SCREENSHOT_DIR;
 const app = mkdtempSync(join(tmpdir(), "herdr-exact-shortcuts-demo-"));
@@ -26,17 +27,7 @@ try {
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
   const prefix = "/herdr-web-ui/demo/app/";
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix });
   try {
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true });
     try {
@@ -85,6 +76,7 @@ try {
         const paletteRow = await page.locator(".settings-row", { has: page.getByRole("button", { name: "Record shortcut for Command palette", exact: true }) }).locator(".settings-description").textContent();
         assert.match(paletteRow ?? "", /⌃\+K is a terminal key/, "a saved terminal key keeps its note");
 
+        // refused: a chord the browser keeps, one already assigned, and one without Ctrl, Alt or ⌘
         assert.match(await record(page, "Find in terminal", "Meta+KeyW"), /keeps that shortcut/);
         await page.keyboard.press("Control+KeyK");
         assert.equal(await page.locator(".settings-row", { has: page.getByRole("button", { name: "Record shortcut for Find in terminal", exact: true }) }).locator(".settings-description").textContent(), "Already assigned");
@@ -101,6 +93,7 @@ try {
 
         await page.getByRole("button", { name: "Close settings", exact: true }).click();
         const palette = page.locator(".command-palette");
+        // dispatched in the page: a shortcut that ran has already prevented it when dispatchEvent returns
         const chord = (key: string, code: string) => page.evaluate(([key, code]) => (document.activeElement ?? document.body).dispatchEvent(
           new KeyboardEvent("keydown", { key, code, metaKey: true, shiftKey: true, bubbles: true, cancelable: true })), [key, code] as const);
         assert.equal(await chord("K", "KeyK"), true, "the moved palette no longer answers Mod+Shift+K");

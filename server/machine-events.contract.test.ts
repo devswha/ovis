@@ -6,6 +6,7 @@ import { type ServerMessage, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts"
 import { DEVICE_COOKIE } from "./auth.ts";
 import { createServer } from "./index.ts";
 import { authenticatedWebSocket } from "./remote-websocket.ts";
+import { withHeaders } from "./websocket.test-helpers.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { expandMachine, expandMachineEvent, type WireMachine, type WireMachineEvent } from "../shared/compact-agents.ts";
@@ -26,9 +27,6 @@ async function connection(base: string, open?: (url: string) => WebSocket) {
   return { socket, frames, wait, features, fence };
 }
 
-/** Bun takes handshake headers; lib.dom's browser constructor does not list them. */
-const withHeaders = (headers: Record<string, string>) => (url: string) =>
-  new (WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket)(url, { headers });
 const pairings = (frames: ServerMessage[]) => frames.filter((frame) => frame.type === "machine-event" && frame.event.type === "device-paired");
 
 it("negotiates compact agents over HTTP, SSE and WS without changing legacy responses or restored rows", async () => {
@@ -149,6 +147,7 @@ it("keeps watch-device authority and closes its machine document when the device
   try {
     client.socket.send(JSON.stringify({ type: "machine-events", enabled: true }));
     await client.wait((frame) => frame.type === "machine-event" && frame.event.type === "preferences");
+    // Receiving the roster does not grant an observing device permission to type.
     client.socket.send(JSON.stringify({ type: "input", pane_id: "not-a-terminal", data: "never typed" }));
     await client.wait((frame) => frame.type === "error" && frame.code === "read_only");
     const closed = new Promise<number>((resolve) => { client.socket.onclose = (event) => resolve(event.code); });
@@ -190,6 +189,7 @@ it("tells a pairing to every machine-event socket but the asking browser's and o
     const told = local.wait((frame) => frame.type === "machine-event" && frame.event.type === "device-paired");
     const paired = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: { ...guard, "x-forwarded-for": "192.168.0.30", cookie: askingBrowser }, body: JSON.stringify({ code, label: "Phone" }) });
     expect(paired.status).toBe(204);
+    // the first device on an open install is enrolled, and told, once it signs in
     const device = paired.headers.get("set-cookie")!.split(";")[0]!;
     expect((await fetch(`${base}/api/session`, { headers: { "x-forwarded-for": "192.168.0.30", cookie: device } })).status).toBe(200);
     expect(await told).toMatchObject({ event: { type: "device-paired", label: "Phone" } });

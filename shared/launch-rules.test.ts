@@ -21,6 +21,7 @@ describe("an agent's launch arguments", () => {
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toContain("--effort");
     expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=ultra", "-m", "gpt-6.1"])).toBeNull();
     expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=ultracode"])).toContain("model_reasoning_effort");
+    // DeepSeek Harness's levels, in both spellings
     expect(launchArgsFault("dsh-tui", ["--effort", "off"])).toBeNull();
     expect(launchArgsFault("dsh-tui", ["--effort=max"])).toBeNull();
     expect(launchArgsFault("dsh-tui", ["--effort", "xhigh"])).toBe("agent.args --effort must be one of off, low, high, max");
@@ -28,6 +29,7 @@ describe("an agent's launch arguments", () => {
   });
   it("still takes Claude Code's --effort ultracode, which the dialog no longer lists as a level", () => {
     expect(CLAUDE_EFFORTS).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    // Claude Code 2.1.311 still reads it as xhigh with Ultracode on; the refusal names it with the levels
     expect(launchArgsFault("claude", ["--effort", "ultracode"])).toBeNull();
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toBe("agent.args --effort must be one of low, medium, high, xhigh, max, ultracode");
   });
@@ -58,6 +60,7 @@ describe("every spelling the CLIs accept for a model or an effort", () => {
     ["claude", ["--effort=ultracode"], null],
     ["claude", ["--effort=medium", "--settings={\"ultracode\":true}"], null],
     ["codex", ["--config=model_reasoning_effort=ultracode"], "model_reasoning_effort"],
+    // a flag's value is the flag's: "--" there is not the end of the options
     ["codex", ["-m", "--"], "--model"],
   ] as const)("%s %j", (kind, args, flag) => {
     const fault = launchArgsFault(kind, args);
@@ -78,5 +81,37 @@ describe("a first message", () => {
     expect(firstMessageFault("line one\n\tline two", true)).toBeNull();
     expect(firstMessageFault("run \u001b[2J this", true)).toContain("control characters");
     expect(firstMessageFault("hi", null)).toContain("needs an agent");
+  });
+});
+
+describe("an MCP server named by the client", () => {
+  it.each([
+    ["claude", ["--mcp-config", "/tmp/evil.json"]],
+    ["claude", ["--model", "opus", "--mcp-config={\"mcpServers\":{}}"]],
+    ["copilot", ["--additional-mcp-config", "@/tmp/evil.json"]],
+    ["codex", ["-c", "mcp_servers.x.command='sh'"]],
+    ["codex", ["--config=mcp_servers={}"]],
+    ["codex", ["-c", "\"mcp_servers\".x.args=[]"]],
+  ])("is refused for %s: only the PC adds one, from its settings", (kind, args) => {
+    expect(launchArgsFault(kind, args)).toContain("browser tool");
+  });
+  it.each([
+    ["codex", ["mcp", "add", "x", "--", "sh"]],
+    ["claude", ["mcp", "add", "x", "sh"]],
+    ["copilot", ["--model", "x", "mcp", "add", "x", "--", "sh"]],
+    ["claude", ["--", "mcp", "add", "x", "sh"]],
+    ["copilot", ["--", "mcp", "add", "x"]],
+    ["claude", ["-c", "mcp", "add", "x", "sh"]],
+  ])("is refused through %s's own mcp command, which writes its settings", (kind, args) => {
+    expect(launchArgsFault(kind, args)).toContain("mcp command");
+  });
+  it("is no command as a flag's value, nor in Codex's prompt after --", () => {
+    expect(launchArgsFault("claude", ["--model", "mcp"])).toBeNull();
+    expect(launchArgsFault("codex", ["-m", "mcp", "--", "mcp"])).toBeNull();
+  });
+  it("is the prompt's own text after --", () => {
+    expect(launchArgsFault("codex", ["--", "--mcp-config and mcp_servers"])).toBeNull();
+    expect(launchArgsFault("claude", ["--", "--mcp-config"])).toBeNull();
+    expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=high"])).toBeNull();
   });
 });

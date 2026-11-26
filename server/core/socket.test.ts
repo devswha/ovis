@@ -1,4 +1,4 @@
-import { expect, it, spyOn } from "bun:test";
+import { expect, it, mock, spyOn } from "bun:test";
 import { resolve } from "node:path";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { OUTPUT_HARD_BYTES } from "../output-window.ts";
@@ -7,16 +7,54 @@ import type { MachineManager } from "../machines.ts";
 import { type Client, connectionData } from "./connections.ts";
 import { createSocket } from "./socket.ts";
 
-function socket(stopped: boolean) {
+function socket(stopped: boolean, notices?: Parameters<typeof createSocket>[0]["notices"], accountEnabled = notices !== undefined) {
   const ended: string[] = [];
   const handler = createSocket({
-    clients: new Set(), present: new Set(), stopped: () => stopped, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, watchPane() {}, unwatchPane() {},
-    end: (_client, reason) => { ended.push(reason); }, holdPending() {}, attachments: new Map(),
+    clients: new Set(), present: new Set(), stopped: () => stopped, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
+    notices, accountEnabled, end: (_client, reason) => { ended.push(reason); }, holdPending() {}, attachments: new Map(),
     clientSnapshot: async () => ({}) as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
   });
   const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: () => 1, close: () => {} };
   return { handler, client, ended };
 }
+
+it("T53: a socket answers It's me only with the session's proved key, never with a bare device id", async () => {
+  const calls: string[][] = [];
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => undefined, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }),
+    itsMe: (...args) => { calls.push(args); return true; } });
+  const sent = spyOn(client, "send");
+  client.data.deviceId = "member";
+  const answer = JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" });
+  await handler.message(client, answer);
+  expect(calls).toEqual([]);
+  client.data.provedKey = "session-key";
+  await handler.message(client, answer);
+  expect(calls).toEqual([["member", "admission", "session-key"]]);
+  expect(sent).not.toHaveBeenCalled();
+});
+
+it("T53: an It's me the PC cannot record (its journal or registry write throws) keeps the connection and says the notice stays open", async () => {
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => undefined, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }),
+    itsMe: () => { throw new Error("EIO"); } });
+  const sent = spyOn(client, "send");
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  client.data.deviceId = "member";
+  client.data.provedKey = "session-key";
+  try {
+    await handler.message(client, JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" }));
+  } finally { logged.mockRestore(); }
+  expect(sent.mock.calls.map(([raw]) => JSON.parse(String(raw)).code)).toEqual(["notice_decision_failed"]);
+});
+
+it("flag off: a socket ignores It's me as before, without answering", async () => {
+  const itsMe = mock(() => true);
+  const { handler, client } = socket(false, { replay: () => null, seen() {}, decide() {}, open: () => undefined, mayAnswer: () => false, block: async () => ({ outcome: "refused", id: "", reason: "record_invalid" }), itsMe }, false);
+  const sent = spyOn(client, "send");
+  client.data.deviceId = "member";
+  await handler.message(client, JSON.stringify({ type: "notice-answer", id: "admission", answer: "its_me" }));
+  expect(sent).not.toHaveBeenCalled();
+  expect(itsMe).not.toHaveBeenCalled();
+});
 
 it("tells a new connection its features before its snapshot, which waits on herdr, and even when that read fails", async () => {
   for (const outcome of ["read", "failed"] as const) {
@@ -24,7 +62,7 @@ it("tells a new connection its features before its snapshot, which waits on herd
     let fail: (error: Error) => void = () => {};
     const held = new Promise<SessionSnapshot>((resolve, reject) => { settle = resolve; fail = reject; });
     const handler = createSocket({
-      clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, watchPane() {}, unwatchPane() {},
+      clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
       end() {}, holdPending() {}, attachments: new Map(),
       clientSnapshot: () => held, herdrLifetime: () => outcome === "read" ? "herdr-a" : undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
     });
@@ -34,6 +72,8 @@ it("tells a new connection its features before its snapshot, which waits on herd
     expect(frames.map((frame) => frame.type)).toEqual(["features"]);
     expect(frames[0]!.features).toEqual(expect.arrayContaining(["submit", "pending-input", "terminal-insert", "watch"]));
     expect(frames[0]!.features).not.toContain("terminal-history");
+    // herdr's attach never says how the program reads an arrow: the browser names it for herdr to encode
+    expect(frames[0]!.features).not.toContain("terminal-modes");
     expect(frames[0]!.connection).toBe(client.data.connectionId);
     expect(frames[0]!.herdr_lifetime).toBe(outcome === "read" ? "herdr-a" : undefined);
     if (outcome === "read") settle({ workspaces: [], panes: [], agents: [], layouts: [] } as unknown as SessionSnapshot);
@@ -50,7 +90,7 @@ it("names the folder OVIS_PASTE_DIR sends uploads to in the features frame, and 
     for (const [override, readOnly, told] of [[" /tmp/shots.png backup ", false, resolve("/tmp/shots.png backup")], [" /tmp/shots.png backup ", true, undefined], [undefined, false, undefined]] as const) {
       if (override === undefined) delete process.env["OVIS_PASTE_DIR"]; else process.env["OVIS_PASTE_DIR"] = override;
       const handler = createSocket({
-        clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, watchPane() {}, unwatchPane() {},
+        clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
         end() {}, holdPending() {}, attachments: new Map(),
         clientSnapshot: async () => ({ workspaces: [], panes: [], agents: [], layouts: [] }) as unknown as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
       });
@@ -65,10 +105,30 @@ it("names the folder OVIS_PASTE_DIR sends uploads to in the features frame, and 
   }
 });
 
+it("lists account-opens-all/1 by default but not with OVIS_ACCOUNT_OPENS_ALL=0", async () => {
+  const previous = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+  try {
+    for (const [flag, listed] of [[undefined, true], ["0", false], ["1", true]] as const) {
+      if (flag === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"]; else process.env["OVIS_ACCOUNT_OPENS_ALL"] = flag;
+      const handler = createSocket({
+        clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
+        end() {}, holdPending() {}, attachments: new Map(),
+        clientSnapshot: async () => ({ workspaces: [], panes: [], agents: [], layouts: [] }) as unknown as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
+      });
+      const frames: { type: string; features?: string[] }[] = [];
+      const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (raw: string) => { frames.push(JSON.parse(raw)); return raw.length; }, close: () => {} };
+      await handler.open!(client);
+      expect({ flag, listed: frames[0]!.features!.includes("account-opens-all/1") }).toEqual({ flag, listed });
+    }
+  } finally {
+    if (previous === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"]; else process.env["OVIS_ACCOUNT_OPENS_ALL"] = previous;
+  }
+});
+
 it("offers no watch where none can be drawn (herdr-core), and ends a watch sent anyway without starting one", async () => {
   const watched: string[] = [];
   const handler = createSocket({
-    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => false, terminalHistory: () => true,
+    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => false, terminalHistory: () => true, terminalModes: () => true,
     watchPane: (_client, paneId) => { watched.push(paneId); }, unwatchPane() {},
     end() {}, holdPending() {}, attachments: new Map(),
     clientSnapshot: async () => ({ workspaces: [], panes: [], agents: [], layouts: [] }) as unknown as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
@@ -79,7 +139,10 @@ it("offers no watch where none can be drawn (herdr-core), and ends a watch sent 
   expect(frames.map((frame) => frame.type)).toEqual(["features", "snapshot"]);
   for (const frame of frames) {
     expect(frame.features).not.toContain("watch");
+    // herdr-core keeps no viewport to scroll: its attaches replay history for the browser to keep
     expect(frame.features).toContain("terminal-history");
+    // hc's attach carries the program's modes: the browser types a plain arrow as xterm encodes it
+    expect(frame.features).toContain("terminal-modes");
     expect(frame.features).toEqual(expect.arrayContaining(["submit", "pending-input", "conversation-watch", "terminal-insert"]));
   }
   frames.length = 0;
@@ -95,7 +158,7 @@ it("refuses a watch whose pane id is no nonempty string before anything is start
   const watched: unknown[] = [];
   const unwatched: unknown[] = [];
   const handler = createSocket({
-    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false,
+    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false,
     watchPane: (_client, paneId) => { watched.push(paneId); }, unwatchPane: (_client, paneId) => { unwatched.push(paneId); },
     end() {}, holdPending() {}, attachments: new Map(),
     clientSnapshot: async () => ({ workspaces: [], panes: [], agents: [], layouts: [] }) as unknown as SessionSnapshot, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {}, frames: {} as never,
@@ -104,6 +167,9 @@ it("refuses a watch whose pane id is no nonempty string before anything is start
   const client: Client = { data: connectionData({ deviceId: undefined, readOnly: true }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (raw: string) => { frames.push(JSON.parse(raw)); return raw.length; }, close() {} };
   await handler.open!(client);
   frames.length = 0;
+  // an array is another Map key every time: each such frame would start one more observe process, which no unwatch could name
+  // and an id shaped as an option would be read as one by herdr's own command line, which is handed the id as it came
+  // and one no pane has: megabytes of it would be logged and sent back for each frame
   for (const paneId of [["w1:p1"], 7, null, undefined, "", "   ", { id: "w1:p1" }, "--help", "-V", "--socket=/tmp/x", " --help", "p".repeat(257), "w1:p1\u0000", "w1\np1"]) {
     await handler.message!(client, JSON.stringify({ type: "watch", pane_id: paneId, cols: 80, rows: 24 }));
     await handler.message!(client, JSON.stringify({ type: "unwatch", pane_id: paneId }));
@@ -118,7 +184,7 @@ it("delivers a session snapshot larger than the transport budget to a socket wit
   const snapshot = { workspaces: [], panes: Array.from({ length: 600 }, (_, i) => ({ pane_id: `p${i}`, cwd: `/w/${"x".repeat(2000)}` })), agents: [], layouts: [] } as unknown as SessionSnapshot;
   expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeGreaterThan(OUTPUT_HARD_BYTES);
   const handler = createSocket({
-    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, watchPane() {}, unwatchPane() {},
+    clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
     end() {}, holdPending() {}, attachments: new Map(),
     clientSnapshot: async () => snapshot, herdrLifetime: () => undefined, browserSnapshot: (read) => read, countVisit() {}, drainOutput() {}, frames: {} as never,
   });
@@ -166,7 +232,7 @@ for (const arrives of ["before the browser's socket opens", "after the browser's
     });
     const manager = { endpoint: () => ({ url: `http://127.0.0.1:${pc.port}`, token: "test" }), trackTerminal: () => () => {} } as unknown as MachineManager;
     const handler = createSocket({
-      clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, watchPane() {}, unwatchPane() {},
+      clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
       end() {}, holdPending() {}, attachments: new Map(),
       clientSnapshot: async () => snapshot, herdrLifetime: () => undefined, browserSnapshot: (read) => read, countVisit() {}, drainOutput() {}, frames: {} as never,
     });
@@ -233,7 +299,7 @@ it("words an error frame's message by the server's view of failed herdr calls, k
   const told: Record<string, { code?: string; message?: string }[]> = {};
   for (const [name, herdrFailure] of [["view", view], ["none", undefined]] as const) {
     const handler = createSocket({
-      clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, watchPane() {}, unwatchPane() {},
+      clients: new Set(), present: new Set(), stopped: () => false, admit: () => true, setRole() {}, watchable: () => true, terminalHistory: () => false, terminalModes: () => false, watchPane() {}, unwatchPane() {},
       end() {}, holdPending() {}, attachments: new Map(), herdrFailure,
       clientSnapshot: async () => { throw new TypeError("a fault of the bridge's own"); }, herdrLifetime: () => undefined, browserSnapshot: (snapshot) => snapshot, countVisit() {}, drainOutput() {},
       frames: { resize: () => { throw new TypeError("a fault of the bridge's own"); } } as never,
