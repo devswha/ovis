@@ -1164,6 +1164,9 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (live.length === 0) return;
         await broadcast({ ...message, ...where(pane.key, machineId), tag: paneNotificationTag(pane.paneId, machineId) }, "normal", live, true);
       });
+      // told while a queued turn already runs: that turn's next status must not call this failure's alert off (a pane
+      // that is forgotten still silences it)
+      if (failedBeforeQueuedTurn) waiting.delete(key);
     },
 
     async onEnded(paneId, machineId = "local") {
