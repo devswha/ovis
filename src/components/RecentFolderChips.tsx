@@ -31,11 +31,19 @@ export function RecentFolderChips({ folders, disabled, labelledBy, basename, onP
   const swipe = useMediaQuery(SWIPE_QUERY);
   const row = useRef<HTMLDivElement>(null);
   const measure = useRef<HTMLDivElement>(null);
+  const focusAfterExpand = useRef<number | null>(null);
   const [limit, setLimit] = useState(RECENT_FOLDERS_PAGE);
   const loaded = folders.slice(0, limit);
   const unloaded = folders.length - loaded.length;
   const [fit, setFit] = useState(loaded.length);
   const [menu, setMenu] = useState<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    const index = focusAfterExpand.current;
+    if (index === null) return;
+    if (swipe) row.current?.querySelectorAll("button")[index]?.focus({ preventScroll: true });
+    focusAfterExpand.current = null;
+  }, [limit, swipe]);
 
   useLayoutEffect(() => {
     if (swipe) return;
@@ -68,10 +76,18 @@ export function RecentFolderChips({ folders, disabled, labelledBy, basename, onP
   </button>;
 
   return <div className="new-session-folder-chips-frame">
-    <div ref={row} className="new-session-folder-chips" role="group" aria-labelledby={labelledBy}>
+    <div ref={row} className="new-session-folder-chips" role="group" aria-labelledby={labelledBy} onFocus={(event) => {
+      // The dialog traps Tab with preventScroll, so reveal keyboard focus in the swipe row.
+      if (swipe && (focusAfterExpand.current !== null || event.target.matches(":focus-visible"))) {
+        event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    }}>
       {shown.map(chip)}
       {swipe && unloaded > 0 && <button type="button" className="btn new-session-folder-chip new-session-folder-more" disabled={disabled}
-        aria-label={t("Show {n} more", { n: next })} onClick={showMore}>
+        aria-label={`+${unloaded}: ${t("Show {n} more", { n: next })}`} onClick={(event) => {
+          if (event.detail === 0) focusAfterExpand.current = shown.length;
+          showMore();
+        }}>
         +{unloaded}
       </button>}
       {!swipe && hidden > 0 && <button type="button" className="btn new-session-folder-chip new-session-folder-more" disabled={disabled}
