@@ -670,7 +670,10 @@ try {
             assert.equal(await joined.getByRole("button", { name: label("Revoke {name}").replace("{name}", "Galaxy S25"), exact: true }).count(), 1, "the row has its own Revoke");
             // this device's row wears three pills: its kind, the account, and this device; each whole, in the name, clear of the buttons
             const self = page.locator(ROW, { hasText: "iPhone · Safari" });
-            assert.equal(await self.getByRole("button", { name: label("Use the relay"), exact: true }).count(), phone ? 1 : 0, "only a touch phone's own row offers Use the relay");
+            // the button waits for the relay's status, read apart from the device list
+            const relayButton = self.getByRole("button", { name: label("Use the relay"), exact: true });
+            if (phone) await relayButton.waitFor();
+            assert.equal(await relayButton.count(), phone ? 1 : 0, "only a touch phone's own row offers Use the relay");
             const pills = await self.evaluate((row) => {
               const name = row.querySelector(".devices-name")!.getBoundingClientRect();
               const buttons = [...row.querySelectorAll(".devices-actions > *")].map((button) => button.getBoundingClientRect());
