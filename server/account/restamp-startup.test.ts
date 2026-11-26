@@ -38,6 +38,15 @@ posix("ordinary boot keeps an independently readable sibling Lock on a later sta
   expect(SafetyLog.open(active).state().locked).toBe(true);
 });
 
+posix("ordinary boot keeps an independently readable sibling Revoke on a later standalone start", () => {
+  const active = folder(), sibling = folder(), row = phone();
+  put(active, "devices.json", { gate_closed_at: past, devices: [row] });
+  put(sibling, "devices.json", false);
+  put(sibling, "account-tombstones.json", { v: 1, tombstones: [{ key: row.relay_public_key, account: "", removed_at: past, record_id: "local" }] });
+  start(active, sibling).stop();
+  expect(start(active).devices.hasKey(row.relay_public_key)).toBe(false);
+});
+
 posix("ordinary boot uses the surviving pairing time when twin rows disagree", () => {
   const active = folder(), sibling = folder(), row = phone();
   put(active, "devices.json", { gate_closed_at: past, devices: [row] });
