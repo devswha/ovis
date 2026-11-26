@@ -2019,5 +2019,9 @@ try {
   const closed = await Promise.allSettled([otherWorkspace, sideWorkspace, workspace].flatMap((id) => id ? [workspaceClose(id)] : []));
   rmSync(root, { recursive: true, force: true });
   const failed = closed.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-  if (failed.length > 0) throw new AggregateError(failed, "workspace cleanup failed");
+  // not thrown: a throw here would replace the failure that brought the run to this cleanup
+  if (failed.length > 0) {
+    console.error(new AggregateError(failed, "workspace cleanup failed"));
+    process.exitCode = 1;
+  }
 }
