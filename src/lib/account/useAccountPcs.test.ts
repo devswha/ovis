@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-import { SignedOutError, type AccountService, type DirectoryPc } from "./service.ts";
-import type { AccountSession } from "./store.ts";
+import { AccountService, SignedOutError, type DirectoryPc } from "./service.ts";
+import { memoryAccountStore, type AccountSession } from "./store.ts";
 import { signedInAccount } from "./useAccountPcs.ts";
 
 const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
@@ -40,6 +40,22 @@ it("offers only PCs whose account join completed or whose mailbox has checked in
   const source = signedInAccount(service(session("acct", 1), pcs).made);
 
   expect((await source.list())?.pcs.map((pc) => pc.name).sort()).toEqual(["Checked in", "Completed"]);
+});
+
+it("does not offer a directory PC with malformed check-in timestamps", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session("acct", 1));
+  const pcs = ["", "not a date", "0", "2026-02-30T00:00:00.000Z"].map((timestamp) => {
+    const key = generateKeyPair().publicKey;
+    return {
+      server_id: deriveServerId(key), public_key: bytesToHex(key), relay: "wss://relay.ovis.sh",
+      label: `PC (${timestamp})`, added_at: new Date().toISOString(), last_seen_at: timestamp,
+      completed_at: null,
+    };
+  });
+  const account = new AccountService({ store, fetch: async () => Response.json({ pcs }) });
+
+  expect(await signedInAccount(account).list()).toEqual({ account: "acct", pcs: [] });
 });
 
 it("admits under the sign-in stored now when the page signed in again to the account the list was read for", async () => {
