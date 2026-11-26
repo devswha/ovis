@@ -42,7 +42,7 @@ import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { draftKept, nativeStepTarget, navigateNativeSteps } from "./dialogs/step-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
 import { withRecord } from "./dialogs/record.ts";
-import { titleStatus } from "./agent-identity.ts";
+import { isHermesInstalledLauncher, titleStatus } from "./agent-identity.ts";
 import { recordFor, recordRequest, recordSettled, type RecordOutcome, withAgentRecord } from "./record-cards.ts";
 import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts";
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
@@ -621,6 +621,9 @@ const queueFronts = new Map<string, QueueFront & { rollout: string }>();
 interface Asking { content: string | null; n: number; queued: boolean; call?: string; gjcCall?: string; picked?: string }
 const askings = new Map<string, Asking>();
 let askingCount = 0;
+// A read begun before a redraw can finish after the refreshed approval has been shown.
+const appliedClaudeReads = new Map<string, number>();
+let claudeReads = 0;
 const SERVER_RUN = randomBytes(6).toString("hex");
 /**
  * The panes an answer is on its way to. Its keys redraw the menu (a move, a row opened for typing,
@@ -737,6 +740,7 @@ export async function readPrompt(paneId: string, codexHome?: string, openCodeSta
   const { panes } = snapshot;
   for (const logged of fallbackLogged) if (!panes.some((candidate) => candidate.pane_id === logged)) fallbackLogged.delete(logged);
   for (const known of askings.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) askings.delete(known);
+  for (const known of appliedClaudeReads.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) appliedClaudeReads.delete(known);
   for (const known of answerTurns.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) answerTurns.delete(known);
   for (const known of heldCandidates.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) heldCandidates.delete(known);
   for (const known of chatSent.keys()) if (!panes.some((candidate) => candidate.pane_id === known)) chatSent.delete(known);
@@ -746,9 +750,26 @@ export async function readPrompt(paneId: string, codexHome?: string, openCodeSta
   const agent = labelledAgent(pane.agent) ?? "";
   const status = waitStatus(pane, agent);
   const turns = answerTurns.get(paneId) ?? 0;
+  const claudeRead = agent === "claude" ? ++claudeReads : 0;
+  const occurrence = claudeRead === 0 ? undefined : askings.get(paneId)?.n;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
   if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
   const fallback = await fallbackCard(paneId, agent, status, known);
+  if (claudeRead !== 0) {
+    let obsolete = signal?.aborted === true;
+    if (!obsolete && claudeRead < (appliedClaudeReads.get(paneId) ?? 0)) {
+      const shown = fallback === null ? known.prompt : fallback.prompt;
+      const asking = askings.get(paneId);
+      // A poll overtaking an answer to the exact same occurrence must not refuse that answer.
+      obsolete = shown === null || asking === undefined || asking.n !== occurrence
+        || asking.content !== shown.id || (answerTurns.get(paneId) ?? 0) !== turns;
+    } else if (!obsolete && !answersUnderWay.has(paneId) && (answerTurns.get(paneId) ?? 0) === turns) {
+      // Like asked(), only publish reads outside an answer. A poll of an intermediate tab
+      // must not supersede the answer's own read verifying that tab.
+      appliedClaudeReads.set(paneId, claudeRead);
+    }
+    if (obsolete) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
+  }
   if (!fallback) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };
@@ -873,9 +894,9 @@ async function hermesOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /**
- * The foreground process is Hermes itself: its own executable, or Python running Hermes's entry script as the
- * script (the first argument that is not an option). isHermesProcess also takes a Python with "hermes" anywhere in its
- * arguments (`python3 -c '…' /tmp/hermes`), which may label a pane but must not let it take an approval's keys.
+ * The foreground process is Hermes itself: its own executable, Python running its entry script,
+ * or the installer's inline CLI launcher. Other Python code must not take an approval's keys
+ * even when its arguments contain a path named Hermes.
  */
 export function isHermesForeground(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }): boolean {
   const named = (value: string) => {
@@ -883,6 +904,7 @@ export function isHermesForeground(entry: { name?: string | null; argv0?: string
     return lower === "hermes" || lower === "hermes.exe" || lower.endsWith("/hermes") || lower.endsWith("\\hermes.exe");
   };
   const argv = entry.argv ?? [];
+  if (isHermesInstalledLauncher(argv)) return true;
   const first = argv[0] ?? entry.argv0 ?? entry.name ?? "";
   if (named(first)) return true;
   const interpreter = (first.split(/[\\/]/).pop() ?? "").toLowerCase();

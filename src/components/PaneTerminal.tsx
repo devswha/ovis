@@ -1,9 +1,7 @@
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { fontSettled } from "../lib/fontFamily.ts";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import type { GhosttyFit, GhosttyTerminal } from "../lib/ghostty/terminal.ts";
 import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Pause, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
-import "@xterm/xterm/css/xterm.css";
 import "./PaneTerminal.css";
 
 import { HerdrSocket } from "../lib/ws.ts";
@@ -233,7 +231,7 @@ export function PaneTerminal({
   const { chatMounted, gridCovered: chatView } = paneLensFlags(view, peek);
   const chatMountedRef = useRef(chatMounted); chatMountedRef.current = chatMounted;
   const [findOpen, setFindOpen] = useState(false);
-  const [terminal, setTerminal] = useState<Terminal | null>(null);
+  const [terminal, setTerminal] = useState<GhosttyTerminal | null>(null);
   const [searchState, setSearchState] = useState<TerminalSearchState | null>(null);
   const viewportIntent = useMemo(() => new ViewportIntentGate(), [machineId, paneId]);
   const viewportSearching = useSyncExternalStore(viewportIntent.subscribe, viewportIntent.isSearching, viewportIntent.isSearching);
@@ -272,8 +270,8 @@ export function PaneTerminal({
   const stackRef = useRef<HTMLDivElement | null>(null);
   const pageScroll = useRef<((direction: -1 | 1) => void) | null>(null);
   const lineScroll = useRef<((lines: number) => void) | null>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
+  const termRef = useRef<GhosttyTerminal | null>(null);
+  const fitRef = useRef<GhosttyFit | null>(null);
   /** OSC 8 links this app cannot open are not drawn (#739); its state ends with `term.reset()` */
   const hyperlinksRef = useRef(hyperlinkFilter());
   const retireOutputRef = useRef<() => void>(() => {});
@@ -400,8 +398,6 @@ export function PaneTerminal({
   codexDragRef.current = settings.codexDrag;
   const [terminalHistory, setTerminalHistory] = useState(false);
   useTerminalImages(terminal, settings.terminalImages ?? terminalHistory, coarse);
-  const picturesChoiceRef = useRef(settings.terminalImages);
-  picturesChoiceRef.current = settings.terminalImages;
   const narrowScreen = useMediaQuery(MIRROR_WRAP_QUERY);
   const mirrorWrap = settings.terminalMirrorWrap ?? narrowScreen;
   const mirrorWrapRef = useRef(mirrorWrap);
@@ -504,7 +500,7 @@ export function PaneTerminal({
   const keyboardOwner = `${keyboardInstance}:${paneId === null ? "" : paneStorageId(machineId, paneId)}`;
   const keyboardOwnerRef = useRef(keyboardOwner);
   keyboardOwnerRef.current = keyboardOwner;
-  // Settings > Terminal > Keyboard only from the key bar (#1635): on a touch screen, until the control's
+  // Settings > GhosttyTerminal > Keyboard only from the key bar (#1635): on a touch screen, until the control's
   // Show asks for the keyboard, this pane's fields carry inputmode="none": a tap on the grid, the line,
   // Send or a key still focuses them, and raises no keyboard. The request is the tap's, not the
   // measurement's, which is blind to a floating keyboard or a zoomed page: it ends at Hide, at a
@@ -573,8 +569,13 @@ export function PaneTerminal({
   const [selectionQuote, setSelectionQuote] = useState<{ pane: string; text: string; range: { start: number; end: number } | null } | null>(null);
   const [chatRefresh, setChatRefresh] = useState(0);
   const [chatInvalidation, setChatInvalidation] = useState(0);
+  const [approvalReflow, setApprovalReflow] = useState({ pane: "", revision: 0, pending: false, promptId: "" });
   const { autoPeek, onCommandScreenClosed, stillOpen, stillOpenRef, setStillOpen, pendingOpenRef, undecidedOpenRef, chatHistoryRef, stillOpenNotedRef, onInputRowFrameRef, stillOpenNote, showStillOpen } = usePeekReturn({ activeRef, agent, agentRef, agentStatus, chatMounted, coarseRef, compositionCommitPendingRef, composingRef, draftHeldForRef, ended, findOpenRef, frameGateRef, inputRowNow, lineComposingRef, onEndPeekRef, onOpenTerminal, onPeekRef, paneId, paneRef, peek, peekRef, presented, receiptRowRef, stackRef, termRef, terminalId, t, heldRef, unsupportedRef });
   const { conversationPushes, setConversationPushes, onConversationWatch, chatOutputRef, onTerminalOutput, chatSent, setChatSent, chatUnsent, setChatUnsent, chatMetadata, redrawGreeting, onChatRead, greetingRoom, setGreetingRoom, greetingRef, chatPrompt, promptRefresh, setPromptRefresh, chatSuggestion, chatRestored, pendingAnswer, setPendingAnswer, promptDock, setPromptDock, onPromptAnswered, clearPendingAnswer, onChatPrompt, onChatMetadata, onChatSuggestion, onChatRestored } = useChatCallbacks({ activeRef, agentStatus, chatHistoryRef, chatViewRef, findOpenRef, machineId, pendingOpenRef, setStillOpen, socketRef, stackRef, stillOpenRef, undecidedOpenRef });
+  const finishApprovalReflow = useCallback((pane: string, revision: number) => {
+    setApprovalReflow((current) => current.pane === pane && current.revision === revision && current.pending
+      ? { ...current, pending: false } : current);
+  }, []);
   const [chatLocalSend, setChatLocalSend] = useState({ key: 0, navigationGeneration: 0 });
   const chatNavigation = useRef(0);
   const queueStore = messageQueues;
@@ -612,7 +613,17 @@ export function PaneTerminal({
   paneRef.current = paneId;
   endedRef.current = ended;
   onConnectionChangeRef.current = onConnectionChange;
-  onServerMessageRef.current = onServerMessage;
+  onServerMessageRef.current = (message) => {
+    onServerMessage?.(message);
+    if (message.type !== "pane-geometry" || message.pane_id !== paneId || !chatView
+      || chatPrompt?.pane !== paneId || chatPrompt.value.agent !== "claude" || chatPrompt.value.kind !== "approval") return;
+    const grid = sharedGridRef.current;
+    // A mirror announces its fixed grid on attach, then sends the same frame type on a resize.
+    if (message.fixed && grid === null) return;
+    if (grid?.cols === message.cols && grid.rows === message.rows) return;
+    const promptId = chatPrompt.value.id;
+    setApprovalReflow((current) => ({ pane: message.pane_id, revision: current.revision + 1, pending: true, promptId }));
+  };
   onRoleAckRef.current = onRoleAck;
 
   useEffect(() => {
@@ -646,7 +657,7 @@ export function PaneTerminal({
     }, 2500);
   }, []);
 
-  useTerminalMount({ setTerminalHistory, picturesChoiceRef, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, colors, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef });
+  useTerminalMount({ setTerminalHistory, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, colors, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef });
 
   useTerminalRefits({ activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize });
 
@@ -773,7 +784,8 @@ export function PaneTerminal({
   // message ("stop, don't touch prod") must reach it, not become the answer; its card answers it
   // a fallback card is answered with its own buttons: what the user types still goes to the agent
   const answering = chatView && chatPrompt !== null && chatPrompt.pane === paneId && !chatPrompt.value.queued && !chatPrompt.value.fallback ? chatPrompt.value : null;
-  const answerPending = answering !== null && chatPrompt?.answered === true;
+  const refreshingApproval = approvalReflow.pane === paneId && approvalReflow.pending;
+  const answerPending = answering !== null && (chatPrompt?.answered === true || refreshingApproval);
   // ...and while it is open in the terminal it holds the input: nothing is sent into it
   const heldByOpenQueue = chatView && chatPrompt !== null && chatPrompt.pane === paneId && chatPrompt.value.queued === "open";
   const readyForQueue = agentStatus !== undefined && QUEUE_READY_STATUS[agentStatus] === true;
@@ -1169,6 +1181,10 @@ export function PaneTerminal({
             onSuggestion={onChatSuggestion}
             onRestored={onChatRestored}
             promptRefreshKey={promptRefresh}
+            approvalReflowRevision={approvalReflow.pane === paneId ? approvalReflow.revision : 0}
+            approvalReflowPromptId={approvalReflow.pane === paneId ? approvalReflow.promptId : undefined}
+            refreshingApproval={refreshingApproval}
+            onApprovalReflowRead={finishApprovalReflow}
             pendingAnswer={pendingAnswer !== null && pendingAnswer.pane === paneId ? pendingAnswer : null}
             onPendingAnswerDone={clearPendingAnswer}
             promptDock={promptDock}

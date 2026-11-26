@@ -1345,8 +1345,8 @@ this way. All other comparison paths still require their original digits.
 ### Adding a PC over SSH
 
 From this PC's own window, signed in to the account this PC is in, Add PC over SSH can also add
-the other PC (B) to that account (Linux and macOS on both ends; a Windows B adds itself with its
-number). SSH only says which machine and OS user was reached; the account's one-press admission
+the other PC (B) to that account (from Linux, macOS or Windows; B runs Linux or macOS, and a Windows
+B adds itself with its number). SSH only says which machine and OS user was reached; the account's one-press admission
 decides which account B may join. There, Add a connection's Ovis relay tab lists the PCs this PC can
 reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC over SSH with that host.
 A row says **In your account** only for a PC that took its place there: the directory's `completed_at`
@@ -1364,7 +1364,9 @@ added** before.
   refused, and a PC without Ovis is offered the official installer (`install_ovis`). Nothing is
   installed or started in its place.
 - **Inspect.** B's registration names its recovery socket (`recover_socket`). It is forwarded over
-  the job's connection into the connection's private folder, and `account_add_inspect` returns B's
+  the job's connection into the connection's private folder; on Windows, whose ssh shares no
+  connection, each request goes on an ssh of its own instead (`ssh -W` to that socket, which needs
+  OpenSSH 9.4 or newer there), so nothing listens for it on the adding PC. `account_add_inspect` returns B's
   ID, public key, advertised relay, label and account. The ID must derive from the key. That socket answers every
   recovery act of B's owner, so the adding PC only ever sends `account_add_inspect` and `account_add_take` on it
   (`server/account-add-channel.ts`), and closes the forward once take answers, on any error, and after ten minutes.
@@ -2093,7 +2095,9 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   says so, and that `ovis add` on this PC gives it its keys. A join of a key this PC itself keeps out (a
   block here, which closes the PC to every key newer than its target, whatever the list holds) is
   marked `list_held`, and `ovis approve` says that the device is not let in here until that block is
-  lifted, and where. A join into the account on a pinned
+  lifted, and where. A PC that follows no list marks a first or members join of such a key
+  `list_held` the same way, and a device approved here anyway hears `list_held_here`, not that
+  nobody approved it. A join into the account on a pinned
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.
@@ -2327,6 +2331,17 @@ open confirm. What this does not prove: that a person sat there. A program that 
 on this PC, a terminal that a driving device opened included, or anyone who logs in to this PC,
 reaches the same screen as you do.
 
+### Recovery at the PC
+
+Needs Step 2, which is on unless `OVIS_ACCOUNT_OPENS_ALL=0`. Run `ovis recover` in a terminal on
+this PC, as the user who runs Ovis. On Windows the command is not available.
+
+- `ovis recover --restamp` shows which timestamps this PC wrote too far ahead and asks you to
+  confirm. It queues the repair without changing device or account records. Restart Ovis as
+  the command directs to apply it. Past timestamps and removals are kept. If a repair was
+  interrupted and another write changed a timestamp, Ovis stays closed. Run the command again
+  to review and confirm keeping the independently changed times, then restart to finish rollback.
+
 ### Limits of this release
 
 These limits apply while Step 2 is on, which is the default.
@@ -2351,7 +2366,9 @@ These limits apply while Step 2 is on, which is the default.
 - **A legacy pairing made with a clock more than a day ahead keeps its existing connection but
   cannot authorize Step 2 actions.** Correcting the clock does not give that old timestamp
   authority. Other phones and account reconciliation are unaffected. A clock fault in new Step 2
-  state still makes the PC refuse account access until that state can be read safely.
+  state still makes the PC refuse account access until that state can be read safely. For a
+  future time this PC wrote in Step 2, run `ovis recover --restamp` on this PC and restart Ovis
+  after confirming the repair.
 - **A locked PC is driven only from the PC itself.** While strict mode is on, the PC takes its
   orders only from the desktop app that started it (its owner channel) or from the confirm page
   on its own screen. No other device, browser window, access token or relay connection can change
