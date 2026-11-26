@@ -29,6 +29,7 @@ import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.ts";
 import { agyCustomEditorMatches, agySameQuestion, parseAgyQuestion } from "./dialogs/agy.ts";
+import { parseCodexNotes } from "./dialogs/codex.ts";
 import { dshFreeTextRow, dshTypedText } from "./dialogs/dsh.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE, ompCustomEditorMatches } from "./dialogs/omp.ts";
@@ -2218,7 +2219,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const interaction = body.custom_text === undefined ? reader?.interaction?.(parsed) : undefined;
         const checkBeforeText = responder === "fallback-gjc-menu" || responder === "pi-ask-question"
           || responder === "pi-questionnaire-question" || responder === "agy-question";
-        const editorAnswer = body.custom_text !== undefined && (checkBeforeText || responder === "dsh-question"
+        const editorAnswer = body.custom_text !== undefined && (checkBeforeText || responder === "dsh-question" || responder === "codex-question"
           || responder === "claude-question" || responder === "omp-question" || responder === "omo-question" || responder === "omo-review" || responder === "hermes-question"
           || responder === "hermes-input" || responder === "opencode-v1-question")
           ? { prompt: parsed, text: body.custom_text.trim() } : undefined;
@@ -2347,6 +2348,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                 if (typedEditor) {
                   if (!asks() || request.signal.aborted) return false;
                   if (checkBeforeText) return inlineEditorMatches(shown, screen, typedEditor.text);
+                  if (responder === "codex-question") {
+                    const notes = parseCodexNotes(screen);
+                    return notes !== null && withServedAsk(body.pane_id, notes).id === parsed.id;
+                  }
                   if (responder === "dsh-question") return dshFreeTextRow(screen, parsed, dshTypedText(typedEditor.text)) === "typed";
                   if (responder === "omp-question") return ompCustomEditorMatches(screen, typedEditor);
                   if (responder === "opencode-v1-question") return openCodeV1CustomEditorMatches(screen, typedEditor);

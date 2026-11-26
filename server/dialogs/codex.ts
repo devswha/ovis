@@ -54,9 +54,9 @@ function parseCodexContinueMenu(screen: string): ParsedPrompt | null {
   });
 }
 
-function parseCodexQuestion(screen: string): ParsedPrompt | null {
+function parseCodexQuestion(screen: string, notes = false): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
-  const hintIndex = findLastIndex(lines, (_, index) => CODEX_ASK_HINT_RE.test(wrapped(lines, index)));
+  const hintIndex = notes ? codexNotesStart(lines) : findLastIndex(lines, (_, index) => CODEX_ASK_HINT_RE.test(wrapped(lines, index)));
   if (hintIndex < 0) return null;
   const rows = menuRows(lines, Math.max(0, hintIndex - 48), hintIndex);
   if (!sequentialRows(rows) || rows.filter((row) => row.selected).length !== 1) return null;
@@ -74,7 +74,7 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
   // several questions, and the hint says ←/→ move between them without answering: the card's Back and Next
   const at = progress ? Number(progress[1]) - 1 : 0;
   const total = progress ? Number(progress[2]) : 1;
-  const navigates = total > 1 && at < total && CODEX_NAVIGATE_RE.test(wrapped(lines, hintIndex));
+  const navigates = !notes && total > 1 && at < total && CODEX_NAVIGATE_RE.test(wrapped(lines, hintIndex));
   return finishPrompt("codex", {
     kind: "question", title, question, body: null, options,
     multi_select: false, custom_option_index: options.length,
@@ -85,6 +85,27 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
     selectedIndex: rows.findIndex((row) => row.selected), checkedOptionIndices: [], customMenuIndex: customIndex,
     rejectWithEscapeIndex: null,
   }, { can_step_back: undefined, can_step_next: undefined });
+}
+
+// Codex replaces the options footer when Tab opens notes. The menu above the notes
+// composer still identifies the question, but the composer itself isn't an option row.
+function codexNotesStart(lines: string[]): number {
+  const end = findLastIndex(lines, (line) => line.trim() !== "");
+  for (let start = end; start >= Math.max(0, end - 2); start -= 1) {
+    const hint = lines.slice(start, end + 1).map(cleanLine).join(" ");
+    if (!/^tab or esc to clear notes\s*\|\s*enter to submit (?:answer|all)$/i.test(hint)) continue;
+    const beforeHint = lines.slice(0, start);
+    const notesRow = findLastIndex(beforeHint, (line) => /^\s*›(?: |$)/u.test(line));
+    if (notesRow < 0) return -1;
+    const selected = findLastIndex(beforeHint.slice(0, notesRow), (line) => /^\s*›(?: |$)/u.test(line));
+    return /^\s*› +\d+\. +None of the above\b/i.test(lines[selected] ?? "") ? notesRow : -1;
+  }
+  return -1;
+}
+
+export function parseCodexNotes(screen: string): ParsedPrompt | null {
+  const parsed = parseCodexQuestion(screen, true);
+  return parsed !== null && parsed.selectedIndex === parsed.customMenuIndex ? parsed : null;
 }
 
 /**
