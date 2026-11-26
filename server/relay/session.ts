@@ -769,8 +769,8 @@ export class RelaySession {
         this.close("auth_failed"); return;
       }
     }
-    // approved on this PC for a key it keeps out itself (a block here): the device hears that cause, as from a list PC
-    if (this.intent === "account" && sas.approvedBy === undefined && !devices.admits(sas.publicKey, undefined, { pairingHere: true })) {
+    // approved on this PC for a key a block here keeps out: the device hears that cause, as from a list PC
+    if (this.intent === "account" && sas.approvedBy === undefined && devices.keptOutByBlock(sas.publicKey)) {
       this.endPairing(true);
       this.failJoin(LIST_ALLOW_CAUSES.held_here!);
       return;

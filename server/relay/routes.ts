@@ -55,7 +55,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       : refusal === "needs_keys" ? { list_needs_keys: true as const } : null;
     return reply({ joins: service.approvals.ownJoins().map((join) => {
       const key = service.approvals.keyOf(join.id);
-      if (join.list !== true) return key !== null && !context.services.devices.admits(key, undefined, { pairingHere: true }) ? { ...join, list_held: true as const } : join;
+      if (join.list !== true) return key !== null && context.services.devices.keptOutByBlock(key) ? { ...join, list_held: true as const } : join;
       const held = key !== null && list?.holdsBack(key) === true ? { list_held: true as const } : {};
       return { ...join, ...why ?? {}, ...held };
     }) });

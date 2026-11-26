@@ -733,7 +733,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
       // a join into the account's list is let in by its entry, first join or not: the approval was received, no more
-      out(outcome === "approved" ? first || join.list === true ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
+      out(outcome === "approved" ? first || join.list === true || join.list_held === true ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);
