@@ -39,7 +39,7 @@ const bashPrompt = (command: string, reason?: string): Prompt => ({
 });
 
 /** omp's side of the extension: its events, and its terminal UI's approval dialog. */
-async function loaded(args: string[], mode = "tui", getContextUsage?: () => { tokens: number; contextWindow: number; percent: number } | undefined) {
+async function loaded(args: string[], mode = "tui", getContextUsage?: () => { tokens: number; contextWindow: number; percent: number } | undefined, kind: "main" | "sub" = "main") {
   const { default: extension } = await import(args[args.indexOf("-e") + 1]!) as { default: (pi: unknown) => void };
   const handlers = new Map<string, (event: unknown, ctx?: unknown) => unknown>();
   const dialogs: Dialog[] = [];
@@ -50,7 +50,7 @@ async function loaded(args: string[], mode = "tui", getContextUsage?: () => { to
     }),
   };
   extension({ on: (name: string, handler: (event: unknown, ctx?: unknown) => unknown) => handlers.set(name, handler) });
-  const run = (type: string) => handlers.get(type)?.({ type }, { mode, hasUI: true, ui, getContextUsage });
+  const run = (type: string) => handlers.get(type)?.({ type }, { mode, hasUI: true, ui, agent: { kind, depth: 0 }, getContextUsage });
   run("session_start");
   /** what omp does for one bash call: its `tool_call` event, then its approval dialog */
   const call = (command: string, prompt = bashPrompt(command), id = "call-1") => {
@@ -62,6 +62,24 @@ async function loaded(args: string[], mode = "tui", getContextUsage?: () => { to
 }
 
 describe.skipIf(!posix)("omp's approval hook", () => {
+  it("keeps depth-zero subagents from reporting context for the main pane", async () => {
+    const contexts: (PaneContext | null)[] = [];
+    const finished = Promise.withResolvers<void>();
+    const { hub } = hubIn((_paneId, context) => {
+      contexts.push(context);
+      if (context?.used === 45_000) finished.resolve();
+    });
+    const args = hub.launchArgs("omp", "p1", [], "18.14.0")!;
+    let tokens = 40_000;
+    const main = await loaded(args, "tui", () => ({ tokens, contextWindow: 200_000, percent: tokens / 2_000 }));
+    const child = await loaded(args, "print", () => ({ tokens: 3_200, contextWindow: 32_000, percent: 10 }), "sub");
+    child.run("agent_end");
+    tokens = 45_000;
+    main.run("agent_end");
+    await finished.promise;
+    expect(contexts).toEqual([{ used: 40_000, window: 200_000 }, { used: 45_000, window: 200_000 }]);
+  });
+
   it("tells the pane its exact context at startup and after a turn", async () => {
     let told = Promise.withResolvers<{ paneId: string; context: PaneContext | null }>();
     const { hub } = hubIn((paneId, context) => told.resolve({ paneId, context }));

@@ -104,6 +104,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     paneVacated?: (paneId: string) => void;
     /** context the agent's launch extension last reported, for this pane's agent kind */
     hookContextOf?: (paneId: string, kind: string | null | undefined) => PaneContext | null | undefined;
+    /** what herdr sees in front, so a launch cannot keep reporting after the pane changes hands */
+    observeHookAgent?: (paneId: string, kind: string | null) => void;
     /** runs each tick of the card reads (CARD_READ_MS) and returns how to stop them; tests tick by hand */
     cardTimer?: (tick: () => Promise<void>) => () => void;
   };
@@ -506,6 +508,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
+      options.observeHookAgent?.(pane.pane_id, pane.agent ?? null);
       if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: told?.get(pane.pane_id)?.agent_session }, pane)) handsChanged(pane.pane_id);
       agentNow.set(pane.pane_id, pane.agent ?? null);
       agentRead.set(pane.pane_id, read);
@@ -678,6 +681,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const bridgeAgents = machines ? null : bridgeAgentNews(() => broadcastAll({ type: "session-changed" }));
 
   function onStatus(paneId: string, read: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null; askedAt?: number }): void {
+    // Provider aliases of a recognized OmO are not a change of agent; a shell or another kind is.
+    options.observeHookAgent?.(paneId, agent !== null && OMO_ALIASES.includes(agent) && omo.runs(paneId) ? "omo" : agent);
     if (agent !== "opencode" && (!replay || agent || read !== "unknown")) {
       options.openCodeState?.forget(paneId);
       if (!replay) releaseOpenCodePane(paneId);

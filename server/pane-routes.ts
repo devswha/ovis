@@ -398,8 +398,14 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       // The live extension knows the current window and fill, which the session file does not record together.
       // Only read omp's status bar if its extension has never reported. An unknown sample leaves the file as-is.
       const kind = conversation.source === "omp-transcript" ? "omp" : conversation.source === "omo-transcript" ? "omo" : null;
-      const reported = kind === null ? undefined : options.approvals?.contextOf(paneId, kind);
-      const context = kind === "omp" && reported === undefined ? await ompScreenContext(paneId) : reported ?? null;
+      let context = kind === null ? undefined : options.approvals?.contextOf(paneId, kind);
+      if (kind === "omp" && context === undefined) {
+        const screen = await ompScreenContext(paneId);
+        // A report can arrive during the screen RPCs. Even a report of unknown beats the screen.
+        const reported = options.approvals?.contextOf(paneId, kind);
+        context = reported === undefined ? screen : reported;
+      }
+      context ??= null;
       const answer = context === null ? conversation
         : { ...conversation, metadata: { ...(conversation.metadata ?? { model: null, reasoning_effort: null }), context } };
       // no-store keeps the browser's own cache out of it, so the chat sees the 304.

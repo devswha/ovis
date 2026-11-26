@@ -156,6 +156,34 @@ it.each(["omp", "omo"] as const)("uses %s's live context without rereading its s
   } finally { read.mockRestore(); scroll.mockRestore(); screen.mockRestore(); }
 });
 
+it("prefers the first omp report when it arrives during a screen read", async () => {
+  const pane = crypto.randomUUID();
+  const url = new URL(`http://x/api/pane/conversation?pane_id=${pane}`);
+  const read = spyOn(conversation, "paneConversation").mockResolvedValue({
+    source: "omp-transcript", turns: [], metadata: { model: null, reasoning_effort: null },
+    cursor: null, history_id: "stable", version: "stable",
+  });
+  const scroll = spyOn(herdr, "paneScrollInfo").mockResolvedValue({ offset_from_bottom: 0, max_offset_from_bottom: 100, viewport_rows: 24 });
+  const reading = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const screen = spyOn(herdr, "paneRead").mockImplementation(async () => {
+    reading.resolve();
+    await release.promise;
+    return { pane_id: pane, tab_id: "t", workspace_id: "w", format: "text", source: "visible", text: "◫ 48.1%/1M", revision: 1, truncated: false };
+  });
+  let sample: PaneContext | undefined;
+  try {
+    const pending = handlePaneRequest(new Request(url), url, url.pathname, { approvals: { contextOf: () => sample } });
+    await reading.promise;
+    sample = { used: 42_013, window: 200_000 };
+    release.resolve();
+    const response = await pending;
+    if (response === null) throw new Error("conversation route not handled");
+    const body: ConversationResponse = await response.json();
+    expect(body.metadata?.context).toEqual({ used: 42_013, window: 200_000 });
+  } finally { release.resolve(); read.mockRestore(); scroll.mockRestore(); screen.mockRestore(); }
+});
+
 it("asks a chat showing a history to wait only when Copilot's rejection may be waited out", async () => {
   const pane = crypto.randomUUID();
   const ask = async (diagnostic: NonNullable<conversation.ConversationUnavailable["diagnostic"]>, history: boolean) => {

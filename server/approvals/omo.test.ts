@@ -77,6 +77,35 @@ async function loaded(args: string[], hasUI = true, getContextUsage?: () => { to
 }
 
 describe.skipIf(!posix)("OmO's approval hook", () => {
+  it("keeps the context from a retryable end when the user aborts the backoff", async () => {
+    const contexts: (PaneContext | null)[] = [];
+    const { hub, turns, told } = hubIn((_paneId, context) => contexts.push(context));
+    let tokens = 10_000;
+    const omo = await loaded(hub.launchArgs("omo", "p1", [], "5.1.81")!, true,
+      () => ({ tokens, contextWindow: 200_000, percent: tokens / 2_000 }));
+    omo.run({ type: "agent_start" });
+    tokens = 50_000;
+    const failed = { type: "agent_end", willRetry: true };
+    omo.run(failed);
+    omo.run({ type: "session_abort" });
+    await told(2);
+    expect(turns).toEqual(["p1 omo began", "p1 omo ended"]);
+    expect(contexts).toEqual([{ used: 10_000, window: 200_000 }, { used: 50_000, window: 200_000 }]);
+  });
+
+  it("reports the selected model's context window without waiting for a turn to end", async () => {
+    const { hub, told } = hubIn();
+    let contextWindow = 200_000;
+    const omo = await loaded(hub.launchArgs("omo", "p1", [], "5.1.81")!, true,
+      () => ({ tokens: 50_000, contextWindow, percent: 5_000_000 / contextWindow }));
+    contextWindow = 1_000_000;
+    const selected = { type: "model_select", model: { contextWindow }, previousModel: { contextWindow: 200_000 }, source: "set" };
+    omo.run(selected);
+    omo.run({ type: "agent_start" });
+    await told(1);
+    expect(hub.contextOf("p1", "omo")).toEqual({ used: 50_000, window: 1_000_000 });
+  });
+
   it("clears its last exact context when compaction leaves the token count unknown", async () => {
     const contexts: (PaneContext | null)[] = [];
     const { hub, told } = hubIn((_paneId, context) => contexts.push(context));

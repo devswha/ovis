@@ -62,11 +62,13 @@ export default function ovisApprovals(pi) {
   const done = (event) => { calls.delete(event?.toolCallId); };
   pi.on("tool_approval_resolved", done);
   pi.on("tool_result", done);
-  pi.on("agent_end", tellContext);
-  pi.on("session_compact", tellContext);
-  pi.on("session_switch", tellContext);
+  // omp rebinds the extension to its subagents, including depth-zero clones, under the same launch key.
+  const reportContext = (event, ctx) => { if (ctx?.agent?.kind === "main") tellContext(event, ctx); };
+  pi.on("agent_end", reportContext);
+  pi.on("session_compact", reportContext);
+  pi.on("session_switch", reportContext);
   pi.on("session_start", (event, ctx) => {
-    tellContext(event, ctx);
+    reportContext(event, ctx);
     const ui = ctx?.ui;
     // omp's terminal UI only: in its RPC mode the dialogs are the RPC client's
     if (ctx?.mode !== "tui" || !ctx.hasUI || typeof ui?.approve !== "function" || wrapped.has(ui)) return;

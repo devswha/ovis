@@ -120,6 +120,13 @@ interface Launch {
   adapter: ApprovalAdapter;
 }
 
+/** Only the launch whose agent herdr saw in front may keep reporting after that sighting. */
+interface ContextLaunch {
+  readonly launch: Launch;
+  seen: boolean;
+  sample?: PaneContext | null;
+}
+
 /** Who asks a held request: the agent kind its card names, and which card option is a decision. */
 export type ApprovalSource = Pick<ApprovalAdapter, "kind" | "decision">;
 
@@ -208,7 +215,7 @@ export class ApprovalHub {
   private readonly pending = new Map<string, Pending[]>();
   /** each pane's agent's permission mode, as its hook last told */
   private readonly modes = new Map<string, ToldMode>();
-  private readonly contexts = new Map<string, { readonly kind: string; readonly context: PaneContext | null }>();
+  private readonly contexts = new Map<string, ContextLaunch>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
   readonly address: string;
@@ -241,7 +248,25 @@ export class ApprovalHub {
   /** No report (undefined) differs from a running extension that reported unknown context (null). */
   contextOf(paneId: string, kind: string | null | undefined): PaneContext | null | undefined {
     const report = this.contexts.get(paneId);
-    return report !== undefined && report.kind === kind ? report.context : undefined;
+    return report !== undefined && report.launch.adapter.kind === kind ? report.sample : undefined;
+  }
+
+  /**
+   * A shell or another agent after herdr saw this launch's kind ends its right to report. A shell seen before the
+   * new agent appears is normal startup, and session switches within the same process do not change the agent kind.
+   * Drop the binding, not just the value: a relay from the old process may still be on its way.
+   */
+  observeContextAgent(paneId: string, kind: string | null): void {
+    const context = this.contexts.get(paneId);
+    if (context === undefined) return;
+    if (context.launch.adapter.kind === kind) context.seen = true;
+    else if (context.seen) this.dropContext(paneId);
+  }
+
+  private dropContext(paneId: string): void {
+    const context = this.contexts.get(paneId);
+    this.contexts.delete(paneId);
+    if (context?.sample !== undefined) this.options.onContext?.(paneId, null);
   }
 
   /** Whether an agent of this kind asks its approvals through the hub. */
@@ -320,7 +345,9 @@ export class ApprovalHub {
       this.dropKey(keyDigest(key));
       return unchanged;
     }
-    this.launches.set(keyDigest(key), { key, paneId, adapter });
+    const launch = { key, paneId, adapter };
+    this.launches.set(keyDigest(key), launch);
+    if (adapter.context !== undefined) this.contexts.set(paneId, { launch, seen: false });
     if (this.launches.size > LAUNCHES_MAX) this.dropLaunch(this.launches.keys().next().value!);
     return hooked;
   }
@@ -364,11 +391,13 @@ export class ApprovalHub {
     if (context !== undefined || turn !== null || command !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
       if (context !== undefined) {
-        const { paneId, adapter: { kind } } = launch;
-        const before = this.contextOf(paneId, kind);
-        if (before === undefined || before?.used !== context?.used || before?.window !== context?.window) {
-          this.contexts.set(paneId, { kind, context });
-          this.options.onContext?.(paneId, context);
+        const report = this.contexts.get(launch.paneId);
+        if (report?.launch === launch) {
+          const before = report.sample;
+          if (before === undefined || before?.used !== context?.used || before?.window !== context?.window) {
+            report.sample = context;
+            this.options.onContext?.(launch.paneId, context);
+          }
         }
       }
       if (turn !== null) this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
@@ -507,7 +536,7 @@ export class ApprovalHub {
     const launch = this.launches.get(digest);
     this.launches.delete(digest);
     this.dropKey(digest);
-    if (launch !== undefined && this.contexts.delete(launch.paneId)) this.options.onContext?.(launch.paneId, null);
+    if (launch !== undefined && this.contexts.get(launch.paneId)?.launch === launch) this.dropContext(launch.paneId);
   }
 
   private dropKey(digest: string): void {

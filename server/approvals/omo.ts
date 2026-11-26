@@ -26,12 +26,14 @@ export default function ovisApprovals(pi) {
   const wrapped = new WeakSet();
   pi.on("session_start", (event, ctx) => { ui = ctx?.hasUI ? ctx.ui : null; tellContext(event, ctx); });
   pi.on("session_compact", tellContext);
+  pi.on("model_select", tellContext);
   let retrying = false;
   const ended = () => { retrying = false; tell({ run: "ended" }); };
   pi.on("agent_start", () => { retrying = false; tell({ run: "began" }); });
   pi.on("agent_end", (event, ctx) => {
     if (event?.willRetry === true) retrying = true;
-    else { ended(); tellContext(event, ctx); }
+    else ended();
+    tellContext(event, ctx);
   });
   pi.on("session_abort", () => { if (retrying) ended(); });
   pi.on("agent_settled", () => { if (retrying) ended(); });

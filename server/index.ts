@@ -647,6 +647,7 @@ export function createServer(
   let agentTools: AgentToolHub | null = null;
   const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); },
     hookContextOf: (paneId, kind) => approvals.contextOf(paneId, kind),
+    observeHookAgent: (paneId, kind) => approvals.observeContextAgent(paneId, kind),
     paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); },
   }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
