@@ -429,19 +429,20 @@ class Connection {
 
   /**
    * The conversations the server holds for the TUI, as it says now: each loaded thread that is neither a subagent nor
-   * one Codex runs aside, with the rollout it writes (null before the server named one). The TUI shows one of them:
+   * one Codex runs aside, with the rollout it writes (null before the server named one) and whether it runs a turn
+   * now. The TUI shows one of them:
    * the only one, or after a /new or a /resume of a thread still loaded, one Codex does not say which (it announces
    * no such switch). `unknown` when the server did not answer all of it, or the threads loaded changed while it was
    * asked. Lookups at the same time share one.
    */
-  conversations(): Promise<{ threadId: string; path: string | null }[] | "unknown"> {
+  conversations(): Promise<{ threadId: string; path: string | null; running: boolean }[] | "unknown"> {
     this.asking ??= this.askConversations().finally(() => { this.asking = null; });
     return this.asking;
   }
 
-  private asking: Promise<{ threadId: string; path: string | null }[] | "unknown"> | null = null;
+  private asking: Promise<{ threadId: string; path: string | null; running: boolean }[] | "unknown"> | null = null;
 
-  private async askConversations(): Promise<{ threadId: string; path: string | null }[] | "unknown"> {
+  private async askConversations(): Promise<{ threadId: string; path: string | null; running: boolean }[] | "unknown"> {
     if (!this.ready) return "unknown";
     const listed = async (): Promise<string[] | null> => {
       const loaded = await this.within("thread/loaded/list", {});
@@ -451,7 +452,7 @@ class Connection {
     };
     const ids = await listed();
     if (ids === null) return "unknown";
-    const threads: { threadId: string; path: string | null }[] = [];
+    const threads: { threadId: string; path: string | null; running: boolean }[] = [];
     for (const threadId of ids) {
       if (this.subagents.has(threadId)) continue;
       // read each time: the file a thread writes is the server's to say, not one kept from before
@@ -462,7 +463,7 @@ class Connection {
         this.subagents.add(threadId);
         continue;
       }
-      threads.push({ threadId, path: text(thread["path"]) });
+      threads.push({ threadId, path: text(thread["path"]), running: isObject(thread["status"]) && thread["status"]["type"] === "active" });
     }
     // a /new or a /resume while the threads were read: what was read may no longer be what the TUI holds
     const again = await listed();
@@ -841,7 +842,7 @@ export function servedStatus(paneId: string): ServedStatus | null {
  * (Connection.conversations): `unknown` where it did not tell, null where Ovis has no connection to it, or `argv` is
  * not that launch's TUI.
  */
-export async function servedConversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | "unknown" | null> {
+export async function servedConversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null; running: boolean }[] | "unknown" | null> {
   for (const servers of instances) {
     const found = await servers.conversations(paneId, argv);
     if (found !== null) return found;
@@ -1023,7 +1024,7 @@ export class CodexServers {
   }
 
   /** The conversations of this launch's server (Connection.conversations), where `argv` is its TUI's; else null. */
-  async conversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | "unknown" | null> {
+  async conversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null; running: boolean }[] | "unknown" | null> {
     return await this.launchOf(paneId, argv)?.conversations() ?? null;
   }
 

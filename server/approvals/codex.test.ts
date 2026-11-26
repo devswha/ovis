@@ -895,6 +895,42 @@ describe("Ovis on the pane's Codex server", () => {
       expect(recorded.read[FIRST]).toBeDefined();
     });
 
+    describe("among several, takes none", () => {
+      const answer = "The first conversation explains how the launcher keeps its app server beside the terminal it serves.";
+      const resumedFirst = `>_ OpenAI Codex (v0.171.0)\n\n\u203a Explain it\n\n\u2022 ${answer}\n\n\u203a Ask Codex to do anything`;
+      const written = (recorded: { read: Record<string, Message> }, first: string, other = "The second conversation answers something else entirely, about a thread that was started anew.") => {
+        said(first, FIRST, answer);
+        const next = String(((recorded.read[NEW]!)["thread"] as Message)["path"]);
+        said(next, NEW, other);
+        return next;
+      };
+
+      it("while another of them runs a turn, whose answer may not be written yet", async () => {
+        const { first, lookup, recorded } = pane("afterNew", resumedFirst, undefined, (recorded) => ({
+          ...recorded.read, [NEW]: { thread: { ...(recorded.read[NEW]!["thread"] as Message), status: { type: "active", activeFlags: [] } } },
+        }));
+        written(recorded, first);
+        expect(await lookup()).toBeNull();
+      });
+
+      it("when one of them is too long to be weighed whole", async () => {
+        const { first, lookup, recorded } = pane("afterNew", resumedFirst);
+        const next = written(recorded, first);
+        writeFileSync(next, JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "x".repeat(1024 * 1024) } }) + "\n", { flag: "a" });
+        expect(await lookup()).toBeNull();
+      });
+
+      it("when the server loads another thread while the screen is read", async () => {
+        let reads = 0;
+        const { first, lookup, recorded } = pane("afterNew", resumedFirst, undefined, (recorded, loaded) => ({
+          ...recorded.read, [FIRST]: () => { if (++reads === 2 && !loaded.includes("01a21970-0000-7000-8000-000000000001")) loaded.push("01a21970-0000-7000-8000-000000000001"); return recorded.read[FIRST]!; },
+        }));
+        written(recorded, first);
+        expect(await lookup()).toBeNull();
+        expect(reads).toBeGreaterThanOrEqual(2);
+      });
+    });
+
     it("after a /new not written yet, takes none, though the previous conversation is still in the history above", async () => {
       const answer = "The first conversation explains how the launcher keeps its app server beside the terminal it serves.";
       const { first, lookup, codex } = pane("afterNew", `>_ OpenAI Codex (v0.171.0)\n\n\u203a Explain it\n\n\u2022 ${answer}\n\n  Worked for 2s\n\n`

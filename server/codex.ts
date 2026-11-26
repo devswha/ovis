@@ -3336,12 +3336,13 @@ function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[
  * when it holds more (a /new, a /resume of a thread still loaded), none written yet, or it did not tell. null where Ovis
  * has no connection to such a server: the lookup goes on as before.
  */
-async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: string[] }[], home: string): Promise<{ only: { path: string; identity: string } } | { among: string[] } | null> {
+async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: string[] }[], home: string): Promise<{ only: { path: string; identity: string } } | { among: string[]; running?: true } | null> {
   if (codexProcesses.length !== 1) return null;
   const threads = await servedConversations(paneId, codexProcesses[0]!.argv ?? []);
   if (threads === null) return null;
   // the pane's server did not tell: no folder or screen evidence stands in for it
   if (threads === "unknown") return { among: [] };
+  // one that runs a turn now may show an answer its rollout does not hold yet
   const among = threads.flatMap(({ threadId, path }) => {
     const rollout = path === null ? null : codexRolloutPath(path, home);
     // the file the store resolves the path to must be that thread's, not one a link in the store leads to
@@ -3353,7 +3354,7 @@ async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: 
       return { only: { path: among[0]!, identity: `${file.dev}:${file.ino}` } };
     } catch { return { among: [] }; }
   }
-  return { among };
+  return { among, ...(threads.some(({ running }) => running) ? { running: true as const } : {}) };
 }
 
 export async function codexOpenRollout(paneId: string, cwd: string | null | undefined, home = defaultCodexHome()): Promise<string | null> {
@@ -3552,17 +3553,21 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     }
     // which of its own conversations the TUI shows is the server's to say, and it does not: the screen tells it among
     // those only, never among the folder's
-    if (told.among.length === 0) return null;
+    // each one the server holds is weighed whole, and none may run a turn now: an answer another of them gave too, or
+    // streams and has not written yet, or wrote before a cut, proves nothing (a fork, a resumed copy)
+    if (told.among.length === 0 || "running" in told || !told.among.every(readWhole)) return null;
     const shown = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }).catch(() => null);
     const candidates = told.among.flatMap((path) => {
       try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
     });
-    // each one the server holds is weighed, and an answer that another of them gave too proves nothing (a fork, a
-    // resumed copy)
     if (shown === null || candidates.length !== told.among.length) return null;
     // answers too short for the long match: the newest of them shown, each under its own prompt
-    return matchCodexTranscript(shown.text, candidates, new Set(told.among))
-      ?? matchShortCodexAnswers(shown.text, candidates.map((candidate) => ({ ...candidate, cut: !readWhole(candidate.path) })));
+    const matched = matchCodexTranscript(shown.text, candidates, new Set(told.among))
+      ?? matchShortCodexAnswers(shown.text, candidates.map((candidate) => ({ ...candidate, cut: false })));
+    // the screen read is held to what the server held around it: a resume in between may show another
+    const again = matched === null ? null : await servedRollouts(paneId, codexProcesses, home);
+    return again !== null && "among" in again && !("running" in again) && again.among.length === told.among.length
+      && again.among.every((path, at) => path === told.among[at]) ? matched : null;
   }
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
   // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
