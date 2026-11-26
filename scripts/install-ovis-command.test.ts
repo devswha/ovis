@@ -433,10 +433,25 @@ describe.skipIf(platform() === "win32")("the ovis launcher install.sh writes", (
       expect(ran.code, ran.out).toBe(0);
     }
     expect(pc.addCalls().map((call) => [call.release, call.command, ...call.rest])).toEqual([["updated", "add", "--google"], ["updated", "login", "--google"], ["updated", "link", "--google"]]);
-    expect(JSON.parse(pc.ovis(["pair"]).out)).toMatchObject({ root: join(pc.scratch, "first-install", "scripts"), command: "pair" });
     pc.updated("first-install-2", "link");
     expect(pc.ovis(["add"]).code).toBe(0);
     expect(pc.addCalls().at(-1)).toMatchObject({ release: "updated", command: "link" });
+  });
+
+  it("runs every command but start and stop from the release Settings → Updates installed, which the checkout falls behind", () => {
+    const pc = new Pc().written();
+    const root = pc.checkout("first-install", "add");
+    const release = pc.release(root, "add");
+    for (const args of [[], ["status"], ["--help"], ["pair", "--approve"]]) {
+      const ran = pc.ovis(args);
+      expect(ran.code, ran.out).toBe(0);
+      expect(JSON.parse(ran.out)).toMatchObject({ root: join(release, "scripts"), command: args[0] ?? "status", rest: args.slice(1) });
+    }
+    for (const name of ["start", "stop"]) expect(JSON.parse(pc.ovis([name]).out)).toMatchObject({ root: join(root, "scripts"), command: name });
+    // without a release of its own the checkout runs them all
+    const plain = new Pc().written();
+    const alone = plain.checkout("first-install", "add");
+    expect(JSON.parse(plain.ovis(["status"]).out)).toMatchObject({ root: join(alone, "scripts"), command: "status" });
   });
 
   it("hands tui on from a checkout from before it to the release that knows it, and says to update where none does", () => {
