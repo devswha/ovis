@@ -338,6 +338,12 @@ describe("providers", () => {
     const [refused] = (await new UsageService(context(), only("claude")).report()).providers;
     expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 30 }] });
     expect(requests).toHaveLength(2);
+    // even a capture a minute old is not taken once a window it named has started over
+    replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17, resets_at: (NOW - 1000) / 1000 }, seven_day: { used_percentage: 30, resets_at: (NOW + 48 * HOUR) / 1000 } } });
+    utimesSync(path, new Date(NOW - 60_000), new Date(NOW - 60_000));
+    expect((await new UsageService(context(), only("claude")).report()).providers[0]?.windows[0]?.used_percent).toBe(42);
+    expect(requests).toHaveLength(3);
   });
 
   it("shows a status-line reading that comes during a 429's backoff, without asking the endpoint, and keeps the offer meanwhile", async () => {

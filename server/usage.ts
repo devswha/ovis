@@ -388,8 +388,10 @@ const claude: UsageProvider = {
     const local = readStatusline(ctx.home, ctx.now());
     if (!local?.account || local.account.id !== signIn.account?.id) return null;
     const windows = claudeStatuslineWindows(local);
-    // a window that names no reset cannot be told to have started over: only a reading moments old counts for it
-    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current: !local.turnedOver && windows.every((window) => window.resets_at !== null) } : null;
+    // a window that names no reset cannot be told to have started over: only a reading moments old counts for it; one
+    // whose window has started over never does
+    const current = !local.turnedOver && (windows.every((window) => window.resets_at !== null) || ctx.now() - local.readAt < FRESH_MS);
+    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current } : null;
   },
   async read(ctx, signIn) {
     const body = await requestJson(ctx, "https://api.anthropic.com/api/oauth/usage", {
@@ -1342,9 +1344,8 @@ export class UsageService {
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
         windows: [...reading.windows, ...others], ...extras(kept ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
     };
-    // the numbers Claude's own status line drew, while they still describe every window (or were drawn moments ago):
-    // no request, no token
-    if (local && (local.current || now - (local.checkedAt ?? now) < FRESH_MS)) return fromLocal(local);
+    // the numbers Claude's own status line drew, while they still describe every window: no request, no token
+    if (local?.current) return fromLocal(local);
     // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
     // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
     // another one's status line is not wrapped
