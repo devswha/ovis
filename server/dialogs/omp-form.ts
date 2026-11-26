@@ -1,6 +1,6 @@
 import type { DialogReader } from "./registry.ts";
 import type { InteractivePrompt, InteractivePromptAnswer, InteractivePromptStep } from "../../shared/protocol.ts";
-import { ANSI_RE, KEY, type AnswerStep, type CardWords, type OmpFormChoices, type OmpFormCut, type ParsedPrompt, type PromptDraft, finishPrompt, findLastIndex, keySteps, navigationKeys, own } from "./shared.ts";
+import { ANSI_RE, KEY, type AnswerStep, type CardWords, type OmpFormChoices, type OmpFormChoiceWindow, type ParsedPrompt, type PromptDraft, finishPrompt, findLastIndex, keySteps, navigationKeys, own } from "./shared.ts";
 import { formChoiceGroups } from "./omp-form-html.ts";
 
 /**
@@ -149,7 +149,7 @@ type Field = { question: CardWords; draft: PromptDraft; internal: Omit<ParsedPro
 /**
  * The choice group under the cursor. In a scrolled box it can run past an edge: past the top when no caption is above
  * its first option, past the bottom when its last shown row is the box's last one and not the Other row omp draws last.
- * The card then lists what shows and says more is in the terminal, until omp-ask.ts fills it from the call (fillCutChoice).
+ * The card then lists what shows and says more is in the terminal, until omp-ask.ts binds it to the call's radio group.
  */
 function choiceField(rows: readonly string[], at: number, block: Block, context: string | null, scrolled: boolean): Field | null {
   const belongs = (index: number): boolean => OPTION_RE.test(rows[index]!) || (CONTINUATION_RE.test(rows[index]!) && !ERROR_RE.test(rows[index]!));
@@ -178,6 +178,7 @@ function choiceField(rows: readonly string[], at: number, block: Block, context:
   const otherRow = (options.length > 2 || top) && !bottom ? OTHER_RE.exec(options.at(-1)!.label) : null;
   const choices = otherRow ? options.slice(0, -1) : options;
   const other = otherRow ? {
+    label: options.at(-1)!.label,
     // focused and empty, the Other input draws its caret as a space before the placeholder
     text: !otherRow[1]!.startsWith(" ") && !(otherRow[1] === OTHER_PLACEHOLDER && !options.at(-1)!.checked) ? otherRow[1]! : "",
     ticked: options.at(-1)!.checked,
@@ -187,10 +188,13 @@ function choiceField(rows: readonly string[], at: number, block: Block, context:
     caption: top ? "" : joined(rows.slice(block.start, first)),
   };
   const error = ERROR_RE.exec(rows[last + 1] ?? "")?.[1] ?? null;
-  return choiceCard(shown, [context, error].filter(Boolean).join("\n\n") || null, top || bottom ? { shown, top, bottom } : null);
+  const body = [context, error].filter(Boolean).join("\n\n") || null;
+  const field = choiceCard(shown, body, top || bottom);
+  field.internal.ompFormChoices = { shown, top, bottom };
+  return field;
 }
 
-function choiceCard(group: OmpFormChoices, body: string | null, cut: OmpFormCut | null): Field {
+function choiceCard(group: OmpFormChoices, body: string | null, cut: boolean): Field {
   const { labels, checked, multi, cursor, other } = group;
   const otherIndex = other ? labels.length : null;
   const question = group.caption || (labels.length === 1 ? labels[0]! : own("Choose an option"));
@@ -213,7 +217,6 @@ function choiceCard(group: OmpFormChoices, body: string | null, cut: OmpFormCut 
       menuLabels: [...labels, ...(otherIndex === null ? [] : ["Other"])], selectedIndex: cursor,
       checkedOptionIndices: checked.flatMap((ticked, index) => ticked ? [index] : []), customMenuIndex: otherIndex, rejectWithEscapeIndex: null,
       ...(otherIndex === null ? {} : { customSteps: typedOther }),
-      ...(cut ? { ompFormCut: cut } : {}),
       // Space ticks, and Enter leaves the group once something is ticked (it would tick the focused box of an empty one).
       // Other is ticked while it holds text, and Space there would type one: emptying its text unticks it
       ...(multi ? { multiSteps: (picked: number[]) => {
@@ -226,47 +229,56 @@ function choiceCard(group: OmpFormChoices, body: string | null, cut: OmpFormCut 
 }
 
 /**
- * A cut radio group made whole from its `ask` call's HTML: the one group whose labels hold the shown ones in a row,
+ * Match the displayed group to its `ask` call's HTML: the one group whose labels hold the shown ones in a row,
  * starting at its first option unless the top is cut and ending at its last unless the bottom is. The card keeps its id
  * and its words around the options. A checkbox group stays cut: its hidden options' ticks are not on screen, and Space
  * toggles them.
  */
-export function fillCutChoice(parsed: ParsedPrompt, html: string): ParsedPrompt | null {
-  const cut = parsed.ompFormCut;
-  if (!cut || cut.shown.multi || cut.shown.labels.length === 0) return null;
-  const { shown, top, bottom } = cut;
+export function bindFormChoiceGroup(parsed: ParsedPrompt, html: string): ParsedPrompt {
+  const window: OmpFormChoiceWindow | undefined = parsed.ompFormChoices;
+  if (!window || window.shown.labels.length === 0) return parsed;
+  const { shown, top, bottom } = window;
   const bare = (text: string): string => text.replace(/\s+/gu, "");
-  const wanted = shown.labels.map(bare);
   // the Other row is drawn last: shown, the group's end shows with it
   const ends = !bottom || shown.other !== null;
-  const found = formChoiceGroups(html).flatMap((group) => {
-    if (group.multi || group.disabled || (ends && group.other !== (shown.other !== null))) return [];
+  const found = formChoiceGroups(html).flatMap((group, index) => {
+    if (group.multi !== shown.multi || group.disabled) return [];
+    if (ends && group.other && shown.other === null) return [];
+    const fixedOther = !group.other ? shown.other : null;
+    const wanted = [...shown.labels, ...(fixedOther ? [fixedOther.label] : [])].map(bare);
     const labels = group.labels.map(bare);
     const offsets: number[] = [];
     for (let offset = 0; offset + wanted.length <= labels.length && (top || offset === 0); offset += 1) {
       if (ends && offset + wanted.length !== labels.length) continue;
       if (wanted.every((label, index) => labels[offset + index] === label)) offsets.push(offset);
     }
-    return offsets.map((offset) => ({ group, offset }));
+    return offsets.map((offset) => ({ group, index, offset, fixedOther }));
   });
-  if (found.length !== 1) return null;
-  const { group, offset } = found[0]!;
+  if (found.length !== 1) return parsed;
+  const { group, index, offset, fixedOther } = found[0]!;
+  const bound = group.multi ? parsed : { ...parsed, ompFormRadioGroup: index };
+  if ((!top && !bottom || group.multi) && !fixedOther) return bound;
+  const shownChecks = fixedOther ? [...shown.checked, fixedOther.ticked] : shown.checked;
+  const labels = group.multi ? [...shown.labels, ...(fixedOther ? [fixedOther.label] : [])] : group.labels;
   const field = choiceCard({
-    labels: group.labels, multi: false, caption: shown.caption,
-    checked: group.labels.map((_, index) => shown.checked[index - offset] ?? false),
-    cursor: shown.cursor === shown.labels.length ? group.labels.length : offset + shown.cursor,
-    other: group.other ? shown.other ?? { text: "", ticked: false } : null,
-  }, null, null);
+    labels, multi: group.multi, caption: shown.caption,
+    checked: group.multi ? shownChecks : labels.map((_, index) => shownChecks[index - offset] ?? false),
+    cursor: group.multi ? shown.cursor : group.other && shown.cursor === shown.labels.length ? labels.length : offset + shown.cursor,
+    other: group.other ? shown.other ?? { label: "", text: "", ticked: false } : null,
+  }, null, group.multi && (top || bottom));
   const whole = finishPrompt("omp", field.draft, { ...field.internal, responder: "omp-form" });
   const kept = Object.entries(parsed.own_text ?? {}).filter(([key]) => key !== "question" && key !== "labels");
   const ownText = { ...Object.fromEntries(kept), ...whole.own_text };
   return {
-    ...parsed,
+    ...bound,
+    // A click carries an index, so the raw rows and the restored option list must never share an id.
+    id: `${parsed.id}@${whole.id}`,
     question: whole.question, options: whole.options, custom_option_index: whole.custom_option_index,
-    default_option_index: whole.default_option_index, default_custom_text: whole.default_custom_text,
+    default_option_index: whole.default_option_index, default_option_indices: whole.default_option_indices,
+    default_custom_text: whole.default_custom_text, checks_with_text: whole.checks_with_text,
     own_text: Object.keys(ownText).length > 0 ? ownText : undefined,
     menuLabels: whole.menuLabels, selectedIndex: whole.selectedIndex, checkedOptionIndices: whole.checkedOptionIndices,
-    customMenuIndex: whole.customMenuIndex, customSteps: whole.customSteps, ompFormCut: undefined,
+    customMenuIndex: whole.customMenuIndex, customSteps: whole.customSteps, multiSteps: whole.multiSteps,
   };
 }
 
@@ -328,7 +340,7 @@ function dropdownField(rows: readonly string[], at: number, block: Block, contex
   };
 }
 
-function textField(rows: readonly string[], at: number, block: Block, context: string | null, label: string): Field | null {
+function textField(rows: readonly string[], at: number, block: Block, context: string | null, label: string, allowMultilineDraft: boolean): Field | null {
   let end = at + 1;
   while (end < block.end && VALUE_RE.test(rows[end]!)) end += 1;
   const lines = rows.slice(at + 1, end).map((row) => VALUE_RE.exec(row)![1] ?? "");
@@ -337,7 +349,7 @@ function textField(rows: readonly string[], at: number, block: Block, context: s
   // focused and empty, the input draws its caret as a space before the placeholder
   const value = lines[0]?.startsWith(" ") ? "" : lines.join("\n");
   // Ctrl+K and Ctrl+U empty one line: a textarea holding several is changed in the terminal
-  if (value.includes("\n")) return null;
+  if (value.includes("\n") && !allowMultilineDraft) return null;
   const [, name, bounds] = LABEL_SUFFIX_RE.exec(label)!;
   const caption = joined(rows.slice(block.start, at));
   const question = name!.trim() || caption || own("Type your answer");
@@ -357,7 +369,7 @@ function textField(rows: readonly string[], at: number, block: Block, context: s
   };
 }
 
-function parseOmpForm(screen: string): ParsedPrompt | null {
+function parseOmpForm(screen: string, allowMultilineDraft = false): ParsedPrompt | null {
   const box = formBox(screen);
   if (!box) return null;
   const { rows } = box;
@@ -395,7 +407,7 @@ function parseOmpForm(screen: string): ParsedPrompt | null {
     const labelled = valueRow && at + 1 < block.end ? DROPDOWN_RE.exec(valueRow[1] ?? "") : null;
     if (bare) field = dropdownField(rows, at, block, intro, "", bare, at);
     else if (labelled) field = dropdownField(rows, at, block, intro, cursorText.replace(/ \*$/u, ""), labelled, at + 1);
-    else if (valueRow && at + 1 < block.end) field = textField(rows, at, block, intro, cursorText);
+    else if (valueRow && at + 1 < block.end) field = textField(rows, at, block, intro, cursorText, allowMultilineDraft);
   }
   if (!onSubmit && !field) return null;
 
@@ -420,6 +432,7 @@ function parseOmpForm(screen: string): ParsedPrompt | null {
     steps, can_step_back: current > 0, can_step_next: current < fields,
   } : {};
   const nativeSteps = navigable ? { nativeSteps: { identity: JSON.stringify(["omp-form", fields]), index: current, count: fields + 1, next: KEY.tab, previous: KEY.backtab } } : {};
+  const hashed = { steps: undefined, can_step_back: undefined, can_step_next: undefined, call: navigable ? String(current) : undefined };
 
   if (onSubmit) {
     const answers: InteractivePromptAnswer[] = folded.map((entry) => ({ question: entry.label, answer: entry.answer }));
@@ -432,10 +445,16 @@ function parseOmpForm(screen: string): ParsedPrompt | null {
       ...nativeSteps,
       responder: "omp-form", menuLabels: ["Submit"], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
       optionSteps: [keySteps([KEY.enter])],
-    }, { steps: undefined, can_step_back: undefined, can_step_next: undefined });
+    }, hashed);
   }
   return finishPrompt("omp", { ...field!.draft, ...navigation }, { ...field!.internal, ...nativeSteps, responder: "omp-form" },
-    { steps: undefined, can_step_back: undefined, can_step_next: undefined });
+    hashed);
+}
+
+/** A pasted textarea can prove it still holds the keys even when its draft is too tall to offer a new card. */
+export function ompFormTextareaFocus(screen: string): ParsedPrompt | null {
+  const field = parseOmpForm(screen, true);
+  return field?.default_custom_text?.includes("\n") && field.ompFormChoices === undefined ? field : null;
 }
 
 export const readers: readonly DialogReader[] = [

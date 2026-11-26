@@ -430,18 +430,20 @@ describe("the answer route moves between questions, one key at a time, each seen
   describe("an omp 19 form", () => {
     // the spy withPane installs on the session lookup
     interface LookupSpy { mockRejectedValue: (error: Error) => void; mockResolvedValue: (value: { path: string; blobs: null }) => void }
-    const FORM_CALL = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "form-call", name: "ask", arguments: { html: "<form></form>" } }] } }) + "\n";
     const formScreen = readFileSync(new URL("./fixtures/omp-form-19.1.0-radio-100.txt", import.meta.url), "utf8");
 
     /** a pane showing the form, whose session holds its one open `{ html }` ask call */
-    async function withForm(run: (pane: Pane, lookup: LookupSpy) => Promise<void>): Promise<void> {
-      await withPane("omp", formScreen, async pane => {
+    async function withForm(
+      run: (pane: Pane, lookup: LookupSpy, path: string) => Promise<void>,
+      { screen = formScreen, html = "<form></form>" } = {},
+    ): Promise<void> {
+      await withPane("omp", screen, async pane => {
         const root = mkdtempSync(join(tmpdir(), "question-steps-form-"));
         const path = join(root, "session.jsonl");
-        writeFileSync(path, FORM_CALL);
+        writeFileSync(path, JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "form-call", name: "ask", arguments: { html } }] } }) + "\n");
         const lookup = conversation.ompTranscriptPath as unknown as LookupSpy;
         lookup.mockResolvedValue({ path, blobs: null });
-        try { await run(pane, lookup); } finally { rmSync(root, { recursive: true, force: true }); }
+        try { await run(pane, lookup, path); } finally { rmSync(root, { recursive: true, force: true }); }
       });
     }
 
@@ -455,6 +457,106 @@ describe("the answer route moves between questions, one key at a time, each seen
         expect(await move((await card()).id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
         expect(pane.sent).toEqual(["down", "enter"]);
       });
+    });
+
+    test("picks a radio option that scrolls into view while the cursor moves", async () => {
+      const before = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-46.txt", import.meta.url), "utf8");
+      const after = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-down-46.txt", import.meta.url), "utf8");
+      const html = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut.html", import.meta.url), "utf8");
+      await withForm(async pane => {
+        pane.onSent = key => {
+          if (key === "down") pane.screen = after;
+          if (key === "enter") pane.screen = "";
+        };
+        expect(await move((await card()).id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["down", "enter"]);
+      }, { screen: before, html });
+    });
+
+    test("an old clipped card cannot answer a different option after the session lookup recovers", async () => {
+      const screen = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-top-46.txt", import.meta.url), "utf8");
+      const html = readFileSync(new URL("./fixtures/omp-form-19.1.1-cut-top.html", import.meta.url), "utf8");
+      await withForm(async (pane, lookup, path) => {
+        lookup.mockRejectedValue(new Error("busy"));
+        const clipped = await card();
+        expect(clipped.options[2]?.label).toStartWith("South America");
+        lookup.mockResolvedValue({ path, blobs: null });
+        const restored = await card();
+        expect(restored.options[2]?.label).toStartWith("Asia Pacific");
+        expect(await move(clipped.id, { option_index: 2 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      }, { screen: screen.replace("❯ ○ South America", "  ○ South America").replace("  ○ Asia Pacific", "❯ ○ Asia Pacific"), html });
+    });
+
+    test("an old card cannot answer a different form field drawn alike", async () => {
+      const open = ["Region", "❯ ◉ North", "  ○ South", "  ○ Other: type your own"];
+      const folded = ["✓ Region", "   ✓ North   South"];
+      const screen = (first: boolean): string => [
+        "╭─ Ask · 2 of 2 answered ─────────╮",
+        ...(first ? [...open, "", ...folded] : [...folded, "", ...open]).concat(["", "  Submit"]).map(row => `│ ${row.padEnd(30)} │`),
+        "╰────────────────────────────────╯",
+      ].join("\n");
+      await withForm(async pane => {
+        const first = await card();
+        pane.screen = screen(false);
+        expect(await move(first.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual([]);
+      }, { screen: screen(true) });
+    });
+
+    test("a fixed option called Other is selected with arrows and Enter, not typed into", async () => {
+      const screen = formScreen.replace("Other: type your own", "Other: archive      ");
+      const html = '<form><label><input type="radio" name="store">SQLite: one file, no new service</label><label><input type="radio" name="store">Redis: shared across instances</label><label><input type="radio" name="store">Other: archive</label></form>';
+      await withForm(async pane => {
+        const shown = await card();
+        expect(shown.options[2]?.label).toBe("Other: archive");
+        expect(shown.custom_option_index).toBeNull();
+        let downs = 0;
+        pane.onSent = key => {
+          if (key === "down") {
+            downs += 1;
+            pane.screen = screen.replace("❯ ◉ SQLite", "  ◉ SQLite")
+              .replace(downs === 1 ? "  ○ Redis" : "  ○ Other", downs === 1 ? "❯ ○ Redis" : "❯ ○ Other");
+          }
+          if (key === "enter") pane.screen = "";
+        };
+        expect(await move(shown.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["down", "down", "enter"]);
+      }, { screen, html });
+    });
+
+    test.each(["before paste", "before Enter"] as const)("takes no more editor keys when another field takes focus %s", async (when) => {
+      const number = readFileSync(new URL("./fixtures/omp-form-19.1.0-number-100.txt", import.meta.url), "utf8");
+      const notes = readFileSync(new URL("./fixtures/omp-form-19.1.0-textarea-100.txt", import.meta.url), "utf8");
+      const paste = "text:\u001b[200~7\u001b[201~";
+      await withForm(async pane => {
+        pane.onSent = key => {
+          if (key === "ctrl+u") pane.screen = when === "before paste" ? notes : number.replace("│ 30", "│   ");
+          if (key === paste) pane.screen = notes;
+        };
+        expect(await move((await card()).id, { custom_text: "7" })).toEqual({ status: 409, code: "prompt_changed" });
+        expect(pane.sent).toEqual(when === "before paste" ? ["ctrl+k", "ctrl+u"] : ["ctrl+k", "ctrl+u", paste]);
+      }, { screen: number });
+    });
+
+    test("a pasted multiline draft can still be confirmed on its own textarea", async () => {
+      const screen = readFileSync(new URL("./fixtures/omp-form-19.1.0-textarea-100.txt", import.meta.url), "utf8");
+      const paste = "text:\u001b[200~line one\nline two\u001b[201~";
+      await withForm(async pane => {
+        pane.onSent = key => {
+          if (key === paste) {
+            let line = 0;
+            pane.screen = screen.replace(/^(│   │) {9}/gmu, (row, prefix: string) => {
+              if (line >= 2) return row;
+              line += 1;
+              return `${prefix} line ${line === 1 ? "one" : "two"}`;
+            });
+          }
+          if (key === "enter") pane.screen = "";
+        };
+        expect(await move((await card()).id, { custom_text: "line one\nline two" })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["ctrl+k", "ctrl+u", paste, "enter"]);
+      }, { screen });
     });
 
     test("takes no key while the session lookups keep failing, with a cached lookup, after it is dropped, and with none", async () => {

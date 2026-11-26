@@ -15,6 +15,7 @@ import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompFormPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
+import { ompFormTextareaFocus } from "./dialogs/omp-form.ts";
 import { gjcCallStillOpen, gjcCallStillOpenInFile, withGjcFallback } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
@@ -2217,6 +2218,16 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const sideways = reader?.list === "slider";
         let seen: ParsedPrompt | null = null;
         const looked = (shown: ParsedPrompt | null): void => { seen = shown; lastSeen = shown?.id; };
+        const sameBoundRadio = (shown: ParsedPrompt): boolean => moved && parsed.ompFormRadioGroup !== undefined
+          && shown.ompFormRadioGroup === parsed.ompFormRadioGroup && shown.ompCall === parsed.ompCall
+          && JSON.stringify(shown.menuLabels) === JSON.stringify(parsed.menuLabels);
+        const sameOmpFormField = (shown: ParsedPrompt | null, screen: string): boolean => {
+          const field = shown ?? (customTyped && parsed.ompFormChoices === undefined ? ompFormTextareaFocus(screen) : null);
+          if (field?.responder !== "omp-form" || field.selectedIndex !== cursor) return false;
+          return sameBoundRadio(field) || (field.question === parsed.question && field.nativeSteps?.index === parsed.nativeSteps?.index
+            && (shown === null || field.ompCall === parsed.ompCall)
+            && JSON.stringify(field.menuLabels) === JSON.stringify(parsed.menuLabels));
+        };
         const aimed = (shown: ParsedPrompt | null, screen: string): boolean => {
           if (interaction) return shown?.responder === responder && interaction.matches(screen);
           if ((responder === "pi-question" || responder === "pi-confirm") && cursor !== 0) {
@@ -2224,7 +2235,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             return dialog?.id === parsed.id && dialog.selectedIndex === cursor && promptTailIsActive(dialog, screen);
           }
           if (responder === "dsh-question" && cursor === parsed.customMenuIndex) return dshFreeTextRow(screen, parsed, "") === "typed";
-          if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
+          if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id || sameBoundRadio(shown))) return false;
           return shown.selectedIndex === cursor && ticked(shown)
             && (responder !== "pi-questionnaire-question" || shown.piQuestionnaireInput === undefined);
         };
@@ -2264,6 +2275,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               && (parsed.gjcCall === undefined || shown?.gjcCall === parsed.gjcCall)
               && (!onCursor || card.selectedIndex === cursor);
           }
+          if (shown !== null && sameBoundRadio(shown)) return !onCursor || shown.selectedIndex === cursor;
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
           return shown.question === parsed.question && shown.ompCall === parsed.ompCall
             && shown.nativeSteps?.index === parsed.nativeSteps?.index
@@ -2318,7 +2330,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const claudeDown = responder === "claude-question" && parsed.multi_select && step.keys?.[0] === KEY.down;
           const gjcEditorPaste = committed && !customTyped && responder === "fallback-gjc-menu" && step.text !== undefined && parsed.gjcCall !== undefined;
           const typedEditor = customTyped && step.keys?.length === 1 && (step.keys[0] === KEY.enter || claudeDown) ? editorAnswer : undefined;
-          if (!committed || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste) {
+          if (!committed || responder === "omp-form" || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste) {
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
               (shown, screen, settled) => {
@@ -2334,6 +2346,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                   if (responder === "opencode-v1-question") return openCodeV1CustomEditorMatches(screen, typedEditor);
                   return shown?.agent === parsed.agent && shown.customEditorMatches?.(typedEditor, claudeDown ? "editor" : "submit") === true;
                 }
+                // The open call only identifies the form: Tab or Esc in the terminal can hand focus elsewhere mid-answer.
+                if (responder === "omp-form" && committed) return sameOmpFormField(shown, screen);
                 return lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch) : sameQuestion(shown, screen, onCursor, settled);
               }, () => ({ written: write() }),
               typedEditor || gjcEditorPaste ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));

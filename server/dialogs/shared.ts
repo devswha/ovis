@@ -150,8 +150,10 @@ export type ParsedPrompt = InteractivePrompt & {
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
   ompCall?: string;
-  /** omp 19 form: the focused choice group runs past the scrolled box's edge (dialogs/omp-form.ts); omp-ask.ts fills it from the call's HTML */
-  ompFormCut?: OmpFormCut;
+  /** The choice group shown in an omp 19 form; rows may run past the scrolled box's edges. */
+  ompFormChoices?: OmpFormChoiceWindow;
+  /** The uniquely matched radio group in the bound omp form call, stable as the box scrolls. */
+  ompFormRadioGroup?: number;
   /** gjc's selector: its title's rows as drawn, top to bottom, which the card splits into a question and a body (server/gjc-ask.ts) */
   gjcTitleRows?: string[];
   /** gjc's selector: the width of its outer border rule, when framed, for width-consistent soft-wrap checks (server/gjc-ask.ts) */
@@ -201,12 +203,12 @@ export interface OmpFormChoices {
   /** an index into `labels`, or `labels.length` on the Other row */
   cursor: number;
   /** the Other row, null when none shows */
-  other: { text: string; ticked: boolean } | null;
+  other: { label: string; text: string; ticked: boolean } | null;
   caption: string;
 }
 
-/** The rows of a choice group the scrolled box shows: more of its options may be above (`top`) or below (`bottom`). */
-export interface OmpFormCut {
+/** The visible rows of a choice group: more options may be above (`top`) or below (`bottom`). */
+export interface OmpFormChoiceWindow {
   shown: OmpFormChoices;
   top: boolean;
   bottom: boolean;

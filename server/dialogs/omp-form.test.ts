@@ -181,10 +181,11 @@ describe("omp 19 Ask form cut by a scrolled box", () => {
     expect(pressed(other, { custom_text: "later" })).toEqual(["ctrl+k", "ctrl+u", PASTE("later"), KEY.enter]);
   });
 
-  it("makes a cut radio group whole from its call's HTML, keeping the card's id", () => {
+  it("makes a cut radio group whole from its call's HTML with a different id for the new option indexes", () => {
     const first = scrolled("cut-46");
     const whole = bound(first, html("cut"));
-    expect(whole).toMatchObject({ id: first.id, question: "Q2 · How far should I go?", options: SHIP.map((label) => ({ label })), custom_option_index: 3, default_option_index: 0 });
+    expect(whole.id).not.toBe(first.id);
+    expect(whole).toMatchObject({ question: "Q2 · How far should I go?", options: SHIP.map((label) => ({ label })), custom_option_index: 3, default_option_index: 0 });
     expect(whole.own_text?.question).toBeUndefined();
     expect(pressed(whole, { option_index: 2 })).toEqual([KEY.down, KEY.down, KEY.enter]);
     expect(pressed(whole, { custom_text: "later" })).toEqual([KEY.down, KEY.down, KEY.down, "ctrl+k", "ctrl+u", PASTE("later"), KEY.enter]);
