@@ -1,14 +1,14 @@
 /**
  * The SSH an account add vouches with (docs/account.md, "Adding a PC over SSH"), against a throwaway OpenSSH server on
  * 127.0.0.1 with its own host key and authorized keys: a host key is trusted only on the person's yes (never accepted
- * silently), a changed one is refused, no password is ever asked, and the PC's owner socket is reached only through the
- * connection's own folder.
+ * silently), a changed one is refused, no password is ever asked, and the PC's owner socket is reached on an ssh's own
+ * stdio, over the master as on Linux and macOS and as its own ssh as on Windows.
  */
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { askRecoverySocket, openRecoverySocket } from "./account/recovery.ts";
+import { openRecoverySocket } from "./account/recovery.ts";
 import { shellQuote } from "./machine-security.ts";
 import { SshConnection } from "./ssh.ts";
 
@@ -57,14 +57,14 @@ async function sshd(root: string, hostKey: string, options: { password?: boolean
 }
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "ovis-ssh-account-add-"));
+  const root = mkdtempSync(join(tmpdir(), "osa-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   keygen(join(root, "host"));
   keygen(join(root, "client"));
   writeFileSync(join(root, "authorized_keys"), readFileSync(join(root, "client.pub")), { mode: 0o600 });
   const state = join(root, "state");
-  const connect = (port: number, identity = join(root, "client")) => {
-    const ssh = new SshConnection({ destination: `${userInfo().username}@127.0.0.1`, port, identity_file: identity }, state);
+  const connect = (port: number, identity = join(root, "client"), multiplexed = true) => {
+    const ssh = new SshConnection({ destination: `${userInfo().username}@127.0.0.1`, port, identity_file: identity }, state, undefined, false, multiplexed);
     ssh.publicKeyOnly = true;
     cleanups.push(() => ssh.close());
     return ssh;
@@ -82,24 +82,18 @@ test.skipIf(!available)("an unknown host key the person does not confirm: no con
   expect(readFileSync(join(state, "known_hosts"), "utf8")).toBe("");
 });
 
-test.skipIf(!available)("a confirmed host key connects, and the PC's owner socket answers through the connection's own folder; a changed key is refused unasked", async () => {
+test.skipIf(!available)("a confirmed host key connects, and the PC's owner socket answers over the master; a changed key is refused unasked", async () => {
   const { root, connect, asked, answering } = fixture();
   const first = await sshd(root, join(root, "host"));
   const port = first.port;
-  const owner = mkdtempSync(join(root, "owner-"));
+  const owner = mkdtempSync(join(root, "o-"));
   const socket = openRecoverySocket({ stateDir: owner, handle: async (request) => ({ heard: request }) });
   if ("refused" in socket) throw new Error(socket.refused);
   cleanups.push(() => socket.stop());
   const ssh = connect(port);
   await ssh.start(answering("yes"));
   expect(asked.map((entry) => entry.hostKey)).toEqual([true]);
-  const local = await ssh.forwardSocket(socket.path);
-  expect(local.startsWith(join("/tmp", "herdr-ssh-"))).toBe(true);
-  expect(await askRecoverySocket(local, { act: "account_add_inspect" })).toEqual({ heard: { act: "account_add_inspect" } });
-  // closed, the forward is gone from the master: nothing reaches the PC's socket through it any more
-  await ssh.closeSocketForward(local);
-  expect(existsSync(local)).toBe(false);
-  await expect(askRecoverySocket(local, { act: "account_add_inspect" })).rejects.toThrow();
+  expect(JSON.parse(await ssh.askSocket(socket.path, JSON.stringify({ act: "account_add_inspect" })))).toEqual({ heard: { act: "account_add_inspect" } });
   expect(ssh.connected()).toBe(true);
   ssh.close();
   // the same address now shows another key: refused by ssh, never asked about again
@@ -109,6 +103,31 @@ test.skipIf(!available)("a confirmed host key connects, and the PC's owner socke
   asked.length = 0;
   await expect(connect(port).start(answering("yes"))).rejects.toThrow(/IDENTIFICATION HAS CHANGED|Host key verification failed/);
   expect(asked).toEqual([]);
+});
+
+test.skipIf(!available)("as on Windows, with no connection sharing: the PC's owner socket answers on an ssh of its own, and a stopped request ends", async () => {
+  const { root, connect, answering } = fixture();
+  const { port } = await sshd(root, join(root, "host"));
+  const owner = mkdtempSync(join(root, "o-"));
+  const never = Promise.withResolvers<unknown>();
+  const reached = Promise.withResolvers<void>();
+  const socket = openRecoverySocket({ stateDir: owner, handle: async (request) => {
+    if ((request as { act: string }).act !== "account_add_take") return { heard: request };
+    reached.resolve();
+    return await never.promise;
+  } });
+  if ("refused" in socket) throw new Error(socket.refused);
+  cleanups.push(() => { never.resolve(null); socket.stop(); });
+  const ssh = connect(port, join(root, "client"), false);
+  await ssh.start(answering("yes"));
+  expect(JSON.parse(await ssh.askSocket(socket.path, JSON.stringify({ act: "account_add_inspect" })))).toEqual({ heard: { act: "account_add_inspect" } });
+  const stop = new AbortController();
+  const waiting = ssh.askSocket(socket.path, JSON.stringify({ act: "account_add_take" }), stop.signal);
+  // stopped while that PC holds the request, as a channel's ten minutes or a given-up add stop a take that waits
+  await reached.promise;
+  stop.abort();
+  await expect(waiting).rejects.toThrow("Connection cancelled");
+  expect(ssh.connected()).toBe(true);
 });
 
 test.skipIf(!available)("a key the PC does not accept fails: no password is ever asked, even where the server takes one", async () => {

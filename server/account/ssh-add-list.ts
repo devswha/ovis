@@ -31,8 +31,8 @@ export interface SshListDeps {
   readonly list: Pick<ListFollow, "allowRefusal" | "status" | "own" | "addPc" | "holdsPcRead">;
   /** The take over the add's SSH channel, naming the list and the adder (MachineManager.accountTake); its refusals throw. */
   take(named: AccountAddNamed): Promise<SshListTaken | { readonly waiting: AccountAddCard }>;
-  /** Closes the add's forward: this add ends before a take was answered for good. */
-  end(): Promise<void>;
+  /** Closes the add's channel to that PC: this add ends before a take was answered for good. */
+  end(): void;
   /** How often the take goes again after the entry is placed while that PC has not read it yet. */
   readonly tries?: number;
   wait?(ms: number): Promise<void>;
@@ -116,8 +116,8 @@ export async function addOverSshByList(deps: SshListDeps): Promise<SshListTaken 
   try {
     return await signedIn(deps, named, pinned, taken.waiting);
   } catch (error) {
-    // whatever stopped it, the forward to that PC's owner socket goes with this add
-    await deps.end();
+    // whatever stopped it, the channel to that PC's owner socket goes with this add
+    deps.end();
     throw error;
   }
 }
@@ -127,7 +127,7 @@ async function signedIn(deps: SshListDeps, named: AccountAddNamed, pinned: strin
   const { list } = deps;
   // a PC that cannot read the list, or that the list put out, would never take an entry: none is signed for it
   if (card.standing !== "waiting") {
-    await deps.end();
+    deps.end();
     return card.standing === "out"
       ? refuse("list_removed", "That PC was removed from your account's list. It comes back only as a new PC: run ovis add on it.", 409)
       : refuse("that_pc_behind", "That PC's Ovis cannot read your account's list. Update Ovis there, then add it again.", 409);
@@ -135,12 +135,12 @@ async function signedIn(deps: SshListDeps, named: AccountAddNamed, pinned: strin
   // That PC's card, as it handed it over this SSH session, must be its key's own for this list and the relay key the
   // inspect read over the same session, before anything is signed. Nothing the account service holds stands in for it
   if (card.endpoint !== deps.endpoint || !await cardHolds({ key: card.key, enc: card.enc, list: pinned, endpoint: deps.endpoint, invite: null }, card.card)) {
-    await deps.end();
+    deps.end();
     return refuse("list_not_added", "That PC's card is not its own for your account's list and the relay key read over SSH, so nothing was signed.", 409);
   }
   const added = await list.addPc({ ...card, endpoint: deps.endpoint });
   if ("refused" in added) {
-    await deps.end();
+    deps.end();
     return notAdded(added);
   }
   const wait = deps.wait ?? pause;
@@ -154,12 +154,12 @@ async function signedIn(deps: SshListDeps, named: AccountAddNamed, pinned: strin
       // stopped there, never "not added", and adding it again finishes it with nothing more signed
       if (!(error instanceof AccountAddError)) throw error;
       console.warn(`[account] the PC an add over SSH reached did not take its entry: ${error.code}`);
-      await deps.end();
+      deps.end();
       return refuse("list_unbound", UNCONFIRMED, 409);
     }
     // `listJoined` as that PC said it: one that followed the list before this take (another way in) joined nothing by it
     if (!("waiting" in taken)) return await seen(deps, pinned, taken);
   }
-  await deps.end();
+  deps.end();
   return refuse("list_unbound", UNBOUND, 409);
 }

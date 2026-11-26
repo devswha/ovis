@@ -22,7 +22,7 @@ import { posixHost } from "../remote-host.ts";
 import { SshConnection } from "../ssh.ts";
 import { TestList } from "./list.test-helpers.ts";
 import { pairingPc, type Pc } from "./pairing.test-helpers.ts";
-import { askRecovery, openRecoverySocket } from "./recovery.ts";
+import { askRecovery, askRecoverySocket, openRecoverySocket } from "./recovery.ts";
 
 const ACCOUNT = "acct_1";
 const REMOTE_SOCKET = "/home/fixture/.local/state/ovis/recover/recover.sock";
@@ -116,7 +116,7 @@ function rawRecorded(pc: Pc): { path: string; lines: string[] } {
   return { path, lines };
 }
 
-/** SSH stood in for: the job reaches that PC's own Ovis, whose registration names its owner socket, forwarded to `socket`. */
+/** SSH stood in for: the job reaches that PC's own Ovis, whose registration names its owner socket, reached at `socket`. */
 function sshTo(socket: string): void {
   const herdr = "/home/fixture/.config/herdr/herdr.sock";
   const descriptor = (): BridgeDescriptor => ({ pid: 12345, port: 17317, token: "a".repeat(64), socket_path: herdr, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false, recover_socket: REMOTE_SOCKET });
@@ -131,8 +131,7 @@ function sshTo(socket: string): void {
     spyOn(SshConnection.prototype, "start").mockImplementation(async () => {}),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
     spyOn(SshConnection.prototype, "connected").mockReturnValue(true),
-    spyOn(SshConnection.prototype, "forwardSocket").mockImplementation(async () => socket),
-    spyOn(SshConnection.prototype, "closeSocketForward").mockImplementation(async () => {}),
+    spyOn(SshConnection.prototype, "askSocket").mockImplementation(async (_path, line) => JSON.stringify(await askRecoverySocket(socket, JSON.parse(line)))),
     spyOn(MachineManager.prototype as unknown as { verify(): Promise<unknown> }, "verify").mockImplementation(async () => ({
       endpoint: { url: "http://127.0.0.1:1", token: "fixture-token" },
       identity: { ...descriptor(), managed_remote: false, socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 } } satisfies BridgeIdentity,
@@ -237,7 +236,7 @@ test.skipIf(process.platform === "win32")("the other PC already in the list by a
   expect(b.app.context.services.accountList!.status()).toMatchObject({ pinned: true, standing: "in" });
 });
 
-test.skipIf(process.platform === "win32")("a PC the window did not list and admit is not placed: the account service asks its own post and an own sign-in's listing, and the forward closes", async () => {
+test.skipIf(process.platform === "win32")("a PC the window did not list and admit is not placed: the account service asks its own post and an own sign-in's listing, and the channel closes", async () => {
   const a = await addingPc({ list: true });
   const b = await otherPc(a.pc.account);
   const socket = recorded(b);

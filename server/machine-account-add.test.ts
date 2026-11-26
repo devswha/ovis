@@ -20,7 +20,7 @@ import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { TestList } from "./account/list.test-helpers.ts";
 import { pairingPc, type Pc } from "./account/pairing.test-helpers.ts";
-import { askRecovery, openRecoverySocket } from "./account/recovery.ts";
+import { askRecovery, askRecoverySocket, openRecoverySocket } from "./account/recovery.ts";
 import { sendAccountAddAct } from "./account-add-channel.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -43,7 +43,7 @@ async function otherPc(options: Parameters<typeof pairingPc>[0] = {}): Promise<P
 }
 
 /**
- * That PC's recovery socket as the forward reaches it, behind a stand-in that records every request it is sent: the
+ * That PC's recovery socket as the add's SSH reaches it, behind a stand-in that records every request it is sent: the
  * socket itself answers every recovery act, so what reaches it is what the adding PC chose to send. `answer`: what the
  * stand-in answers in place of that PC's own answer (an older Ovis there).
  */
@@ -57,7 +57,7 @@ function recorded(pc: Pc, answer: (request: unknown, said: unknown) => unknown =
 }
 
 /**
- * That PC's recovery socket behind a forward that drops the take's answer: the take reaches that PC (which binds), then
+ * That PC's recovery socket behind an SSH that drops the take's answer: the take reaches that PC (which binds), then
  * the connection closes with nothing said, as when SSH drops while that PC waits for its relay. After that, `later`
  * says whether an inspect is answered or dropped too.
  */
@@ -100,8 +100,10 @@ function fixture(remote: { descriptor: "own" | "managed" | "none"; recoverSocket
   const descriptor = (): BridgeDescriptor => ({ pid: 12345, port: 17317, token: "a".repeat(64), socket_path: socket, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION,
     managed_remote: remote.descriptor === "managed", ...(remote.descriptor === "own" && remote.recoverSocket !== null ? { recover_socket: remote.recoverSocket ?? REMOTE_SOCKET } : {}) });
   const commands: string[] = [];
+  // the sockets the add asked on, and one entry for each of its channels that closed
   const forwarded: string[] = [];
   const closed: string[] = [];
+  const channels = new Set<AbortSignal>();
   const prompts: boolean[] = [];
   const mocks: { mockRestore(): void }[] = [
     spyOn(SshConnection.prototype, "run").mockImplementation(async (script) => {
@@ -121,8 +123,12 @@ function fixture(remote: { descriptor: "own" | "managed" | "none"; recoverSocket
     }),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
     spyOn(SshConnection.prototype, "connected").mockReturnValue(true),
-    spyOn(SshConnection.prototype, "forwardSocket").mockImplementation(async (path) => { forwarded.push(path); return remote.socketPath ?? "/nonexistent"; }),
-    spyOn(SshConnection.prototype, "closeSocketForward").mockImplementation(async (local) => { closed.push(local); }),
+    spyOn(SshConnection.prototype, "askSocket").mockImplementation(async (path, line, signal) => {
+      const at = remote.socketPath ?? "/nonexistent";
+      if (!forwarded.includes(path)) forwarded.push(path);
+      if (signal !== undefined && !channels.has(signal)) { channels.add(signal); signal.addEventListener("abort", () => closed.push(at), { once: true }); }
+      return JSON.stringify(await askRecoverySocket(at, JSON.parse(line)));
+    }),
     spyOn(MachineManager.prototype as unknown as { verify(): Promise<unknown> }, "verify").mockImplementation(async () => ({
       endpoint: { url: "http://127.0.0.1:1", token: "fixture-token" },
       identity: { ...descriptor(), managed_remote: remote.descriptor === "managed", socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 } } satisfies BridgeIdentity,
@@ -168,7 +174,7 @@ test("happy path: host key confirmed, that PC's own Ovis is reached, the window 
   const job = await settled({ destination: "fixture-pc", account_add: true });
   expect(prompts).toEqual([true]);
   expect(job.phase).toBe("connected");
-  // only the socket its own registration named is forwarded
+  // only the socket its own registration named is asked
   expect(forwarded).toEqual([REMOTE_SOCKET]);
   const identity = b.app.context.services.relay.currentIdentity()!;
   expect(job.account_add).toEqual({ server_id: identity.server_id, public_key: identity.public_key, relay: expect.stringMatching(/^wss:\/\//), label: expect.any(String), account: null });
@@ -185,7 +191,7 @@ test("happy path: host key confirmed, that PC's own Ovis is reached, the window 
   expect(b.app.context.services.relay.status().phase).toBe("online");
   // that PC's own receipt of its bind: the directory shows its add completed
   expect((await listing(b, "acct_1", identity.server_id))?.completed_at).toEqual(expect.any(String));
-  // the forward carried an inspect and one take, and closed as the take answered
+  // the channel carried an inspect and one take, and closed as the take answered
   expect(socket.seen.map((request) => (request as { act: string }).act)).toEqual(["account_add_inspect", "account_add_take"]);
   expect(closed).toEqual([socket.path]);
   // nothing more goes on it: another take needs a new connection (which then finds that PC in the account)
@@ -243,9 +249,10 @@ test("a take whose answer is lost, and that PC unreachable after it: may have be
   await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1")).rejects.toMatchObject({ code: "take_unanswered" });
 });
 
-test("nothing but an account add's inspect and take is ever sent on the forwarded recovery socket", async () => {
+test("nothing but an account add's inspect and take is ever sent to that PC's recovery socket", async () => {
   const b = await otherPc();
   const socket = recorded(b);
+  const ssh = { askSocket: async (path: string, line: string) => JSON.stringify(await askRecoverySocket(path, JSON.parse(line))) } as unknown as SshConnection;
   for (const request of [
     { act: "admit", pending: "a".repeat(32), fingerprint: "AB12-CD34" }, { act: "revoke_all" }, { act: "lift", blocks: ["a".repeat(64)] },
     { act: "remove", targets: ["0123456789abcdef"] }, { act: "release", rows: ["0123456789abcdef"] }, { act: "list" },
@@ -254,11 +261,11 @@ test("nothing but an account add's inspect and take is ever sent on the forwarde
     { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), list: "a".repeat(64) },
     { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), adder: "key" },
     { act: "account_add_take", account: "acct_1", server_id: "0".repeat(32), list: "a".repeat(64), adder: "key", pending: "x" },
-  ]) await expect(sendAccountAddAct(socket.path, request as never)).rejects.toThrow("Only an account add's inspect and take");
+  ]) await expect(sendAccountAddAct(ssh, socket.path, request as never)).rejects.toThrow("Only an account add's inspect and take");
   expect(socket.seen).toEqual([]);
 });
 
-test("a take that names the account's list keeps the forward open while that PC waits for its entry, and closes it once that PC joined", async () => {
+test("a take that names the account's list keeps the channel open while that PC waits for its entry, and closes it once that PC joined", async () => {
   const b = await otherPc({ server: { accountAddRelayMs: 300 } });
   b.account.listAccounts = "*";
   const list = await TestList.start(b.account, "acct_1");
@@ -279,7 +286,7 @@ test("a take that names the account's list keeps the forward open while that PC 
   await expect(manager.accountTake(job.id, job.account_add!.server_id, "acct_1", named)).rejects.toMatchObject({ code: "disconnected" });
 });
 
-test("a take that names a list, answered by an Ovis from before lists: that PC is to be updated, and the forward closes", async () => {
+test("a take that names a list, answered by an Ovis from before lists: that PC is to be updated, and the channel closes", async () => {
   const b = await otherPc();
   const older = recorded(b, (request, said) => (request as { list?: unknown }).list !== undefined ? { error: "Unexpected field list" } : said);
   const { manager, closed, settled } = fixture({ descriptor: "own", socketPath: older.path });
@@ -307,7 +314,7 @@ test("a take that names a list, answered by a current Ovis with an error of no c
   expect(closed).toEqual([failing.path]);
 });
 
-test("a card answer with a field longer than any key or card is no card: refused, and the forward closes", async () => {
+test("a card answer with a field longer than any key or card is no card: refused, and the channel closes", async () => {
   const b = await otherPc();
   b.account.listAccounts = "*";
   const list = await TestList.start(b.account, "acct_1");
@@ -319,7 +326,7 @@ test("a card answer with a field longer than any key or card is no card: refused
   expect(closed).toEqual([long.path]);
 });
 
-test("a refused inspect closes the forward at once", async () => {
+test("a refused inspect closes the channel at once", async () => {
   const b = await otherPc();
   const socket = recorded(b);
   const before = process.env["OVIS_REMOTE"];
@@ -335,7 +342,7 @@ test("a refused inspect closes the forward at once", async () => {
   }
 });
 
-test("a setup that fails after the inspect closes the forward", async () => {
+test("a setup that fails after the inspect closes the channel", async () => {
   const b = await otherPc();
   const socket = recorded(b);
   const { closed, settled } = fixture({ descriptor: "own", socketPath: socket.path });
@@ -346,7 +353,7 @@ test("a setup that fails after the inspect closes the forward", async () => {
   expect(closed).toEqual([socket.path]);
 });
 
-test("a take the other PC refuses closes the forward, and binds nothing", async () => {
+test("a take the other PC refuses closes the channel, and binds nothing", async () => {
   const b = await otherPc();
   const socket = recorded(b);
   const { manager, closed, settled } = fixture({ descriptor: "own", socketPath: socket.path });

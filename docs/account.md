@@ -1345,8 +1345,8 @@ this way. All other comparison paths still require their original digits.
 ### Adding a PC over SSH
 
 From this PC's own window, signed in to the account this PC is in, Add PC over SSH can also add
-the other PC (B) to that account (Linux and macOS on both ends; a Windows B adds itself with its
-number). SSH only says which machine and OS user was reached; the account's one-press admission
+the other PC (B) to that account (from Linux, macOS or Windows; B runs Linux or macOS, and a Windows
+B adds itself with its number). SSH only says which machine and OS user was reached; the account's one-press admission
 decides which account B may join. There, Add a connection's Ovis relay tab lists the PCs this PC can
 reach (its Tailscale login's PCs and its ssh config hosts); Add opens Add PC over SSH with that host.
 A row says **In your account** only for a PC that took its place there: the directory's `completed_at`
@@ -1363,13 +1363,14 @@ added** before.
   this app started (`managed_remote: false`, proved over its own credential); a bridge-only PC is
   refused, and a PC without Ovis is offered the official installer (`install_ovis`). Nothing is
   installed or started in its place.
-- **Inspect.** B's registration names its recovery socket (`recover_socket`). It is forwarded over
-  the job's connection into the connection's private folder, and `account_add_inspect` returns B's
+- **Inspect.** B's registration names its recovery socket (`recover_socket`). Each request reaches it
+  on an ssh's own stdin and stdout (`ssh -W`, over the job's connection where it is multiplexed), so
+  nothing listens for it on the adding PC, and `account_add_inspect` returns B's
   ID, public key, advertised relay, label and account. The ID must derive from the key. That socket answers every
   recovery act of B's owner, so the adding PC only ever sends `account_add_inspect` and `account_add_take` on it
-  (`server/account-add-channel.ts`), and closes the forward once take answers, on any error, and after ten minutes.
-  A take that got no answer (the connection dropped while B waited for its relay) is followed by one more inspect on
-  a forward of its own: B in the account answers as added (`unanswered: true`, its relay not known); with no answer
+  (`server/account-add-channel.ts`), and closes that channel once take answers, on any error, and after ten minutes,
+  stopping a request still waiting. A take that got no answer (the connection dropped while B waited for its relay) is
+  followed by one more inspect on a channel of its own: B in the account answers as added (`unanswered: true`, its relay not known); with no answer
   to that either, `409 take_unanswered`, and the window says B may have been added and to connect again to check,
   never that it was not added.
 - **List and admit.** The window lists B (`PUT /v1/pcs/:id`) unless already listed, then admits it
@@ -1425,7 +1426,7 @@ list and admit with its own sign-in, `POST /api/account/ssh-add`); the rest happ
 3. B, in no account, names itself for the account, reads the list with its own proof, and while the
    list does not hold it answers `{ "state": "waiting", "standing", "key", "enc", "card" }`: its list
    key, its encryption key and its card for that list. It posts the same keys at the account service
-   (`POST /v2/pc/list/keys`, the second lock of the entry). The forward stays open for this answer.
+   (`POST /v2/pc/list/keys`, the second lock of the entry). The channel stays open for this answer.
 4. A checks that card itself: it is B's key's own for that list and the relay key A read at the inspect
    over the same SSH session (never one B's answer names); otherwise `409 list_not_added` and nothing
    is signed. A B whose `standing` is not `waiting` gets nothing signed either: `out` (the list put it

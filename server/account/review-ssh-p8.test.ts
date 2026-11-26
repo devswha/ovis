@@ -24,7 +24,7 @@ import { SshConnection } from "../ssh.ts";
 import { ListFollow, type AddedPc } from "./list-follow.ts";
 import { listMember, TestList } from "./list.test-helpers.ts";
 import { pairingPc, setUpFor, type Pc } from "./pairing.test-helpers.ts";
-import { askRecovery, openRecoverySocket } from "./recovery.ts";
+import { askRecovery, askRecoverySocket, openRecoverySocket } from "./recovery.ts";
 
 const ACCOUNT = "acct_1";
 const REMOTE_SOCKET = "/home/fixture/.local/state/ovis/recover/recover.sock";
@@ -109,9 +109,9 @@ function recorded(pc: Pc, answer: (request: unknown, said: unknown) => unknown =
 }
 
 /**
- * That PC's owner socket behind a forward that can drop: for each request, `fate` says whether it reaches that PC and is
- * answered (`answer`), reaches it and the forward then drops before the answer comes back (`lost`), or drops before it
- * reaches that PC at all (`dropped`). A dropped forward is what the take's own catch in MachineManager.accountTake is for.
+ * That PC's owner socket behind an SSH that can drop: for each request, `fate` says whether it reaches that PC and is
+ * answered (`answer`), reaches it and the SSH then drops before the answer comes back (`lost`), or drops before it
+ * reaches that PC at all (`dropped`). A dropped SSH is what the take's own catch in MachineManager.accountTake is for.
  */
 function droppy(pc: Pc, fate: (request: Record<string, unknown>, index: number) => "answer" | "lost" | "dropped"): { path: string; seen: { request: Record<string, unknown>; fate: string }[] } {
   const seen: { request: Record<string, unknown>; fate: string }[] = [];
@@ -139,7 +139,7 @@ function droppy(pc: Pc, fate: (request: Record<string, unknown>, index: number) 
   return { path, seen };
 }
 
-/** SSH stood in for: the job reaches that PC's own Ovis, whose registration names its owner socket, forwarded to `socket`. */
+/** SSH stood in for: the job reaches that PC's own Ovis, whose registration names its owner socket, reached at `socket`. */
 function sshTo(socket: string): void {
   const herdr = "/home/fixture/.config/herdr/herdr.sock";
   const descriptor = (): BridgeDescriptor => ({ pid: 12345, port: 17317, token: "a".repeat(64), socket_path: herdr, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false, recover_socket: REMOTE_SOCKET });
@@ -154,8 +154,7 @@ function sshTo(socket: string): void {
     spyOn(SshConnection.prototype, "start").mockImplementation(async () => {}),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
     spyOn(SshConnection.prototype, "connected").mockReturnValue(true),
-    spyOn(SshConnection.prototype, "forwardSocket").mockImplementation(async () => socket),
-    spyOn(SshConnection.prototype, "closeSocketForward").mockImplementation(async () => {}),
+    spyOn(SshConnection.prototype, "askSocket").mockImplementation(async (_path, line) => JSON.stringify(await askRecoverySocket(socket, JSON.parse(line)))),
     spyOn(MachineManager.prototype as unknown as { verify(): Promise<unknown> }, "verify").mockImplementation(async () => ({
       endpoint: { url: "http://127.0.0.1:1", token: "fixture-token" },
       identity: { ...descriptor(), managed_remote: false, socket_id: "fixture-socket", herdr: { version: "0.9.5", protocol: 22 } } satisfies BridgeIdentity,
@@ -242,7 +241,7 @@ test.skipIf(process.platform === "win32")("finding M2a: a lost answer to the fir
   const b = await otherPc(a.pc.account);
   await boundBefore(b, a.pc.account);
   await pinToNewList(a.pc);
-  // the forward drops while that PC answers the first take (it posted its keys and read the list: a few seconds)
+  // the SSH drops while that PC answers the first take (it posted its keys and read the list: a few seconds)
   const forward = droppy(b, (request) => request.act === "account_add_take" && request.list !== undefined ? "lost" : "answer");
   sshTo(forward.path);
   const job = await connected(a.pc);
@@ -268,7 +267,7 @@ test.skipIf(process.platform === "win32")("finding M2b: a take lost after the en
   const b = await otherPc(a.pc.account);
   await boundBefore(b, a.pc.account);
   await pinToNewList(a.pc);
-  // the first take is answered (waiting, with the card); the forward drops before the second take reaches that PC
+  // the first take is answered (waiting, with the card); the SSH drops before the second take reaches that PC
   let takes = 0;
   const forward = droppy(b, (request) => {
     if (request.act !== "account_add_take") return "answer";
