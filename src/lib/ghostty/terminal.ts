@@ -82,6 +82,8 @@ const TRACKING_NAME = { none: "none", x10: "x10", normal: "vt200", button: "drag
 
 /** how long one task parses output before it lets the page draw and take input (xterm's write buffer budget) */
 const WRITE_BUDGET_MS = 12;
+/** how long a synchronized update may hold the screen before it is shown anyway (xterm's limit) */
+const SYNC_HOLD_MS = 1000;
 
 interface Pending { readonly data: string | Uint8Array; readonly callback: (() => void) | undefined }
 
@@ -95,6 +97,12 @@ export class GhosttyTerminal {
   rows: number;
   /** the limits pictures are drawn within, or null with pictures off (the mount's Settings choice) */
   pictureLimits: PictureLimits | null = null;
+  /**
+   * Whether the output being parsed now is the program's live output, which libghostty may answer. The mount says no
+   * for a replay of earlier output, a hidden tab's view and output of a pane it left: their questions were answered
+   * when they were new, and an answer now would reach the program as typing.
+   */
+  replyGate: () => boolean = () => true;
 
   private readonly onDataEmitter = new Emitter<string>();
   private readonly onBinaryEmitter = new Emitter<string>();
@@ -123,6 +131,7 @@ export class GhosttyTerminal {
   private viewport: HTMLElement | undefined;
   private selectionLayer: HTMLElement | undefined;
   private drawnSelectionKey = "";
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly earlyLinks: { provider: ILinkProvider; registered: Disposable | null }[] = [];
   private vt: GhosttyVt | null = null;
   private renderer: RowsRenderer | null = null;
@@ -141,6 +150,8 @@ export class GhosttyTerminal {
   );
   private dims: CellDimensions | null = null;
   private fromBottom = 0;
+  /** the kept row the view showed first after the last write, while it is scrolled back */
+  private viewTop: number | null = null;
   private cancelFrame: (() => void) | null = null;
   private written = false;
   private announceUntil = 0;
@@ -151,6 +162,14 @@ export class GhosttyTerminal {
     this.cols = cols;
     this.rows = rows;
     const values: GhosttyTerminalOptions = { ...DEFAULT_OPTIONS, ...rest };
+    // the input layer encodes keys as xterm does, which knows no Kitty keyboard protocol: a program's request for it is
+    // not taken, nor its question answered, so the program goes on with the keys it gets (as under xterm)
+    for (const prefix of [">", "<", "=", "?"]) this.parser.registerCsiHandler({ prefix, final: "u" }, () => true);
+    // focus reports turned on are answered at once with where the focus is, as xterm answers them
+    this.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+      if (params.includes(1004) && this.textarea) this.reply(this.textarea.ownerDocument.activeElement === this.textarea ? "\x1b[I" : "\x1b[O");
+      return false;
+    });
     this.options = new Proxy(values, {
       set: (target, key, value) => {
         const changed = (target as unknown as Record<PropertyKey, unknown>)[key] !== value;
@@ -313,8 +332,8 @@ export class GhosttyTerminal {
     let vt: GhosttyVt;
     try {
       vt = await GhosttyVt.create(this.cols, this.rows, {
-        onReply: (bytes) => this.inputLayer?.reply(new TextDecoder().decode(bytes)),
-        onHold: (held) => { if (!held) this.schedule(); },
+        onReply: (bytes) => this.reply(new TextDecoder().decode(bytes)),
+        onHold: (held) => this.held(held),
       });
     } catch (error) {
       this.fail(error);
@@ -332,14 +351,31 @@ export class GhosttyTerminal {
     this.drainWrites();
   }
 
+  private reply(data: string): void {
+    if (!this.disposed && this.replyGate()) this.inputLayer?.reply(data);
+  }
+
+  /** a synchronized update left open past a second is ended, as xterm ends one, so the screen does not stay frozen */
+  private held(held: boolean): void {
+    if (this.holdTimer !== null) clearTimeout(this.holdTimer);
+    this.holdTimer = null;
+    if (held) {
+      this.holdTimer = setTimeout(() => {
+        this.holdTimer = null;
+        try { this.vt?.releaseHold(); } catch (error) { this.fail(error); }
+      }, SYNC_HOLD_MS);
+    } else this.schedule();
+  }
+
   /** libghostty could not start or stopped: told once, so the mount can say so and open the pane again */
   private fail(error: unknown): void {
     if (this.failed !== null) return;
     this.failed = error;
     console.warn("libghostty could not draw this terminal", error);
-    // what waits is acknowledged, so the server's flow control does not take the pane for a reader that stopped
+    // what waits is still acknowledged, in order, so the server's flow control does not take the pane for a reader that
+    // stopped: the writes go through with nothing parsed
     this.pending = false;
-    for (const { callback } of this.writes.splice(0)) callback?.();
+    if (this.draining === null && this.writes.length > 0) this.draining = setTimeout(() => this.drainWrites(), 0);
     this.host?.dispatchEvent(new CustomEvent("ovis-terminal-failed", { detail: error }));
   }
 
@@ -371,20 +407,38 @@ export class GhosttyTerminal {
   }
 
   private parseWrite(data: string | Uint8Array, callback: (() => void) | undefined): void {
-    const before = this.fromBottom > 0 && this.vt ? this.vt.history().scrollback : 0;
+    if (this.failed !== null) { callback?.(); return; }
     this.pictures.write(data, (part, picture) => this.parse(part, picture), () => {
-      // a view scrolled back stays on its rows while new ones push the history up
-      if (this.fromBottom > 0 && this.vt) {
-        const max = Math.min(this.vt.history().scrollback, this.vt.scrollback);
-        this.fromBottom = Math.min(max, this.fromBottom + this.vt.history().scrollback - before);
-        this.vt.scrollFromBottom(this.fromBottom);
+      try {
+        if (this.failed === null) this.afterWrite();
+      } catch (error) {
+        this.fail(error);
+      } finally {
+        callback?.();
       }
-      this.written = true;
-      this.selection?.refresh();
-      this.onWriteParsedEmitter.fire();
-      if (!this.modes.synchronizedOutputMode) this.schedule();
-      callback?.();
     });
+  }
+
+  /**
+   * A view scrolled back stays on its rows while new ones push the history up: libghostty keeps its viewport on the
+   * rows it shows, so the offset is read back from it, and a selection follows the rows history let go of.
+   */
+  private afterWrite(): void {
+    const vt = this.vt;
+    if (vt && this.fromBottom > 0) {
+      const top = this.viewTop;
+      const history = vt.history();
+      const max = vt.alternate() ? 0 : Math.min(history.scrollback, vt.scrollback);
+      this.fromBottom = Math.max(0, Math.min(max, history.scrollback - history.viewportTop));
+      vt.scrollFromBottom(this.fromBottom);
+      this.selection?.refresh(top !== null ? Math.max(0, top - vt.history().viewportTop) : 0);
+    } else this.selection?.refresh();
+    this.viewTop = vt && this.fromBottom > 0 ? vt.history().viewportTop : null;
+    this.written = true;
+    // the program's mouse and cursor modes may have changed: the input layer follows them now, as xterm's does
+    this.inputLayer?.cursorMoved();
+    this.onWriteParsedEmitter.fire();
+    if (!this.modes.synchronizedOutputMode) this.schedule();
   }
 
   private parse(part: string | Uint8Array, picture: boolean): void {
@@ -408,7 +462,9 @@ export class GhosttyTerminal {
     this.decoder = new TextDecoder();
     this.pictures.reset();
     this.selection?.clearSelection();
+    this.inputLayer?.reset();
     this.fromBottom = 0;
+    this.viewTop = null;
     try { this.vt?.reset(); } catch (error) { this.fail(error); }
     this.schedule();
   }
@@ -528,7 +584,10 @@ export class GhosttyTerminal {
   private moveView(rows: number): void {
     if (rows === this.fromBottom) return;
     this.fromBottom = rows;
-    try { this.vt?.scrollFromBottom(rows); } catch (error) { this.fail(error); }
+    try {
+      this.vt?.scrollFromBottom(rows);
+      this.viewTop = this.vt && rows > 0 ? this.vt.history().viewportTop : null;
+    } catch (error) { this.fail(error); }
     this.selection?.refresh();
     this.linkifier?.refresh();
     this.inputLayer?.cursorMoved();
@@ -669,6 +728,7 @@ export class GhosttyTerminal {
     if (this.disposed) return;
     this.disposed = true;
     this.cancelFrame?.();
+    if (this.holdTimer !== null) clearTimeout(this.holdTimer);
     this.writes.length = 0;
     if (this.draining !== null) clearTimeout(this.draining);
     for (const cleanup of this.cleanups.splice(0)) cleanup();

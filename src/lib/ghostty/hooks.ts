@@ -17,7 +17,9 @@ export interface OscStringState { readonly open: boolean; readonly idComplete: b
 /** a hooked payload past this is dropped unread, as xterm's OSC and DCS parsers drop one past their limit */
 const PAYLOAD_MAX = 10_000_000;
 
-const GROUND = 0, ESC = 1, CSI = 2, OSC = 3, DCS_HEAD = 4, DCS = 5, STRING = 6;
+const GROUND = 0, ESC = 1, CSI = 2, OSC = 3, DCS_HEAD = 4, DCS = 5, STRING = 6, CSI_IGNORE = 7;
+/** C1 introducers, which begin a sequence anywhere: one inside another ends that one, as in xterm's parser */
+const C1_INTRODUCERS = new Set([0x90, 0x98, 0x9b, 0x9d, 0x9e, 0x9f]);
 
 const idKey = (id: SequenceId): string => `${id.prefix ?? ""}|${id.intermediates ?? ""}|${id.final}`;
 
@@ -99,6 +101,11 @@ export function hookedStream(hooks: ParserHooks, engine: (text: string) => void)
   let payloadOver = false;
   let dcsKey = "";
   let out = "";
+  /** what came before a sequence reaches the engine before any hook sees the sequence, as in xterm's one parse */
+  const flush = (): void => {
+    if (out) engine(out);
+    out = "";
+  };
 
   const clear = (): void => {
     held = prefix = params = intermediates = payload = dcsKey = "";
@@ -122,6 +129,7 @@ export function hookedStream(hooks: ParserHooks, engine: (text: string) => void)
   const endString = (): void => {
     if (!hooked) out += "\x1b\\";
     else {
+      flush();
       const taken = !payloadOver && (state === OSC ? hooks.runOsc(oscId, payload) : hooks.runDcs(dcsKey, payload, parseParams(params)));
       if (!taken) out += held + payload + "\x1b\\";
     }
@@ -151,7 +159,21 @@ export function hookedStream(hooks: ParserHooks, engine: (text: string) => void)
       clear();
       return true;
     }
+    if (state !== GROUND && C1_INTRODUCERS.has(code)) {
+      // a string ends there (an OSC is dispatched, as xterm's parser dispatches it); an unfinished CSI or DCS header is dropped
+      if (state === OSC || state === DCS || state === STRING) {
+        if (state === STRING) { out += "\x1b\\"; state = GROUND; clear(); }
+        else endString();
+      } else { state = GROUND; clear(); }
+      return false;
+    }
     switch (state) {
+      case CSI_IGNORE:
+        // a malformed CSI is read to its final byte and dropped, as xterm's parser ignores it
+        if (code >= 0x40 && code <= 0x7e) { state = GROUND; clear(); }
+        else if (code < 0x20 && code !== 0x1b) out += ch;
+        else if (code === 0x1b) begin(ESC, ch);
+        return true;
       case GROUND:
         if (code === 0x1b) begin(ESC, ch);
         else if (code === 0x9b) begin(CSI, "\x1b[");
@@ -177,12 +199,21 @@ export function hookedStream(hooks: ParserHooks, engine: (text: string) => void)
         if (code === 0x1b) { begin(ESC, ch); return true; }
         if (code < 0x20 || code === 0x7f) { out += ch; return true; }
         held += ch;
-        if (code >= 0x3c && code <= 0x3f && held.length === 3) prefix = ch;
-        else if ((code >= 0x30 && code <= 0x39) || code === 0x3b || code === 0x3a) params += ch;
-        else if (code >= 0x20 && code <= 0x2f) intermediates += ch;
+        if (code >= 0x3c && code <= 0x3f) {
+          // a private marker only leads the sequence; anywhere else it makes the sequence malformed
+          if (held.length === 3) prefix = ch;
+          else { state = CSI_IGNORE; clear(); }
+        } else if ((code >= 0x30 && code <= 0x39) || code === 0x3b || code === 0x3a) {
+          if (intermediates) { state = CSI_IGNORE; clear(); } else params += ch;
+        } else if (code >= 0x20 && code <= 0x2f) intermediates += ch;
         else if (code >= 0x40 && code <= 0x7e) {
           const key = `${prefix}|${intermediates}|${ch}`;
-          if (!(hooks.hasCsi(key) && hooks.runCsi(key, parseParams(params)))) out += held;
+          let taken = false;
+          if (hooks.hasCsi(key)) {
+            flush();
+            taken = hooks.runCsi(key, parseParams(params));
+          }
+          if (!taken) out += held;
           state = GROUND;
           clear();
         }
@@ -195,6 +226,7 @@ export function hookedStream(hooks: ParserHooks, engine: (text: string) => void)
             if (!hooked) out += held;
           }
           if (hooked) {
+            flush();
             const taken = !payloadOver && hooks.runOsc(oscId, payload);
             if (!taken) out += held + payload + (code === 0x07 ? "\x07" : "\x1b\\");
           } else out += code === 0x07 ? "\x07" : "\x1b\\";

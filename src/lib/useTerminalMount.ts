@@ -1042,6 +1042,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!writingOutput || holdingForPictures) replayOscOpen = oscMayCopy();
       };
       retireOutputRef.current = retireOutput;
+      // libghostty answers the program's questions itself: only in the live output of the pane shown, never in a replay,
+      // a hidden tab's view or output of a pane this terminal left (their questions were answered when they were new)
+      if (ownEngine) (term as unknown as GhosttyTerminal).replyGate = () => !parsingReplay && !parsingView && parsingOwner === outputOwner;
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__) {
         // browser scripts read the parse state and count the output frames written and in flight (never in a release
         // build): at the terminal's door, so the counts are the same whether xterm or libghostty parses the text
@@ -2628,7 +2631,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         ghosttyFaintObserver.disconnect();
         releaseGhostty();
         term.element?.remove();
-        disposeAfterPendingFrame(term);
+        // xterm's renderer may still have a frame queued; the terminal without it lets go of its engine now
+        if (ownEngine) term.dispose();
+        else disposeAfterPendingFrame(term);
         termRef.current = null;
         setTerminal((current) => current === term ? null : current);
         socketRef.current = null;

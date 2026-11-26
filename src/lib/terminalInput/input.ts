@@ -186,6 +186,15 @@ export class TerminalInput {
     this.triggerData(data, false);
   }
 
+  /** the terminal was reset (another pane): a composition or key still pending is dropped, never sent to the new one */
+  public reset(): void {
+    this._composition.reset();
+    this._textKey = undefined;
+    this._digitAwaitsKeyPress = false;
+    this._keyDownSeen = false;
+    this._unprocessedDeadKey = false;
+  }
+
   public paste(text: string): void {
     this._composition.finishReplacement();
     this.pasteText(text);

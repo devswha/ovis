@@ -149,4 +149,30 @@ describe("hookedStream", () => {
     expect(sent()).toBe("plain");
     expect(write.oscStringState().open).toBe(false);
   });
+
+  it("gives the engine what came before a sequence before a hook sees it", () => {
+    const { hooks, write, engine } = stream();
+    const seen: string[] = [];
+    hooks.registerCsiHandler({ final: "n" }, () => { seen.push(engine.join("")); return true; });
+    write("\x1b[cbefore\x1b[6nafter");
+    expect(seen).toEqual(["\x1b[cbefore"]);
+    expect(engine.join("")).toBe("\x1b[cbeforeafter");
+  });
+
+  it("ends an OSC at a C1 introducer and reads the sequence it begins", () => {
+    const { hooks, write } = stream();
+    const payloads: string[] = [];
+    hooks.registerOscHandler(52, (data) => { payloads.push(data); return true; });
+    write("\x1b]0;title\u009d52;c;QQ==\x07");
+    expect(payloads).toEqual(["c;QQ=="]);
+  });
+
+  it("drops a malformed CSI unseen, as xterm's parser ignores it", () => {
+    const { hooks, write, sent } = stream();
+    const seen: HookParams[] = [];
+    hooks.registerCsiHandler({ final: "n" }, (params) => { seen.push(params); return true; });
+    write("a\x1b[2?6nb\x1b[1 2nc");
+    expect(seen).toEqual([]);
+    expect(sent()).toBe("abc");
+  });
 });

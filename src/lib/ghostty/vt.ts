@@ -117,6 +117,11 @@ export class GhosttyVt {
     return this.engine.modes();
   }
 
+  /** ends a synchronized update the program left open: the next frame shows what it wrote since */
+  releaseHold(): void {
+    this.engine.releaseHold();
+  }
+
   write(data: string | Uint8Array): void {
     const bytes = typeof data === "string" ? this.encoder.encode(data) : data;
     if (bytes.length === 0) return;
