@@ -29,7 +29,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import type { PaneContext } from "../../shared/protocol.ts";
 import { shellCommandLine } from "../shell-agent.ts";
-import { askOf, tokenContext, type CodexAsk, type ServedStatus } from "./codex-status.ts";
+import { askOf, tokenContext, type CodexAsk, type ServedStatus, type ServedThreadSettings } from "./codex-status.ts";
 import type { ApprovalDecision, ApprovalHub, ApprovalRequest, ApprovalSource } from "./hub.ts";
 
 /** The Codex versions measured with a TUI on its own server; any other runs as before. */
@@ -333,6 +333,7 @@ class Connection {
   private rerouted: { turnId: string; model: string } | null = null;
   /** The model the pane's own thread runs, as the server said on resume or in its settings. */
   private model: string | null = null;
+  private settings: ServedThreadSettings | undefined;
   /** Whether the pane's own thread is known to run no turn: what the server said of it last, never assumed. */
   private idle = false;
   closed = false;
@@ -453,6 +454,7 @@ class Connection {
     this.context = null;
     this.rerouted = null;
     this.model = null;
+    this.settings = undefined;
     this.idle = false;
     changed(this.paneId);
   }
@@ -463,7 +465,10 @@ class Connection {
   }
 
   status(): ServedStatus | null {
-    return this.thread === null ? null : { threadId: this.thread, context: this.context, model: this.rerouted?.model ?? null };
+    return this.thread === null ? null : {
+      threadId: this.thread, context: this.context, model: this.rerouted?.model ?? null,
+      ...(this.settings === undefined ? {} : { settings: this.settings }),
+    };
   }
 
   questions(): CodexAsk[] {
@@ -534,8 +539,18 @@ class Connection {
         break;
       }
       case "thread/settings/updated": {
-        const settings = isObject(params["threadSettings"]) ? params["threadSettings"] : {};
-        if (threadId === this.thread) this.model = text(settings["model"]) ?? this.model;
+        const settings = params["threadSettings"];
+        if (threadId === null || threadId !== this.thread || !isObject(settings)) break;
+        this.model = text(settings["model"]) ?? this.model;
+        // This is a snapshot, not a patch: when it names no effort, the chat uses its rollout or
+        // screen again instead of keeping the effort from a previous mode.
+        const effort = text(settings["effort"]);
+        const mode = settings["collaborationMode"];
+        const kind = isObject(mode) ? mode["mode"] : null;
+        const plan = kind === "plan" ? true : kind === "default" ? false : null;
+        if (effort === (this.settings?.effort ?? null) && plan === (this.settings?.plan ?? null)) break;
+        this.settings = effort === null && plan === null ? undefined : { effort, plan };
+        changed(this.paneId);
         break;
       }
       case "thread/tokenUsage/updated": {

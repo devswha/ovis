@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +7,11 @@ import type { Server, ServerWebSocket } from "bun";
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
 import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, servedPlan, servesCommands, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import * as rollout from "../codex.ts";
+import { ConversationMonitor } from "../conversation-monitor.ts";
+import { paneConversation } from "../conversation.ts";
 import { parsePrompt } from "../dialogs/live.ts";
+import * as herdr from "../herdr/client.ts";
 import { ApprovalHub } from "./hub.ts";
 
 // a command approval recorded from Codex 0.171.0 on its own app server (`codex --remote` TUI, read-only sandbox)
@@ -576,6 +580,56 @@ describe("Ovis on the pane's Codex server", () => {
     expect(await told).toBe("w1:p1");
     expect(servedStatus("w1:p1")).toBeNull();
     expect(servedQuestions("w1:p1")).toEqual([]);
+  });
+
+  it("refreshes chat effort and Plan mode from its own Codex thread without a rollout write", async () => {
+    const { codex } = launched();
+    const paneId = "w1:p1";
+    const dir = root();
+    const path = join(dir, `rollout-2026-11-26T00-00-00-${MAIN}.jsonl`);
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: MAIN, cwd: dir } },
+      { type: "turn_context", payload: { model: "gpt-6.2-sol", effort: "low" } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      protocol: 1, version: "test", workspaces: [], tabs: [], layouts: [], agents: [],
+      panes: [{ pane_id: paneId, workspace_id: "w1", tab_id: "w1:t1", terminal_id: paneId, cwd: dir, agent: "codex", agent_status: "idle", revision: 0, focused: true }],
+    });
+    const processInfo = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: paneId, foreground_processes: [] });
+    const transcript = spyOn(rollout, "codexTranscriptPath").mockResolvedValue(path);
+    let update = Promise.withResolvers<string>();
+    const monitor = new ConversationMonitor((_, signature) => update.resolve(signature), dir);
+    cleanups.push(() => { monitor.stop(); transcript.mockRestore(); processInfo.mockRestore(); snapshot.mockRestore(); });
+
+    // A fixture from Codex 0.171.0's generated ThreadSettingsUpdatedNotification and ThreadSettings.
+    const settings = (threadId: string, effort: string | null, mode: "plan" | "default") => ({
+      method: "thread/settings/updated",
+      params: { threadId, threadSettings: {
+        disabledPluginIds: [], cwd: dir, approvalPolicy: "on-request", approvalsReviewer: "user",
+        sandboxPolicy: { type: "readOnly", networkAccess: false }, activePermissionProfile: null,
+        model: "gpt-6.2-sol", modelProvider: "openai", serviceTier: null, effort, summary: null,
+        collaborationMode: { mode, settings: { model: "gpt-6.2-sol", reasoning_effort: effort, developer_instructions: null } },
+        personality: null,
+      } },
+    });
+    await running(codex, MAIN);
+    monitor.watch(paneId);
+    const beforeSignature = await update.promise;
+    const before = await paneConversation(paneId, dir);
+    expect(before.metadata).toEqual({ model: "gpt-6.2-sol", reasoning_effort: "low" });
+
+    update = Promise.withResolvers<string>();
+    codex.send(settings(MAIN, "high", "plan"));
+    codex.send(settings("another-thread", "medium", "default"));
+    await read(codex);
+    const planned = await paneConversation(paneId, dir);
+    expect(planned.metadata).toEqual({ model: "gpt-6.2-sol", reasoning_effort: "high", permission_mode: "plan" });
+    expect(planned.version).not.toBe(before.version);
+    expect(await update.promise).not.toBe(beforeSignature);
+
+    codex.send(settings(MAIN, null, "default"));
+    await read(codex);
+    expect((await paneConversation(paneId, dir)).metadata).toEqual(before.metadata);
   });
 
   const request = (codex: ReturnType<typeof codexServer>, method: string) => codex.next((message) => message["method"] === method);
