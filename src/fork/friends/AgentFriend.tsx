@@ -2,8 +2,19 @@ import type { Friend } from "../../../shared/friends.ts";
 import type { AgentStatus } from "../../../shared/protocol.ts";
 import "./AgentFriend.css";
 
-// Vite bundles each of the folder's pictures for this pattern
-const picture = (friend: Friend) => new URL(`../../assets/friends/${friend}.png`, import.meta.url).href;
+// each picture named as a plain string, so Vite bundles it and scripts/ci-browser-parallel.ts can follow it
+const PICTURES: Record<Friend, URL> = {
+  hoshi: new URL("../../assets/friends/hoshi.png", import.meta.url),
+  kokoro: new URL("../../assets/friends/kokoro.png", import.meta.url),
+  kuma: new URL("../../assets/friends/kuma.png", import.meta.url),
+  maru: new URL("../../assets/friends/maru.png", import.meta.url),
+  mikan: new URL("../../assets/friends/mikan.png", import.meta.url),
+  neko: new URL("../../assets/friends/neko.png", import.meta.url),
+  sankaku: new URL("../../assets/friends/sankaku.png", import.meta.url),
+  shikaku: new URL("../../assets/friends/shikaku.png", import.meta.url),
+  usagi: new URL("../../assets/friends/usagi.png", import.meta.url),
+};
+const picture = (friend: Friend) => PICTURES[friend].href;
 
 /**
  * An agent's friend (agents-app's friends), in place of its agent's mark, with no harness logo: it
