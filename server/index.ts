@@ -395,7 +395,6 @@ export function createServer(
     try {
       if (removals !== null && carried.length > 0) {
         if (safetyLog?.strict) throw new Error(safetyLog.strict);
-        if (merge?.devicesBlocked) throw new Error(merge.devicesBlocked);
         const siblingEvidence = RemovalEvidence.open(sibling, safetyLog);
         if (pcAccount?.evidenceWritten()) removals.missingAfterWritten();
         if (PcAccountState.open(sibling).evidenceWritten()) siblingEvidence.missingAfterWritten();
