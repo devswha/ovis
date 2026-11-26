@@ -206,6 +206,7 @@ export interface Settings extends ForkSettings {
   codexLaunchEffort: (typeof CODEX_EFFORTS)[number] | "";
   /** the browser tool each agent this PC's server starts is given (shared/browser-tools.ts); an agent absent gets none */
   agentBrowserTools: BrowserToolChoices;
+  agentHarnessTool: HarnessToolSetting;
 }
 
 export const DIFF_STYLES = ["unified", "split"] as const;
@@ -217,6 +218,7 @@ type TelemetrySourceSettings = Omit<Settings, keyof ForkSettings |
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "builtInBrowser" | "browserBlockedSites" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
+  | "agentHarnessTool"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "followOmarchy" | "speechVoice" | "liveVoice" | "openLiveWork"
@@ -325,6 +327,7 @@ export const SETTING_SCOPE = {
   claudeLaunchMode: "shared", codexLaunchMode: "shared",
   claudeLaunchModel: "shared", claudeLaunchEffort: "shared", codexLaunchModel: "shared", codexLaunchEffort: "shared",
   agentBrowserTools: "shared",
+  agentHarnessTool: "shared",
   customThemes: "shared",
 } as const satisfies Record<keyof Settings, "shared" | "device">;
 
@@ -413,7 +416,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultView: "auto",
   usageOrder: [],
   usageHidden: [],
-  voiceInput: "auto",
+  voiceInput: "off",
   voiceLanguage: "auto",
   voiceEngine: "auto",
   voicePolishChat: true,
@@ -436,6 +439,7 @@ export const DEFAULT_SETTINGS: Settings = {
   codexLaunchModel: "",
   codexLaunchEffort: "",
   agentBrowserTools: {},
+  agentHarnessTool: HARNESS_TOOL_DEFAULT,
 };
 
 export const QUICK_REPLIES_MAX = 12;
@@ -454,6 +458,8 @@ export const QUICK_REPLY_MAX_CHARS = 200;
 
 function voiceButton(value: unknown): VoiceButton {
   if (value === true) return "on";
+  // a saved switch from before the three places: off was the switch's default, and Auto took its place (#559)
+  if (value === false) return "auto";
   return VOICE_BUTTONS.includes(value as VoiceButton) ? value as VoiceButton : DEFAULT_SETTINGS.voiceInput;
 }
 
@@ -655,6 +661,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     codexLaunchModel: launchModel("codex", record["codexLaunchModel"]),
     codexLaunchEffort: CODEX_EFFORTS.find((level) => level === record["codexLaunchEffort"]) ?? DEFAULT_SETTINGS.codexLaunchEffort,
     agentBrowserTools: browserToolChoices(record["agentBrowserTools"]),
+    agentHarnessTool: harnessToolSetting(record["agentHarnessTool"]),
   };
 }
 
@@ -1152,3 +1159,4 @@ export function forgetPaneViews(given?: Pick<Storage, "length" | "key" | "remove
   }
   return keys.length;
 }
+import { HARNESS_TOOL_DEFAULT, harnessToolSetting, type HarnessToolSetting } from "../../shared/harness-tool.ts";

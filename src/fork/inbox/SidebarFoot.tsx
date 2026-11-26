@@ -35,17 +35,21 @@ function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPl
 }
 
 /**
- * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): the places as icons on the gear's row instead
- * of the row (Default: the inbox alone). Under Navigation → Rail the rail has them, and the foot keeps the gear and
- * the meters.
+ * Under Navigation → Footer or Rail the places are the fork's, not upstream's Inbox beside the gear (App.tsx passes
+ * MachineSidebar no `inbox` then).
  */
-export function ForkSidebarFoot({ children }: { children: ReactElement<{ onOpen(): void }> }) {
-  if (useNavigation() === "rail") return null;
-  const enter = children.props.onOpen;
+export const useForkOwnsInboxEntry = (): boolean => useNavigation() !== "upstream";
+
+/**
+ * The workspaces sidebar's foot (App.tsx): under Navigation → Footer the places as icons on the gear's row, the
+ * workspaces one marked. Default keeps upstream's Inbox entry; under Rail the rail has the places.
+ */
+export function ForkSidebarFoot({ onOpen }: { onOpen(): void }) {
+  if (useNavigation() !== "footer") return null;
   return <FootPlaces current="workspaces" onPlace={(place) => {
     if (place === "workspaces") return;
     setPlace(place);
-    enter();
+    onOpen();
   }} />;
 }
 

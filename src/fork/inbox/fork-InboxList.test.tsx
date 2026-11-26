@@ -60,7 +60,7 @@ test.each([false, true])("a conductor arriving during keyboard focus cannot move
   await act(async () => { renderer = create(view(false)); });
   const root = renderer!.root;
   const order = () => root.findAll((node) => node.type === "li" && node.props["data-pane"]).map((node) => node.props["data-pane"]);
-  const list = () => root.findByType("ul");
+  const list = () => root.findAll((node) => node.type === "div" && node.props.className === "inbox-groups")[0]!;
   expect(order()).toEqual(initial.map((pane) => pane.pane_id));
   await act(async () => { list().props.onFocus({ target: { matches: () => true } }); });
   await act(async () => { renderer!.update(view(true)); });

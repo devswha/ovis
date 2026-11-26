@@ -38,6 +38,13 @@ describe("buildSnapshot", () => {
       expect(snapshot.workspaces.reduce((sum, workspace) => sum + workspace.pane_count, 0)).toBe(snapshot.panes.length);
     }
   });
+  it("carries a person's hold on an ACP child, and none on a child that is not held", () => {
+    const acp = { agent: "opencode", status: "idle" as const, plan: null };
+    const { panes } = buildSnapshot([terminal("t1", { acp: { ...acp, hold: { child_id: "aaaaaaaaaaaa", generation: 3 } } }), terminal("t2", { acp })], null, "0.1.14");
+    expect(panes.find((pane) => pane.pane_id === "t1")).toMatchObject({ acp_child: true, acp_hold: { child_id: "aaaaaaaaaaaa", generation: 3 } });
+    expect(panes.find((pane) => pane.pane_id === "t2")).not.toHaveProperty("acp_hold");
+  });
+
   it("reads the app's spaces as workspaces, its tabs as tabs and each terminal block as a pane, in the app's order", () => {
     const layout = {
       spaces: [

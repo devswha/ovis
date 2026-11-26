@@ -8,7 +8,7 @@ import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { leaveAccount } from "../../src/lib/account/leave.ts";
 import { AccountService } from "../../src/lib/account/service.ts";
 import { beginSignIn, finishOwnSignIn } from "../../src/lib/account/signin.ts";
-import type { RelayDevice, RelayDeviceStore } from "../../src/lib/relay/device.ts";
+import type { RelayDevice, ShellDeviceStore } from "../../src/lib/relay/device.ts";
 import { memoryAccountStore } from "../../src/lib/account/store.ts";
 import { createServer } from "../index.ts";
 import { readDeviceRegistry } from "../devices.ts";
@@ -108,8 +108,9 @@ test.skipIf(!available).each(["sign-out", "leave"] as const)("released phone acc
     const saved = new Map<string, RelayDevice>([[pc.identity.server_id, { server_id: pc.identity.server_id,
       server_public_key: pc.identity.public_key, relay: "wss://relay.ovis.sh", device_id: pc.memberId,
       private_key: pc.key.private_key, public_spki: pc.key.public_spki, label: "Account phone", account: ACCOUNT }]]);
-    const phone: RelayDeviceStore = {
+    const phone: ShellDeviceStore = {
       get: async id => saved.get(id), list: async () => [...saved.values()], remove: async id => { saved.delete(id); },
+      removeRow: async (id, deviceId) => saved.get(id)?.device_id === deviceId && saved.delete(id),
       update: async (id, change) => { const next = change(saved.get(id)); saved.set(id, next); return next; },
     };
     if (action === "sign-out") await account.signOut();
@@ -174,14 +175,15 @@ test.skipIf(!available).each([ACCOUNT, "acct_other"] as const)("PC browser signs
     expect(await press.json()).toMatchObject({ error: { code: "in_account" } });
     expect(await app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
     expect(await pcAccount(app.port)).toBe(ACCOUNT);
-    expect(PcAccountState.open(pc.folders.a).binding()).toEqual(binding);
+    // the same binding, now with the listing its account rows are let in under
+    expect(PcAccountState.open(pc.folders.a).binding()).toMatchObject({ ...binding });
     for (const cookie of pc.cookies) expect(await credentialStatus(app.port, cookie)).toBe(200);
   } finally { await app.stop(); }
   pc.offline();
   const restarted = pc.start();
   try {
     expect(await pcAccount(restarted.port)).toBe(ACCOUNT);
-    expect(PcAccountState.open(pc.folders.a).binding()).toEqual(binding);
+    expect(PcAccountState.open(pc.folders.a).binding()).toMatchObject({ ...binding });
     expect(await memberStatus(pc, restarted, pc.identity.server_id)).toBe(200);
     for (const cookie of pc.cookies) expect(await credentialStatus(restarted.port, cookie)).toBe(200);
   } finally { await restarted.stop(); }

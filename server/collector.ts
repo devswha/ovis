@@ -77,7 +77,7 @@ export interface StatusCollectorHandlers {
    * program that ended and whose pane then closed.
    */
   onPaneClosed?: (paneId: string) => void;
-  onPaneMoved?: (previousPaneId: string, paneId: string, workspaceId?: string) => void;
+  onPaneMoved?: (previousPaneId: string, paneId: string, status: AgentStatus, workspaceId?: string) => void;
   onStructureChange: () => void;
   /**
    * A herdr that died closes it, while its socket file can stay behind; a file replaced meanwhile names none.
@@ -516,7 +516,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
           born.delete(previousPaneId);
           actedOn.set(previousPaneId, ++statusEvents);
           lastEventOf.set(paneId, statusEvents);
-          handlers.onPaneMoved?.(previousPaneId, paneId, workspaceId);
+          handlers.onPaneMoved?.(previousPaneId, paneId, status, workspaceId);
         }
         if (parsed.closed !== undefined) {
           const exited = exitedAt.get(parsed.closed);

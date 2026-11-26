@@ -1479,6 +1479,24 @@ describe("push resync after lost status events", () => {
   });
 });
 
+it("rekeys a finish already under way even when the destination reported work before the move", async () => {
+  const asked = Promise.withResolvers<void>();
+  const looked = Promise.withResolvers<void>();
+  const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
+    lookupPane: async () => { asked.resolve(); await looked.promise; return { title: "claude" }; } });
+  push.subscribe(fake.subscription);
+  push.seed([pane("w1:p1", "working", "claude")]);
+  await push.onStatus("w1:p1", "done");
+  await asked.promise;
+  try {
+    await push.onStatus("w2:p1", "working");
+    push.moved("w1:p1", "w2:p1", "done");
+  } finally { looked.resolve(); }
+
+  await push.settled();
+  expect(fake.received.map(({ payload }) => [payload.kind, payload.pane_id])).toEqual([["done", "w2:p1"]]);
+});
+
 describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {
   function mutable(timing = { short: 0, long: 0, longTurn: 0 }) {
     const list: string[] = [];
@@ -1496,7 +1514,7 @@ describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {
     push.subscribe(fake.subscription, { input: true, done: "always" });
     push.seed([{ ...pane("w1:p1", "working", "claude"), agent: "claude" }, { ...pane("w1:p2", "working", "helper"), agent: "claude", parent_pane_id: "w1:p1" }]);
     await push.onStatus("w1:p2", "blocked");
-    push.moved("w1:p2", "w2:p2");
+    push.moved("w1:p2", "w2:p2", "blocked");
     helpersMuted = true;
     push.mutesChanged();
     await push.settled();
@@ -1688,7 +1706,7 @@ describe("answer buttons on a question's alert (#2916)", () => {
     push.seed(panes);
     await push.onStatus("w1:p1", "blocked");
     await started.promise;
-    push.moved("w1:p1", "w2:p2", "local", "w2");
+    push.moved("w1:p1", "w2:p2", "blocked", "local", "w2");
     slow.resolve();
     await push.settled();
     expect(fake.received.map((r) => r.payload.friend)).toEqual([second]);

@@ -9,8 +9,10 @@ import { UsageMeters } from "./UsageMeters.tsx";
  * the sidebar's grid with the Settings gear and the plan meters. Its sizes are its own (Sidebar.css), so it is the
  * same foot wherever a column ends in it.
  */
-export function SidebarFooter({ start, watching = false, onSettings, onUsageLogin }: {
+export function SidebarFooter({ start, afterSettings, watching = false, onSettings, onUsageLogin }: {
   start?: ReactNode;
+  /** drawn beside the gear (upstream's Inbox entry) */
+  afterSettings?: ReactNode;
   watching?: boolean;
   onSettings(): void;
   /** a sign-in tab the usage popover opened; a watching device has none */
@@ -23,6 +25,7 @@ export function SidebarFooter({ start, watching = false, onSettings, onUsageLogi
         showing in every tab. */}
     <div className="sidebar-footer-row">
       <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={onSettings}><Settings aria-hidden="true" /></button>
+      {afterSettings}
       <UsageMeters watching={watching} onLocalLogin={watching ? undefined : onUsageLogin} />
     </div>
   </footer>;

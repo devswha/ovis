@@ -54,7 +54,6 @@ export const SETUP_ZH: Record<string, string> = {
   "Copy the command for {name}": "复制 {name} 的命令",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "这台 PC 的桥接服务暂不提供代理集成。下次运行时更新后即可使用。",
   "Open setup guide": "打开向导",
-  "Expired": "已过期",
   "Edit": "编辑",
   "Remove hub?": "移除中心？",
   "Its accounts disappear from this list. The hub itself is not changed.": "中心账号将从列表中消失，中心本身不变。",
@@ -87,4 +86,8 @@ export const SETUP_ZH: Record<string, string> = {
   "Install another agent ({count})": "安装其他代理（{count}）",
   "None": "无",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "代理可以操作的浏览器：Ovis 启动该代理时会加上固定版本的 MCP 服务器。该浏览器使用单独的配置文件，不会用到你的登录信息，Ovis 也不会查看或限制它。从下次启动起生效；从终端直接启动的代理不受影响。",
+  "Let agents call other agents": "允许 Agent 调用其他 Agent",
+  "On this PC only. Only you can approve requests.": "仅限此电脑。只有你能批准权限请求。",
+  "Agents they may call": "可调用的 Agent",
+  "Not saved: this PC did not answer. Try again.": "未保存：此 PC 没有响应。请重试。",
 };

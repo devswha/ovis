@@ -4,7 +4,7 @@ import type { Machine } from "../../../shared/machines.ts";
 import type { Translate } from "../../lib/i18n.ts";
 
 /**
- * Hidden terminals (`ovis.view=hidden` → `ovis_hidden`, server/fork/core-terminals.ts; they alert like any agent) reach the browser in every snapshot, in a workspace of
+ * Hidden terminals (`ovis.view=hidden` → `ovis_hidden`, shared/fork/core-terminals.ts; they alert like any agent) reach the browser in every snapshot, in a workspace of
  * their own, and every reader but the inbox's Hidden filter sees the roster without them (`useHiddenLens`). Selecting one
  * (any way) keeps just it in the roster the thread view reads while it is the selected pane; `useListedMachines` keeps it out of every list.
  */

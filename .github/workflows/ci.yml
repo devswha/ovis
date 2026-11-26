@@ -46,8 +46,10 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       browser: ${{ steps.filter.outputs.browser }}
       draft: ${{ steps.filter.outputs.draft }}
+      server: ${{ steps.filter.outputs.server }}
       linux: ${{ steps.route.outputs.linux }}
       fast: ${{ steps.route.outputs.fast }}
+      integration: ${{ steps.route.outputs.integration }}
       windows: ${{ steps.route.outputs.windows }}
       rust: ${{ steps.route.outputs.rust }}
       ratchet_base: ${{ steps.ratchet.outputs.base }}
@@ -73,6 +75,8 @@ jobs:
           LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
+          # the fastest machine's own labels for Integration tests while its queue is short (scripts/ci-runner-route.sh)
+          INTEGRATION_LABELS: ${{ vars.CI_INTEGRATION_SELF_HOSTED_LABELS }}
           # winvm's runner, while it waits for a job (scripts/self-hosted-runner/winvm-runner.sh); in ci.yml's own runs only
           WINVM_READY: ${{ github.workflow == 'CI' && vars.CI_WINVM_READY || '' }}
           # a draft's Native Windows install fails at its first step: it must not take winvm's one round
@@ -149,8 +153,12 @@ jobs:
             echo "Only documentation changes detected, skipping heavy tests"
           fi
           # Only a pull request may skip the Browser regression jobs, and only when none of its paths can
-          # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name).
+          # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name); one that
+          # changed the server alone runs them without the demo-only scripts (browser=live).
           printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
+          # Only a pull request may skip herdr-core live contract, Rust PTY host and Native macOS session identity, and
+          # only when it changes nothing but the client (scripts/ci-server-reach.sh); unset, as in every other event, they run.
+          printf '%s\n' "$CHANGED" | bash scripts/ci-server-reach.sh >> "$GITHUB_OUTPUT"
   windows-install:
     name: Native Windows install
     needs: changes
@@ -188,7 +196,7 @@ jobs:
   macos-session:
     name: Native macOS session identity
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
     # mac: fork pull requests stay on macos-15
     runs-on: ${{ inputs.hosted_only && 'macos-15' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(github.workflow == 'CI' && vars.CI_MAC_LABELS || '"macos-15"') }}
     timeout-minutes: 5
@@ -226,7 +234,7 @@ jobs:
     # GitHub's image, which has Rust too, when those runners are busy or gone.
     name: Rust PTY host
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
     runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.rust) }}
     timeout-minutes: 10
     env:
@@ -254,8 +262,19 @@ jobs:
       - name: Rust unit tests
         if: needs.changes.outputs.draft != 'true'
         run: cargo test --locked --manifest-path crates/pty-sidecar/Cargo.toml
+      - name: ACP keeper unit tests
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo test --locked --manifest-path crates/acp-keeper/Cargo.toml
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
+      - name: Build the ACP keeper and test agent
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins
+      - name: ACP keeper integration tests
+        if: needs.changes.outputs.draft != 'true'
+        env:
+          OVIS_REQUIRE_ACP_KEEPER: '1'
+        run: bun test ./server/acp ./server/agent-tools/turns.test.ts ./server/agent-tools/child.contract.test.ts ./server/agent-tools/pane.test.ts ./server/agent-tools/stop.contract.test.ts ./server/approvals/acp.test.ts ./server/core/acp-composer.test.ts
       - name: PtySession on both hosts
         if: needs.changes.outputs.draft != 'true'
         run: bun test ./server/pty/host.test.ts
@@ -272,9 +291,11 @@ jobs:
     # a matrix would rename the job's check run, which scripts/release-ci-reuse.ts looks up by name.
     name: herdr-core live contract
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
+    # GitHub-hosted: it runs there faster than on the self-hosted pool, where it took a slot of every run. The repository
+    # variable CI_HC_LIVE_LABELS (a self-hosted label list) moves it back; fork pull requests stay GitHub-hosted whatever
+    # it says (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(vars.CI_HC_LIVE_LABELS || '"ubuntu-24.04"') }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
@@ -329,7 +350,19 @@ jobs:
           set -euo pipefail
           # one file per line: a new live test file is added by adding its line
           files=(
+            ./server/acp/children.live.test.ts
             ./server/herdr-core/live.test.ts
+            ./server/herdr-core/socket-transport.live.test.ts
+            ./server/herdr-core/core.fake.live.test.ts
+            ./tui/testing/with-core.contract.test.ts
+            ./tui/core/link.live.test.ts
+            ./tui/core/pane.live.test.ts
+            ./tui/core/layout.live.test.ts
+            ./tui/display.live.test.ts
+            ./tui/loop.live.test.ts
+            ./tui/fidelity.live.test.ts
+            ./tui/coexist.live.test.ts
+            ./tui/view/mouse.live.test.ts
           )
           while read -r version sha256; do
             [ -n "$version" ] || continue
@@ -375,7 +408,7 @@ jobs:
       - id: upgrade-fixtures
         name: Fetch the pinned upgrade fixtures
         run: |
-          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
+          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7 refs/tags/v0.5.4:refs/tags/v0.5.4 refs/tags/v0.5.9:refs/tags/v0.5.9
           git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
           git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
       - run: bun run check fast
@@ -403,7 +436,8 @@ jobs:
     name: Integration tests
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
+    # the Linux jobs' runners, or CI_INTEGRATION_SELF_HOSTED_LABELS' while their queue is short; forks always hosted (scripts/ci-runner-route.sh)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.integration) }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:
@@ -576,6 +610,10 @@ jobs:
           BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-terminal-regression.ts,scripts/ui-ime-regression.ts,scripts/ui-access-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
           BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
+          # a pull request that changed the server alone (scripts/ci-browser-reach.sh): the scripts that check the
+          # static demo alone and load no file of the server are left out (scripts/ci-browser-parallel.ts); in ci.yml's
+          # own runs only, so no workflow that calls it from a pull request leaves any out
+          BROWSER_LIVE_ONLY: ${{ github.workflow == 'CI' && needs.changes.outputs.browser == 'live' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       # About 2,000 screenshots of a green run cost ~50 s to upload on the job that ends a run last,
       # so they go up only when the job failed; the report and every script's log always do.
@@ -634,7 +672,8 @@ jobs:
             exit 1
           fi
           # A change that cannot reach the browser jobs skipped them (Detect changes): only a skip counts
-          # then, never a job that failed or was cancelled.
+          # then, never a job that failed or was cancelled. A change to the server alone (browser=live) ran
+          # them without the demo-only scripts, so they must pass as on any other change.
           if [ "$BROWSER" = "false" ]; then
             if [ "$BROWSER_MAIN_RESULT" != "skipped" ] || [ "$BROWSER_OTHER_RESULT" != "skipped" ]; then
               echo "Browser regression was to be skipped and ended as $BROWSER_MAIN_RESULT and $BROWSER_OTHER_RESULT"
