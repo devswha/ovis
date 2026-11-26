@@ -88,6 +88,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   account add, take it into the preview's test account. It now leaves that Ovis alone, adds no PC
   to its account over SSH and installs no Ovis on another PC.
   ([#4802](https://github.com/devswha/ovis/pull/4802))
+- The desktop launcher no longer gives a stopped app's address to the terminal screen or
+  tries to approve a device after the desktop server stops listening.
+  ([#4801](https://github.com/devswha/ovis/pull/4801))
 
 ## [0.5.10] - 2026-11-26
 
