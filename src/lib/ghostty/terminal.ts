@@ -50,15 +50,13 @@ export interface GhosttyTerminalOptions {
   disableStdin: boolean;
   wordSeparator: string;
   macOptionClickForcesSelection: boolean;
-  /** what CSI 14/16/18 t may report: kept for the mount's picture settings, which read it */
-  windowOptions: Record<string, boolean>;
   cursorStyle?: "block" | "underline" | "bar";
   cursorBlink?: boolean;
 }
 
 const DEFAULT_OPTIONS: GhosttyTerminalOptions = {
   fontFamily: "monospace", fontSize: 13, lineHeight: 1, letterSpacing: 0, theme: {}, scrollback: 0, minimumContrastRatio: 1,
-  disableStdin: false, wordSeparator: " ()[]{}',\"`", macOptionClickForcesSelection: false, windowOptions: {},
+  disableStdin: false, wordSeparator: " ()[]{}',\"`", macOptionClickForcesSelection: false,
 };
 
 /** the rows the app reads, as xterm's buffer gives them, with the screen up now */
