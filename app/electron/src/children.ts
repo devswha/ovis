@@ -285,12 +285,13 @@ export function writeSaved(path: string, saved: Saved): void {
   renameSync(`${path}.tmp`, path);
 }
 
-/** A port remembered for the next start isn't an address the CLI can use. */
-export async function desktopCommandPort(path: string): Promise<number | null> {
+/** A saved port isn't enough: the CLI can only use the live process that owns the desktop listener record. */
+export async function desktopCommandListener(path: string): Promise<{ readonly port: number; readonly identity: string } | null> {
   const { port, server } = readSaved(path);
   if (port === null || !Number.isInteger(port) || port < 1 || port > 65535
     || server?.ready !== true || !Number.isSafeInteger(server.pid) || server.pid <= 0 || server.started === null) return null;
-  return await processStart(server.pid) === server.started && desktopListenerMatches(path, server.pid) ? port : null;
+  if (await processStart(server.pid) !== server.started || !desktopListenerMatches(path, server.pid)) return null;
+  return { port, identity: JSON.stringify([server.pid, server.started]) };
 }
 
 export interface ProcessProbe {

@@ -66,7 +66,7 @@ if (import.meta.main || COMPILED) {
 }
 
 let desktopPort: number | null = null;
-let desktopListenerPort: (() => Promise<number | null>) | undefined;
+let desktopListenerIsCurrent: (() => Promise<boolean>) | undefined;
 // help and the version are answered here without a server, so they work with the app closed
 if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && early.kind !== "version") {
   // The app owns its server; these commands only explain how to start or stop it.
@@ -75,13 +75,17 @@ if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && earl
     process.exit(1);
   }
   const record = desktopCommandRecord(process.env);
-  const { desktopCommandPort } = await import("../app/electron/src/children.ts");
-  if (record) desktopListenerPort = () => desktopCommandPort(record);
-  desktopPort = await desktopListenerPort?.() ?? null;
-  if (desktopPort === null || String(desktopPort) !== process.env["PORT"]) {
+  const { desktopCommandListener } = await import("../app/electron/src/children.ts");
+  const listener = record ? await desktopCommandListener(record) : null;
+  if (!record || listener === null || String(listener.port) !== process.env["PORT"]) {
     process.stderr.write("ovis: open the Ovis app first, then run this again\n");
     process.exit(1);
   }
+  desktopPort = listener.port;
+  desktopListenerIsCurrent = async () => {
+    const current = await desktopCommandListener(record);
+    return current?.port === listener.port && current.identity === listener.identity;
+  };
 }
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
@@ -279,7 +283,10 @@ function profileRelayOnly(): string {
 }
 
 function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
-  return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
+  if (door !== null) return ownerFetch(door, `http://localhost${path}`, init);
+  // A desktop command has a verified loopback target; neither a proxy nor a redirect can answer for it.
+  const options = desktopPort === null ? init : { ...init, proxy: false, redirect: "error" as const };
+  return fetch(`${origin}${path}`, options);
 }
 
 /** A request that ran past its `AbortSignal.timeout`: the server answered health, then stopped answering. */
@@ -1014,9 +1021,8 @@ async function approvePairings(): Promise<number> {
   if (!(await health())) return notRunning();
   const listenerGone = new Error("Desktop listener closed");
   const approvalFetch = async (path: string, init: RequestInit): Promise<Response> => {
-    if (desktopListenerPort === undefined) return serverFetch(path, init);
-    if (await desktopListenerPort() !== desktopPort) throw listenerGone;
-    return serverFetch(path, { ...init, redirect: "error" });
+    if (desktopListenerIsCurrent !== undefined && !(await desktopListenerIsCurrent())) throw listenerGone;
+    return serverFetch(path, init);
   };
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;

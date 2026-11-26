@@ -916,6 +916,66 @@ it("does not send a desktop approval request after the listener was withdrawn du
   } finally { withdraw(); await server.stop(true); }
 });
 
+it.skipIf(process.platform === "win32").each(["restart", "proxy"] as const)("keeps a typed desktop approval on the original local server (%s)", async (scenario) => {
+  const record = join(scratch, "desktop.json");
+  const direct: string[] = [];
+  const proxied: string[] = [];
+  const answer = (seen: string[]) => async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    switch (path) {
+      case "/api/health": return Response.json(APP_HEALTH);
+      case "/api/relay/pairings": return Response.json({ pairings: [] });
+      case "/api/relay/joins": return Response.json({ joins: [{ id: "j1", label: "Fixture phone" }] });
+      case "/api/relay/join":
+        seen.push(await request.text());
+        return new Response(null, { status: 204 });
+      default: return new Response(null, { status: 404 });
+    }
+  };
+  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: answer(direct) });
+  const proxy = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: answer(proxied) });
+  const next = scenario === "restart" ? Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { env: process.env, stdin: "ignore" }) : null;
+  const save = (pid: number) => {
+    writeSaved(record, { port: server.port, server: { pid, ready: true, bun: process.execPath, started: processStartSync(pid) } });
+    return recordDesktopListener(record, pid);
+  };
+  let withdraw = save(process.pid);
+  let out = "";
+  let typed = false;
+  let reply: ReturnType<typeof setTimeout> | undefined;
+  const child = Bun.spawn([process.execPath, "scripts/plugin.ts", "approve"], {
+    cwd: ROOT,
+    env: launchEnv({
+      PORT: String(server.port), OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record,
+      ...(scenario === "proxy" ? { HTTP_PROXY: proxy.url.origin, http_proxy: proxy.url.origin, NO_PROXY: "", no_proxy: "" } : {}),
+    }),
+    timeout: 6_000, killSignal: "SIGKILL",
+    terminal: { cols: 80, rows: 24, data(terminal, bytes) {
+      out += new TextDecoder().decode(bytes);
+      if (typed || !out.endsWith("leave it waiting: ")) return;
+      typed = true;
+      if (next !== null) { withdraw(); withdraw = save(next.pid); }
+      // An answer typed too soon to have read the prompt is discarded by the command.
+      reply = setTimeout(() => terminal.write("123456\n"), 1_550);
+    } },
+  });
+  try {
+    const exit = await child.exited;
+    expect(typed, out).toBe(true);
+    expect({ direct, proxied }).toEqual({
+      direct: scenario === "proxy" ? ['{"id":"j1","digits":"123456"}'] : [], proxied: [],
+    });
+    expect(exit, out).toBe(scenario === "proxy" ? 0 : 1);
+  } finally {
+    clearTimeout(reply);
+    child.terminal?.close();
+    if (next !== null) { next.kill(); await next.exited; }
+    withdraw();
+    await server.stop(true);
+    await proxy.stop(true);
+  }
+}, 8_000);
+
 for (const encoding of ["ASCII", "Unicode"]) {
   it.skipIf(process.platform === "win32")(`logout reads a healthy ${encoding} token-protected server without printing the token`, async () => {
     const { pairingPc } = await import("../server/account/pairing.test-helpers.ts");
