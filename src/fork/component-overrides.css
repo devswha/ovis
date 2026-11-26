@@ -36,10 +36,10 @@
 }
 .fork-helpers-face > svg { display: none; width: var(--icon-size); height: var(--icon-size); }
 .fork-helpers-face:focus-visible > svg { display: block; }
-:is(.agent-item, .inbox-item):has(> .fork-helpers-face:focus-visible) :is(.agent-row > .sidebar-mark, .inbox-avatar) { visibility: hidden; }
+:is(.agent-item, .inbox-item, .workspace-agent):has(> .fork-helpers-face:focus-visible) :is(.agent-row > .sidebar-mark, .inbox-avatar, .workspace-agent-select > .sidebar-mark) { visibility: hidden; }
 @media (hover: hover) {
   .fork-helpers-face:hover > svg { display: block; }
-  :is(.agent-item, .inbox-item):has(> .fork-helpers-face:hover) :is(.agent-row > .sidebar-mark, .inbox-avatar) { visibility: hidden; }
+  :is(.agent-item, .inbox-item, .workspace-agent):has(> .fork-helpers-face:hover) :is(.agent-row > .sidebar-mark, .inbox-avatar, .workspace-agent-select > .sidebar-mark) { visibility: hidden; }
 }
 .mode-inbox .inbox-item:has(> .fork-helpers-face) {
   position: relative;
@@ -299,6 +299,45 @@
 [data-fork-square-corners="true"] .sidebar-status-dot {
   border-radius: var(--radius-circle);
 }
+
+/* Fold helpers under their agent with Agents under workspaces (fork sidebar/useForkTree.tsx): the Agents list is not
+   drawn, so the PCs section takes its room, also from a split that was dragged before. */
+.sidebar-shell:not(:has(> .agents-sidebar)) > .pcs-sidebar { flex: 1 1 0; min-height: 0; max-height: none; }
+/* A tree agent's picture is its helpers' fold; a helper steps in under its agent's mark with the Agents list's elbow
+   and is its title alone, and the workspace's line ends at its last agent. */
+.workspace-agent > .fork-helpers-face { inset-inline-start: var(--agent-indent); }
+.workspace-agent[data-depth] { --fork-tree-x: calc(var(--agent-indent) + var(--side-box) / 2); --tree-step: calc(var(--space-3) + var(--space-2)); }
+.workspace-agent[data-depth] .workspace-agent-select > .sidebar-mark { display: none; }
+.workspace-agent[data-depth] .workspace-agent-title { font-size: var(--fs-sm); }
+.workspace-agent[data-depth="1"] > .workspace-agent-select { padding-inline-start: calc(var(--fork-tree-x) + var(--tree-step)); }
+.workspace-agent[data-depth="2"] > .workspace-agent-select { padding-inline-start: calc(var(--fork-tree-x) + 2 * var(--tree-step)); }
+.workspace-agent[data-depth] > .workspace-agent-select::after { display: none; }
+.workspace-agent[data-depth]::after {
+  position: absolute;
+  top: 0;
+  inset-inline-start: var(--fork-tree-x);
+  width: var(--space-3);
+  height: 50%;
+  border-inline-start: var(--hairline) solid var(--border-strong);
+  border-block-end: var(--hairline) solid var(--border-strong);
+  border-end-start-radius: var(--radius-sm);
+  content: "";
+  pointer-events: none;
+}
+.workspace-agent[data-depth="2"]::after { inset-inline-start: calc(var(--fork-tree-x) + var(--tree-step)); }
+.workspace-agent[data-depth][data-more]::after {
+  height: 100%;
+  border: 0;
+  border-end-start-radius: 0;
+  background:
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat,
+    linear-gradient(var(--border-strong), var(--border-strong)) 0 50% / 100% var(--hairline) no-repeat;
+}
+.workspace-agent[data-through] > .workspace-agent-select {
+  background: linear-gradient(var(--border-strong), var(--border-strong)) var(--fork-tree-x) 0 / var(--hairline) 100% no-repeat;
+}
+.workspace-agents:not([data-more]) > .workspace-agent:not([data-depth]):not(:has(~ .workspace-agent:not([data-depth]))) > .workspace-agent-select::before { bottom: 50%; }
+.workspace-agents:not([data-more]) > .workspace-agent:not([data-depth]):not(:has(~ .workspace-agent:not([data-depth]))) ~ .workspace-agent > .workspace-agent-select::before { display: none; }
 
 /* src/components/TabStrip.css */
 [data-fork-agent-friends="true"] .tab-strip-faces {

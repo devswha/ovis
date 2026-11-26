@@ -245,6 +245,40 @@ browser regressions build only disposable demo bundles. Self-audit covered corre
 performance, types, coverage and fork hook scope: no new dependency, payload, setting or poller.
 No push, PR, deployment, merge, generated-source edit or Bigpowers state/spec artifact.
 
+## Helper folds in the workspace tree
+
+Kind: user preference over upstream behaviour (pile B), triggered only by the user's own stored upstream
+settings: Settings → Fold helpers under their agent (`foldHelpers`) together with Agents under workspaces
+(`sidebarAgentTree`). Both stay off by default; with either off the sidebar is upstream's.
+
+With both on:
+- The Agents list and its divider are not drawn (above or below the PCs): the workspace tree already lists
+  each agent. The PCs section takes the whole height, also from a divider dragged earlier; filter, footer
+  and inbox entry stay.
+- Each workspace's agents list a helper right under its agent (a helper's helper under that helper), by
+  `parent_pane_id`; a helper whose agent is in another workspace stays a normal row. The agent's picture is
+  the fold caret (`ForkHelpersFace`) and its title gets the hidden helpers' "+N" (`ForkFoldCount`). A blocked
+  helper and the selected pane stay in sight while folded; a sidebar filter folds nothing. Which agents are
+  open is shared with the Agents list and the agent inbox (`HELPERS_OPEN_KEY`, `useForkOpenHelpers`, a store read
+  from storage on each draw, so turning the tree on shows what the Agents list opened meanwhile).
+- An agent row drops its tab name after the title (the row's hover title keeps it); the agent's live name stays.
+
+Code: `src/fork/sidebar/treeRows.ts` (`forkTreeOn`, `forkTreeRows`, `forkTreeTab`, pure),
+`src/fork/sidebar/useForkTree.tsx` (the hook the tree calls), `forkFamiliesFolded` in
+`src/fork/inbox/inboxRows.ts` (the inbox's own nesting and folds, reused, no third copy), CSS in
+`src/fork/component-overrides.css` (Sidebar.css section). Tests: `src/fork/sidebar/fork-treeRows.test.ts`,
+`fork-Sidebar.test.tsx`, `fork-MachineSidebar.test.tsx`.
+
+Hooks in upstream files:
+- `src/components/Sidebar.tsx`: one import, one `useForkTree(...)` call, `renderAgentRow` takes `ForkTreeAgent`,
+  `forkTree.tab(tabName)` in `place`, `{...entry.forkTree}` on the row's `<li>`, `forkTree.face(...)` and
+  `forkTree.count(...)` in the row, and `forkTree.rows(workers)` before the map.
+- `src/components/MachineSidebar.tsx`: one import, `forkTreeOn(settings) ? null :` before `agentList`, and
+  `agentList &&` on its two `SidebarSplit`s.
+
+Upstream candidate: folding the workspace tree's helpers like the Agents list could suit upstream as part of
+Fold helpers under their agent; dropping the Agents list and the tab name are Ricardo's own layout.
+
 ## Three piles
 
 - **A: reusable changes.** Upstream PR candidates, not submitted. Optional presentation features should arrive upstream disabled; protocol correctness fixes should retain their focused tests rather than acquire a switch.

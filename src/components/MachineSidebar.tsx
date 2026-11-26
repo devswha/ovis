@@ -30,6 +30,7 @@ import { t, useT } from "../lib/i18n.ts";
 import { asksChoice, FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
 import { useSettings } from "../lib/settings.ts";
 import { ComputerButton } from "../fork/computer/ComputerButton.tsx";
+import { forkTreeOn } from "../fork/sidebar/treeRows.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -256,7 +257,7 @@ export function MachineSidebar(props: Props) {
   const loadingWords = useAnnouncedText(props.machines.length === 0 ? t("Loading PCs…") : null);
   const unanswered = props.machines.some((machine) => machine.snapshot === null);
   const noMatchWords = useAnnouncedText(filter.active && filter.matches === 0 && props.machines.length > 0 ? `${t(unanswered ? "No workspaces or agents match on the PCs that answered" : "No workspaces or agents match")}\n${t("Try other words, or clear the filter.")}` : null);
-  const agentList = <AgentSidebar key="agents" foldRequest={agentsFold} listId={agentsListId} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} watching={props.watching} onSelect={props.onSelect} />;
+  const agentList = forkTreeOn(settings) ? null : <AgentSidebar key="agents" foldRequest={agentsFold} listId={agentsListId} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} watching={props.watching} onSelect={props.onSelect} />;
   return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div ref={shell} className={`sidebar-shell${order === "agents" ? " is-agents-first" : ""}`} onBlur={onSidebarBlur} onKeyDown={stepRows}>
     {filterShown && <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
       <Search className="sidebar-filter-glass" aria-hidden="true" />
@@ -266,7 +267,7 @@ export function MachineSidebar(props: Props) {
         : closable && <button type="button" className="sidebar-filter-clear" aria-label={t("Close filter")} title={t("Close filter")} onClick={closeFilter}><X aria-hidden="true" /></button>}
     </div>}
     {settings.agentGroups && agentList}
-    {settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
+    {settings.agentGroups && agentList && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={agentsListId} onSplit={changeSplit} onFold={foldSections} />}
     <section className="pcs-sidebar" aria-label={t("PCs")}>
       <div ref={machineList} className="machine-list" id={listId} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
@@ -280,7 +281,7 @@ export function MachineSidebar(props: Props) {
       {/* part of the PC section, so the split below measures it with the PCs (SidebarSplit.tsx) */}
       {props.afterPcs}
     </section>
-    {!settings.agentGroups && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
+    {!settings.agentGroups && agentList && <SidebarSplit shell={shell} order={order} split={splits[order]} controls={listId} onSplit={changeSplit} onFold={foldSections} />}
     {!settings.agentGroups && agentList}
     <SidebarFooter start={props.footerStart} watching={props.watching} onUsageLogin={props.onUsageLogin} afterSettings={props.inbox ? <InboxEntry {...props.inbox} /> : null}
       onSettings={() => { tally(() => props.actions.counted?.("settings", "button")); props.actions.openSettings(); }} />

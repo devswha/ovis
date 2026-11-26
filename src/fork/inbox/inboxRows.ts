@@ -21,6 +21,11 @@ export function forkInboxRows<T extends InboxRow>(rows: readonly T[], enabled: b
   return forkInboxNesting(enabled ? nestRows(rows, keyOf, parentOf) : rows, enabled);
 }
 
+/** The family order and the folds at once, for a list drawn in its snapshot's order (the sidebar's workspace tree). */
+export function forkFamiliesFolded<T extends InboxRow>(rows: readonly T[], folds: ForkFolds<T>): (T & { forkTree: ForkTree; forkFold?: ForkFold })[] {
+  return forkInboxFolded(nestRows(rows, keyOf, parentOf), true, folds);
+}
+
 /**
  * The tree of the order actually drawn: a row is a helper only under its agent's family just above it, so a held
  * helper never connects across an unrelated row. Depth stops at 2, as the sidebar's does.

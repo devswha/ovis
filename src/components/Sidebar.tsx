@@ -44,6 +44,7 @@ import { paneDrag } from "../lib/paneDrag.ts";
 import { publishWorkspaceRows, workspaceRows } from "../lib/adjacentTarget.ts";
 import { currentSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneWorkspacePins, reorderWorkspacePins, setSidebarPins, splitPinnedGroups, subscribeSidebarPins, toggleSidebarPin, workspacePinKey, type WorkspaceGroup } from "../lib/sidebarPins.ts";
 import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
+import { useForkTree, type ForkTreeAgent } from "../fork/sidebar/useForkTree.tsx";
 
 const ERROR_NOTE_MS = 5000;
 
@@ -261,6 +262,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // renames and reorders them only where Ovis keeps its layout
   const { rename: renameOffered, arrange, worktrees: worktreesOffered } = useAppLayout();
   const activity = useSidebarActivity();
+  const forkTree = useForkTree(machineId, selectedPaneId, (pane) => activity.status(machineId, pane));
   const { closeWorkspace, listWorktrees, moveWorkspace, removeWorktree, renameWorkspace } = useMachineApi();
   const historyOffered = useSessionHistoryOffered(online);
   const loadingWords = useAnnouncedText(snapshot ? null : t("Loading workspaces…"));
@@ -750,17 +752,18 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     moveVisible(workspaceId, event.key === "ArrowUp" ? -1 : 1);
   };
 
-  const renderAgentRow = (entry: SidebarAgent) => {
+  const renderAgentRow = (entry: ForkTreeAgent) => {
     const { pane, agent } = entry;
     const selected = pane.pane_id === selectedPaneId;
     const title = pane.label?.trim() || agent?.title?.trim() || pane.title?.trim() || displayPaneTitle(pane);
     const tabName = agentTabName(entry.tab, snapshot?.tabs.filter((tab) => tab.workspace_id === pane.workspace_id) ?? [], t);
     const name = agent?.name?.trim() || null;
-    const place = [...new Set([name, tabName])].filter((part): part is string => part !== null && part !== title).join(" · ") || null;
+    const place = [...new Set([name, forkTree.tab(tabName)])].filter((part): part is string => part !== null && part !== title).join(" · ") || null;
     const kind = entry.agentLabel ?? entry.canonicalAgent;
     const mark = paneMark(entry);
     const context = filtered !== null && !filtered.matchedPanes.has(pane.pane_id);
-    return <li key={pane.pane_id} className={`workspace-agent${selected ? " is-selected" : ""}${context ? " is-filter-context" : ""}`} data-agent-pane={pane.pane_id}>
+    return <li key={pane.pane_id} className={`workspace-agent${selected ? " is-selected" : ""}${context ? " is-filter-context" : ""}`} data-agent-pane={pane.pane_id} {...entry.forkTree}>
+      {forkTree.face(entry, title)}
       <button type="button" className="workspace-agent-select" disabled={!online} aria-current={selected ? "true" : undefined}
         title={[...new Set([title, kind, name, tabName, pane.cwd].filter(Boolean))].join(" — ")}
         draggable={online && !coarsePointer}
@@ -774,6 +777,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         <span className="sidebar-mark" aria-hidden="true">{mark !== null ? <AgentAvatar agent={mark} size={18} paneId={pane.pane_id} machineId={machineId} status={paneStatus(pane)} /> : <Terminal />}</span>
         {kind && kind !== title && <span className="visually-hidden">{kind}: </span>}
         <span className="workspace-agent-title">{title}</span>
+        {forkTree.count(entry)}
         {place && <span className="workspace-agent-place">{place}</span>}
         {context && selected && <span className="sidebar-filter-note">{t("Selected")}</span>}
         {/* the counts give way before the title in a narrow sidebar: cut at the row's trailing cell, never over it */}
@@ -936,7 +940,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       </div>
       {inlineError?.workspaceId === workspace.workspace_id && <p className="sidebar-inline-error" role="alert">{inlineError.message}{inlineError.detail !== null && <><br /><code>{inlineError.detail}</code></>}</p>}
       {/* the worktrees drawn under it go on from the same branch: the last agent is a tee, not an elbow */}
-      {workers.length > 0 && <ul className="workspace-agents" aria-label={t("Agents in {name}", { name: rowTitle })} data-more={children.some((child) => !collapsed || roster.some((candidate) => candidate.workspace_id === child.workspace_id && candidate.pane_id === selectedPaneId)) ? "" : undefined}>{workers.map(renderAgentRow)}</ul>}
+      {workers.length > 0 && <ul className="workspace-agents" aria-label={t("Agents in {name}", { name: rowTitle })} data-more={children.some((child) => !collapsed || roster.some((candidate) => candidate.workspace_id === child.workspace_id && candidate.pane_id === selectedPaneId)) ? "" : undefined}>{forkTree.rows(workers).map(renderAgentRow)}</ul>}
     </li>;
   };
 
