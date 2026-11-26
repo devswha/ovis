@@ -166,9 +166,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   with Remove. Ovis checks with the kernel and herdr-core that the call really comes from that
   pane. The grant ends when the pane closes.
   ([#4640](https://github.com/devswha/ovis/pull/4640))
-- An agent that asks another one through Ovis can now start Antigravity (agy) as the helper too, in its strictest
-  asking setup: you approve every write, side-effecting command and tool call, except what your own
-  allow rules or a project folder's setup in agy allow. Its built-in web search runs without asking, and Settings says so.
+- An agent that asks another one through Ovis can now start Antigravity (agy) as the helper too, in
+  agy's default mode (see the delegated agents line under Changed). Its built-in web search runs
+  without asking, and Settings says so.
   ([#4643](https://github.com/devswha/ovis/pull/4643))
 - When the phone app carries its own copy of Ovis, a PC that no longer supports that copy shows
   "Update the app" with a button to the app's store page; the app's other PCs still open.
@@ -177,8 +177,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   all six digits the new device shows, and one wrong entry ends that join.
   ([#4435](https://github.com/devswha/ovis/pull/4435))
 - An agent that asks another one through Ovis can now start Claude Code (through
-  `claude-agent-acp`) as the helper, in a launch that asks you before every write, command, web
-  request and tool call, whatever your own Claude settings allow.
+  `claude-agent-acp`) as the helper, in Claude's default (Manual) mode with your own settings;
+  Ovis refuses its automatic and full-access modes (see the delegated agents line under Changed).
   ([#4623](https://github.com/devswha/ovis/pull/4623))
 - The Chat's model pill shows a small plan icon while Claude Code is in plan mode, read from its
   transcript and, in a Claude Ovis started, from its hooks. Every other mode shows nothing.
@@ -186,9 +186,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   Switching modes is still done in Claude's terminal (Shift+Tab).
   ([#4666](https://github.com/devswha/ovis/pull/4666))
 - An agent that asks another one through Ovis can now start Codex (through `codex-acp`) or the
-  Copilot CLI as the helper, each in its strictest asking setup: you approve every write,
-  side-effecting command, web request and tool call, except what your own allow rules in that agent (yours or a project
-  folder's) already allow. Settings says so under the agents they may call.
+  Copilot CLI as the helper, each in its default mode with your own settings; Ovis refuses their
+  full-access modes and Copilot's allow-all (see the delegated agents line under Changed).
   ([#4631](https://github.com/devswha/ovis/pull/4631))
 - An agent can answer its child's clarification questions. If it passes or does not answer within
   30 seconds, the question goes to a person in Ovis. Only people can answer permission requests.
@@ -345,9 +344,10 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   as on Linux and macOS, so a card shows the whole command. A Claude Code older than 2.1.286, or
   one whose version Ovis cannot read, keeps answering its approvals with keys.
   ([#4516](https://github.com/devswha/ovis/pull/4516))
-- `ovis` at a terminal joins a running herdr-core session in the terminal screen (`ovis --session NAME`
-  selects another session). If no core answers, or the command's input or output isn't a terminal,
-  it does exactly what `ovis status` does. It never asks to start a core.
+- Plain `ovis` at a terminal on Linux and macOS joins a running herdr-core session in the terminal
+  screen (`ovis --session NAME` selects another session). If no core answers, on Windows, or when the
+  command's input or output isn't a terminal (a script), it does exactly what `ovis status` does. It
+  never asks to start a core; `ovis tui` does.
   ([#4579](https://github.com/devswha/ovis/pull/4579))
 - The terminal screen can create worktrees and delete linked checkouts through the local Ovis server.
   ([#4579](https://github.com/devswha/ovis/pull/4579))
@@ -515,9 +515,6 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   code. `ovis status` also names the account and the relay. The old names (`add`, `link`,
   `link --code`, `pair --approve`) keep working.
   ([#4435](https://github.com/devswha/ovis/pull/4435))
-- Plain `ovis` at a terminal opens the terminal screen where it can run, else prints the help;
-  in a script it is still `ovis status`.
-  ([#4435](https://github.com/devswha/ovis/pull/4435))
 - `ovis login` is laid out as `codex login` is: 1/2 Sign in (the browser opens on a desktop; over SSH
   or with `--no-browser`, the address and code to type), 2/2 Let this PC in, and how to check or undo it.
   ([#4435](https://github.com/devswha/ovis/pull/4435))
@@ -534,9 +531,6 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   picker of every terminal (`prefix+g`), its right-click menus, and on a narrow window herdr's
   layout and switcher. It adds copy mode with search and copy hints (`prefix+[`) and a lock that
   sends every key to the pane (`ctrl+alt+g`) ([docs/tui.md](docs/tui.md)).
-  ([#4544](https://github.com/devswha/ovis/pull/4544))
-- Plain `ovis` at a terminal prints the help everywhere: it no longer opens the separate terminal
-  program on a PC where one had been built. `ovis tui` opens the screen.
   ([#4544](https://github.com/devswha/ovis/pull/4544))
 - Command palette's Recent section now shows up to eight recently visited panes, not counting the
   selected one (up from 3), and stores nine so the selected pane does not take a row (#4035).

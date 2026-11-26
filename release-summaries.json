@@ -3,7 +3,7 @@
     "en": {
       "new": [
         "Agents can call other agents on this PC; you approve their actions.",
-        "Settings → Memory keeps notes your agents can use.",
+        "Settings → Memory keeps notes for this PC, your account or a project.",
         "ovis login adds a PC to your account; ovis approve lets devices in.",
         "Manage account can sign out every device at once.",
         "The desktop app checks for updates from Settings → About."
@@ -26,7 +26,7 @@
     "ko": {
       "new": [
         "에이전트가 이 PC의 다른 에이전트를 부를 수 있고, 승인은 직접 해요.",
-        "설정 → 메모리에 에이전트가 쓸 메모를 남겨 둘 수 있어요.",
+        "설정 → 메모리에 이 PC, 계정, 프로젝트별 메모를 남길 수 있어요.",
         "ovis login으로 PC를 계정에 넣고, ovis approve로 기기를 허락해요.",
         "'계정 관리'에서 모든 기기를 한 번에 로그아웃할 수 있어요.",
         "데스크톱 앱의 설정 → 정보에서 업데이트를 확인할 수 있어요."
@@ -49,7 +49,7 @@
     "ja": {
       "new": [
         "エージェントがこの PC の他のエージェントを呼べます。承認はあなたが行います。",
-        "設定 → メモリーに、エージェントが使うメモを残せます。",
+        "設定 → メモリーに、この PC・アカウント・プロジェクトごとのメモを残せます。",
         "ovis login で PC をアカウントに追加し、ovis approve で端末を入れます。",
         "「アカウント管理」から、すべてのデバイスを一度にサインアウトできます。",
         "デスクトップアプリの 設定 → 情報 から更新を確認できます。"
@@ -72,7 +72,7 @@
     "zh": {
       "new": [
         "智能体可以调用这台电脑上的其他智能体，操作仍由你批准。",
-        "设置 → 记忆 可保存供智能体使用的笔记。",
+        "设置 → 记忆 可按这台电脑、账号或项目保存笔记。",
         "ovis login 把电脑加入账号，ovis approve 让设备接入。",
         "在“管理账号”里可一次退出所有设备。",
         "桌面应用可在 设置 → 关于 中检查更新。"
