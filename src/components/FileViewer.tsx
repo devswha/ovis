@@ -30,7 +30,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { MAX_INLINE_IMAGE_BYTES, markdownImagePreview } from "../lib/markdownImages.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useAppWindow } from "../lib/install.ts";
-import { FileSaveTooLargeError, fileSaveRoute, pcFile, SAVE_MAX_BYTES, saveInApp, shareFile } from "../lib/saveImage.ts";
+import { fileFromResponse, FileSaveTooLargeError, fileSaveRoute, pcFile, SAVE_MAX_BYTES, saveInApp, shareFile } from "../lib/saveImage.ts";
 import type { MarkdownBlock } from "../../shared/markdown.ts";
 import { knownPreview, parsePreviewOffThread } from "../lib/markdownPreview.ts";
 import { outlineOf } from "../lib/markdownOutline.ts";
@@ -182,6 +182,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   useOpeningPaneLane(surface, paneId === null ? null : paneStorageId(machineId, paneId));
   const [error, setError] = useState<FileFailure | null>(null);
   const [loaded, setLoaded] = useState<FilePreviewText | null>(null);
+  const [saveRoute] = useState(fileSaveRoute);
+  const [prepared, setPrepared] = useState<{ info: FileInfo; result: File | "too-large" | "failed" } | null>(null);
   const [chosen, setChosen] = useState<{ path: string; mode: TextViewMode } | null>(null);
   const mode = chosen?.path === path ? chosen.mode : target.line === null ? "preview" : "code";
   const sourceRef = useRef<HTMLElement>(null);
@@ -216,18 +218,33 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       if (next.kind !== "text") return;
       const budget = readBudget(languageForPath(next.path), next.size);
       const started = Date.now();
+      const shareText = saveRoute === "share" && next.size > 0 && next.size <= SAVE_MAX_BYTES;
+      let preparing = false;
       deadline = setTimeout(() => abort.abort(), budget.timeoutMs);
       try {
-        const response = await getTransport().fetch(fileUrl(next.path, paneId), { signal: abort.signal, headers: { range: `bytes=0-${budget.bytes - 1}` } });
+        const response = await getTransport().fetch(fileUrl(next.path, paneId), { signal: abort.signal, headers: { range: `bytes=0-${shareText ? SAVE_MAX_BYTES : budget.bytes - 1}` } });
         if (!response.ok && !(response.status === 416 && response.headers.get("content-range")?.trim() === "bytes */0")) {
           if (response.headers.get("content-type")?.includes("application/json")) throw await errorFrom(fileUrl(next.path, paneId), response);
           await response.body?.cancel();
           throw new ApiError(fileUrl(next.path, paneId), response.status, response.statusText, null);
         }
         clearTimeout(deadline);
+        if (shareText) {
+          // A second request can read a different revision. Keep the original bytes to share,
+          // but let the preview still stop at its own byte, line and time budgets.
+          const file = fileFromResponse(response.clone(), next.name, next.mime.split(";")[0]?.trim() ?? "");
+          preparing = true;
+          void file.then(
+            (result) => { if (!cancelled) setPrepared({ info: next, result }); },
+            (reason: unknown) => { if (!cancelled) setPrepared({ info: next, result: failedSave(reason) }); },
+          );
+        }
         const timeoutMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
         const body = await readFilePreviewText(response, budget.bytes, { signal: abort.signal, maxLines: budget.lines, timeoutMs, partialOnTimeout: true });
         if (!cancelled) setLoaded(body);
+      } catch (reason) {
+        if (!cancelled && shareText && !preparing) setPrepared({ info: next, result: failedSave(reason) });
+        throw reason;
       } finally { clearTimeout(deadline); }
     }).catch(async (reason: unknown) => {
       if (cancelled) return;
@@ -242,7 +259,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       setError(fileFailure(reason));
     });
     return () => { cancelled = true; clearTimeout(deadline); abort.abort(); };
-  }, [target.path, paneId, fetchFileInfo, fileUrl, fetchDirectories, remote, saves]);
+  }, [target.path, paneId, fetchFileInfo, fileUrl, fetchDirectories, remote, saves, saveRoute]);
 
   useEffect(() => {
     if ((info === null && directory === null) || reportedKind.current === path) return;
@@ -325,7 +342,6 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const pageSrc = useResourceUrl(!relay && htmlPage && !source ? pageUrl : null);
   const image = useResourceUrlState(info?.kind === "image" && info.size <= MAX_INLINE_IMAGE_BYTES ? `${url}&revision=${encodeURIComponent(`${info.modified}:${info.size}`)}` : null);
   const imageSrc = image.url;
-  const [saveRoute] = useState(fileSaveRoute);
   const savedHere = saveRoute !== "link";
   // The same inert media body can be saved through the download attribute. In blob mode this
   // avoids fetching and retaining a second complete video/PDF merely to draw its download link.
@@ -342,26 +358,23 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const saveName = info?.name ?? "file";
   const saveType = info?.mime.split(";")[0]?.trim() ?? "";
   const saveFits = info !== null && info.size > 0 && info.size <= SAVE_MAX_BYTES;
-  // which file, in which version: a file read for the share sheet serves only the version it is of
-  const saveVersion = info === null ? null : `${info.path}\n${info.modified}\n${info.size}`;
   const [saveNote, setSaveNote] = useState<{ path: string; state: "saved" | "failed" | "too-large" | "update" } | null>(null);
   // a note is about the tap that made it: another file, or this one opened again, starts without it
   useEffect(() => setSaveNote(null), [savePath]);
-  // the share sheet opens only within the tap, so there the file is read as soon as it is known,
-  // and Download waits for it, as the image viewer's does
-  const [prepared, setPrepared] = useState<{ version: string; result: File | "too-large" | "failed" } | null>(null);
+  // The share sheet opens only within the tap. Non-text previews don't read their bytes here,
+  // so prepare those files separately.
   const [prepareRetry, setPrepareRetry] = useState(0);
   const saving = useRef(false);
   useEffect(() => {
-    if (saveRoute !== "share" || saveVersion === null || saveSrc === null || !saveFits) return;
+    if (saveRoute !== "share" || info === null || info.kind === "text" || saveSrc === null || !saveFits) return;
     const abort = new AbortController();
     pcFile(saveSrc, saveName, saveType, abort.signal).then(
-      (file) => { if (!abort.signal.aborted) setPrepared({ version: saveVersion, result: file }); },
-      (error: unknown) => { if (!abort.signal.aborted) setPrepared({ version: saveVersion, result: failedSave(error) }); },
+      (file) => { if (!abort.signal.aborted) setPrepared({ info, result: file }); },
+      (error: unknown) => { if (!abort.signal.aborted) setPrepared({ info, result: failedSave(error) }); },
     );
     return () => abort.abort();
-  }, [saveRoute, saveVersion, saveSrc, saveName, saveType, saveFits, prepareRetry]);
-  const shareReady = prepared !== null && prepared.version === saveVersion ? prepared : null;
+  }, [saveRoute, info, saveSrc, saveName, saveType, saveFits, prepareRetry]);
+  const shareReady = prepared?.info === info ? prepared : null;
   // on the share route Download waits for the read; a file it never reads (too large, empty) says why at once
   const saveWaits = saveRoute === "share" && saveFits && shareReady === null;
   const saveHere = (): void => {
@@ -375,7 +388,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       if (shareReady.result === "failed") {
         note("failed");
         setPrepared(null);
-        setPrepareRetry((attempt) => attempt + 1);
+        if (info?.kind === "text") setSaves((count) => count + 1);
+        else setPrepareRetry((attempt) => attempt + 1);
         return;
       }
       if (shareReady.result === "too-large") { note("too-large"); return; }

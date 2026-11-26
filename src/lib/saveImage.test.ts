@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { downloadLeavesApp, fileSaveRoute, imageFile, pcFile, SAVE_MAX_BYTES, SAVE_PLUGIN, saveInApp, saveRoute, shareFile } from "./saveImage.ts";
 import { nativeTransport, setTransport, type Transport } from "./transport.ts";
 
-const saved = new Map(["navigator", "Capacitor"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+const saved = new Map(["navigator", "Capacitor", "isSecureContext"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 
 afterEach(() => {
   setTransport(nativeTransport);
@@ -64,10 +64,22 @@ describe("fileSaveRoute", () => {
   });
 
   test("is the share sheet where a link would load the file over the app", () => {
-    environment({ standalone: true });
+    Object.defineProperty(globalThis, "isSecureContext", { value: true, configurable: true });
+    const webShare = { share: async () => {}, canShare: () => true };
+    environment({ ...webShare, standalone: true });
     expect(fileSaveRoute()).toBe("share");
-    environment({}, "ios", [SAVE_PLUGIN]);
+    environment(webShare, "ios", [SAVE_PLUGIN]);
     expect(fileSaveRoute()).toBe("share");
+  });
+
+  test.each([
+    ["the PC is on plain LAN HTTP", false, { share: async () => {}, canShare: (): boolean => true }],
+    ["Web Share is missing", true, { canShare: (): boolean => true }],
+    ["file sharing support is missing", true, { share: async () => {} }],
+  ] as const)("uses the download link in the iOS app when %s", (_reason, secure, navigator) => {
+    Object.defineProperty(globalThis, "isSecureContext", { value: secure, configurable: true });
+    environment(navigator, "ios");
+    expect(fileSaveRoute()).toBe("link");
   });
 
   test("is the download link in a browser tab", () => {

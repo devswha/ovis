@@ -12,7 +12,7 @@ import { nativeTransport, setTransport, type Transport } from "../lib/transport.
 // Download in the file viewer inside the Android app, whose WebView drops a download link without a
 // word: the viewer reads the file through the transport and hands it to the app, which saves it to
 // Downloads (app/android/.../SaveImagePlugin.java saveFile).
-const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator", "Capacitor"];
+const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator", "Capacitor", "isSecureContext"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
 
@@ -21,6 +21,7 @@ beforeEach(() => {
   const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "", backgroundColor: "" };
   Object.assign(globalThis, {
     IS_REACT_ACT_ENVIRONMENT: true,
+    isSecureContext: true,
     window: { ...listen, location: { pathname: "/" }, requestAnimationFrame: () => 0, cancelAnimationFrame() {}, localStorage: { getItem: () => null, setItem() {} }, matchMedia: () => ({ ...listen, matches: false }) },
     document: { ...listen, activeElement: null, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
     getComputedStyle: () => style,
@@ -149,18 +150,34 @@ test("in a home-screen app, Download hands the file, read before the tap, to the
   expect(await Promise.all(shared.map(async (file) => [file.name, file.type, await file.text()]))).toEqual([["notes.md", "text/markdown", TEXT]]);
 });
 
+test("in a home-screen app, Download shares the text shown when two reads return different versions", async () => {
+  const current = "# new version\n";
+  const stale = "# old version\n";
+  const shared: File[] = [];
+  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
+  let firstRead = true;
+  await open({ ...NOTES, size: current.length }, {}, () => {
+    const response = new Response(firstRead ? current : stale);
+    firstRead = false;
+    return response;
+  });
+  expect(shown()).toContain("new version");
+  await download();
+  expect(await shared[0]?.text()).toBe(current);
+});
+
 test("a home-screen relay download does not read the same file as a download-link blob", async () => {
-  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true } });
+  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async () => {} } });
   const reads = await open(NOTES, { kind: "relay", resourceUrl(this: Transport, path, signal) {
-    return relayResourceUrl(this, "test-pc", path, signal);
+    return relayResourceUrl(this, "0123456789abcdef0123456789abcdef", path, signal);
   } });
   expect(reads.filter((path) => path.includes("download=1"))).toEqual([]);
-  expect(reads.filter((path) => path.startsWith("/api/fs/file"))).toHaveLength(2); // text preview and share
+  expect(reads.filter((path) => path.startsWith("/api/fs/file"))).toHaveLength(1); // one read for preview and share
 });
 
 test("a home-screen share can recover from a failed prefetch without reopening the viewer", async () => {
   const shared: File[] = [];
-  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
+  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
   let offline = true;
   await open(NOTES, {}, (init) =>
     new Headers(init?.headers).get("range") === `bytes=0-${SAVE_MAX_BYTES}` && offline

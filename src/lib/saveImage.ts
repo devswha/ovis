@@ -58,7 +58,8 @@ const SAVE_FILE = "saveFile";
 export function fileSaveRoute(): "link" | "share" | "app" | "update" {
   if (hasNativeMethod(SAVE_PLUGIN, SAVE_FILE)) return "app";
   if (inAndroidApp()) return "update";
-  return downloadLeavesApp() ? "share" : "link";
+  return downloadLeavesApp() && globalThis.isSecureContext
+    && typeof navigator.share === "function" && typeof navigator.canShare === "function" ? "share" : "link";
 }
 
 export class FileSaveTooLargeError extends Error {
@@ -72,6 +73,11 @@ export class FileSaveTooLargeError extends Error {
 export async function pcFile(src: string, name: string, type: string, signal?: AbortSignal): Promise<File> {
   // Request at most the limit plus one byte, but also enforce the limit if the PC ignores Range.
   const response = await getTransport().fetch(src, { signal, headers: { Range: `bytes=0-${SAVE_MAX_BYTES}` } });
+  return fileFromResponse(response, name, type);
+}
+
+/** Keeps only a whole file within the save limit, even when the PC ignores Range. */
+export async function fileFromResponse(response: Response, name: string, type: string): Promise<File> {
   const discard = () => { void response.body?.cancel().catch(() => {}); };
   if (!response.ok) { discard(); throw new Error(`HTTP ${response.status}`); }
   const total = response.status === 206 ? /^bytes 0-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "") : null;
