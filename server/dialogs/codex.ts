@@ -170,8 +170,8 @@ function parseCodexAsyncQuestion(screen: string, answer?: string): ParsedPrompt 
     if (answer !== undefined && (!lastRow.selected || answer === "Other" || answer === "Other (write an answer)"
       || lines[lastRow.lineIndex]?.trimEnd().replace(/^\s*› *\d+\. /u, "") !== answer
       || text(lastRow.lineIndex + 1, hintIndex).length !== 0)) return null;
-    // an old layout without the header must still end in its "Other" row
-    if (header < 0 && !/^Other\b/i.test(rows.at(-1)!.label)) return null;
+    // an old layout without the header must still end in its "Other" row, until an answer is typed there
+    if (header < 0 && answer === undefined && !/^Other\b/i.test(rows.at(-1)!.label)) return null;
     // a wrapped option continues on the lines under it: these rows carry no descriptions
     const labels = rows.map((row, index) => normalizeText([row.label, ...text(row.lineIndex + 1, rows[index + 1]?.lineIndex ?? hintIndex)].join(" ")));
     question = header < 0 ? nearestQuestion(lines, rows[0]!.lineIndex) : normalizeText(questionLines(rows[0]!.lineIndex).join(" ")) || null;

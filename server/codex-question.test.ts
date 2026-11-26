@@ -222,6 +222,13 @@ test("does not paste into Codex's composer when the question closes after Tab", 
   expect([result, pane.sent]).toEqual([409, ["down", "down", "tab"]]);
 });
 
+test("answers a queued question in the old layout without the queue header", async () => {
+  const queue = (row: string) => `  Which color?\n    1. red\n    2. blue\n${row}\n  enter submit   ctrl+] skip   alt+↓ main prompt\n`;
+  const pane = await herdr((key, screen) => key === "text:green" ? queue("  › 3. green") : key === "enter" ? COMPOSER : screen, queue("  › 3. Other"));
+  const result = await answer((await card()).id, { custom_text: "green" });
+  expect([result, pane.sent]).toEqual([200, ["text:green", "enter"]]);
+});
+
 describe.each([
   ["free-form", "  Type your answer", "  green"],
   ["choice with Other", "    1. red\n    2. blue\n  › 3. Other", "    1. red\n    2. blue\n  › 3. green"],
