@@ -1259,7 +1259,8 @@ async function readKnownPrompt(
   }
   // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
-    return { prompt: null, screen, suppressFallback: true };
+    // The screen can still show the old form, including a pasted multiline textarea.
+    return { prompt: null, screen, suppressFallback: true, inputUnverified: true };
   }
   // Hermes's approval answers by keys that grant or refuse: offered only while Hermes holds the input.
   // Looked at before the read that settles a key, never after it: a look between that read's check and

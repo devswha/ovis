@@ -205,20 +205,20 @@ describe("Hermes's open-ended question in a batch", () => {
   });
 });
 
-interface Pane { agent: string; screen: string; sent: string[]; visible?: string; ompCall?: (id: string, changed?: "question" | "option") => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
+interface Pane { agent: string; screen: string; sent: string[]; visible?: string; foreground?: string; ompCall?: (id: string, changed?: "question" | "option") => void; onSent?: (key: string) => void; onRpc?: (method: string) => number | void; cwd?: string; omo?: { pid: number; path: string } }
 
-async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>, questions = QUESTIONS): Promise<void> {
+async function withPane(agent: string, screen: string, run: (pane: Pane) => Promise<void>, questions = QUESTIONS, formHtml?: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "question-steps-"));
   const path = join(root, "herdr.sock");
   const pane: Pane = { agent, screen, sent: [] };
   const transcript = join(root, "session.jsonl");
   if (agent === "omp") {
     pane.ompCall = (id, changed) => appendFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: "Ask again" } }) + "\n" + JSON.stringify({
-      type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: {
+      type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "ask", arguments: formHtml === undefined ? {
         questions: questions.map(([header, question, options], index) => ({ id: header, header,
           question: changed === "question" && index === 0 ? "A different question?" : question,
           options: options.map((label, option) => ({ label: changed === "option" && index === 0 && option === 0 ? "Orange" : label })) })),
-      } }] },
+      } : { html: formHtml } }] },
     }) + "\n");
     pane.ompCall("initial");
   }
@@ -243,7 +243,7 @@ async function withPane(agent: string, screen: string, run: (pane: Pane) => Prom
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: pane.agent, agent_status: "blocked", cwd: pane.cwd ?? (pane.agent === "omp" ? root : undefined), ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) }], layouts: [] } });
       if (request.method === "pane.read") return answer({ read: { text: pane.agent === "omp" ? request.params.format === "ansi" ? pane.visible ?? pane.screen : pane.screen.replace(ANSI_RE, "") : pane.screen } });
       if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1", scroll: { offset_from_bottom: 0 } } });
-      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.agent}`] }] : [] } });
+      if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo ? [{ pid: pane.omo.pid, argv: ["omo"] }] : ["codex", "omp"].includes(pane.agent) ? [{ pid: 2147483647, argv: [`/usr/bin/${pane.foreground ?? pane.agent}`] }] : [] } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
       for (const sent of request.params.keys ?? [`text:${request.params.text}`]) {
@@ -333,6 +333,28 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
     pane.screen = draw(at);
   };
 }
+
+const ompForm = (name: string): string => readFileSync(new URL(`./fixtures/omp-form-19.1.0-${name}.txt`, import.meta.url), "utf8");
+
+test.skipIf(process.platform === "win32")("omp form: a multiline draft cannot be confirmed when the final read sees the shell in front", async () => {
+  const screen = ompForm("textarea-100");
+  await withPane("omp", screen, async pane => {
+    const prompt = await card();
+    pane.onSent = (key) => {
+      if (!key.startsWith("text:")) return;
+      let row = 0;
+      pane.screen = screen.replace(/│   │ {3}/gu, (prefix) => ["│   │ line 1", "│   │ line 2"][row++] ?? prefix);
+      pane.onRpc = (method) => {
+        if (method === "pane.read") pane.foreground = "bash";
+      };
+    };
+    const result = await move(prompt.id, { custom_text: "line 1\nline 2" });
+    expect({ result, sent: pane.sent }).toEqual({
+      result: { status: 409, code: "prompt_changed" },
+      sent: ["ctrl+k", "ctrl+u", "text:\u001b[200~line 1\nline 2\u001b[201~"],
+    });
+  }, QUESTIONS, "<form><label>Notes<textarea name=\"notes\"></textarea></label></form>");
+});
 
 describe("the answer route moves between questions, one key at a time, each seen", () => {
   test.each(["question", "option"] as const)("omp: a call whose %s differs from the displayed question offers no moves", async changed => {
