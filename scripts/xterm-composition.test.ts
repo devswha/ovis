@@ -9,8 +9,8 @@ const bundle = await Bun.build({
   plugins: [xtermSourcePlugin(source)], target: "bun",
 });
 if (!bundle.success) throw new AggregateError(bundle.logs, "Could not build the composition helper");
-const load = async (name: string) => {
-  const output = bundle.outputs.find(({ path }) => path.endsWith(`/${name}.js`))!;
+const load = async (name: string, from = bundle) => {
+  const output = from.outputs.find(({ path }) => path.endsWith(`/${name}.js`))!;
   return import(`data:text/javascript;base64,${Buffer.from(await output.text()).toString("base64")}`);
 };
 const { CompositionHelper } = await load("CompositionHelper");
@@ -19,11 +19,11 @@ const { CoreBrowserTerminal } = await load("CoreBrowserTerminal");
 beforeEach(() => { jest.useFakeTimers(); });
 afterEach(() => { jest.useRealTimers(); });
 
-function editor(term?: any) {
+function editor(term?: any, Helper = CompositionHelper) {
   const sent: string[] = [];
   const textarea = Object.assign(new EventTarget(), { value: "", selectionStart: 0, selectionEnd: 0 });
   const view = { textContent: "", classList: { add() {}, remove() {} } };
-  const helper = new CompositionHelper(textarea, view,
+  const helper = new Helper(textarea, view,
     { buffer: { isCursorInViewport: false } },
     { rawOptions: { screenReaderMode: false } },
     term?.coreService ?? { triggerDataEvent: (text: string) => sent.push(text) }, {});
@@ -204,6 +204,49 @@ describe("xterm mobile composition input", () => {
     expect(e.sent).toEqual(["\x1b[D"]);
     jest.runAllTimers();
     expect(e.sent).toEqual(["\x1b[D", "abc"]);
+  });
+});
+
+describe("xterm dictation input on iPhone WebKit", async () => {
+  const safari = await Bun.build({
+    entrypoints: [join(source, "browser/input/CompositionHelper.js"), join(source, "browser/CoreBrowserTerminal.js")],
+    plugins: [xtermSourcePlugin(source)], target: "bun",
+    banner: "const process = undefined; const document = {}; const window = {}; const navigator = { userAgent: 'Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Version/27.0 Mobile/15E148 Safari/604.1', platform: 'iPhone', language: 'en' };",
+  });
+  if (!safari.success) throw new AggregateError(safari.logs, "Could not build the terminal for iPhone WebKit");
+  const { CompositionHelper: SafariHelper } = await load("CompositionHelper", safari);
+  const { CoreBrowserTerminal: SafariTerminal } = await load("CoreBrowserTerminal", safari);
+
+  for (const rewrite of ["insertReplacementText", "insertText"]) {
+    it(`keeps ${rewrite} rewrites of a provisional dictation phrase out of the PTY until Enter`, () => {
+      const e = editor(new SafariTerminal(), SafariHelper);
+      // The phone report has no event log; the insertText case models the same selected range
+      // as the established replacement trace, but with a different inputType on later revisions.
+      const hypotheses = ["p", "ple", "pleas", "please ", "please te", "please test", "please test t",
+        "please test thi", "please test this", "please test this solution", "please test this solution"];
+      for (const [index, data] of hypotheses.entries()) {
+        const inputType = index === 0 ? "insertReplacementText" : rewrite;
+        e.textarea.selectionStart = 0;
+        e.event("beforeinput", { inputType, data, isComposing: false });
+        e.value(data);
+        e.event("input", { inputType, data, isComposing: false });
+        jest.runOnlyPendingTimers();
+      }
+      expect(e.sent).toEqual([]);
+      e.event("keydown", { key: "Enter", keyCode: 13 });
+      expect(e.sent).toEqual(["please test this solution", "\r"]);
+    });
+  }
+
+  it("commits dictation before regular text inserted at the caret", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    e.event("beforeinput", { inputType: "insertReplacementText", data: "hello", isComposing: false });
+    e.value("hello");
+    e.event("input", { inputType: "insertReplacementText", data: "hello", isComposing: false });
+    e.event("beforeinput", { inputType: "insertText", data: "!", isComposing: false });
+    e.value("hello!");
+    e.event("input", { inputType: "insertText", data: "!", isComposing: false });
+    expect(e.sent).toEqual(["hello", "!"]);
   });
 });
 

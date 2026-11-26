@@ -327,7 +327,7 @@ index 1a9f222575b9cec71168ecbe438c9f2f80c34467..4aa79485cdffe29f2a73da3eae8456d8
  
      this._isSyncing = false;
 diff --git a/src/browser/input/CompositionHelper.ts b/src/browser/input/CompositionHelper.ts
-index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103c4383442 100644
+index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..dc6fa2de225e1b0bd914934e5bb7adf8ad18e5c3 100644
 --- a/src/browser/input/CompositionHelper.ts
 +++ b/src/browser/input/CompositionHelper.ts
 @@ -6,6 +6,19 @@
@@ -384,7 +384,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
    constructor(
      private readonly _textarea: HTMLTextAreaElement,
      private readonly _compositionView: HTMLElement,
-@@ -50,17 +74,180 @@ export class CompositionHelper {
+@@ -50,17 +74,184 @@ export class CompositionHelper {
      @IRenderService private readonly _renderService: IRenderService
    ) {
      this._isComposing = false;
@@ -455,7 +455,11 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
 +    if (!this._replacementComposition) this._editAwaitingKey = false;
 +    if (!isAppleWebKit || ev.isComposing || this._optionsService.rawOptions.screenReaderMode
 +      || (this._isComposing && !this._replacementComposition)) return;
-+    if (this._replacementComposition && (ev.inputType === 'insertReplacementText'
++    // An insertion replacing the whole selected hypothesis is another edit to the preedit.
++    const rewritesDictation = this._dictation && ev.inputType === 'insertText'
++      && this._textarea.selectionStart < this._textarea.selectionEnd
++      && this._textarea.selectionStart === this._compositionPosition.start && this._textarea.selectionEnd === this._compositionPosition.end;
++    if (this._replacementComposition && (ev.inputType === 'insertReplacementText' || rewritesDictation
 +      || ev.inputType === 'deleteContentBackward' || ev.inputType === 'deleteContentForward')) return;
 +    // keydown() held back this key while the syllable was pending, so Terminal will treat
 +    // its insertion as already handled by keydown. Mark it to be forwarded once.
@@ -567,7 +571,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
      this._compositionView.textContent = '';
      this._dataAlreadySent = '';
      this._compositionView.classList.add('active');
-@@ -71,9 +258,12 @@ export class CompositionHelper {
+@@ -71,9 +262,12 @@ export class CompositionHelper {
     * @param ev The event.
     */
    public compositionupdate(ev: Pick<CompositionEvent, 'data'>): void {
@@ -580,7 +584,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
        this._compositionPosition.end = this._textarea.value.length;
      }, 0);
    }
-@@ -83,6 +273,7 @@ export class CompositionHelper {
+@@ -83,6 +277,7 @@ export class CompositionHelper {
     * the handler.
     */
    public compositionend(): void {
@@ -588,7 +592,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
      this._finalizeComposition(true);
    }
  
-@@ -92,7 +283,26 @@ export class CompositionHelper {
+@@ -92,7 +287,26 @@ export class CompositionHelper {
     * @returns Whether the Terminal should continue processing the keydown event.
     */
    public keydown(ev: KeyboardEvent): boolean {
@@ -616,7 +620,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
        if (ev.keyCode === 20 || ev.keyCode === 229) {
          // 20 is CapsLock, 229 is Enter
          // Continue composing if the keyCode is the "composition character"
-@@ -126,57 +336,46 @@ export class CompositionHelper {
+@@ -126,57 +340,46 @@ export class CompositionHelper {
     *   the command is executed.
     */
    private _finalizeComposition(waitForPropagation: boolean): void {
@@ -702,7 +706,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
    /**
     * Apply any changes made to the textarea after the current event chain is allowed to complete.
     * This should be called when not currently composing but a keydown event with the "composition
-@@ -185,25 +384,39 @@ export class CompositionHelper {
+@@ -185,25 +388,39 @@ export class CompositionHelper {
     */
    private _handleAnyTextareaChanges(): void {
      const oldValue = this._textarea.value;
@@ -759,7 +763,7 @@ index b87ebbea07f5a9cdfc9f2f905a2b481e7da6b753..0f224fe5e8d8d717acff71aa64ffd103
    }
  
    /**
-@@ -218,27 +431,57 @@ export class CompositionHelper {
+@@ -218,27 +435,57 @@ export class CompositionHelper {
      }
  
      if (this._bufferService.buffer.isCursorInViewport) {
