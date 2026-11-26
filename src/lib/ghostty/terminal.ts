@@ -32,6 +32,8 @@ export function ownTerminalEngine(): boolean {
 }
 
 export interface Disposable { dispose(): void }
+/** what the mount sizes the grid with: the grid the element's parent fits, and fitting it (xterm's fit addon's two calls) */
+export interface GhosttyFit { fit(): void; proposeDimensions(): { cols: number; rows: number } | undefined }
 type Listener<T> = (value: T) => void;
 
 class Emitter<T> {
@@ -602,6 +604,11 @@ export class GhosttyTerminal {
   fit(): void {
     const grid = this.proposeDimensions();
     if (grid) this.resize(grid.cols, grid.rows);
+  }
+
+  /** the two calls as one object, whose fit the mount wraps to settle the font first */
+  fitter(): GhosttyFit {
+    return { fit: () => this.fit(), proposeDimensions: () => this.proposeDimensions() };
   }
 
   private optionChanged(key: keyof GhosttyTerminalOptions): void {
