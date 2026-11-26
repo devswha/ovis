@@ -541,7 +541,7 @@ describe("preferences sync real send path", () => {
     clients.splice(clients.indexOf(b), 1);
     await act(async () => { a.update({ markdownStyle: "tinted" }); });
     await send();
-    await act(async () => { pageEvents.dispatchEvent(Object.assign(new Event("storage"), { key: "ovis:markdown-style", storageArea: window.localStorage })); });
+    await act(async () => { page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "ovis:markdown-style", storageArea: page.window.localStorage })); });
     clients.splice(clients.indexOf(a), 1);
     store.set({ settings: { markdownStyle: "colorful" } });
     clients.push(b);
