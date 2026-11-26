@@ -563,6 +563,8 @@ export class SshConnection {
     // `ssh -V` says its version on stderr
     const version = Bun.spawn([this.client.ssh, "-V"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [shown, also] = await Promise.all([new Response(version.stderr).text(), new Response(version.stdout).text(), version.exited]);
+    // close() may have run while the version was asked: it ends only the children it saw
+    if (this.closed) throw new Error("SSH connection closed");
     if (!stdioSocketForward(shown + also)) throw new Error(SOCKET_SSH_TOO_OLD);
     const proc = Bun.spawn([...this.direct(), "-W", remotePath, this.target.destination], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.askEnv() });
     this.children.add(proc);
