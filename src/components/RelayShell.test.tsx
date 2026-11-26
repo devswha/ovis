@@ -14,7 +14,6 @@ import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
 import { NewPcNotices } from "./NewPcNotices.tsx";
 import { leaveAddEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
 import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
-import { checkNetwork } from "../lib/useOffline.ts";
 
 /** every tree a test draws, still mounted: the test's end unmounts each one, not only the last it kept */
 const drawn = new Set<ReactTestRenderer>();
@@ -999,34 +998,51 @@ describe("the hosted front page", () => {
         }
       });
 
-      it("believes the account service over a WebView that says offline: an answer takes the line away and a row opens", async () => {
+      it("believes the account service over a WebView that says offline: its answer takes the line away and a row opens, asked again on each open", async () => {
         // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7)
         const meta = { getAttribute: (name: string) => name === "content" ? "https://account.example" : null };
         Object.assign(document, { querySelector: (selector: string) => selector === 'meta[name="ovis-account-service"]' ? meta : null });
-        const asked: string[] = [];
-        let answers = false;
+        const asks: { readonly url: string; readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }[] = [];
         const realFetch = globalThis.fetch;
         globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
-          asked.push(String(input));
-          if (!answers) throw new TypeError("Failed to fetch");
-          return new Response(null, { status: 200 });
+          const answer = Promise.withResolvers<Response>();
+          asks.push({ url: String(input), answer });
+          return await answer.promise;
         }, { preconnect: realFetch.preconnect });
+        const settle = async (ask: { readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }, answered: boolean): Promise<void> => {
+          await act(async () => {
+            if (answered) ask.answer.resolve(new Response(null, { status: 200 }));
+            else ask.answer.reject(new TypeError("Failed to fetch"));
+            await ask.answer.promise.catch(() => undefined);
+            for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+          });
+        };
+        const relayRow = () => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a");
+        const assigned: string[] = [];
+        Object.assign(window.location, { assign: (href: string) => { assigned.push(href); } });
         try {
           offline(true);
           await mount(offlinePage());
-          await act(async () => { await checkNetwork(); });
-          // no answer: the device is offline, as before
+          // the screen asks on its own as it starts watching; no answer: the device is offline, as before
+          expect(asks.map((ask) => ask.url)).toEqual(["https://account.example/v1/providers"]);
+          await settle(asks[0]!, false);
           expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
-          answers = true;
-          const before = asked.length;
+          // Try again asks again, and its answer takes the line away
           await act(async () => { renderer!.root.find((node) => node.type === "button" && textOf(node) === "Try again" && shown(node)).props.onClick(); });
-          await act(async () => { await checkNetwork(); });
-          expect(asked.length).toBeGreaterThan(before);
-          expect(new Set(asked)).toEqual(new Set(["https://account.example/v1/providers"]));
+          expect(asks).toHaveLength(2);
+          await settle(asks[1]!, true);
           expect(alerts().filter((text) => text.includes("internet"))).toEqual([]);
+          // a tap asks once more rather than trusting that answer, and goes to the PC's page once it answers
           let held = 0;
-          await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a").props.onClick({ preventDefault: () => { held++; } }); });
-          expect(held).toBe(0);
+          await act(async () => { relayRow().props.onClick({ preventDefault: () => { held++; } }); });
+          expect([held, asks.length, assigned]).toEqual([1, 3, []]);
+          await settle(asks[2]!, true);
+          expect(assigned).toEqual([`/s/${ids.mac}/`]);
+          // the network gone since, with the flag still false: the next tap's ask goes unanswered, and the row says so
+          await act(async () => { relayRow().props.onClick({ preventDefault: () => { held++; } }); });
+          await settle(asks[3]!, false);
+          expect(assigned).toHaveLength(1);
+          expect(alerts()).toContain("Connect this device to the internet to open the PC.");
         } finally {
           globalThis.fetch = realFetch;
           offline(false);

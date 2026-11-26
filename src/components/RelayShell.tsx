@@ -244,7 +244,7 @@ export function RelayShell(props: RelayShellProps) {
     if (wasOffline.current && !offline) readAgain.current();
     wasOffline.current = offline;
   }, [offline]);
-  const noneOnline = offline ? <OfflineLine onRetry={() => { readAgain.current(); void checkNetwork(); }} /> : checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
+  const noneOnline = offline ? <OfflineLine onRetry={() => { readAgain.current(); void checkNetwork({ fresh: true }); }} /> : checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
