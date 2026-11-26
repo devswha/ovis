@@ -10,6 +10,8 @@ export interface PendingIdentity {
   omoSession?: string | null;
   /** the session Claude's PID record names: it changes with /clear and /resume in the same process, hook or not */
   claudeSession?: string | null;
+  /** Pi's extension-verified file when the backend does not report the session. */
+  piSession?: { readonly path: string; readonly fileIdentity: string | null };
 }
 
 /** Whether two reads of a process's start name the same process. macOS allows a second: its birth was once read from
@@ -48,7 +50,7 @@ export interface PendingRecord<Owner, Lease> {
 }
 type Fault = { code: string; message: string };
 interface HeldCopyReply { ok: boolean; code?: string; message?: string }
-type Removed = { id: string; outcome: "sent" | "discarded" | "dismissed" };
+type Removed = { id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" };
 /**
  * `joined`: until then a ready status may be the end of the turn a Send now's Enter joined, or of one that ended just
  * before that Enter landed and started a turn of its own. `lenient`: such a ready came, and the wait is for that own
@@ -121,6 +123,7 @@ export class PendingInputs<Owner, Lease> {
     if (previous) {
       if (previous.fingerprint !== fingerprint) throw new PendingInputError("invalid_submit_id", "This resend id already belongs to another message");
     }
+    if (outcome?.paneId === paneId && outcome.outcome === "consumed") return Promise.resolve({ ok: true });
     if (outcome?.paneId === paneId && outcome.outcome === "dismissed"
       || this.records.get(id)?.paneId === paneId && this.records.get(id)?.message.state === "uncertain"
       || [...this.resends.values()].some((entry) => entry.id === id && entry.paneId === paneId && entry.uncertain)) {
@@ -225,6 +228,7 @@ export class PendingInputs<Owner, Lease> {
       throw new PendingInputError("pending_limit", "Too many recent pending-message outcomes are retained; try again later");
     }
     if ([...this.records.values()].some((item) => item.paneId === paneId && item.message.state === "uncertain")) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
+    if (this.closed.has(owner)) fault ??= { code: "input_not_ready", message: "The sending connection closed; review the saved message before sending it" };
     const item: PendingRecord<Owner, Lease> = {
       owner, paneId, lease, identity, inFlight: false,
       message: { id: this.newId(), request_id: requestId, text, state: held || fault ? "held" : "queued", created_at: new Date(this.now()).toISOString(), ...(agentOnly ? { agent_only: true as const } : {}),
@@ -316,6 +320,13 @@ export class PendingInputs<Owner, Lease> {
     if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
     if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
     this.publish(item.owner, item.paneId);
+  }
+
+  /** Native transcript evidence settles only this uncertain ID; held followers stay held. */
+  confirmRecorded(item: PendingRecord<Owner, Lease>, remember: () => boolean): boolean {
+    if (this.records.get(item.message.id) !== item || item.inFlight || item.message.state !== "uncertain" || !remember()) return false;
+    this.finish(item, "consumed");
+    return true;
   }
 
   discard(item: PendingRecord<Owner, Lease>, withdrawalOnly = false): boolean {
