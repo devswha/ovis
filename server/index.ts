@@ -14,6 +14,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { OrderSequence } from "./order-sequence.ts";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
 import { accessSync, chmodSync, constants, mkdirSync, rmSync, statSync } from "node:fs";
+import { recordDesktopListener } from "./desktop-listener.ts";
 import { version } from "../package.json";
 import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
@@ -144,6 +145,7 @@ export const KEY_SETTLE_MS = 40;
 export const SUBMIT_DEADLINE_MS = 45_000;
 const DRAFT_CLEAR_WAIT_MS = 1_500;
 const DRAFT_CLEAR_POLL_MS = 50;
+const SHUTDOWN_DRAIN_MS = 4_000;
 
 
 /**
@@ -177,7 +179,7 @@ export interface ServerInstance {
   alertsSettled: () => Promise<void>;
   warmAgentCatalog: () => void;
   queueFirstMessage: (paneId: string, text: string, kind: string, requester?: string | null, launchedPid?: number | null) => Promise<PendingMessage>;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 export function createServer(
@@ -504,6 +506,8 @@ export function createServer(
     join: (given) => accountList.joinList(given),
     joined: () => accountMailbox.joinedByList(),
     joinedTo: (account, list) => { const status = accountList.status(); return status.pinned && status.account === account && status.pinned_list === list && status.standing === "in"; },
+    inAccount: () => devices.account() !== null,
+    needsKeys: () => accountList.needsKeys(),
     now: () => Date.now(),
     pollMs: options.accountListAddPollMs,
   });
@@ -639,28 +643,28 @@ export function createServer(
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
   let agentTools: AgentToolHub | null = null;
-  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber), paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); agentTools?.grants.forgetPane(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
+  const core = createCore({ options: { ...options, acp, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); }, paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); } }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
   const { machines, collector, queueFirstMessage, push } = core;
   const seen = new SeenStore(stateDir, (pc, epoch) => machines?.finishEnded(pc, epoch) ?? false);
   machines?.subscribe((event) => {
     if (event.type !== "machine-message" || event.machine_id === LOCAL_MACHINE || event.message.type !== "pane-moved") return;
-    try { seen.moved(event.machine_id, event.message.from, event.message.to); }
-    catch (error) { console.warn(`seen: could not carry the reads of ${event.message.from} to ${event.message.to}:`, error); }
+    void seen.moved(event.machine_id, event.message.from, event.message.to).catch((error) => console.warn("seen: could not carry remote reads:", error));
   });
   // on herdr-core a finish read here is read in the Herdr app and its other clients too: only the
   // pane's finish now, so a read told late never marks a turn that ended since as seen.
   const seenMarker = capabilities().seen === "label" ? coreSeenMarker() : null;
-  const markSeen = (finish: SeenFinish, again: boolean) => {
+  // returned to the store, whose close() waits for it: a receipt saved during shutdown still reaches `herdr.seen`
+  const markSeen = (finish: SeenFinish, again: boolean): Promise<void> | undefined => {
     if (!seenMarker || finish.pc !== LOCAL_MACHINE || machines?.finishEnded(finish.pc, finish.epoch) !== false) return;
     const pane = machines.list().find((machine) => machine.id === LOCAL_MACHINE)?.snapshot?.panes.find((candidate) => candidate.pane_id === finish.pane);
     if (pane?.agent_status !== "done" || pane.finish_id !== finish.id) return;
-    seenMarker.mark(finish.pane, again).catch((error: unknown) => console.warn(`herdr-core: could not mark ${finish.pane} seen:`, error));
+    return seenMarker.mark(finish.pane, again).catch((error: unknown) => console.warn(`herdr-core: could not mark ${finish.pane} seen:`, error));
   };
   if (seenMarker) {
-    seen.subscribe((finish, presented) => { if (presented !== "new") markSeen(finish, false); });
+    seen.subscribe((finish, presented) => presented !== "new" ? markSeen(finish, false) : undefined);
     seen.onPresented((finish) => markSeen(finish, true));
   }
-  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
+  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 10 s: that wait
   // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
   const bridgeToken = options.bridgeToken ?? randomBytes(32).toString("hex");
@@ -952,7 +956,7 @@ export function createServer(
   // No deferred listener from a failed HTTP/LAN bind may replace a running server's hub.
   if (acp && process.platform !== "win32" && hcMachine() === null) {
     try {
-      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool) });
+      agentTools = new AgentToolHub({ dir: join(stateDir, "agent-tools"), acp, detector: agentDetector, machines: () => machines?.list() ?? [], hasHook: kind => approvals.handles(kind), setting: () => harnessToolSetting(preferences.get().settings.agentHarnessTool), paneRunEpoch: () => preferences.paneRunEpoch });
       const hub = agentTools;
       void acpReady?.then(async restored => {
         if (!restored) throw new Error("ACP restore incomplete.");
@@ -982,16 +986,17 @@ export function createServer(
         console.error(`agent catalog warm-up failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     },
-    stop: () => {
+    stop() {
       services.runtimeMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
+      listAdd?.stop();
       accountWitness?.stop();
       accountRows?.stop();
       accountCatchUp.stop();
       void ovisRelay.shutdown();
       settlePortalStartup({ ok: false, error: new Error("Server stopped before Portal startup cleanup completed") });
-      core.stop(() => {
+      const stoppingMachines = core.stop(() => {
         clearInterval(draftTimer);
         openCodeState.clear();
         void options.portal?.shutdown();
@@ -1024,6 +1029,7 @@ export function createServer(
       releaseFilePool();
       releaseCommandHistory();
       requestLog.close();
+      return Promise.all([seen.close(), stoppingMachines]).then(() => undefined);
     },
   };
 }
@@ -1163,18 +1169,32 @@ export async function serve(): Promise<void> {
     herdrCore?.stop();
     process.exit(1);
   }
+  let clearDesktopListener: (() => void) | undefined;
+  const desktopRecord = process.env["OVIS_DESKTOP_APP"] === "1" ? process.env["OVIS_DESKTOP_COMMAND_RECORD"] : undefined;
+  if (desktopRecord !== undefined) {
+    try { clearDesktopListener = recordDesktopListener(desktopRecord, process.pid); }
+    catch (error) { console.error("Cannot record the desktop listener:", error); }
+  }
   telemetry.start();
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
+    try { clearDesktopListener?.(); }
+    catch (error) { console.error("Cannot clear the desktop listener record:", error); }
     telemetry.stop();
-    instance.stop();
+    // the supervisor kills a server 6 s after SIGTERM (server/supervisor.ts): what the drain has not saved by
+    // SHUTDOWN_DRAIN_MS the browser sends again, as its request then fails
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const seenDrained = Promise.race([instance.stop(), new Promise<void>((resolve) => { drainTimer = setTimeout(() => {
+      console.warn(`Read receipts and machine bridges did not finish saving within ${SHUTDOWN_DRAIN_MS / 1000} s; stopping anyway`);
+      resolve();
+    }, SHUTDOWN_DRAIN_MS); })]).finally(() => clearTimeout(drainTimer));
     // Attach sidecars need ~1.2s to release herdr's exclusive client slot; Portal unregisters from
     // its relay, and the pipes it logs to must outlive it
     // herdr-core's adapter answers what the stopping server still asks meanwhile
-    void Promise.all([Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(() => {
-      herdrCore?.stop();
+    void Promise.all([seenDrained, Bun.sleep(2000), portal?.shutdown(), relay.shutdown()]).then(async () => {
+      await herdrCore?.stop({ drain: true });
       process.exit(0);
     });
   };

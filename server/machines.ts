@@ -54,7 +54,6 @@ import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAd
 const RELAY_FOUND_MS = 10 * 60_000;
 /** the account service keeps an admission for 10 minutes: a key made for another PC of the account waits no longer */
 const ACCOUNT_PC_MS = 10 * 60_000;
-const ACCOUNT_PC_ANSWER_MS = 10_000;
 
 export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
@@ -381,6 +380,7 @@ export class MachineManager {
   private jobs = new Map<string, JobState>();
   private listeners = new Set<(event: MachineEvent) => void>();
   private stopped = false;
+  private readonly bridgeWork = new Map<string, Promise<void>>();
   private localBusy = false;
   private localRefreshQueued = false;
   private localRevision = 0;
@@ -403,7 +403,9 @@ export class MachineManager {
   private discoveryTimer?: ReturnType<typeof setTimeout>;
   private discoveryStarted = false;
   private hcTimer?: ReturnType<typeof setTimeout>;
-  private hcStart?: (machine: Pick<HcMachine, "id" | "name">) => Promise<MachineBridge>;
+  private hcStart?: (machine: Pick<HcMachine, "id" | "name">, signal: AbortSignal) => Promise<MachineBridge>;
+  /** Aborts the bridges still starting: stop() would otherwise wait for their start deadline. */
+  private readonly stopping = new AbortController();
   private settingsPath: string;
   private preferences: MachineSettings = { ...DEFAULT_SETTINGS };
   private autoChain: Promise<void> = Promise.resolve();
@@ -605,7 +607,7 @@ export class MachineManager {
     this.profileState.flush();
     if (errors.length) throw new AggregateError(errors, "Some saved machine keys could not be removed; cleanup will retry");
   }
-  watchHcMachines(read: () => Promise<HcMachine[]>, start: (machine: Pick<HcMachine, "id" | "name">) => Promise<MachineBridge>, intervalMs = 5000): void {
+  watchHcMachines(read: () => Promise<HcMachine[]>, start: (machine: Pick<HcMachine, "id" | "name">, signal: AbortSignal) => Promise<MachineBridge>, intervalMs = 5000): void {
     if (this.hcStart || this.stopped) return;
     this.hcStart = start;
     let failures = 0, previousError: string | undefined;
@@ -2260,12 +2262,18 @@ export class MachineManager {
     const generation = runtime.generation;
     if (runtime.hc) {
       const hc = runtime.hc;
+      const current = () => generation === runtime.generation && !this.stopped && runtime.hc === hc;
       try {
         delete runtime.machine.herdr;
-        const bridge = await this.hcStart!(hc);
-        if (generation !== runtime.generation || this.stopped || runtime.hc !== hc) { bridge.stop(); return; }
-        hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
-        void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
+        const prior = this.bridgeWork.get(hc.id) ?? Promise.resolve();
+        await this.trackBridgeWork(hc.id, prior.catch(() => undefined).then(async () => {
+          if (!current()) return;
+          const bridge = await this.hcStart!(hc, this.stopping.signal);
+          if (!current()) { await bridge.stop(); return; }
+          hc.bridge = bridge; runtime.endpoint = bridge.endpoint;
+          void bridge.exited.then(() => this.lost(runtime, generation, new Error("This machine's server stopped")));
+        }));
+        if (!current()) return;
         await this.observe(runtime); this.emit();
       } catch (e) { this.lost(runtime, generation, e); }
       return;
@@ -2319,6 +2327,13 @@ export class MachineManager {
     }).catch((e) => { console.error("Automatic bridge update failed:", e instanceof Error ? e.message : String(e)); })
       .finally(() => { this.autoQueued.delete(id); });
   }
+  private trackBridgeWork(id: string, work: Promise<void>): Promise<void> {
+    const tracked = work.finally(() => {
+      if (this.bridgeWork.get(id) === tracked) this.bridgeWork.delete(id);
+    });
+    this.bridgeWork.set(id, tracked);
+    return tracked;
+  }
   private disconnect(runtime: Runtime): void {
     runtime.generation++;
     runtime.refreshQueued = false;
@@ -2330,7 +2345,11 @@ export class MachineManager {
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
     runtime.forward?.close(); runtime.forward = undefined;
-    if (runtime.hc?.bridge) { runtime.hc.bridge.stop(); runtime.hc.bridge = undefined; }
+    if (runtime.hc?.bridge) {
+      const drain = runtime.hc.bridge.stop().catch((error) => console.warn("Could not stop the machine bridge:", error));
+      void this.trackBridgeWork(runtime.hc.id, drain);
+      runtime.hc.bridge = undefined;
+    }
     runtime.verification?.abort.abort(); runtime.verification = undefined;
     runtime.acceptedEpoch = undefined; runtime.candidate = undefined; runtime.candidateRun = undefined; delete runtime.machine.source_boot_id;
     runtime.move = undefined;
@@ -2567,8 +2586,9 @@ export class MachineManager {
     if (this.stopped) throw new Error("Server stopping");
     if (!Array.isArray(pcs) || pcs.length > 32) throw new AccountPcError("invalid", "Expected the account's PCs");
     const offers = pcs.map((pc) => this.accountPcOffer(pc).offer);
+    // as long as a device waits for a PC (PC_ANSWER_MS): a busy PC answers late, and a PC that does not answer is not known to be off
     return Promise.all(offers.map(async (offer) => ({ server_id: offer.server_id,
-      state: await vouchedSupport(offer, { ...(this.relaySocket ? { socket: this.relaySocket } : {}), pcAnswerMs: ACCOUNT_PC_ANSWER_MS }) })));
+      state: await vouchedSupport(offer, this.relaySocket ? { socket: this.relaySocket } : {}) })));
   }
 
   /**
@@ -2584,6 +2604,7 @@ export class MachineManager {
     const support = await vouchedSupport(offer, this.relaySocket ? { socket: this.relaySocket } : {});
     if (support === "outdated") throw new AccountPcError("outdated", "Update Ovis on that PC first.");
     if (support === "offline") throw new AccountPcError("offline", "That PC is not on the relay now.");
+    if (support === "unreachable") throw new AccountPcError("offline", "That PC could not be reached just now. Try again.");
     if (this.stopped) throw new Error("Server stopping");
     const now = this.now();
     for (const [serverId, held] of this.accountPcs) if (now - held.at > ACCOUNT_PC_MS && !held.running) this.accountPcs.delete(serverId);
@@ -2719,12 +2740,14 @@ export class MachineManager {
     try { await this.observe(runtime); this.emit(); } catch (e) { this.lost(runtime, generation, e); }
     return runtime.machine;
   }
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }
     this.listeners.clear();
+    this.stopping.abort();
+    await Promise.allSettled(this.bridgeWork.values());
   }
 }
 
@@ -2759,7 +2782,9 @@ export function accountPcFailure(error: unknown, { shown, aborted }: { shown: bo
     }
     return new AccountPcError("declined", "That PC was not approved. Nothing was added.", { cause: error });
   }
-  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
+  // most often a PC of the account that no device of the account was paired at: nobody there may approve another PC
+  // (server/relay/session.ts accountJoin), however often it is asked
+  if (error instanceof RelayPcRefused) return new AccountPcError("refused", "That PC did not take the request. Only a device of your account that is paired with that PC can let another PC in there.", { cause: error });
   return new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
 }
 
