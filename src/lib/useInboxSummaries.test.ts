@@ -78,6 +78,25 @@ describe("SummaryReads", () => {
     }
     expect(reads.summaries().size).toBe(rows.length);
   });
+
+  it("still fills a row after other reads repeatedly use up the batch deadline", async () => {
+    const { reads, calls, waits } = harness();
+    const last = target("tail");
+    const rows = [...Array.from({ length: 6 }, (_, index) => target(`slow-${index}`)), last];
+    reads.sync(rows);
+    for (let turn = 0; turn < rows.length * (SUMMARY_RETRIES + 1); turn++) {
+      const call = calls[turn];
+      if (!call) break;
+      const [first, ...skipped] = call.paneIds;
+      // Each slow read takes the whole deadline; the tail answers as soon as it is reached.
+      const reply = { ...answer(first === last.paneId ? { [last.paneId]: said("Reached the tail") } : {}), skipped };
+      call.resolve(reply);
+      await settled();
+      if (reads.summaries().has(last.key)) break;
+      for (const wait of waits.splice(0)) if (!wait.cancelled) wait.run();
+    }
+    expect(reads.summaries().get(last.key)?.text).toBe("Reached the tail");
+  });
   it("asks each PC in batches of at most 24, one request in flight per PC", async () => {
     const { reads, calls } = harness();
     const many = Array.from({ length: 30 }, (_, index) => target(`a${index}`));
