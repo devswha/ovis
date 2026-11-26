@@ -550,7 +550,8 @@
 [data-markdown-style="editorial"] .chat-turn-agent .markdown :is(.markdown-h4, .markdown-h5) {
   color: color-mix(in srgb, var(--text-strong) 80%, var(--text-dim));
 }
-[data-markdown-style="editorial"] .chat-turn-agent .markdown .markdown-list > li::marker {
+/* ordered numbers are text and keep the reply's color; only bullets take the tint */
+[data-markdown-style="editorial"] .chat-turn-agent .markdown ul.markdown-list > li::marker {
   color: color-mix(in srgb, var(--accent) 60%, var(--text-dim));
 }
 [data-markdown-style="editorial"] .chat-turn-agent .markdown blockquote {
@@ -562,10 +563,15 @@
 [data-markdown-style="editorial"] .chat-turn-agent .markdown blockquote > :last-child {
   margin-bottom: 0;
 }
+/* one wash however deep the quote: stacked washes darken the ground under --text-dim */
+:is([data-markdown-style="editorial"], [data-markdown-style="tinted"]) .chat-turn-agent .markdown blockquote blockquote {
+  background: none;
+}
 [data-markdown-style="editorial"] .chat-turn-agent .markdown :not(pre):not(.markdown-file):not(.markdown-code-link):not(a) > code {
   background: color-mix(in srgb, var(--accent) 7%, var(--bg));
   border: var(--hairline) solid color-mix(in srgb, var(--accent) 18%, var(--border));
-  color: color-mix(in srgb, var(--syntax-function) 26%, var(--text-strong));
+  /* one text color, never a mix of two: an imported theme may put them on either side of its ground */
+  color: var(--text-strong);
 }
 [data-markdown-style="editorial"] .chat-turn-agent .markdown th {
   background: color-mix(in srgb, var(--bg-elevated) 75%, var(--bg));

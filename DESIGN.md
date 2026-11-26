@@ -829,7 +829,9 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   file previews, fenced code blocks, and clickable file/link chips (`.markdown-file`,
   `.markdown-code-link`, `a > code`) keep their own affordances. `editorial` follows Claude and
   Linear's restrained typography (neutral headings with a hairline rule under `h2`, single-accent
-  tints on list markers, blockquote rail/wash, and non-file inline code pills); `tinted` adds soft
+  tints on bullets while ordered numbers keep the text color, one blockquote rail/wash however deep
+  the quote, and non-file inline code pills in `--text-strong`, never a mix of two text colors, so an
+  imported theme keeps it readable); `tinted` adds soft
   two-tone theme heading and inline-code tints; `colorful` uses the active theme's `--syntax-*`
   roles across headings, emphasis, and inline code (following the syntax-colored Markdown direction
   proposed in #4262); `plain` keeps the original monochrome Markdown. Every preset's foreground and

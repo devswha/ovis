@@ -2,12 +2,34 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { hex, over, rgb } from "./colorMath.ts";
 import { contrastRatio } from "./terminalFold.ts";
+import { customRow, readThemeFile } from "./customThemes.ts";
 import { parseThemeBlocks, resolveEntry } from "./themeCss.ts";
 import { CONTRAST_PAIRS, LIGHT_ANSI_PAIRS, TEXT_FLOOR } from "./themeContrast.ts";
 import { SUPPORTED_ENTRIES } from "./themes.ts";
 
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const blocks = parseThemeBlocks(css);
+const chatCss = readFileSync(new URL("../components/ChatView.css", import.meta.url), "utf8");
+const EDITORIAL_CODE = '[data-markdown-style="editorial"] .chat-turn-agent .markdown :not(pre):not(.markdown-file):not(.markdown-code-link):not(a) > code';
+const TINTED_MARKER = '[data-markdown-style="tinted"] .chat-turn-agent .markdown .markdown-list > li::marker';
+
+/** the value a rule in ChatView.css declares for a property, so a check reads the color the page draws */
+function declared(selector: string, property: string): string {
+  const start = chatCss.indexOf(`${selector} {`);
+  if (start < 0) throw new Error(`Missing rule ${selector} in ChatView.css`);
+  const body = chatCss.slice(start + selector.length + 2, chatCss.indexOf("}", start));
+  const match = new RegExp(String.raw`(?:^|[;\s])${property}:\s*([^;]+);`).exec(body);
+  if (!match?.[1]) throw new Error(`Missing ${property} in ${selector}`);
+  return match[1].trim();
+}
+
+function paint(value: string, colors: Record<string, string>): string {
+  const role = /^var\((--[\w-]+)\)$/.exec(value);
+  if (role?.[1]) return colors[role[1]] ?? "";
+  const mixed = /^color-mix\(in srgb,\s*var\((--[\w-]+)\)\s*(\d+(?:\.\d+)?)%,\s*var\((--[\w-]+)\)\)$/.exec(value);
+  if (mixed?.[1] && mixed[2] && mixed[3]) return hex(over(rgb(colors[mixed[1]] ?? ""), rgb(colors[mixed[3]] ?? ""), Number(mixed[2]) / 100));
+  throw new Error(`Cannot paint ${value}`);
+}
 
 function mixRule(role: string): { weight: number; base: string } {
   const match = new RegExp(String.raw`--${role}:\s*color-mix\(in srgb,\s*var\(--accent\)\s*(\d+(?:\.\d+)?)%,\s*var\((--[\w-]+)\)\)`).exec(css);
@@ -70,13 +92,14 @@ describe("theme contrast", () => {
       const meta = colors["--syntax-meta"]!;
       const variable = colors["--syntax-variable"]!;
       const checks: readonly [string, string, string][] = [
-        ["editorial code", mix(fn, strong, 0.26), mix(accent, bg, 0.07)],
+        ["editorial code", paint(declared(EDITORIAL_CODE, "color"), colors), mix(accent, bg, 0.07)],
         ["editorial blockquote", dim, mix(accent, bg, 0.04)],
         ["editorial table header", strong, mix(elev, bg, 0.75)],
         ["tinted heading", mix(fn, strong, 0.42), bg],
         ["tinted subheading", mix(ty, strong, 0.38), bg],
         ["tinted code", mix(kw, strong, 0.38), mix(kw, bg, 0.06)],
         ["tinted blockquote", dim, mix(ty, bg, 0.04)],
+        ["tinted list number", paint(declared(TINTED_MARKER, "color"), colors), bg],
         ["tinted table header", mix(ty, strong, 0.38), mix(elev, bg, 0.75)],
         ["colorful heading", mix(fn, strong, 0.7), bg],
         ["colorful subheading", mix(ty, strong, 0.7), bg],
@@ -93,4 +116,12 @@ describe("theme contrast", () => {
       expect(below).toEqual([]);
     });
   }
+
+  it("keeps Editorial inline code readable in an imported theme whose text and accent sit on either side of its ground", () => {
+    const file = readThemeFile(JSON.stringify({ name: "Gray", base00: "757575", base01: "757575", base02: "757575", base05: "ffffff", base0D: "000000" }));
+    if (!("theme" in file)) throw new Error(`the gray theme did not import: ${file.error}`);
+    const colors = Object.fromEntries(Object.entries(customRow(file.theme, "dark").vars ?? {}).map(([role, value]) => [`--${role}`, value]));
+    const pill = hex(over(rgb(colors["--accent"]!), rgb(colors["--bg"]!), 0.07));
+    expect(contrastRatio(paint(declared(EDITORIAL_CODE, "color"), colors), pill)!).toBeGreaterThanOrEqual(TEXT_FLOOR);
+  });
 });
