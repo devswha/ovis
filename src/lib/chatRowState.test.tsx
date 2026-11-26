@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, createElement } from "react";
 
-import { ChatDetails } from "./chatRowState.tsx";
+import { ChatDetails, chatRowMemory, ChatRowMemoryContext } from "./chatRowState.tsx";
 import { openPage, type Page } from "./page.fixture.ts";
 
 let page: Page;
@@ -31,12 +31,16 @@ test("follows its default until the reader opens or closes it: a failure the tur
 });
 
 test("keeps what the reader chose, whatever the default says after", async () => {
-  await page.render(row(false));
+  const memory = chatRowMemory(new Map(), "turn");
+  const rememberedRow = (defaultOpen: boolean) => createElement(ChatRowMemoryContext.Provider, { value: memory }, row(defaultOpen));
+  await page.render(rememberedRow(false));
   await toggled(true);
   expect(details().open).toBe(true);
-  await page.render(row(false));
+  // A new details element cannot inherit the browser's native open state.
+  await page.render(null);
+  await page.render(rememberedRow(false));
   expect(details().open).toBe(true);
   await toggled(false);
-  await page.render(row(true));
+  await page.render(rememberedRow(true));
   expect(details().open).toBe(false);
 });

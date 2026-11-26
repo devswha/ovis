@@ -134,8 +134,15 @@ describe("sidebar finish acknowledgement through React effects", () => {
     let keyCalls = 0, readCalls = 0;
     const storage = localStorage;
     const key = storage.key.bind(storage), getItem = storage.getItem.bind(storage);
-    storage.key = (index) => { keyCalls++; return key(index); };
-    storage.getItem = (name) => { readCalls++; return getItem(name); };
+    // happy-dom's Storage ignores an assignment to a method it has: install the counters as own properties
+    Object.defineProperties(storage, {
+      key: { configurable: true, value: (index: number) => { keyCalls++; return key(index); } },
+      getItem: { configurable: true, value: (name: string) => { readCalls++; return getItem(name); } },
+    });
+    storage.key(0);
+    storage.getItem("probe");
+    expect([keyCalls, readCalls]).toEqual([1, 1]);
+    keyCalls = readCalls = 0;
 
     const changed = roster({ a: 1, b: 1 }, { a: "working" })[0]!;
     await client.update([changed, remoteA, remoteB], "b");
@@ -819,7 +826,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const read = localStorage.getItem;
     const key = seenKey("remote", "server-b", "other");
     page.window.localStorage.setItem(key, JSON.stringify({ id: 4, at: 1 }));
-    localStorage.getItem = (name) => { if (name === key) unrelatedReads++; return read(name); };
+    Object.defineProperty(localStorage, "getItem", { configurable: true, value: (name: string) => { if (name === key) unrelatedReads++; return Reflect.apply(read, localStorage, [name]); } });
+    localStorage.getItem(key);
+    expect(unrelatedReads).toBe(1);
+    unrelatedReads = 0;
     await client.update(roster({ a: 1 }), "a");
     expect(unrelatedReads).toBe(0);
     await client.update(roster({ a: 2 }), "a");
