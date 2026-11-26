@@ -89,8 +89,10 @@ export function currentStateDir(legacy: string, next: string): string {
   return holdsOwnState(legacy, next) ? legacy : next;
 }
 
+/** Restamp runs only with Step 2 on; with it off a leftover plan pins nothing, as on a build without restamp. */
 function restampPinsFolders(legacy: string, next: string): boolean {
-  return [legacy, next].some(dir => [RESTAMP_PLAN, RESTAMP_ROLLBACK, RESTAMP_PARTICIPANT].some(file => {
+  // accountOpensAll's rule, read here without shared/account-devices-api.ts: a checkout without packages runs this
+  return process.env["OVIS_ACCOUNT_OPENS_ALL"] !== "0" && [legacy, next].some(dir => [RESTAMP_PLAN, RESTAMP_ROLLBACK, RESTAMP_PARTICIPANT].some(file => {
     try { return lstatSync(join(dir, file), { throwIfNoEntry: false }) !== undefined; }
     catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOTDIR"; }
   }));
