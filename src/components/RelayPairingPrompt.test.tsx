@@ -17,7 +17,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
   let page: Page;
   let decided: [string, unknown][];
   const browserGlobals = ["HTMLElement", "Element", "Node", "Event", "CustomEvent", "fetch"] as const;
-  const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const savedBrowserGlobals = new Map<(typeof browserGlobals)[number], PropertyDescriptor | undefined>();
   let settings: HTMLElement;
   let opener: HTMLElement;
   let shift: number;
@@ -25,7 +25,6 @@ describe("the PC's prompt for a device waiting for approval", () => {
   let inert: boolean;
   let focusCalls: WeakMap<HTMLElement, number>;
   let scrollCalls: WeakMap<HTMLElement, number>;
-  let focusDescriptors: PropertyDescriptorMap;
   let nativeFocus: (this: HTMLElement) => void;
 
   function Held() {
@@ -52,6 +51,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
   beforeEach(async () => {
     page = openPage("http://127.0.0.1:7421/");
     for (const key of browserGlobals) {
+      savedBrowserGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
       if (key !== "fetch") Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
     }
     decided = [];
@@ -60,10 +60,6 @@ describe("the PC's prompt for a device waiting for approval", () => {
     strict = false;
     focusCalls = new WeakMap();
     scrollCalls = new WeakMap();
-    focusDescriptors = Object.fromEntries(["focus", "scrollIntoView"].flatMap((key) => {
-      const descriptor = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, key);
-      return descriptor ? [[key, descriptor]] : [];
-    }));
     nativeFocus = window.HTMLElement.prototype.focus;
     Object.defineProperties(window.HTMLElement.prototype, {
       focus: { configurable: true, value: function (this: HTMLElement) {
@@ -93,10 +89,12 @@ describe("the PC's prompt for a device waiting for approval", () => {
 
   afterEach(async () => {
     jest.useRealTimers();
-    try { await page.close(); } finally { Object.defineProperties(page.window.HTMLElement.prototype, focusDescriptors); }
-    for (const [key, descriptor] of savedBrowserGlobals) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
+    try { await page.close(); } finally {
+      for (const [key, descriptor] of savedBrowserGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+      savedBrowserGlobals.clear();
     }
   });
 

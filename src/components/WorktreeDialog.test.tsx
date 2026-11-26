@@ -14,18 +14,23 @@ describe("the palette's worktree dialog", () => {
   let page: Page;
   const browserGlobals = ["HTMLElement"] as const;
   const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  let answerCreate: (body: unknown) => void = () => undefined;
+  let creates: ReturnType<typeof Promise.withResolvers<Response>>[];
 
   beforeEach(() => {
     page = openPage("http://ovis.test/");
+    creates = [];
     for (const key of browserGlobals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
     Object.defineProperties(page.window, {
       requestAnimationFrame: { configurable: true, value: () => 1 },
       cancelAnimationFrame: { configurable: true, value: () => {} },
     });
-    spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => String(input).includes("worktree/create")
-      ? new Promise<Response>((resolve) => { answerCreate = (body) => resolve(Response.json(body)); })
-      : Response.json({ agents: [] }), { preconnect: globalThis.fetch.preconnect }));
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input, "http://ovis.test/");
+      if (url.pathname !== "/api/worktree/create" || init?.method !== "POST") return Response.json({ agents: [] });
+      const reply = Promise.withResolvers<Response>();
+      creates.push(reply);
+      return reply.promise;
+    }, { preconnect: globalThis.fetch.preconnect }));
   });
 
   afterEach(async () => {
@@ -45,11 +50,15 @@ describe("the palette's worktree dialog", () => {
     if (!field) throw new Error("Branch input did not mount");
     return field;
   };
-  const submit = () => act(async () => {
+  const submit = async () => {
     const form = document.querySelector("form");
     if (!form) throw new Error("Worktree form did not mount");
-    form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
-  });
+    await act(async () => { form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+    expect(creates).toHaveLength(1);
+    const [reply] = creates;
+    if (!reply) throw new Error("Worktree creation did not start");
+    return reply;
+  };
 
   it("focuses the Branch field and selects the suggested branch in create mode (#1222)", async () => {
     const frames: FrameRequestCallback[] = [];
@@ -75,11 +84,11 @@ describe("the palette's worktree dialog", () => {
   it("keeps a draft typed after a replaced dialog's creation was sent, when that creation answers", async () => {
     await page.render(dialog(repository("api")));
     await page.type(branchField(), "feat/one");
-    await submit();
+    const reply = await submit();
     await page.render(dialog(repository("web")));
     await page.render(dialog(repository("api")));
     await page.type(branchField(), "feat/two");
-    await act(async () => { answerCreate({ workspace_id: "w9", pane_id: "p9", agent_started: true }); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { reply.resolve(Response.json({ workspace_id: "w9", pane_id: "p9", agent_started: true })); });
     await page.render(dialog(repository("web")));
     await page.render(dialog(repository("api")));
     expect(branchField().value).toBe("feat/two");
@@ -95,9 +104,9 @@ describe("the palette's worktree dialog", () => {
   it("ignores the answer of a dialog that another repository's replaced", async () => {
     const opened: string[] = [];
     await page.render(dialog(repository("api"), () => opened.push("api")));
-    await submit();
+    const reply = await submit();
     await page.render(dialog(repository("web"), () => opened.push("web")));
-    await act(async () => { answerCreate({ workspace_id: "w9", pane_id: "p9", agent_started: true }); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { reply.resolve(Response.json({ workspace_id: "w9", pane_id: "p9", agent_started: true })); });
     expect(opened).toEqual([]);
   });
 });

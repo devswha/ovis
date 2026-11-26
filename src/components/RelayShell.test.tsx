@@ -20,14 +20,20 @@ const EXPECTED = "0123456789abcdef0123456789abcdef";
 const RECEIVED = "01234567ffffcdef0123456789abeeee";
 const none = () => {};
 const props = (state: RelayShellProps["state"]): RelayShellProps => ({ state, scoped: true, iosTab: false, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none });
-let staticPage: Page;
-beforeEach(() => {
-  staticPage = openPage("https://app.ovis.sh/");
-  staticPage.window.happyDOM.setViewport({ width: 390, height: 844 });
+let staticPage: Page | undefined;
+afterEach(async () => {
+  const page = staticPage;
+  staticPage = undefined;
+  await page?.close();
 });
-afterEach(async () => { await staticPage.close(); });
 
-const render = (shown: RelayShellProps): string => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
+const render = (shown: RelayShellProps): string => {
+  if (staticPage === undefined) {
+    staticPage = openPage("https://app.ovis.sh/");
+    staticPage.window.happyDOM.setViewport({ width: 390, height: 844 });
+  }
+  return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
+};
 describe("the front page's account part", () => {
   // the dashboard is a page opened on purpose, by its address: a front page with none is Add a PC
   const pc = (server_id: string, name: string, state: "paired" | "needs-approval" | "offline" | "needs-update", paired = state === "paired") => ({ server_id, name, state, last_seen_at: null, added_at: null, listed: true, paired, linked: paired });
@@ -247,15 +253,19 @@ describe("the hosted front page", () => {
     });
 
     afterEach(async () => {
-      await browser.render(null);
-      // Let the sheet leave its history entry while this window is still here.
-      await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      await browser.close();
-      for (const [key, descriptor] of descriptors) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
+      try {
+        await browser.render(null);
+        // Let the sheet leave its history entry while this window is still here.
+        await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      } finally {
+        try { await browser.close(); } finally {
+          for (const [key, descriptor] of descriptors) {
+            if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+            else Reflect.deleteProperty(globalThis, key);
+          }
+          descriptors.clear();
+        }
       }
-      descriptors.clear();
     });
 
     const mount = async (shown: RelayShellProps) => {
@@ -279,10 +289,11 @@ describe("the hosted front page", () => {
       return event.defaultPrevented;
     };
     const trackFocus = (focused: string[]): void => {
+      // The first focus can happen during mount. The page restores the shared prototype on close.
       const focus = browser.window.HTMLElement.prototype.focus;
-      Object.defineProperty(browser.window.HTMLElement.prototype, "focus", { configurable: true, value: function (this: HTMLElement) {
+      Object.defineProperty(browser.window.HTMLElement.prototype, "focus", { configurable: true, value: function (this: HTMLElement, options?: FocusOptions) {
         focused.push(this.localName === "button" ? String(this.getAttribute("data-action") ?? this.getAttribute("aria-label")) : this.localName);
-        Reflect.apply(focus, this, []);
+        Reflect.apply(focus, this, [options]);
       } });
     };
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };

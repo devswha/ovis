@@ -149,9 +149,19 @@ describe("the strict-mode section in Settings", () => {
   };
 
   it("G5: on a PC that does not offer it, shows nothing and asks the PC nothing", async () => {
-    await page.render(<SettingsProvider><StrictModeSection offered={false} auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>);
+    const section = (offered: boolean) => <SettingsProvider><StrictModeSection offered={offered} auth={{ required: false, authenticated: true, via: "local", role: "drive", own_window: true }} /></SettingsProvider>;
+    await page.render(section(false));
     expect(page.container.childNodes).toHaveLength(0);
+    expect([...body().childNodes].map((node) => node === page.container ? "mount" : node.nodeName)).toEqual(["mount"]);
     expect(requests).toEqual([]);
+
+    await page.render(section(true));
+    await act(async () => { toggle().click(); });
+    expect(text(confirmationDialog())).toContain("Turn on strict mode?");
+    await page.render(section(false));
+    expect(page.container.childNodes).toHaveLength(0);
+    expect([...body().childNodes].map((node) => node === page.container ? "mount" : node.nodeName)).toEqual(["mount"]);
+    expect(requests).toEqual(["GET /api/account/lock"]);
   });
 
   it("T46, R10, Q20: after asking, says strict mode is not on until approved on this PC's screen, by when, and how to open that page", async () => {
@@ -267,7 +277,7 @@ describe("the strict-mode section in Settings", () => {
     answer = locked;
     await page.render(<SettingsProvider><AccessGate reason="locked" ownWindow initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
     expect([...body().querySelectorAll<HTMLButtonElement>("button")].map((node) => text(node))).toEqual(["Ask to turn strict mode off"]);
-    expect(page.container.querySelectorAll("input")).toHaveLength(0);
+    expect(body().querySelectorAll("input")).toHaveLength(0);
     await page.render(null);
     await page.render(<SettingsProvider><AccessGate reason="locked" ownWindow={false} initialCode="" consumePairCode={() => ""} pairingUnconfirmed={false} onUnlocked={() => {}} /></SettingsProvider>);
     expect(text(body())).toBe("This PC is in strict mode.");

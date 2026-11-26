@@ -35,11 +35,16 @@ describe("how the row menu closes from outside it", () => {
     } });
     window.requestAnimationFrame = (run) => frames.push(run);
     window.cancelAnimationFrame = () => {};
-    const proto = page.window.HTMLElement.prototype;
-    for (const metric of ["offsetWidth", "offsetHeight", "clientHeight", "scrollHeight"] as const) {
-      Object.defineProperty(proto, metric, { configurable: true, get(this: HTMLElement) {
-        return this.matches(".row-menu") ? (metric === "offsetWidth" ? 200 : menuHeight) : 0;
-      } });
+    if (!phone) {
+      // The popover measures its div in a layout effect, before draw returns. The page restores the prototype.
+      const { HTMLDivElement, HTMLElement } = page.window;
+      const owner = document;
+      for (const metric of ["offsetWidth", "offsetHeight", "clientHeight", "scrollHeight"] as const) {
+        Object.defineProperty(HTMLDivElement.prototype, metric, { configurable: true, get(this: HTMLDivElement) {
+          if (this.ownerDocument === owner && this.matches(".row-menu")) return metric === "offsetWidth" ? 200 : menuHeight;
+          return Reflect.get(HTMLElement.prototype, metric, this);
+        } });
+      }
     }
     function OpenMenu() {
       const [open, setOpen] = useState(true);

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, createElement } from "react";
@@ -15,6 +15,11 @@ let asked: string[] = [];
 
 beforeEach(() => {
   page = openPage("https://ovis.test/");
+  jest.useFakeTimers();
+  Object.defineProperties(page.window, {
+    setTimeout: { configurable: true, value: setTimeout },
+    clearTimeout: { configurable: true, value: clearTimeout },
+  });
   asked = [];
   const transport: Transport = {
     ...nativeTransport,
@@ -25,14 +30,15 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await page.close();
-  setTransport(nativeTransport);
+  jest.useRealTimers();
+  try { await page.close(); } finally { setTransport(nativeTransport); }
 });
 
 const PATH = "/w/out/before after.html";
 const buttons = () => [...page.container.querySelectorAll("button")];
 const text = (): string => page.container.textContent ?? "";
 const children = (node: Element) => [...node.childNodes].map((child) => child.nodeType === 3 ? child.textContent : child);
+const drainTimers = () => act(async () => { jest.runOnlyPendingTimers(); });
 
 test("a reference's card asks the PC for nothing and draws no frame; Open preview opens the file viewer on exactly that path, through its own pane's opener", async () => {
   const here: string[] = [], elsewhere: string[] = [];
@@ -40,6 +46,7 @@ test("a reference's card asks the PC for nothing and draws no frame; Open previe
       createElement(OpenFileContext.Provider, { value: (path) => { elsewhere.push(path); }, children:
         createElement(OpenFileContext.Provider, { value: (path) => { here.push(path); }, children:
           createElement(Visualization, { path: PATH, title: "Transmission comparison" }) }) }) }));
+  await drainTimers();
   expect(text()).toContain("before after.html");
   expect(text()).toContain("Transmission comparison");
   expect(buttons().map(children)).toEqual([["Open preview"]]);
@@ -52,6 +59,7 @@ test("a reference's card asks the PC for nothing and draws no frame; Open previe
   expect(page.container.querySelectorAll("iframe")).toHaveLength(0);
 
   await act(async () => { buttons()[0]!.click(); });
+  await drainTimers();
   expect(here).toEqual([PATH]);
   expect(elsewhere).toEqual([]);
   expect(asked).toEqual([]);
@@ -60,6 +68,7 @@ test("a reference's card asks the PC for nothing and draws no frame; Open previe
 
 test("where nothing can open a file, the card names it and offers no button", async () => {
   await page.render(createElement(SettingsProvider, { children: createElement(Visualization, { path: PATH }) }));
+  await drainTimers();
   expect(text()).toContain("before after.html");
   expect(buttons()).toHaveLength(0);
   expect(asked).toEqual([]);
