@@ -289,13 +289,25 @@ function heard(confirms: LocalConfirms, line: string): void {
 }
 
 /**
- * The uid that holds the client end of a TCP connection on loopback, from the kernel's socket table: the row whose
- * local port is the peer's and whose remote port is the listener's. Null when no such row is found.
+ * How many times the socket table is read for one connection. The kernel hands /proc/net/tcp out a page per read and
+ * resumes by position, so while other sockets come and go one read can miss a live row or show it twice; reading
+ * again only asks the kernel again, and a row that is not there is never found.
  */
-export function peerUidOnLinux(listenerPort: number, peerPort: number): number | null {
-  let text: string;
-  try { text = readFileSync("/proc/net/tcp", "utf8"); } catch { return null; }
-  return peerUidInTable(text, listenerPort, peerPort);
+const TABLE_READS = 3;
+
+/**
+ * The uid that holds the client end of a TCP connection on loopback, from the kernel's socket table: the row whose
+ * local port is the peer's and whose remote port is the listener's. Null when no read of the table finds it.
+ */
+export function peerUidOnLinux(listenerPort: number, peerPort: number,
+  readTable: () => string = () => readFileSync("/proc/net/tcp", "utf8")): number | null {
+  for (let read = 0; read < TABLE_READS; read++) {
+    let text: string;
+    try { text = readTable(); } catch { return null; }
+    const uid = peerUidInTable(text, listenerPort, peerPort);
+    if (uid !== null) return uid;
+  }
+  return null;
 }
 
 /** 127.0.0.1 as /proc/net/tcp writes it, in host (little-endian) order. */
