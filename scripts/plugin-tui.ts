@@ -25,7 +25,7 @@ import { loopbackOrigin } from "../shared/loopback-origin.ts";
 import { appOrigin } from "./plugin-port.ts";
 import { execWaiter } from "./plugin-tui-waiter.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
-import { readPluginSettings } from "./plugin-settings.ts";
+import { desktopCommandRecord, readPluginSettings } from "./plugin-settings.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -313,7 +313,14 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
     return EXIT_FAILED;
   }
   const home = parts.home ?? (parts.caller["HOME"] || accountHome());
-  const origin = loopbackOrigin(appOrigin(mergeEnvLayers([parts.caller, parts.settings]), home));
+  let origin: string | null;
+  if (parts.caller["OVIS_DESKTOP_COMMAND"] === "1") {
+    const record = desktopCommandRecord(parts.caller);
+    const port = record ? await (await import("../app/electron/src/children.ts")).desktopCommandPort(record) : null;
+    origin = port === null || String(port) !== parts.caller["PORT"] ? null : `http://127.0.0.1:${port}`;
+  } else {
+    origin = loopbackOrigin(appOrigin(mergeEnvLayers([parts.caller, parts.settings]), home));
+  }
   return runScreen([], { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder, [SCREEN_SERVER]: origin ?? "" }, parts);
 }
 

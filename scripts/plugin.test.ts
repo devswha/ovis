@@ -17,6 +17,8 @@ import { trustRefusal } from "../server/herdr-core/discovery.ts";
 import { profileGroups } from "../server/herdr-discovery.ts";
 import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 import { newInvite } from "../shared/account-list-join.ts";
+import { processStartSync, writeSaved } from "../app/electron/src/children.ts";
+import { recordDesktopListener } from "../server/desktop-listener.ts";
 
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
@@ -891,6 +893,27 @@ describe("ovis join, as the command runs it", () => {
     const fromEnv = await run("join", { ...env(), OVIS_INVITE: line }, { args: ["--json"] });
     expect(fromEnv.exitCode).toBe(13);
   });
+});
+
+it("does not send a desktop approval request after the listener was withdrawn during health", async () => {
+  const record = join(scratch, "desktop.json");
+  const withdraw = recordDesktopListener(record, process.pid);
+  const requests: string[] = [];
+  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const path = new URL(request.url).pathname;
+    requests.push(path);
+    if (path === "/api/health") {
+      withdraw();
+      return Response.json(APP_HEALTH);
+    }
+    return Response.json({ pairings: [], joins: [] });
+  } });
+  try {
+    writeSaved(record, { port: Number(server.port), server: { pid: process.pid, ready: true, bun: process.execPath, started: processStartSync(process.pid) } });
+    const result = await run("approve", { PORT: String(server.port), OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record });
+    expect(requests).toEqual(["/api/health"]);
+    expect(result.exitCode).toBe(1);
+  } finally { withdraw(); await server.stop(true); }
 });
 
 describe("the devices status lists apart", () => {

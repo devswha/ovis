@@ -333,6 +333,14 @@ describe("core choice", () => {
     }
   });
 
+  it("keeps the desktop terminal screen usable without a verified desktop listener", async () => {
+    const record = join(scratch, "desktop.json");
+    writeFileSync(record, JSON.stringify({ port: 18555, server: null }));
+    const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, PORT: "18555", OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record } } });
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(run.runs[0]?.env["OVIS_TUI_SERVER"]).toBe("");
+  });
+
   it.each([
     ["the caller's socket", [], { HC_SOCKET: "/run/me/hc.sock" }, {}, "HC_SOCKET=/run/me/hc.sock hc server start"],
     ["a flag over an inherited socket", ["--session", "work"], { HC_SOCKET: "/run/me/hc.sock" }, {}, "env -u HC_SOCKET HC_SESSION=work hc server start"],
