@@ -1870,6 +1870,15 @@ it.skipIf(process.platform !== "linux")("shows the session the hook of the Copil
     appendFileSync(own.log, register(other));
     forgetTranscriptState();
     expect(JSON.stringify((await paneConversation("own")).turns)).toContain("switched history");
+    // nor is a log that names a session it cannot prove: the hook's older session does not stand in for it
+    const real = join(own.root, "session-state", `${other}-real`);
+    fs.renameSync(join(own.root, "session-state", other), real);
+    symlinkSync(real, join(own.root, "session-state", other));
+    appendFileSync(peer.log, register(session, "Unregistering"));
+    forgetTranscriptState();
+    const unproved: unknown = await paneConversation("own").catch((error: unknown) => error);
+    expect(unproved).toBeInstanceOf(ConversationUnavailable);
+    expect(JSON.stringify(unproved)).not.toContain("held history");
   } finally {
     readToldSessions(null);
     snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
