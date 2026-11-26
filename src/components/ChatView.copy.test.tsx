@@ -7,10 +7,6 @@ import * as clipboard from "../lib/clipboard.ts";
 import * as plainTextModule from "../lib/plainText.ts";
 import { Turn } from "./ChatView.tsx";
 
-// Captured at module load, before any spy is installed: the original plain-text implementation,
-// so a test can compute legacy output byte-for-byte and wrap the spy without re-entering it.
-const originalPlainText = plainTextModule.plainText;
-
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
 
 function installBrowserGlobals(): void {
@@ -99,19 +95,33 @@ describe("an assistant turn's TXT copy derives its words only when copied", () =
     expect(plainTextSpy).toHaveBeenCalledTimes(0); // nothing derived on render and nothing needed for markdown (AC-002)
   });
 
-  it("derives its plain text once in the click handler, before the clipboard write", async () => {
-    const answer = "# Heading\n\n> quoted\n~~gone~~ and **kept**."; // legacy output below is computed from the original implementation either way - byte-for-byte (AC-002)
-    const order: string[] = []; // a synchronous derivation inside the gesture must precede the clipboard write it feeds (DESIGN-002)
-    plainTextSpy.mockImplementation((markdown: string) => { order.push("derive"); return originalPlainText(markdown); }); // record the derivation's moment inside the gesture; delegate to the original, not the spy
-    copyTextSpy.mockImplementation((text: string) => { order.push("copy"); return Promise.resolve(true); }); // record the clipboard write's moment inside the gesture (no live clipboard here)
-    await renderTurn(assistantTurn([answer])); // a markdown answer whose plain form differs from it (AC-002)
-    expect(plainTextSpy).toHaveBeenCalledTimes(0); // nothing derived while the row rendered (AC-002)
-    await clickCopy("Copy as plain text"); // one click: derive, then write - in that order (DESIGN-002)
-    expect(copyTextSpy).toHaveBeenCalledTimes(1); // one clipboard write for one click (AC-006)
-    expect(copyTextSpy).toHaveBeenCalledWith(originalPlainText(answer)); // byte-for-byte the original implementation's plain form (AC-002)
-    expect(plainTextSpy).toHaveBeenCalledTimes(1); // derived exactly once, in the click itself (AC-002)
-    expect(order).toEqual(["derive", "copy"]); // the derivation ran synchronously inside the gesture, before the clipboard write it fed (DESIGN-002)
+  it("starts the plain-text clipboard write inside the click gesture", async () => {
+    await renderTurn(assistantTurn(["# Heading\n\n> quoted\n~~gone~~ and **kept**."]));
+    await act(async () => {
+      copyButton(renderer!, "Copy as plain text").props.onClick();
+      // Check before act flushes microtasks: the browser may require an active user gesture.
+      expect(copyTextSpy.mock.calls).toEqual([["Heading\n\nquoted\ngone and kept."]]);
+    });
+    expect(copyTextSpy).toHaveBeenCalledTimes(1);
+    expect(plainTextSpy).toHaveBeenCalledTimes(1);
   });
+
+  const brackets = "[".repeat(96 * 1024);
+  it.each([
+    { kind: "unmatched brackets", answer: `\`\`\`text\n${brackets}\n\`\`\``, expected: `${brackets}\n` },
+    { kind: "backticks without a fence newline", answer: "```".repeat(32 * 1024), expected: "" },
+  ])("does not stall the clipboard write on a long run of $kind", async ({ answer, expected }) => {
+    await renderTurn(assistantTurn([answer]));
+    await act(async () => {
+      const button = copyButton(renderer!, "Copy as plain text");
+      const start = process.cpuUsage();
+      button.props.onClick();
+      const { user, system } = process.cpuUsage(start);
+      expect(copyTextSpy.mock.calls).toEqual([[expected]]);
+      // Legacy rescanning used seconds of CPU. Allow a full second for the synchronous write.
+      expect((user + system) / 1_000_000).toBeLessThan(1);
+    });
+  }, 30_000);
 
   it("shows no copy buttons for an empty answer, so nothing is derived", async () => {
     await renderTurn({ role: "assistant", ts: null, parts: [{ kind: "text", text: "" }] }); // an answer with no words (AC-002 boundary)
@@ -121,12 +131,13 @@ describe("an assistant turn's TXT copy derives its words only when copied", () =
   });
 
   it("copies a large answer with CJK, emoji, code and links byte-for-byte, deriving once in the click", async () => {
-    const answer = ["# 計畫 Plan", "", "**重點** key points:", "", "```", "const n = 42; // 計算", "console.log(n);", "```", "", "- [文件](https://example.com/docs) 🎉", "- 中文與 emoji 🚀 mixed", "", "tail".repeat(4096)].join("\n"); // a large answer mixing CJK, emoji, a code fence and a link (AC-002 content shapes)
+    const tail = "tail".repeat(4096);
+    const answer = ["# 計畫 Plan", "", "**重點** key points:", "", "```", "const n = 42; // 計算", "console.log(n);", "```", "", "- [文件](https://example.com/docs) 🎉", "- 中文與 emoji 🚀 mixed", "", tail].join("\n");
     await renderTurn(assistantTurn([answer])); // a long answer must not pay a plain-text pass while it renders (AC-002)
     expect(plainTextSpy).toHaveBeenCalledTimes(0); // nothing derived while the row rendered (AC-002)
     await clickCopy("Copy as plain text"); // one click: derive once, write once (AC-006)
     expect(copyTextSpy).toHaveBeenCalledTimes(1); // one clipboard write for one click (AC-006)
-    expect(copyTextSpy).toHaveBeenCalledWith(originalPlainText(answer)); // byte-for-byte the original implementation's plain form (AC-002)
+    expect(copyTextSpy).toHaveBeenCalledWith(`計畫 Plan\n\n重點 key points:\n\nconst n = 42; // 計算\nconsole.log(n);\n\n\n- 文件 🎉\n- 中文與 emoji 🚀 mixed\n\n${tail}`);
     expect(plainTextSpy).toHaveBeenCalledTimes(1); // derived exactly once, in the click itself (AC-002)
   });
 });
