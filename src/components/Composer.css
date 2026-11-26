@@ -881,12 +881,10 @@
   white-space: nowrap;
 }
 
-.composer-attachment.is-error,
-.composer-attachment.is-no-room {
+.composer-attachment.is-error {
   border-color: var(--status-blocked);
 }
 
-.composer-attachment.is-no-room .composer-attachment-state,
 .composer-attachment.is-error .composer-attachment-state {
   display: inline-flex;
   align-items: center;
