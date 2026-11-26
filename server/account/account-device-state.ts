@@ -21,6 +21,8 @@ export interface AccountRowSource {
   row(id: string): AccountRow | null;
   rename(id: string, label: string): AccountRow | null;
   rowsByKey(key: string): readonly AccountRow[];
+  /** Whether row `id` stands as admitted here, read only: not expired, and out of its hold only through the admission guard. */
+  standing(id: string): boolean;
   access(id: string): AccessAnswer;
   pruneDenied(evidence: RemovalEvidence, legacyRevoke?: "revoke_all"): void;
   removeRows(ids: readonly string[], reason: Exclude<DropReason, "list">, close?: (id: string) => void): void;
@@ -34,8 +36,12 @@ export interface AccountRowSource {
 
 export type AccountRow = AccountJoinedRow;
 
-/** A whole read's list, as S2-24's commit hands it over. */
-export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed">;
+/**
+ * A whole read's list, as S2-24's commit hands it over. `moved`: a device of a signed list that handed its place on to
+ * another key of its own (`from` the key a row may hold, `to` the key it is in by now); never a snapshot's.
+ */
+/** `names`: the devices' labels are the names the account's signed list gives them (list-follow.ts listCommit), which a row still named by the placeholder takes. */
+export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed"> & { readonly moved?: readonly { readonly from: string; readonly to: string }[]; readonly names?: true };
 
 export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_step"> {
   readonly kind: "admit" | "drop" | "its_me";
@@ -68,6 +74,13 @@ export interface AccountRowPorts {
   admits(key: string, account: string): boolean;
   /** Puts the admission's notice in the unseen set of every older row, on disk; throws when it could not. */
   publish(entry: JournalEntry & { readonly accountNo: number }): void;
+  /**
+   * The rows one whole read newly admitted, on disk: told once per read that admits any, never for a row read at a
+   * start, a republish or a sign-in.
+   */
+  admitted?(rows: readonly AccountRow[]): void;
+  /** The rows changed and are on disk: a row was let in, left its hold, was used or went. */
+  rowsWritten?(): void;
   now(): number;
   /**
    * Numbers one admission on this PC and returns its origin (PcAccountState.admit in pc-binding.ts, P12, P22): its

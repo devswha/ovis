@@ -54,7 +54,6 @@ export const SETUP_JA: Record<string, string> = {
   "Copy the command for {name}": "{name} のコマンドをコピー",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "この PC のブリッジはまだエージェント連携に対応していません。次のランタイム更新後に利用できます。",
   "Open setup guide": "ガイドを開く",
-  "Expired": "期限切れ",
   "Edit": "編集",
   "Remove hub?": "ハブを削除しますか？",
   "Its accounts disappear from this list. The hub itself is not changed.": "一覧からハブのアカウントが消えます。ハブ自体は変わりません。",
@@ -87,4 +86,8 @@ export const SETUP_JA: Record<string, string> = {
   "Install another agent ({count})": "別のエージェントをインストール ({count})",
   "None": "なし",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "エージェントが操作できるブラウザです。Ovis がこのエージェントを起動するときに、バージョンを固定した MCP サーバーを追加します。そのブラウザは専用のプロフィールを使うため、あなたのログインは使われません。Ovis はそのブラウザを監視も制限もしません。次の起動から適用され、ターミナルから直接起動したエージェントは変わりません。",
+  "Let agents call other agents": "ほかのエージェントを呼び出す",
+  "On this PC only. Only you can approve requests.": "この PC でのみ。承認はご自身で行います。",
+  "Agents they may call": "呼び出せるエージェント",
+  "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
 };

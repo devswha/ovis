@@ -34,8 +34,12 @@ export interface Transport {
   resourceUrl(path: string, signal?: AbortSignal): string | Promise<string>;
   /** The carrier a relay transport has up now; undefined while it reconnects. */
   readonly route?: "relay" | "direct" | undefined;
+  /** While `route` is `direct`: whether the carrier is on the PC's private address (`lan`) or its Tailscale one. */
+  readonly directVia?: "lan" | "tailscale" | undefined;
   /** While a relay transport reconnects: `pc`, the relay has nobody for the PC; `relay`, no relay was reached. */
   readonly unreached?: "pc" | "relay" | undefined;
+  /** A relay transport: the PC lets its account's devices in by the account's signed list alone (it is pinned to it). */
+  readonly followsList?: boolean | undefined;
   /** Calls `listener` each time the carrier goes up, down or changes, and when `unreached` changes. */
   onRouteChange?(listener: () => void): () => void;
 }

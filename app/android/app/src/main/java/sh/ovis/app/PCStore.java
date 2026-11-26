@@ -51,8 +51,77 @@ final class PCStore {
     /** A PC's page on the hosted shell the app was opened with (appLink), until the connect screen takes it. In memory only, as it can hold a pairing offer's code. */
     static volatile String link;
 
-    /** The SSH login a page asked the connect screen to open on its SSH tab with (HerdrShellPlugin.openSshSetup), until it takes it. In memory only. */
-    static volatile String sshSetup;
+    /**
+     * The hosted Connect a PC screen (Home) did not load, so the app's own page stands in for it, until the person
+     * tries it again there (Try again) or a PC's page has loaded since: never by itself. In memory only: an app started
+     * again tries the hosted screen.
+     */
+    static volatile boolean homeFailed;
+
+    /** The bundled demo was asked for (HerdrShell openDemo) and is up until it is left. In memory only. */
+    static volatile boolean demo;
+
+    /**
+     * Change PC was pressed where an SSH PC did not open: the app's own page, whose Manage holds what mends it (Forget
+     * host key, Set up again), which the hosted screen has not. In memory only.
+     */
+    static volatile boolean manage;
+
+    /**
+     * The fragment the next hosted screen starts at instead of `#pcs` (Home.homeStart: a sign-in the app's own page
+     * asked for), taken once by the activity that opens it. In memory only.
+     */
+    static volatile String homeStart;
+
+    /**
+     * Whether something waits that only the app's own Connect a PC page takes: a pairing link, an SSH PC whose address
+     * another app holds, which that page says, or an SSH PC to manage.
+     */
+    static boolean bundledAsked() {
+        return link != null || manage || "ssh-port".equals(failureKind);
+    }
+
+    /** The hosted screen is to be tried again (Try again on the fallback, the way back from the app's own page): nothing is left that would keep the app's own page up. */
+    static void goHome() {
+        homeFailed = false;
+        demo = false;
+        link = null;
+        manage = false;
+        homeStart = null;
+        if ("ssh-port".equals(failureKind)) fail(null, null);
+    }
+
+    /**
+     * The PC is left (Change PC): none is current. Where an SSH PC did not open (`unopened`: the cover's Change PC,
+     * error.html's), the app's own page comes for it (`manage`): error.html sends the person to Manage there (Forget
+     * host key, Set up again), and the hosted screen has no such thing.
+     */
+    static void leave(Context context, boolean unopened) {
+        String left = current(context);
+        setCurrent(context, null);
+        manage = unopened && left != null && SshPcs.on(context).get(left) != null;
+    }
+
+    /**
+     * The hosted app's front page asked for by its address (Home.homeStart): an attempt at the hosted screen, starting
+     * at `start`, which makes nothing the current PC. A PC that is current stays the one to go back to.
+     */
+    static void homeAttempt(Context context, String start) {
+        goHome();
+        homeStart = start;
+        if (current(context) != null) choosing = true;
+    }
+
+    /**
+     * A relay PC's page came up in the hosted screen (Home.Event.RELAY_PC), which the app is not asked to open: the
+     * hosted app at `appOrigin` is the current PC from here on, as it is after a sign-in from the app's own page, so
+     * Back and the next start are that PC's.
+     */
+    static void keepHosted(Context context, String appOrigin) {
+        choosing = false;
+        prefs(context).edit().putString("current", appOrigin).putString("last", appOrigin).apply();
+        if (names(context).optString(appOrigin, "").isEmpty()) setName(context, appOrigin, "Ovis");
+    }
 
     private static final Pattern PC_SCOPE = Pattern.compile("/s/([0-9a-f]{32})/?");
 
@@ -266,9 +335,13 @@ final class PCStore {
     }
 
     static List<String> saved(Context context) {
+        return saved(prefs(context));
+    }
+
+    private static List<String> saved(SharedPreferences prefs) {
         List<String> list = new ArrayList<>();
         try {
-            JSONArray array = new JSONArray(prefs(context).getString("saved", "[]"));
+            JSONArray array = new JSONArray(prefs.getString("saved", "[]"));
             for (int i = 0; i < array.length(); i++) list.add(array.getString(i));
         } catch (org.json.JSONException ignored) {
         }
@@ -280,14 +353,19 @@ final class PCStore {
     }
 
     static JSONObject names(Context context) {
+        return names(prefs(context));
+    }
+
+    private static JSONObject names(SharedPreferences prefs) {
         try {
-            return new JSONObject(prefs(context).getString("names", "{}"));
+            return new JSONObject(prefs.getString("names", "{}"));
         } catch (JSONException damaged) {
             return new JSONObject();
         }
     }
 
-    static void setName(Context context, String key, String name) {
+    /** On PCStore's monitor, as identify writes the names there too: neither write is lost to the other. */
+    static synchronized void setName(Context context, String key, String name) {
         JSONObject names = names(context);
         try {
             if (name == null) names.remove(key);
@@ -298,12 +376,33 @@ final class PCStore {
         prefs(context).edit().putString("names", names.toString()).apply();
     }
 
+    /** The relay ID each saved PC's own page said it has (HerdrShell identify), by its key. */
+    static JSONObject ids(Context context) {
+        return ids(prefs(context));
+    }
+
+    private static JSONObject ids(SharedPreferences prefs) {
+        try {
+            return new JSONObject(prefs.getString("ids", "{}"));
+        } catch (JSONException damaged) {
+            return new JSONObject();
+        }
+    }
+
+    /** What the page of the saved PC `key` said of itself (Home.identifiedKey): its relay ID, and a name where none is kept. */
+    static synchronized void identify(Context context, String key, String serverId, String name) {
+        JSONObject ids = ids(context), names = names(context);
+        Home.identified(ids, names, key, serverId, name);
+        prefs(context).edit().putString("ids", ids.toString()).putString("names", names.toString()).apply();
+    }
+
     static String current(Context context) {
         return prefs(context).getString("current", null);
     }
 
     static void setCurrent(Context context, String origin) {
         choosing = false;
+        demo = false;
         prefs(context).edit().putString("current", origin).apply();
     }
 
@@ -313,6 +412,9 @@ final class PCStore {
 
     static void open(Context context, String key, String start) {
         choosing = false;
+        demo = false;
+        manage = false;
+        homeStart = null;
         prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }
@@ -337,14 +439,23 @@ final class PCStore {
     }
 
     static synchronized void forget(Context context, String key) {
+        forget(prefs(context), key);
+    }
+
+    /** Forgets `key` in `prefs`: off the saved list, with its name and the relay ID its page said, and as current or last. */
+    static synchronized void forget(SharedPreferences prefs, String key) {
         forgottenAt.put(key, ++forgets);
-        List<String> list = saved(context);
+        List<String> list = saved(prefs);
         list.remove(key);
-        setSaved(context, list);
-        setName(context, key, null);
-        SharedPreferences.Editor edit = prefs(context).edit();
-        if (key.equals(current(context))) edit.remove("current");
-        if (key.equals(last(context))) edit.remove("last");
+        JSONObject names = names(prefs), ids = ids(prefs);
+        names.remove(key);
+        ids.remove(key);
+        SharedPreferences.Editor edit = prefs.edit()
+            .putString("saved", new JSONArray(list).toString())
+            .putString("names", names.toString())
+            .putString("ids", ids.toString());
+        if (key.equals(prefs.getString("current", null))) edit.remove("current");
+        if (key.equals(prefs.getString("last", null))) edit.remove("last");
         edit.apply();
     }
 
@@ -393,7 +504,7 @@ final class PCStore {
         return path;
     }
 
-    private static String percentDecoded(String text) {
+    static String percentDecoded(String text) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);

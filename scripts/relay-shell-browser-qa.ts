@@ -403,7 +403,8 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await page.clock.install({ time });
       await page.clock.pauseAt(new Date(time.getTime() + 1000));
     }
-    await page.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })), options.theme ?? "dark");
+    // a test that sets qa-language in the tab's sessionStorage reloads in that language
+    await page.addInitScript((theme) => localStorage.setItem("ovis:settings", JSON.stringify({ language: sessionStorage.getItem("qa-language") ?? "en", theme })), options.theme ?? "dark");
     csp.push(await watchCsp(page));
     return { context, page, bridge };
   };
@@ -642,15 +643,16 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await pairedStraightIn(a);
       await inApp(a);
       await a.goto(`${APP}/`);
-      // signed out with a PC saved here, the front page is My PCs; the sign-in is behind its Add PC
+      // signed out with a PC saved here, the front page is My PCs; the sign-in is on its Add a PC, which a wide screen keeps
+      // open beside the list (no Add PC button there)
       await a.locator('main.relay-add-screen[data-account-state="signed-out"] [data-view="my-pcs"]').waitFor();
       assert.equal(await a.locator(".relay-add-saved-pc").getAttribute("href"), `/s/${pc1.id}/`, "My PCs lists the PC this device paired, by its page");
-      assert.equal(await a.getByRole("button", { name: "Continue with GitHub" }).count(), 0, "no sign-in on My PCs itself");
+      assert.equal(await a.locator('[data-view="my-pcs"]').getByRole("button", { name: "Continue with GitHub" }).count(), 0, "no sign-in on My PCs itself");
+      assert.equal(await a.locator('[data-action="add-pc"]').count(), 0, "at 1440 Add a PC stands open beside My PCs, with no Add PC button");
       await capture(a, "local-1440-dark");
-      await a.locator('[data-action="add-pc"]').click();
       await a.getByRole("heading", { name: "Add PC" }).waitFor();
       assert.equal(await a.locator('[data-tab-panel="relay"]').getByRole("button", { name: "Continue with GitHub" }).count(), 1, "Add PC's relay tab holds the sign-in");
-      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> My PCs lists Desk PC at /s/${pc1.id}/; its Add PC holds the sign-in`);
+      log9(`local: paired Desk PC ${pc1.id} by QR through the Bun relay, opened it, back on / (the tab's launch is past, so it stays) -> My PCs lists Desk PC at /s/${pc1.id}/, Add a PC beside it at 1440 holding the sign-in`);
 
       // the sign-in's return opens the PC this device paired, as a launch does: no list of PCs first. Opening it lists it in
       // the account, as Open on its row did
@@ -745,9 +747,13 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await pc2.mailbox.pull();
       await a.goto(`${APP}/`);
       await pcLink(a, "Mac mini").waitFor();
-      // Mac mini is this device's own PC now, which it can forget
-      await front(a).locator("li.my-pc", { hasText: "Mac mini" }).locator(".phone-pc-forget").waitFor();
+      // Mac mini is this device's own PC now, which it can forget: the ⋮ menu's Forget PCs puts Forget on its row
       assert.equal(await pcLink(a, "Mac mini").count(), 1, "Mac mini is listed once");
+      await front(a).locator('[data-action="account-menu"]').click();
+      await a.locator('.row-menu [data-item="forget-pcs"], .row-sheet [data-item="forget-pcs"]').click();
+      await front(a).locator("li.my-pc", { hasText: "Mac mini" }).locator('[data-action="forget-pc"]').waitFor();
+      await front(a).locator('[data-action="forget-done"]').click();
+      await front(a).locator("li.my-pc", { hasText: "Mac mini" }).locator("a.relay-add-saved-pc").waitFor();
       log9(`new PC: Mac mini ${pc2.id} listed itself and opened its local-only window -> My PCs (/#add) notes it On -> its own page's sheet (new) -> Ask to join (no confirm step after it, no second Pair) -> typed the ${asked!.digits.length} digits its own screen listed -> approved on the PC -> app -> listed as this device's own`);
 
       await a.goto(`${APP}/s/${pc1.id}/`);
@@ -784,40 +790,90 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
       await until(async () => (await pc1.pairings()).length === 0 && pc1.joined() && (await saved(b, pc1.id))?.enrollment === "complete", "Desk PC settled and this device recorded completion after the member's approval", 75_000);
       log9(`account join: Desk PC added 11 min ago, its window closed -> second device (390) signed in -> its launch went to Desk PC and asked to join by itself (plain wait, no tabs, sheet or list) -> showed ${shown.length} digits; the first device (another member, in Desk PC's app) got the prompt with 3 choices and picked them; Desk PC's own GET /api/relay/pairings = []; -> app`);
 
-      // the signed-in front page (My PCs) at both widths and themes, and the pairing dialog of its Add PC (the relay tab's
-      // Pair with a code), whose Escape closes it and leaves no sheet entry in the history
+      // the signed-in front page (My PCs) at both widths and themes, and the pairing dialog a code typed in its Add a PC's
+      // relay tab opens (a code that does not read: no lookup goes out), whose Escape closes it and leaves no sheet entry
       for (const [page, width] of [[a, 1440], [b, 390]] as const) {
         for (const theme of ["dark", "light"] as const) {
           await page.goto(`${APP}/`);
           await setTheme(page, theme);
           await pcLink(page, "Desk PC").waitFor();
           await capture(page, `front-${width}-${theme}`);
-          await front(page).locator('[data-action="add-pc"]').click();
+          // a wide screen keeps Add a PC open beside My PCs; a phone opens it from Add PC
+          const desk = width >= 1024;
+          if (desk) assert.equal(await front(page).locator('[data-view="add-pc"]').count(), 1, "Add a PC stands open beside My PCs at 1440");
+          else await front(page).locator('[data-action="add-pc"]').click();
+          // the code is one line that opens its field in place, where it is looked up: a code that does not read says so
+          // there and stays to correct (no lookup goes out for it), and Cancel closes the field
           await front(page).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
-          await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
-          await settledSheet(page);
-          await capture(page, `pair-dialog-${width}-${theme}`);
-          await page.keyboard.press("Escape");
-          await page.locator("[role=dialog]").waitFor({ state: "detached" });
-          // the dialog closes back to Add PC, whose Back is My PCs: with it goes Add PC's own history entry, after the dialog's
-          await front(page).locator('[data-view="add-pc"] .relay-add-back').click();
+          const codeField = front(page).locator('[data-code-form] input[name="code"]');
+          await codeField.fill("x");
+          await front(page).locator('[data-code-form] button[type="submit"]').click();
+          await front(page).locator('[data-code-form] [role="alert"]').waitFor();
+          assert.equal(await codeField.inputValue(), "x", `a code that does not read stays in its field to correct (${width}px)`);
+          await capture(page, `code-field-${width}-${theme}`);
+          await front(page).locator("[data-code-form]").getByRole("button", { name: "Cancel", exact: true }).click();
+          await front(page).locator("[data-code-form]").waitFor({ state: "detached" });
+          // back to My PCs: on a phone Add a PC's Back (and with it goes its own history entry); beside it at 1440 there is none
+          if (!desk) await front(page).locator('[data-view="add-pc"] .relay-add-back').click();
           await pcLink(page, "Desk PC").waitFor();
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
-          // the account is in the ⋮ menu at the top of My PCs: who is signed in, Manage account and Sign out
+          // the account is in the ⋮ menu at the top of My PCs: who is signed in, Manage account and Sign out, after
+          // Forget PCs (Desk PC is this device's own); a row carries no Forget of its own
           assert.equal(await front(page).locator('[data-action="manage-account"]').count(), 0, "no Manage account link on My PCs");
+          assert.equal(await front(page).locator('[data-action="forget-pc"]').count(), 0, `no row carries Forget (${width}px)`);
           await front(page).locator('[data-action="account-menu"]').click();
           const menu = page.locator(".row-menu, .row-sheet");
           await menu.getByText("Signed in with GitHub").waitFor();
-          assert.deepEqual(await menu.locator("[data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["manage-account", "sign-out"], `the account menu holds Manage account and Sign out (${width}px)`);
+          assert.deepEqual(await menu.locator("[data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["forget-pcs", "manage-account", "sign-out"], `the account menu holds Forget PCs, Manage account and Sign out (${width}px)`);
           await capture(page, `account-menu-${width}-${theme}`);
           await page.keyboard.press("Escape");
           await menu.waitFor({ state: "detached" });
           // a phone's menu is a sheet with a history entry: its Escape goes back, and the next goto must not cut that short
           await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
+          // Forget PCs: Forget in the chevron's place on Desk PC, whose row opens nothing, until Done
+          await front(page).locator('[data-action="account-menu"]').click();
+          await menu.locator('[data-item="forget-pcs"]').click();
+          await menu.waitFor({ state: "detached" });
+          await front(page).locator("li.my-pc", { hasText: "Desk PC" }).locator('[data-action="forget-pc"]').waitFor();
+          assert.equal(await front(page).locator("li.my-pc", { hasText: "Desk PC" }).locator("a.relay-add-saved-pc, .relay-shell-pc-glyph").count(), 0, `Desk PC opens nothing while PCs are being forgotten (${width}px)`);
+          await capture(page, `forget-pcs-${width}-${theme}`);
+          await front(page).locator('[data-action="forget-done"]').click();
+          await front(page).locator("li.my-pc", { hasText: "Desk PC" }).locator("a.relay-add-saved-pc").waitFor();
+          await page.waitForFunction(() => !Object.keys(history.state ?? {}).includes("ovis:sheet"));
         }
       }
+      // a short desktop window with more PCs than it can hold: each pane scrolls on its own under a mouse wheel, so Pair
+      // under an opened code field and the last PC stay within reach of a pointer
+      const extra = Array.from({ length: 14 }, (_, index) => ({ server_id: (index + 16).toString(16).repeat(16), server_public_key: "qa-extra-key", name: `QA PC ${index + 1}` }));
+      await a.setViewportSize({ width: 1024, height: 400 });
+      await seed(a, extra);
+      await a.goto(`${APP}/`);
+      await pcLink(a, "Desk PC").waitFor();
+      await pcLink(a, "QA PC 14").waitFor();
+      const listPane = front(a).locator('[data-view="my-pcs"]');
+      assert.ok(await listPane.evaluate((pane) => pane.scrollHeight > pane.clientHeight + 100), "My PCs is taller than the 1024x400 window, so its own pane has to scroll");
+      await front(a).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
+      const reachable = async (pane: Locator, target: Locator, what: string): Promise<void> => {
+        const box = await pane.boundingBox();
+        assert.ok(box !== null, `${what}: its pane is drawn`);
+        await a.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 120));
+        await a.mouse.wheel(0, 4_000);
+        await a.waitForFunction((element) => { const rect = element!.getBoundingClientRect(); return rect.top >= 0 && rect.bottom <= innerHeight; }, await target.elementHandle(), { timeout: 5_000 })
+          .catch(() => assert.fail(`${what} is out of reach at 1024x400: the wheel does not bring it into the window`));
+        await target.click({ trial: true });
+      };
+      await reachable(front(a).locator('[data-view="add-pc"]'), front(a).locator('[data-code-form] button[type="submit"]'), "Pair under the opened code field");
+      await reachable(listPane, front(a).locator(".relay-add-saved-pc").last(), "the last PC of 16 in My PCs");
+      assert.ok(await listPane.evaluate((pane) => pane.scrollTop > 0), "the wheel scrolled My PCs' own pane");
+      await capture(a, "short-window-1024x400");
+      await a.evaluate(async (ids) => {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open("ovis-relay", 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+        await new Promise<void>((resolve, reject) => { const tx = db.transaction("devices", "readwrite"); for (const id of ids) tx.objectStore("devices").delete(id); tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error); });
+        db.close();
+      }, extra.map((pc) => pc.server_id));
+      await a.setViewportSize({ width: 1440, height: 900 });
       assert.deepEqual([...A.errors, ...B.errors], [], "no page error on either device");
-      log9("front page: My PCs, its Add PC's pairing dialog and the account menu at 1440 and 390, dark and light; Escape closes the dialog and its history entry; page errors on both devices: none");
+      log9("front page: My PCs, its Add a PC's code field (a code that does not read stays to correct, Cancel closes it), the account menu (Forget PCs first) and Forget PCs' edit state at 1440 and 390, dark and light; at 1024x400 with 16 PCs My PCs scrolls on its own, and Pair and the last PC are reached with the wheel; page errors on both devices: none");
       keep("task-9-account.txt", `# relay-shell-browser-qa (n): the sign-in screen and Add a PC on ${APP} (routed to ${origin}), account service ${ACCOUNT_SERVICE} (shared/account-service-fake.ts), PCs on the Bun relay as ${RELAY}\n${lines.join("\n")}\n`);
     } finally {
       keep("task-9-console.txt", `${consoleLines.join("\n")}\n`);
@@ -1479,10 +1535,11 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
 
     {
       const shot19 = async (page: Page, name: string): Promise<void> => { if (evidence) await page.screenshot({ path: join(evidence, `task-19-${name}.png`) }); };
-      const skewPc = async (version: string, updates?: UpdateService) => {
+      /** `floor`: the oldest client it says it supports in WELCOME (server/relay/client-floor.ts), this checkout's servers only */
+      const skewPc = async (version: string, updates?: UpdateService, floor?: string) => {
         const dir = mkdtempSync(join(tmpdir(), "ovis-relay-skew-qa-"));
         const ready = deferred<void>();
-        const pcRelay = new RelayService({ stateDir: dir, relay: RELAY, serverVersion: version, connect: (url) => {
+        const pcRelay = new RelayService({ stateDir: dir, relay: RELAY, serverVersion: version, ...(floor ? { minSupportedClient: floor } : {}), connect: (url) => {
           const socket = new WebSocket(relayUrl(url));
           socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"sync"')) ready.resolve(); });
           return socket;
@@ -1598,6 +1655,98 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
         note(`same version: ${shellVersion} -> app directly`);
         await closeMarked(context);
       }
+      if (resolve(tree.dir) === resolve(repo)) {
+        // the phone app's own copy of the client: what the app sets at document start (lib/appShell.ts)
+        const bundled = (context: BrowserContext) => context.addInitScript(() => {
+          Object.defineProperty(window, "__ovisAppShell", { value: { bundled: true, platform: "android", appVersion: "1.1.0", build: 15 } });
+        });
+        {
+          const pc = await skewPc(newer, undefined, newer);
+          try {
+            const { context, page } = await open({ theme: "light" });
+            await bundled(context);
+            const loads: string[] = [];
+            page.on("load", () => loads.push(page.url()));
+            await pairFrom(page, pc.offer);
+            await state(page, "app-outdated").waitFor();
+            await page.getByRole("heading", { name: "Update the app" }).waitFor();
+            await page.getByText(`PC ${newer} needs a newer version of this app.`).waitFor();
+            const store = page.getByRole("link", { name: "Open the store" });
+            assert.equal(await store.getAttribute("href"), "https://play.google.com/store/apps/details?id=sh.ovis.app", "the store page of the app's platform");
+            assert.equal(await page.locator(".app").count(), 0, "no app for a PC that no longer supports this copy");
+            assert.equal(loads.length, 1, `the app's own copy never reloads for a newer PC (loads: ${JSON.stringify(loads)})`);
+            assert.equal(pc.devices.list(null).length, 1, "the pairing itself was made: the updated app opens the PC by it");
+            await shot19(page, "app-outdated-en");
+            await page.evaluate(() => sessionStorage.setItem("qa-language", "ko"));
+            await page.reload();
+            await state(page, "app-outdated").waitFor();
+            await page.getByRole("heading", { name: "앱을 업데이트하세요" }).waitFor();
+            await page.getByRole("link", { name: "스토어 열기" }).waitFor();
+            assert.equal(await page.locator(".app").count(), 0, "opened again, the PC is still held behind the update");
+            await shot19(page, "app-outdated-ko");
+            assert.equal(loads.length, 2, `only the reload this test made (loads: ${JSON.stringify(loads)})`);
+            await page.evaluate(() => sessionStorage.removeItem("qa-language"));
+            lines.push(`server ${newer} with floor ${newer}, the app's own copy at ${shellVersion}: paired, then Update the app (store link, Back), no app and no reload; again after a reload, in Korean`);
+            note(`app-outdated: WELCOME min_supported_client ${newer} > the app's own copy ${shellVersion} -> Update the app with the Google Play page; no app, no reload`);
+
+            const other = await skewPc(newer);
+            try {
+              await page.getByRole("button", { name: "뒤로" }).click();
+              await state(page, "app-outdated").waitFor({ state: "detached" });
+              const before = loads.length;
+              await pairFrom(page, other.offer);
+              await pairedStraightIn(page);
+              await inApp(page);
+              assert.equal(loads.length, before + 1, `a newer PC that still supports this copy opens with no reload (loads: ${JSON.stringify(loads)})`);
+              lines.push(`server ${newer} with the default floor, the same app copy: paired -> app, no reload`);
+              note(`app copy, newer PC: ${newer} > ${shellVersion} with the floor below it -> the app opens in this copy, no reload`);
+            } finally { await other.stop(); }
+            await closeMarked(context);
+          } finally { await pc.stop(); }
+        }
+        {
+          const { context, page } = await open();
+          const offer = await serverOffer("Same PC");
+          await pairFrom(page, offer);
+          await pairedStraightIn(page);
+          const scope = await page.evaluate(async () => (await navigator.serviceWorker.ready).scope);
+          assert.equal(scope, scopeOf(offer.server_id), "the hosted page registered its PC's worker");
+          await page.reload();
+          await inApp(page);
+          assert.ok(await page.evaluate(() => navigator.serviceWorker.controller !== null), "the hosted page is now served by its worker");
+          assert.ok((await page.evaluate(() => caches.keys())).length > 0, "the worker kept caches");
+          const marker = `kept-${randomBytes(4).toString("hex")}`;
+          await page.evaluate((marker) => localStorage.setItem("qa-retire-marker", marker), marker);
+          await bundled(context);
+          // the app opens the PC's page anew, a navigation: a page that is itself a reload never reloads (lib/shellMode.ts)
+          await page.goto("about:blank");
+          const loads: string[] = [];
+          page.on("load", () => loads.push(page.url()));
+          await page.goto(scopeOf(offer.server_id));
+          await inApp(page);
+          for (const deadline = Date.now() + 20_000; loads.length < 2;) {
+            if (Date.now() > deadline) throw new Error(`the page a worker served did not load again from the app (loads: ${JSON.stringify(loads)})`);
+            await Bun.sleep(50);
+          }
+          await inApp(page);
+          const after = await page.evaluate(async () => ({
+            registrations: (await navigator.serviceWorker.getRegistrations()).length,
+            controlled: navigator.serviceWorker.controller !== null,
+            marker: localStorage.getItem("qa-retire-marker"),
+          }));
+          assert.deepEqual(after, { registrations: 0, controlled: false, marker }, "no worker; web storage kept, the value written before it untouched");
+          assert.ok((await saved(page, offer.server_id))?.device_id, "the pairing in IndexedDB stays");
+          await page.reload();
+          await inApp(page);
+          assert.equal(loads.length, 3, `once gone, a later load loads once (loads: ${JSON.stringify(loads)})`);
+          assert.equal(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length), 0, "the app's own copy registers none");
+          const left = await page.evaluate(async () => (await caches.keys()).filter((name) => name !== "ovis-files-v1"));
+          assert.deepEqual(left, [], "no worker's cache is left");
+          lines.push("the app's own copy over a hosted page's worker: unregistered, caches deleted, the page loaded once more without it; pairing and settings kept; none registered after");
+          note("app copy: the hosted page's worker and caches removed on its first load, one more load from the app, the pairing kept, no worker registered again");
+          await closeMarked(context);
+        }
+      } else note("the app's own copy: skipped against another server tree");
       keep("task-19-prev.txt", `${lines.join("\n")}\n`);
     }
 

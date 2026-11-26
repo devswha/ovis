@@ -70,7 +70,7 @@ async function firstPcWithPhone(f: Pc, twoStep: boolean | null = null) {
   expect(f.stored().some(row => row.relay_public_key === key.spki)).toBe(false);
   const url = `https://account.test/v1/pcs/${serverId}`;
   const headers = { authorization: `Bearer ${token}` };
-  return { device, serverId, clock,
+  return { device, serverId, clock, token,
     remove: async () => { expect((await f.account.fetch(new Request(url, { method: "DELETE", headers }))).status).toBe(204); },
     relist: async () => {
       const answer = await f.account.fetch(new Request(url, { method: "PUT", headers, body: JSON.stringify({
@@ -923,7 +923,7 @@ test("listing confirmation: a join a member approves from afar makes no device w
 test("a snapshot whose listing cannot be confirmed still applies its blocks, and releases nothing", async () => {
   let offline = false;
   const f = await pc({ accountFetch: async (req, svc) => offline && pathOf(req) === "/v1/pc/complete" ? new Response(null, { status: 503 }) : svc.fetch(req) });
-  const { device, serverId } = await firstPcWithPhone(f);
+  const { device, serverId, token } = await firstPcWithPhone(f);
   const target = await phone();
   f.account.registerDevice("acct_1", target.spki, "Target");
   expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
@@ -931,7 +931,8 @@ test("a snapshot whose listing cannot be confirmed still applies its blocks, and
   f.account.registerDevice("acct_1", late.spki, "Late");
   const block = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2,
     signer: device.publicKey, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, device.keys.privateKey);
-  const filed = await f.account.fetch(new Request("https://account.test/v1/safety-records", { method: "POST", headers: { authorization: `Bearer ${f.account.issueToken("acct_1")}` }, body: JSON.stringify({ record: block }) }));
+  // sent by the sign-in that registered the phone's key, as the account service wants it
+  const filed = await f.account.fetch(new Request("https://account.test/v1/safety-records", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ record: block }) }));
   expect(filed.status).toBeLessThan(300);
   offline = true;
   expect(await f.app.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false, denials: 1 });
@@ -1564,6 +1565,8 @@ test("PADD-1: a Revoke all that finishes while the press waits on the account se
 
 test("first-PC exemption: the same sign-in may repeat its admit before the PC reads it, and gets the same admission", async () => {
   const f = await pc();
+  // an account service that asks a used account's admit for two-step, as until 2026-11-23
+  f.account.admitAsksTwoStep = true;
   await setUpFor(f, "acct_retry");
   const identity = f.app.context.services.relay.currentIdentity()!;
   const token = f.account.issueToken("acct_retry", { twoStep: null });

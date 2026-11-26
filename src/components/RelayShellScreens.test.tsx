@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act, create as createRenderer, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import {
@@ -14,6 +14,16 @@ import { CodeEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { relayFailureText } from "./relayFailureText.ts";
 import { translate, type Vars } from "../lib/i18n.ts";
+
+/** every tree a test draws, still mounted: the test's end unmounts each one, not only the ones it unmounted itself */
+const drawn = new Set<ReactTestRenderer>();
+const create = (...args: Parameters<typeof createRenderer>): ReactTestRenderer => {
+  const tree = createRenderer(...args);
+  const unmount = tree.unmount.bind(tree);
+  tree.unmount = () => { drawn.delete(tree); unmount(); };
+  drawn.add(tree);
+  return tree;
+};
 
 const none = () => {};
 const baseProps = (state: RelayShellProps["state"]): RelayShellProps => ({
@@ -103,7 +113,11 @@ describe("RelayShellScreens", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // every tree goes, then what its unmount left to run on a timer (a sheet leaving its history entry) runs while
+    // this window is still here
+    await act(async () => { for (const tree of [...drawn]) tree.unmount(); });
+    await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -204,6 +218,40 @@ describe("RelayShellScreens", () => {
       const inputAfter = renderer!.root.findByType("input");
       expect(inputAfter).toBe(inputBefore);
       expect(fieldMock.value).toBe("7K3QD-M2XHA");
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+    }
+  });
+
+  it("puts up Update the app with the store page of the app's platform, and no way into the PC", () => {
+    for (const [platform, page] of [["android", "https://play.google.com/store/apps/details?id=sh.ovis.app"], ["ios", "https://apps.apple.com/app/id6824664162"]] as const) {
+      const html = render(createElement(RelayShell, baseProps({ kind: "app-outdated", name: "Desk PC", platform })));
+      expect(html).toContain('data-relay-state="app-outdated"');
+      expect(html).toContain(">Update the app</h1>");
+      expect(html).toContain("Desk PC needs a newer version of this app.");
+      expect(html).toContain(`href="${page}"`);
+      expect(html).toContain(">Open the store</a>");
+      expect(html).toContain(">Back</button>");
+      expect(html).not.toContain("Try again");
+    }
+    const unknown = render(createElement(RelayShell, baseProps({ kind: "app-outdated", name: "Desk PC", platform: null })));
+    expect(unknown).not.toContain("Open the store");
+    expect(unknown).toContain(">Back</button>");
+  });
+
+  it("leaves Update the app for the front page by Cancel where no PC's page is open", async () => {
+    const cancelled: string[] = [];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(createElement(SettingsProvider, { children: createElement(RelayShellCardContent, {
+          props: { ...baseProps({ kind: "app-outdated", name: "Desk PC", platform: null }), scoped: false, onCancel: () => cancelled.push("cancel"), onBack: () => cancelled.push("back") },
+        }) }));
+      });
+      const back = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Back");
+      expect(back).toHaveLength(1);
+      await act(async () => { back[0]!.props.onClick(); });
+      expect(cancelled).toEqual(["cancel"]);
     } finally {
       await act(async () => { renderer?.unmount(); });
     }

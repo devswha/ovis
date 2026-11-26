@@ -15,7 +15,8 @@ const { AccountPcRows, NoAccountPcHint, signInOfAccount } = await import("./Acco
 
 const DESK = "a".repeat(32);
 const LAPTOP = "b".repeat(32);
-const pc = (server_id: string, name: string): MyPc => ({ server_id, name, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false });
+// a PC in the account (it took its place there), which this device is not paired with
+const pc = (server_id: string, name: string): MyPc => ({ server_id, name, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, joined: true, paired: false, linked: false });
 
 const NOW = Date.parse("2026-11-11T00:00:00Z");
 const gone = (server_id: string, name: string): MyPc => ({ ...pc(server_id, name), state: "offline", last_seen_at: "2026-11-01T00:00:00Z", added_at: "2026-10-01T00:00:00Z" });
@@ -128,5 +129,15 @@ describe("Settings → Devices and PCs", () => {
     expect(account).toBeLessThan(page.indexOf('<SettingsGroup section="devices">'));
     expect(account).toBeLessThan(fold);
     expect(page.slice(page.indexOf("const openAccount"), page.indexOf("const accountService"))).not.toContain("details");
+  });
+
+  it("closes Settings after a sign-in on Add a connection only where closedBySignIn says so", () => {
+    const source = readFileSync(new URL("./SettingsDialog.tsx", import.meta.url), "utf8");
+    const page = source.slice(source.indexOf("function DevicesPage("), source.indexOf("function UseRelayHere("));
+    const start = page.indexOf("onSignedIn:");
+    const signedIn = page.slice(start, page.indexOf("...(opensAll", start));
+    expect(signedIn).toContain("closedBySignIn(home, connectAsked)");
+    expect(page.match(/onHome\(\)/g)).toHaveLength(1);
+    expect(signedIn).toMatch(/=== "settings"\) onHome\(\)/);
   });
 });

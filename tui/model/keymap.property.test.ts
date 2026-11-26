@@ -4,7 +4,7 @@ import { decodeControl, decodeCsi, decodeSs3, type InputEvent, type Mods, typedK
 import { Framer } from "../input/framer.ts";
 import type { Effect } from "./effects.ts";
 import type { World } from "./focus.ts";
-import { helpRows, modeBar } from "./hints.ts";
+import { cleanConfigText, helpRows, modeBar } from "./hints.ts";
 import { buildKeymap, charChords, chordId, type KeyAction, type Keymap, keyChords, type Mode } from "./keymap.ts";
 import { initialState, type ModelState, reduce } from "./reduce.ts";
 
@@ -81,7 +81,7 @@ for (const read of [
 /** The ids the matching looks up for what a host sends for `chord`. */
 const matchIds = (chord: HerdrChord) => eventsFor(chord).flatMap((event) => matched(event).map(chordId));
 
-const INDEXED = new Set(["switch_tab", "switch_workspace", "focus_agent", "navigate_index"]);
+const INDEXED = new Set(["switch_tab", "switch_workspace", "focus_agent", "navigate_index", "copy_label"]);
 
 /** The chords a shown key text stands for, each with its index. */
 function chordsOf(text: string, action: string): { chord: HerdrChord; index: number | null; prefixed: boolean }[] {
@@ -179,7 +179,8 @@ function checkConfig(keys: Record<string, unknown>): void {
       for (const { chord, index, prefixed } of chordsOf(text, row.action)) {
         const level = row.mode === "terminal" ? (row.action === "lock" ? "direct" : prefixed ? "after" : "direct") : row.mode;
         for (const id of matchIds(chord)) shown.add(`${level}|${row.action}|${id}`);
-        const state = level === "after" ? at.armed : level === "direct" ? at.idle : at[row.mode as Exclude<Mode, "terminal">];
+        let state = level === "after" ? at.armed : level === "direct" ? at.idle : at[row.mode as Exclude<Mode, "terminal">];
+        if (state !== null && row.action === "copy_label") state = reduce(state, { type: "action", action: "copy_hints", at: AT }).state;
         check(state !== null, `${row.action} "${text}" is shown in a state the screen cannot reach`);
         check(fires(state, row.action, chord, index), `${row.mode} ${row.action} "${text}" is shown but no input event fires it`);
       }
@@ -263,14 +264,16 @@ function checkConfig(keys: Record<string, unknown>): void {
     }
   }
 
-  // the mode bar shows what the help shows for that state
-  const helpKeys = (filter: (mode: Mode, text: string) => boolean, strip: boolean) => helpRows(keymap).flatMap((row) => {
-    const keysShown = row.keys.filter((text) => filter(row.mode, text)).map((text) => strip ? text.replace(/^prefix\+/, "") : text);
-    return keysShown.length === 0 ? [] : [{ action: row.action, keys: keysShown }];
-  });
-  if (at.armed !== null) check(Bun.deepEquals(modeBar(at.armed).hints, helpKeys((mode, text) => mode === "terminal" && text.startsWith("prefix+"), true)), "the armed mode bar differs from the help");
-  for (const mode of ["navigate", "resize", "copy"] as const) check(Bun.deepEquals(modeBar(at[mode]!).hints, helpKeys((m) => m === mode, false)), `the ${mode} mode bar differs from the help`);
-  check(Bun.deepEquals(modeBar(at.idle!).hints[0]!.keys, keymap.prefixes.map((prefix) => prefix.text)), "the idle mode bar's prefixes differ from the table's");
+  // the mode bar: none in terminal mode; after the prefix the keys the help gives the prefix and the help itself
+  const afterPrefix = (action: KeyAction) => helpRows(keymap).find((row) => row.mode === "terminal" && row.action === action)?.keys.find((text) => text.startsWith("prefix+"))?.replace(/^prefix\+/, "") ?? "unset";
+  if (at.armed !== null) {
+    const bar = modeBar(at.armed);
+    check(bar?.mode === "prefix" && bar.hints[1]!.key === cleanConfigText(keymap.prefixes[0]?.text ?? "unset") && bar.hints[3]!.key === afterPrefix("help"), "the armed mode bar's keys differ from the table's");
+  }
+  for (const mode of ["navigate", "resize", "copy"] as const) check(modeBar(at[mode]!)?.mode === mode, `the ${mode} mode bar does not show its mode`);
+  const hintMode = at.copy && reduce(at.copy, { type: "action", action: "copy_hints", at: AT }).state;
+  check(hintMode !== null && modeBar(hintMode)?.mode === "copy", "the copy hint mode bar does not show copy mode");
+  check(modeBar(at.idle!) === null, "terminal mode shows a mode bar");
 
   // (b) and (d): the table is the resolver's minus the bindings it drops, and each drop has exactly one note; with no
   // prefix left, the one fallback its note names

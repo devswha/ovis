@@ -64,6 +64,8 @@ try {
           : { viewport: { width: 1280, height: 900 }, locale: "en-US", colorScheme: theme });
         try {
           await context.addInitScript((value) => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value })), theme);
+          // the demo's opening turn would finish the api agent on its own timer, and a resting agent folds under +N resting
+          await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
@@ -108,6 +110,26 @@ try {
             return badge.width > 0 && badge.left >= outer.left && badge.right <= outer.right && badge.top >= outer.top && badge.bottom <= outer.bottom;
           });
           assert.ok(inside, "the ring is drawn inside its row");
+          if (!phone) {
+            for (const target of [panes.api, panes.web]) {
+              const item = row(page, target);
+              await item.hover();
+              const clear = await item.evaluate((node) => {
+                const badge = node.querySelector(".context-count")!.getBoundingClientRect();
+                const button = node.querySelector(".agent-actions button")!.getBoundingClientRect();
+                const state = node.querySelector(".agent-row-state")!.getBoundingClientRect();
+                return {
+                  badgeWidth: badge.width,
+                  buttonWidth: button.width,
+                  noOverlap: badge.right <= button.left + 0.5,
+                  beforeState: Math.abs(button.right - state.left) <= 0.5,
+                };
+              });
+              assert.ok(clear.badgeWidth > 0 && clear.buttonWidth > 0 && clear.noOverlap && clear.beforeState,
+                `${label} (${target}): hover ⋯ sits beside the context ring without covering it (${JSON.stringify(clear)})`);
+            }
+            await page.mouse.move(1270, 890);
+          }
           if (evidence) {
             mkdirSync(evidence, { recursive: true });
             await page.locator(".agents-sidebar").screenshot({ path: join(evidence, `context-ring-${phone ? "390" : "1280"}-${theme}.png`) });
