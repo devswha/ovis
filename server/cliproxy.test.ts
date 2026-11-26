@@ -102,6 +102,24 @@ describe("CLIProxyAPI v8", () => {
     expect((await rows())["claude:cliproxy:claude-a.json"]).toEqual(["failed", "hub"]);
   });
 
+  it("keeps an account's last numbers through a later 429 or failure", async () => {
+    await configure();
+    const start = Date.now();
+    try {
+      setSystemTime(start);
+      const first = (await service.report()).find((entry) => entry.key === "claude:cliproxy:claude-a.json")!;
+      expect(first).toMatchObject({ problem: null, windows: [{ used_percent: 25 }, { used_percent: 55 }] });
+      fake.answers.set("a", { status_code: 429, body: "{}" });
+      setSystemTime(start + FRESH_MS);
+      const limited = (await service.report()).find((entry) => entry.key === "claude:cliproxy:claude-a.json");
+      expect(limited).toMatchObject({ problem: "rate_limited", windows: first.windows, checked_at: first.checked_at });
+      fake.answers.set("a", { status_code: 503, body: "{}" });
+      setSystemTime(start + 2 * FRESH_MS);
+      const failed = (await service.report()).find((entry) => entry.key === "claude:cliproxy:claude-a.json");
+      expect(failed).toMatchObject({ problem: "failed", failure: "upstream", windows: first.windows, checked_at: first.checked_at });
+    } finally { setSystemTime(); }
+  });
+
   it("lists no account turned off in the Hub, hidden or not, until it is turned on again", async () => {
     await configure();
     const keys = async () => (await service.report()).map((entry) => entry.key);

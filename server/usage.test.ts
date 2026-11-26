@@ -340,6 +340,55 @@ describe("providers", () => {
     expect(requests).toHaveLength(2);
   });
 
+  it("shows a status-line reading that comes during a 429's backoff, without asking the endpoint, and keeps the offer meanwhile", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 2 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    replies.set(CLAUDE_USAGE, { status: 429, headers: { "retry-after": "3600" } });
+    const service = new UsageService(context(), only("claude"));
+    expect((await service.report()).providers[0]).toMatchObject({ problem: "rate_limited", statusline_offer: true });
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers[0]).toMatchObject({ problem: "rate_limited", statusline_offer: true });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 37, resets_at: (NOW + HOUR) / 1000 } } });
+    utimesSync(path, new Date(now), new Date(now));
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers[0]).toMatchObject({ problem: null, windows: [{ used_percent: 37 }] });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("asks the endpoint over a capture whose window names no reset once it is minutes old", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 96 } } });
+    utimesSync(path, new Date(NOW - 30 * 60_000), new Date(NOW - 30 * 60_000));
+    replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 4 } } });
+    expect((await new UsageService(context(), only("claude")).report()).providers[0]?.windows[0]?.used_percent).toBe(4);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("reads again when a capture grows too old, and keeps what only the endpoint gives beside it", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 8 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    replies.set(CLAUDE_USAGE, { body: { seven_day: { utilization: 20, resets_at: new Date(NOW + 48 * HOUR).toISOString() }, seven_day_opus: { utilization: 100, resets_at: new Date(NOW + 48 * HOUR).toISOString() },
+      extra_usage: { is_enabled: true, monthly_limit: 2000, used_credits: 1321, utilization: 66, currency: "USD" } } });
+    const service = new UsageService(context(), only("claude"));
+    await service.report();
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { seven_day: { used_percentage: 17, resets_at: (NOW + 48 * HOUR) / 1000 } } });
+    now += FRESH_MS;
+    const taken = now - (6 * HOUR - 60_000);
+    utimesSync(path, new Date(taken), new Date(taken));
+    const [merged] = (await service.report()).providers;
+    expect(merged!.windows.map((window) => [window.scope, window.used_percent])).toEqual([[null, 17], ["Opus", 100]]);
+    expect(merged!.credits).toMatchObject({ kind: "spend", used: 13.21 });
+    expect(requests).toHaveLength(1);
+    // a minute later the capture is six hours old: no longer a reading, so the endpoint is asked though FRESH_MS has not passed
+    now += 61_000;
+    expect((await service.report()).providers[0]!.windows[0]!.used_percent).toBe(20);
+    expect(requests).toHaveLength(2);
+  });
+
   it("names what a failed Claude read ran into, and offers the status line for it and for a 429", async () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
     const read = async (reply: Reply) => {

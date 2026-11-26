@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CLIProxyStatus, ProviderUsage } from "../shared/protocol.ts";
+import type { CLIProxyStatus, ProviderUsage, UsageFailure } from "../shared/protocol.ts";
 import { isJsonObject } from "./http.ts";
 import { writePrivateState } from "./private-state.ts";
 import { failureOf, FRESH_MS, MIN_REFRESH_MS, systemUsageContext, USAGE_PROVIDERS, UsageFailed, UsageHttpError } from "./usage.ts";
@@ -609,8 +609,13 @@ export class CLIProxyService {
           return row;
         };
         if (unreadableIn(start, entry.key, identities) || unreadableIn(live, entry.key, identities)) return [Promise.resolve(held({ ...entry, problem: null }))];
+        // a read that fails keeps the numbers last read of this same account, named by what went wrong since
+        const previous = holder === null ? undefined : this.entries.find((row) => row.key === entry.key && this.holders.get(row) === holder && row.checked_at !== null);
+        const unread = (problem: ProviderUsage["problem"], failure?: UsageFailure): ProviderUsage => ({
+          ...entry, ...(previous ? { plan: previous.plan, windows: previous.windows, checked_at: previous.checked_at } : {}), problem, ...(failure ? { failure } : {}),
+        });
         // the hub set the account aside (its sign-in refused, or its limits reached): nothing is asked for it
-        if (file["unavailable"] === true) return [Promise.resolve(held({ ...entry, failure: "hub" }))];
+        if (file["unavailable"] === true) return [Promise.resolve(held(unread("failed", "hub")))];
         return [(async (): Promise<ProviderUsage> => {
           try {
             const reading = await provider.read({ ...ctx, fetch: async (url, init) => {
@@ -629,10 +634,9 @@ export class CLIProxyService {
             return reading ? { ...entry, plan: reading.plan, windows: reading.windows, problem: null, checked_at: new Date().toISOString() } : entry;
           } catch (error) {
             const status = error instanceof UsageHttpError ? error.status : null;
-            if (status === 401 || status === 403) return { ...entry, problem: "expired" };
-            if (status === 429) return { ...entry, problem: "rate_limited" };
-            const failure = failureOf(error);
-            return failure ? { ...entry, failure } : entry;
+            if (status === 401 || status === 403) return unread("expired");
+            if (status === 429) return unread("rate_limited");
+            return unread("failed", failureOf(error) ?? undefined);
           }
         })().then(held)];
       }));

@@ -21,7 +21,7 @@ import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSy
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { readStatusline, type StatuslinePayload } from "./statusline.ts";
+import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
 import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
@@ -388,7 +388,8 @@ const claude: UsageProvider = {
     const local = readStatusline(ctx.home, ctx.now());
     if (!local?.account || local.account.id !== signIn.account?.id) return null;
     const windows = claudeStatuslineWindows(local);
-    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current: !local.turnedOver } : null;
+    // a window that names no reset cannot be told to have started over: only a reading moments old counts for it
+    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current: !local.turnedOver && windows.every((window) => window.resets_at !== null) } : null;
   },
   async read(ctx, signIn) {
     const body = await requestJson(ctx, "https://api.anthropic.com/api/oauth/usage", {
@@ -1274,7 +1275,9 @@ export class UsageService {
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
       const current = entry !== undefined && entry.holder === holderOf(signIn) &&
-        (hidden || (now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
+        // a forced refresh reads a rate-limited one again too: its backoff keeps the endpoint unasked, and a status-line
+        // reading that came meanwhile can stand in
+        (hidden || (now < entry.nextAt && !forced));
       if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
@@ -1331,16 +1334,32 @@ export class UsageService {
     const local = provider.readLocal?.(this.ctx, signIn) ?? null;
     const fromLocal = (reading: Reading): Entry => {
       const resets = reading.windows.flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
+      // what the status line is not handed (a model's own week, extra usage) stays as the endpoint last gave it
+      const named = (window: UsageWindow) => reading.windows.some((own) => own.kind === window.kind && own.scope === window.scope);
+      const others = (kept?.windows ?? []).filter((window) => !named(window) && (window.resets_at === null || Date.parse(window.resets_at) > now));
+      // read again by the time the reading is too old to count (STALE_MS) or a window it names starts over
+      const until = [...resets, (reading.checkedAt ?? now) + STALE_MS].map((at) => at - now);
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
-        windows: reading.windows, problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...resets.map((reset) => reset - now)));
+        windows: [...reading.windows, ...others], ...extras(kept ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
     };
-    // the numbers Claude's own status line drew, while they still describe every window: no request, no token
-    if (local?.current) return fromLocal(local);
+    // the numbers Claude's own status line drew, while they still describe every window (or were drawn moments ago):
+    // no request, no token
+    if (local && (local.current || now - (local.checkedAt ?? now) < FRESH_MS)) return fromLocal(local);
+    // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
+    // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
+    // another one's status line is not wrapped
+    const offer = (): Pick<ProviderUsage, "statusline_offer"> => {
+      if (provider.id !== "claude") return {};
+      const statusline = this.statusline();
+      return statusline.supported && !statusline.installed && this.switchesConfigOf(found.source) ? { statusline_offer: true } : {};
+    };
     const fallback = local !== null && !(kept?.checked_at && Date.parse(kept.checked_at) > (local.checkedAt ?? now)) ? local : null;
     if (signIn.expiresAt !== null && signIn.expiresAt <= now) return fallback ? fromLocal(fallback) : keep("expired", signIn.plan ?? null, RETRY_MS);
     const backoff = found.account ? `${provider.id}:${found.account.id}` : `${provider.id}#${createHash("sha256").update(signIn.token).digest("hex")}`;
     const until = this.backoffs.get(backoff);
-    if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, until - now);
+    // looked at again within FRESH_MS though the backoff runs longer: a status-line reading may come meanwhile, and the
+    // backoff still keeps the endpoint unasked
+    if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, Math.min(until - now, FRESH_MS), offer());
     this.backoffs.delete(backoff);
     try {
       const reading = await provider.read(this.ctx, signIn);
@@ -1352,20 +1371,12 @@ export class UsageService {
       const wait = Math.max(RETRY_MS, error instanceof UsageHttpError ? error.retryAfterMs ?? FRESH_MS : 0);
       if (error instanceof UsageHttpError && error.status === 429) this.backoffs.set(backoff, now + wait);
       if (fallback) return fromLocal(fallback);
-      // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
-      // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
-      // another one's status line is not wrapped
-      const offer = (): Pick<ProviderUsage, "statusline_offer"> => {
-        if (provider.id !== "claude") return {};
-        const statusline = this.statusline();
-        return statusline.supported && !statusline.installed && this.switchesConfigOf(found.source) ? { statusline_offer: true } : {};
-      };
       if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403)) {
         // a 403 for a token that has not expired is a refusal, not an expiry: the status line can stand in
         const refused = error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
         return keep("expired", signIn.plan ?? null, RETRY_MS, refused ? offer() : {});
       }
-      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, wait, offer());
+      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, Math.min(wait, FRESH_MS), offer());
       const failure = failureOf(error);
       console.warn(`usage: ${provider.id} could not be read${failure ? ` (${failure})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
       return keep("failed", signIn.plan ?? null, RETRY_MS, { ...(failure ? { failure } : {}), ...offer() });
