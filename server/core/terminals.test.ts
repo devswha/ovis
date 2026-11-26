@@ -4,6 +4,7 @@ import { connectionData, send } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
+import { ATTACH_BATCH_MAX_MS, ATTACH_BATCH_QUIET_MS } from "./attach-batch.ts";
 import * as pty from "../pty/session.ts";
 import * as coreAttach from "../herdr-core/attach-session.ts";
 import type { CoreAttachOptions } from "../herdr-core/attach-session.ts";
@@ -437,6 +438,7 @@ async function resizableAttach() {
     attach, pty: attempts[0], core: coreAttaches[0], ended, writes,
     ready: (): boolean => frames.some((frame) => frame.type === "input-ready" && frame.ready !== false),
     painted: (): string => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []).join(""),
+    sent: (): string[] => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []),
     resize: (cols: number, rows: number) => registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols, rows }),
     [Symbol.dispose]() {
       jest.useRealTimers();
@@ -521,6 +523,7 @@ for (const onCore of [true, false]) {
       const setup = "\x1b[?1049h";
       pane.attach.onData(query + setup);
       if (onCore) {
+        jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
         expect(pane.painted()).toBe(query + setup);
         expect(pane.ready()).toBe(true);
         expect(pane.writes).toEqual([]);
@@ -543,6 +546,54 @@ for (const onCore of [true, false]) {
     }
   });
 }
+
+it("sends a herdr-core attach's history replay as one frame, so a viewer opens it at its newest rows, then output as it comes", async () => {
+  serveRuntime(HERDR_CORE);
+  try {
+    using pane = await resizableAttach();
+    for (const chunk of ["\x1b[3Jhistory 1\r\n", "history 2\r\n", "screen"]) {
+      pane.attach.onData(chunk);
+      jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS - 1);
+    }
+    expect(pane.ready()).toBe(true);
+    expect(pane.sent()).toEqual([]);
+    jest.advanceTimersByTime(1);
+    expect(pane.sent()).toEqual(["\x1b[3Jhistory 1\r\nhistory 2\r\nscreen"]);
+    pane.attach.onData("live");
+    expect(pane.sent().at(-1)).toBe("live");
+  } finally {
+    serveRuntime(null);
+  }
+});
+
+it("passes on a herdr-core attach's first output by its deadline though the program never goes quiet", async () => {
+  serveRuntime(HERDR_CORE);
+  try {
+    using pane = await resizableAttach();
+    let printed = 0;
+    while (pane.sent().length === 0) {
+      pane.attach.onData(`line ${printed++}\r\n`);
+      jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS - 1);
+    }
+    expect(printed).toBe(Math.ceil(ATTACH_BATCH_MAX_MS / (ATTACH_BATCH_QUIET_MS - 1)));
+    pane.attach.onData("next");
+    expect(pane.sent().at(-1)).toBe("next");
+  } finally {
+    serveRuntime(null);
+  }
+});
+
+it("passes on a herdr-core attach's held output before its exit", async () => {
+  serveRuntime(HERDR_CORE);
+  try {
+    using pane = await resizableAttach();
+    pane.attach.onData("last words");
+    pane.attach.onExit(0);
+    expect(pane.sent()).toEqual(["last words"]);
+  } finally {
+    serveRuntime(null);
+  }
+});
 
 it("attaches with herdr's own command where OVIS_RUNTIME names herdr-core but no runtime was started", async () => {
   const previous = process.env["OVIS_RUNTIME"];

@@ -1,5 +1,6 @@
 import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { AttachOutputTail, AttachStartupProbes, isTakeoverExit } from "../attach-output.ts";
+import { AttachBatch } from "./attach-batch.ts";
 import { checkedHerdrSocket, faultOf, HerdrError, type HerdrFailureView, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
 import { coreConnection, HC_MOVED, hcBin } from "../herdr-core/runtime.ts";
@@ -332,6 +333,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       let holding = false;
       let holdTimer: ReturnType<typeof setTimeout> | undefined;
       const probes = onCore ? null : new AttachStartupProbes();
+      const history = onCore ? new AttachBatch(forward) : null;
       const outputTail = new AttachOutputTail();
       let tailTimer: ReturnType<typeof setTimeout> | undefined;
       let tailDeadline: number | null = null;
@@ -424,6 +426,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       const ended = (code: number | null): void => {
         if (endedOnce) return;
         endedOnce = true;
+        history?.end();
         trying = false;
         clearTimeout(holdTimer);
         clearTimeout(tailTimer);
@@ -631,7 +634,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
               held = null;
               took();
             }
-            forward(data);
+            history!.push(data);
             return;
           }
           // herdr's startup queries are the bridge's to answer: never readiness, broadcast or replay
