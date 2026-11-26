@@ -49,9 +49,14 @@ export function signedInAccount(service: Pick<AccountService, "session" | "forSi
       // copy is waited for, and where none ends every row is marked, so the sidebar adds none by itself
       const listed = await bound.listPcs();
       await readPageList(session.account);
-      const pcs = myPcs(pagePcs(session.account, listed), [], { now: Date.now() }).flatMap((pc): AccountPcRow[] => pc.join === undefined
-        ? (pc.byList === true ? [{ server_id: pc.server_id, name: pc.name, server_public_key: "", relay: "", unreachable: true }] : [])
-        : [{ server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }), ...(pc.notInList === true ? { outside: true as const } : {}), ...(pc.byList === true ? { byList: true as const } : {}) }]);
+      const pcs = myPcs(pagePcs(session.account, listed), [], { now: Date.now() }).flatMap((pc): AccountPcRow[] => {
+        // A directory entry alone cannot accept another device. Its first Add has a separate request card.
+        // Rows outside a signed list are still shown as such, and cannot be added from the sidebar.
+        if (pc.joined !== true && pc.notInList !== true) return [];
+        return pc.join === undefined
+          ? (pc.byList === true ? [{ server_id: pc.server_id, name: pc.name, server_public_key: "", relay: "", unreachable: true }] : [])
+          : [{ server_id: pc.server_id, name: pc.name, ...pc.join, ...(pc.new_until == null ? {} : { new_until: pc.new_until }), ...(pc.notInList === true ? { outside: true as const } : {}), ...(pc.byList === true ? { byList: true as const } : {}) }];
+      });
       return { account: session.account, pcs };
     },
     async admit(serverId, label, key) {

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { SignedOutError, type AccountService } from "./service.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
+import { SignedOutError, type AccountService, type DirectoryPc } from "./service.ts";
 import type { AccountSession } from "./store.ts";
 import { signedInAccount } from "./useAccountPcs.ts";
 
@@ -10,18 +13,34 @@ afterEach(() => { if (saved) Object.defineProperty(globalThis, "navigator", save
 const session = (account: string, no: number): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `a-${no}`, refresh_token: `r-${no}`, expires_at: Date.now() + 3_600_000 });
 
 /** The account service as the sidebar uses it: one stored sign-in, and a bound service that refuses once another is stored. */
-function service(first: AccountSession) {
+function service(first: AccountSession, pcs: readonly DirectoryPc[] = []) {
   let stored: AccountSession | undefined = first;
   const admitted: string[] = [];
   const made = {
     session: async () => stored,
     forSignIn: (signIn: AccountSession) => ({
-      listPcs: async () => [],
+      listPcs: async () => pcs,
       postAdmission: async () => { if (stored?.refresh_token !== signIn.refresh_token) throw new SignedOutError(); admitted.push(signIn.refresh_token); },
     }),
   } as unknown as AccountService;
   return { made, admitted, store: (next: AccountSession | undefined) => { stored = next; } };
 }
+
+it("offers only PCs whose account join completed or whose mailbox has checked in", async () => {
+  const dir = (name: string, completed: boolean, seen: boolean): DirectoryPc => {
+    const key = generateKeyPair().publicKey;
+    const at = new Date().toISOString();
+    return {
+      server_id: deriveServerId(key), public_key: bytesToHex(key), relay: "wss://relay.ovis.sh",
+      label: name, added_at: at, last_seen_at: seen ? at : null, completed_at: completed ? at : null,
+      admitted_at: at, admitted_before_you: true, new_until: null,
+    };
+  };
+  const pcs = [dir("Only listed", false, false), dir("Completed", true, false), dir("Checked in", false, true)];
+  const source = signedInAccount(service(session("acct", 1), pcs).made);
+
+  expect((await source.list())?.pcs.map((pc) => pc.name).sort()).toEqual(["Checked in", "Completed"]);
+});
 
 it("admits under the sign-in stored now when the page signed in again to the account the list was read for", async () => {
   const account = service(session("acct", 1));
