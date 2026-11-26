@@ -355,10 +355,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const CODEX_LOOK_MS = 1000;
   const CODEX_RETRY_MS = 2000;
   const codexFailed = new Set<string>();
-  const codexLooked = new Map<string, { path: string; size: number } | null>();
+  const codexLooked = new Map<string, { path: string; size: number; running: boolean } | null>();
   const codexLooking = new Map<string, Promise<void>>();
   const codexRetryAt = new Map<string, number>();
   const codexTurns = new Map<string, number>();
+  let codexTurn = 0;
   let codexReads = 0;
   const codexFailedAt = new Map<string, number>();
   const codexWorking = (paneId: string, began: boolean): void => {
@@ -366,7 +367,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     codexFailedAt.delete(paneId);
     codexLooked.delete(paneId);
     codexRetryAt.delete(paneId);
-    if (began) codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
+    if (began) codexTurns.set(paneId, ++codexTurn); else codexTurns.delete(paneId);
   };
   /** herdr calls a Codex at rest DONE, idle or `unknown` (codex/unknown at rest, server/completion.ts) */
   const atRest = (status: AgentStatus): boolean => status === "done" || status === "idle" || status === "unknown";
@@ -458,9 +459,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     for (const pane of snapshot.panes) if (letta.runs(pane.pane_id) && (pane.agent !== "letta" || pane.agent_status !== "unknown")) letta.ended(pane.pane_id);
     await letta.refresh(snapshot.panes);
     for (const pane of snapshot.panes) {
-      if (pane.agent !== "codex") continue;
+      if ((agentRead.get(pane.pane_id) ?? 0) > read || (paneClosed.get(pane.pane_id) ?? 0) >= read) continue;
+      if (pane.agent !== "codex") {
+        if (codexTurns.has(pane.pane_id)) codexWorking(pane.pane_id, false);
+        continue;
+      }
       if (pane.agent_status === "working") { if ((codexFailedAt.get(pane.pane_id) ?? -1) < codexRead) codexWorking(pane.pane_id, true); }
-      else if ((pane.agent_status === "done" || (codexFailed.has(pane.pane_id) && atRest(pane.agent_status))) && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
+      else if (atRest(pane.agent_status) && (pane.agent_status === "done" || codexFailed.has(pane.pane_id)
+        || (codexLooked.get(pane.pane_id)?.running && completions.current(pane.pane_id) === "done"))
+        && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
     }
     for (const pane of snapshot.panes) if (pane.agent === "claude" && atRest(pane.agent_status) && claudeLooked.has(pane.pane_id)) claudeLate(pane.pane_id);
     const named = failedRests(letta.apply(gjc.apply(omo.apply(snapshot))));
@@ -491,6 +498,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
+      if (codexTurns.has(paneId)) codexWorking(paneId, false);
       agentNow.delete(paneId);
       agentRead.delete(paneId);
       agentExited.delete(paneId);
@@ -818,9 +826,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       alert(paneId, alertStatus(status, waits.waiting(paneId)));
     };
     if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId) && (codexTurns.get(paneId) ?? 0) > 0) {
+      const turn = codexTurns.get(paneId);
       let timer: ReturnType<typeof setTimeout> | undefined;
       void Promise.race([codexRest(paneId), new Promise<void>((resolve) => { timer = setTimeout(resolve, CODEX_LOOK_MS); })])
-        .then(() => { clearTimeout(timer); if (completions.current(paneId) === status) tell(); });
+        .then(() => { clearTimeout(timer); if (codexTurns.get(paneId) === turn && completions.current(paneId) === status) tell(); });
     } else tell();
     if (claudeFailedNow && status === "idle") claudeFailedAlert(paneId);
     if (claudeEnd === "answered") claudeLooked.delete(paneId);
@@ -916,26 +925,27 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (turn === 0 || known === null || (codexRetryAt.get(paneId) ?? 0) > Date.now()) return Promise.resolve();
     const looking = codexLooking.get(paneId);
     if (looking !== undefined) return looking;
-    const look = (found: { path: string; size: number } | null): void => { if ((codexTurns.get(paneId) ?? 0) === turn) codexLooked.set(paneId, found); };
-    const retry = (): null => { codexRetryAt.set(paneId, Date.now() + CODEX_RETRY_MS); return null; };
+    const current = (): boolean => codexTurns.get(paneId) === turn;
+    const retry = (): null => { if (current()) codexRetryAt.set(paneId, Date.now() + CODEX_RETRY_MS); return null; };
     const done = (async () => {
       let path = known?.path;
       let size = path === undefined ? -1 : await stat(path).then((file) => file.size, () => -1);
       if (size < 0) {
         const transcript = await paneTranscript(paneId, options.codexHome, snapshot).catch(() => undefined);
         if (transcript === undefined) return retry();
-        if (transcript.source !== "codex-transcript") { look(null); return null; }
+        if (transcript.source !== "codex-transcript") { if (current()) codexLooked.set(paneId, null); return null; }
         path = transcript.path;
         size = await stat(path).then((file) => file.size, () => -1);
         if (size < 0) return retry();
       } else if (known!.size === size) return null;
+      if (!current()) return null;
       codexRetryAt.delete(paneId);
       const end = await codexLastTurnEnd(path!);
-      look({ path: path!, size });
-      return (codexTurns.get(paneId) ?? 0) === turn ? end : null;
+      if (current()) codexLooked.set(paneId, { path: path!, size, running: end === "running" });
+      return end;
     })().then((end) => {
       // the server's word on this turn stands over a rollout read begun before it came
-      if (end !== null && end !== "running" && (codexTurns.get(paneId) ?? 0) === turn && servedTurnEnd(paneId) !== "failed") codexEnded(paneId, end);
+      if (end !== null && end !== "running" && current() && servedTurnEnd(paneId) !== "failed") codexEnded(paneId, end);
     }, () => undefined).finally(() => codexLooking.delete(paneId));
     codexLooking.set(paneId, done);
     return done;
@@ -973,7 +983,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     paneClosed.set(paneId, opencodeAgents.beginRead());
     codexWorking(paneId, false);
     claudeWorking(paneId, false);
-    codexTurns.delete(paneId);
     omo.ended(paneId);
     gjc.ended(paneId);
     letta.ended(paneId);

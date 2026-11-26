@@ -108,6 +108,43 @@ describe("a Codex pane whose turn ended in an error", () => {
     } finally { h.restore(); }
   });
 
+  it.each(["idle", "unknown"])("finds a late failure when the next snapshot still says %s (#3760)", async (rest) => {
+    const h = codexHub(`${failed.trimEnd().split("\n").slice(0, -1).join("\n")}\n`);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.herdrSays(pane(rest));
+      handlers.onStatus("w1:p1", rest === "idle" ? "idle" : "unknown", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("done");
+      writeFileSync(h.path, failed);
+      await h.snapshot();
+      await h.looked();
+      expect(h.last().status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { h.restore(); }
+  }, 2_000);
+
+  it("does not attribute a pending rollout read to a successor agent (#3760)", async () => {
+    const h = codexHub(failed);
+    const reading = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    h.read.mockImplementation(async () => {
+      reading.resolve();
+      await release.promise;
+      return "failed";
+    });
+    try {
+      handlers.onStatus("w1:p1", "working", "codex");
+      handlers.onStatus("w1:p1", "idle", "codex");
+      await reading.promise;
+      handlers.onStatus("w1:p1", "idle", "claude");
+      release.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(h.failures).toEqual([]);
+    } finally { release.resolve(); h.restore(); }
+  });
+
   it("lets no read begun while herdr still said working undo the failed rest, or tell it twice", async () => {
     const h = codexHub(failed);
     try {
