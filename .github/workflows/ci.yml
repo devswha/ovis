@@ -328,6 +328,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        if: needs.changes.outputs.draft != 'true'
         with:
           pty-host: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'restore' }}
