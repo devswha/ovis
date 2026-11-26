@@ -129,14 +129,18 @@ function namesAWrapper(command: string, tee: string, home: string): boolean {
   });
 }
 
+/** Claude Code's settings sources, as its `--setting-sources` names them. */
+export type SettingSource = "user" | "project" | "local";
+
 /**
  * The status line Claude Code draws from its settings files, without a `--settings` of its own: the first of the
  * project's local settings, its shared settings and the user's settings (in `configDir`) that sets one with a command,
- * as Claude ranks them. Null when none does, or for a file that cannot be read as JSON (Claude would not run it either).
- * Managed settings rank above a `--settings`, so what they set is drawn whatever this says.
+ * as Claude ranks them, of the `sources` it reads. Null when none does, or for a file that cannot be read as JSON (Claude
+ * would not run it either). Managed settings rank above a `--settings`, so what they set is drawn whatever this says.
  */
-export function configuredStatusLine(configDir: string, projectDir: string | null): Record<string, unknown> | null {
-  const files = [...(projectDir === null ? [] : [join(projectDir, ".claude", "settings.local.json"), join(projectDir, ".claude", "settings.json")]), join(configDir, "settings.json")];
+export function configuredStatusLine(configDir: string, projectDir: string, sources: readonly SettingSource[]): Record<string, unknown> | null {
+  const files = ([["local", join(projectDir, ".claude", "settings.local.json")], ["project", join(projectDir, ".claude", "settings.json")], ["user", join(configDir, "settings.json")]] as const)
+    .filter(([source]) => sources.includes(source)).map(([, file]) => file);
   for (const file of files) {
     let value: unknown;
     try { value = JSON.parse(readFileSync(file, "utf8")); } catch { continue; }

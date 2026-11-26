@@ -16,7 +16,7 @@ import { isAbsolute, join, relative } from "node:path";
 
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import { settingsFile } from "../claude-settings-file.ts";
-import { configuredStatusLine, shellQuote } from "../statusline-install.ts";
+import { configuredStatusLine, shellQuote, type SettingSource } from "../statusline-install.ts";
 import type { ApprovalAdapter, ApprovalDecision, ApprovalRequest } from "./hub.ts";
 
 /**
@@ -41,20 +41,32 @@ const COMMAND_EVENTS: Record<string, string | null> = { PostCompact: "manual", S
 const TOLD_TIMEOUT_S = 10;
 
 /**
- * The status line of a Claude Ovis starts, which hands Ovis the payload Claude gives its status line (its context
- * window, among the rest) and draws the user's own line (`approval-hook --statusline`, server/approvals/relay.ts). Only
- * where the user set one, in the `--settings` the launch had or in their settings: Claude 2.1.330 drops the `? for
- * shortcuts` hint from its footer under any status line, even one that prints nothing, and a pane must look as it would
- * without Ovis. Its other members (padding, refreshInterval) are the user's. Not on Windows, where the line is not run
- * through `sh`.
+ * The settings sources a launch's `--setting-sources` lets Claude read (all three without it), so the status line is
+ * looked for only where Claude would look.
  */
-function statusLineOf(given: unknown, hook: { command: string; args: string[] }): Record<string, unknown> | null {
+function settingSources(flags: readonly string[]): SettingSource[] {
+  const at = flags.findIndex((arg) => arg === "--setting-sources" || arg.startsWith("--setting-sources="));
+  if (at < 0) return ["user", "project", "local"];
+  const value = flags[at] === "--setting-sources" ? flags[at + 1] ?? "" : flags[at]!.slice("--setting-sources=".length);
+  return value.split(",").map((source) => source.trim()).filter((source): source is SettingSource => source === "user" || source === "project" || source === "local");
+}
+
+/**
+ * The status line of a Claude Ovis starts in `cwd`, which hands Ovis the payload Claude gives its status line (its
+ * context window, among the rest) and draws the user's own line (`approval-hook --statusline`, server/approvals/
+ * statusline.ts): the one Claude would draw, from the `--settings` the launch had or else the settings files it reads,
+ * with its own members (padding, refreshInterval). Only where the user set one: Claude 2.1.330 drops the `? for
+ * shortcuts` hint from its footer under any status line, even one that prints nothing, and a pane must look as it would
+ * without Ovis. None where the project folder is not known (its settings rank above the user's), nor on Windows, where
+ * the line is not run through `sh`.
+ */
+function statusLineOf(given: unknown, hook: { command: string; args: string[] }, sources: readonly SettingSource[], cwd: string | null): Record<string, unknown> | null {
   if (process.platform === "win32") return null;
-  const inline = typeof given === "object" && given !== null && !Array.isArray(given) && typeof (given as Record<string, unknown>)["command"] === "string"
-    && ((given as Record<string, unknown>)["command"] as string).trim() !== "" ? given as Record<string, unknown> : null;
-  const line = inline ?? configuredStatusLine(process.env["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude"), null);
+  const lineOf = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>)["command"] === "string" && ((value as Record<string, unknown>)["command"] as string).trim() !== "" ? value as Record<string, unknown> : null;
+  const line = lineOf(given) ?? (cwd === null ? null : configuredStatusLine(process.env["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude"), cwd, sources));
   if (line === null) return null;
-  const words = [hook.command, ...hook.args, "--statusline", ...(inline === null ? [] : ["--statusline-command", Buffer.from(inline["command"] as string).toString("base64")])];
+  const words = [hook.command, ...hook.args, "--statusline", "--statusline-command", Buffer.from(line["command"] as string).toString("base64")];
   return { ...line, type: "command", command: words.map(shellQuote).join(" ") };
 }
 
@@ -72,7 +84,7 @@ export const claudeApprovals: ApprovalAdapter = {
    * An inline JSON `--settings` the launch already has (the dialog's) goes into the hook's file with it; a `--settings`
    * that names a file, or more than one, could not be merged, and gets no hook.
    */
-  launchArgs(args, hook, dir) {
+  launchArgs(args, hook, dir, cwd = null) {
     const given = args ?? [];
     const end = given.indexOf("--");
     const flags = end < 0 ? given : given.slice(0, end);
@@ -104,7 +116,7 @@ export const claudeApprovals: ApprovalAdapter = {
     // told only of what is a command (command), and never waited on for long: the hub answers them at once
     const told = [{ ...relay[0]!, timeout: TOLD_TIMEOUT_S }];
     for (const [event, matcher] of Object.entries(COMMAND_EVENTS)) hooks[event] = [...theirs(event), { ...(matcher ? { matcher } : {}), hooks: told }];
-    const statusLine = statusLineOf(settings["statusLine"], hook);
+    const statusLine = statusLineOf(settings["statusLine"], hook, settingSources(flags), cwd);
     const path = settingsFile(JSON.stringify({ ...settings, hooks, ...(statusLine === null ? {} : { statusLine }) }), dir);
     if (replaced === null) return ["--settings", path, ...given];
     return [...given.slice(0, replaced.from), "--settings", path, ...given.slice(replaced.to)];

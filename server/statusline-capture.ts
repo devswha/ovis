@@ -57,7 +57,7 @@ function captureContext(body: Record<string, unknown>, on: () => boolean): void 
   } catch { /* A missing context must not prevent quota capture or the original status line. */ }
 }
 /** Claude's payload is a few kilobytes; one past this is not read whole, and the last reading stays. */
-const MAX_PAYLOAD_BYTES = 256 * 1024;
+export const MAX_PAYLOAD_BYTES = 256 * 1024;
 export async function payload(): Promise<string | null> {
   const chunks: Uint8Array[] = [];
   let size = 0;
