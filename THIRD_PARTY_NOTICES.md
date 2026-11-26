@@ -1573,8 +1573,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 `shared/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
 commit e95bed6, built for wasm32 by `scripts/ghostty-vt/build.sh` with `kitty-on-wasm.patch`
-(Kitty graphics on, file media off) and `screen-generation.patch` (a read-only screen generation
-for TUI selections), both beside the build script. It draws every terminal, under the
+(Kitty graphics on, file media off), `screen-generation.patch` (a read-only screen generation
+for TUI selections) and `erase-ends-wrap.patch` (an erase from a row's first column or a line feed onto it ends
+the soft wrap into it, as in xterm), all beside the build script. It draws every terminal, under the
 MIT License below. The module links two
 packages Ghostty's build brings in: [Wuffs](https://github.com/google/wuffs) 0.4.0-alpha.10, which decodes
 Kitty PNG pictures, under the MIT License (it is offered under MIT or Apache-2.0), and
@@ -1883,11 +1884,20 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ## xterm.js
 
-The browser terminal includes xterm.js 6.0.0 with a local composition-ordering and reset patch.
+The browser terminal uses libghostty and includes code adapted from xterm.js, not the xterm.js package.
+
+`src/lib/terminalInput` adapts the browser input code from xterm.js 6.0.0, including Ovis's
+local keyboard, mouse, and composition patches. The MIT license below applies to that port.
 xterm.js 6 includes parts of Visual Studio Code's base library (`src/vs/base`), under the same
 MIT license.
 The queue/watermark approach follows joonhoekim's MIT-licensed proposal in
 https://github.com/xtermjs/xterm.js/pull/6090.
+`src/lib/ghostty/selection.ts` adapts xterm.js 6's selection rules (selected text, word and line
+selection, from `SelectionService` and `Buffer`) to read libghostty's rows.
+`src/lib/terminalSelection/` adapts xterm.js 6.0.0's `SelectionService`, `SelectionModel`,
+mouse coordinates, `Linkifier` and `LinkProviderService` for Ovis under the same MIT license.
+`src/lib/terminalSelection/webLinks.ts` adapts the Web Links addon 0.12.0.
+`src/components/PaneTerminal.css` adapts the input helper, composition and cursor styles from xterm.js.
 
 Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
 Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)

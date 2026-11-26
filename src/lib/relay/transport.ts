@@ -303,11 +303,12 @@ export class RelayTransport implements Transport {
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
     this.found = undefined;
+    // what this carrier's PC selected is known before anyone is told it is up (followsList, version)
+    this.known = channel.server;
     this.routeChanged();
     channel.mux.onStreamAvailable = () => {
       for (const pending of this.waitingHttp) if (!pending.run()) break;
     };
-    this.known = channel.server;
     this.cancelRetry?.();
     this.cancelRetry = undefined;
     this.delay = 1000;
@@ -521,6 +522,9 @@ export class RelayTransport implements Transport {
   /** The PC's row this session signed in, or was admitted, as: the one its channel saved. Undefined while none is open. */
   get deviceId(): string | null | undefined { return this.channel?.device.device_id; }
 
+  /** The key this session signed in with (its row's public key, as a list spells a key). Undefined while none is open. */
+  get deviceKey(): string | undefined { return this.channel?.device.public_spki; }
+
   /** Whether the PC lets its account's devices in by the account's signed list alone: it selected ACCOUNT_LIST_FEATURE, which only a PC pinned to its list does. */
   get followsList(): boolean { return this.known?.features?.includes(ACCOUNT_LIST_FEATURE) === true; }
 
@@ -706,7 +710,6 @@ export class RelayTransport implements Transport {
         };
         if (request.signal.aborted) { aborted(); return; }
         if (upload) void stream.sendBody(upload).catch((error: unknown) => {
-          if (stream.stopped) return;
           stream.reset("internal_error");
           reject(request.signal.aborted ? request.signal.reason : new TypeError("Relay upload failed", { cause: error }));
         });

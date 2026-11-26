@@ -1435,7 +1435,9 @@ is sent. A list store that cannot be read stops it too. Where the list does not 
 nobody is signed out and the question says so; where only part of it went, it says how much.
 (Holding the sign-out itself to the head that was read needs the account service: a follow-up.) This device stays in the list with its key and its copy,
 signed out as before; signed out, the list opens no PC with that key, and signed in again on it,
-it is in the list at once, with no Allow.
+it is in the list at once, with no Allow. The question says so, under what it names, whether other
+devices go or none: "This device keeps its place in your account's list: signed in again here, it
+opens your PCs with no Allow. To take it out too, use Disconnect on its own row."
 
 **Signing out and leaving.** Disconnect, Sign out and Sign out every device carry what their
 question showed (the account, and the list and this device's key in it): where the sign-in stored by
@@ -1676,13 +1678,109 @@ from before this call lets only the status and the link through that session).
 **A PC the account names that the list does not hold yet.** Such a PC keeps its row, marked **Not
 in your account's list yet** ([PCs of a list account](#pcs-of-a-list-account)). In Settings, on a
 device that may write the list, the row offers **Add** when the PC posted its keys for the list,
-which a PC that runs a build with lists does by itself: the same number, confirmed at the PC, then
-**Add**, with no admission asked for, since the account lists the PC already. A PC that posted
-nothing runs a build from before lists, and its row says **Update Ovis on this PC**. A device that
+which a PC that runs a build with lists does once it is added from itself (`ovis add`, or **Add this
+PC to my account** in its window): the same number, confirmed at the PC, then **Add**, with no
+admission asked for, since the account lists the PC already. A PC that posted nothing was not added
+from itself yet, or runs a build from before lists, and its row says both: **Add it from that PC
+(ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first**. A device that
 only watches, or one that may not write the list, is offered neither.
 
 Either way the entry is signed through the one write loop of
 [Letting a device in](#letting-a-device-in), for the account and the list the card was shown for.
+
+### Invites
+
+A device that may write the list makes an invite for one PC
+([`src/lib/account/listInvite.ts`](../src/lib/account/listInvite.ts)) under **Add PC → Ovis relay →
+Invite a PC**: in the phone apps and in the hosted app in a browser alike, wherever the page holds
+the account's list. A device that may not write it is shown no such section. A PC's own page (the
+Mac and desktop apps, a browser on the PC's address) holds no copy of the list and makes no invite:
+on a PC that follows its account's list, signed in to that account, its **Add a connection → Ovis
+relay** says where one is made (**To give an agent an invite that adds a PC, make one in the Ovis
+phone app or at app.ovis.sh: Add PC → Ovis relay → Invite a PC.**). By default the PC that joins with the invite asks, and a device
+of the account presses **Add** for it. With **Let the PC join by itself** on, the PC joins with
+nobody asked, for a PC an agent sets up; the line under the switch then says so: **Anyone who gets
+this line in the next 15 minutes can add a PC to your account without asking you.**
+
+1. The device makes a key pair and writes the join line from it (`newInvite`). The line is the
+   only copy of the private key: it is shown once, on the device that made it, and never stored.
+2. The account service gets the public key (`POST /v1/pc-invites` `{ invite_key, auto }`), which
+   is what a PC redeems; the answer's `account` must be the device's own, or no line is shown.
+3. The device signs an `invite` entry for that key: `uses` 1, `exp` fourteen minutes from its own
+   clock as it reads now (never the account service's, nor the list's time or a floor it saved),
+   under the service's fifteen. A device whose clock reads behind the list's own time by more than
+   that makes nothing and places nothing: **This device's clock is behind. Check its date and
+   time, then make the invite again.**
+   For an invite a PC joins with by itself the current epoch's key is wrapped to the invite's key,
+   so the PC that joins reads the list's names.
+4. Only when the device's own copy shows the entry is the line shown, with the minutes left and
+   the one line an agent runs on the PC: the one-line installer, then `ovis join --invite-file
+   ~/ovis-invite.txt --account <the account's id>` (the installer takes no invite itself). Where the service or the list refuses, nothing is shown, the service's invite is ended
+   again, and the key pair is gone. Where the entry went out and whether it was placed is not
+   known (no answer and no read of the log since, or a request the service kept asking for
+   again), nothing is ended and the line is not dropped: the page keeps it in memory for its life
+   (also when the invites panel leaves the screen; never stored), says **It is not known yet
+   whether the invite was made**, and the next **Make an invite** settles the kept request
+   against the log first. The line is shown if the list holds the entry; otherwise the
+   service's invite is ended and a new invite is made.
+
+A sign-in older than ten minutes proves its registered key for that very invite, to the service's
+invite and to the entry alike (`ovis-pc-add/1`, purpose `invite` or `invite-auto`, the invite's
+key where a listing id stands otherwise).
+
+The list's invites are listed under it: **Expires in N min** while open, then **Expired**,
+**Used**, **Revoked** or **Ended**, for an hour after their end. **Used** is an invite a PC joined
+with, or one whose removal the device's copy shows in one request with a `pc` entry (right after
+it, by the same member at the same second: a person's Add of the PC that joined with it);
+**Revoked** a removal this device revoked, or one on its own before the invite's time was over;
+**Ended** any other end (its placer left, it went with a PC's removal). Whichever page ends an
+invite in the list (a Revoke, the Add of the PC that joined with it, also by the number) ends the
+account service's invite too: by the id this device kept when it made it (beside its pages, with
+the invite's public key and never the line), or, for an invite another device made, by the
+service's list of the account's invites where that names the key (`GET /v1/pc-invites` is
+documented without it today). **Revoke**
+signs a `remove` of the invite's key; where the kinds call for the
+next epoch after it (an invite a PC joins with by itself held the epoch's key), the same request
+opens it. A device whose clock reads more than ten minutes under the time it saved signs the
+removal alone. An invite past its `exp` is never shown as open, by the device's clock held
+against the latest time it saved and the list's own time: setting the clock back opens nothing
+again.
+
+**The PC that joined with an invite that waits for Add** shows on the card of a PC that asks, as
+**Add this PC to your account? (joined with your invite)**, and its **Add** needs no number
+([`listInvited.ts`](../src/lib/account/listInvited.ts)). The account service says which PC used an
+invite, and that is only its word. So the device goes by what the service cannot make: the PC's
+post carries the invite's public key and the line's own proof (`invite`, `invite_proof`): the
+line's signature over `lineProofBytes` for this account, the PC's id, this list and the PC's very
+card (see "What a line signs for a PC's card" above), checked with `verifyLineProof`. A redeem
+signature of the line is never taken for it: the account service chooses a redeem's challenge, so
+it could have the line sign the challenge of a card of its own. The device offers the one-press Add only where that proof holds, the card
+holds for this list and that relay key, and its own copy of the list holds the invite as open,
+placed by a member, waiting for Add, not past its `exp`. Add has the account admit the PC, signs
+its `pc` entry and ends the invite's key in the same request (in every branch of the write, an
+epoch opened for the entry included). The press is for the card that was shown: its very keys,
+card and invite, signed by the member key at the press; a post that changed since is drawn again
+for a press of its own. The invite is judged again on the state each signature is made on, so one
+that ran out, was revoked or lost its placer meanwhile signs nothing ("This request ran out"). The
+Add is done only once the device's own copy holds the PC by that card and the invite's end: where
+another Add placed the PC meanwhile, the invite's removal goes alone. Where the account admitted
+the PC and the list did not take the entry, the card stays with **Try again**, as for the number.
+The `invited` record is written before the card goes. A PC added by the number whose post carries
+the line's proof for that very card gets its invite ended beside its entry (only while the
+invite is still open: the number decides there). The card is drawn again when the list, the posts or the account's
+PCs change, when the page comes back to the front, and at the invite's end, and it says nothing
+of a sign-in code. On an account with a list, a card never falls back to the directory's
+admission alone. Any other post is a PC that asks, and gets the number.
+
+What that proves and what it does not: whoever holds the line can put a PC of theirs on the card,
+under a name they choose, for the invite's fifteen minutes, and the press is the person's check
+of that name. A lying account service cannot: it never has the line. An invite a PC joins with by
+itself needs no card at all.
+
+The PC posts `invite` and `invite_proof` with its keys when it joined by a line that waits for a
+person, and the repository's account service fake carries them. The one-press Add is offered only
+where a post carries them: for a PC, or an account service, that does not, a PC that joined with
+such an invite is added with the number, like any PC that asks.
 
 ### What a pinned PC asks of the app
 
@@ -1874,6 +1972,79 @@ How often the device asks while it gets no list:
   the service named another list or none and did not answer for the device's own log;
 - never while signed out.
 
+### Meeting a PC
+
+From the moment the app owns an authenticated session with a PC that selected the account's list
+for it (it is pinned to its list, [Two members meet](#two-members-meet)), whatever screen shows
+(Ready, an update the PC needs, the PC's own pages), the device and the PC say where they stand,
+and each hands the other what it lacks (`listGossip.ts`, over `POST /api/account/list/head` and
+`POST /api/account/list/page`):
+
+- at once, at every new carrier of the session (each is a new session at the PC, whose selected
+  features are known before anyone is told the carrier is up), whenever the device's own copy moves
+  its head, and every five minutes while the session is up. So a removal this device places
+  reaches the open PC at once, and one the account service withholds from a PC reaches it the next
+  time any device of the account that holds it opens that PC;
+- the device says its footing; what the PC answers of its own entries (`page`) is taken by the
+  device's follower as a page from a peer (`takeFromPeer`: never a full read, saved under the
+  account's lock as a round saves, and installed only while the sign-in it was begun under is the
+  stored one); what the PC asks for (`asks`) is handed over, once an exchange, following every
+  place the PC asks for next: a later one where it took a page in part, an earlier one where it
+  looks for where two histories part, until it asks for a place it was handed already. Where the PC
+  asks for a place past the footing it names beside it (an entry no member signed stands above its
+  footing, which the service may have shown it), the device hands from that footing, so a stranger's
+  entry keeps no removal from the PC. Entries are handed only to a PC this device's copy holds or
+  held; one that merely names the list's id is told where the device stands and handed nothing;
+- the session belongs to the account, the list and the member key its list key was taken for (a
+  session opened with the list key), or else of its first exchange: while the page's list is
+  another one (another account signed in on this browser in another tab, or this device back with
+  another key), the PC is told nothing of it, the app says nothing of that PC by it (no "removed
+  from the account"), and once that list is back the exchanges go on. This is looked at before
+  every call and after every answer: an exchange under way when the page's list changes stops
+  there, and takes or hands nothing more. So does one under way when its session is no longer the
+  app's, when the device stops comparing with that PC, or when a new carrier comes up: its call is
+  called off, and what a late answer brings is neither taken nor followed. The PC, for its part,
+  asks for entries from its footing, never from an entry no member signed above it;
+- where the device needs the PC's entries after another place (the PC holds more, another entry at
+  a place the device holds, or the device looks for where two histories part), it asks for them in
+  the head call (`asks`), and judges what comes back. The PC answers that read only to a key its
+  list lets in. Two histories that members signed raise the alarm on both sides; one that holds
+  only what its writer left behind raises it on the side that is shown the other;
+- at most 24 of the two calls a minute of one PC and the key it let the device in by, and a
+  `429`'s wait, kept for that PC and key in the browser's storage, so every tab and every
+  reopening of the PC draws on the same budget (the PC counts 30 by that key, in memory); a wait
+  lasts no longer than the PC asked for, whatever the wall clock does, and is armed in pieces of
+  five minutes at most. Where the browser's storage takes no write, the page goes by its own record
+  until it does. What a minute's calls or a `429` did not finish (the device's read, or the PC's
+  next asked place) goes on as soon as the budget has room again, from where it got to, while the
+  device stands where it stood;
+- one answer is read up to 512 KiB and for 10 seconds, an error's body included; a longer or a
+  slower one ends the exchange;
+- a page whose save fails is acted on from memory all the same (a removal stands at once), is not
+  said to be taken, and the next round writes it first. Where another tab saved meanwhile, what this
+  tab verified (the entries, an alarm) is taken into what that tab saved before anything is shown,
+  from the last entry a member signed in it: entries no member signed above it, which the service may
+  have shown that tab, give way to what this tab verified.
+
+**A PC the list puts out while it is open.** The device ends its own use of it at once (the PC's
+pages go, the session is no longer the app's, and an exchange of that use under way stops), and
+over the session it still has makes one attempt of three seconds at most to hand that PC its
+removal, then closes the session: it waits within those seconds for a carrier that is down, draws
+on what is left of the PC's own 30 calls of the minute, takes nothing from that PC (a PC known to be
+out raises no alarm here), and hands nothing where the page's list never held that PC, or stands
+for another account, list or member key by the time the carrier is back. The attempt can fail: the
+carrier stays down, the PC does not answer in time, or the minute's calls are spent. The PC then
+learns of its removal only from the account service, or from a member that hands it over at a later
+session; where the service withholds it too, the PC does not know it is out until then.
+
+**An alarm ends every write.** From the moment the device's copy holds an alarm, in this tab or as
+another tab of the device saved it, nothing it signs is kept or sent: an Allow that was waiting for
+a claim, a change that was waiting for an answer, a request kept from before.
+
+Nothing is asked of a PC that follows no list (it did not select the list for the session), and
+nothing by a device that follows none: an account with no list sends no request and no frame it
+did not send before. Entries prove themselves, so neither side is trusted for who is in.
+
 ### What the device says is wrong
 
 Each of these is a state the app can show. None takes anybody out of the copy, and none lets
@@ -1881,7 +2052,7 @@ anybody in.
 
 | state | when |
 |---|---|
-| `fork` | the account service showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found |
+| `fork` | the account service, or a PC this device met, showed another history that a member signed. Kept with the copy until a person resets it; from then on the device shows only whom it held when it was found, and signs nothing |
 | `stuck` | the account service shows another history under what the device holds, which no member signed |
 | `other_list` | the account service names another list for the account than the one the device follows |
 | `refused` | the log holds an entry that does not hold: a changed byte, a broken chain |
@@ -1891,6 +2062,22 @@ anybody in.
 
 A name that does not open for another reason (no wrap yet, a wrap that was spoiled on the way) is
 a device or a PC without a name, and no state: it is no evidence of anything.
+
+**The alarm on the screen.** A device whose copy holds `fork` says so in a part of its own at the
+top of Manage account's lists, and in one line on My PCs that points there: **Two different
+histories of your account's list were seen**. It names no device or PC as the cause. It says that
+the devices and PCs already in keep working and that this device lets nobody new in while it
+shows, and it gives the way back of [What a person does](#two-histories), one device or PC at a
+time: reset one (a device: Sign out, sign in again and be allowed from another device or PC, then
+remove its old listing there; a PC: Revoke all, then add it again), look at what it shows and
+remove what is not the person's at that same device or PC, check it is gone there before the next,
+and stop where two of them still differ. A device is reset by Sign out, not Disconnect: Disconnect
+signs the device's own removal first, which the alarm refuses, so it never finishes while the alarm
+stands, while Sign out signs nothing, ends the sign-in and forgets the key and the copy. The old key
+stays in the list until a member that shows no alarm removes it, as the one that let the device in
+again can; the message after that sign-out says so in the same order. A pinned PC says the same in its own words, in `reason` of
+`GET /api/account/list` and in the account's status, which `ovis status --json` shows as
+`list.reason`.
 
 ### What the app reads
 
@@ -1912,7 +2099,8 @@ once it goes by the list:
   on (the device's state, its keys, the epoch keys it holds), or none for a device that may not
   sign. A device of power `bound` has one only for the removal of its own key
   (`writer({ self: true })`), which the signers' rules let any signer write. `gossip()` and `pageAfter(place, limit)`: where the device stands, and its entries after a
-  place, for another member.
+  place, for another member. `compare(head)` and `takeFromPeer(page, read)`: how the device
+  stands against a PC's head, and a page that PC handed it ([Meeting a PC](#meeting-a-pc)).
 - `subscribe`, `sync` (one read now), `due` (when the next read is due), `forget` (a person's reset).
 
 ### Compared with the directory
@@ -2123,6 +2311,80 @@ the one that started the list is no reason not to follow: that device stays out 
 the pin, by whichever key it is in and whichever sign-in key vouches for it (`heldOut`), so
 neither a hand-over nor the pin undoes a removal.
 
+### On the PC (as built)
+
+- **The names of its rows.** A pinned PC makes its account rows from the list's devices, and names
+  each as the list sealed its name: it opens the `sealed` field of the entry that let the device in
+  with the epoch key it holds (the wrap a member gave it when it added the PC), once per entry, and
+  writes the rows again when one opened. It asks the account service for a wrap once per epoch in a
+  round, outside the follower's turn, so a read (a removal before a session opens) never waits for
+  the names; an entry the service could not be asked about is asked again a minute later, and one
+  whose epoch it holds no wrap of for this PC yet (a PC just added gets its wrap a moment later) after
+  the next read of the log, at most once a minute; a PC with no key of its own in the list asks for
+  none. A newcomer is given wraps of the epoch it comes in at and of later ones only, so a PC added
+  to the list later reads a name sealed in an earlier epoch as a device does: from the nearest later
+  wrap it holds, back through the links the list's `epoch` entries carry (walkBack), each key
+  checked against the commitment its own copy holds. What that walk cannot reach (a link missing or
+  that does not open) is final, with no error. A name it cannot open (a wrap that does not open,
+  none sealed) leaves the row named `Device`; a name a person gave a row
+  at the PC is kept, but a row a person named `Device` or cleared takes the list's name,
+  since the PC tells it from the placeholder by the label alone. Only the list's commits name rows:
+  a PC that follows no list keeps the labels its rows came in with. The names decide nothing, and
+  stay on the PC.
+- **The witness.** A device asks each PC it knows `GET /api/account/list/witness` in its own
+  session and gets the PC's `{ account, pinned, admits, removed }` (docs/account.md, "How long a key
+  has been let in").
+- **The naming.** `POST /api/account/list/name { naming: { list, key, signature }, vouches? }` from
+  the device's own session, signed in with its key (at most 16 vouches, and 30 calls a minute for
+  a key with the other session calls of the list). The PC keeps a vouch only between a device of
+  that list and a key it lets in through its account or holds a removal against, so links between
+  made-up keys take no place (`account-list-vouches.json`, at most 4 lists and 64 vouches a list;
+  the other lists' go at the pin, and the file goes with the binding and at an identity reset).
+  The cap never refuses a link whose sign-in key the PC holds a removal against: such a link keeps
+  a device out, and there are no more of them than the PC's own removals. Any other link past the
+  cap only says who is known here: a naming that would rest on one is refused (`lists_full`), and
+  after the pin it is left out with a line in the log, never dropped unsaid. It
+  reads that list's log with its own proof, at most once a list each 30 seconds, and follows only
+  on a read that reached the head the service shows. It asks `pinVerdict` with its own record and
+  the vouches it kept and was handed now. It answers `{ pinned: true, list }` or `{ pinned: false,
+  why, wait }`, `why` one of the refusals above or `naming_invalid`, `named_here`, `not_read`,
+  `lists_full`, `unavailable`, `wait` in seconds of its own clock. A PC that follows a list answers
+  `{ pinned: true, list }` with the list it follows, whatever was named: the device compares it.
+- **The account service's links.** Before it pins, the PC reads every link the account service
+  keeps for that list (`POST /v2/pc/list/links`, page after page), checks both signatures of each
+  itself, and keeps those that say something here, beside the vouches: no links read, no pin yet.
+  After the pin it reads them again at each read of the log while it holds a removal of its own,
+  so a device it put out by a sign-in key stays out by its member key whether or not it ever
+  handed that link. What is left: a service that withholds a link. On a yes it saves its copy, pinned
+  as `migrated`, and pins once the answer is out: the pin ends every session of the account's rows
+  with `auth_changed`, the naming one among them, and its final `WELCOME` then names the list.
+- **After the pin** a device that hands its place on keeps its row, a removal of the PC's own
+  follows the device (`heldOut`), and a carried key that never handed over is let in only while the
+  account service's snapshot names it (docs/account.md, "What a pinned PC does").
+- **Keys for a PC carried in as an endpoint.** It follows the list and lets its devices in, and
+  lets nobody in itself. A device the list holds to drive with full power asks it in its session,
+  `POST /api/account/list/card`, for `{ key, enc, card, endpoint, list }`; the PC posts its keys at
+  the account service in that call, and takes for itself only the `pc` entry that very device signs
+  (handed over `POST /api/account/list/page`, or read from the service). A device signs one with no
+  question only when it did something itself for that PC (`addedItself`). With nobody's evidence,
+  `ovis add` at the PC gives it its keys by the number, from the adder the person confirmed. An entry
+  with its keys that another device signed, and another key at its relay key, give it nothing to
+  sign with, and it says so. Such a PC (with no key at all, or keys from an entry another device
+  signed) says `needs_keys` in the list of `GET /api/account/status`, and `ovis add` there goes on to
+  that add instead of saying the PC is in an account already: it lists nothing and signs in to
+  nothing, and ends once the PC holds its keys. Its own window offers the same add as **Add this PC
+  to my account's list**, which opens no pairing window and lists nothing. Asked to approve a join, it
+  says that it came in as its account moved, never that it joined by an invite.
+- **The device's side of that number.** A device that may write the list reads the PCs that posted
+  their keys (`postedFor` in `src/lib/account/listPcs.ts`, which Manage account, My PCs and the join
+  card share) and tells three apart: a PC the list does not hold (Add adds it), a PC the move carried
+  in with no key (Add gives it its keys: any device that may write signs that `pc` entry once the
+  number was compared at the PC, as for any add by the number), and a PC the list holds by these very
+  keys under an entry another device signed. That PC takes its keys from that device alone, so the
+  others offer no Add and Manage account names the device that can finish it. Manage account marks a
+  keyless carried PC "No key of its own in your account's list yet", and says to run `ovis add` there
+  until it posts.
+
 ### What is left
 
 - **A key that stood for a day, unnoticed, on one PC the first device asks can be carried in, and
@@ -2146,6 +2408,91 @@ neither a hand-over nor the pin undoes a removal.
 - Nobody signs a removal because the account service lists a key as gone or blocked. A carried key
   that never handed over is let in by a PC that follows the list only while the snapshot also
   names it, which is local and undone when the snapshot names it again.
+
+### In the app
+
+The app does all of this by itself, behind the account service's migrate switch, and asks the
+person to press nothing ([`src/lib/account/listMigrate.ts`](../src/lib/account/listMigrate.ts),
+[`accountList.ts`](../src/lib/account/accountList.ts)). An account the switch does not name, and an
+account with no list, is asked and told exactly what it was before; a list that was not born by a
+move is never named to any PC.
+
+- **What a device knows.** Its PCs are its own record of them (`seenPcs.ts`: since when it held
+  sessions with each relay key, and what it did itself for it); `invited` counts as `added`. Each
+  PC's answer (`GET /api/account/list/witness` on a session) is kept in memory for this run of the
+  app only. While the device waits on its PCs, every session the app opens to one asks it, and the
+  PCs its record knows that have not answered are asked over a session of their own (a saved
+  pairing, or through the account with this sign-in's key, and once more with the key its list holds
+  where the PC lets the account's devices in by the list alone), each at most once in ten minutes.
+  This goes on while a PC's app is open, and on a clock as long as the device waits: after ten
+  minutes, or after the wait the plan told where that is longer. A plan that comes out the same each
+  round still asks again. The QA twin turns the ten minutes down with its waits, to 30 seconds at the
+  least. A PC that cannot be reached, or runs an Ovis that cannot answer, is silent.
+- **The start.** When `GET /v2/lists/mine` says `migrate` and the account is not new, a device whose
+  storage lasts (as for a genesis) plans from `GET /v1/devices`, the directory's PCs that are listed
+  as let in (a PC outside it is left out, as the service would refuse it), its record, this run's
+  answers, and the keys it holds a block or a removal against itself (every key a Not me of it
+  blocked, whatever the service answered, and the removals it signed). It notes its first try
+  (`tried`) and waits while the plan says so. Each carried device's entry seals the name its sign-in
+  registered (`GET /v1/devices`' `label`, where it sent one). It signs the birth once, keeps it in
+  its own store and sends it (`POST /v2/lists` with `entries`, the wraps of epoch 1 to itself, and
+  the link of its account key to its sign-in key) as it is until a 201 or its own list back in a
+  `409 list_exists`, or until the account service names that list. While a block of its own on a key
+  the birth carries has no answer from the account service, the birth waits: a frozen sign-in is
+  never carried. Where a key it blocked is carried in all the same (a block the service refused for
+  good, or a service that placed the birth anyway), the device's first write in the list it made
+  removes it (`not-me:<key>:<digest>`, kept and sent again like any write), and it signs nothing
+  else there before that is placed. The birth's own final refusal (a 400 or a 413 of its body, a
+  `403 not_carried`) drops it; the next plan comes an hour later at the soonest and leaves out the
+  key or the PC a `403 not_carried` named (its `index`: entry 0 is 0, then the devices, then the
+  PCs, in the plan's order). A refusal of the caller (a frozen sign-in, a route the service hides)
+  keeps it. Only a `409 list_exists` naming another list gives its list up for good, and a birth
+  kept for another list than the one the device follows is let go. It follows the list pinned under
+  the sign-in key that signed entry 0.
+- **A carried device.** A device that is not in the list the account service names reads its first
+  two entries, in one request (`limit=2`), on every account: entry 1's kind is the only word on
+  whether a move carried it in. A list whose entry 1 is `carried` is read whole without being kept.
+  Where the device's sign-in key was carried in, it asks `joinVerdict` with its record and this
+  run's answers; on a yes it pins as `carried`, saves the copy and, while no PC it knows says
+  against the list and its copy holds no fork alarm, hands its place to its account key
+  (`signRotation`, with the D11.2 link, one kept request per head). On a no that does not wait it
+  says why, names the PCs, and asks to be let in as any new device does; it asks again at every
+  round, so the refusal clears when its cause does. Until its hand-over is placed it signs in to a
+  PC of the list with its sign-in key, the key the list holds it by (R-E), never the way from
+  before.
+- **After a carried device joins** it keeps the PCs that agreed then or since (one agrees when it
+  follows the list, or has let the device that started it in for a day by both its counters), and
+  for three days asks the others again. Where a PC it knows says that it follows another list of the
+  account, holds a removal against the device that started the list, or (one that did not agree at
+  the join) lets that device in by none of its keys, it says so, names the list to no PC any more,
+  and offers the reset of its copy of the list (V4-6). After the reset it follows nothing, says why
+  while a PC says it, and asks to be let in as a new device does: a member's Allow hands it its own
+  place.
+- **A saved copy** is the device's own when it was pinned under its account key, or under a
+  sign-in key of its own that the list shows handed over to it, or under its sign-in key of now
+  while the list still holds that key.
+- **Sessions.** A device that follows its moved list names it (`POST /api/account/list/name`, the
+  naming by the key the list holds it by, with the vouch of the sign-in key the session signed in
+  with) to every PC of the account that takes no `account-list-1`: one its directory lists, or one
+  its own record knows. A PC this device is paired with opens by that pairing, whose naming the PC
+  does not take, so the device also names its list over a session of its own through the account
+  (this sign-in's key, where the directory lists the PC) to each PC its record knows that has not
+  said it follows the list, once in ten minutes at most, never over a pairing; a PC it reaches only
+  by a pairing learns the list from another device it knows, or from Add at the PC. It says
+  nothing of the move to any other PC. On a PC that does, a PC the
+  move left with no keys gets them from a member that did something itself for that PC: it takes the
+  PC's card over the session (`POST /api/account/list/card`), checks it for this list and that relay
+  key, signs the `pc` entry and hands the PC the page. Any other member leaves it to the number at
+  the PC.
+- **What the person sees.** Once, after the pin, who made the list and every device and PC it
+  brought in that is still in, never the device itself, and each device it put out again because
+  this device said Not me to it. Each PC has Not me, which removes it from the list after a
+  question; a device's Not me, and that of the device that made the list where it is another, is the
+  devices list's Remove. A carried device that refused the list says why. Nothing else.
+- **The QA twin** (`sh.ovis.app.previewqa`, which says so through `HerdrShell.appId`) multiplies
+  the durations the device hands over (`known`, `tried`) by `localStorage["ovis-migrate-qa-scale"]`
+  (1 to 86400). No other build reads it, and the pure constants never change; a PC scales its own
+  two counters itself.
 
 ## The vectors
 

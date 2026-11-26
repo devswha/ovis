@@ -1,11 +1,11 @@
-import type { IBuffer, IBufferCell } from "@xterm/xterm";
 import type { ScreenCell, ScreenRow, ScreenSnapshot } from "../../shared/input-row.ts";
+import type { ScreenCell as GridCell, ScreenRows } from "./terminalScreen.ts";
 
 export { inputRowState, readsInputRow, type InputRowRecognizer, type InputRowState, type ScreenCell, type ScreenRow, type ScreenSnapshot } from "../../shared/input-row.ts";
 
-export function readScreen(buffer: IBuffer, cols: number, rows: number): ScreenSnapshot {
+export function readScreen(buffer: ScreenRows, cols: number, rows: number): ScreenSnapshot {
   const out: ScreenRow[] = [];
-  let cell: IBufferCell | undefined;
+  let cell: GridCell | undefined;
   for (let y = 0; y < rows; y++) {
     const line = buffer.getLine(buffer.baseY + y);
     const cells: ScreenCell[] = [];
@@ -27,7 +27,7 @@ export function readScreen(buffer: IBuffer, cols: number, rows: number): ScreenS
   return { cols, rows: out };
 }
 
-export function readScreenLines(buffer: IBuffer, rows: number): string[] | null {
+export function readScreenLines(buffer: ScreenRows, rows: number): string[] | null {
   const lines: string[] = [];
   for (let y = 0; y < rows; y++) {
     const line = buffer.getLine(buffer.baseY + y);
@@ -48,7 +48,7 @@ export interface FrameStamp {
 }
 
 type GateParse = "ground" | "can" | "can-esc" | "can-csi" | "can-bang" | "esc" | "csi" | "bang" | "private";
-/** xterm 6 Params capacity (node_modules/@xterm/xterm/src/common/parser/Params.ts). */
+/** Maximum CSI parameters tracked by the frame gate. */
 const XTERM_MAX_CSI_PARAMS = 32;
 
 /**

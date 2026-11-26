@@ -90,6 +90,7 @@ import type { PiSessionReader } from "./pi-session-metadata.ts";
 import type { HerdrSidebarConfig } from "./herdr-sidebar.ts";
 import { readHerdrUi } from "./herdr-ui.ts";
 import { MachineRelay, type RelayReceiptIds } from "./machine-relay.ts";
+import { RECEIPT_RESUME_ID } from "../shared/receipt-resume.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { handlePluginRequest } from "./plugin-routes.ts";
 import type { createServer } from "./index.ts";
@@ -631,6 +632,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const deviceId = access.level === "full" ? access.device?.id : undefined;
     const recheck = portalRecheckMs === undefined ? {} : { recheckMs: portalRecheckMs };
     const machineId = url.searchParams.get("machine_id");
+    const browser = url.searchParams.get("receipt_resume_id");
+    const commandBrowser = browser && RECEIPT_RESUME_ID.test(browser) ? browser : undefined;
     if (machineId && machineId !== "local") {
       if (access.level === "none") return unauthorizedJson(access.reason);
       if (!machines?.endpoint(machineId)) return jsonResponse({ error: { code: "machine_offline", message: "This PC is disconnected" } }, 503);
@@ -641,7 +644,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       let relay: MachineRelay | undefined;
       try {
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
-          (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
+          (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser), commandBrowser);
         await relay.ready;
         const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" ? { open: true } : {}), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
         if (upgraded) return undefined;
@@ -672,7 +675,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       manager: machines, preferences, herdrSidebar, seen,
       pairings: machinePairingEvents(ctx, access, keys, joinViewer),
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, listJoins, deviceId, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
+    const managedReceipts = options.bridgeOnly === true && ctx.peer.kind !== "relay" && bearerMatches(request, token);
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, localRoster, listJoins, deviceId, commandBrowser, managedReceipts, ...(ctx.peer.kind === "relay" && ctx.peer.device.id === deviceId && ctx.peer.key ? { provedKey: ctx.peer.key } : {}), readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(ingress === undefined ? {} : { ingress }), ...recheck, ...(untilRefused ? { untilLock: untilRefused } : {}) }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }
@@ -1045,7 +1049,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const pluginResponse = await handlePluginRequest(request, url, pathname, options);
   if (pluginResponse) return pluginResponse;
 
-  const paneResponse = await handlePaneRequest(request, url, pathname, options);
+  const paneResponse = await handlePaneRequest(request, url, pathname, { ...options, approvals });
   if (paneResponse) return paneResponse;
 
   const tasksResponse = await handleTasksRequest(request, url, pathname, { omo, claudeAgents, opencodeAgents });
@@ -1093,7 +1097,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // (a new one would cancel the turn that person started), and one that cannot take it is named
       let children;
       try { children = await acp.childrenOf(body.pane_id); } catch (error) { return errorResponse(error); }
-      const tried = await Promise.allSettled(children.map(async child => {
+      const tried = await Promise.allSettled(children.ready.map(async child => {
         if (!child.client.connected || !child.client.session) throw new Error("not connected");
         if (child.client.holdGeneration !== null) return { pane_id: child.terminal, child_id: child.id, generation: child.client.holdGeneration };
         return { pane_id: child.terminal, child_id: child.id, generation: await child.client.hold(child.client.session) };
@@ -1101,7 +1105,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       return jsonResponse({
         ok: true,
         held: tried.flatMap(outcome => outcome.status === "fulfilled" ? [outcome.value] : []),
-        failed: children.filter((_, index) => tried[index]?.status === "rejected").map(child => child.terminal),
+        failed: [...children.opening, ...children.ready.filter((_, index) => tried[index]?.status === "rejected").map(child => child.terminal)],
       });
     }
     const child = acp.forPane(body.pane_id);
@@ -1117,7 +1121,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   if (pathname.startsWith("/api/pane/prompt")) {
     try {
-      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), onAnswered: () => options.telemetry?.tally("prompt_answers") });
+      const response = await handlePromptRequest(request, url, { serialize, codexHome: options.codexHome, claudeTranscript: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null, readOnly, openCodeStateDir: options.openCodeStateDir, openCodeState, approvals, ...(acp ? { acp } : {}), ...(options.telemetry ? { onAnswering: (paneId: string) => options.telemetry!.answering(paneId) } : {}) });
       if (response) return response;
     } catch (error) {
       return errorResponse(error);

@@ -8,7 +8,7 @@ import { RelayShell } from "../../components/RelayShell.tsx";
 import { accountDevice, withAccountDevice } from "../account/accountDevice.ts";
 import { nextOpenStep, openRefusalOf } from "../account/openPc.ts";
 import { isNewAccountPc, newPcs, type MyPc } from "../account/myPcs.ts";
-import { noteSession } from "../account/seenPcs.ts";
+import { noteSession, readSeenPcs } from "../account/seenPcs.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { sameSignIn, SignedOutError } from "../account/service.ts";
 import type { AccountProvider, AccountSession, PendingPairing } from "../account/store.ts";
@@ -33,6 +33,8 @@ import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ADMISSION_WAIT_MS, AddedToListError, ConsentChangedError, createAccountController, ListUnwritableError, PlacedInListError } from "./accountController.ts";
 import { keepShellAccount } from "../account/hostedSignIn.ts";
 import { AccountPcError } from "../account/join.ts";
+import { deliverOnce, gossipBudget, keepListGossip } from "../account/listGossip.ts";
+import type { WriteScope } from "../account/listRemoveDevice.ts";
 import { listRemovedLink, refusalOf } from "./firstLink.ts";
 import { CHECK_GAP_MS, createPcSweep } from "./pcSweep.ts";
 import type { PcFinding, ProbeTarget } from "./pcStatus.ts";
@@ -252,6 +254,31 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   document.addEventListener("click", pressedJoin, true);
   const iosTab = iosBrowserTab({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints ?? 0, standalone: "standalone" in navigator && navigator.standalone === true });
   let shell: Root | null = null, app: Root | null = null, transport: RelayTransport | null = null;
+  /** Ends the exchanges of the account's list with the PC whose session the shell owns (listGossip.ts), and which session that is. */
+  let stopGossip: (() => void) | null = null;
+  let gossipFor: RelayTransport | null = null;
+  /** The account whose list that session is compared for: the one its list key was taken for, or the page's list's when the shell took it. */
+  let gossipAccount: string | null = null;
+  /** What the list's calls to this PC by the key of this session draw on: shared with every tab and reopening of it. */
+  const budgetOf = (opened: RelayTransport, serverId: string) => gossipBudget(`${serverId}:${opened.deviceId ?? ""}`);
+  /**
+   * The PC and this device say where the account's list stands, from the moment the shell owns an authenticated session
+   * with that PC and for as long as it is the one it owns, whatever screen shows (the app, Ready, an update): only where
+   * the PC follows the list and this device does too, otherwise nothing is asked. `scope`: what the list key this
+   * session was opened with was taken for; the PC is told nothing while the page's list stands for anything else.
+   */
+  const gossipOver = (opened: RelayTransport, serverId: string, scope?: WriteScope): void => {
+    if (gossipFor === opened) return;
+    stopGossip?.();
+    gossipFor = opened;
+    gossipAccount = scope?.account ?? account.list?.view().account ?? null;
+    stopGossip = keepListGossip(opened, {
+      list: () => account.list, pc: serverId, live: () => transport === opened, budget: budgetOf(opened, serverId),
+      ...(scope === undefined ? {} : { scope: { account: scope.account, list: scope.list, key: scope.member } }),
+    });
+  };
+  /** What the list key read now is taken for (Attempt.listFor), to go with it. */
+  const listForNow = (): { readonly listFor?: WriteScope } => { const scope = account.listScope; return scope === null ? {} : { listFor: scope }; };
   let last: Attempt | null = null, opening: AbortController | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let shown: RelayShellState | null = null, sheetJoin: SheetJoin | null = null, codeOffer: RelayOffer | null = null;
@@ -362,15 +389,25 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const listMoved = (): void => {
     const open = transport, attempt = last;
     if (open === null || attempt === null || attempt.listOpen === undefined) return;
+    // the page's list is another account's now (signed in on this browser in another tab): it says nothing of this
+    // session's PC, which is neither put out nor handed anything for it
+    if (gossipFor === open && gossipAccount !== null && account.list?.view().account !== gossipAccount) return;
     const says = account.listSays(attempt.offer.server_id);
     if (says === "holds" || says === "unknown") return;
     transport = null;
     app?.unmount();
     app = null;
     updates.cancel();
+    // the list put the PC out: this device's own use of it ends here, and over the session it still has it tries once,
+    // for a few seconds at most, to hand that PC the removal before it closes it (for a PC the service withholds it from).
+    // The exchanges of the app's own use end first, one under way too: nothing a late answer of that PC brings is taken
+    if (says === "pc-out") {
+      if (gossipFor === open) { stopGossip?.(); stopGossip = null; gossipFor = null; }
+      void deliverOnce(open, account.list, budgetOf(open, attempt.offer.server_id), undefined, attempt.offer.server_id).finally(() => { open.close(); });
+      show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id });
+      return;
+    }
     open.close();
-    // the list put the PC out: the words of a PC that was removed from the account, and nothing is forgotten
-    if (says === "pc-out") { show({ kind: "failed", failure: "list-removed", name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id }); return; }
     // the list holds this device no more (or its time is over): as when the PC refuses its key, which it would
     void failed(new MuxProtocolError("auth_failed", "This device's copy of the account's list holds it no more"), attempt);
   };
@@ -542,15 +579,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       }
       // its join, asked at once (#16: the PC pops its approval by itself), on the PC's own page: never the PC's bare page,
       // which opens a PC the account lets this device into by itself (security-triage condition 3)
-      // no storage for the mark: no join a reload could open by the account's key; the front page draws the account instead
-      if (pc !== null && keepLaunchJoin(pc.server_id)) {
-        // a PC new in the account that no device is in yet takes the number its screen shows, as on its own page
-        const fresh = newPcs([pc], Date.now()).length > 0;
-        keepConfirmedPc(pc.server_id);
-        // its new window, kept for its own page, which opens it before it reads the account's PCs (#16, C3 pin 1)
-        newnessOf(pc.server_id);
-        left = true; joinPc(pc, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) }); return;
-      }
+      if (pc !== null && joinAtOnce(pc, true)) return;
       // signed in with nothing saved here and none of the account's PCs to ask: one line says to turn a PC on (#16)
       if (view?.kind === "signed-in") { waitingPc = true; waitingPcName = order[0]?.name ?? (view.pcs ?? []).find((row) => !row.paired)?.name ?? null; }
     }
@@ -630,8 +659,17 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (pc !== null && !moved) { leaveFor(pc); return; }
     await showFront();
   };
-  /** Ask again on the line that says this device was removed from its PC (#16): the front page's launch asks the account's PCs again. */
-  const askAgain = (): void => { keepFrontChosen(false); cancelAttempt(); keepLaunchAccount(); navigate("/"); };
+  /**
+   * Ask again on the line that says this device was removed from its PC (#16): that PC's join, asked at once on its own
+   * page, as a launch asks it. The front page's launch would open the PC by the account key again, which it just refused,
+   * and land here once more: it asks the account's PCs again only where the account's row offers no join for this one.
+   */
+  const askAgain = (): void => {
+    const pc = shown?.kind === "failed" && shown.server_id !== undefined ? rowToJoin(shown.server_id) : undefined;
+    cancelAttempt();
+    if (pc !== undefined && joinAtOnce(pc)) return;
+    keepFrontChosen(false); keepLaunchAccount(); navigate("/");
+  };
   /** Check again on the line that says to turn a PC on: the sign-in's launch once more, over the account's PCs as read now. */
   const waitAgain = async (): Promise<void> => {
     if (left || !frontUp()) return;
@@ -670,6 +708,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     window.dispatchEvent(new Event(PAGE_LEAVING_EVENT));
     replace(serverScopePath(pc));
   };
+  /**
+   * #16: `pc`'s join, asked at once on its own page, where the PC pops its approval by itself. False, with nothing done,
+   * where there is no storage for its mark: no join a reload could open by the account's key. `leaving`: a launch sends
+   * the front page to it.
+   */
+  const joinAtOnce = (pc: MyPc, leaving = false): boolean => {
+    if (!keepLaunchJoin(pc.server_id)) return false;
+    // a PC new in the account that no device is in yet takes the number its screen shows, as on its own page
+    const fresh = newPcs([pc], Date.now()).length > 0;
+    keepConfirmedPc(pc.server_id);
+    // its new window, kept for its own page, which opens it before it reads the account's PCs (#16, C3 pin 1)
+    newnessOf(pc.server_id);
+    if (leaving) left = true;
+    joinPc(pc, { sheet: fresh ? "new" : "join", alone: true, ...(fresh ? { typed: true } : {}) });
+    return true;
+  };
   const joinPc = (pc: Pick<MyPc, "server_id" | "join"> & { readonly name?: string }, options: { typed?: boolean; sheet?: "new" | "join"; alone?: true } = {}): void => {
     if (!pc.join) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, ...pc.join, ...(pc.name === undefined ? {} : { name: pc.name }) }, window.location.origin));
@@ -705,7 +759,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // no list refuses that (AccountListUnsupportedError), and the way from before is tried (failed). A PC the list
     // does not hold is opened the way from before, and says so itself where it follows the list all the same (failed).
     const listKey = account.listHolds(pc.server_id) ? account.listKey : null;
-    if (listKey !== null) return { offer, code: false, paired: true, listOpen: listKey, ...(fresh ? { freshPc: true as const } : {}) };
+    if (listKey !== null) return { offer, code: false, paired: true, listOpen: listKey, ...listForNow(), ...(fresh ? { freshPc: true as const } : {}) };
     const openKey = account.openKey;
     if (pc.accountOpen !== true || openKey === null) return null;
     return { offer, code: false, paired: true, accountOpen: openKey, ...(fresh ? { freshPc: true as const } : {}) };
@@ -721,9 +775,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const open = pc !== undefined && (isNewAccountPc(pc, Date.now()) || pc.notInList === true) ? accountOpenOf(pc) : null;
     return open === null ? null : { ...open, pressed: true };
   };
+  /** The PC's relay key as this device's record of its PCs names it (account/seenPcs.ts). */
+  const endpointOf = (offer: RelayOffer): string => Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  /** This device held a session with the PC of `offer` while signed in to `account`, by its own record of its PCs. */
+  const letInBefore = (account: string, offer: RelayOffer): boolean => {
+    try { return readSeenPcs(account).pcs[endpointOf(offer)]?.since !== undefined; } catch { return false; }
+  };
   /**
    * This device's own record of the PCs it held sessions with (account/seenPcs.ts): the PC just let it in, on a
-   * channel bound to that PC's relay key, while signed in. It only records; nothing waits for it or decides by it.
+   * channel bound to that PC's relay key, while signed in. Nothing waits for it; a refusal reads it (letInBefore).
    */
   const noteAdmitted = async (attempt: Attempt): Promise<void> => {
     try {
@@ -733,7 +793,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       // someone else since gets nothing of this act. A session with no such act goes to whoever is signed in.
       const signedIn = attempt.recordFor ?? await account.storedAccount();
       if (signedIn === undefined) return;
-      const endpoint = Array.from(importPublicKey(attempt.offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const endpoint = endpointOf(attempt.offer);
       // what this device did itself here: a pairing it just made at the PC, by a QR code of that PC for the account
       // (`added`), or otherwise (a code typed here, the digits, a code for this device alone: `paired`); nothing, where
       // it opened a PC it held or was shown
@@ -762,7 +822,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // (only while the list still holds that PC: one it put out meanwhile is not opened the way from before by itself)
     if (attempt.listOpen !== undefined && error instanceof AccountListUnsupportedError && !attempt.retriedListOpen && account.listHolds(attempt.offer.server_id)) {
       const openKey = account.openKey;
-      const { listOpen: _key, ...rest } = attempt;
+      const { listOpen: _key, listFor: _scope, ...rest } = attempt;
       if (openKey !== null) { await connect({ ...rest, accountOpen: openKey, retriedListOpen: true }); return; }
     }
     if (attempt.listOpen === undefined && error instanceof MuxProtocolError && error.code === "account_list_required" && !attempt.retriedListOpen) {
@@ -770,7 +830,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (last !== attempt) return;
       const listKey = account.listKey;
       const { accountOpen: _key, ...rest } = attempt;
-      if (listKey !== null) { await connect({ ...rest, listOpen: listKey, retriedListOpen: true }); return; }
+      if (listKey !== null) { await connect({ ...rest, listOpen: listKey, ...listForNow(), retriedListOpen: true }); return; }
       // A pairing of a device with no list to answer with (no account here, or an account that keeps none) is told by
       // this what `auth_failed` tells it: the PC holds that pairing no more. It is read as that, and never leads to a
       // join. (A sign-in through the account that is not let in asks to join, as before.)
@@ -778,8 +838,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }
     const refusal = attempt.accountOpen === undefined && attempt.listOpen === undefined ? null : openRefusalOf(error);
     // a PC answers a key it does not list with a bare auth_failed (server/relay/session.ts): after a press on a new PC's
-    // sheet, that is the account's way refused too, and the join follows; this device was never in, so nothing is removed
-    const unlisted = attempt.pressed === true && error instanceof MuxProtocolError && error.code === "auth_failed";
+    // sheet, that is the account's way refused too, and the join follows; this device was never in, so nothing is removed.
+    // So is it from a PC that never let this device in under its account (a key the account service does not count as
+    // the account's, such as a sign-in without two-step): only one that did says it removed this device
+    const unlisted = error instanceof MuxProtocolError && error.code === "auth_failed"
+      && (attempt.pressed === true || (attempt.accountOpen !== undefined && !letInBefore(attempt.accountOpen.account, attempt.offer)));
     // a list key the PC does not hold, or holds no more, is `auth_failed` too: the device is not in that PC's list, and
     // the way in is to be let in again (the join)
     const notInList = attempt.listOpen !== undefined && (error instanceof AccountListUnsupportedError || (error instanceof MuxProtocolError && (error.code === "auth_failed" || error.code === "account_list_required")));
@@ -991,7 +1054,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const { code: _spent, ...offer } = attempt.offer;
       if (entry.offer !== null) entry = { ...entry, offer: null };
       const key = taken ? account.listKey : null;
-      if (key !== null) { await connect({ offer, code: false, paired: true, listOpen: key }); return; }
+      if (key !== null) { await connect({ offer, code: false, paired: true, listOpen: key, ...listForNow() }); return; }
       // the list is not read here yet: the front page, where the PC has its row and a tap opens it
       cancelAttempt();
       void showFront();
@@ -1001,6 +1064,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // forgotten. Not read from the store again, where another tab may have saved a newer pairing of this PC since
     attempt.row = opened.deviceId ?? null;
     void noteAdmitted(attempt);
+    // the move of an account that was in use onto its list asks this PC, or names the list to it (account/listMigrate.ts)
+    void account.sessionOpened(opened, attempt.offer.server_public_key).catch((error: unknown) => console.info("Ovis: this session said nothing for the move onto the account's list", error instanceof Error ? error.name : error));
     opening = null;
     comparison = null;
     markRemovedPc(attempt.offer.server_id, null);
@@ -1011,10 +1076,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(attempt.row === undefined ? {} : { row: attempt.row }), ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}), ...(attempt.recordFor === undefined ? {} : { recordFor: attempt.recordFor }), ...(attempt.accountOpen ? { accountOpen: attempt.accountOpen } : {}), ...(attempt.retriedAccountOpen ? { retriedAccountOpen: true } : {}),
       // which key this session signed in with stays with it: a refusal at a later reconnect is read by that. That the
       // other key was tried once on the way here ends with this sign-in: a PC that pins later is asked once more
-      ...(attempt.listOpen ? { listOpen: attempt.listOpen } : {}) };
+      ...(attempt.listOpen ? { listOpen: attempt.listOpen, ...(attempt.listFor ? { listFor: attempt.listFor } : {}) } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
+    gossipOver(opened, saved.server_id, enrolled.listOpen === undefined ? undefined : enrolled.listFor);
     await updates.admit(opened, enrolled);
   };
 
@@ -1075,6 +1141,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     keepDeviceOnlyPc(null);
     keepConfirmedSignIn(null);
     setTransport(opened);
+    gossipOver(opened, attempt.offer.server_id, attempt.listOpen === undefined ? undefined : attempt.listFor);
     shell?.unmount(); shell = null;
     app = mount.renderApp(); account.armRefresh();
     registerPending(attempt.offer.server_id);
@@ -1145,7 +1212,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         const key = account.listKey;
         const { code: _spent, ...offer } = attempt.offer;
         if (transport === opened) transport = null;
-        if (key !== null) { void connect({ offer, code: false, paired: true, listOpen: key }); return; }
+        if (key !== null) { void connect({ offer, code: false, paired: true, listOpen: key, ...listForNow() }); return; }
         // the list is not read on this page yet: the front page, where the PC has its row and a tap opens it
         cancelAttempt();
         void showFront();

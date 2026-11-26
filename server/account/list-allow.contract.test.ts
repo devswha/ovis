@@ -4,7 +4,7 @@
  * that lets the device in with its own list key. A PC that follows no list, and a join that brings no card, are let in
  * as before.
  */
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
 import { join as pathJoin } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -13,7 +13,7 @@ import { openSealed, openWrap, wrapFromText } from "../../shared/account-list-se
 import { readKind, readNames } from "../../shared/account-list.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
-import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_LISTING_ERRORS, FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { ACCOUNT_LIST_ALLOW_FILE, LIST_ALLOW_MS, LIST_MEMBER_WAIT_MS } from "./list-follow.ts";
@@ -77,6 +77,30 @@ async function allowingPc(first?: (account: TestList) => Promise<void>) {
 }
 
 type Bound = Awaited<ReturnType<typeof boundPc>>;
+
+async function memberReadClock(run: (clock: { readonly now: () => number; readonly advanceTo: (ms: number) => Promise<void> }) => Promise<void>) {
+  let elapsed = 0;
+  const immediate = setImmediate;
+  const clock = spyOn(performance, "now").mockImplementation(() => 1_000 + elapsed);
+  jest.useFakeTimers();
+  try {
+    await run({ now: () => elapsed, advanceTo: async (ms) => {
+      await new Promise<void>((resolve) => immediate(resolve));
+      // Let each look and the account response settle before advancing the next timer.
+      while (elapsed < ms) {
+        const step = Math.min(100, ms - elapsed);
+        elapsed += step;
+        jest.advanceTimersByTime(step);
+        await new Promise<void>((resolve) => immediate(resolve));
+      }
+    } });
+  } finally {
+    jest.useRealTimers();
+    clock.mockRestore();
+  }
+}
+
+const logLimited = (seconds: number) => Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": String(seconds) } });
 
 /** The new device's join: its admission, then PAIR_REQUEST with the account intent, with its card where it says so. */
 async function join(made: Bound, device: ListMember, options: { card?: { enc: string; card: string }; features?: readonly string[];
@@ -315,6 +339,43 @@ describe("a PC that a person added lets a new device into the list from its own 
   });
 });
 
+describe("a join from an app that knows no signed list, on a pinned PC", () => {
+  test("is marked to this PC's own window and terminal as one it cannot let in: the app offered no part of the list", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    // as an Ovis older than 0.5.10 asks: the account intent, and nothing of the list
+    await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
+    expect(await ownJoin(made)).toMatchObject({ list_unknown: true });
+    expect((await ownJoin(made)).list).toBeUndefined();
+  });
+
+  test("a join that offered the list's part is not so marked, also where this PC took no card for it", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    await join(made, phone, { card: { enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone) } });
+    expect(await ownJoin(made)).not.toHaveProperty("list_unknown");
+  });
+
+  test("is approved by nothing on this PC's own window: neither its Allow nor its digits let it in, and it still waits", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
+    const waiting = await ownJoin(made);
+    const base = `http://127.0.0.1:${made.pc.app.port}`;
+    const answer = async (body: unknown) => {
+      const response = await fetch(`${base}/api/relay/join`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...own }, body: JSON.stringify(body) });
+      return [response.status, ((await response.json()) as { error?: { code?: string } }).error?.code];
+    };
+    expect(await answer({ id: waiting.id, decision: "approve" })).toEqual([409, "list_unknown"]);
+    expect(await answer({ id: waiting.id, digits: asked.digits })).toEqual([409, "list_unknown"]);
+    // nothing was written for it, and the join waits until it ends by itself or is declined
+    expect(made.pc.devices.hasKey(phone.key)).toBe(false);
+    expect(made.services.relay.approvals.ownJoins().map((each) => each.id)).toEqual([waiting.id]);
+    expect(await decide(made, { id: waiting.id, decision: "decline" })).toBe(200);
+    expect(made.services.relay.approvals.ownJoins()).toEqual([]);
+  });
+});
+
 describe("what the PC does when the entry does not go in", () => {
   /** A join the person allowed that the PC did not let in: the device hears what a refused join always heard. */
   async function refused(made: Awaited<ReturnType<typeof allowingPc>>, phone: ListMember, card: { enc: string; card: string }) {
@@ -427,6 +488,62 @@ describe("what the PC does when the entry does not go in", () => {
     const { answer } = await allowed(made, phone, { enc: phone.enc, card });
     expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
     expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toMatchObject({ by: made.ownKey });
+  });
+
+  test("a PC that spent its minute of list calls (a number check waited on) is let wait the time the service names: the device is let in by the entry placed", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    // the service's own answer past a PC's 30 list calls in a minute (MACHINE_LIMITER): the entry is placed with the
+    // 30th, and the read after it and the entry sent again meet the limit until the minute is over
+    const limited = () => Response.json({ error: { code: "rate_limited", message: "Too many requests; try again later" } }, { status: 429, headers: { "retry-after": "2" } });
+    let placed = false;
+    let resent = 0;
+    let limitedAt: number | null = null;
+    let againAt: number | null = null;
+    made.hook.on = async (request, forward) => {
+      const path = new URL(request.url).pathname;
+      if (!path.startsWith("/v2/pc/list")) return await forward();
+      if (path === "/v2/pc/list/entries" && !placed) { placed = true; return await forward(); }
+      if (!placed || resent > 1) return await forward();
+      if (path === "/v2/pc/list/entries") {
+        resent += 1;
+        if (resent === 1) { limitedAt = performance.now(); return limited(); }
+        againAt = performance.now();
+        return await forward();
+      }
+      return resent === 0 ? limited() : await forward();
+    };
+    const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+    expect(answer).toMatchObject({ type: FrameType.AUTH_OK });
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toMatchObject({ by: made.ownKey });
+    // sent again only after the two seconds the service named (a timer may fire a moment early)
+    expect(againAt! - limitedAt!).toBeGreaterThanOrEqual(1_980);
+  });
+
+  test("a wait the service names that would outlast the device's wait for its entry is not taken: the device is refused, and nothing is placed after it", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const realNow = Date.now.bind(Date);
+    let spent = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => realNow() + spent);
+    let sent = 0;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/entries") return await forward();
+      sent += 1;
+      // half a minute of the device's wait is gone by this answer, and the service names its whole next minute
+      spent = 30_000;
+      return Response.json({ error: { code: "rate_limited", message: "Too many requests; try again later" } }, { status: 429, headers: { "retry-after": "60" } });
+    };
+    try {
+      const { answer } = await allowed(made, phone, { enc: phone.enc, card });
+      expect(answer).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed" } });
+    } finally { clock.mockRestore(); }
+    expect(sent).toBe(1);
+    expect(made.pc.account.accountList(ACCOUNT)!.state.signers[phone.key]).toBeUndefined();
+    // the entry the service did not take is not kept for the next Allow to send after the device gave up
+    expect(existsSync(pathJoin(made.pc.stateDir, ACCOUNT_LIST_ALLOW_FILE))).toBe(false);
   });
 
   test("the signed entry is kept beside the copy: a second Allow at the same head sends that very entry and signs no other", async () => {
@@ -627,6 +744,32 @@ describe("what the PC does when the entry does not go in", () => {
   });
 });
 
+/**
+ * #4720 review J2 (the lead's ruling): a join waits at most JOIN_ADMISSION_WAIT_MS for the account's word only where its
+ * client offered `account-listing-errors-1`, which can hear why and try again. Any other join (another PC of the account,
+ * an older app) waits as it always did and hears what it always heard.
+ */
+test("with the account's word late, a join that can hear why is refused at the bound, and one that cannot waits and is taken once the word comes", async () => {
+  const made = await allowingPc();
+  const [told, older] = [await listMember(), await listMember()];
+  const cards = await Promise.all([told, older].map(async (device) => ({ enc: device.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, device) })));
+  // the mailbox, where the PC reads both admissions, answers once the test lets it
+  const word = deferred<void>();
+  made.hook.on = async (request, forward) => {
+    if (new URL(request.url).pathname === "/v1/pc/mailbox") await word.promise;
+    return await forward();
+  };
+  try {
+    const waiting = join(made, older, { card: cards[1]! });
+    const refusal = await join(made, told, { card: cards[0]!, features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT, ACCOUNT_LIST_ALLOW, ACCOUNT_LISTING_ERRORS] })
+      .then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
+    expect(refusal).toBe(`The join was refused: ${JSON.stringify({ code: "account_unreachable", message: "account_unreachable" })}`);
+    // the join that offered nothing is still waiting past that bound; the word comes, and it is taken
+    word.resolve();
+    expect((await waiting).list).toBe(made.account.id);
+  } finally { word.resolve(); }
+}, 60_000);
+
 describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("a PC that follows no list takes a PAIR_REQUEST whose list members are out of their form as it always did", async () => {
     // an app that sends the extension to a PC with no list must still pair there, whatever it sent
@@ -668,9 +811,8 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
   test("on a pinned PC a join that brings no card records a pairing that opens nothing: the list holds no entry for it, and its session ends", async () => {
     const made = await allowingPc();
     const phone = await listMember();
-    const asked = await join(made, phone, { features: [PAIR_SAS_FEATURE, PAIR_INTENT_ACCOUNT] });
-    // a join that takes no card is told no list
-    expect(asked.list).toBeUndefined();
+    // an app that knows joins into a list and sent no card (one that knows none is approved by nothing: list_unknown)
+    const asked = await join(made, phone);
     const waiting = await ownJoin(made);
     expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
     asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
@@ -718,6 +860,22 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     expect(entriesPlaced(made)).toBe(0);
   });
 
+  test("a PC that joined by an invite, approved at itself, tells the device that cause: it lets nobody into the list itself", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const waiting = await ownJoin(made);
+    // as the PC that joined by an invite answers the allow: it is in the list and signs for nobody
+    const refusal = spyOn(made.list, "allowDevice").mockResolvedValue({ refused: "not_signer", detail: null });
+    try {
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_not_signer" } });
+    } finally { refusal.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
   test("the person's Decline at this PC of a waiting join drops what this PC kept signed for that device", async () => {
     const made = await allowingPc();
     const phone = await listMember();
@@ -740,6 +898,42 @@ describe("a PC that cannot sign for a list lets a device in as before", () => {
     const refusal = spyOn(made.list, "allowRefusal").mockReturnValue("not_signer");
     try { expect(await ownJoin(made)).toMatchObject({ list: true, list_not_signer: true }); } finally { refusal.mockRestore(); }
     expect(await ownJoin(made)).not.toHaveProperty("list_not_signer");
+  });
+
+  test("a PC that came in as its account moved, with no key of its own in the list, says that cause, never an invite, here and to the device", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    const refusal = spyOn(made.list, "allowRefusal").mockReturnValue("needs_keys");
+    const allowed = spyOn(made.list, "allowDevice").mockResolvedValue({ refused: "needs_keys", detail: null });
+    try {
+      const waiting = await ownJoin(made);
+      expect(waiting).toMatchObject({ list: true, list_needs_keys: true });
+      expect(waiting).not.toHaveProperty("list_not_signer");
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_needs_keys" } });
+    } finally { refusal.mockRestore(); allowed.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+  });
+
+  test("a key this PC itself keeps out (a block here) is marked so before anybody approves it, and the device hears that cause, not that it was not added", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const card = await claimKey(made.pc.account, ACCOUNT, made.account.id, phone);
+    const asked = await join(made, phone, { card: { enc: phone.enc, card } });
+    // the gate a block in force closes for every key that came after its target (devices.ts admissionAllowed)
+    const gate = spyOn(made.services.devices, "admitsFromList").mockImplementation((key) => key !== phone.key);
+    try {
+      const waiting = await ownJoin(made);
+      expect(waiting).toMatchObject({ list: true, list_held: true });
+      expect(await decide(made, { id: waiting.id, decision: "approve" })).toBe(200);
+      asked.link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+      expect(await asked.next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_held_here" } });
+    } finally { gate.mockRestore(); }
+    expect(entriesPlaced(made)).toBe(0);
+    expect(made.list.holdsBack(phone.key)).toBe(false);
   });
 
   test("the challenge names the list this PC follows, and a refusal says which cause it was", async () => {
@@ -967,6 +1161,117 @@ describe("a join into the list a member allows from afar, on a pinned PC", () =>
     expect(await bounded(waiting, MEMBER_WAIT_MS + 300).catch(() => "still waiting")).toBe("still waiting");
     (held as () => void)();
     expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
+  });
+
+  test("a member-approved join reads its entry after the PC's exhausted list budget resets", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await made.account.addDevice(phone);
+    let retryAt: number | null = null;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+      retryAt ??= performance.now() + 2_000;
+      if (performance.now() >= retryAt) return await forward();
+      return Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": "2" } });
+    };
+
+    expect(await made.list.allowDevice(device, false)).toMatchObject({ allowed: { id: made.account.id } });
+  });
+
+  test("member log retry keeps the normal interval when Retry-After is shorter", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await made.account.addDevice(phone);
+    await memberReadClock(async ({ now, advanceTo }) => {
+      const reads: number[] = [];
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+        reads.push(now());
+        return reads.length === 1 ? logLimited(1) : await forward();
+      };
+      const waiting = made.list.allowDevice(device, false);
+      await advanceTo(3_500);
+      expect(reads).toEqual([0, 3_000]);
+      expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
+    });
+  });
+
+  test("member log retry after a throttled final read can still find the entry", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await memberReadClock(async ({ now, advanceTo }) => {
+      const release = deferred<void>();
+      const reads: number[] = [];
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+        reads.push(now());
+        if (reads.length === 2) return logLimited(5);
+        if (reads.length === 3) await release.promise;
+        return await forward();
+      };
+      const waiting = made.list.allowDevice(device, false);
+      try {
+        await advanceTo(1_000);
+        await made.account.addDevice(phone);
+        await advanceTo(12_000);
+      } finally {
+        release.resolve();
+        await made.list.settled();
+      }
+      await advanceTo(12_100);
+      expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
+      expect(reads).toEqual([0, 3_000, 8_000]);
+    });
+  });
+
+  test("member log retry stops waiting for an unanswered final read by the session deadline", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await memberCard(phone, made.account.id), label: "Phone" };
+    await memberReadClock(async ({ advanceTo }) => {
+      const release = deferred<void>();
+      let reads = 0;
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname === "/v2/pc/list/log" && ++reads === 2) await release.promise;
+        return await forward();
+      };
+      const answer: { refusal: string | null } = { refusal: null };
+      const waiting = made.list.allowDevice(device, false).then((outcome) => { if ("refused" in outcome) answer.refusal = outcome.refused; });
+      try {
+        await advanceTo(LIST_ALLOW_MS);
+        expect(reads).toBe(2);
+        expect(answer.refusal).toBe("service_away");
+      } finally {
+        release.resolve();
+        await made.list.settled();
+      }
+      await waiting;
+    });
+  });
+
+  test("member log retry sends nothing after an in-flight read returns Retry-After past the session deadline", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await memberCard(phone, made.account.id), label: "Phone" };
+    await memberReadClock(async ({ now, advanceTo }) => {
+      const release = deferred<void>();
+      const reads: number[] = [];
+      made.hook.on = async (request, forward) => {
+        if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+        reads.push(now());
+        if (reads.length === 1) { await release.promise; return logLimited(10); }
+        return await forward();
+      };
+      const waiting = made.list.allowDevice(device, false);
+      try { await advanceTo(LIST_ALLOW_MS + 100); }
+      finally { release.resolve(); await made.list.settled(); }
+      await advanceTo(LIST_ALLOW_MS + 200);
+      expect(reads).toEqual([0]);
+      expect(await waiting).toMatchObject({ refused: "service_away" });
+    });
   });
 
   test("a join nobody signs for ends as not in the list once that wait is over, and not before", async () => {

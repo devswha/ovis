@@ -15,7 +15,7 @@ import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../deskt
 import { ClaudeSubagentStatus, plain } from "../claude-subagents.ts";
 import { claudeLastTurnEnd, claudeTranscriptStart, type ClaudeTurnEnd } from "../claude-transcript.ts";
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
-import { servedTurnEnd } from "../approvals/codex.ts";
+import { onServedStatus, servedStatus, servedTurnEnd } from "../approvals/codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import type { TurnEvent } from "../approvals/hub.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
@@ -32,10 +32,11 @@ import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
 import { resolveGrokStore } from "../grok-store.ts";
-import { createLettaStatus, lettaPanes, lettaTitleStatus } from "../letta-status.ts";
+import { createLettaStatus, lettaPanes, lettaTitleName, lettaTitleStatus } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
-import { resolveAgent } from "../pane-context.ts";
+import { resolveAgent, versionSourceOf } from "../pane-context.ts";
+import { storeAgentVersion } from "../agent-version.ts";
 import { launchedAgents } from "../launched-agents.ts";
 import { bridgeAgentNews, MachineManager } from "../machines.ts";
 import { omoPanes } from "../omo.ts";
@@ -50,13 +51,15 @@ import { SessionPlans } from "../session-plan.ts";
 import { readStatuslineContext } from "../statusline.ts";
 import { userHome } from "../user-home.ts";
 import { notePaneFolders } from "../windows-share.ts";
-import type { Telemetry } from "../telemetry.ts";
+import type { Telemetry, VisitPane } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 const VISIT_READ_MS = 10 * 60_000;
+/** how long a pane whose session named no version waits before it is read again for the usage counts */
+const VERSION_RETRY_MS = 60 * 60_000;
 /**
  * How often a herdr-core server reads its agents' screens for an asking they did not report (server/card-waits.ts).
  * One read of one terminal costs four hc requests, not one: a `terminal.read`, plus the `terminal.list` and two
@@ -99,6 +102,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     seenMoved?: (from: string, to: string, renumber: (id: number) => number) => void;
     /** a pane that ended, closed or moved to another ID: what was kept under its ID is no longer that pane's */
     paneVacated?: (paneId: string) => void;
+    /** context the agent's launch extension last reported, for this pane's agent kind */
+    hookContextOf?: (paneId: string, kind: string | null | undefined) => PaneContext | null | undefined;
+    /** what herdr sees in front, so a launch cannot keep reporting after the pane changes hands */
+    observeHookAgent?: (paneId: string, kind: string | null) => void;
     /** runs each tick of the card reads (CARD_READ_MS) and returns how to stop them; tests tick by hand */
     cardTimer?: (tick: () => Promise<void>) => () => void;
   };
@@ -156,7 +163,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
   const lettaTitled = new Map<string, AgentStatus>();
-  const lettaRests = new Map<string, OmoRest>();
+  const lettaRests = new Map<string, { path: string; title: string; rest: OmoRest }>();
+  const sameLettaApproval = (paneId: string, saved: { path: string; title: string }): boolean => {
+    const path = letta.pathOf(paneId);
+    // A peer can make the transcript temporarily ambiguous without ending the title's approval.
+    return lettaTitleName(lastPanes?.get(paneId)) === saved.title && (path === null || path === saved.path);
+  };
   let titleReads = 0;
   let titleApplied = 0;
   const letta = createLettaStatus({
@@ -164,7 +176,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     snapshot: omoSnapshot,
     onChange: (paneId, derived, _background, turn, rest) => {
       if (lettaTitled.get(paneId) !== "blocked") { gjcChanged(paneId, derived, turn, rest, "letta"); return; }
-      if (turn && rest !== undefined && derived !== "working") lettaRests.set(paneId, rest); else if (turn) lettaRests.delete(paneId);
+      if (turn) {
+        const path = letta.pathOf(paneId);
+        if (path !== null && rest !== undefined && derived !== "working") {
+          lettaRests.set(paneId, { path, title: lettaTitleName(lastPanes?.get(paneId)), rest });
+        }
+        else lettaRests.delete(paneId);
+      }
     },
     onFound: (paneId) => completions.adopt(paneId, "letta", []),
   });
@@ -176,7 +194,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     (pane, panes) => waitingCard(pane, panes, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir, openCodeState: cardOpenCode, ompLookups: cardOmp }),
     (paneId, waiting) => cardChanged(paneId, waiting),
   );
-  const alert = (paneId: string, status: AgentStatus): void => { push.onStatus(paneId, cards.status(paneId, status)).catch(logPushError); };
+  const alert = (paneId: string, status: AgentStatus): void => { push.onStatus(paneId, cards.status(paneId, displayStatus(paneId, status))).catch(logPushError); };
   let lastPanes: Map<string, HerdrPane> | null = null;
   let settling: string | null = null;
   const agentNow = new Map<string, string | null>();
@@ -239,9 +257,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const hookPrompts = new Map<string, (string | null)[]>();
   /** the prompts herdr's rest dropped from hookPrompts with no Stop: their Stop, if it comes, is late and ends nothing */
   const droppedPrompts = new Map<string, Set<string>>();
-  const dropPrompts = (paneId: string): void => {
+  /** Only the latest prompt from this rest can still supply a failure for it. Older IDs remain Stop tombstones. */
+  const lateClaudeFailure = new Map<string, string>();
+  const dropPrompts = (paneId: string, ready: boolean): void => {
     const open = (hookPrompts.get(paneId) ?? []).filter((prompt): prompt is string => prompt !== null);
     hookPrompts.delete(paneId);
+    const last = open.at(-1);
+    if (ready && last !== undefined) lateClaudeFailure.set(paneId, last);
+    else if (!ready) lateClaudeFailure.delete(paneId);
     if (open.length > 0) droppedPrompts.set(paneId, new Set([...(droppedPrompts.get(paneId) ?? []), ...open].slice(-16)));
   };
   /**
@@ -261,7 +284,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
     if (agent !== "claude" || status !== "working" || event) stoppedOnHook.delete(paneId);
     if (agent !== "claude") { hookPrompts.delete(paneId); droppedPrompts.delete(paneId); }
-    else if (event && status !== "working") dropPrompts(paneId);
+    if (agent !== "claude" || (event && status === "working")) lateClaudeFailure.delete(paneId);
+    else if (event && status !== "working") dropPrompts(paneId, atRest(status));
     if (agent !== "claude") { heard.delete(paneId); return; }
     const before = heard.get(paneId);
     heard.set(paneId, status);
@@ -332,17 +356,52 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     claudePath: (paneId) => claudeAgents.sessionOf(paneId)?.path ?? null,
     omoPath: (paneId) => omo.pathOf(paneId),
     codexPath: async (pane) => codexOpenRollout(pane.pane_id, pane.cwd, await paneCodexHome(pane.pane_id, options.codexHome)),
+    codexServed: servedStatus,
     onChange: (paneId, summary) => planChanged(paneId, summary),
     onContext: (paneId, context) => contextChanged(paneId, context),
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
   });
+  // Hook/app-server failures are an overlay for clients and alerts only. The completion tracker also feeds delivery.
+  const toldFailures = new Map<string, { agent: "claude" | "codex"; thread?: string; rested: boolean; notified: boolean }>();
+  const toldClaudePrompts = new Map<string, Set<string>>();
+  const codexAlertTurn = new Map<string, { prompt: string | null; thread: string | undefined; failed: boolean; afterFailure: boolean }>();
+  const displayStatus = (paneId: string, status: AgentStatus): AgentStatus =>
+    status !== "blocked" && toldFailures.has(paneId) ? "idle" : status;
+  function broadcastDisplayStatus(paneId: string, status: AgentStatus): void {
+    broadcastAll({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)),
+      ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
+  }
+  function tellFailure(paneId: string, agent: "claude" | "codex"): void {
+    const thread = agent === "codex" ? servedStatus(paneId)?.threadId : undefined;
+    const status = completions.current(paneId);
+    toldFailures.set(paneId, { agent, ...(thread === undefined ? {} : { thread }), rested: status === "idle" || status === "done", notified: false });
+    broadcastDisplayStatus(paneId, status ?? "idle");
+    notifyToldFailure(paneId);
+  }
+  function notifyToldFailure(paneId: string): void {
+    const failure = toldFailures.get(paneId);
+    if (failure === undefined || failure.notified || waits.waiting(paneId)
+      || completions.current(paneId) === "blocked" || cards.status(paneId, "idle") === "blocked") return;
+    failure.notified = true;
+    alert(paneId, "idle");
+    push.onFailed(paneId).catch(logPushError);
+  }
+  const stopServed = onServedStatus((paneId) => {
+    const thread = servedStatus(paneId)?.threadId;
+    const failure = toldFailures.get(paneId);
+    if (failure?.agent === "codex" && failure.thread !== thread) toldFailures.delete(paneId);
+    if (codexAlertTurn.get(paneId)?.thread !== thread) codexAlertTurn.delete(paneId);
+    plans.servedChanged(paneId);
+  });
   const CODEX_LOOK_MS = 1000;
   const CODEX_RETRY_MS = 2000;
   const codexFailed = new Set<string>();
-  const codexLooked = new Map<string, { path: string; size: number } | null>();
-  const codexLooking = new Map<string, Promise<void>>();
+  const codexLooked = new Map<string, { path: string; size: number; pending: boolean } | null>();
+  const codexLooking = new Map<string, { turn: number; done: Promise<void> }>();
   const codexRetryAt = new Map<string, number>();
   const codexTurns = new Map<string, number>();
+  const codexSessions = new Map<string, string>();
+  let codexTurn = 0;
   let codexReads = 0;
   const codexFailedAt = new Map<string, number>();
   const codexWorking = (paneId: string, began: boolean): void => {
@@ -350,8 +409,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     codexFailedAt.delete(paneId);
     codexLooked.delete(paneId);
     codexRetryAt.delete(paneId);
-    if (began) codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
+    codexSessions.delete(paneId);
+    if (began) codexTurns.set(paneId, ++codexTurn); else codexTurns.delete(paneId);
   };
+  function noteCodexSession(pane: HerdrPane): void {
+    const session = pane.agent_session;
+    if (session?.agent !== "codex" || !codexTurns.has(pane.pane_id)) return;
+    const before = codexSessions.get(pane.pane_id);
+    if (before !== undefined && before !== session.value) codexWorking(pane.pane_id, false);
+    else codexSessions.set(pane.pane_id, session.value);
+  }
   /** herdr calls a Codex at rest DONE, idle or `unknown` (codex/unknown at rest, server/completion.ts) */
   const atRest = (status: AgentStatus): boolean => status === "done" || status === "idle" || status === "unknown";
   const claudeFailed = new Set<string>();
@@ -379,6 +446,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     push.onFailed(paneId).catch(logPushError);
   }
   function claudeFailHeldEnds(paneId: string): void {
+    notifyToldFailure(paneId);
     if (!claudeFailHeld.has(paneId) || waits.waiting(paneId) || !claudeFailed.has(paneId) || completions.current(paneId) !== "idle") return;
     claudeFailedAlert(paneId);
   }
@@ -423,7 +491,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     waits.status(paneId, status);
     broadcastAll(paneStatus(paneId, status));
     alert(paneId, alertStatus(status, waits.waiting(paneId)));
-    claudeFailedAlert(paneId);
+    if (!toldFailures.has(paneId)) claudeFailedAlert(paneId);
   }
   /** herdr calls such a pane's rest DONE as it calls any finish it did not see, or `unknown`: it is at rest, and READY */
   const failedRests = (snapshot: SessionSnapshot): SessionSnapshot => {
@@ -442,9 +510,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     for (const pane of snapshot.panes) if (letta.runs(pane.pane_id) && (pane.agent !== "letta" || pane.agent_status !== "unknown")) letta.ended(pane.pane_id);
     await letta.refresh(snapshot.panes);
     for (const pane of snapshot.panes) {
-      if (pane.agent !== "codex") continue;
-      if (pane.agent_status === "working") { if ((codexFailedAt.get(pane.pane_id) ?? -1) < codexRead) codexWorking(pane.pane_id, true); }
-      else if ((pane.agent_status === "done" || (codexFailed.has(pane.pane_id) && atRest(pane.agent_status))) && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
+      if ((agentRead.get(pane.pane_id) ?? 0) > read || (paneClosed.get(pane.pane_id) ?? 0) >= read) continue;
+      if (pane.agent !== "codex") {
+        if (codexTurns.has(pane.pane_id)) codexWorking(pane.pane_id, false);
+        continue;
+      }
+      if (pane.agent_status === "working" && (codexFailedAt.get(pane.pane_id) ?? -1) < codexRead) codexWorking(pane.pane_id, true);
+      noteCodexSession(pane);
+      if (atRest(pane.agent_status) && (pane.agent_status === "done" || codexFailed.has(pane.pane_id)
+        || ((codexLooked.get(pane.pane_id)?.pending || codexRetryAt.has(pane.pane_id)) && completions.current(pane.pane_id) === "done"))
+        && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
     }
     for (const pane of snapshot.panes) if (pane.agent === "claude" && atRest(pane.agent_status) && claudeLooked.has(pane.pane_id)) claudeLate(pane.pane_id);
     const named = failedRests(letta.apply(gjc.apply(omo.apply(snapshot))));
@@ -465,12 +540,17 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     if (newest) notePaneFolders(named.panes.flatMap((pane) => [pane.cwd, pane.foreground_cwd]));
     if (capabilities().agents === "reported") for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) {
-      const rest = status === "idle" ? lettaRests.get(paneId) : undefined;
+      const saved = lettaRests.get(paneId);
+      const rest = status === "idle" && saved && sameLettaApproval(paneId, saved) ? saved.rest : undefined;
       if (status !== "blocked") lettaRests.delete(paneId);
       gjcChanged(paneId, status, true, rest, "letta");
     }
+    if (newest) for (const [paneId, saved] of lettaRests) {
+      if (lettaTitled.get(paneId) !== "blocked" || !sameLettaApproval(paneId, saved)) lettaRests.delete(paneId);
+    }
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
+      if (codexTurns.has(paneId)) codexWorking(paneId, false);
       agentNow.delete(paneId);
       agentRead.delete(paneId);
       agentExited.delete(paneId);
@@ -481,9 +561,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       stoppedOnHook.delete(paneId);
       hookPrompts.delete(paneId);
       droppedPrompts.delete(paneId);
+      lateClaudeFailure.delete(paneId);
+      toldClaudePrompts.delete(paneId);
+      toldFailures.delete(paneId);
+      codexAlertTurn.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
+      options.observeHookAgent?.(pane.pane_id, pane.agent ?? null);
       if (changedHands({ agent: agentNow.get(pane.pane_id), agent_session: told?.get(pane.pane_id)?.agent_session }, pane)) handsChanged(pane.pane_id);
       agentNow.set(pane.pane_id, pane.agent ?? null);
       agentRead.set(pane.pane_id, read);
@@ -524,31 +609,62 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         const background = backgroundOf(pane.pane_id);
         const waiting = waits.waiting(pane.pane_id);
         const plan = plans.summaryOf(pane.pane_id);
-        const context = plans.contextOf(pane.pane_id);
+        const context = options.hookContextOf?.(pane.pane_id, pane.agent) ?? plans.contextOf(pane.pane_id);
         return background > 0 || waiting || plan !== null || context !== null ? { ...pane, ...(background > 0 ? { background_tasks: background } : {}), ...(waiting ? { background_wait: true as const } : {}), ...(plan !== null ? { plan } : {}), ...(context !== null ? { context } : {}) } : pane;
       }),
     }, completions);
     return order ? { ...settled, ...order } : settled;
   };
   // clients see a card a pane waits on over what its agent reported, which the finishes and the turns were read from
-  const clientSnapshot = async (): Promise<SessionSnapshot> => cards.apply(await deliverySnapshot());
+  const clientSnapshot = async (): Promise<SessionSnapshot> => {
+    const snapshot = await deliverySnapshot();
+    if (toldFailures.size === 0) return cards.apply(snapshot);
+    const display = <T extends { pane_id: string; agent?: string | null; agent_status: AgentStatus }>(pane: T): T =>
+      toldFailures.get(pane.pane_id)?.agent === pane.agent ? { ...pane, agent_status: displayStatus(pane.pane_id, pane.agent_status) } : pane;
+    return cards.apply({ ...snapshot, panes: snapshot.panes.map(display), agents: snapshot.agents.map(display) });
+  };
   let visitReadAt = -Infinity;
   function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
     if (!telemetry?.counting()) return;
-    let agents: Promise<(string | null)[]> | (string | null)[] = [];
+    let agents: Promise<VisitPane[]> | VisitPane[] = [];
     if (snapshot || Date.now() - visitReadAt >= VISIT_READ_MS) {
       visitReadAt = Date.now();
-      agents = (snapshot ?? clientSnapshot()).then((read) => read.panes.map((pane) => resolveAgent(pane).agent));
+      agents = (snapshot ?? clientSnapshot()).then(visitPanes);
     }
     void telemetry.active(agents, visit)
       .catch((error) => console.error(`telemetry: the visit was not counted (${error instanceof Error ? error.message : String(error)})`));
   }
+  /**
+   * each pane's agent version as its session names it, by the agent and session it was read for; a read that found none
+   * is tried again only after VERSION_RETRY_MS, and a pane seen with no agent forgets it
+   */
+  const visitVersions = new Map<string, { session: string; version: string | null; at: number }>();
+  async function visitVersion(pane: HerdrPane, agent: string | null, read: SessionSnapshot): Promise<string | null> {
+    if (agent !== "claude" && agent !== "codex" && agent !== "opencode") return null;
+    const session = `${agent}\0${JSON.stringify(pane.agent_session ?? null)}`;
+    const known = visitVersions.get(pane.pane_id);
+    if (known?.session === session && (known.version !== null || Date.now() - known.at < VERSION_RETRY_MS)) return known.version;
+    const source = await paneTranscript(pane.pane_id, options.codexHome, read, undefined, options.opencodeDb).then(versionSourceOf, () => null);
+    const version = storeAgentVersion(agent, source);
+    visitVersions.set(pane.pane_id, { session, version, at: Date.now() });
+    return version;
+  }
+  /** what a visit tells the usage counts of each pane: its agent, whether this server started it, and its version */
+  async function visitPanes(read: SessionSnapshot): Promise<VisitPane[]> {
+    const agents = read.panes.map((pane) => ({ pane_id: pane.pane_id, agent: resolveAgent(pane).agent }));
+    for (const paneId of visitVersions.keys()) if (!agents.some((pane) => pane.pane_id === paneId && pane.agent)) visitVersions.delete(paneId);
+    const started = launchedAgents.startedPanes(agents, { omo: OMO_ALIASES });
+    return Promise.all(read.panes.map(async (pane, index) => {
+      const agent = agents[index]!.agent;
+      return { agent, ovis: started.has(pane.pane_id), version: await visitVersion(pane, agent, read).catch(() => null) };
+    }));
+  }
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null; context?: PaneContext | null } = {}): ServerMessage =>
-    ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, status), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
-  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
+    ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, displayStatus(paneId, status)), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
+  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, previewProfile: process.env["OVIS_PREVIEW_PROFILE"] === "1", ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
-  if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine) => startMachineBridge(machine, options.stateDir ?? defaultStateDir()));
+  if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine, signal) => startMachineBridge(machine, options.stateDir ?? defaultStateDir(), signal));
 
   const desktopActivity = options.desktopActivity === true ? trackDesktopActivity({
     path: join(options.stateDir ?? defaultStateDir(), DESKTOP_ACTIVITY_FILE),
@@ -571,6 +687,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   function omoChanged(paneId: string, derived: AgentStatus, background: number, turn: boolean, rest: OmoRest | undefined): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
+    if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, "omo", rest) : completions.current(paneId) ?? completions.observe(paneId, derived, "omo");
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     const held = waits.waiting(paneId);
@@ -583,6 +700,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
+    if (turn) options.telemetry?.paneStatus(paneId, derived);
     const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     broadcastAll(paneStatus(paneId, status));
@@ -629,6 +747,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const bridgeAgents = machines ? null : bridgeAgentNews(() => broadcastAll({ type: "session-changed" }));
 
   function onStatus(paneId: string, read: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null; askedAt?: number }): void {
+    // Provider aliases of a recognized OmO are not a change of agent; a shell or another kind is.
+    options.observeHookAgent?.(paneId, agent !== null && OMO_ALIASES.includes(agent) && omo.runs(paneId) ? "omo" : agent);
     if (agent !== "opencode" && (!replay || agent || read !== "unknown")) {
       options.openCodeState?.forget(paneId);
       if (!replay) releaseOpenCodePane(paneId);
@@ -653,7 +773,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       hearClaude(paneId, agent, read, replay === undefined);
       if (agent === "claude") claudeAgents.poll(paneId);
     } finally { settling = was; }
-    if (agent === "letta" && read !== "unknown" && replay === undefined) lettaTitled.delete(paneId);
+    if (replay === undefined && (agent !== "letta" || read !== "unknown")) {
+      lettaTitled.delete(paneId);
+      lettaRests.delete(paneId);
+    }
     const titled = agent === "letta" && read === "unknown" && capabilities().agents === "reported" && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, titled ?? read));
     gjc.poll();
@@ -740,9 +863,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /** `askedAt`: a status replayed from a snapshot asked for then, which the queue takes as that snapshot (`pending.baseline`) */
   function reportStatus(paneId: string, raw: AgentStatus, agent: string | null, askedAt?: number): void {
+    const told = toldFailures.get(paneId);
+    if (told !== undefined) {
+      if (told.agent !== agent || (told.rested && raw === "working")) toldFailures.delete(paneId);
+      else if (atRest(raw)) told.rested = true;
+    }
     // back at work, the agent has had its answer, maybe from a terminal: the same prompt on
     // its screen after this is another asking, which an answer to the old card must not take.
     if (raw === "working") promptWaitEnded(paneId);
+    options.telemetry?.paneStatus(paneId, raw);
     if (raw === "working" || agent !== "codex") codexWorking(paneId, raw === "working" && agent === "codex");
     if (raw === "working" || agent !== "claude") claudeWorking(paneId, raw === "working" && agent === "claude");
     const claudeEnd = agent === "claude" && raw !== "blocked" && raw !== "working" ? claudeRest(paneId) : null;
@@ -765,13 +894,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const tell = (): void => {
       broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
       alert(paneId, alertStatus(status, waits.waiting(paneId)));
+      notifyToldFailure(paneId);
     };
     if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId) && (codexTurns.get(paneId) ?? 0) > 0) {
+      const turn = codexTurns.get(paneId);
       let timer: ReturnType<typeof setTimeout> | undefined;
       void Promise.race([codexRest(paneId), new Promise<void>((resolve) => { timer = setTimeout(resolve, CODEX_LOOK_MS); })])
-        .then(() => { clearTimeout(timer); if (completions.current(paneId) === status) tell(); });
+        .then(() => { clearTimeout(timer); if (codexTurns.get(paneId) === turn && completions.current(paneId) === status) tell(); });
     } else tell();
-    if (claudeFailedNow && status === "idle") claudeFailedAlert(paneId);
+    if (claudeFailedNow && status === "idle" && !toldFailures.has(paneId)) claudeFailedAlert(paneId);
     if (claudeEnd === "answered") claudeLooked.delete(paneId);
     if (tracker === opencodeAgents && opencodeAgents.sessionOf(paneId)?.live !== true) {
       const begun = opencodeAgents.beginRead();
@@ -781,20 +912,60 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   }
 
   /**
-   * A turn of an agent this server started, as its hook told (server/approvals/hub.ts): Claude's Stop is its finish,
-   * told before herdr reads it from the screen, and the same as herdr's rest from then on (the transcript still says
-   * whether it failed), once no prompt it told of is left open (hookPrompts). A Stop after herdr's rest tells nothing
-   * new. Claude's UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
+   * A turn of an agent this server started, as its hook or app server told. Claude's Stop ends its prompt before herdr
+   * reads the rest. StopFailure tells it failed, without waiting for the transcript. Either is a rest only once no
+   * newer prompt is open. UserPromptSubmit ends the hook's rest, and herdr's reading stands again.
+   *
+   * OmO's extension tells its runs instead (server/approvals/omo.ts): its session file stays the status's source, which
+   * holds the rest it reads while a run told began has not ended (omo-status.ts), and is read again at once when one does.
    */
-  function hookTurn(paneId: string, kind: string, { turn, prompt }: TurnEvent): void {
+  function hookTurn(paneId: string, kind: string, event: TurnEvent): void {
+    const { turn, prompt } = event;
+    if (kind === "omo") {
+      omo.told(paneId, turn);
+      if (turn === "ended") void omo.poll();
+      return;
+    }
+    if (kind === "codex") {
+      if (agentNow.get(paneId) !== "codex" || omo.runs(paneId) || gjc.runs(paneId)) return;
+      const previous = codexAlertTurn.get(paneId);
+      const thread = servedStatus(paneId)?.threadId;
+      if (turn === "began") {
+        const afterFailure = codexFailed.has(paneId);
+        codexAlertTurn.set(paneId, { prompt, thread, failed: false, afterFailure });
+        if (toldFailures.delete(paneId)) {
+          const next = completions.current(paneId) === "blocked" ? "blocked" : "working";
+          broadcastDisplayStatus(paneId, next);
+          alert(paneId, next);
+        }
+        return;
+      }
+      if (!event.failed || (previous?.prompt != null && prompt !== previous.prompt) || previous?.failed) return;
+      codexAlertTurn.set(paneId, { prompt, thread, failed: true, afterFailure: false });
+      if (!codexFailed.has(paneId) || previous?.afterFailure) tellFailure(paneId, "codex");
+      return;
+    }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
+      lateClaudeFailure.delete(paneId);
+      toldFailures.delete(paneId);
       hookPrompts.set(paneId, [...open, prompt]);
       hookRestEnds(paneId);
       return;
     }
     const at = open.indexOf(prompt);
+    if (event.failed) {
+      if (prompt !== null) {
+        if (at < 0 && (open.length > 0 || lateClaudeFailure.get(paneId) !== prompt)) return;
+        const seen = toldClaudePrompts.get(paneId) ?? new Set<string>();
+        if (seen.has(prompt)) return;
+        toldClaudePrompts.set(paneId, new Set([...seen, prompt].slice(-16)));
+      } else if (toldFailures.has(paneId)) return;
+      if (at >= 0 && at < open.length - 1) push.onFailed(paneId, undefined, true).catch(logPushError);
+      else if (!claudeFailed.has(paneId) || at >= 0) tellFailure(paneId, "claude");
+      return;
+    }
     // the Stop of a prompt herdr's rest already dropped: late, while another turn may run (a repeated Stop of a prompt
     // that ended, after another Stop hook blocked the first, is still the rest)
     if (at < 0 && prompt !== null && droppedPrompts.get(paneId)?.delete(prompt)) return;
@@ -856,29 +1027,51 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     if (turn === 0 || known === null || (codexRetryAt.get(paneId) ?? 0) > Date.now()) return Promise.resolve();
     const looking = codexLooking.get(paneId);
-    if (looking !== undefined) return looking;
-    const look = (found: { path: string; size: number } | null): void => { if ((codexTurns.get(paneId) ?? 0) === turn) codexLooked.set(paneId, found); };
-    const retry = (): null => { codexRetryAt.set(paneId, Date.now() + CODEX_RETRY_MS); return null; };
+    if (looking?.turn === turn) return looking.done;
+    const current = (): boolean => codexTurns.get(paneId) === turn;
+    const unavailable = (): null => {
+      if (!current()) return null;
+      // Give a first lookup one more chance, but don't switch rollouts mid-check.
+      if (known !== undefined || codexRetryAt.has(paneId)) {
+        codexLooked.set(paneId, null);
+        codexRetryAt.delete(paneId);
+      } else codexRetryAt.set(paneId, Date.now() + CODEX_RETRY_MS);
+      return null;
+    };
     const done = (async () => {
       let path = known?.path;
       let size = path === undefined ? -1 : await stat(path).then((file) => file.size, () => -1);
-      if (size < 0) {
-        const transcript = await paneTranscript(paneId, options.codexHome, snapshot).catch(() => undefined);
-        if (transcript === undefined) return retry();
-        if (transcript.source !== "codex-transcript") { look(null); return null; }
+      if (path !== undefined && size < 0) return unavailable();
+      if (path === undefined) {
+        const seen = snapshot ?? await sessionSnapshot().catch(() => undefined);
+        if (!current()) return null;
+        if (seen === undefined) return unavailable();
+        const pane = seen.panes.find((pane) => pane.pane_id === paneId);
+        if (pane?.agent === "codex") noteCodexSession(pane);
+        if (!current()) return null;
+        const transcript = await paneTranscript(paneId, options.codexHome, seen).catch(() => undefined);
+        if (transcript === undefined) return unavailable();
+        if (transcript.source !== "codex-transcript") {
+          if (current()) { codexLooked.set(paneId, null); codexRetryAt.delete(paneId); }
+          return null;
+        }
         path = transcript.path;
         size = await stat(path).then((file) => file.size, () => -1);
-        if (size < 0) return retry();
-      } else if (known!.size === size) return null;
+        if (size < 0) return unavailable();
+      } else if (known?.size === size) return null;
+      if (!current()) return null;
       codexRetryAt.delete(paneId);
-      const end = await codexLastTurnEnd(path!);
-      look({ path: path!, size });
-      return (codexTurns.get(paneId) ?? 0) === turn ? end : null;
+      const end = await codexLastTurnEnd(path);
+      // A bounded tail can lose the start marker before the end reaches disk.
+      if (current()) codexLooked.set(paneId, { path, size, pending: end === "running" || (end === null && (known?.pending ?? true)) });
+      return end;
     })().then((end) => {
       // the server's word on this turn stands over a rollout read begun before it came
-      if (end !== null && end !== "running" && (codexTurns.get(paneId) ?? 0) === turn && servedTurnEnd(paneId) !== "failed") codexEnded(paneId, end);
-    }, () => undefined).finally(() => codexLooking.delete(paneId));
-    codexLooking.set(paneId, done);
+      if (end !== null && end !== "running" && current() && servedTurnEnd(paneId) !== "failed") codexEnded(paneId, end);
+    }, () => undefined).finally(() => {
+      if (codexLooking.get(paneId)?.turn === turn) codexLooking.delete(paneId);
+    });
+    codexLooking.set(paneId, { turn, done });
     return done;
   }
 
@@ -898,12 +1091,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
     codexFailed.add(paneId);
     codexFailedAt.set(paneId, codexReads);
+    const told = codexAlertTurn.get(paneId);
+    if (told !== undefined) told.afterFailure = false;
     const status = completions.observe(paneId, "idle", "codex", "failed");
     pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
     waits.status(paneId, status);
     broadcastAll(paneStatus(paneId, status));
     alert(paneId, status);
-    push.onFailed(paneId).catch(logPushError);
+    if (toldFailures.has(paneId)) notifyToldFailure(paneId);
+    else push.onFailed(paneId).catch(logPushError);
   }
 
   const shellSnapshots = new WeakSet<HerdrPane>();
@@ -914,7 +1110,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     paneClosed.set(paneId, opencodeAgents.beginRead());
     codexWorking(paneId, false);
     claudeWorking(paneId, false);
-    codexTurns.delete(paneId);
     omo.ended(paneId);
     gjc.ended(paneId);
     letta.ended(paneId);
@@ -934,6 +1129,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     stoppedOnHook.delete(paneId);
     hookPrompts.delete(paneId);
     droppedPrompts.delete(paneId);
+    lateClaudeFailure.delete(paneId);
+    toldClaudePrompts.delete(paneId);
+    toldFailures.delete(paneId);
+    codexAlertTurn.delete(paneId);
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
     agentExited.delete(paneId);
@@ -941,6 +1140,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     forgetPaneTranscriptState(paneId);
     bridgeAgents?.ended(paneId);
   }
+  let alertRoster = new Map<string, string | null>();
   const collector = startStatusCollector({
     onStatus,
     herdrLive: { identity: () => finishes.herdrIdentity(), onChange: (identity) => { liveHerdr = identity; } },
@@ -963,12 +1163,28 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         const began = created.get(pane.pane_id);
         if (began !== undefined) push.firstStatus(pane.pane_id, began, pane.agent_status).catch(logPushError);
       }
+      // A roster may already show a terminal under its new pane ID while its move event is in transit.
+      const roster = new Map<string, string | null>();
+      const present = new Set(alerted.map((pane) => pane.pane_id));
+      for (const pane of alerted) {
+        if (pane.terminal_id) roster.set(pane.terminal_id, roster.has(pane.terminal_id) ? null : pane.pane_id);
+      }
+      for (const pane of alerted) {
+        const before = alertRoster.get(pane.terminal_id);
+        // The roster gives us the terminal's identity; push checks the latest question at its source,
+        // including one heard while this roster was in flight.
+        if (pane.agent_status === "blocked" && before && roster.get(pane.terminal_id) === pane.pane_id
+          && !present.has(before)) push.movedQuestion(before, pane.pane_id, newer.has(pane.pane_id));
+      }
+      alertRoster = roster;
       push.seed(alerted);
       // a tab, workspace or worktree that closed names none of its panes: the snapshot without them says they went
       push.gone(projected, newer);
       for (const pane of projected) {
         // herdr told the pane's status after this snapshot was read: the queue has the newer reading
         if (newer.has(pane.pane_id)) continue;
+        // a pane already waiting for its user when the server started (or reconnected) begins its wait for the usage counts
+        if (!(omo.tracks(pane.pane_id) || gjc.tracks(pane.pane_id) || letta.tracks(pane.pane_id))) options.telemetry?.paneStatus(pane.pane_id, pane.agent_status);
         // A fast mirrored client may queue before the collector's first baseline. A
         // known ready baseline can schedule a fresh guarded check even when the tracker
         // still remembers working; an unknown baseline never supplies that permission.
@@ -1015,22 +1231,29 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       options.paneVacated?.(paneId);
       push.closed(paneId);
     },
-    onPaneMoved: (from, to) => {
+    onPaneMoved: (from, to, status) => {
       options.paneVacated?.(from);
       const renumber = finishes.moved(from, to);
-      for (const state of [codexFailedAt, codexTurns, codexLooked] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
+      for (const state of [codexFailedAt, codexTurns, codexLooked, codexSessions, codexRetryAt] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
       if (codexFailed.delete(from)) codexFailed.add(to);
+      if (codexAlertTurn.has(from)) { codexAlertTurn.set(to, codexAlertTurn.get(from)!); codexAlertTurn.delete(from); }
+      if (toldFailures.has(from)) { toldFailures.set(to, toldFailures.get(from)!); toldFailures.delete(from); }
+      if (toldClaudePrompts.has(from)) { toldClaudePrompts.set(to, toldClaudePrompts.get(from)!); toldClaudePrompts.delete(from); }
       if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
       if (claudeFailed.delete(from)) claudeFailed.add(to);
       if (stoppedOnHook.has(from)) { stoppedOnHook.set(to, stoppedOnHook.get(from)!); stoppedOnHook.delete(from); }
       if (hookPrompts.has(from)) { hookPrompts.set(to, hookPrompts.get(from)!); hookPrompts.delete(from); }
       if (droppedPrompts.has(from)) { droppedPrompts.set(to, droppedPrompts.get(from)!); droppedPrompts.delete(from); }
+      const late = lateClaudeFailure.get(from);
+      if (late !== undefined) { lateClaudeFailure.set(to, late); lateClaudeFailure.delete(from); }
       if (claudeFailHeld.has(from)) { claudeFailHeld.set(to, claudeFailHeld.get(from) ?? null); claudeFailHeld.delete(from); }
       if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
       broadcastAll({ type: "pane-moved", from, to });
-      push.moved(from, to);
+      // A provider's work is not a tracked agent resuming, nor does it answer a card managed here.
+      const ownsQuestion = omo.tracks(from) || gjc.tracks(from) || letta.tracks(from) || cards.waiting(from);
+      push.moved(from, to, ownsQuestion ? "unknown" : status);
       paneMoved?.(from, to);
     },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),
@@ -1097,7 +1320,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   plans.start();
 
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId), () => collector.refresh());
-  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
+  const tracked = { ...collector, stop() { cardsStopped = true; untrackOpenCode(); stopMutes(); stopSubmitted(); stopAnswered(); stopCardTimer(); desktopActivity?.stop(); taskAgents.stop(); stopServed(); collector.stop(); } };
 
   /**
    * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an answer up
@@ -1116,5 +1339,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn };
+  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn, contextChanged };
 }

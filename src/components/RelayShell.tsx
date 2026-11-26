@@ -16,14 +16,16 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { useOffline } from "../lib/useOffline.ts";
+import { checkNetwork, useOffline } from "../lib/useOffline.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
 import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, savedWayTag, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
+import { ListAlarmLine } from "./ListAlarmNotice.tsx";
 import { ListWaitingNotice } from "./ListChangeNotice.tsx";
+import { ListMoveNotices } from "./ListMoveNotice.tsx";
 import { NoPcOnline } from "./NoPcOnline.tsx";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
@@ -242,7 +244,7 @@ export function RelayShell(props: RelayShellProps) {
     if (wasOffline.current && !offline) readAgain.current();
     wasOffline.current = offline;
   }, [offline]);
-  const noneOnline = offline ? <OfflineLine onRetry={() => readAgain.current()} /> : checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
+  const noneOnline = offline ? <OfflineLine onRetry={() => { readAgain.current(); void checkNetwork({ fresh: true }); }} /> : checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
@@ -342,9 +344,11 @@ export function RelayShell(props: RelayShellProps) {
       <main className={frontClass(myPcsShown)} data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
-          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} />{listUnread}{directoryError}</>, true)}
+          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} /><ListAlarmLine />{listUnread}{directoryError}</>, true)}
           {/* a change here (a Remove) that was refused because an earlier one still waits: that one's card, to try it again or cancel it */}
           <ListWaitingNotice />
+          {/* the one-time notice of the move of an account that was in use onto its list, or why this device did not join it */}
+          <ListMoveNotices />
           {!myPcsShown && listUnread}
           {!myPcsShown && directoryError}
         </div>
@@ -377,12 +381,13 @@ export function RelayShell(props: RelayShellProps) {
     : state.kind === "failed" ? state.server_id === sheetJoin.server_id && state.failure !== "identity-changed"
     : state.kind === "connecting" || state.kind === "compare" || state.kind === "ready");
   if (continued) {
-    // #16: the join a sign-in's launch asked by itself waits on one plain screen, and ends on one too (declined, removed,
-    // the PC off: Ask again or Check again asks once more); any other failure, or a number to type here, keeps the sheet
+    // #16: the join a sign-in's launch asked by itself waits on one plain screen, and ends on one too (declined, refused,
+    // removed, the PC off: Ask again or Check again asks once more); any other failure, or a number to type here, keeps the sheet
     const launched: { readonly reason: PlainReason; readonly digits?: string; readonly ask?: () => void; readonly check?: () => void } | null = props.launchJoin !== true ? null
       : state.kind === "confirm" || state.kind === "connecting" ? { reason: "allow" }
       : state.kind === "compare" && state.typed !== true ? { reason: state.approveOn === undefined ? "type" : "allow", digits: state.digits }
-      : state.kind === "failed" && (state.failure === "pair-declined" || state.failure === "pair-unavailable") ? { reason: "declined", ask: onRetry }
+      : state.kind === "failed" && state.failure === "pair-declined" ? { reason: "declined", ask: onRetry }
+      : state.kind === "failed" && state.failure === "pair-unavailable" ? { reason: "refused", ask: onRetry }
       : state.kind === "failed" && state.failure === "pair-unanswered" ? { reason: "unanswered", ask: onRetry }
       : state.kind === "failed" && state.failure === "revoked" ? { reason: "removed", ask: onRetry }
       : state.kind === "failed" && state.failure === "pc-offline" ? { reason: "off", check: onRetry }

@@ -29,8 +29,15 @@ const extensionSource = (server: { name: string; command: string; args: readonly
 ].join("\n");
 
 let hub: AgentToolHub | null = null;
+export const OVIS_AGENT_LAUNCH_LABEL = "ovis.agent-launch";
 export function useAgentToolHub(current: AgentToolHub | null): void { hub = current; }
 export function forgetLocalRun(pane: string, keep?: string): void { if (hcMachine() === null) hub?.runs.forgetTerminal(pane, keep); }
+export async function markLocalAgentLaunch(pane: string, platform: string): Promise<void> {
+  if (platform !== "linux" || pane.includes("/") || hcMachine() !== null || capabilities().attach !== "hc") return;
+  // The new process may call before launch is confirmed, even for harnesses that never get a token.
+  await coreConnection().call("terminal.label", { terminal: pane, labels: { [OVIS_AGENT_LAUNCH_LABEL]: "1" } });
+  hub?.runs.forgetPaneRun(pane);
+}
 export function launchHarnessTool(pane: string, kind: string, options: { args?: string[]; platform: string; browsers: unknown }) {
   if (!hub || hcMachine() !== null || !capabilities().acpChildren || options.platform === "win32") return null;
   const extension = Object.hasOwn(EXTENSION_AGENTS, kind) ? EXTENSION_AGENTS[kind] : null;

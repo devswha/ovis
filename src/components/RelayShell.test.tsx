@@ -306,6 +306,8 @@ describe("the hosted front page", () => {
         waiting: async () => waits, cancel: async (given: typeof first) => { calls.push(`cancel ${given.place.hash}`); },
         sync: async () => { calls.push("sync"); throw new Error("nothing is sent in this test"); },
         subscribe: () => () => {}, view: () => ({ account: null, reached: false, status: { at: "off" }, devices: [], pcs: [] }),
+        // Add PC's relay tab asks every page list whether this device may write it (InvitePc): this one may not
+        writer: () => null,
       } as unknown as AccountList);
       const cards = () => renderer!.root.findAll((node) => node.props["data-testid"] === "list-allow-notice");
       const refusedElsewhere = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT)); await Promise.resolve(); await Promise.resolve(); }); };
@@ -993,6 +995,57 @@ describe("the hosted front page", () => {
           (navigator as { onLine?: boolean }).onLine = true;
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
+        }
+      });
+
+      it("believes the account service over a WebView that says offline: its answer takes the line away and a row opens, asked again on each open", async () => {
+        // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7)
+        const meta = { getAttribute: (name: string) => name === "content" ? "https://account.example" : null };
+        Object.assign(document, { querySelector: (selector: string) => selector === 'meta[name="ovis-account-service"]' ? meta : null });
+        const asks: { readonly url: string; readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }[] = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
+          const answer = Promise.withResolvers<Response>();
+          asks.push({ url: String(input), answer });
+          return await answer.promise;
+        }, { preconnect: realFetch.preconnect });
+        const settle = async (ask: { readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }, answered: boolean): Promise<void> => {
+          await act(async () => {
+            if (answered) ask.answer.resolve(new Response(null, { status: 200 }));
+            else ask.answer.reject(new TypeError("Failed to fetch"));
+            await ask.answer.promise.catch(() => undefined);
+            for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+          });
+        };
+        const relayRow = () => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a");
+        const assigned: string[] = [];
+        Object.assign(window.location, { assign: (href: string) => { assigned.push(href); } });
+        try {
+          offline(true);
+          await mount(offlinePage());
+          // the screen asks on its own as it starts watching; no answer: the device is offline, as before
+          expect(asks.map((ask) => ask.url)).toEqual(["https://account.example/v1/providers"]);
+          await settle(asks[0]!, false);
+          expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
+          // Try again asks again, and its answer takes the line away
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && textOf(node) === "Try again" && shown(node)).props.onClick(); });
+          expect(asks).toHaveLength(2);
+          await settle(asks[1]!, true);
+          expect(alerts().filter((text) => text.includes("internet"))).toEqual([]);
+          // a tap asks once more rather than trusting that answer, and goes to the PC's page once it answers
+          let held = 0;
+          await act(async () => { relayRow().props.onClick({ preventDefault: () => { held++; } }); });
+          expect([held, asks.length, assigned]).toEqual([1, 3, []]);
+          await settle(asks[2]!, true);
+          expect(assigned).toEqual([`/s/${ids.mac}/`]);
+          // the network gone since, with the flag still false: the next tap's ask goes unanswered, and the row says so
+          await act(async () => { relayRow().props.onClick({ preventDefault: () => { held++; } }); });
+          await settle(asks[3]!, false);
+          expect(assigned).toHaveLength(1);
+          expect(alerts()).toContain("Connect this device to the internet to open the PC.");
+        } finally {
+          globalThis.fetch = realFetch;
+          offline(false);
         }
       });
 
@@ -2279,6 +2332,13 @@ describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on 
     const removed = failed("revoked");
     expect(plain(removed)).toBe("removed");
     expect(removed).toContain("This device was removed from Mac. Ask again to join it.");
+    // refused before anybody was asked (a PC in no account yet, one paused after too many tries): nobody declined it
+    const refused = failed("pair-unavailable");
+    expect(plain(refused)).toBe("refused");
+    expect(refused).toContain("Mac cannot take this device yet");
+    expect(refused).toContain('data-action="ask-again"');
+    expect(refused).not.toContain("Not allowed");
+    expect(refused).not.toContain("[Allow]");
     const off = failed("pc-offline");
     expect(plain(off)).toBe("off");
     expect(off).toContain('data-action="check-again"');

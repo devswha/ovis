@@ -78,6 +78,20 @@ describe("the number for a PC that asks to be added", () => {
     expect(await play.digits()).not.toBe(number.digits);
   });
 
+  it("can still show after the PC was unable to answer for a full rate-limit window", async () => {
+    const { phone, play } = await asking();
+    const [post] = await postedPcs(phone.list);
+    if (post === undefined) throw new Error("no PC post");
+    let clock = 0;
+
+    const result = await numberWith(phone.list, post, { now: () => clock, wait: async (ms) => {
+      clock += ms;
+      if (clock >= 63_000) await play.answer();
+    } });
+
+    expect(await play.digits()).toBe(shown(result).digits);
+  });
+
   it("is not shown where the PC does not answer in time", async () => {
     const { phone } = await asking();
     const [post] = await postedPcs(phone.list);
@@ -138,8 +152,8 @@ describe("the number for a PC that asks to be added", () => {
     };
     // the PC's nonce was not there at the first read, sent at 0, and was at the next: it can have been put there right after 0
     expect(shown(await slowly(20_000)).until).toBe(120_000);
-    // the same, where the late read came back past the thirty seconds the device waits: no number at all
-    expect(await slowly(40_000)).toEqual({ shown: false, why: "silent" });
+    // the same, where the late read came back after the device's deadline: no number at all
+    expect(await slowly(80_000)).toEqual({ shown: false, why: "silent" });
   });
 
   it("ends at its deadline where the reveal is never answered, the number's two minutes notwithstanding", async () => {
@@ -183,6 +197,18 @@ describe("Add, beside the number", () => {
     const before = w.held().entries.length;
     expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => { admitted.push("again"); } })).toEqual({ added: true });
     expect([admitted, w.held().entries.length]).toEqual([[pc.server_id], before]);
+  });
+
+  it("is not done for a card of the same key with another encryption key than the one the list holds for that PC", async () => {
+    const { w, phone, pc, play } = await asking();
+    const number = shown(await numberWith(phone.list, (await postedPcs(phone.list))[0]!, pcTurn(play)));
+    expect(await addPostedPc(phone.list, number.post, null, { wait: async () => {}, admit: async () => {} })).toEqual({ added: true });
+    // the same key signs another card for the same relay key, with another encryption key
+    const other = await askingPc();
+    const card = await signCard({ key: pc.key, enc: other.enc, list: w.held().id, endpoint: pc.endpoint, invite: null }, pc.signs);
+    const outcome = await addPostedPc(phone.list, { ...number.post, enc: other.enc, card }, null, { wait: async () => {}, admit: async () => {} });
+    expect(outcome.added).toBe(false);
+    expect(w.held().state.pcs[pc.endpoint]).toMatchObject({ enc: pc.enc });
   });
 
   it("signs nothing where the account service does not admit the PC, and says what it said", async () => {

@@ -57,7 +57,7 @@ const LOGIN: Spec = {
 };
 
 const SPECS: Readonly<Record<string, Spec>> = {
-  agent: { command: "agent", passThrough: true, summary: "Use this coding agent's local harness tools", usage: "ovis agent <machines|harnesses|ls|read|start|send|wait|result|ask|stop> [arguments] --json", more: HARNESS_SKILL },
+  agent: { command: "agent", passThrough: true, summary: "Use this coding agent's local harness tools", usage: "ovis agent <machines|harnesses|ls|read|start|send|wait|result|ask|answer|stop> [arguments] --json\n  ovis agent answer <session> --question-id <id> [--choice <index>] --json  (when waiting_parent)", more: HARNESS_SKILL },
   login: LOGIN,
   add: LOGIN,
   link: LOGIN,
@@ -114,7 +114,7 @@ const SPECS: Readonly<Record<string, Spec>> = {
   recover: {
     command: "recover", gated: true, passThrough: true,
     summary: "List the devices this PC holds back; release, admit or remove them",
-    usage: "ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all]",
+    usage: "ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all | --restamp]",
   },
   confirm: {
     command: "confirm", gated: true,

@@ -6,7 +6,7 @@ import type { SeenFinish } from "./seen.ts";
 
 export const LOCAL_MACHINE = "local";
 export const BRIDGE_PROTOCOL = 1;
-export const REMOTE_BUNDLE_VERSION = "53";
+export const REMOTE_BUNDLE_VERSION = "54";
 export interface PaneTarget { machine_id: string; pane_id: string }
 export type MachineState = "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 export interface SshTarget {
@@ -471,6 +471,11 @@ export interface OwnJoinRequest {
   digits?: string;
   /** The join is let in by the account's signed list: an approval here is received at once, and the device is in only once its entry is in the list. */
   list?: true;
+  /**
+   * A join into the account on a PC pinned to its list, from an app that knows no join into a list (an Ovis older than
+   * 0.5.10): this PC lets it in by nothing, so nothing is approved for it here; that app is updated, and asks again.
+   */
+  list_unknown?: true;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its
@@ -528,6 +533,12 @@ export interface RemotePairingRequest {
    * member. Absent from an older server, or while it has not confirmed.
    */
   confirmed?: true;
+  /**
+   * A join this PC cannot let in: it lets devices in by its account's signed list, and the app that asks knows no join
+   * into a list (an Ovis older than 0.5.10). No approval decides it (409 `list_unknown`); a decline ends it. Absent from
+   * an older server, or when false.
+   */
+  list_unknown?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

@@ -6,19 +6,21 @@ import { useTypedKeys, type TypedKeysDeps } from "./useTypedKeys.ts";
 
 function mount(agent: string) {
   const sent: string[] = [];
+  let status: TypedKeysDeps["agentStatus"] = "working";
+  const marks: (number | null)[] = [];
   let pane: string | null = "p1";
   let lease = "1:0:0";
   const socket = { connected: true, inputLease: () => lease };
-  const term = { input: (data: string) => { sent.push(data); }, rows: 0, buffer: { active: { baseY: 0, getLine: () => undefined } }, focus: () => {} };
+  const term = { input: (data: string) => { sent.push(data); marks.push(refs.stopKeyRef.current); }, rows: 0, buffer: { active: { baseY: 0, getLine: () => undefined } }, focus: () => {} };
   const ref = <T,>(current: T) => ({ current });
   const refs = {
     barKeyRef: ref(null), coarseRef: ref(false), compositionCommitPendingRef: ref(false), composingRef: ref(false), inputLineRef: ref(false),
-    modifiersRef: ref({}), lockedRef: ref({}), reassertIfStaleRef: ref(() => {}), socketRef: ref(socket), stopKeyRef: ref(false),
+    modifiersRef: ref({}), lockedRef: ref({}), reassertIfStaleRef: ref(() => {}), socketRef: ref(socket), stopKeyRef: ref<number | null>(null),
     tRef: ref((key: string) => key), termRef: ref(term),
   };
   let hook: ReturnType<typeof useTypedKeys> | null = null;
   function Probe() {
-    hook = useTypedKeys({ ...refs, agent, agentStatus: "working", commitPendingText: () => {}, setLatch: () => {}, consumeModifiers: () => {},
+    hook = useTypedKeys({ ...refs, agent, agentStatus: status, commitPendingText: () => {}, setLatch: () => {}, consumeModifiers: () => {},
       paneId: pane, setInputError: () => {} } as unknown as TypedKeysDeps);
     return null;
   }
@@ -26,9 +28,11 @@ function mount(agent: string) {
   act(() => { renderer = create(createElement(Probe)); });
   return {
     sent,
+    marks,
     stop: () => act(() => { hook!.abortTurn(); }),
     wait: () => act(() => { jest.advanceTimersByTime(DOUBLE_ESCAPE_GAP_MS); }),
     switchPane: (next: string) => { pane = next; act(() => { renderer!.update(createElement(Probe)); }); },
+    status: (next: TypedKeysDeps["agentStatus"]) => { status = next; act(() => { renderer!.update(createElement(Probe)); }); },
     reconnect: () => { lease = "2:0:0"; },
     drop: () => { socket.connected = false; },
     unmount: () => act(() => { renderer!.unmount(); }),
@@ -39,6 +43,16 @@ describe("the second Escape of a two-Escape Stop", () => {
   beforeAll(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
   beforeEach(() => { jest.useFakeTimers(); });
   afterEach(() => { jest.useRealTimers(); });
+
+  it("carries the mark of the Stop, as the first does, so a link lost since refuses it", () => {
+    const h = mount("devin");
+    h.stop();
+    h.wait();
+    expect(h.sent).toEqual(["\u001b", "\u001b"]);
+    expect(h.marks[0]).toBeNumber();
+    expect(h.marks[1]).toBe(h.marks[0]!);
+    h.unmount();
+  });
 
   it("follows the first on the same pane and connection", () => {
     const h = mount("devin");
@@ -52,6 +66,15 @@ describe("the second Escape of a two-Escape Stop", () => {
     const h = mount("devin");
     h.stop();
     h.switchPane("p2");
+    h.wait();
+    expect(h.sent).toEqual(["\u001b"]);
+  });
+
+  it("does not follow a stop into the next observed turn", () => {
+    const h = mount("devin");
+    h.stop();
+    h.status("idle");
+    h.status("working");
     h.wait();
     expect(h.sent).toEqual(["\u001b"]);
   });
