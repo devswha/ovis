@@ -303,12 +303,10 @@ export function App() {
     showsChat(pane, lens) && machineSessions.peek(machineId)?.socket.canSearchConversation() === true;
   const { renameRequest, requestRename, clearRenameRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
   const { renameRequest: closeTabRequest, requestRename: requestCloseTab, clearRenameRequest: clearCloseTabRequest } = useRenameRequest(selectedMachineId, selectedPaneId);
-  const moreMenu = useMoreMenu();
   const hostedSignIn = useHostedSignIn();
   // where Add a PC leads on a phone: a PC reached through the hosted app (in a browser or in the phone app, which opens
   // it there) goes to the hosted app's Add a PC, one the phone app opened by its address to the app's own screens
   const addPcTo = addPcExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname });
-  const { more, setMore, closeMore, group: moreGroup, openGroup: openMoreGroup, closeGroup: closeMoreGroup } = moreMenu;
   const paneActionsRef = useRef<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>(null);
   const paneLocked = usePaneLocked(selectedMachineId);
   const { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, hideFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
@@ -829,13 +827,15 @@ export function App() {
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const paneMenuInMore = selectedPane !== null
     && tabRowHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0, tabsInHeader || inMode);
+  const moreMenu = useMoreMenu(selectedPane ? paneStorageId(selectedMachineId, selectedPane.pane_id) : null, paneMenuInMore);
+  const { more, setMore, closeMore, group: moreGroup, openGroup: openMoreGroup, closeGroup: closeMoreGroup, paneActionsInMore } = moreMenu;
   const inboxWide = inMode && wideScreen;
   const moreWaiting = inMode && !inbox.shown && selectedPaneId !== null ? waitingElsewhere(waitingRosters, { machineId: selectedMachineId, paneId: selectedPaneId }) : sessionTally.waiting;
   const waitingInMore = moreWaiting > 0;
-  const currentTabInMore = paneMenuInMore && selectedPane ? snapshot?.tabs.find((tab) => tab.tab_id === selectedPane.tab_id) : undefined;
+  const currentTabInMore = paneActionsInMore && selectedPane ? snapshot?.tabs.find((tab) => tab.tab_id === selectedPane.tab_id) : undefined;
   const currentTabPlace = currentTabInMore && snapshot ? snapshot.tabs.filter((tab) => tab.workspace_id === selectedPane!.workspace_id).indexOf(currentTabInMore) + 1 : 1;
   const currentTabName = currentTabInMore ? (customTabLabel(currentTabInMore, currentTabPlace) ?? tabLabel(currentTabInMore, t, currentTabPlace)) : null;
-  const paneMoreItems = paneMenuInMore && selectedPane ? (paneActionsRef.current?.(selectedPane) ?? []).map((item, index): RowMenuItem => ({
+  const paneMoreItems = paneActionsInMore && selectedPane ? (paneActionsRef.current?.(selectedPane) ?? []).map((item, index): RowMenuItem => ({
     ...item, divider: index === 0 || item.divider,
     ...(item.id === "rename-tab" && currentTabName ? { hint: currentTabName, title: `${item.label} · ${currentTabName}` } : {}),
     run: () => paneActionsRef.current?.(selectedPane).find((fresh) => fresh.id === item.id)?.run(),

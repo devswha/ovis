@@ -7,21 +7,25 @@ export interface MoreMenu {
   setMore: Dispatch<SetStateAction<{ anchor: HTMLElement } | null>>;
   closeMore: () => void;
   group: { kind: MoreGroup; anchor: HTMLElement } | null;
+  paneActionsInMore: boolean;
   openGroup: (kind: MoreGroup, anchor: HTMLElement) => void;
   closeGroup: () => void;
 }
 
-export function useMoreMenu(): MoreMenu {
+export function useMoreMenu(paneKey: string | null, paneMenuInMore: boolean): MoreMenu {
   const [more, setMore] = useState<{ anchor: HTMLElement } | null>(null);
   const closeMore = useCallback(() => setMore(null), []);
   // A More whose button left the document goes with it, before a frame is drawn: the thread it stood over closed
   // under it (a system Back in the inbox mode's wide layout takes the pane's More away), and what it listed was that
   // thread's. Checked after every render: nothing tells of a button's leaving.
   useLayoutEffect(() => { if (more !== null && !more.anchor.isConnected) setMore(null); });
-  const [group, setGroup] = useState<{ kind: MoreGroup; anchor: HTMLElement } | null>(null);
-  const openGroup = useCallback((kind: MoreGroup, anchor: HTMLElement) => setGroup({ kind, anchor }), []);
+  const [opened, setGroup] = useState<{ kind: MoreGroup; anchor: HTMLElement; paneKey: string | null } | null>(null);
+  const openGroup = useCallback((kind: MoreGroup, anchor: HTMLElement) => setGroup({ kind, anchor, paneKey }), [paneKey]);
   const closeGroup = useCallback(() => setGroup(null), []);
-  return { more, setMore, closeMore, group, openGroup, closeGroup };
+  const paneChanged = opened?.kind === "pane" && opened.paneKey !== paneKey;
+  useLayoutEffect(() => { if (paneChanged) closeGroup(); }, [paneChanged, closeGroup]);
+  const group = paneChanged ? null : opened;
+  return { more, setMore, closeMore, group, openGroup, closeGroup, paneActionsInMore: paneMenuInMore || group?.kind === "pane" };
 }
 
 export function openGroupItems<T extends { divider?: boolean }>(kind: MoreGroup | null, sheet: boolean, find: T[], pane: T[]): T[] {
