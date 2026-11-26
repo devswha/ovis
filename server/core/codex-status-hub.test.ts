@@ -42,6 +42,22 @@ function codexHub(text: string) {
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
+  it("keeps herdr's done alert when the app server never ends the announced turn", async () => {
+    const h = codexHub(answered);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.status.hookTurn("w1:p1", "codex", { turn: "began", prompt: "u1" });
+      h.status.hookTurn("w1:p1", "codex", { turn: "ended", prompt: "other", failed: true });
+      h.herdrSays(pane("idle"));
+      handlers.onStatus("w1:p1", "idle", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("done");
+      expect(h.alerts).toEqual(["working", "done"]);
+      expect(h.failures).toEqual([]);
+    } finally { h.restore(); }
+  });
+
   it("keeps a rollout-detected failure ready for delivery at codex/unknown", async () => {
     const h = codexHub(failed);
     try {
@@ -74,7 +90,7 @@ describe("a Codex pane whose turn ended in an error", () => {
     } finally { told.mockRestore(); h.restore(); }
   });
 
-  it("reports a served failure before herdr rests, but releases queued input only at rest", async () => {
+  it("shows a served failure immediately without changing the delivery snapshot", async () => {
     const h = codexHub(failed);
     try {
       h.herdrSays(pane("working"));
@@ -85,14 +101,12 @@ describe("a Codex pane whose turn ended in an error", () => {
       expect(h.failures).toEqual(["w1:p1"]);
       expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
       expect(h.pending.current("w1:p1")).toBe("working");
-      expect(h.status.queueHeld("w1:p1", true)).toBe(true);
+      expect((await h.status.deliverySnapshot()).panes[0]?.agent_status).toBe("working");
       h.herdrSays(pane("done"));
       expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
-      expect(h.status.queueHeld("w1:p1", true)).toBe(false);
-      expect(h.read).not.toHaveBeenCalled();
       handlers.onStatus("w1:p1", "done", "codex");
       h.status.hookTurn("w1:p1", "codex", event);
-      expect(h.pending.current("w1:p1")).toBe("idle");
+      await h.looked();
       expect(h.failures).toEqual(["w1:p1"]);
     } finally { h.restore(); }
   });

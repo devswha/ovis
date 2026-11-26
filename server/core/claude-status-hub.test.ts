@@ -101,7 +101,7 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([id]);
   });
 
-  it("tells StopFailure before the transcript arrives without releasing queued input or repeating the alert", async () => {
+  it("shows StopFailure before the transcript arrives without repeating the alert", async () => {
     const h = await claudeHub(null, true);
     const id = h.pane.pane_id;
     h.herdrSays({ ...h.pane, agent_status: "working" });
@@ -115,7 +115,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     if (failure) h.status.hookTurn(id, "claude", failure);
     expect(h.last().status).toBe("idle");
     expect(h.failures).toEqual([id]);
-    expect(h.pending.current(id)).toBe("working");
 
     handlers.onStatus(id, "working", "claude");
     expect(h.last().status).toBe("idle");
@@ -125,7 +124,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     if (failure) h.status.hookTurn(id, "claude", failure);
     expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
     expect(h.failures).toEqual([id]);
-    expect(h.pending.current(id)).toBe("idle");
   });
 
   it("reads at rest and tells the failure once, never DONE, for a turn this server saw run", async () => {

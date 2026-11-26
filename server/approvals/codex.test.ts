@@ -530,7 +530,7 @@ describe("Ovis on the pane's Codex server", () => {
 
     codex.send({ method: "error", params: notice });
     await read(codex);
-    expect(servedTurnEnd("w1:p1")).toBe("failed");
+    expect(servedTurnEnd("w1:p1")).toBe("running");
     expect(failures).toEqual(["u1"]);
     const failedTurn = { status: "failed", items: [], error };
     codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u1" } } });
