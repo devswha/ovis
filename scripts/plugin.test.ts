@@ -893,22 +893,44 @@ describe("ovis join, as the command runs it", () => {
   });
 });
 
-it.skipIf(process.platform === "win32")("logout finds the account on a healthy token-protected server", async () => {
-  const token = "logout-fixture-token";
-  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (path === "/api/health") return Response.json({ ...APP_HEALTH, auth: { required: true, authenticated: false, reason: "token_required" } });
-    if (path === "/api/account/status") {
-      if (request.headers.get("authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });
-      return Response.json({ account: null, members: 0 });
+for (const encoding of ["ASCII", "Unicode"]) {
+  it.skipIf(process.platform === "win32")(`logout reads a healthy ${encoding} token-protected server without printing the token`, async () => {
+    const { pairingPc } = await import("../server/account/pairing.test-helpers.ts");
+    const token = encoding === "ASCII" ? "logout-fixture-token" : "logout-fixture-🔒";
+    const herdrSocket = process.env["HERDR_SOCKET"];
+    const unix = join(scratch, "herdr.sock");
+    const herdr = Bun.listen<{ line: string }>({ unix, socket: {
+      open(client) { client.data = { line: "" }; },
+      data(client, chunk) {
+        client.data.line += chunk.toString();
+        if (!client.data.line.includes("\n")) return;
+        const { id, method } = JSON.parse(client.data.line) as { id: string; method: string };
+        const result = method === "ping" ? { version: "fixture", protocol: 22 } : { snapshot: { workspaces: [], panes: [] } };
+        client.end(`${JSON.stringify({ id, result })}\n`);
+      },
+    } });
+    process.env["HERDR_SOCKET"] = unix;
+    try {
+      const pc = await pairingPc({ startRelay: false, server: { token, accountOpensAll: true } });
+      try {
+        expect(await pc.local("/api/health")).toMatchObject({ status: 200, body: { ok: true, auth: { reason: "token_required" } } });
+        expect((await pc.local("/api/account/status")).status).toBe(401);
+        const result = await run("logout", {
+          HOST: "127.0.0.1", PORT: String(pc.app.port), OVIS_STATE_DIR: pc.stateDir, OVIS_TOKEN: token,
+          OVIS_PROFILE: undefined, OVIS_PREVIEW: undefined, OVIS_ACCOUNT_OPENS_ALL: "1", BUN_CONFIG_VERBOSE_FETCH: "curl",
+        }, { timeout: 5_000 });
+        expect(result.out).not.toContain(token);
+        expect(result.err).not.toContain(token);
+        expect(result.exitCode, result.out + result.err).toBe(0);
+        expect(result.out).toContain("This PC is in no Ovis account.");
+      } finally { await pc.close(); }
+    } finally {
+      herdr.stop(true);
+      if (herdrSocket === undefined) delete process.env["HERDR_SOCKET"];
+      else process.env["HERDR_SOCKET"] = herdrSocket;
     }
-    return new Response(null, { status: 404 });
-  } });
-  try {
-    const result = await run("logout", { HOST: "127.0.0.1", PORT: String(server.port), HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: token });
-    expect(result.exitCode, result.out + result.err).toBe(0);
-  } finally { await server.stop(true); }
-});
+  });
+}
 
 describe("the devices status lists apart", () => {
   const GROUPS = { unlinked: [{ id: "6a1f0c9e2b7d4a10", label: "Old phone" }], own_word: [{ id: "0d4c1b7a9e2f3c58", label: "Tab\u001b]0;let\u0007let" }, { id: "1e5d2c8b0a3f4d69", label: "Laptop" }] };

@@ -1375,9 +1375,9 @@ const listSummaryOf = (value: unknown): ListSummary | null => {
  * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
  * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
  */
-async function accountTold(headers?: HeadersInit): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
   try {
-    const response = await serverFetch("/api/account/status", { ...(headers === undefined ? {} : { headers, redirect: "error" }), signal: AbortSignal.timeout(1500) });
+    const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
     if (!response.ok) {
       const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
       return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
@@ -1391,8 +1391,8 @@ async function accountTold(headers?: HeadersInit): Promise<{ readonly account: s
 }
 
 /** This PC's account as its owner is told it; null where that does not answer, or the PC cannot read its account state. */
-async function accountOf(headers?: HeadersInit) {
-  const told = await accountTold(headers);
+async function accountOf() {
+  const told = await accountTold();
   return told !== null && "problem" in told ? null : told;
 }
 
@@ -1488,9 +1488,12 @@ async function logout(): Promise<number> {
   return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => {
     const health = await appHealth();
     if (health === null) return null;
-    // The health answer already says the app is running; only this explicit owner's account request needs its token.
-    const token = env["OVIS_TOKEN"];
-    return await accountOf(health.tokenRequired && token ? { authorization: `Bearer ${token}` } : undefined);
+    if (serverDoor() !== null || !health.tokenRequired) return await accountOf();
+    // Liveness does not prove who holds the TCP port. Ask the same local socket that will revoke the devices.
+    const reply = await io.send({ act: "account_status" }, 2).catch(() => null);
+    if (typeof reply !== "object" || reply === null || !("account" in reply) || !("members" in reply)) return null;
+    const { account, members } = reply;
+    return (typeof account === "string" || account === null) && typeof members === "number" && Number.isSafeInteger(members) ? { account, members } : null;
   }, leave: leaveListing }));
 }
 
@@ -1528,7 +1531,7 @@ async function withRecoveryIo(run: (io: import("./plugin-recover.ts").RecoverIo)
       terminal: lines !== null,
       platform: process.platform,
       ask: (question) => lines === null ? Promise.resolve("") : lines.question(question),
-      send: (request) => askRecovery(runningStateDir(APP_STATE_DIR), request),
+      send: (request, timeoutSeconds) => askRecovery(runningStateDir(APP_STATE_DIR), request, timeoutSeconds),
     });
   } finally { lines?.close(); }
 }
