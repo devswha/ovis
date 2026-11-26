@@ -49,8 +49,11 @@ public class PreviewUpdaterTest {
 
     @Test
     public void aBuildThatIsNotThePreviewHasNoFeedAndNoInstallPermission() throws IOException {
-        assertEquals("", BuildConfig.PREVIEW_FEED);
-        assertFalse(PreviewUpdater.enabled());
+        // the preview variant's own unit run carries OVIS_PREVIEW_FEED when it is set
+        if (!"preview".equals(BuildConfig.BUILD_TYPE)) {
+            assertEquals("", BuildConfig.PREVIEW_FEED);
+            assertFalse(PreviewUpdater.enabled());
+        }
         String main = new String(Files.readAllBytes(Paths.get("src/main/AndroidManifest.xml")), StandardCharsets.UTF_8);
         String preview = new String(Files.readAllBytes(Paths.get("src/preview/AndroidManifest.xml")), StandardCharsets.UTF_8);
         assertFalse(main.contains("REQUEST_INSTALL_PACKAGES"));

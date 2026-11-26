@@ -27,7 +27,10 @@ export function usePreviewAppUpdate(): DesktopAppUpdate | null {
   // the native check answers once it and any download are over: until then the row says it is checking
   const check = useCallback(() => {
     setState((now) => now && { ...now, phase: "checking", error: null });
-    void ask("check").catch(() => {});
+    // a refused check ends the checking phase, so the row can be tried again
+    void ask("check").catch((error: unknown) => {
+      setState((now) => now && { ...now, phase: "failed", error: error instanceof Error ? error.message : String(error) });
+    });
   }, [ask]);
   const install = useCallback(() => { void ask("install").catch(() => {}); }, [ask]);
   return native && state && state.phase !== "off" ? { state, installing: false, check, install } : null;
