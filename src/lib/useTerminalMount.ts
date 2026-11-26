@@ -1025,7 +1025,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           peakInFlight = Math.max(peakInFlight, inFlight);
           write(data, () => { inFlight--; callback(); });
         };
-        Object.assign(host, { failTerminal: () => (term as unknown as GhosttyTerminal).failForTest() });
+        Object.assign(host, { failTerminal: () => term.failForTest() });
         Object.assign(host, { outputProbe: () => ({ ...term.oscStringState(), parsingReplay, replayOscOpen, retired: writingOutput && parsingOwner !== outputOwner, queued: outputFrames.length, inFlight, peakInFlight, writes, written, frameSettled: frameGateRef.current.current,
           history: ((rows) => ({ scrollback: term.options.scrollback ?? 0, length: rows.length, viewportY: rows.viewportY, baseY: rows.baseY }))(screenRows(term)),
           grid: { cols: term.cols, rows: term.rows } }) });
