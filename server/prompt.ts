@@ -48,6 +48,8 @@ import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
+import { answerOmoPending } from "./omo-answer.ts";
+import { omoPaneSocket } from "./command-data-send.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
 import { OpenCodePromptState } from "./opencode-prompt.ts";
 export { removedInvisible } from "./dialogs/claude.ts";
@@ -2146,13 +2148,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (request.signal.aborted) return promptChanged();
       const served = agent === "codex" && parsedPrompt !== undefined ? answerServed(body.pane_id, parsedPrompt, body) : null;
       if (served === "gone") return promptChanged();
-      if (served === "sent") {
+      // an OmO question asked alone that does not wait: its answer goes as data on the pane's own OmO control socket
+      const omoData = parsedPrompt?.omoData === undefined ? null
+        : await answerOmoPending(await omoPaneSocket(pane), parsedPrompt, body, () => !deadline.aborted);
+      if (served === "sent" || omoData === "sent") {
         delivered = true;
         way = "native";
         askingEnded(body.pane_id);
         form.still = sameContent(contentId(prompt));
         return jsonResponse({ ok: true });
       }
+      if (omoData === "gone") return promptChanged();
 
       let steps: AnswerStep[];
       try {

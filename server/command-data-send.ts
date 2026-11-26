@@ -98,6 +98,19 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
   return { at, ran: route.kind === "command" };
 }
 
+/**
+ * The control socket of the OmO process `pane` runs (omo-control.ts), while herdr still reports the pane's terminal and
+ * session as `pane` says them; null otherwise.
+ */
+export async function omoPaneSocket(pane: HerdrPane): Promise<string | null> {
+  const roots = await paneProcessRoots(pane.pane_id, "omo");
+  const agentDir = roots.omo?.agentDir;
+  const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
+  if (socket === null) return null;
+  const now = await paneGet(pane.pane_id);
+  return now.terminal_id === pane.terminal_id && JSON.stringify(now.agent_session ?? null) === JSON.stringify(pane.agent_session ?? null) ? socket : null;
+}
+
 /** Whether herdr reports a Codex session in `pane` other than `threadId` (by its id, or by its rollout file's name). */
 export function codexDisagrees(pane: Pick<HerdrPane, "agent_session">, threadId: string): boolean {
   const session = pane.agent_session;
@@ -113,13 +126,9 @@ export function codexDisagrees(pane: Pick<HerdrPane, "agent_session">, threadId:
  * would refuse is typed, so it says why.
  */
 async function omoEffort(pane: HerdrPane, level: string, mayWrite: () => boolean): Promise<DataSent | null> {
-  const roots = await paneProcessRoots(pane.pane_id, "omo");
-  const agentDir = roots.omo?.agentDir;
-  const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
-  if (socket === null || level === "off") return null;
-  // the session the send was made for, as herdr reports it now
-  const now = await paneGet(pane.pane_id);
-  if (now.terminal_id !== pane.terminal_id || JSON.stringify(now.agent_session ?? null) !== JSON.stringify(pane.agent_session ?? null)) return null;
+  if (level === "off") return null;
+  const socket = await omoPaneSocket(pane);
+  if (socket === null) return null;
   // last before the write: the levels the model offers now (OmO clamps an unoffered level rather than refusing it)
   const offered = await omoControlCall(socket, { type: "get_available_thinking_levels" });
   const levels = typeof offered === "object" && typeof offered["data"] === "object" && offered["data"] !== null ? (offered["data"] as { levels?: unknown }).levels : undefined;
