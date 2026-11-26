@@ -51,7 +51,7 @@ interface InstallRecord {
   command: string;
 }
 
-const shellQuote = (value: string): string => (/^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
+export const shellQuote = (value: string): string => (/^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const commandOf = (value: unknown): string | null => (isObject(value) && typeof value["command"] === "string" ? value["command"] : null);
 
@@ -127,6 +127,24 @@ function namesAWrapper(command: string, tee: string, home: string): boolean {
     if (!path.startsWith("/")) return path.includes("statusline-tee.sh");
     return basename(path) === "statusline-tee.sh" && ownFile(path);
   });
+}
+
+/**
+ * The status line Claude Code draws from its settings files, without a `--settings` of its own: the first of the
+ * project's local settings, its shared settings and the user's settings (in `configDir`) that sets one with a command,
+ * as Claude ranks them. Null when none does, or for a file that cannot be read as JSON (Claude would not run it either).
+ * Managed settings rank above a `--settings`, so what they set is drawn whatever this says.
+ */
+export function configuredStatusLine(configDir: string, projectDir: string | null): Record<string, unknown> | null {
+  const files = [...(projectDir === null ? [] : [join(projectDir, ".claude", "settings.local.json"), join(projectDir, ".claude", "settings.json")]), join(configDir, "settings.json")];
+  for (const file of files) {
+    let value: unknown;
+    try { value = JSON.parse(readFileSync(file, "utf8")); } catch { continue; }
+    const line = isObject(value) ? value[KEY] : undefined;
+    const command = commandOf(line);
+    if (command !== null && command.trim() !== "") return line as Record<string, unknown>;
+  }
+  return null;
 }
 
 export interface StatuslineInstallOptions {

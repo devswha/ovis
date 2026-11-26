@@ -9,6 +9,7 @@ import { preloaded } from "./relay.ts";
 import { parsedByPublicPrompt } from "../dialogs/shared.ts";
 import { ROOT } from "../entries.ts";
 import { parseInteractivePrompt } from "../prompt.ts";
+import { readStatuslineContext } from "../statusline.ts";
 
 // the folder's and socket's modes and links are those of Linux and macOS; on Windows the hub is a named pipe
 const posix = process.platform !== "win32";
@@ -140,6 +141,62 @@ describe.skipIf(!posix)("launchArgs", () => {
     expect(relayCommand("/opt/ovis", true)).toEqual([process.execPath, "approval-hook"]);
     expect(relayCommand("/opt/ovis", false)).toEqual([process.execPath, "--config=/opt/ovis/bunfig.toml", "--no-env-file", join("/opt/ovis", "server", "approvals", "relay.ts")]);
     expect(relayCommand()).toEqual([process.execPath, `--config=${join(ROOT, "bunfig.toml")}`, "--no-env-file", join(ROOT, "server", "approvals", "relay.ts")]);
+  });
+});
+
+describe.skipIf(!posix)("the status line of a Claude Ovis starts", () => {
+  /** what Claude Code 2.1.330 handed its status line at start, in a folder and config directory named /project and /config */
+  const PAYLOAD = readFileSync(join(ROOT, "server", "fixtures", "claude-statusline-2.1.330.json"), "utf8");
+  const SESSION = (JSON.parse(PAYLOAD) as { session_id: string }).session_id;
+  const given = process.env["CLAUDE_CONFIG_DIR"];
+  afterEach(() => { if (given === undefined) delete process.env["CLAUDE_CONFIG_DIR"]; else process.env["CLAUDE_CONFIG_DIR"] = given; });
+
+  /** A home with Claude's config directory and a project, each with the settings given, and Ovis's hub. */
+  function claudeIn(settings: { user?: unknown; project?: unknown } = {}) {
+    const { hooks, root } = hooksIn();
+    const home = join(root, "home"), config = join(home, ".claude"), project = join(root, "project");
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    mkdirSync(config, { recursive: true });
+    if (settings.user !== undefined) writeFileSync(join(config, "settings.json"), JSON.stringify(settings.user));
+    if (settings.project !== undefined) writeFileSync(join(project, ".claude", "settings.json"), JSON.stringify(settings.project));
+    process.env["CLAUDE_CONFIG_DIR"] = config;
+    const transcript = join(config, "projects", "-project", `${SESSION}.jsonl`);
+    /** What the status line draws for the payload, run as Claude runs it, and what Ovis then reads of its context window. */
+    const draw = async (statusLine: { command: string }) => {
+      const run = Bun.spawn(["sh", "-c", statusLine.command], {
+        cwd: project, stdin: Buffer.from(PAYLOAD.replaceAll("/config", config).replaceAll("/project", project)), stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config },
+      });
+      const line = await new Response(run.stdout).text();
+      expect(await run.exited).toBe(0);
+      return { line, window: readStatuslineContext(home, SESSION, "claude-haiku-4-5-20251001", transcript) };
+    };
+    return { hooks, draw };
+  }
+  const statusLineOf = (args: string[]) => (settingsOf(args).settings as unknown as { statusLine?: { type: string; command: string; padding?: number; refreshInterval?: number } }).statusLine;
+
+  it("draws the user's own line, with its padding and refresh, and keeps the context window Claude gave it", async () => {
+    const { hooks, draw } = claudeIn({ user: { statusLine: { type: "command", command: "printf 'my line'", padding: 2, refreshInterval: 5 } } });
+    const statusLine = statusLineOf(launch(hooks, "p1", undefined)!)!;
+    expect(statusLine).toMatchObject({ type: "command", padding: 2, refreshInterval: 5 });
+    expect(await draw(statusLine)).toEqual({ line: "my line", window: 200_000 });
+  });
+
+  it("sets none where the user has none: any status line takes Claude's shortcuts hint off the screen", () => {
+    const { hooks } = claudeIn({ user: { theme: "dark" } });
+    expect(statusLineOf(launch(hooks, "p1", undefined)!)).toBeUndefined();
+  });
+
+  it("draws the line the project's settings set over the user's, as Claude ranks them", async () => {
+    const { hooks, draw } = claudeIn({ user: { statusLine: { type: "command", command: "printf mine" } }, project: { statusLine: { type: "command", command: "printf theirs" } } });
+    expect((await draw(statusLineOf(launch(hooks, "p1", undefined)!)!)).line).toBe("theirs");
+  });
+
+  it("draws the line of a --settings the launch already had", async () => {
+    const { hooks, draw } = claudeIn();
+    const args = launch(hooks, "p1", ["--settings", JSON.stringify({ ultracode: true, statusLine: { type: "command", command: "printf 'it''s given'" } })])!;
+    expect(settingsOf(args).settings.ultracode).toBe(true);
+    expect(await draw(statusLineOf(args)!)).toEqual({ line: "its given", window: 200_000 });
   });
 });
 
