@@ -28,9 +28,9 @@ afterEach(() => {
 /**
  * OmO's terminal control socket as senpi 2026.11.19-5 serves it (docs/rpc.md, "terminal control"): the 32-byte secret
  * first, then one JSON request a line, each answered by a `response` with its id. It holds `sessionFile` and answers an
- * `extension_ui_response` with `reply`.
+ * `extension_ui_response` with `reply`, or not at all (null).
  */
-function omoSocket(sessionFile: string, reply: Record<string, unknown> = { success: true, disposition: "applied" }) {
+function omoSocket(sessionFile: string, reply: Record<string, unknown> | null = { success: true, disposition: "applied" }) {
   const root = mkdtempSync(join(tmpdir(), "omo-answer-"));
   roots.push(root);
   const path = join(root, "t-0123456789abcdef.sock");
@@ -53,6 +53,7 @@ function omoSocket(sessionFile: string, reply: Record<string, unknown> = { succe
         buffered = buffered.subarray(end + 1);
         frames.push(frame);
         const answer = frame["type"] === "get_state" ? { success: true, data: { sessionFile } } : reply;
+        if (answer === null) continue;
         socket.write(`${JSON.stringify({ id: frame["id"], type: "response", command: frame["type"], ...answer })}\n`);
       }
     });
@@ -82,7 +83,7 @@ describe("an OmO question that does not wait, answered on its control socket", (
     await omo.listening;
     const shown = card("one");
     const call = shown.omoQuestion!.call.split("\0")[1];
-    expect(await answerOmoPending(omo.path, shown, { pane_id: "p", prompt_id: shown.id, option_indices: [0, 2] }, () => true)).toBe("sent");
+    expect(await answerOmoPending(omo.path, shown, { pane_id: "p", prompt_id: shown.id, option_indices: [0, 2] }, () => true, Date.now() + 4_000)).toBe("sent");
     expect(omo.frames.map(({ id: _, ...frame }) => frame)).toEqual([
       { type: "get_state" },
       { type: "extension_ui_response", uiRequestId: call, answers: { q1: { selected: [shown.omoData!.labels[0]!, shown.omoData!.labels[2]!] } } },
@@ -97,13 +98,13 @@ describe("an OmO question that does not wait, answered on its control socket", (
     const older = omoSocket("/s/session.jsonl", { success: false, error: "unsupported" });
     const calledOff = omoSocket("/s/session.jsonl");
     await Promise.all([other.listening, unapplied.listening, older.listening, calledOff.listening]);
-    expect(await answerOmoPending(other.path, card("one"), body, () => true)).toBeNull();
+    expect(await answerOmoPending(other.path, card("one"), body, () => true, Date.now() + 4_000)).toBeNull();
     expect(other.frames.map((frame) => frame["type"])).toEqual(["get_state"]);
-    expect(await answerOmoPending(unapplied.path, card("one"), body, () => true)).toBeNull();
-    expect(await answerOmoPending(older.path, card("one"), body, () => true)).toBeNull();
-    expect(await answerOmoPending(calledOff.path, card("one"), body, () => false)).toBeNull();
+    expect(await answerOmoPending(unapplied.path, card("one"), body, () => true, Date.now() + 4_000)).toBeNull();
+    expect(await answerOmoPending(older.path, card("one"), body, () => true, Date.now() + 4_000)).toBeNull();
+    expect(await answerOmoPending(calledOff.path, card("one"), body, () => false, Date.now() + 4_000)).toBeNull();
     expect(calledOff.frames.map((frame) => frame["type"])).toEqual(["get_state"]);
-    expect(await answerOmoPending(null, card("one"), body, () => true)).toBeNull();
+    expect(await answerOmoPending(null, card("one"), body, () => true, Date.now() + 4_000)).toBeNull();
   });
 
   test("types no key where OmO waits on no such question, or answers in a way that may mean it applied the answer", async () => {
@@ -112,7 +113,21 @@ describe("an OmO question that does not wait, answered on its control socket", (
     const answered = omoSocket("/s/session.jsonl", { success: false, error: "unknown_request", disposition: "unknown" });
     const unclear = omoSocket("/s/session.jsonl", { disposition: "applied" });
     await Promise.all([answered.listening, unclear.listening]);
-    expect(await answerOmoPending(answered.path, card("one"), body, () => true)).toBe("gone");
-    expect(await answerOmoPending(unclear.path, card("one"), body, () => true)).toBe("gone");
+    expect(await answerOmoPending(answered.path, card("one"), body, () => true, Date.now() + 4_000)).toBe("gone");
+    expect(await answerOmoPending(unclear.path, card("one"), body, () => true, Date.now() + 4_000)).toBe("gone");
+  });
+  test("waits for OmO's word only within the answer's time, then types no key for that call, also without a socket", async () => {
+    const body = { pane_id: "p", prompt_id: "c", option_indices: [0] };
+    const shown = card("one", "/s/silent.jsonl");
+    const silentHere = omoSocket("/s/silent.jsonl", null);
+    await silentHere.listening;
+    const started = Date.now();
+    expect(await answerOmoPending(silentHere.path, shown, body, () => true, started + 300)).toBe("gone");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(silentHere.frames.map((frame) => frame["type"])).toEqual(["get_state", "extension_ui_response"]);
+    expect(await answerOmoPending(null, shown, body, () => true, Date.now() + 4_000)).toBe("gone");
+    const refusing = omoSocket("/s/silent.jsonl", { success: false, error: "invalid_response" });
+    await refusing.listening;
+    expect(await answerOmoPending(refusing.path, shown, body, () => true, Date.now() + 4_000)).toBe("gone");
   });
 });

@@ -125,7 +125,7 @@ export type ParsedPrompt = InteractivePrompt & {
   omoQuestion?: { call: string; index: number };
   /**
    * An OmO question its call asks alone, and does not wait on: the key OmO files its answer under and its options' labels
-   * as the call gave them, for an answer sent as data on the pane's control socket (omo-answer.ts).
+   * as OmO keeps them (trimmed, as its ask-user schema does), for an answer sent as data on the pane's control socket (omo-answer.ts).
    */
   omoData?: { key: string; labels: string[] };
   nativeSteps?: NativeSteps;

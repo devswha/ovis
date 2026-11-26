@@ -2148,17 +2148,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (request.signal.aborted) return promptChanged();
       const served = agent === "codex" && parsedPrompt !== undefined ? answerServed(body.pane_id, parsedPrompt, body) : null;
       if (served === "gone") return promptChanged();
-      // an OmO question asked alone that does not wait: its answer goes as data on the pane's own OmO control socket
-      const omoData = parsedPrompt?.omoData === undefined ? null
-        : await answerOmoPending(await omoPaneSocket(pane), parsedPrompt, body, () => !deadline.aborted);
-      if (served === "sent" || omoData === "sent") {
+      if (served === "sent") {
         delivered = true;
         way = "native";
         askingEnded(body.pane_id);
         form.still = sameContent(contentId(prompt));
         return jsonResponse({ ok: true });
       }
-      if (omoData === "gone") return promptChanged();
 
       let steps: AnswerStep[];
       try {
@@ -2166,6 +2162,19 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
         throw error;
+      }
+      // an OmO question asked alone that does not wait: its answer, one the keys would take, goes as data on the pane's
+      // own OmO control socket; one that may already have gone that way takes no key
+      if (parsedPrompt?.omoData !== undefined) {
+        const omoData = await answerOmoPending(await omoPaneSocket(pane), parsedPrompt, body, () => !deadline.aborted, deadlineAt);
+        if (omoData === "gone") return promptChanged();
+        if (omoData === "sent") {
+          delivered = true;
+          way = "native";
+          askingEnded(body.pane_id);
+          form.still = sameContent(contentId(prompt));
+          return jsonResponse({ ok: true });
+        }
       }
       // The asking this answer is for, held to its last key: once anything says it ended (the
       // agent back at work), no key of this answer goes out any more, whatever the screen shows.

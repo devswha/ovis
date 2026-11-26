@@ -20,6 +20,8 @@ type Answer = { selected: string[]; text?: string };
 export function omoAnswerOf(labels: readonly string[], multiSelect: boolean, body: PromptAnswer): Answer | null {
   if (body.step_back !== undefined || body.step_next !== undefined || body.step_index !== undefined || body.draft !== undefined) return null;
   if (multiSelect ? body.option_index !== undefined : body.option_indices !== undefined) return null;
+  // one choice or the user's own words, as OmO's single-choice row takes them: not both
+  if (!multiSelect && body.option_index !== undefined && body.custom_text !== undefined) return null;
   const picked = multiSelect ? body.option_indices : body.option_index === undefined ? undefined : [body.option_index];
   const selected: string[] = [];
   for (const index of picked ?? []) {
@@ -40,25 +42,45 @@ export function omoAnswerOf(labels: readonly string[], multiSelect: boolean, bod
 const REFUSED_UNAPPLIED = new Set(["question_incomplete", "invalid_response", "invalid_secret_response", "invalid_answer_id", "unsupported"]);
 
 /**
- * Answers `body` on `card` through `socket`: "sent" once OmO took it, "gone" where no key may answer it any more (OmO
- * waits on no such question, or the answer may have reached OmO with no clear word back), null where the answer is the
- * terminal's to take as keys.
+ * Calls whose answer went with no clear word back: no key may answer them while that answer may stand, also from a
+ * later request that finds no socket. The newest UNCONFIRMED_MAX are kept.
  */
-export async function answerOmoPending(socket: string | null, card: ParsedPrompt, body: PromptAnswer, mayWrite: () => boolean): Promise<"sent" | "gone" | null> {
+const unconfirmed = new Set<string>();
+const UNCONFIRMED_MAX = 64;
+
+function unconfirmedAnswer(call: string): "gone" {
+  unconfirmed.delete(call);
+  unconfirmed.add(call);
+  if (unconfirmed.size > UNCONFIRMED_MAX) unconfirmed.delete(unconfirmed.values().next().value!);
+  return "gone";
+}
+
+/**
+ * Answers `body` on `card` through `socket` before `deadlineAt`: "sent" once OmO took it, "gone" where no key may
+ * answer it any more (OmO waits on no such question, or an answer may have reached OmO with no clear word back), null
+ * where the answer is the terminal's to take as keys.
+ */
+export async function answerOmoPending(socket: string | null, card: ParsedPrompt, body: PromptAnswer, mayWrite: () => boolean, deadlineAt: number): Promise<"sent" | "gone" | null> {
   const data = card.omoData;
   const call = card.omoQuestion?.call;
-  if (socket === null || card.responder !== "omo-pending" || data === undefined || call === undefined) return null;
+  if (card.responder !== "omo-pending" || data === undefined || call === undefined) return null;
+  if (socket === null) return unconfirmed.has(call) ? "gone" : null;
   const answer = omoAnswerOf(data.labels, card.multi_select, body);
   const split = call.lastIndexOf("\0");
   if (answer === null || split < 0) return null;
   const session = call.slice(0, split);
   const request = call.slice(split + 1);
-  const state = await omoControlCall(socket, { type: "get_state" });
+  const state = await omoControlCall(socket, { type: "get_state" }, () => true, deadlineAt - Date.now());
   const sessionFile = typeof state === "object" && state["success"] === true ? (state["data"] as { sessionFile?: unknown } | undefined)?.sessionFile : undefined;
-  if (sessionFile !== session) return null;
-  const sent = await omoControlCall(socket, { type: "extension_ui_response", uiRequestId: request, answers: { [data.key]: answer } }, mayWrite);
-  if (sent === "unsent") return null;
-  if (sent === "unknown") return "gone";
-  if (sent["success"] === true) return "sent";
-  return sent["success"] === false && REFUSED_UNAPPLIED.has(String(sent["error"])) ? null : "gone";
+  if (sessionFile !== session) return unconfirmed.has(call) ? "gone" : null;
+  const sent = await omoControlCall(socket, { type: "extension_ui_response", uiRequestId: request, answers: { [data.key]: answer } },
+    () => mayWrite() && Date.now() < deadlineAt, deadlineAt - Date.now());
+  if (sent === "unsent") return unconfirmed.has(call) ? "gone" : null;
+  if (sent === "unknown") return unconfirmedAnswer(call);
+  if (sent["success"] === true) {
+    unconfirmed.delete(call);
+    return "sent";
+  }
+  if (sent["success"] === false && REFUSED_UNAPPLIED.has(String(sent["error"]))) return unconfirmed.has(call) ? "gone" : null;
+  return sent["success"] === false && sent["error"] === "unknown_request" ? "gone" : unconfirmedAnswer(call);
 }
