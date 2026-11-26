@@ -404,7 +404,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
         else {
           const endpoint = machines.accountAddEndpoint(jobId);
           if (endpoint === null) return fail("job_not_found", "No add over SSH of that PC is waiting here. Connect to it again.", 404);
-          const byList = await addOverSshByList({ endpoint, list, take: (named) => machines.accountTake(jobId, target, account, named), end: () => { machines.accountAddEnd(jobId); } });
+          const byList = await addOverSshByList({ endpoint, list, take: (named) => machines.accountTake(jobId, target, account, named), end: () => machines.accountAddEnd(jobId) });
           if ("refused" in byList) return fail(byList.refused.code, byList.refused.message, byList.refused.status);
           taken = byList;
         }

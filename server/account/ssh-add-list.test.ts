@@ -1,6 +1,6 @@
 /**
  * The adding PC's steps of an add over SSH by the account's signed list (ssh-add-list.ts), with the take and the list
- * stood in for: what goes to the other PC, what is signed, when it says added, and when the channel is closed.
+ * stood in for: what goes to the other PC, what is signed, when it says added, and when the forward is closed.
  */
 import { beforeAll, expect, test } from "bun:test";
 import { signCard } from "../../shared/account-list.ts";
@@ -79,7 +79,7 @@ test("the take names this PC's list and its own key; the card that comes back is
   expect(made.ended()).toBe(0);
 });
 
-test("a card that is not that key's own for this list and the relay key the inspect read is not signed, and the channel closes", async () => {
+test("a card that is not that key's own for this list and the relay key the inspect read is not signed, and the forward closes", async () => {
   const otherList = await cardOf(OTHER_LIST);
   const otherEndpoint = await cardOf(LIST, "f".repeat(64));
   for (const card of [otherList, otherEndpoint, { ...CARD, enc: otherList.enc }]) {
@@ -132,7 +132,7 @@ test("the account service's budget of additions: said as a time to wait, apart f
   expect(made.ended()).toBe(1);
 });
 
-test("an entry this PC could not place ends the add there: the channel is closed and no second take goes", async () => {
+test("an entry this PC could not place ends the add there: the forward is closed and no second take goes", async () => {
   for (const [refused, code] of [["not_written", "list_not_added"], ["refused", "list_not_added"], ["head_lost", "list_not_added"], ["service_away", "take_unanswered"], ["alarm", "list_cannot_add"]] as const) {
     const made = fixture({ answers: [{ waiting: CARD }], added: { refused, detail: null } });
     expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code } });
@@ -141,7 +141,7 @@ test("an entry this PC could not place ends the add there: the channel is closed
   }
 });
 
-test("a PC that has not taken its entry after the last take: in the list, not following it yet, and said so as a step to finish; the channel is closed", async () => {
+test("a PC that has not taken its entry after the last take: in the list, not following it yet, and said so as a step to finish; the forward is closed", async () => {
   const made = fixture({ answers: [{ waiting: CARD }, { waiting: CARD }, { waiting: CARD }, { waiting: CARD }, { waiting: CARD }, { waiting: CARD }] });
   expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code: "list_unbound" } });
   expect(made.signed).toHaveLength(1);
@@ -172,7 +172,7 @@ test("a take lost before anything was signed is not known; one lost or refused a
   }
 });
 
-test("a PC that cannot read the list, or that the list put out, is signed nothing: what to do is said, and the channel closes", async () => {
+test("a PC that cannot read the list, or that the list put out, is signed nothing: what to do is said, and the forward closes", async () => {
   for (const [standing, code] of [["stopped", "that_pc_behind"], ["out", "list_removed"]] as const) {
     const made = fixture({ answers: [{ waiting: { ...CARD, standing } }] });
     expect(await addOverSshByList(made.deps)).toMatchObject({ refused: { code } });
@@ -181,7 +181,7 @@ test("a PC that cannot read the list, or that the list put out, is signed nothin
   }
 });
 
-test("an error of any other kind once that PC answered with its card closes the channel and is thrown on", async () => {
+test("an error of any other kind once that PC answered with its card closes the forward and is thrown on", async () => {
   const made = fixture({ answers: [{ waiting: CARD }] });
   made.deps.list.addPc = async () => { throw new TypeError("the disk went away"); };
   await expect(addOverSshByList(made.deps)).rejects.toThrow("the disk went away");

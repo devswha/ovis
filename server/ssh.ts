@@ -139,9 +139,21 @@ function gitInstallPath(): string | null {
  * ("REMOTE HOST IDENTIFICATION HAS CHANGED") and never reaches the fingerprint question.
  */
 const UNKNOWN_HOST = /No \S+ host key is known for /;
-/** bytes askSocket reads of an answer before giving up on it: a recovery socket's answers are a few hundred */
-const SOCKET_ANSWER_MAX = 65_536;
 const CONFIG_FORWARD = /^(localforward|remoteforward|dynamicforward) /m;
+/** bytes askSocket keeps of an answer and of ssh's own words: a recovery socket's answers are a few hundred */
+const SOCKET_ANSWER_MAX = 65_536;
+export const SOCKET_SSH_TOO_OLD = "Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.";
+
+/**
+ * Whether the ssh that printed `version` (`ssh -V`) reaches a Unix socket with `-W`: OpenSSH does from 9.4 on (its release
+ * notes); before that it reads the path as a host name and its port.
+ */
+export function stdioSocketForward(version: string): boolean {
+  const match = /OpenSSH_(?:for_Windows_)?(\d+)\.(\d+)/.exec(version);
+  if (!match) return false;
+  const [major, minor] = [Number(match[1]), Number(match[2])];
+  return major > 9 || (major === 9 && minor >= 4);
+}
 
 function listening(port: number): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -524,21 +536,41 @@ export class SshConnection {
     } finally { clearTimeout(timer); this.pending.delete(ready.reject); }
   }
   /**
-   * One line to a Unix socket on the PC (its owner's recovery socket) and the first line it answers, carried on an ssh's
-   * own stdin and stdout (`ssh -W`): nothing listens on this PC for it, so no other process here can reach that socket.
-   * It goes over the master where there is one, and as its own ssh on Windows, whose ssh shares no connection. `signal`
-   * stops it; the socket's side stays open until it answered, as one that reads a closed input as a withdrawn request may.
+   * A Unix socket on the PC (its owner's recovery socket) reached at a socket in this connection's own folder, which only
+   * this account may enter. Multiplexed connections only (Linux, macOS); askSocket serves the others.
    */
-  async askSocket(remotePath: string, line: string, signal?: AbortSignal): Promise<string> {
+  async forwardSocket(remotePath: string): Promise<string> {
     if (this.closed) throw new Error("SSH connection closed");
+    if (!this.multiplexed) throw new Error("Forwarding a socket needs a multiplexed SSH connection");
+    if (/[\s:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
+    const local = join(this.makeDir(), `fwd-${randomBytes(8).toString("hex")}.sock`);
+    this.socketForwards.set(local, remotePath);
+    try { await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "forward", "-L", `${local}:${remotePath}`, this.target.destination]); }
+    catch (error) { await this.closeSocketForward(local); throw error; }
+    return local;
+  }
+  private socketForwards = new Map<string, string>();
+  /**
+   * One line to a Unix socket on the PC (its owner's recovery socket) and the first line it answers, for a connection with
+   * no master to forward it (Windows): on an ssh's own stdin and stdout (`ssh -W`), so nothing listens on this PC for it
+   * and no other process here can reach that socket. The socket's side stays open until it answered.
+   */
+  async askSocket(remotePath: string, line: string): Promise<string> {
+    if (this.closed) throw new Error("SSH connection closed");
+    if (this.multiplexed) throw new Error("A multiplexed connection reaches a socket with forwardSocket");
     if (/[\s:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
     if (line.includes("\n")) throw new Error("A socket request is one line");
-    signal?.throwIfAborted();
-    const proc = Bun.spawn([...(this.multiplexed ? [...this.base(), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"] : this.direct()), "-W", remotePath, this.target.destination], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.askEnv() });
+    // `ssh -V` says its version on stderr
+    const version = Bun.spawn([this.client.ssh, "-V"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [shown, also] = await Promise.all([new Response(version.stderr).text(), new Response(version.stdout).text(), version.exited]);
+    if (!stdioSocketForward(shown + also)) throw new Error(SOCKET_SSH_TOO_OLD);
+    const proc = Bun.spawn([...this.direct(), "-W", remotePath, this.target.destination], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.askEnv() });
     this.children.add(proc);
-    const stop = () => proc.kill();
-    signal?.addEventListener("abort", stop, { once: true });
-    const stderr = new Response(proc.stderr).text();
+    let said = "";
+    const stderr = (async () => {
+      const decoder = new TextDecoder();
+      for await (const chunk of proc.stderr) said = (said + decoder.decode(chunk, { stream: true })).slice(-4096);
+    })().catch(() => {});
     try {
       // an ssh that could not reach the socket may have closed its input already: its own words below say why
       try { proc.stdin.write(`${line}\n`); await proc.stdin.flush(); } catch {}
@@ -547,16 +579,24 @@ export class SshConnection {
       for await (const chunk of proc.stdout) {
         answer += decoder.decode(chunk, { stream: true });
         const end = answer.indexOf("\n");
+        if ((end < 0 ? answer.length : end) > SOCKET_ANSWER_MAX) throw new Error(`The PC sent more than ${SOCKET_ANSWER_MAX} bytes on its socket; it was not read`);
         if (end >= 0) return answer.slice(0, end);
-        if (answer.length > SOCKET_ANSWER_MAX) throw new Error(`The PC sent more than ${SOCKET_ANSWER_MAX} bytes on its socket; it was not read`);
       }
-      if (this.closed || signal?.aborted) throw new Error("Connection cancelled");
-      throw new Error((await stderr).trim().slice(-4096) || "The PC answered nothing on its socket");
+      if (this.closed) throw new Error("Connection cancelled");
+      await stderr;
+      throw new Error(said.trim() || "The PC answered nothing on its socket");
     } finally {
-      signal?.removeEventListener("abort", stop);
       this.children.delete(proc);
       proc.kill();
     }
+  }
+  /** Ends a forward forwardSocket opened: the master stops listening there, and the local socket file goes. */
+  async closeSocketForward(local: string): Promise<void> {
+    const remote = this.socketForwards.get(local);
+    if (remote === undefined) return;
+    this.socketForwards.delete(local);
+    try { if (!this.closed && this.master !== null && this.master.exitCode === null) await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "cancel", "-L", `${local}:${remote}`, this.target.destination]); }
+    finally { rmSync(local, { force: true }); }
   }
   private async exec(args: string[], input?: Uint8Array | StreamInput, timeout = 30_000, maxOutput?: number): Promise<string> {
     const stream = input !== undefined && !(input instanceof Uint8Array) ? input : undefined;
