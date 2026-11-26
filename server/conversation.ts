@@ -40,7 +40,7 @@ import { authorizedTranscript } from "./transcript-store.ts";
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
-import { servedStatus } from "./approvals/codex.ts";
+import { followServedThread, servedStatus } from "./approvals/codex.ts";
 import type { ServedThreadSettings } from "./approvals/codex-status.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, paneCodexProcess, parseCodexTranscript, readRange, rolloutThread } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
@@ -153,7 +153,7 @@ export function withToldMode<T extends Pick<RecognizedConversation, "metadata" |
  */
 function withServedCodex(answer: RecognizedConversation, settings: ServedThreadSettings | undefined, reroutedModel?: string | null): RecognizedConversation {
   const { metadata } = answer;
-  const model = reroutedModel ?? metadata.model;
+  const model = reroutedModel ?? settings?.model ?? metadata.model;
   const reasoning_effort = settings?.effort ?? metadata.reasoning_effort;
   const plan = settings?.plan;
   const permission_mode = plan === true ? "plan" : plan === false ? undefined : metadata.permission_mode;
@@ -2194,7 +2194,12 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
     }
   }
 
-  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId, freshKimi, kimiFreshAfter));
+  const resolved = noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known, agyHistoryId, freshKimi, kimiFreshAfter));
+  if (resolved.source === "codex-transcript") {
+    const threadId = rolloutThread(resolved.path);
+    if (threadId !== null && herdrSocketPath() === socket) followServedThread(paneId, threadId);
+  }
+  return resolved;
 }
 
 const AGY_WRITE_RACE_MS = 5000;
@@ -2244,7 +2249,13 @@ async function readPaneConversation(paneId: string, codexHome?: string, page: Co
     const answer: RecognizedConversation = { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
     // Before there is a rollout, only a proven empty Codex session (or our own pending launch)
     // can reach here, so there is no other thread's transcript to check the settings against.
-    return source === "codex-transcript" ? withServedCodex(answer, servedStatus(paneId)?.settings) : answer;
+    if (source !== "codex-transcript") return answer;
+    const settings = servedStatus(paneId)?.settings;
+    // The greeting's live footer can be newer than thread/started. Codex does not publish
+    // Plan to this connection until there is a rollout to subscribe to.
+    return withServedCodex(answer, settings?.initial
+      ? { ...settings, model: metadata.model ?? settings.model, effort: metadata.reasoning_effort ?? settings.effort }
+      : settings);
   };
 
   const onNotStarted = async (error: ConversationNotStarted): Promise<RecognizedConversation> => {
