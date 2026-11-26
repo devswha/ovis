@@ -333,6 +333,13 @@ describe("turn waits", () => {
     expect(found("for (let seen = null; seen !== lane;) { seen = lane; await lane; await new Promise((resolve) => setTimeout(resolve, 0)); }")).toBe(0);
     expect(found("for (;;) {\n  if (seen()) break;\n  await new Promise(setImmediate);\n}")).toBe(0);
     expect(found("expect(await Promise.race([ready, new Promise((resolve) => setImmediate(() => resolve(\"pending\")))])).toBe(\"pending\");")).toBe(0);
+    expect(found("await Promise.race([ready, new Promise(setImmediate)]); await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let i = 8; i > 0; i--) { await new Promise(setImmediate); }")).toBe(1);
+    expect(found("for (const type of types) { await page.evaluate(() => { return 1; }); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("do { await new Promise(setImmediate); } while (!done() && Date.now() < deadline);")).toBe(0);
+    expect(found("function tick() { return new Promise(setImmediate); }\nawait tick();\nawait tick(\"flushed\");")).toBe(2);
+    expect(found("import { setTimeout as sleep } from \"node:timers/promises\";\nawait sleep(0);\nawait sleep();\nawait sleep(20);")).toBe(2);
+    expect(found("import * as timers from \"node:timers/promises\";\nawait timers.setImmediate();\nawait timers.setTimeout(0);\nawait timers.setTimeout(20);")).toBe(2);
     expect(found("close: () => { setImmediate(() => socket.close()); },")).toBe(0);
     expect(found("// await new Promise(setImmediate);")).toBe(0);
   });

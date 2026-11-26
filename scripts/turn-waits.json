@@ -1,5 +1,7 @@
 {
+  "app/electron/src/connectScreen.test.ts": 3,
   "scripts/check.test.ts": 1,
+  "scripts/keyboard-viewport-regression.ts": 1,
   "scripts/plugin-join.test.ts": 1,
   "scripts/plugin-link.test.ts": 2,
   "scripts/terminal-command-backspace-regression.ts": 1,

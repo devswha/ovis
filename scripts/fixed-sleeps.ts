@@ -50,7 +50,7 @@ function loopAround(code: string, at: number): { head: string; body: string } | 
     const head = code.slice(code.lastIndexOf("\n", open - 1) + 1, open).trim();
     const body = code.slice(open, close);
     const doWhile = /(?:^|[\s;}])do$/.test(head) ? /^\s*while\s*\(([^\n]*)/.exec(code.slice(close))?.[1] ?? "" : null;
-    if (doWhile !== null || /\b(?:while|for)\s*\(/.test(head)) return { head: doWhile ?? head, body };
+    if (doWhile !== null || /\b(?:while|for)\s*\(/.test(head)) return { head: doWhile === null ? head : `while (${doWhile}`, body };
     if (/=>$|\)\s*(?::[^{]*)?$/.test(head) && !/\b(?:if|switch|catch|with)\s*\(/.test(head)) return null;
     from = open;
   }
@@ -128,22 +128,36 @@ export const markedWaitCounts = (): Record<string, number> => countsOf(markedWai
 /** A promise that one turn of the event loop resolves: `new Promise((r) => setImmediate(r))`, `setTimeout(r, 0)`, `new Promise(setImmediate)`. */
 const TURN = /\bnew Promise(?:<[^>]*>)?\(\s*(?:(?:async\s*)?(?:function\s*)?\(?\s*(\w+)\s*\)?\s*(?::\s*\w+\s*)?(?:=>)?\s*\{?\s*(?:window\.|globalThis\.)?(?:setImmediate\(\s*(?:\1|\(\s*\)\s*=>\s*\{?\s*\1\s*\(\s*\)\s*;?\s*\}?)\s*\)|setTimeout\(\s*(?:\1|\(\s*\)\s*=>\s*\{?\s*\1\s*\(\s*\)\s*;?\s*\}?)\s*(?:,\s*0\s*)?\))|setImmediate\s*\))/g;
 
-export const turnWaitFiles = (): string[] => sleepFiles().filter((file) => /\.test\.[cm]?[jt]sx?$/.test(file) || /^scripts\/(?:.*\/)?[^/]*-(?:regression|qa)\.ts$/.test(file));
+export const turnWaitFiles = (): string[] => files("{server,src,shared,scripts,site,telemetry,tui,integrations,push-relay,relay,app}/**/*.{ts,tsx,mjs,js}")
+  .filter((file) => file !== "scripts/conventions.test.ts" && (/\.test\.[cm]?[jt]sx?$/.test(file) || /^scripts\/(?:.*\/)?[^/]*-(?:regression|qa)\.ts$/.test(file)));
 
-/** The `(…)` that follows `open` in `code`, with the parentheses inside it. */
-function parenthesised(code: string, open: number): string {
+/** Where the bracket opened at `open` closes. */
+function closing(code: string, open: number): number {
+  const [up, down] = code[open] === "{" ? ["{", "}"] : ["(", ")"];
   let close = open + 1;
-  for (let depth = 1; depth > 0 && close < code.length; close++) depth += code[close] === "(" ? 1 : code[close] === ")" ? -1 : 0;
-  return code.slice(open + 1, close - 1);
+  for (let depth = 1; close < code.length; close++) {
+    depth += code[close] === up ? 1 : code[close] === down ? -1 : 0;
+    if (depth === 0) break;
+  }
+  return close;
 }
 
-/** A loop polls when its condition tests more than a counter (`turn < 50 && !seen()`, `!done()`), or its body can leave it early. */
+/** `body` without the functions inside it: a `return` there leaves the function, not the loop. */
+function ownCode(body: string): string {
+  for (let inner = /=>\s*\{|\bfunction\b[^{;]*\{/.exec(body); inner !== null; inner = /=>\s*\{|\bfunction\b[^{;]*\{/.exec(body)) {
+    body = body.slice(0, inner.index) + body.slice(closing(body, inner.index + inner[0].length - 1) + 1);
+  }
+  return body;
+}
+
+/** A loop polls when its condition tests more than a counter (`turn < 50 && !seen()`, `!done()`), or its own body can leave it early. */
 function polls(head: string, body = ""): boolean {
   const at = /\b(for|while)\s*\(/.exec(head);
   if (at === null) return false;
-  const inside = parenthesised(head, at.index + at[0].length - 1);
+  const open = at.index + at[0].length - 1;
+  const inside = head.slice(open + 1, closing(head, open));
   const condition = (at[1] === "for" ? inside.split(";")[1] ?? "" : inside).trim();
-  return (condition !== "" && condition !== "true" && !/^\w+\s*<=?\s*[\w.]+$/.test(condition)) || /\b(?:break|return|throw)\b/.test(body);
+  return (condition !== "" && condition !== "true" && !/^\w+\s*[<>]=?\s*[\w.]+$/.test(condition)) || /\b(?:break|return|throw)\b/.test(ownCode(body));
 }
 
 /** The turn waits in `file`: each that is no poll, and each call of a helper that only returns one. */
@@ -158,17 +172,26 @@ export function turnWaits(file: string, text = read(file)): string[] {
     helpers.add(match[1] ?? match[2]!);
     definitions.add(at);
   }
-  for (const match of stripComments(text).matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*["'](?:node:)?timers\/promises["']/g)) {
-    const named = /\bsetImmediate(?:\s+as\s+(\w+))?\b/.exec(match[1]!);
-    if (named) helpers.add(named[1] ?? "setImmediate");
+  // node:timers/promises: its setImmediate() is one turn, and so is its setTimeout() for no time
+  const zeroTimers = new Set<string>();
+  for (const match of stripComments(text).matchAll(/\bimport\s*(?:\{([^}]*)\}|\*\s*as\s+(\w+))\s*from\s*["'](?:node:)?timers\/promises["']/g)) {
+    if (match[2] !== undefined) { helpers.add(`${match[2]}.setImmediate`); zeroTimers.add(`${match[2]}.setTimeout`); continue; }
+    const immediate = /\bsetImmediate(?:\s+as\s+(\w+))?\b/.exec(match[1]!);
+    if (immediate) helpers.add(immediate[1] ?? "setImmediate");
+    const timeout = /\bsetTimeout(?:\s+as\s+(\w+))?\b/.exec(match[1]!);
+    if (timeout) zeroTimers.add(timeout[1] ?? "setTimeout");
   }
-  const calls = helpers.size ? [...code.matchAll(new RegExp(`(?<![\\w.])(?:${[...helpers].join("|")})\\s*\\(\\s*\\)`, "g"))] : [];
+  const called = (names: Set<string>, args: string) => names.size === 0 ? []
+    : [...code.matchAll(new RegExp(`(?<![\\w.])(?<!\\bfunction\\s+)(?:${[...names].map((name) => name.replace(".", "\\.")).join("|")})\\s*\\(${args}`, "g"))];
+  const calls = [...called(helpers, ""), ...called(zeroTimers, "\\s*(?:0\\s*)?[,)]")];
   const waits = [...[...code.matchAll(TURN)].filter((match) => !definitions.has(match.index)), ...calls].sort((a, b) => a.index - b.index);
+  // a turn raced against the event is a timeout for it, not a wait
+  const races = [...code.matchAll(/\bPromise\.race\s*\(/g)].map((race) => [race.index, closing(code, race.index + race[0].length - 1)] as const);
   const found: string[] = [];
   for (const match of waits) {
+    if (races.some(([from, to]) => match.index > from && match.index < to)) continue;
     const line = lineOf(code, match.index);
     const codeLine = code.split("\n")[line - 1]!;
-    if (/\bPromise\.race\s*\(/.test(codeLine)) continue;
     const before = codeLine.slice(0, match.index - (code.lastIndexOf("\n", match.index) + 1));
     // a loop without braces holds the wait on its own line: `for (…) await …`
     const single = /\b(?:for|while)\s*\((?!.*\b(?:for|while)\s*\().*\)\s*(?:await\s+)?$/.exec(before)?.[0];
