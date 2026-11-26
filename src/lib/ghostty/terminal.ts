@@ -13,6 +13,7 @@ import { createLinkifier, createSelection, type ILinkProvider, type Linkifier, t
 import { holdScreenRows, type ScreenRows } from "../terminalScreen.ts";
 import { requestShownFrame } from "../shownFrame.ts";
 import { fitCompositionView } from "../terminalGlyphs.ts";
+import { wheelPansGrid } from "../terminalWheel.ts";
 import type { PictureLimits } from "../itermPictures.ts";
 import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
 import { ghosttyRows } from "./screenRows.ts";
@@ -338,7 +339,8 @@ export class GhosttyTerminal {
     // layer turns it into a report or arrow keys where the program reads the mouse or its screen keeps no history
     let wheelPixels = 0;
     const onWheel = (event: WheelEvent): void => {
-      if (this.disposed || this.options.scrollback === 0 || this.vt?.alternate() !== false || this.modes.mouseTrackingMode !== "none") return;
+      // a wheel that pans a grid wider than the screen (terminalWheel.ts) moves only that
+      if (this.disposed || wheelPansGrid(event) || this.options.scrollback === 0 || this.vt?.alternate() !== false || this.modes.mouseTrackingMode !== "none") return;
       const cellH = this.dims?.cell.height ?? 0;
       wheelPixels += event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * cellH : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * cellH * this.rows : event.deltaY;
       const lines = cellH > 0 ? Math.trunc(wheelPixels / cellH) : 0;
