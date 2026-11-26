@@ -875,8 +875,9 @@ const opencode: UsageProvider = {
     // xdg-basedir, as OpenCode resolves it: XDG_DATA_HOME, else ~/.local/share, on macOS too
     const dir = join(ctx.env["XDG_DATA_HOME"] || join(ctx.home, ".local", "share"), "opencode");
     const store = opencodeStore(opencodeDatabasePath(ctx.env, ctx.home));
+    const oauth = store?.oauth;
     const found: Found[] = [];
-    if (store?.oauth) found.push({ ...store.oauth, source: `${dir}#oauth` });
+    if (oauth) found.push({ ...oauth, source: `${dir}#oauth` });
     if (store?.key) {
       found.push({ token: store.key, expiresAt: null, source: dir });
       return found;
@@ -884,9 +885,11 @@ const opencode: UsageProvider = {
     // OpenCode 2 imports auth.json once. The old file must not undo a sign-out in its current store.
     const file = store ? null : opencodeSignIn(readText(join(dir, "auth.json")));
     if (file) return [{ ...file, source: dir }];
-    // Keep environment-key limits when the OAuth sign-in has no workspace to query.
+    // An expired sign-in is still listed, but cannot supply limits in place of the environment key.
     const token = text(ctx.env["OPENCODE_API_KEY"]);
-    if (token && store?.oauth?.opencodeOrg == null) found.push({ token, expiresAt: null, source: "env" });
+    if (token && (!oauth?.opencodeOrg || (oauth.expiresAt !== null && oauth.expiresAt <= ctx.now()))) {
+      found.push({ token, expiresAt: null, source: "env" });
+    }
     return found;
   },
   async read(ctx, signIn) {
@@ -897,6 +900,7 @@ const opencode: UsageProvider = {
     let body: Json;
     try {
       body = await requestJson(ctx, `${OPENCODE_ORIGIN}/zen/go/v1/usage`, {
+        ...(signIn.opencodeOrg ? { redirect: "manual" } as const : {}),
         headers: {
           authorization: `Bearer ${signIn.token}`, accept: "application/json", "user-agent": USER_AGENT,
           ...(signIn.opencodeOrg ? { "x-opencode-org-id": signIn.opencodeOrg } : {}),
@@ -1246,12 +1250,12 @@ export class UsageService {
       const kept = keptFor(signIn);
       if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder }];
       const entry = this.entries.get(source);
-      // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
+      // Reuse a reading only for the same holder, including during its Retry-After.
+      // Hidden or removed accounts keep their last reading without using their credentials (#3333).
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
-      // only while the place still holds that account: another one there is read anew, without the hidden one's row
-      const held = hidden && entry?.holder === holderOf(signIn);
-      const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
+      const current = entry !== undefined && entry.holder === holderOf(signIn) &&
+        (hidden || (now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
       if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
