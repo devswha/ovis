@@ -1023,6 +1023,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#4735](https://github.com/devswha/ovis/pull/4735))
 - Moving a pane that has already resumed work no longer sends a stale question alert.
   ([#4724](https://github.com/devswha/ovis/pull/4724))
+- Keep an open question's alert when a moved pane's new status or roster arrives before the move.
+  ([#4790](https://github.com/devswha/ovis/pull/4790))
 - With no internet on the phone, My PCs says so in one line with Try again instead of blaming the
   account service, keeps listing the PCs of your account it showed last, and a tapped PC says to
   connect first rather than that its name was not found. The list reads everything again once the
