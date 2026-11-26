@@ -64,9 +64,10 @@ export interface TerminalPort {
   /**
    * Stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action), once
    * `giveBack` has given the terminal back. A continue that comes from the moment it is called cancels the stop, so a
-   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called (the
-   * process that started this one, and stopped at the same signal, runs again), it gives the terminal back and does not
-   * stop. Either way the continue is heard next (`cont`).
+   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called, it gives
+   * the terminal back and does not stop. Which of the two it is may be settled after it returns: once the process that
+   * started this one is seen stopped at the same signal, or once the continue is heard. Either way the continue is heard
+   * (`cont`).
    */
   suspend(giveBack: () => void): void;
   /**
