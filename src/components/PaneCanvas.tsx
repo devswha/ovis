@@ -12,10 +12,10 @@ import { PANE_DRAG_TYPE, paneDragData, type SplitSide } from "../lib/split.ts";
 import { PaneSubmitRetention } from "../lib/paneSubmitRetention.ts";
 import { keepPressedButtonClick } from "../lib/pressedButton.ts";
 import { PaneCachedContext, PanePresentedContext, PaneShownContext, PaneSubmitContext, PaneWatchedContext } from "../lib/paneSubmitContext.ts";
-import { cachedPaneCells, visitPaneTab } from "../lib/paneTabCache.ts";
+import { cachedPaneCells, orderedPaneCells, visitPaneTab } from "../lib/paneTabCache.ts";
 import { routeMissing } from "../lib/api.ts";
 import { layoutCells, zoomMode } from "../lib/layoutMap.ts";
-import { CRAMPED_QUERY, layoutTopology, paneContextPress, paneFieldTarget, SOLO_PANE_QUERY, soloPane, splitPath, splitRatioAt, tabRowHidden } from "../lib/paneCanvas.ts";
+import { CRAMPED_QUERY, layoutTopology, paneContextPress, paneFieldTarget, paneInput, SOLO_PANE_QUERY, soloPane, splitPath, splitRatioAt, tabRowHidden } from "../lib/paneCanvas.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -36,6 +36,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import "./PaneCanvas.css";
 
 type PaneLayoutSplit = PaneLayoutSnapshot["splits"][number];
+export type PaneActions = (target: HerdrPane, options?: { readonly counted?: boolean; readonly includeTabRow?: boolean }) => RowMenuItem[];
 
 interface Props {
   snapshot: SessionSnapshot | null;
@@ -44,7 +45,7 @@ interface Props {
   onSelect: (paneId: string, focusInput?: boolean) => void;
   onChanged: () => void;
   renderPane: (pane: HerdrPane | null, active: boolean, split: boolean) => ReactNode;
-  actionsRef?: MutableRefObject<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>;
+  actionsRef?: MutableRefObject<PaneActions | null>;
   onOpenInHalf?: (paneId: string, side: SplitSide) => void;
   mirrored?: boolean;
   onRecoverUnsent?: (target: HerdrPane) => void;
@@ -98,6 +99,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const [submits] = useState(() => new PaneSubmitRetention());
   const retainedIds = useSyncExternalStore(submits.subscribe, submits.snapshot, submits.snapshot);
   const lastCells = useRef(new Map<string, ReturnType<typeof layoutCells>[number]>());
+  const paneOrder = useRef<readonly string[]>([]);
   const visitedTabs = useRef<readonly string[]>([]);
   useEffect(() => {
     const live = new Set(snapshot?.panes.map((item) => item.pane_id) ?? []);
@@ -236,9 +238,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     ...(!appLayout.arrange ? [] : [{ id: "zoom", label: t(layout && zoomMode(layout, target.pane_id) === "off" ? "Unzoom pane" : "Zoom pane"), icon: Maximize2,
       run: () => zoom(target) }]),
   ];
-  const rowItems = (target: HerdrPane): { panes: RowMenuItem[]; tab: RowMenuItem[] } | null => {
-    const tabs = snapshot?.tabs.filter((tab) => tab.workspace_id === target.workspace_id).length ?? 0;
-    if (!tabRowHidden(cramped, tabs, tabsInHeader)) return null;
+  const rowItems = (target: HerdrPane): { panes: RowMenuItem[]; tab: RowMenuItem[] } => {
     const tab = snapshot?.tabs.find((entry) => entry.tab_id === target.tab_id);
     const own = rosterPanes(snapshot?.panes.filter((item) => item.tab_id === target.tab_id) ?? [], selectedPaneId);
     return {
@@ -270,10 +270,11 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       ],
     };
   };
-  const itemsFor = (target: HerdrPane, { counted = true }: { counted?: boolean } = {}): RowMenuItem[] => {
+  const itemsFor: PaneActions = (target, { counted = true, includeTabRow = false } = {}) => {
     const use: MenuUse = (name) => { if (counted) tally(() => usageCounters.paneUse(name, machineId)); };
+    const tabs = snapshot?.tabs.filter((tab) => tab.workspace_id === target.workspace_id).length ?? 0;
+    if (!includeTabRow && !tabRowHidden(cramped, tabs, tabsInHeader)) return paneItemsFor(target, use);
     const row = rowItems(target);
-    if (!row) return paneItemsFor(target, use);
     const own = paneItemsFor(target, use).filter((item) => item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down");
     return [row.panes, own, row.tab].filter((group) => group.length > 0)
       .flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
@@ -296,7 +297,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     ];
   };
   const items = target ? itemsFor(target) : [];
-  const published = useRef<{ ref: MutableRefObject<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>; items: typeof itemsFor } | null>(null);
+  const published = useRef<{ ref: MutableRefObject<PaneActions | null>; items: PaneActions } | null>(null);
   if (actionsRef) { actionsRef.current = itemsFor; published.current = { ref: actionsRef, items: itemsFor }; }
   useEffect(() => () => {
     const last = published.current;
@@ -355,12 +356,16 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const watchedTabs = new Set(visitedTabs.current.slice(0, narrowScreen ? 2 : 4));
   const cachedCells = cachedPaneCells(visitedTabs.current, presented?.tab_id ?? null, snapshot?.panes ?? [], lastCells.current, shownIds);
   const cachedIds = new Set(cachedCells.map((cell) => cell.paneId));
-  const mountedCells = [...cells.map((cell) => ({ ...cell, retained: false, cached: false })),
+  const mounted = [...cells.map((cell) => ({ ...cell, retained: false, cached: false })),
     ...cachedCells.map((cell) => ({ ...cell, retained: retainedIds.includes(cell.paneId), cached: true })),
     ...retainedIds.flatMap((id) => {
     const cell = lastCells.current.get(id);
     return !shownIds.has(id) && !cachedIds.has(id) && cell ? [{ ...cell, retained: true, cached: false }] : [];
   })];
+  // React moves a keyed frame whose rank changes, and a moved frame loses the scroll of what it scrolls:
+  // a pane keeps its place, and only the frames the tab draws follow the layout's own order
+  const mountedCells = orderedPaneCells(paneOrder.current, mounted, shownIds);
+  paneOrder.current = mountedCells.map((cell) => cell.paneId);
   const mountedIds = new Set(mountedCells.map((cell) => cell.paneId));
   for (const id of lastCells.current.keys()) if (!mountedIds.has(id)) lastCells.current.delete(id);
   return <PaneSubmitContext.Provider value={submits}><div className={`pane-canvas${!pane && presented ? " is-pending" : ""}`} ref={canvas} aria-busy={!pane && presented ? true : undefined}>
@@ -395,12 +400,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             if (onOpenInHalf && element?.closest(".pane-frame-head")) return;
             event.preventDefault();
             const frame = event.currentTarget;
-            const input = frame.querySelector<HTMLElement>(".secret-input input")
-              ?? frame.querySelector<HTMLElement>(".find-bar input")
-              ?? (frame.querySelector(".terminal-stack.is-chat:not(.is-peek)")
-                ? frame.querySelector<HTMLElement>(".composer-text")
-                : frame.querySelector<HTMLElement>(".terminal-input textarea") ?? frame.querySelector<HTMLElement>(".xterm-helper-textarea"));
-            input?.focus({ preventScroll: true });
+            paneInput(frame)?.focus({ preventScroll: true });
           }
         }}
         onDropCapture={() => { if (!active) onSelect(item.pane_id, false); }}
@@ -492,15 +492,6 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       body={t("The pane's running processes will stop. Closing its last pane also closes the workspace.")}
       confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await closePane(closing); setClosing(null); onChanged(); }} />}
   </div></PaneSubmitContext.Provider>;
-}
-
-function paneInput(frame: Pick<Element, "querySelector"> | null): HTMLElement | null {
-  if (!frame) return null;
-  return frame.querySelector<HTMLElement>(".secret-input input")
-    ?? frame.querySelector<HTMLElement>(".find-bar input")
-    ?? (frame.querySelector(".terminal-stack.is-chat:not(.is-peek)")
-      ? frame.querySelector<HTMLElement>(".composer-text")
-      : frame.querySelector<HTMLElement>(".terminal-input textarea") ?? frame.querySelector<HTMLElement>(".xterm-helper-textarea"));
 }
 
 function RenameDialog({ title, field, initial, placeholder, maxLength, required, onDraft, onClose, onCancel, onSave }: { title: string; field: string; initial: string; placeholder?: string; maxLength: number; required?: string; onDraft?: (value: string) => void; onClose: () => void; onCancel?: () => void; onSave: (label: string) => Promise<void> }) {

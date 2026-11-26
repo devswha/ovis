@@ -8,7 +8,6 @@ import { VOICE_DEFAULTS, type VoiceStatus } from "../shared/voice.ts";
 import type { HerdrUiConfig } from "../shared/protocol.ts";
 import type {} from "./chat-history-fixture.tsx";
 import { parseAgyTranscript } from "../server/agy.ts";
-import { buildXtermSource, xtermSourcePlugin } from "./build-xterm.ts";
 import { chromePath } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-history-browser-"));
@@ -28,8 +27,7 @@ function nextRoute(name: string): Promise<void> {
 }
 try {
   // the app's own xterm, as Vite aliases it: the patched source, not the package's minified build
-  const xterm = buildXtermSource(join(import.meta.dir, ".."));
-  const build = await Bun.build({ entrypoints: ["scripts/chat-history-fixture.tsx"], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"development"' }, plugins: [xtermSourcePlugin(xterm)] });
+  const build = await Bun.build({ entrypoints: ["scripts/chat-history-fixture.tsx"], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"development"' } });
   assert.ok(build.success, String(build.logs));
   server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
     const path = new URL(request.url).pathname;
@@ -48,6 +46,8 @@ try {
     // a count asks the server whether counting is on; this fictional server has no telemetry, and a page not answered
     // counts nothing (src/lib/usageCounters.ts). Served from the folder, it would throw ENOENT as above
     if (path === "/api/telemetry") return new Response(null, { status: 404 });
+    // the terminal's libghostty module, which the app fetches beside its own files
+    if (path === "/shared/ghostty/ghostty-vt.wasm") return new Response(Bun.file(join(import.meta.dir, "../shared/ghostty/ghostty-vt.wasm")));
     return path === "/" ? new Response('<html><head><link rel="stylesheet" href="/chat-history-fixture.css"></head><body><div id="root"></div><script type="module" src="/chat-history-fixture.js"></script></body></html>', { headers: { "Content-Type": "text/html" } }) : new Response(Bun.file(join(root, path.slice(1))));
   } });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
@@ -464,11 +464,11 @@ try {
   await page.getByText("Summarize the last three fictional commits.", { exact: true }).waitFor();
   await page.getByText("Synthetic Agy answer", { exact: true }).waitFor();
   await page.locator(".work-block-head").click();
-  assert.equal(await page.locator(".work-row-head").count(), 2, "Agy planner call and independent result remain separate");
-  await page.locator(".work-row-head").last().click();
+  assert.equal(await page.locator(".work-row-head").count(), 1, "Agy's result is drawn in the planner call it answers, not as a row of its own");
+  await page.locator(".work-row-head").click();
   await page.getByText("Fictional commit log", { exact: true }).waitFor();
   assert.equal(await page.getByText("Synthetic Claude prompt", { exact: true }).count(), 0);
-  console.log("PASS Agy native parser output renders user/assistant text and independent expandable tool results");
+  console.log("PASS Agy native parser output renders user/assistant text and its tool call with the result it returned");
   // A press reads a chat before its pick renders (#2562). herdr moves the pane to another session after
   // that read answered and before the click lands: the chat opened shows the new session, never the old one.
   await page.evaluate(() => { window.qa.session("switch", "a"); window.qa.press("switch"); });

@@ -586,6 +586,83 @@ describe("request ceiling", () => {
   }, 120_000);
 });
 
+describe("upload body chunk size", () => {
+  for (const [length, chunk] of [[3 * MiB, 3 * MiB], [3 * MiB + 1, 3 * MiB + 1], [6 * MiB, 6 * MiB], [6 * MiB, 64 * KiB]] as const) {
+    it(`streams ${length} bytes in ${chunk}-byte chunks without tripping the 3 MiB nonterminal queue (#4476)`, async () => {
+      const p = pair({ trace: false });
+      const local = p.client.openHttp({ method: "POST", target: "/api/pane/image", headers: [["content-type", "application/json"]], body: "stream" });
+      const generated = source(length, chunk);
+      const sending = outcome(local.sendBody(generated.body));
+      await p.flush();
+      const remote = required(p.http[0]);
+      remote.accept();
+      const consumed = await digest(remote.body);
+      expect(consumed).toEqual({ bytes: length, digest: generated.digest() });
+      remote.headers(200);
+      remote.end();
+      await sending;
+      expect((await digest(local.body)).bytes).toBe(0);
+      await p.flush();
+      expect(local.response?.status).toBe(200);
+      expect(p.peaks.queued).toBeLessThanOrEqual(WS_CONTINUATION_CAPACITY);
+      expect(p.errors).toEqual([]);
+      expect(p.client.stats.streams).toBe(0);
+      expect(p.server.stats.streams).toBe(0);
+    }, 60_000);
+  }
+
+  it("stops mid-chunk cleanly when the server rejects a large single-chunk upload early (#4476)", async () => {
+    const p = pair({ trace: false });
+    const local = p.client.openHttp({ method: "POST", target: "/api/pane/image", headers: [["content-type", "application/json"]], body: "stream" });
+    const generated = source(6 * MiB, 6 * MiB);
+    const sending = outcome(local.sendBody(generated.body));
+    const response = digest(local.body);
+    await p.flush();
+    const remote = required(p.http[0]);
+    remote.accept();
+    const reader = remote.body.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    await p.flush();
+    expect(local.getBufferedAmount()).toBeGreaterThan(0);
+    remote.stopRequest();
+    remote.headers(413);
+    remote.end();
+    expect(await sending).toBeUndefined();
+    expect((await response).bytes).toBe(0);
+    await p.flush();
+    expect(local.response?.status).toBe(413);
+    expect(local.cancelled).toBe(false);
+    expect(p.errors).toEqual([]);
+    expect(p.client.stats.streams).toBe(0);
+    expect(p.server.stats.streams).toBe(0);
+  });
+});
+
+it("keeps uploading a single-chunk body after early 204 headers (#4476)", async () => {
+  const p = pair({ trace: false });
+  const local = p.client.openHttp({ method: "POST", target: "/api/pane/image", headers: [["content-type", "application/json"]], body: "stream" });
+  const generated = source(4 * WS_CONTINUATION_CAPACITY, 4 * WS_CONTINUATION_CAPACITY);
+  const sending = outcome(local.sendBody(generated.body));
+  await p.flush();
+  const remote = required(p.http[0]);
+  remote.accept();
+  const reader = remote.body.getReader();
+  const first = await reader.read();
+  expect(first.done).toBe(false);
+  remote.headers(204);
+  let bytes = first.value?.length ?? 0;
+  for (let next = await reader.read(); !next.done; next = await reader.read()) bytes += next.value.length;
+  expect(bytes).toBe(4 * WS_CONTINUATION_CAPACITY);
+  remote.end();
+  expect(await sending).toBeUndefined();
+  await p.flush();
+  expect(local.response?.status).toBe(204);
+  expect(p.errors).toEqual([]);
+  expect(p.client.stats.streams).toBe(0);
+  expect(p.server.stats.streams).toBe(0);
+});
+
 describe("WebSockets", () => {
   for (const length of [0, 1, 16372, 16373, 65536, 65537, MiB]) {
     it(`reassembles ${length} bytes with whole-message credit`, async () => {
@@ -1478,5 +1555,54 @@ describe("carrier loss never resends", () => {
     await e.engine.flush();
     expect(sends).toBe(1);
     expect(e.closes).toEqual([4000]);
+  });
+});
+
+describe("key proof setup (device-row-states T71, T72; S2-13 wire)", () => {
+  function unauthenticated() {
+    const clock = new Clock();
+    const seen = { client: [] as MuxFrame[], server: [] as MuxFrame[] };
+    const errors: MuxProtocolError[] = [];
+    let client!: MuxEngine;
+    let server!: MuxEngine;
+    const make = (role: "client" | "server") => new MuxEngine({
+      role, clock, send: async (bytes) => { (role === "client" ? server : client).receive(bytes); },
+      close: () => {}, onClose: (error) => { errors.push(error); },
+      outboundWireByteLength: (bytes) => bytes.length + 24, routingOverhead: 0, maxWireMessageBytes: 32 * KiB,
+      onSession: (frame) => { seen[role].push(frame); }, requestTimeoutMs: () => 0,
+    });
+    client = make("client");
+    server = make("server");
+    engines.push(client, server);
+    return { client, server, seen, errors };
+  }
+
+  it("T71: the PC sends the challenge and the wait, and the device sends the proof", async () => {
+    const { client, server, seen, errors } = unauthenticated();
+    server.sendSession({ type: FrameType.KEY_CHALLENGE, flags: 0, stream_id: 0, payload: { challenge: "A".repeat(43) } });
+    await server.flush();
+    client.sendSession({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature: "A".repeat(86) } });
+    await client.flush();
+    server.sendSession({ type: FrameType.KEY_PENDING, flags: 0, stream_id: 0, payload: {} });
+    await server.flush();
+    expect(seen.client.map((frame) => frame.type)).toEqual([FrameType.KEY_CHALLENGE, FrameType.KEY_PENDING]);
+    expect(seen.server.map((frame) => frame.type)).toEqual([FrameType.KEY_PROVE]);
+    expect(errors).toEqual([]);
+  });
+
+  it("T71: neither end may send the other's key proof frame", () => {
+    const { client, server } = unauthenticated();
+    expect(() => client.sendSession({ type: FrameType.KEY_CHALLENGE, flags: 0, stream_id: 0, payload: { challenge: "A".repeat(43) } })).toThrow();
+    expect(() => server.sendSession({ type: FrameType.KEY_PROVE, flags: 0, stream_id: 0, payload: { signature: "A".repeat(86) } })).toThrow();
+  });
+});
+
+describe("S2-25 a held refusal reaches the app with its hold state (S25)", () => {
+  it("S25: the server's held failure arrives as the client's error, hold and all", async () => {
+    const mux = pair();
+    mux.server.fail("held", "This device waits for its join hold", undefined, { reason: "join_hold", until: "2026-11-20T05:00:10.000Z" });
+    await mux.flush();
+    const received = mux.errors.find((error) => error.code === "held");
+    expect(received?.hold).toEqual({ reason: "join_hold", until: "2026-11-20T05:00:10.000Z" });
   });
 });

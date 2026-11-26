@@ -249,11 +249,11 @@ describe("icon cache", () => {
 
 describe("UI wording", () => {
   it("says New workspace, never New session", () => {
-    const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("site/**/*.{ts,tsx,html}"), "index.html"]
+    const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("site/**/*.{ts,tsx,html}"), "index.html", ...scan("tui/**/*.ts").filter((file) => !file.startsWith("tui/testing/"))]
       .filter((file) => !file.endsWith(".test.ts"))
       .flatMap((file) => read(file).split("\n").flatMap((line, index) =>
         /^\s*(?:\/\/|\/?\*)/.test(line) || !/\bNew [Ss]ession\b/.test(line) ? [] : [`${file}:${index + 1}: ${line.trim()}`]));
-    fail(offenders, "UI text says \"New workspace\", not \"New session\" (AGENTS.md, UI wording). Change the string and its i18n entries in src/lib/i18n.*.ts or src/lib/i18n/*.ts.");
+    fail(offenders, "UI text says \"New workspace\", not \"New session\" (AGENTS.md, UI wording). Change the string, and in src/ its i18n entries in src/lib/i18n.*.ts or src/lib/i18n/*.ts.");
   });
 });
 
@@ -363,13 +363,12 @@ describe("surfaces over the app", () => {
 });
 
 describe("terminal mount", () => {
-  // The attach stream is the only writer of the terminal and herdr owns scrollback (AGENTS.md): xterm
-  // keeps none, or the fit addon reserves a scrollbar column and the last columns go dead.
-  it("creates every xterm Terminal with scrollback: 0", () => {
+  // Only terminal-history panes opt into local history, after the server advertises it.
+  it("mounts the Ghostty terminal with local history off by default", () => {
     const options: string[] = [];
     for (const file of scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name))) {
       const source = read(file);
-      for (const match of source.matchAll(/new Terminal\(\{/g)) {
+      for (const match of source.matchAll(/new GhosttyTerminal\(\{|const termOptions = \{/g)) {
         let depth = 1;
         let end = match.index + match[0].length;
         for (; depth > 0 && end < source.length; end++) depth += source[end] === "{" ? 1 : source[end] === "}" ? -1 : 0;
@@ -378,7 +377,7 @@ describe("terminal mount", () => {
     }
     expect(options.length).toBeGreaterThan(0);
     fail(options.filter((entry) => !/\bscrollback:\s*0\b/.test(entry)).map((entry) => entry.split("\n")[0]!),
-      "Every new Terminal({...}) sets scrollback: 0: herdr owns scrollback, and xterm's own would reserve a scrollbar column (AGENTS.md).");
+      "Ghostty panes start with scrollback: 0; herdr owns scrollback unless the backend advertises terminal-history.");
   });
 
   it("mounts the terminal before the attach reset effect runs", () => {
@@ -388,5 +387,28 @@ describe("terminal mount", () => {
     expect(mount).toBeGreaterThan(-1);
     expect(reset).toBeGreaterThan(-1);
     expect(mount).toBeLessThan(reset);
+  });
+});
+
+describe("herdr focus", () => {
+  const USERS: Record<string, string> = {
+    "src/lib/api.ts": "focusPane, the request itself",
+    "src/lib/machineContext.tsx": "hands focusPane to a machine's context",
+  };
+
+  it("asks herdr to move its focus from no selection", () => {
+    const uses: string[] = [];
+    const users = new Set<string>();
+    for (const file of scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name))) {
+      const code = stripComments(read(file));
+      for (const match of code.matchAll(/\bfocusPane\b|\/api\/pane\/focus/g)) {
+        users.add(file);
+        if (!(file in USERS)) uses.push(`${file}:${lineOf(code, match.index)}: ${code.split("\n")[lineOf(code, match.index) - 1]!.trim().slice(0, 160)}`);
+      }
+    }
+    fail(uses,
+      "Selecting a pane or tab in the browser never moves herdr's own focus: nothing in the client calls focusPane for a selection. A new caller is an explicit action that needs herdr to show the pane: list its file in USERS in src/conventions.test.ts with that action.");
+    fail(Object.keys(USERS).filter((file) => !users.has(file)),
+      "These files no longer name focusPane: remove them from USERS in src/conventions.test.ts.");
   });
 });

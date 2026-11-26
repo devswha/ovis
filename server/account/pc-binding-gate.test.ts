@@ -56,7 +56,7 @@ describe("the PC's account binding holds through upgrades, siblings and failures
     one.migrate(null, false);
     one.bind(ACCOUNT, "first").commit();
     writeFileSync(join(b, ADMISSION_FILE), readFileSync(join(a, ADMISSION_FILE)), { mode: 0o600 });
-    one.clear("left_on_pc", "pc");
+    one.clear("unlisted", "account");
     // the stale copy starts beside the folder that cleared its binding
     expect(start(b, true, a).account()).toBeNull();
     expect(pcFile(b).clears).toHaveLength(1);
@@ -67,6 +67,21 @@ describe("the PC's account binding holds through upgrades, siblings and failures
       state.bind(account, account).commit();
     }
     expect(start(c, true, d).failsClosed).toBe(true);
+  });
+
+  test("P12, T48: a clear in the active folder survives starting its sibling alone after merge", () => {
+    const [a, b] = [stateDir(), stateDir()];
+    const active = PcAccountState.open(a);
+    active.migrate(null, false);
+    active.bind(ACCOUNT, "first").commit();
+    writeFileSync(join(b, ADMISSION_FILE), readFileSync(join(a, ADMISSION_FILE)), { mode: 0o600 });
+    expect(active.clear("unlisted", "account")).toBe(true);
+
+    const merged = start(a, true, b);
+
+    expect(merged.failsClosed).toBe(false);
+    expect(merged.account()).toBeNull();
+    expect(start(b, true).account()).toBeNull();
   });
 
   test("T13: a failure after the member row is on disk takes nothing back: the binding and the count stand", async () => {

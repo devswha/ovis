@@ -45,6 +45,14 @@ const ANSWERS_REVIEW = {
   multi_select: false, custom_option_index: null,
 };
 const PLAN = { ...FORM, id: "demo-plan", kind: "plan", title: "Ready to code?", steps: undefined };
+/** hook-vs-screen's long command ① as its hook request carries it: one line, wider than a desktop's card */
+const LONG_COMMAND = "find /usr/share/doc -maxdepth 2 -type f -name '*.gz' -newer /etc/hostname -size +1k -printf '%TY-%Tm-%Td %s %p\\n' 2>/dev/null | sort -r | head -n 5 | awk '{print $1, $2, $3}'";
+const LONG_APPROVAL = {
+  id: "demo-long-command", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
+  body: `List the newest docs\n${LONG_COMMAND}`,
+  options: [{ label: "Yes", description: null }, { label: "Yes, and don't ask again for: find", description: null }, { label: "No", description: null }],
+  multi_select: false, custom_option_index: null,
+};
 const NEXT = { ...PLAN, id: "demo-next", title: "One more thing", question: "Which region should the counters live in?" };
 const OTHER = { ...PLAN, id: "demo-other", agent: "omo", title: "Proofread", question: "Which chapters should the proofread cover?" };
 const LONG_LABEL = "Approve with the changes the reviewer listed: keep the rate limit per user and report, move the counters to the shared store, and return Retry-After. ".repeat(15).slice(0, 2166);
@@ -176,6 +184,14 @@ try {
   const form = `<script>(() => {
     const demo = window.fetch;
     const web = ${JSON.stringify(panes.web)};
+    if (window.testApprovalReflow) {
+      const DemoWebSocket = window.WebSocket;
+      window.WebSocket = Object.assign(function (...args) {
+        const socket = new DemoWebSocket(...args);
+        if (new URL(String(args[0]), location.href).pathname === "/ws") window.formSocket = socket;
+        return socket;
+      }, Object.fromEntries(["CONNECTING", "OPEN", "CLOSING", "CLOSED"].map((key) => [key, DemoWebSocket[key]])));
+    }
     window.formPrompt = null;
     window.panePrompts = {};
     window.formAnswers = [];
@@ -197,7 +213,15 @@ try {
         if (window.formReadHold) return new Promise(() => {});
         if (window.formReadFails) { window.formFailedReads += 1; if (window.formHoldAfterFailure) window.formReadHold = true; return Promise.reject(new TypeError("Failed to fetch")); }
         const prompt = promptOf(url.searchParams.get("pane_id"));
-        if (prompt !== null) return json({ prompt, suggestion: null });
+        if (prompt !== null) {
+          if (window.formReflowGate) {
+            window.formReflowReadStarted = true;
+            const shown = "formReflowFirst" in window ? window.formReflowFirst : prompt;
+            delete window.formReflowFirst;
+            return window.formReflowGate.then(() => json({ prompt: shown, suggestion: null }));
+          }
+          return json({ prompt, suggestion: null });
+        }
       }
       if (url.pathname === "/api/pane/prompt/answer") {
         const answer = JSON.parse(init.body);
@@ -233,7 +257,7 @@ try {
         throw error;
       };
       let evidenceSequence = 0;
-      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
+      const open = async ({ width, height, touch = false, finePointer = false, held = [], prompt = null, approvalReflow = false, theme = "dark", language = "en", settings = {} }: { width: number; height: number; touch?: boolean; finePointer?: boolean; held?: string[]; prompt?: unknown; approvalReflow?: boolean; theme?: string; language?: string; settings?: Record<string, unknown> }): Promise<Opened> => {
         const context = await browser.newContext({ viewport: { width, height }, locale: "en-US", hasTouch: touch, isMobile: touch && !finePointer });
         // a laptop with a touch screen: Chromium calls any screen with touch a coarse pointer, and
         // such a laptop's mouse is its first one. The app asks through matchMedia (useMediaQuery)
@@ -256,6 +280,7 @@ try {
           Object.defineProperty(keyboard, "boundingRect", { get: () => new DOMRect(0, 0, 390, keyboard.height) });
           Object.defineProperty(navigator, "virtualKeyboard", { configurable: true, value: keyboard });
         });
+        if (approvalReflow) await context.addInitScript(() => { Reflect.set(window, "testApprovalReflow", true); });
         if (prompt !== null) await context.addInitScript((next) => { window.addEventListener("DOMContentLoaded", () => { (window as unknown as { formPrompt: unknown }).formPrompt = next; }); }, prompt);
         const page = await context.newPage();
         const evidence = evidenceDirectory ? await startBrowserEvidence({
@@ -276,7 +301,7 @@ try {
           if (prompt !== null) await setPrompt(page, prompt);
           await page.locator(".prompt-card").waitFor();
           if (prompt !== null) await page.locator(".prompt-card").getByText((prompt as { question: string }).question).waitFor();
-          await appFaces(page);
+          if (!approvalReflow) await appFaces(page);
           return {
             page,
             errors,
@@ -332,6 +357,79 @@ try {
         }
       }
       console.log("PASS the approval card sits outside the transcript, directly over the input card on its column, at 1440 and 390, dark and light");
+
+      for (const [firstFrame, optionIndex, fixed] of [["old", 0, false], ["blank", 1, false], ["fallback", 1, false], ["old", 0, true]] as const) {
+        const approval = {
+          id: "claude-wide", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
+          body: "touch probe.txt", multi_select: false, custom_option_index: null,
+          options: ["Yes", "Yes, and always allow access to /projects/demo from this project", "No"].map((label) => ({ label, description: null })),
+        };
+        const { page, errors, close } = await open({ width: 1440, height: 900, prompt: approval, approvalReflow: true });
+        try {
+          const card = page.locator(".prompt-card");
+          const option = card.locator(".prompt-card-option").nth(optionIndex);
+          assert.ok(await option.isEnabled());
+          await page.evaluate(([pane, narrow, firstFrame, fixed]) => {
+            const mock = window as unknown as {
+              formPrompt: unknown; formSocket: WebSocket; formReflowGate?: Promise<void>; finishReflow?: () => void; formReflowFirst?: unknown;
+            };
+            mock.formReflowFirst = firstFrame === "old" ? mock.formPrompt : firstFrame === "blank" ? null : {
+              id: "claude-fallback", agent: "claude", kind: "menu", fallback: true,
+              title: "Waiting for input", question: "The agent is waiting for input.",
+              body: null, multi_select: false, custom_option_index: null,
+              options: [{ label: "Enter", description: null }, { label: "Esc", description: null }],
+            };
+            mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
+            mock.formPrompt = narrow;
+            mock.formSocket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+              type: "pane-geometry", pane_id: pane, cols: 40, rows: 44, ...(fixed ? { fixed: true } : {}),
+            }) }));
+          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }, firstFrame, fixed] as const);
+          await page.waitForFunction(() => (window as unknown as { formReflowReadStarted?: boolean }).formReflowReadStarted === true);
+          assert.ok(await option.isDisabled(), `${fixed ? "mirrored" : "attached"} resize disables the approval until its redraw is read`);
+          assert.deepEqual(await answersOf(page), []);
+          await page.evaluate(() => {
+            const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void>; formReflowReadStarted?: boolean };
+            mock.finishReflow();
+            mock.formReflowReadStarted = false;
+            mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
+          });
+          await page.waitForFunction(() => Reflect.get(window, "formReflowReadStarted") === true);
+          assert.deepEqual(await card.locator(".prompt-card-body").allTextContents(), [approval.body], `keep the approval after the ${firstFrame} frame`);
+          assert.ok(await option.isDisabled(), `${firstFrame} is inconclusive; wait for the redraw`);
+          await page.evaluate(() => {
+            const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void> };
+            mock.finishReflow();
+            delete mock.formReflowGate;
+          });
+          await card.getByText("Yes, and always allow access to /projects/ demo from this project").waitFor();
+          await option.click();
+          assert.deepEqual(await answersOf(page), [{ pane_id: panes.web, prompt_id: "claude-narrow", option_index: optionIndex }]);
+          assert.deepEqual(errors, []);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+      }
+      console.log("PASS a Claude approval's first or second choice submits the refreshed card after a terminal resize");
+
+      for (const size of [{ width: 1280, height: 800 }, { width: 390, height: 844, touch: true }]) {
+        const { page, errors, shot, close } = await open({ ...size, theme: "light", prompt: LONG_APPROVAL });
+        try {
+          const body = page.locator(".prompt-card-body");
+          assert.equal(await body.textContent(), LONG_APPROVAL.body);
+          // the end of the command is in the box, not pushed out past its right edge
+          const fit = await body.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const range = document.createRange();
+            range.setStart(node.firstChild!, node.firstChild!.textContent!.length - 1);
+            range.setEnd(node.firstChild!, node.firstChild!.textContent!.length);
+            const end = range.getBoundingClientRect();
+            return { overflows: node.scrollWidth > node.clientWidth + 1, endInside: end.right <= box.right && end.left >= box.left };
+          });
+          assert.deepEqual(fit, { overflows: false, endInside: true }, `${size.width}: the long command wraps inside the card`);
+          assert.deepEqual(errors, []);
+          await shot(`approval-long-command-${size.width}-light`);
+        } catch (error) { await preserveFailure(page, error); } finally { await close(); }
+      }
+      console.log("PASS a long one-line command wraps inside the approval card to its end, at 1280 and 390");
 
       {
         const { page, errors, close } = await open({ width: 1440, height: 900 });

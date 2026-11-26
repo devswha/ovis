@@ -10,10 +10,13 @@
  * the acts write; Ovis has no boundary there.
  */
 import { dlopen, FFIType } from "bun:ffi";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, fstatSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { CONFIRM_MS } from "../../shared/account-devices-api.ts";
 import { machineForwardingHeaders } from "../access.ts";
+import { writePrivateState } from "../private-state.ts";
 
 export type ScreenAction =
   | { kind: "lock" }
@@ -31,7 +34,7 @@ export interface ConfirmShown { title: string; lines: readonly string[]; fingerp
 export type ConfirmAnswer = "approved" | "declined" | "expired";
 export interface OpenConfirm { id: string; action: ScreenAction; shown: ConfirmShown; expiresAt: number }
 
-export const CONFIRM_MS = 2 * 60_000;
+export { CONFIRM_MS };
 export const CONFIRMS_OPEN_MAX = 16;
 export const LOCAL_CONFIRM_FILE = "local-confirm.json";
 const DESKTOP_OWNER_ARGUMENT = "--desktop-owner-fd";
@@ -98,6 +101,11 @@ export class LocalConfirms {
   onChange(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /** Takes an act off the screen: what it asked for is gone. Its asker hears `expired`, and no answer to it counts. */
+  withdraw(id: string): void {
+    this.#end(id, "expired");
   }
 
   isOpen(id: string): boolean {
@@ -382,8 +390,7 @@ export function openConfirmListener(confirms: LocalConfirms, options: {
   });
   const file = join(options.stateDir, LOCAL_CONFIRM_FILE);
   try {
-    writeFileSync(file, JSON.stringify({ port: server.port }), { mode: 0o600 });
-    chmodSync(file, 0o600);
+    writePrivateState(file, { port: server.port });
   } catch (error) {
     server.stop(true);
     throw error;
@@ -391,11 +398,25 @@ export function openConfirmListener(confirms: LocalConfirms, options: {
   return {
     port: server.port!,
     stop() {
-      server.stop(true);
+      // The approval of the last standing unlock can close this listener. Finish its HTTP reply.
+      server.stop();
       try { rmSync(file, { force: true }); }
       catch (error) { console.error(`${file} was not removed: ${error instanceof Error ? error.message : String(error)}`); }
     },
   };
+}
+
+/**
+ * Opens `url` (this listener's page) in a browser on this PC's own desktop, as `ovis confirm` does: on Linux, under X11
+ * or Wayland only. False where there is no desktop to open it on, and where `xdg-open` could not be started (a desktop
+ * without it): only a started opener counts as opened.
+ */
+export function openOnDesktop(url: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Promise<boolean> {
+  if (platform !== "linux" || !(Boolean(env["DISPLAY"]) || Boolean(env["WAYLAND_DISPLAY"]))) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const opener = spawn("xdg-open", [url], { stdio: "ignore", detached: true, env });
+    opener.once("spawn", () => { opener.unref(); resolve(true); }).once("error", () => resolve(false));
+  });
 }
 
 function listPage(open: readonly OpenConfirm[]): string {

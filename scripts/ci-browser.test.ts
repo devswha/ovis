@@ -147,7 +147,6 @@ describe("browser lane", () => {
       { script: "scripts/workspace-rows-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/pending-pane-switch-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/lan-exposure-notice-regression.ts", seconds: expect.any(Number), code: 0 },
-      { script: "scripts/terminal-dispose-browser-qa.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/herdr-restart-regression.ts", seconds: expect.any(Number), code: 0 },
       { script: "scripts/sticky-modifiers-regression.ts", seconds: expect.any(Number), code: 7 },
     ]);
@@ -195,6 +194,7 @@ describe("browser lane", () => {
 });
 
 const MANUAL_BROWSER_SCRIPTS = [
+  "scripts/pc-add-guidance-regression.ts", // requires UI_EVIDENCE_DIR; run for the localized PC-add captures
   "scripts/android-ime-regression.ts", // an Android emulator over ADB (docs/terminal-input.md)
   "scripts/chat-browser-qa.ts",
   "scripts/font-swap-demo-regression.ts",

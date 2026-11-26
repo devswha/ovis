@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { testSocketPath } from "../scripts/test-herdr.ts";
+import { join } from "node:path";
+import { testConfigHome } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, subscribeEvents, type Subscription, workspaceClose, workspaceCreate } from "./herdr/client.ts";
@@ -33,7 +33,7 @@ async function fixtureInFront(pane: string, session: string): Promise<number | u
 }
 
 function herdrLogTail(): string {
-  const log = join(dirname(testSocketPath()), "herdr-server.log");
+  const log = join(testConfigHome(), "herdr", "herdr-server.log");
   try {
     return fs.readFileSync(log, "utf8").split("\n").filter((line) => line && !line.includes('event="api.request.')).slice(-25).join("\n");
   } catch (error) { return `no herdr log at ${log}: ${error instanceof Error ? error.message : String(error)}`; }
@@ -108,7 +108,7 @@ if (api) createServer((socket) => {
       if (!["connect", "session.getForeground"].includes(message.method)
         || Object.keys(message.params).length !== 0) throw new Error("unexpected API write or credentials");
       const response = apiReject ? { error: { code: -32001, message: "Unauthorized" } }
-        : { result: message.method === "connect" ? { protocolVersion: 3 } : { sessionId: selected } };
+        : { result: message.method === "connect" ? { ok: true, protocolVersion: 4 } : { sessionId: selected } };
       const reply = frame({ jsonrpc: "2.0", id: message.id, ...response });
       if (apiRace && message.method === "session.getForeground" && ++apiReads % 2 === 0)
         socket.write(Buffer.concat([reply, lifecycleEvent("session.background"), lifecycleEvent("session.foreground")]));
