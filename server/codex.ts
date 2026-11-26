@@ -3332,17 +3332,20 @@ function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[
 /**
  * The conversations the Codex server Ovis started beside a pane's one TUI holds for it, as that server says
  * (approvals/codex.ts servedConversations): only that TUI is on it, so none is another pane's. `only` for the one it
- * holds, written in `home`, with the identity of its file; `among` for the written ones of `home` when it holds more
- * (a /new, a /resume of a thread still loaded) or none written yet. null where Ovis has no connection to such a
- * server: the lookup goes on as before.
+ * holds, written in `home` under its own name, with the identity of its file; `among` for the written ones of `home`
+ * when it holds more (a /new, a /resume of a thread still loaded), none written yet, or it did not tell. null where Ovis
+ * has no connection to such a server: the lookup goes on as before.
  */
 async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: string[] }[], home: string): Promise<{ only: { path: string; identity: string } } | { among: string[] } | null> {
   if (codexProcesses.length !== 1) return null;
   const threads = await servedConversations(paneId, codexProcesses[0]!.argv ?? []);
   if (threads === null) return null;
-  const among = threads.flatMap(({ path }) => {
+  // the pane's server did not tell: no folder or screen evidence stands in for it
+  if (threads === "unknown") return { among: [] };
+  const among = threads.flatMap(({ threadId, path }) => {
     const rollout = path === null ? null : codexRolloutPath(path, home);
-    return rollout === null ? [] : [rollout];
+    // the file the store resolves the path to must be that thread's, not one a link in the store leads to
+    return rollout !== null && ROLLOUT_NAME.exec(nodePath.basename(rollout))?.[1]?.toLowerCase() === threadId.toLowerCase() ? [rollout] : [];
   });
   if (threads.length === 1 && among.length === 1) {
     try {
@@ -3358,7 +3361,8 @@ export async function codexOpenRollout(paneId: string, cwd: string | null | unde
   const { codexProcesses, processes, open } = await openRollouts(paneId, home);
   if (open.size === 1) return [...open][0]!;
   const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
-  if (told !== null && "only" in told) return told.only.path;
+  // the pane's server knows it holds more than one: no earlier report or binding says which the TUI shows
+  if (told !== null) return "only" in told ? told.only.path : null;
   const reported = cwd ? reportedRollout(agent.agent_session, home) : null;
   if (reported !== null && !agent.nestedTerminal && !agent.unlabelled && resumedThread(codexProcesses.map((process) => process.argv ?? [])) === null
     && await freshReportedThread(paneId, cwd!, home, reported, codexProcesses)) return reported;
@@ -3549,12 +3553,15 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     // which of its own conversations the TUI shows is the server's to say, and it does not: the screen tells it among
     // those only, never among the folder's
     if (told.among.length === 0) return null;
-    const shown = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
+    const shown = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }).catch(() => null);
     const candidates = told.among.flatMap((path) => {
       try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
     });
+    // each one the server holds is weighed, and an answer that another of them gave too proves nothing (a fork, a
+    // resumed copy)
+    if (shown === null || candidates.length !== told.among.length) return null;
     // answers too short for the long match: the newest of them shown, each under its own prompt
-    return matchCodexTranscript(shown.text, candidates)
+    return matchCodexTranscript(shown.text, candidates, new Set(told.among))
       ?? matchShortCodexAnswers(shown.text, candidates.map((candidate) => ({ ...candidate, cut: !readWhole(candidate.path) })));
   }
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store

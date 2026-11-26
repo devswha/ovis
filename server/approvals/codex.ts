@@ -319,8 +319,6 @@ class Connection {
   private readonly resumed = new Set<string>();
   /** Threads that are not the pane's own: subagents, and the ephemeral ones Codex runs aside (it titles a thread in one). */
   private readonly subagents = new Set<string>();
-  /** The rollout each main thread the server named one for writes (thread/read): it keeps it for the thread's life. */
-  private readonly rollouts = new Map<string, string>();
   private readonly changes = new Map<string, FileChange[]>();
   private readonly asks = new Map<string, CodexAsk>();
   private following: ThreadBinding | null = null;
@@ -433,30 +431,43 @@ class Connection {
    * The conversations the server holds for the TUI, as it says now: each loaded thread that is neither a subagent nor
    * one Codex runs aside, with the rollout it writes (null before the server named one). The TUI shows one of them:
    * the only one, or after a /new or a /resume of a thread still loaded, one Codex does not say which (it announces
-   * no such switch). null when the server did not answer all of it.
+   * no such switch). `unknown` when the server did not answer all of it, or the threads loaded changed while it was
+   * asked. Lookups at the same time share one.
    */
-  async conversations(): Promise<{ threadId: string; path: string | null }[] | null> {
-    const loaded = await this.within("thread/loaded/list", {});
-    const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
-    if (result?.["nextCursor"] !== null || !Array.isArray(result["data"])) return null;
+  conversations(): Promise<{ threadId: string; path: string | null }[] | "unknown"> {
+    this.asking ??= this.askConversations().finally(() => { this.asking = null; });
+    return this.asking;
+  }
+
+  private asking: Promise<{ threadId: string; path: string | null }[] | "unknown"> | null = null;
+
+  private async askConversations(): Promise<{ threadId: string; path: string | null }[] | "unknown"> {
+    if (!this.ready) return "unknown";
+    const listed = async (): Promise<string[] | null> => {
+      const loaded = await this.within("thread/loaded/list", {});
+      const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
+      const ids = result?.["nextCursor"] === null && Array.isArray(result["data"]) ? result["data"] : null;
+      return ids !== null && ids.every((id) => typeof id === "string") ? ids as string[] : null;
+    };
+    const ids = await listed();
+    if (ids === null) return "unknown";
     const threads: { threadId: string; path: string | null }[] = [];
-    for (const threadId of result["data"]) {
-      if (typeof threadId !== "string") return null;
+    for (const threadId of ids) {
       if (this.subagents.has(threadId)) continue;
-      if (!this.rollouts.has(threadId)) {
-        const read = await this.within("thread/read", { threadId, includeTurns: false });
-        const thread = read !== "unknown" && isObject(read["result"]) && isObject(read["result"]["thread"]) ? read["result"]["thread"] : null;
-        if (thread === null || thread["id"] !== threadId) return null;
-        if (typeof thread["parentThreadId"] === "string" || thread["ephemeral"] === true) {
-          this.subagents.add(threadId);
-          continue;
-        }
-        const path = text(thread["path"]);
-        if (path !== null) this.rollouts.set(threadId, path);
+      // read each time: the file a thread writes is the server's to say, not one kept from before
+      const read = await this.within("thread/read", { threadId, includeTurns: false });
+      const thread = read !== "unknown" && isObject(read["result"]) && isObject(read["result"]["thread"]) ? read["result"]["thread"] : null;
+      if (thread === null || thread["id"] !== threadId) return "unknown";
+      if (typeof thread["parentThreadId"] === "string" || thread["ephemeral"] === true) {
+        this.subagents.add(threadId);
+        continue;
       }
-      threads.push({ threadId, path: this.rollouts.get(threadId) ?? null });
+      threads.push({ threadId, path: text(thread["path"]) });
     }
-    return this.closed ? null : threads;
+    // a /new or a /resume while the threads were read: what was read may no longer be what the TUI holds
+    const again = await listed();
+    if (this.closed || again === null || again.length !== ids.length || again.some((id, at) => id !== ids[at])) return "unknown";
+    return threads;
   }
 
   private send(message: Json): void {
@@ -827,9 +838,10 @@ export function servedStatus(paneId: string): ServedStatus | null {
 
 /**
  * The conversations the Codex server Ovis started in `paneId` holds for the TUI whose command line is `argv`
- * (Connection.conversations): null where Ovis has no connection to it, or `argv` is not that launch's TUI.
+ * (Connection.conversations): `unknown` where it did not tell, null where Ovis has no connection to it, or `argv` is
+ * not that launch's TUI.
  */
-export async function servedConversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | null> {
+export async function servedConversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | "unknown" | null> {
   for (const servers of instances) {
     const found = await servers.conversations(paneId, argv);
     if (found !== null) return found;
@@ -1011,7 +1023,7 @@ export class CodexServers {
   }
 
   /** The conversations of this launch's server (Connection.conversations), where `argv` is its TUI's; else null. */
-  async conversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | null> {
+  async conversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | "unknown" | null> {
     return await this.launchOf(paneId, argv)?.conversations() ?? null;
   }
 
