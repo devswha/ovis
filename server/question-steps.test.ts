@@ -356,6 +356,28 @@ test.skipIf(process.platform === "win32")("omp form: a multiline draft cannot be
   }, QUESTIONS, "<form><label>Notes<textarea name=\"notes\"></textarea></label></form>");
 });
 
+test("omp form: a scrolled Contact card cannot answer another Contact field", async () => {
+  const screen = ompForm("required-60");
+  const rows = screen.split("\n");
+  const box = rows.findIndex((row) => row.startsWith("╭─ Ask"));
+  const field = rows.findIndex((row) => row.includes("❯ Project name"));
+  const bottom = rows.findIndex((row) => row.startsWith("╰─"));
+  const frame = (draft: string) => [
+    rows[box]?.replace("2 of 4 answered", "0 of 2 answered"),
+    rows[field]?.replace("Project name *", "Contact       ").replace(/  │$/u, "│ │"),
+    rows[field + 1]?.replace(" my-app", draft).replace(/  │$/u, "█ │"),
+    ...rows.slice(bottom),
+  ].join("\n");
+  const html = "<form><label>Contact<input name=\"first\"></label><label>Contact<input name=\"second\"></label></form>";
+  await withPane("omp", frame(" first "), async pane => {
+    const first = await card();
+    expect(first.question).toBe("Contact");
+    pane.screen = frame(" second");
+    expect(await move(first.id, { custom_text: "new contact" })).toEqual({ status: 409, code: "prompt_changed" });
+    expect(pane.sent).toEqual([]);
+  }, QUESTIONS, html);
+});
+
 describe("the answer route moves between questions, one key at a time, each seen", () => {
   test.each(["question", "option"] as const)("omp: a call whose %s differs from the displayed question offers no moves", async changed => {
     await withPane("omp", omp(0), async pane => {

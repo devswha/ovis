@@ -152,6 +152,8 @@ export type ParsedPrompt = InteractivePrompt & {
   ompCall?: string;
   /** The choice group shown in an omp 19 form; rows may run past the scrolled box's edges. */
   ompFormChoices?: OmpFormChoiceWindow;
+  /** A text or dropdown field whose position in a multi-field form isn't visible. */
+  ompFormPositionUnverified?: true;
   /** The uniquely matched radio group in the bound omp form call, stable as the box scrolls. */
   ompFormRadioGroup?: number;
   /** gjc's selector: its title's rows as drawn, top to bottom, which the card splits into a question and a body (server/gjc-ask.ts) */

@@ -447,14 +447,19 @@ function parseOmpForm(screen: string, allowMultilineDraft = false): ParsedPrompt
       optionSteps: [keySteps([KEY.enter])],
     }, hashed);
   }
-  return finishPrompt("omp", { ...field!.draft, ...navigation }, { ...field!.internal, ...nativeSteps, responder: "omp-form" },
-    hashed);
+  if (!field) return null;
+  // Text labels and dropdown values can repeat. Without the field's position, a stale card could answer its twin.
+  const positionUnverified = box.total !== null && !navigable && field.internal.ompFormChoices === undefined;
+  return finishPrompt("omp", { ...field.draft, ...navigation }, {
+    ...field.internal, ...nativeSteps, responder: "omp-form",
+    ...(positionUnverified ? { ompFormPositionUnverified: true } : {}),
+  }, hashed);
 }
 
 /** A pasted textarea can prove it still holds the keys even when its draft is too tall to offer a new card. */
 export function ompFormTextareaFocus(screen: string): ParsedPrompt | null {
   const field = parseOmpForm(screen, true);
-  return field?.default_custom_text?.includes("\n") && field.ompFormChoices === undefined ? field : null;
+  return field?.default_custom_text?.includes("\n") && field.ompFormChoices === undefined && !field.ompFormPositionUnverified ? field : null;
 }
 
 export const readers: readonly DialogReader[] = [

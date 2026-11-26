@@ -49,7 +49,9 @@ export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   const call = ompOpenCall(open, session);
   const args = open[0]?.args;
   if (!parsed) return { prompt };
-  if (call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") return { prompt, unverified: true };
+  if (parsed.ompFormPositionUnverified || call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") {
+    return { prompt, unverified: true };
+  }
   return { prompt: publicPrompt({ ...bindFormChoiceGroup(parsed, args.html), ompCall: call }) };
 }
 
