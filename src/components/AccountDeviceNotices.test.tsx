@@ -343,8 +343,8 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   for (const action of [again, notMe]) {
     const { onClick } = reactProps(action);
     if (typeof onClick !== "function") throw new Error("Missing notice click handler");
-    // Do not await a conflicting answer: if it starts, the wire assertions below must catch it.
-    await act(async () => { void onClick(); });
+    // a guard returns at once; one that let the answer start would leave this waiting on it
+    await act(async () => { await onClick(); });
   }
   expect(answers(desk)).toEqual([answer]);
   expect(answers(lab)).toEqual([]);

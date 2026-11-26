@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { act } from "react";
-import { openPage, type Page } from "../lib/page.fixture.ts";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { type AccountSession, indexedAccountStore } from "../lib/account/store.ts";
@@ -406,6 +406,8 @@ describe("deleting the account from Settings", () => {
     expect(button.disabled).toBe(true);
     expect(button.getAttribute("aria-busy")).toBe("true");
     await act(async () => { button.click(); });
+    // React drops the click on the disabled button: the handler's own check must hold too
+    await act(async () => { (reactProps(button).onClick as () => void)(); });
     expect(shown()).not.toContain("for good");
     gate.resolve();
     await until(() => shown().includes("Your account was deleted."));
