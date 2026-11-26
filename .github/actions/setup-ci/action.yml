@@ -95,15 +95,31 @@ runs:
         restore-keys: |
           bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-
     # the PTY host alone (no ACP keeper beside it): the release's, checked against its manifest and crate tree, into bin/;
-    # a crate tree no release was built from is built here, where the server takes it without one in bin/
-    # (server/pty/host.ts). Only that build needs Rust.
+    # a crate tree no release or daily beta was built from (or a version not published yet) is built here, where the
+    # server takes it without one in bin/ (server/pty/host.ts). A runner without Rust (an image from before its layer)
+    # attaches on the latest release's host instead, checked against that release's SHA256SUMS, and says so: ci.yml's
+    # Rust PTY host job builds and tests this tree's own on GitHub's image.
     - name: Rust PTY host
       if: inputs.pty-host == 'true' && runner.os != 'Windows'
       shell: bash
       run: |
         if ! bun -e 'const { install } = await import("./scripts/pty-sidecar.ts"); const result = await install(); console.log(result.message); process.exit(result.ok ? 0 : 1)'; then
-          command -v cargo >/dev/null || { echo "::error::no release Rust PTY host for this crate tree, and no cargo on this runner to build one" >&2; exit 1; }
-          cargo build --release --locked --manifest-path crates/pty-sidecar/Cargo.toml
+          if command -v cargo >/dev/null; then
+            cargo build --release --locked --manifest-path crates/pty-sidecar/Cargo.toml
+          else
+            echo "::warning::no Rust PTY host released for this crate tree and no cargo on this runner: this job attaches on the latest release's host"
+            case "$RUNNER_OS-$RUNNER_ARCH" in
+              Linux-X64) asset=ovis-pty-sidecar-linux-x64 ;;
+              Linux-ARM64) asset=ovis-pty-sidecar-linux-arm64 ;;
+              *) asset=ovis-pty-sidecar-darwin-universal ;;
+            esac
+            latest=https://github.com/${{ github.repository }}/releases/latest/download
+            out=crates/pty-sidecar/target/release
+            mkdir -p "$out"
+            curl -fsSL --retry 3 "$latest/$asset" -o "$out/ovis-pty-sidecar"
+            curl -fsSL --retry 3 "$latest/SHA256SUMS" | grep " $asset$" | sed "s| $asset$| $out/ovis-pty-sidecar|" | sha256sum -c -
+            chmod +x "$out/ovis-pty-sidecar"
+          fi
         fi
         bun -e 'const { rustSidecar } = await import("./server/pty/host.ts"); process.exit(rustSidecar() ? 0 : 1)'
     - name: Install checksum-pinned herdr 0.9.3
