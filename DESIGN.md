@@ -821,6 +821,21 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
 - `palette`: the legacy mirror of the drawn side's theme for older app versions; default `codex`.
   A record with no palette (saved before palettes) or a removed one (`report`, `lilac`, `forest`)
   loads as `amber`.
+- `markdownStyle`: `editorial`, `tinted`, `colorful`, or `plain`; default `editorial`, shared across
+  devices (`SHARED_SETTING_KEYS`) and stored in its own key (`ovis:markdown-style`, applied at cold
+  boot via `data-markdown-style` on `<html>`). Picked from a row of four miniature preview cards
+  under Settings → Appearance → Chat Markdown (following the Theme picker's card strip rather than a
+  binary toggle). Scoped to assistant chat turns only (`.chat-turn-agent .markdown`); user bubbles,
+  file previews, fenced code blocks, and clickable file/link chips (`.markdown-file`,
+  `.markdown-code-link`, `a > code`) keep their own affordances. `editorial` follows Claude and
+  Linear's restrained typography (neutral headings with a hairline rule under `h2`, single-accent
+  tints on bullets while ordered numbers keep the text color, one blockquote rail/wash however deep
+  the quote, and non-file inline code pills in `--text-strong`, never a mix of two text colors, so an
+  imported theme keeps it readable); `tinted` adds soft
+  two-tone theme heading and inline-code tints; `colorful` uses the active theme's `--syntax-*`
+  roles across headings, emphasis, and inline code (following the syntax-colored Markdown direction
+  proposed in #4262); `plain` keeps the original monochrome Markdown. Every preset's foreground and
+  surface mixes meet WCAG AA (4.5:1) across all built-in dark and light themes (`themes.contrast.test.ts`).
 - `density`: `comfortable` or `compact`; default `comfortable`.
 - `sidebarRows`: `one` or `two`; default `one`.
 - Terminal font size is independent: default `13px`, clamped to `10–22px`.
@@ -3181,6 +3196,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A right-click on a pane always opens its menu.
   Native app shortcuts default to Mod+Shift in the browser, so Ctrl+key continues to reach the PTY;
   a plain Ctrl/Alt chord is taken only after the user records it and confirms Save anyway.
+  Like Zed's scoped shortcut opt-out, **Off** disables only the selected action. Chat's **Hold
+  message in chat** and the **Dictate (hold)** key can be turned off independently. These two keep
+  their default chords when enabled; **Off** does not change a terminal's Alt+Enter or the mic button.
 
 ### Worktree dialog (`.worktree-modal`)
 - From a workspace row's menu, as herdr's prefix+shift+g: **New worktree** asks for the branch
@@ -4153,6 +4171,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   then reads `Question 1 of 2`; the review after the last question keeps the chips, all checked.
 - Single options submit immediately; multi-select exposes checks plus Submit; supported custom input
   has its own labelled field. The prompt id names what the prompt says and which asking of it this is; an answer to another prompt, or to an earlier asking of the same one, is rejected with `prompt_changed`.
+- When Chat sees a terminal resize during a Claude Code approval, it keeps the card in place and
+  briefly disables its choices while reading the redrawn screen. This follows Claude Code's
+  terminal, where a resize leaves the approval open. The live answer check still binds the
+  selection to the command and permission scope on screen.
 - OpenCode's native multi-step form uses the same question card, not a new wizard. Back and
   answered-step chips save the current step's unsent text and checks before navigating. Returning
   restores them without submitting them to the agent. This keeps the existing T3 Code-inspired
@@ -5669,21 +5691,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   folded rows or an oversized mirror, done in the browser, does not glide. The wheel speed setting
   is for wheels and trackpads only: the finger keeps the text under it.
 - The screen a new attach is handed (`pty-data` with `replay: true`: a second tab, a phone, a
-  reconnect) is presentation history: xterm draws it byte for byte, and an OSC 52 copy request in
-  it is not run again. Output reaches xterm one frame at a time, so the frame being parsed is
-  known; a replayed frame that ends inside an OSC that may still become OSC 52 (xterm's own
-  `oscStringState()`, added by the xterm patch) keeps the next OSC 52 dispatch suppressed until
+  reconnect) is presentation history: Ghostty draws it byte for byte, and an OSC 52 copy request in
+  it is not run again. Output reaches Ghostty one frame at a time, so the frame being parsed is
+  known; a replayed frame that ends inside an OSC that may still become OSC 52 (`oscStringState()` in
+  `src/lib/ghostty/hooks.ts`) keeps the next OSC 52 dispatch suppressed until
   that OSC ends. The edge is fail-closed: when such an OSC is aborted (CAN, SUB) or completes as
   another identifier, a whole live OSC 52 later in that same live frame is not copied either; one
   in the next frame is. An older bridge marks nothing, so its replay still counts as live output.
   A reconnect, a pane switch or a tab letting go of its attach retires the output from before
-  it: frames still waiting are dropped unwritten, the one xterm is still parsing copies nothing,
+  it: frames still waiting are dropped unwritten, the one Ghostty is still parsing copies nothing,
   and an OSC the old output left open is guarded as a replayed one.
   The idea that a new viewer does not act on earlier writes is AoE's (Agent of Empires), whose
   clipboard consumer starts at the current point and never sees the replay; Ovis differs because a
-  joining view needs the replay drawn, so only its side effect goes. Every xterm upgrade ports
-  `oscStringState` (`scripts/xterm-parser-state.test.ts`) and reruns
-  `scripts/replay-clipboard-demo-regression.ts`.
+  joining view needs the replay drawn, so only its side effect goes. The parser state and replay
+  guard are checked by `src/lib/ghostty/hooks.test.ts` and `scripts/replay-clipboard-demo-regression.ts`.
 - Terminal banners stack top-right for ended, reconnecting, view-only and held-input states, and
   say only what the person needs now (section 1). Ended reads **Terminal ended**; input held for
   the pane stays until the person sends or discards it (pty-exit also comes with a herdr restart).
