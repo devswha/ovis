@@ -36,7 +36,7 @@ function editor(term?: any, Helper = CompositionHelper) {
     Object.assign(term, {
       textarea, element, _compositionHelper: helper,
       screenElement: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
-      _selectionService: { selectionText: "screen-output", shouldColumnSelect: () => false },
+      _selectionService: { selectionText: "screen-output", shouldColumnSelect: () => false, reset() {} },
     });
     term.onData((text: string) => sent.push(text));
     term._initGlobal();
@@ -218,11 +218,14 @@ describe("xterm mobile composition input", () => {
   });
 });
 
-describe("xterm dictation input on iPhone WebKit", async () => {
+for (const platform of ["iPhone", "MacIntel"]) describe(`xterm dictation input on mobile WebKit (${platform})`, async () => {
   const safari = await Bun.build({
     entrypoints: [join(source, "browser/input/CompositionHelper.js"), join(source, "browser/CoreBrowserTerminal.js")],
     plugins: [xtermSourcePlugin(source)], target: "bun",
-    banner: "const process = undefined; const document = {}; const window = {}; const navigator = { userAgent: 'Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Version/27.0 Mobile/15E148 Safari/604.1', platform: 'iPhone', language: 'en' };",
+    banner: `const process = undefined; const document = {}; const window = {}; const navigator = {
+      userAgent: 'Mozilla/5.0 (${platform === "iPhone" ? "iPhone" : "Macintosh"}) AppleWebKit/605.1.15 Version/27.0 Safari/604.1',
+      platform: '${platform}', maxTouchPoints: 5, language: 'en'
+    };`,
   });
   if (!safari.success) throw new AggregateError(safari.logs, "Could not build the terminal for iPhone WebKit");
   const { CompositionHelper: SafariHelper } = await load("CompositionHelper", safari);
@@ -255,25 +258,65 @@ describe("xterm dictation input on iPhone WebKit", async () => {
     const { value, selectionStart, selectionEnd } = e.textarea;
     e.value(value.slice(0, selectionStart) + data + value.slice(selectionEnd));
     e.event("input", fields);
-    jest.runOnlyPendingTimers();
   };
 
   for (const key of [undefined, { key: "Unidentified", keyCode: 229 }]) {
-    it(`keeps the first insertText dictation hypothesis provisional (${key ? "229" : "no keydown"})`, () => {
+    it(`sends single-key answers without waiting for a following key (${key ? "229" : "no keydown"})`, () => {
+      const e = editor(new SafariTerminal(), SafariHelper);
+      for (const [index, data] of ["1", "y"].entries()) {
+        if (key) e.event("keydown", key);
+        insert(e, data);
+        expect(e.sent).toEqual(["1", "y"].slice(0, index + 1));
+        if (key) e.event("keyup", key);
+        jest.runOnlyPendingTimers();
+        expect(e.sent).toEqual(["1", "y"].slice(0, index + 1));
+      }
+    });
+
+    it(`buffers only the rewrites after a plain first insertion (${key ? "229" : "no keydown"})`, () => {
       const e = editor(new SafariTerminal(), SafariHelper);
       for (const data of ["p", "ple", "please"]) {
         e.textarea.select();
         if (key) e.event("keydown", key);
         insert(e, data);
+        expect(e.sent).toEqual(["p"]);
         if (key) e.event("keyup", key);
+        jest.runOnlyPendingTimers();
       }
       e.event("keydown", { key: "Enter", keyCode: 13 });
-      expect(e.sent).toEqual(["please", "\r"]);
+      expect(e.sent).toEqual(["p", "lease", "\r"]);
     });
   }
 
-  it("commits dictation before context-menu paste replaces the textarea with a grid selection", () => {
+  it("corrects a sent prefix only at commit, after Backspace edits the provisional text", () => {
     const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "thi");
+    e.textarea.select();
+    insert(e, "This.");
+    e.event("keydown", { key: "Backspace", keyCode: 8 });
+    e.textarea.selectionStart--;
+    e.event("beforeinput", { inputType: "deleteContentBackward", isComposing: false });
+    e.value("This");
+    e.event("input", { inputType: "deleteContentBackward", isComposing: false });
+    expect(e.sent).toEqual(["thi"]);
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["thi", "\x7f\x7f\x7fThis", "\r"]);
+  });
+
+  it("accepts keyless input after reset even when the old key never came up", () => {
+    const term = new SafariTerminal();
+    const e = editor(term, SafariHelper);
+    e.event("keydown", { key: "Shift", keyCode: 16 });
+    term.reset();
+    insert(e, "first", "insertReplacementText");
+    e.textarea.select();
+    insert(e, "final", "insertReplacementText");
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["final", "\r"]);
+  });
+
+  it("commits dictation before context-menu paste replaces the textarea with a grid selection", () => {
+    const e = editor(new SafariTerminal({ rightClickSelectsWord: false }), SafariHelper);
     insert(e, "p", "insertReplacementText");
     e.textarea.select();
     insert(e, "please");
