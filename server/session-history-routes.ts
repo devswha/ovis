@@ -80,7 +80,7 @@ export function workspaceFolder(snapshot: Snapshot, workspaceId: string): string
 
 const isClaude = (entry: PaneProcess) => isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined });
 
-async function paneStore(paneId: string, options: StoreOptions, reportedClaude = false): Promise<{ store: NonNullable<Awaited<ReturnType<typeof claudeStoreOf>>>; claude: boolean; wrapped: boolean; pid: number | null } | null> {
+async function paneStore(paneId: string, options: StoreOptions, { reportedClaude = false, started = false } = {}): Promise<{ store: NonNullable<Awaited<ReturnType<typeof claudeStoreOf>>>; claude: boolean; wrapped: boolean; pid: number | null } | null> {
   let processes: PaneProcesses | undefined;
   try { processes = await (options.paneProcesses ?? herdrPaneProcesses)(paneId); } catch { return null; }
   // only processes herdr reported say there is no Claude: an answer without them is no answer
@@ -103,10 +103,13 @@ async function paneStore(paneId: string, options: StoreOptions, reportedClaude =
     try { wrapper = await hintedClaudeSource(foreground, { requireReadable: reportedClaude && !foreground.some(isClaude) }); }
     catch (error) { if (error instanceof AmbiguousClaudeStore) return null; throw error; }
   }
-  const source = wrapper === null ? await paneClaudeSource(foreground, home, platform, table) : null;
-  const store = await claudeStoreOf(wrapper?.source ?? source, wrapper?.home ?? home, options.stores?.env ?? process.env);
-  const claude = foreground.filter(isClaude);
-  return store === null ? null : { store, claude: source !== null, wrapped: wrapper !== null, pid: claude.length === 1 ? claude[0]!.pid : null };
+  const observed = wrapper === null ? foreground : foreground.filter(({ pid }) => !wrapper.pids.includes(pid));
+  const claude = observed.filter(isClaude);
+  // A source lists the wrapper's store, but a new tab must prove where its actual Claude writes.
+  const selectedWrapper = started ? null : wrapper;
+  const source = selectedWrapper === null ? await paneClaudeSource(observed, home, platform, table) : selectedWrapper.source;
+  const store = await claudeStoreOf(source, selectedWrapper?.home ?? home, options.stores?.env ?? process.env);
+  return store === null ? null : { store, claude: claude.length > 0, wrapped: wrapper !== null, pid: claude.length === 1 ? claude[0]?.pid ?? null : null };
 }
 
 /**
@@ -124,7 +127,7 @@ async function startedStore(paneId: string, listedDir: string, options: StoreOpt
   let landed: Awaited<ReturnType<typeof paneStore>> = null;
   for (;;) {
     if (stopped()) return null;
-    const found = await paneStore(paneId, options);
+    const found = await paneStore(paneId, options, { started: true });
     if (found?.claude) {
       landed = found;
       if (platform === "linux" || platform === "darwin") return { store: found.store, writesListed: true };
@@ -169,7 +172,7 @@ export async function handleSessionHistoryRequest(request: Request, url: URL, op
   if (cwd === null) return jsonResponse({ error: { code: "no_folder", message: "the workspace has no folder to list sessions for" } }, 409);
   let sessions;
   if (agent === "claude" && paneId !== null) {
-    const found = await paneStore(paneId, options, pane?.agent === "claude");
+    const found = await paneStore(paneId, options, { reportedClaude: pane?.agent === "claude" });
     if (found === null) return storeUnknown();
     const { store } = found;
     // a store whose choice cannot be repeated in a new tab is listed without a source: its Resume is withheld
@@ -270,7 +273,7 @@ async function resumeIn(
   if (source.workspace_id !== workspaceId) return badRequest("pane_not_in_workspace", "pane_id must name a pane of the workspace");
   const cwd = workspaceFolder(snapshot, workspaceId);
   if (cwd === null) return refuse(409, "no_folder", "the workspace has no folder to list sessions for");
-  const found = await paneStore(paneId, options, source.agent === "claude");
+  const found = await paneStore(paneId, options, { reportedClaude: source.agent === "claude" });
   if (found === null) return storeUnknown();
   const { store } = found;
   if (store.key !== storeKey) return refuse(409, "stale_source", "the pane's Claude store changed since the list: list the sessions again");
@@ -282,7 +285,7 @@ async function resumeIn(
   if (resumesRunning.has(running)) return inProgress();
   for (const pane of snapshot.panes) {
     if (pane.workspace_id !== workspaceId || !reportsSession(pane, sessionId)) continue;
-    const showing = pane.pane_id === paneId ? found : await paneStore(pane.pane_id, options, pane.agent === "claude");
+    const showing = pane.pane_id === paneId ? found : await paneStore(pane.pane_id, options, { reportedClaude: pane.agent === "claude" });
     if (showing?.store.place === store.place) return jsonResponse({ action: "opened", workspace_id: workspaceId, pane_id: pane.pane_id } satisfies SessionResumeResponse);
   }
   if (found.wrapped) return refuse(409, "launch_wrapped", "a new tab cannot resume this Claude session through its wrapper");
