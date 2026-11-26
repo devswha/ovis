@@ -21,12 +21,12 @@ import { cellDimensions, measureChar, proposeGrid, type CellDimensions } from ".
 import { createRowsRenderer, themeColors, type RendererTheme, type RowsRenderer } from "./renderer.ts";
 import { GhosttyVt, rgb } from "./vt.ts";
 
-/** "ghostty" or "xterm": which terminal this browser makes for a pane, over the default (xterm until the switch is made) */
+/** "xterm": this browser makes its panes with xterm.js, as before; anything else (the default) makes them without it */
 export const TERMINAL_ENGINE_KEY = "ovis:terminal-engine";
 
 /** whether panes are made as GhosttyTerminal, without xterm.js; a browser that refuses storage keeps the default */
 export function ownTerminalEngine(): boolean {
-  try { return globalThis.localStorage?.getItem(TERMINAL_ENGINE_KEY) === "ghostty"; } catch { return false; }
+  try { return globalThis.localStorage?.getItem(TERMINAL_ENGINE_KEY) !== "xterm"; } catch { return true; }
 }
 
 export interface Disposable { dispose(): void }
@@ -103,8 +103,17 @@ export class GhosttyTerminal {
   readonly unicode = { activeVersion: "15-graphemes", register: (): void => {} };
   cols: number;
   rows: number;
+  private pictureCaps: PictureLimits | null = null;
   /** the limits pictures are drawn within, or null with pictures off (the mount's Settings choice) */
-  pictureLimits: PictureLimits | null = null;
+  get pictureLimits(): PictureLimits | null { return this.pictureCaps; }
+  /** turned off, the pictures drawn go (Kitty's delete-all, given to the engine alone, never to the program) */
+  set pictureLimits(limits: PictureLimits | null) {
+    const off = limits === null && this.pictureCaps !== null;
+    this.pictureCaps = limits;
+    if (!off || !this.vt) return;
+    try { this.vt.write("\x1b_Ga=d,d=A\x1b\\"); } catch (error) { this.fail(error); }
+    this.schedule();
+  }
   /**
    * Whether the output being parsed now is the program's live output, which libghostty may answer. The mount says no
    * for a replay of earlier output, a hidden tab's view and output of a pane it left: their questions were answered
@@ -153,7 +162,7 @@ export class GhosttyTerminal {
   private decoder = new TextDecoder();
   private readonly stream = hookedStream(this.parser, (text) => this.vt?.write(text));
   private readonly pictures = itermPictureWriter(
-    () => this.pictureLimits,
+    () => this.pictureCaps,
     () => ({ cols: this.cols, rows: this.rows, cellW: this.dims?.cell.width ?? 0, cellH: this.dims?.cell.height ?? 0 }),
     () => rgb(themeColors(this.options.theme).background) ?? [0, 0, 0],
   );
