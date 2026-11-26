@@ -31,6 +31,7 @@ import { useAgentToolHub } from "./agent-tools/launch.ts";
 import { harnessToolSetting } from "../shared/harness-tool.ts";
 
 import { claudeApprovals } from "./approvals/claude.ts";
+import { copilotApprovals } from "./approvals/copilot.ts";
 import { CodexServers } from "./approvals/codex.ts";
 import { omoApprovals } from "./approvals/omo.ts";
 import { ompApprovals } from "./approvals/omp.ts";
@@ -62,7 +63,7 @@ import { mergeTailnetNodes, TailnetNodes } from "./tailnet-nodes.ts";
 import { moveLegacyStateDir } from "./update-state.ts";
 import { sweepSshDirs } from "./ssh.ts";
 import { noteHookCommand, OpenCodePromptState, readHeldApprovals } from "./prompt.ts";
-import { readToldModes } from "./conversation.ts";
+import { readToldModes, readToldSessions } from "./conversation.ts";
 import { connectUpdater, type UpdateService } from "./update-api.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
@@ -534,7 +535,7 @@ export function createServer(
   readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
   // a turn a hook tells of goes to the status of its pane, and a command it ran to the chat's send of it: no hook runs
   // before the core below starts an agent
-  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals], {
+  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals, copilotApprovals], {
     onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn),
     onCommand: (paneId, kind, command) => noteHookCommand(paneId, kind, command),
     onContext: (paneId, context) => core.hookContextChanged(paneId, context),
@@ -616,6 +617,7 @@ export function createServer(
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
   readHeldApprovals(approvals);
   readToldModes((paneId) => approvals.toldMode(paneId));
+  readToldSessions((paneId) => approvals.toldSession(paneId));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
     return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;

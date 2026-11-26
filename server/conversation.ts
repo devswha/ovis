@@ -76,7 +76,8 @@ import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, cop
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, type MetadataFold, parseConversationMetadata } from "./conversation-metadata.ts";
 import { catalogVersion, piCatalogVersion } from "./pi-models.ts";
-import type { ToldMode } from "./approvals/hub.ts";
+import type { ToldMode, ToldSession } from "./approvals/hub.ts";
+import { readProcessBirth } from "./process-owner.ts";
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -135,6 +136,12 @@ const writtenSessions = new Set<string>();
 let toldMode: (paneId: string) => ToldMode | null = () => null;
 export function readToldModes(read: ((paneId: string) => ToldMode | null) | null): void {
   toldMode = read ?? (() => null);
+}
+
+/** The session the hook of a Copilot Ovis started in a pane last told it runs, with the process that told it (the approval hub's). */
+let toldSession: (paneId: string) => ToldSession | null = () => null;
+export function readToldSessions(read: ((paneId: string) => ToldSession | null) | null): void {
+  toldSession = read ?? (() => null);
 }
 
 /**
@@ -1899,6 +1906,18 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   const foreground = processes[0];
   if (process.platform !== "linux" || ![1, 2].includes(processes.length) || typeof foreground?.pid !== "number") {
     throw new ConversationUnavailable("no_session_path", undefined, "copilot_process_set_unproved");
+  }
+  // the session the Copilot in front told through the hook Ovis gave it (server/approvals/copilot.ts): that very
+  // process, by its pid and start, and the transcript in its own store
+  const told = processes.length === 1 ? toldSession(pane.pane_id) : null;
+  if (told !== null && told.pid === foreground.pid && told.birth !== null) {
+    const now = readProcessBirth(foreground.pid);
+    const path = now.state === "identified" && now.birth.value === told.birth
+      ? copilotApiTranscript(told.session, processEnviron(foreground.pid), foreground.argv ?? []) : null;
+    if (path !== null) {
+      if (await claimedByPeer(told.session)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
+      return { path, binding: `hook:${foreground.pid}:${told.session}`, peerClaims: await peerClaims! };
+    }
   }
   if (processes.length === 1) {
     const api = await readCopilotForeground(foreground.pid);
