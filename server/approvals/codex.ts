@@ -319,6 +319,8 @@ class Connection {
   private readonly resumed = new Set<string>();
   /** Threads that are not the pane's own: subagents, and the ephemeral ones Codex runs aside (it titles a thread in one). */
   private readonly subagents = new Set<string>();
+  /** The rollout each main thread the server named one for writes (thread/read): it keeps it for the thread's life. */
+  private readonly rollouts = new Map<string, string>();
   private readonly changes = new Map<string, FileChange[]>();
   private readonly asks = new Map<string, CodexAsk>();
   private following: ThreadBinding | null = null;
@@ -425,6 +427,36 @@ class Connection {
     writing();
     const reply = await this.within("turn/steer", { threadId, expectedTurnId: turn, clientUserMessageId: clientId, input: [{ type: "text", text: input, text_elements: [] }] });
     return reply !== "unknown" && reply["error"] === undefined && isObject(reply["result"]) && reply["result"]["turnId"] === turn ? "accepted" : "unknown";
+  }
+
+  /**
+   * The conversations the server holds for the TUI, as it says now: each loaded thread that is neither a subagent nor
+   * one Codex runs aside, with the rollout it writes (null before the server named one). The TUI shows one of them:
+   * the only one, or after a /new or a /resume of a thread still loaded, one Codex does not say which (it announces
+   * no such switch). null when the server did not answer all of it.
+   */
+  async conversations(): Promise<{ threadId: string; path: string | null }[] | null> {
+    const loaded = await this.within("thread/loaded/list", {});
+    const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
+    if (result?.["nextCursor"] !== null || !Array.isArray(result["data"])) return null;
+    const threads: { threadId: string; path: string | null }[] = [];
+    for (const threadId of result["data"]) {
+      if (typeof threadId !== "string") return null;
+      if (this.subagents.has(threadId)) continue;
+      if (!this.rollouts.has(threadId)) {
+        const read = await this.within("thread/read", { threadId, includeTurns: false });
+        const thread = read !== "unknown" && isObject(read["result"]) && isObject(read["result"]["thread"]) ? read["result"]["thread"] : null;
+        if (thread === null || thread["id"] !== threadId) return null;
+        if (typeof thread["parentThreadId"] === "string" || thread["ephemeral"] === true) {
+          this.subagents.add(threadId);
+          continue;
+        }
+        const path = text(thread["path"]);
+        if (path !== null) this.rollouts.set(threadId, path);
+      }
+      threads.push({ threadId, path: this.rollouts.get(threadId) ?? null });
+    }
+    return this.closed ? null : threads;
   }
 
   private send(message: Json): void {
@@ -793,6 +825,18 @@ export function servedStatus(paneId: string): ServedStatus | null {
   return null;
 }
 
+/**
+ * The conversations the Codex server Ovis started in `paneId` holds for the TUI whose command line is `argv`
+ * (Connection.conversations): null where Ovis has no connection to it, or `argv` is not that launch's TUI.
+ */
+export async function servedConversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | null> {
+  for (const servers of instances) {
+    const found = await servers.conversations(paneId, argv);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
 /** The pane transcript reader bound this thread to the pane; let its own app server follow that binding. */
 export function followServedThread(paneId: string, threadId: string): void {
   for (const servers of instances) {
@@ -957,13 +1001,25 @@ export class CodexServers {
     return this.panes.has(paneId);
   }
 
-  /** A call bound to this launch, not just its reusable pane id. */
-  steerTarget(paneId: string, argv: readonly string[]) {
+  /** The connection to the server of this launch, where `argv` is its TUI's: not just the launch's reusable pane id. */
+  private launchOf(paneId: string, argv: readonly string[]): Connection | null {
     const served = this.panes.get(paneId);
     const connection = served?.connection;
-    const threadId = connection?.status()?.threadId;
-    if (!served || !connection || !threadId || connection.closed || !argv.some((arg, i) =>
+    if (!served || !connection || connection.closed || !argv.some((arg, i) =>
       arg === "--remote" && argv[i + 1] === `unix://${join(served.dir, SOCKET_NAME)}`)) return null;
+    return connection;
+  }
+
+  /** The conversations of this launch's server (Connection.conversations), where `argv` is its TUI's; else null. */
+  async conversations(paneId: string, argv: readonly string[]): Promise<{ threadId: string; path: string | null }[] | null> {
+    return await this.launchOf(paneId, argv)?.conversations() ?? null;
+  }
+
+  /** A call bound to this launch, not just its reusable pane id. */
+  steerTarget(paneId: string, argv: readonly string[]) {
+    const connection = this.launchOf(paneId, argv);
+    const threadId = connection?.status()?.threadId;
+    if (!connection || !threadId) return null;
     return { threadId, send: (input: string, clientId: string, checkPane: () => Promise<void>, writing: () => void) => connection.steer(threadId, input, clientId, checkPane, writing) };
   }
 

@@ -20,6 +20,7 @@ import { kiroCodexProcess, kiroNested, kiroWrapper } from "./kiro-terminal.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { FOOTER } from "./codex-steering.ts";
 import { codexStartScreenUnused } from "./start-screen.ts";
+import { servedConversations } from "./approvals/codex.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -3328,10 +3329,36 @@ function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[
   return { path, identity };
 }
 
+/**
+ * The conversations the Codex server Ovis started beside a pane's one TUI holds for it, as that server says
+ * (approvals/codex.ts servedConversations): only that TUI is on it, so none is another pane's. `only` for the one it
+ * holds, written in `home`, with the identity of its file; `among` for the written ones of `home` when it holds more
+ * (a /new, a /resume of a thread still loaded) or none written yet. null where Ovis has no connection to such a
+ * server: the lookup goes on as before.
+ */
+async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: string[] }[], home: string): Promise<{ only: { path: string; identity: string } } | { among: string[] } | null> {
+  if (codexProcesses.length !== 1) return null;
+  const threads = await servedConversations(paneId, codexProcesses[0]!.argv ?? []);
+  if (threads === null) return null;
+  const among = threads.flatMap(({ path }) => {
+    const rollout = path === null ? null : codexRolloutPath(path, home);
+    return rollout === null ? [] : [rollout];
+  });
+  if (threads.length === 1 && among.length === 1) {
+    try {
+      const file = statSync(among[0]!, { bigint: true });
+      return { only: { path: among[0]!, identity: `${file.dev}:${file.ino}` } };
+    } catch { return { among: [] }; }
+  }
+  return { among };
+}
+
 export async function codexOpenRollout(paneId: string, cwd: string | null | undefined, home = defaultCodexHome()): Promise<string | null> {
   const agent = await codexAgentInfo(paneId);
   const { codexProcesses, processes, open } = await openRollouts(paneId, home);
   if (open.size === 1) return [...open][0]!;
+  const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
+  if (told !== null && "only" in told) return told.only.path;
   const reported = cwd ? reportedRollout(agent.agent_session, home) : null;
   if (reported !== null && !agent.nestedTerminal && !agent.unlabelled && resumedThread(codexProcesses.map((process) => process.argv ?? [])) === null
     && await freshReportedThread(paneId, cwd!, home, reported, codexProcesses)) return reported;
@@ -3513,6 +3540,23 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // bind a conversation to the wrong one
   const { codexProcesses, processes, open, held } = await openRollouts(paneId, home, agent.processRead?.info);
   if (codexProcesses.length === 0) return null;
+  const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
+  if (told !== null) {
+    if ("only" in told) {
+      proofs?.set(told.only.path, told.only.identity);
+      return told.only.path;
+    }
+    // which of its own conversations the TUI shows is the server's to say, and it does not: the screen tells it among
+    // those only, never among the folder's
+    if (told.among.length === 0) return null;
+    const shown = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
+    const candidates = told.among.flatMap((path) => {
+      try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
+    });
+    // answers too short for the long match: the newest of them shown, each under its own prompt
+    return matchCodexTranscript(shown.text, candidates)
+      ?? matchShortCodexAnswers(shown.text, candidates.map((candidate) => ({ ...candidate, cut: !readWhole(candidate.path) })));
+  }
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
   // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
   if (agent.unlabelled && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;

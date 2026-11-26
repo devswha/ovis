@@ -338,7 +338,7 @@ describe("Ovis on the pane's Codex server", () => {
   type Message = Record<string, unknown>;
 
   /** A Codex app server of `version` on the launch's socket: what Ovis sends comes in order, and the test sends as Codex. */
-  function codexServer(program: string, version = "0.171.0", loaded: string[] = []) {
+  function codexServer(program: string, version = "0.171.0", loaded: string[] = [], threads: Record<string, Message> = {}) {
     const received: Message[] = [];
     const waiting: { match: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
     let client: ServerWebSocket<undefined> | null = null;
@@ -359,6 +359,10 @@ describe("Ovis on the pane's Codex server", () => {
           const params = (message["params"] ?? {}) as Message;
           if (message["method"] === "initialize") socket.send(JSON.stringify({ id: message["id"], result: { userAgent: `ovis/${version} (Ubuntu; x86_64) xterm (ovis; 0)` } }));
           if (message["method"] === "thread/loaded/list") socket.send(JSON.stringify({ id: message["id"], result: { data: loaded, nextCursor: null } }));
+          if (message["method"] === "thread/read") {
+            const read = threads[String(params["threadId"])];
+            socket.send(JSON.stringify(read === undefined ? { id: message["id"], error: { code: -32600, message: "thread not loaded" } } : { id: message["id"], result: read }));
+          }
           if (message["method"] === "thread/resume") {
             const refused = resumeErrors.delete(String(params["threadId"]));
             socket.send(JSON.stringify(refused ? { id: message["id"], error: { code: -32600, message: "no rollout found" } } : { id: message["id"], result: resumed.get(String(params["threadId"])) ?? {} }));
@@ -382,7 +386,7 @@ describe("Ovis on the pane's Codex server", () => {
     };
   }
 
-  function launched(version = "0.171.0", loaded: string[] = []) {
+  function launched(version = "0.171.0", loaded: string[] = [], threads: Record<string, Message> = {}) {
     const waiting: (() => void)[] = [];
     const settling: (() => void)[] = [];
     const failures: (string | null)[] = [];
@@ -391,7 +395,7 @@ describe("Ovis on the pane's Codex server", () => {
     const servers = new CodexServers(hub, { tmp: root() });
     cleanups.push(() => { servers.stop(); hub.stop(); });
     const program = servers.launch("w1:p1", ["--model", "m"], "0.171.0")!;
-    const codex = codexServer(program, version, loaded);
+    const codex = codexServer(program, version, loaded, threads);
     const held = () => new Promise<void>((resolve) => waiting.push(resolve));
     const settled = () => new Promise<void>((resolve) => settling.push(resolve));
     return { hub, servers, codex, held, settled, failures, program };
@@ -788,6 +792,83 @@ describe("Ovis on the pane's Codex server", () => {
     if (reply === "lost reply") codex.drop();
     else codex.send({ id: steer.id, result: { turnId: reply === "matching reply" ? "turn" : "other" } });
     expect(await result).toBe(reply === "matching reply" ? "accepted" : "unknown");
+  });
+
+  describe("the conversation its own server holds for the TUI", () => {
+    /**
+     * What Codex 0.171.0's server answered a second client while its real TUI (codex --remote) ran: the threads loaded
+     * after one exchange (the pane's and the one Codex titles it in, aside) and after a /new, each as thread/read
+     * describes it, and the rollout of the first. Recorded in an isolated CODEX_HOME.
+     */
+    const RECORDING = readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-conversations-0.171.0.json"), "utf8");
+    const FIRST = "01a2196f-48d2-7353-b50a-04524b6d1886";
+    const NEW = "01a2196f-f948-7c51-9c2d-9790944fe6d6";
+
+    function pane(at: "afterFirstAnswer" | "afterNew", screen: string, home = join(root(), "codex")) {
+      const recorded = JSON.parse(RECORDING.replaceAll("<codex-home>", home).replaceAll("<cwd>", dirname(home))) as
+        { loaded: Record<"afterFirstAnswer" | "afterNew", { data: string[] }>; read: Record<string, Message>; rollout: Message[] };
+      const first = String(((recorded.read[FIRST]!)["thread"] as Message)["path"]);
+      mkdirSync(dirname(first), { recursive: true });
+      writeFileSync(first, recorded.rollout.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      const { codex, program } = launched("0.171.0", recorded.loaded[at].data, recorded.read);
+      const tui = { pid: 2147483647, name: "codex", argv: ["/usr/bin/codex", "--remote", `unix://${join(dirname(program), "codex.sock")}`] };
+      const spies = [
+        spyOn(herdr, "agentGet").mockResolvedValue({ pane_id: "w1:p1", agent: "codex", cwd: dirname(home) } as Awaited<ReturnType<typeof herdr.agentGet>>),
+        spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: "w1:p1", foreground_processes: [tui] }),
+        spyOn(herdr, "paneRead").mockResolvedValue({ text: screen } as Awaited<ReturnType<typeof herdr.paneRead>>),
+      ];
+      cleanups.push(() => { for (const spy of spies) spy.mockRestore(); });
+      const proofs = new Map<string, string>();
+      const lookup = async () => {
+        await codex.next((message) => message["method"] === "thread/loaded/list");
+        return await rollout.codexTranscriptPath("w1:p1", dirname(home), home, undefined, false, false, proofs);
+      };
+      return { first, home, proofs, lookup, codex, recorded };
+    }
+
+    it("reads the one it holds, with no screen or folder evidence, and proves its file", async () => {
+      const { first, home, proofs, lookup } = pane("afterFirstAnswer", "\u203a Ask Codex to do anything");
+      expect(await lookup()).toBe(first);
+      const file = statSync(first, { bigint: true });
+      expect(proofs.get(first)).toBe(`${file.dev}:${file.ino}`);
+      expect(await rollout.codexOpenRollout("w1:p1", null, home)).toBe(first);
+    });
+
+    const said = (path: string, id: string, answer: string, asked = "Explain it") => writeFileSync(path, [
+      { type: "session_meta", payload: { id, cwd: dirname(dirname(path)), originator: "codex-tui", cli_version: "0.171.0", source: "vscode" } },
+      { type: "event_msg", payload: { type: "user_message", message: asked } },
+      { type: "event_msg", payload: { type: "agent_message", message: answer } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", { flag: "a" });
+
+    it("after a /new and a /resume of the first, still loaded, tells the TUI's among the server's own by the screen", async () => {
+      const answer = "The first conversation explains how the launcher keeps its app server beside the terminal it serves.";
+      const { first, lookup, recorded } = pane("afterNew", `>_ OpenAI Codex (v0.171.0)\n\n\u203a Explain it\n\n\u2022 ${answer}\n\n\u203a Ask Codex to do anything`);
+      said(first, FIRST, answer);
+      const next = String(((recorded.read[NEW]!)["thread"] as Message)["path"]);
+      said(next, NEW, "The second conversation answers something else entirely, about a thread that was started anew.");
+      expect(await lookup()).toBe(first);
+    });
+
+    it("after a /new, tells the new one by short answers the screen shows under their prompts", async () => {
+      const { lookup, recorded } = pane("afterNew", ">_ OpenAI Codex (v0.171.0)\n\n\u203a What colour is the sky?\n\n\u2022 The sky is usually a clear bright blue by day.\n\n"
+        + "\u203a And at sunset?\n\n\u2022 At sunset it turns orange, pink and deep red.\n\n\u203a Ask Codex to do anything");
+      const next = String(((recorded.read[NEW]!)["thread"] as Message)["path"]);
+      said(next, NEW, "The sky is usually a clear bright blue by day.", "What colour is the sky?");
+      writeFileSync(next, [
+        { type: "event_msg", payload: { type: "user_message", message: "And at sunset?" } },
+        { type: "event_msg", payload: { type: "agent_message", message: "At sunset it turns orange, pink and deep red." } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", { flag: "a" });
+      expect(await lookup()).toBe(next);
+    });
+
+    it("after a /new not written yet, takes none, though the previous conversation is still in the history above", async () => {
+      const answer = "The first conversation explains how the launcher keeps its app server beside the terminal it serves.";
+      const { first, lookup, codex } = pane("afterNew", `>_ OpenAI Codex (v0.171.0)\n\n\u203a Explain it\n\n\u2022 ${answer}\n\n  Worked for 2s\n\n`
+        + ">_ OpenAI Codex (v0.171.0)\n\n\u203a Ask Codex to do anything");
+      said(first, FIRST, answer);
+      expect(await lookup()).toBeNull();
+      expect(codex.received.some((message) => message["method"] === "thread/read" && (message["params"] as Message)["threadId"] === NEW)).toBe(true);
+    });
   });
 
   it("runs a bare /plan as the TUI does: Plan mode with Plan's own effort and the thread's model as it is then", async () => {
