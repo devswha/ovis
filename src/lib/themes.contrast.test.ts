@@ -55,5 +55,42 @@ describe("theme contrast", () => {
       expect(edgeDiff, `--bubble-edge (${bubbleEdge}) vs --bg (${bg})`).not.toBeNull();
       expect(edgeDiff!, `--bubble-edge (${bubbleEdge}) vs --bg (${bg})`).toBeGreaterThanOrEqual(1.5);
     });
+
+    it(`${entry.id}/${entry.mode} keeps every chat Markdown style preset readable (WCAG AA)`, () => {
+      const colors = resolveEntry(blocks, entry.id, entry.mode).resolved;
+      const mix = (fg: string, bg: string, weight: number) => hex(over(rgb(fg), rgb(bg), weight));
+      const bg = colors["--bg"]!;
+      const elev = colors["--bg-elevated"]!;
+      const strong = colors["--text-strong"]!;
+      const dim = colors["--text-dim"]!;
+      const accent = colors["--accent"]!;
+      const fn = colors["--syntax-function"]!;
+      const ty = colors["--syntax-type"]!;
+      const kw = colors["--syntax-keyword"]!;
+      const meta = colors["--syntax-meta"]!;
+      const variable = colors["--syntax-variable"]!;
+      const checks: readonly [string, string, string][] = [
+        ["editorial code", mix(fn, strong, 0.26), mix(accent, bg, 0.07)],
+        ["editorial blockquote", dim, mix(accent, bg, 0.04)],
+        ["editorial table header", strong, mix(elev, bg, 0.75)],
+        ["tinted heading", mix(fn, strong, 0.42), bg],
+        ["tinted subheading", mix(ty, strong, 0.38), bg],
+        ["tinted code", mix(kw, strong, 0.38), mix(kw, bg, 0.06)],
+        ["tinted blockquote", dim, mix(ty, bg, 0.04)],
+        ["tinted table header", mix(ty, strong, 0.38), mix(elev, bg, 0.75)],
+        ["colorful heading", mix(fn, strong, 0.7), bg],
+        ["colorful subheading", mix(ty, strong, 0.7), bg],
+        ["colorful detail", mix(meta, strong, 0.7), bg],
+        ["colorful strong", mix(variable, strong, 0.7), bg],
+        ["colorful emphasis", mix(meta, strong, 0.7), bg],
+        ["colorful code", mix(kw, strong, 0.7), elev],
+        ["colorful table header", mix(ty, strong, 0.7), elev],
+      ];
+      const below = checks.flatMap(([name, fg, surface]) => {
+        const ratio = contrastRatio(fg, surface);
+        return ratio === null || ratio < TEXT_FLOOR ? [`${name}: ${ratio?.toFixed(2) ?? "invalid"}:1 (${fg} on ${surface})`] : [];
+      });
+      expect(below).toEqual([]);
+    });
   }
 });
