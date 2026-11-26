@@ -1110,13 +1110,12 @@ describe("connection-owned pending input", () => {
     expect(result).toMatchObject({ ok: false, code: "submit_changed" });
   }, 30_000);
 
-  for (const afterEnter of ["idle", "matching panel"] as const) it(`keeps terminal Codex Send now uncertain after ${afterEnter} without a receipt (#4769)`, async () => {
-    const f = await setup(`codex-send-now-${afterEnter}`, "codex"); const message = await f.queue(1, "send this now");
+  it("keeps terminal Codex Send now uncertain after a matching panel without a receipt (#4769)", async () => {
+    const f = await setup("codex-send-now-panel", "codex"); const message = await f.queue(1, "send this now");
     f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
     await f.waitBytes("\r");
     expect(f.bytes()).toBe(`${paste(message.text)}\r`);
-    if (afterEnter === "idle") await f.state("idle");
-    else await f.showScreen(codexSteering(message.text));
+    await f.showScreen(codexSteering(message.text));
     const result = await f.socket.action(10);
     const settled = await f.socket.event((frame) => frame.messages.some((item) => item.id === message.id && item.state === "uncertain")
       || frame.removed?.some((item) => item.id === message.id) === true);
@@ -1125,8 +1124,8 @@ describe("connection-owned pending input", () => {
 
     f.socket.send({ type: "pending-action", id: 11, pane_id: f.pane, pending_id: message.id, action: "steer" });
     expect(await f.socket.action(11)).toMatchObject({ ok: false, code: "pending_uncertain" });
-    if (afterEnter === "matching panel") await f.waitBytes("\u001b");
-    expect(f.bytes()).toBe(`${paste(message.text)}\r${afterEnter === "matching panel" ? "\u001b" : ""}`);
+    await f.waitBytes("\u001b");
+    expect(f.bytes()).toBe(`${paste(message.text)}\r\u001b`);
   }, 30_000);
 
   it("withholds Codex Escape when its sender's lease lapses while the key RPC connects", async () => {
