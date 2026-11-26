@@ -219,6 +219,7 @@ describe("InboxList", () => {
       await act(async () => { retries.shift()?.(); });
     }
     await redraw({ opening: 2 });
+    expect(summaryCalls.map((call) => call.paneIds)).toEqual([[paneId]]);
     await act(async () => {
       summaryCalls.shift()?.resolve({ server_time, summaries: { [paneId]: said("Read on reopening", null) } });
     });

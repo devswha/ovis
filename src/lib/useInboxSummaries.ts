@@ -85,13 +85,6 @@ export class SummaryReads {
   summaries = (): ReadonlyMap<string, RowSummary> => this.current;
 
   sync(targets: readonly SummaryTarget[], reopened = false): void {
-    if (reopened) {
-      for (const read of this.exhausted) {
-        this.started.delete(read);
-        this.retries.delete(read);
-      }
-      this.exhausted.clear();
-    }
     const earlier = this.targets;
     this.targets = new Map(targets.map((target) => [target.key, target]));
     const live = new Set(targets.map(readOf));
@@ -109,7 +102,7 @@ export class SummaryReads {
     }
     for (const [machineId, queue] of this.queues) this.queues.set(machineId, queue.filter((target) => this.isCurrent(target)));
     const gone = [...this.current.keys()].filter((key) => !this.targets.has(key));
-    for (const key of [...this.answeredFor.keys()]) if (!this.targets.has(key)) this.answeredFor.delete(key);
+    for (const [key, stamp] of this.answeredFor) if (this.targets.get(key)?.stamp !== stamp) this.answeredFor.delete(key);
     for (const key of [...this.answeredIn.keys()]) if (!this.targets.has(key)) this.answeredIn.delete(key);
     const replaced = [...this.current.keys()].filter((key) => {
       const was = this.answeredIn.get(key);
@@ -123,6 +116,13 @@ export class SummaryReads {
     if (gone.length > 0) this.change((summaries) => { for (const key of gone) summaries.delete(key); });
     for (const target of targets) {
       const read = readOf(target);
+      if (reopened && this.exhausted.delete(read)) {
+        this.started.delete(read);
+        this.retries.delete(read);
+      } else if (reopened && this.retries.get(read) === SUMMARY_RETRIES && this.answeredFor.get(target.key) !== target.stamp) {
+        // A final retry may already be queued or in flight. Give it another chance only if it misses.
+        this.retries.set(read, SUMMARY_RETRIES - 1);
+      }
       if (this.started.has(read) || this.missing.has(target.machineId)) continue;
       this.started.add(read);
       const before = earlier.get(target.key)?.stamp;
