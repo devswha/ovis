@@ -227,19 +227,20 @@ describe("relay Durable Object hibernation", () => {
     const fake = fakeState();
     const handled: (string | ArrayBuffer)[] = [];
     const wakes: number[] = [];
-    const told = new Set<FakeSocket>();
+    /** when the runtime reported each socket's close */
+    const closedAt = new Map<FakeSocket, number>();
     let room = new RelayRoom(fake.state);
     /** the far end answers each close the room sent, and the runtime reports it */
     const answerCloses = () => {
       for (const socket of fake.sockets) {
-        if (!socket.closedWith || told.has(socket)) continue;
-        told.add(socket);
+        if (!socket.closedWith || closedAt.has(socket)) continue;
+        closedAt.set(socket, Date.now());
         room = new RelayRoom(fake.state);
         room.webSocketClose(socket, socket.closedWith.code, socket.closedWith.reason, true);
       }
     };
     return {
-      fake, handled, wakes,
+      fake, handled, wakes, closedAt,
       get room() { return room; },
       /** a frame from the far end: the registered auto-response answers its request without waking the object */
       async arrive(socket: FakeSocket, frame: string | ArrayBuffer) {
@@ -300,16 +301,29 @@ describe("relay Durable Object hibernation", () => {
       await pairing.arrive(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AAA" })!);
       expect(host.json(0)).toEqual({ type: "waiting" });
       for (const room of [alone, pc, pairing]) room.handled.length = 0;
-      let hostClosedAt: number | null = null;
-      for (let at = start + PING_MS; at <= start + HOUR; at += PING_MS) {
+      const open = [lonely, spare, control, warm, client, data];
+      const pings = new Map<FakeSocket, number>();
+      const ping = async (room: ReturnType<typeof hibernating>, socket: FakeSocket) => {
+        pings.set(socket, (pings.get(socket) ?? 0) + 1);
+        await room.arrive(socket, KEEPALIVE_PING);
+      };
+      const end = start + HOUR;
+      for (let at = start + PING_MS; at <= end; at += PING_MS) {
         for (const room of [alone, pc, pairing]) await room.alarmsUntil(at);
-        if (host.closedWith && hostClosedAt === null) hostClosedAt = Date.now();
         setSystemTime(new Date(at));
-        for (const socket of [lonely, spare]) await alone.arrive(socket, KEEPALIVE_PING);
-        for (const socket of [control, warm, client, data]) await pc.arrive(socket, KEEPALIVE_PING);
-        if (!host.closedWith && (at - start) % PAIR_PING_MS === 0) await pairing.arrive(host, KEEPALIVE_PING);
+        for (const socket of [lonely, spare]) await ping(alone, socket);
+        for (const socket of [control, warm, client, data]) await ping(pc, socket);
+        if (!host.closedWith && (at - start) % PAIR_PING_MS === 0) await ping(pairing, host);
       }
-      return { start, timers, rooms: { alone, pc, pairing }, hostClosedAt, open: [lonely, spare, control, warm, client, data], host };
+      const closedInHour = open.filter((socket) => socket.closedWith !== null);
+      const pongs = [...open, host].map((socket) => socket.sent.filter((frame) => frame === KEEPALIVE_PONG).length - (pings.get(socket) ?? 0));
+      // then the PC's spare warm socket goes quiet: the idle check, still running, closes it
+      for (let at = end + PING_MS; at <= end + IDLE_MS + IDLE_WAKE_FLOOR_MS; at += PING_MS) {
+        await alone.alarmsUntil(at);
+        setSystemTime(new Date(at));
+        await ping(alone, lonely);
+      }
+      return { start, end, timers, rooms: { alone, pc, pairing }, closedInHour, pongs, pings, open, host, quiet: { lonely, spare } };
     } finally {
       Object.assign(globalThis, real);
     }
@@ -352,28 +366,35 @@ describe("relay Durable Object hibernation", () => {
   });
 
   test("an idle hour never hands a keepalive to a room, and keepalives alone keep every socket open", async () => {
-    const { start, rooms, open, host, hostClosedAt } = await idle();
+    const { start, end, rooms, closedInHour, pongs, pings, host, quiet } = await idle();
     for (const room of Object.values(rooms)) expect(room.handled).toEqual([]);
-    for (const socket of open) {
-      expect(socket.closedWith).toBeNull();
-      expect(socket.sent.at(-1)).toBe(KEEPALIVE_PONG);
-    }
+    expect(closedInHour).toEqual([]);
+    // every keepalive got exactly one pong, the pairing host's included
+    expect(pongs).toEqual(pongs.map(() => 0));
+    expect(pings.get(host)).toBe(PAIR_HOST_MS / PAIR_PING_MS - 1);
     // the pairing code holds its nameplate to its deadline, not to an idle timeout
     expect(host.closedWith).toEqual({ code: 1001, reason: "time ran out" });
-    expect(hostClosedAt).toBe(start + PAIR_HOST_MS);
+    expect(rooms.pairing.closedAt.get(host)).toBe(start + PAIR_HOST_MS);
+    // a socket that stops its keepalive after the hour is closed as idle, no sooner than IDLE_MS
+    expect(quiet.spare.closedWith).toEqual({ code: CLOSE.GOING_AWAY, reason: "idle" });
+    expect(rooms.alone.closedAt.get(quiet.spare)).toBeGreaterThanOrEqual(end + IDLE_MS);
+    expect(rooms.alone.closedAt.get(quiet.spare)).toBeLessThanOrEqual(end + IDLE_MS + IDLE_WAKE_FLOOR_MS);
+    expect(quiet.lonely.closedWith).toBeNull();
   });
 
   test("an idle room starts no timer and wakes only for alarms at least a minute apart, none once empty", async () => {
-    const { start, timers, rooms } = await idle();
+    const { start, end, timers, rooms } = await idle();
     expect(timers).toEqual([]);
     for (const room of [rooms.alone, rooms.pc]) {
       // the deadlines of the connections being set up (the PC's proof, the phone's handshake) may wake it once each
-      const settled = room.wakes.filter((at) => at > start + HANDSHAKE_MS);
-      expect(room.wakes.slice(0, room.wakes.length - settled.length).filter((at) => at !== start + SERVER_PROOF_MS && at !== start + HANDSHAKE_MS)).toEqual([]);
+      const settled = room.wakes.filter((at) => at > start + HANDSHAKE_MS && at <= end);
+      expect(room.wakes.filter((at) => at <= start + HANDSHAKE_MS && at !== start + SERVER_PROOF_MS && at !== start + HANDSHAKE_MS)).toEqual([]);
       // then only the idle check: it still runs (it closes sockets that went quiet), at most once a minute
       expect(settled[0]! - start - HANDSHAKE_MS).toBeGreaterThanOrEqual(IDLE_WAKE_FLOOR_MS);
       expect(gaps(settled).filter((gap) => gap < IDLE_WAKE_FLOOR_MS)).toEqual([]);
       expect(settled.length).toBeGreaterThan(HOUR / IDLE_MS / 2);
+      // and it is still armed at the end of the hour
+      expect(settled.filter((at) => at > end - IDLE_MS)).not.toEqual([]);
     }
     // a pairing code: idle checks until its deadline, which ends it; an empty room keeps no alarm
     expect(rooms.pairing.wakes.at(-1)).toBe(start + PAIR_HOST_MS);
