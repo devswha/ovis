@@ -15,8 +15,15 @@ export function usePreviewAppUpdate(): DesktopAppUpdate | null {
   const ask = useCallback(async (action: PreviewAction) => {
     const answer = readAppUpdate(await callNative<unknown>("HerdrShell", "previewUpdate", { action }));
     if (answer) setState(answer);
+    return answer;
   }, []);
-  useEffect(() => { if (native) void ask("state").catch(() => {}); }, [native, ask]);
+  // a check already running (the one when the app opens) is joined, so the row hears when it ends
+  useEffect(() => {
+    if (!native) return;
+    void ask("state").then((now) => {
+      if (now?.phase === "checking" || now?.phase === "downloading") return ask("check");
+    }).catch(() => {});
+  }, [native, ask]);
   // the native check answers once it and any download are over: until then the row says it is checking
   const check = useCallback(() => {
     setState((now) => now && { ...now, phase: "checking", error: null });

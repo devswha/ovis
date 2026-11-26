@@ -146,7 +146,7 @@ final class PreviewUpdater {
                     next = "ready";
                     nextUpdate = release.name;
                 }
-            } catch (IOException | JSONException e) {
+            } catch (IOException | JSONException | IllegalArgumentException e) {
                 next = "failed";
                 nextError = String.valueOf(e.getMessage());
             }
@@ -209,6 +209,8 @@ final class PreviewUpdater {
 
     private static HttpURLConnection open(String address) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(address).openConnection();
+        // a redirect would leave the feed's origin that parse() checked: it fails as any answer but 200
+        connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(TIMEOUT_MS);
         connection.setReadTimeout(TIMEOUT_MS);
         connection.setUseCaches(false);
@@ -237,9 +239,10 @@ final class PreviewUpdater {
 
     private static File download(Release release, File folder) throws IOException {
         if (!folder.isDirectory() && !folder.mkdirs()) throw new IOException("cannot make " + folder);
-        File[] old = folder.listFiles();
-        if (old != null) for (File each : old) each.delete();
-        File file = new File(folder, "ovis-preview.apk");
+        // written to a part file and kept under its digest only once it matches: the installer URI of an earlier
+        // download never names bytes still being written or not yet checked
+        File part = new File(folder, "download.part");
+        File file = new File(folder, "ovis-preview-" + release.sha256 + ".apk");
         MessageDigest digest;
         try {
             digest = MessageDigest.getInstance("SHA-256");
@@ -247,7 +250,7 @@ final class PreviewUpdater {
             throw new IOException(e);
         }
         HttpURLConnection connection = open(release.apk);
-        try (InputStream in = connection.getInputStream(); OutputStream out = new FileOutputStream(file)) {
+        try (InputStream in = connection.getInputStream(); OutputStream out = new FileOutputStream(part)) {
             byte[] buffer = new byte[64 * 1024];
             for (int read; (read = in.read(buffer)) != -1; ) {
                 digest.update(buffer, 0, read);
@@ -259,9 +262,12 @@ final class PreviewUpdater {
         StringBuilder hex = new StringBuilder();
         for (byte each : digest.digest()) hex.append(String.format(Locale.ROOT, "%02x", each));
         if (!hex.toString().equals(release.sha256)) {
-            file.delete();
+            part.delete();
             throw new IOException("the downloaded APK does not match its sha256");
         }
+        if (!part.renameTo(file)) throw new IOException("cannot keep " + file);
+        File[] old = folder.listFiles();
+        if (old != null) for (File each : old) if (!each.equals(file)) each.delete();
         return file;
     }
 }
