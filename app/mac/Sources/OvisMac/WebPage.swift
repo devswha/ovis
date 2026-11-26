@@ -52,6 +52,12 @@ final class OvisWebView: WKWebView {
     private var titleBarHeight: CGFloat = 0
     private var windowWatch: [NSObjectProtocol] = []
     private var transparencyWatch: NSKeyValueObservation?
+    /// Whether a cover hides the page (loading, or waiting for the server). The window server would move the
+    /// window from a drag anywhere in the folded bar, a header tab or button included, so over the page only
+    /// its asks (`title-bar.js`) move it, through `performDrag`; a cover asks nothing, and the bar moves it.
+    var pageCovered = true {
+        didSet { if titleBarScript != nil { window?.isMovable = pageCovered } }
+    }
     /// The press under way, and whether the page found it on its header's bare surface.
     private var press: NSEvent?
     private var dragArmed = false
@@ -74,6 +80,7 @@ final class OvisWebView: WKWebView {
         guard drawsTitleBar, let window, titleBarScript == nil, let folded = TitleBar.fold(window, for: self) else { return }
         titleBarScript = folded.script
         titleBarHeight = folded.height
+        window.isMovable = pageCovered
         let center = NotificationCenter.default
         windowWatch = [
             center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak window] _ in
@@ -168,7 +175,9 @@ final class WebPageController: NSObject, ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var state: State = .loading
+    @Published private(set) var state: State = .loading {
+        didSet { webView.pageCovered = state != .shown }
+    }
     let webView: OvisWebView
     private let origin: URL
     private weak var model: Model?
