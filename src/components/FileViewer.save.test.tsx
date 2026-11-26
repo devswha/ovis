@@ -67,6 +67,13 @@ async function settle(): Promise<void> {
   }
 }
 
+/** Lets React run until `done` holds: settle() stops at the first quiet turn, which can come before a read lands. */
+async function until(done: () => boolean): Promise<void> {
+  for (let round = 0; !done() && round < 200; round++) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+}
+
 /** Opens `info` on a PC whose file route answers TEXT; the file reads it asked for land in `reads`. */
 async function open(
   info: FileInfo,
@@ -161,6 +168,7 @@ test("in a home-screen app, Download shares the text shown when two reads return
     firstRead = false;
     return response;
   });
+  await until(() => shown().includes("new version"));
   expect(shown()).toContain("new version");
   await download();
   expect(await shared[0]?.text()).toBe(current);
