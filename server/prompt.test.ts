@@ -4564,6 +4564,53 @@ describe("an answer and the menu it was made for", () => {
     return { status: response.status, code: body.error?.code };
   }
 
+  test.each([false, true])("a late Claude screen read cannot replace the refreshed approval (live scope changed: %s)", async (changed) => {
+    const screen = (scope: string) => `\n${"─".repeat(80)}\n Bash command\n   touch probe.txt\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to ${scope} from this project\n   3. No\n Esc to cancel · Tab to amend\n`;
+    await withPane("claude", "blocked", screen("/projects/demo"), async (pane) => {
+      const initial = await card();
+      expect(initial?.kind).toBe("approval");
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      pane.holdRead = held.promise;
+      pane.onReadHeld = started.resolve;
+      const older = card();
+      try {
+        await started.promise;
+        pane.screen = screen("/projects/ demo");
+        const refreshed = await card();
+        if (!refreshed) throw new Error("Expected a redrawn approval");
+        expect(refreshed.id).not.toBe(initial?.id);
+        held.resolve();
+        await older;
+        if (changed) pane.screen = screen("/projects/different");
+        const result = await answer(refreshed.id, { option_index: 0 });
+        expect(result.status).toBe(changed ? 409 : 200);
+        expect(pane.sent).toEqual(changed ? [] : ["enter"]);
+      } finally {
+        held.resolve();
+        await older;
+      }
+    });
+  });
+
+  test("a newer read of the same Claude approval does not interrupt an answer", async () => {
+    await withPane("claude", "blocked", claudeBackgroundApproval(0), async (pane) => {
+      const shown = await card();
+      if (!shown) throw new Error("Expected a Claude approval");
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      pane.holdRead = held.promise;
+      pane.onReadHeld = started.resolve;
+      const answering = answer(shown.id, { option_index: 0 });
+      try {
+        await started.promise;
+        expect((await card())?.id).toBe(shown.id);
+      } finally { held.resolve(); }
+      expect((await answering).status).toBe(200);
+      expect(pane.sent).toEqual(["enter"]);
+    });
+  });
+
   // #2106 review: omp 18.13's approval menu on a terminal without extended key reporting, where Ctrl+J and Ctrl+M arrive
   // as LF and CR and Ctrl+Enter and Shift+Enter as CR, all read as Enter, which takes the highlighted row (Approve when the
   // panel opens); Ctrl+H and Ctrl+I arrive as Backspace and Tab. omp matches what arrives against its bindings: approve
