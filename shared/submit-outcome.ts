@@ -1,13 +1,14 @@
-/** The server refused the message before any of it reached the pane: nothing was typed.
- * Unknown failures are ambiguous on both sides of a held-copy resend. */
-/** The bridge's `agent_not_ready` message when no agent is in front of the pane at all (#511); the same code also says an agent's input state is unknown. */
 /** An input_draft refusal over typed text in an agent's box other than Claude Code's or Hermes' (server/core/composer.ts freeAgentInput). */
 export const AGENT_INPUT_DRAFT_MESSAGE = "The agent's input box in the terminal holds typed text; send or clear it there, then send this message";
 
 /** An input_draft refusal over Claude Code's box holding a paste or an image it folded, whose lines are not shown: no send anyway (#3563). */
 export const CLAUDE_FOLDED_DRAFT_MESSAGE = "Claude Code's input box holds a paste or an image it folded, whose lines are not shown here; send or clear it in the terminal, then send this message";
 
+/** The bridge's `agent_not_ready` message when no agent is in front of the pane at all (#511); the same code also says an agent's input state is unknown. */
 export const NO_AGENT_MESSAGE = "No agent is in front of this pane now; nothing was typed";
+
+/** The fallback paste finished, but the bridge deliberately did not send its separate Enter. */
+export const FALLBACK_ENTER_WITHHELD_MESSAGE = "The message was pasted, but the terminal menu could not be ruled out before Enter. Check the terminal before sending again.";
 
 /**
  * The bridge's `submit_changed` message when Send now queued its message in a working Grok and pressed nothing more
@@ -21,7 +22,6 @@ export const GROK_QUEUED_MESSAGE = "The message is in Grok's queue and goes when
 export const grokQueuedBehindMessage = (count: number): string =>
   `The message is in Grok's queue behind ${count} queued before it and goes when they do; nothing more was pressed`;
 
-/** The count a grokQueuedBehindMessage names; null for any other message. */
 export function grokQueuedAhead(message: string): number | null {
   const match = /^The message is in Grok's queue behind (\d+) queued before it and goes when they do; nothing more was pressed$/.exec(message);
   return match ? Number(match[1]) : null;
@@ -48,11 +48,8 @@ export function submitNotTyped(code: string): boolean {
     "invalid_submit_id", "pending_limit", "pending_not_found", "pending_busy", "invalid_pending_action", "pending_target_changed", "first_message_launch_ended", "pending_lease_lost", "not_attached", "input_not_ready", "attach_held", "pane_not_found", "retired_submit_id", "input_draft",
     // Claude Code's rewind dialog was on screen: nothing went into it
     "rewind_dialog_open",
-    // refused by this view while the terminal holds input (PaneTerminal), before anything was sent
     "held_input",
-    // the connection dropped before the request's frame left the browser (HerdrSocket)
     "not_transmitted",
-    // the wait for the bridge's snapshot ended before it said what the bridge takes: nothing left (HerdrSocket)
     "capabilities_unknown",
     // a message for an agent alone was not sent to a bridge that cannot keep that rule (HerdrSocket)
     "agent_only_unsupported",

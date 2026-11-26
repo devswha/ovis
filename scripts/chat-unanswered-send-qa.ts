@@ -1,4 +1,3 @@
-/** A fictional Codex that never writes the message it was sent -> the chat says it went unanswered, at 1280 and 390, and keeps it over a reload. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
@@ -9,6 +8,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { WAITING_SEND_MS } from "../src/lib/sentWaiting.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 if (process.platform !== "linux") { console.log("SKIP fictional agent processes require Linux"); process.exit(0); }
 const EARLIER = "The fictional earlier answer is long enough for the chat to tie this rollout to the screen that shows it, as a real one is.";
@@ -21,8 +21,6 @@ db.exec("CREATE TABLE threads (rollout_path TEXT, cwd TEXT, archived INTEGER, ag
 db.query("INSERT INTO threads VALUES (?, ?, 0, NULL, 1)").run(rollout, root);
 db.close();
 
-// a Codex that shows its last answer (the chat ties a rollout to the screen that shows it), then reads what is
-// typed and writes none of it: a turn it failed before recording it
 mkdirSync(join(root, "bin"));
 const codex = join(root, "bin", "codex");
 writeFileSync(codex, `#!/bin/sh\nprintf '%s\\n' '${EARLIER}' | fold -s -w 60 | sed '1s/^/• /;2,$s/^/  /'\ncat > /dev/null\n`);
@@ -51,6 +49,7 @@ try {
     { type: "response_item", timestamp: now, payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Earlier question" }] } },
     { type: "response_item", timestamp: now, payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: EARLIER }] } },
   ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   const page = await context.newPage();

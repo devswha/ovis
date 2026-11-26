@@ -9,7 +9,6 @@ import * as facesModule from "../lib/fontFaces.ts";
 import { composerDrafts } from "../lib/composerDraft.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
-// #2369: two tabs on one pane send its draft once, whoever presses Send first
 const pane = "cross-tab-pane", draftKey = `ovis:composer-draft:${pane}`, lockName = `ovis-send:${draftKey}`;
 const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -17,9 +16,9 @@ let renderer: ReactTestRenderer | undefined;
 /** the storage every tab of the origin shares */
 let data: Map<string, string>;
 let refuseLocks = false;
-/** called after each storage read, with what was read already returned to the reader */
 let onRead: ((key: string) => void) | null = null;
 const leaseKey = `ovis:composer-sending:${draftKey}`;
+let shortcutOverrides: ReturnType<typeof settingsModule.useSettings>["settings"]["shortcutOverrides"];
 
 /** Web Locks as the browser grants them: one holder per name, the others queued in order. */
 function locks(): { request(name: string, run: () => unknown): Promise<unknown> } {
@@ -52,6 +51,7 @@ beforeEach(() => {
   setGlobals();
   data = new Map<string, string>();
   onRead = null;
+  shortcutOverrides = {};
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => {
     const value = data.get(key) ?? null;
     onRead?.(key);
@@ -59,7 +59,7 @@ beforeEach(() => {
   });
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
   spyOn(paneLifetimes.paneStorage, "removeItem").mockImplementation((key) => { data.delete(key); });
-  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, showQuickReplies: true }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
+  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, showQuickReplies: true, shortcutOverrides }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   spyOn(commandsModule, "usePaneCommands").mockReturnValue([]);
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
@@ -79,7 +79,6 @@ afterEach(() => {
   saved.clear();
 });
 
-/** This tab's composer with `draft` in its box: the messages it sends, and its Send button. */
 async function tabWith(draft: string, onSend: (message: string) => ReturnType<ComposerProps["onSend"]> = () => true): Promise<{ sent: string[]; press: () => Promise<void>; disconnect: () => Promise<void>; reconnect: () => Promise<void>; quickReply: () => Promise<string>; unmount: () => Promise<void> }> {
   const sent: string[] = [];
   composerDrafts.set(draftKey, draft);
@@ -103,15 +102,26 @@ it("does not send a draft another tab sent while it held the pane's send lock", 
   const lockManager = locks();
   setGlobals(lockManager);
   const tab = await tabWith("deploy");
-  // the other tab pressed first: it holds the lock while it claims the draft
   let release = (): void => {};
   const other = lockManager.request(lockName, () => new Promise<void>((resolve) => { release = resolve; }));
   await tab.press();
   expect(tab.sent).toEqual([]);
-  // its send is acknowledged and settles the draft; no storage event has reached this tab yet
   data.delete(draftKey);
   await act(async () => { release(); await other; });
   expect(tab.sent).toEqual([]);
+});
+
+it("leaves Alt+Enter alone when the hold shortcut is off", async () => {
+  shortcutOverrides = { "hold-message": null };
+  const { sent } = await tabWith("Keep this in the composer");
+  const preventDefault = mock(() => {});
+  await act(async () => {
+    renderer?.root.findByProps({ className: "composer-text" }).props.onKeyDown({
+      key: "Enter", altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, nativeEvent: {}, preventDefault,
+    });
+  });
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(sent).toEqual([]);
 });
 
 it("does not send a draft another tab sent before this one heard of it, without Web Locks either", async () => {
@@ -124,9 +134,7 @@ it("does not send a draft another tab sent before this one heard of it, without 
 it("does not send a draft whose other tab's acknowledgement lands while this tab claims it", async () => {
   setGlobals(locks());
   const tab = await tabWith("deploy");
-  // the other tab's send of the same draft is on its way
   data.set(leaseKey, JSON.stringify({ sent: "deploy", at: Date.now() }));
-  // and is acknowledged as this tab reads the draft: it clears the text, then ends its lease
   onRead = (key) => {
     if (key !== draftKey) return;
     onRead = null;

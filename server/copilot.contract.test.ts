@@ -3,13 +3,14 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { testSocketPath } from "../scripts/test-herdr.ts";
+import { join } from "node:path";
+import { testConfigHome } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, subscribeEvents, type Subscription, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
+import { readCopilotForeground } from "./copilot-foreground.ts";
 import { processEnviron } from "./omo.ts";
 import * as processOwner from "./process-owner.ts";
 
@@ -28,28 +29,17 @@ let app: ReturnType<typeof createServer>;
 let workspace: string;
 let pane: string;
 
-/** The stand-in for this session in front of a pane, by its own process: herdr's agent label can outlast one that quit. */
 async function fixtureInFront(pane: string, session: string): Promise<number | undefined> {
   return (await paneProcessInfo(pane))?.foreground_processes?.find((process) => process.argv?.includes(executable) && process.argv.includes(session))?.pid;
 }
 
-/**
- * The test herdr's last log lines without its per-request ones: what its detection changed (`agent changed`) and its
- * warnings. In the runs read, it had no line for a stand-in's exit while the pane's agent events (`recordAgentEvents`)
- * did, so no `agent=None` line after a quit proves nothing.
- */
 function herdrLogTail(): string {
-  const log = join(dirname(testSocketPath()), "herdr-server.log");
+  const log = join(testConfigHome(), "herdr", "herdr-server.log");
   try {
     return fs.readFileSync(log, "utf8").split("\n").filter((line) => line && !line.includes('event="api.request.')).slice(-25).join("\n");
   } catch (error) { return `no herdr log at ${log}: ${error instanceof Error ? error.message : String(error)}`; }
 }
 
-/**
- * herdr's agent events for `pane` (`pane.agent_detected`, kept for this pane, and `pane.agent_status_changed`) from the
- * moment herdr acknowledged the subscription, each with when it came. Only for a failure's message: it waits for the
- * acknowledgement at most 2 s and never fails a test itself.
- */
 async function recordAgentEvents(pane: string): Promise<{ events: { at: number; text: string }[]; close: () => void }> {
   const events: { at: number; text: string }[] = [];
   const note = (text: string) => events.push({ at: performance.now(), text });
@@ -96,7 +86,7 @@ const log = join(home, "logs", \`process-100-\${process.pid}.log\`);
 let selected = process.argv[2];
 const api = process.argv.includes("--ui-server");
 const sockets = new Set();
-let apiReject = false, apiRace = false, apiReads = 0, acknowledgements = 0;
+let apiReject = false, apiRace = false, badActivity = false, apiReads = 0, acknowledgements = 0;
 const frame = (value) => {
   const body = Buffer.from(JSON.stringify(value));
   return Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]);
@@ -116,10 +106,12 @@ if (api) createServer((socket) => {
       if (bytes.length < boundary + 4 + length) return;
       const message = JSON.parse(bytes.subarray(boundary + 4, boundary + 4 + length));
       bytes = bytes.subarray(boundary + 4 + length);
-      if (!["connect", "session.getForeground"].includes(message.method)
-        || Object.keys(message.params).length !== 0) throw new Error("unexpected API write or credentials");
+      const activity = message.method === "session.metadata.isProcessing";
+      if (activity ? Object.keys(message.params).length !== 1 || message.params.sessionId !== selected
+        : !["connect", "session.getForeground"].includes(message.method) || Object.keys(message.params).length !== 0)
+        throw new Error("unexpected API write or credentials");
       const response = apiReject ? { error: { code: -32001, message: "Unauthorized" } }
-        : { result: message.method === "connect" ? { protocolVersion: 3 } : { sessionId: selected } };
+        : { result: activity ? { processing: badActivity ? "unknown" : true } : message.method === "connect" ? { ok: true, protocolVersion: 4 } : { sessionId: selected } };
       const reply = frame({ jsonrpc: "2.0", id: message.id, ...response });
       if (apiRace && message.method === "session.getForeground" && ++apiReads % 2 === 0)
         socket.write(Buffer.concat([reply, lifecycleEvent("session.background"), lifecycleEvent("session.foreground")]));
@@ -153,6 +145,8 @@ process.stdin.on("data", (chunk) => {
         selected = line.slice(12);
         for (const socket of sockets) socket.write(lifecycleEvent("session.foreground"));
       } else if (line === ":api-reject") apiReject = true;
+      else if (line === ":api-bad-activity") badActivity = true;
+      else if (line === ":api-good-activity") badActivity = false;
       else if (line === ":api-allow") apiReject = false;
       else if (line === ":api-race") apiRace = true;
       else if (line === ":api-stable") apiRace = false;
@@ -346,10 +340,6 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
   const command = async (target: string, pid: number, text: string) => {
     const expected = (commands.get(pid) ?? 0) + 1;
     await herdrRpc("pane.send_text", { pane_id: target, text: text + "\n" });
-    // The acknowledgement shows before the rename that publishes it has returned, and the end of that rename
-    // can wait on the disk (state D) for some milliseconds. herdr reads no argv from a process in that state,
-    // and to the server two such answers in a row are no Copilot in front (the unread answers below), and one
-    // from a peer is no claim: a command is done once the stand-in is also at rest again.
     for (const deadline = Date.now() + 4000;;) {
       try { if (JSON.parse(fs.readFileSync(join(home, `api-ack-${pid}.json`), "utf8")) === expected && atRest(pid)) break; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -368,6 +358,7 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     await startFixture(current, first, "--ui-server --no-proof");
     const pid = await fixtureInFront(current, first);
     if (pid === undefined) throw new Error("isolated API fixture has no foreground process");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "selected", sessionId: first, processing: true });
     expect((await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent_session).toBeFalsy();
     const initial = await read();
     expect(initial.source).toBe("copilot-transcript");
@@ -377,6 +368,17 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     const outputRef = initial.turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool")?.output_ref;
     if (outputRef === undefined) throw new Error("API fixture tool output has no reference");
     expect(await (await fetch(toolUrl(outputRef))).text()).toBe("output ".repeat(900));
+    await command(current, pid, ":api-bad-activity");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "unavailable", diagnostic: "malformed_rpc" });
+    expect((await read()).history_id).toBe(initial.history_id);
+    expect(await (await fetch(toolUrl(outputRef))).text()).toBe("output ".repeat(900));
+    await command(current, pid, ":api-good-activity");
+    // The malformed response retired the activity connection. Reject its next handshake only.
+    await command(current, pid, ":api-reject");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "unavailable", diagnostic: "rpc_rejected" });
+    await command(current, pid, ":api-allow");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "selected", sessionId: first, processing: true });
+    expect((await read()).history_id).toBe(initial.history_id);
     await herdrRpc("pane.report_agent_session", { pane_id: current, agent: "copilot", source: "herdr:copilot",
       seq: Date.now() * 1000, agent_session_id: first });
     await command(current, pid, `:api-switch ${second}`);
@@ -394,6 +396,7 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     expect((await read()).history_id).not.toBe(returned.history_id);
     expect((await fetch(toolUrl(outputRef))).status).toBe(404);
     await command(current, pid, ":api-race");
+    expect((await readCopilotForeground(pid, true)).state).toBe("unavailable");
     expect(await read()).toEqual({ source: "scrollback", turns: [] });
     await command(current, pid, ":api-stable");
     expect((await read()).source).toBe("copilot-transcript");
@@ -415,14 +418,12 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     try {
       expect((await read()).source).toBe("copilot-transcript");
       expect(answers.slice(0, 2)).toEqual(["unread", "read"]);
-      // still unread when asked again: which process is Copilot, and which store it names, stays unproved
       answers.length = 0;
       unreadLeft = 2;
       expect(await read()).toEqual({ source: "scrollback", turns: [] });
       expect(answers).toEqual(["unread", "unread"]);
     } finally { unread.mockRestore(); }
     expect((await read()).source).toBe("copilot-transcript");
-    // Even valid legacy report/marker evidence cannot rescue a refused API request.
     await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${first}\n` });
     for (const deadline = Date.now() + 4000;;) {
       if (copilotProcessSession(processEnviron(pid), ["copilot"], pid)?.sessionId === first) break;
@@ -464,8 +465,6 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
 }, 30_000);
 
 it.skipIf(process.platform !== "linux")("binds only the reported UUID to the foreground process's home and rejects old cursors after a switch", async () => {
-  // the pane's agent events, for the errors after the stand-in quits below: in the runs read, its exit showed there
-  // ("released":true) and not in herdr's log. Opened here, long before the quit, so that it adds no wait at the quit
   const agentEvents = await recordAgentEvents(pane);
   onTestFinished(() => agentEvents.close());
   const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(pane)}`;
@@ -607,7 +606,6 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
   function failedRead(fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fs.ReadPosition | null): number;
   function failedRead(fd: number, buffer: NodeJS.ArrayBufferView, options?: fs.ReadSyncOptions): number;
   function failedRead(fd: number, buffer: NodeJS.ArrayBufferView, offset?: number | fs.ReadSyncOptions, length?: number, position?: fs.ReadPosition | null): number {
-    // Leave the bounded header/identity checks real; fail only a transcript page read.
     if (fail && (length ?? 0) > 64 * 1024 && fs.readlinkSync(`/proc/self/fd/${fd}`) === failingFile) {
       fail = false;
       onFailure();
@@ -627,8 +625,6 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
       appendFileSync(log, `${new Date().toISOString()} [INFO] ${action} foreground session: ${id}\n`);
     const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
     reads = spyOn(fs, "readSync").mockImplementation(failedRead);
-    // CI once read no cursor here for a reason its log did not keep: each answer waited past is
-    // printed, so a run that waits says what it saw
     const readCursor = async () => {
       for (const deadline = Date.now() + 5000;;) {
         const response = await fetch(url);
@@ -752,8 +748,6 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
         source: string; turns: { parts: { text?: string; output_ref?: string }[] }[]; cursor?: string; history_id?: string;
       };
     };
-    // A switch may answer scrollback, or 409 if ownership changes during the read.
-    // Neither is the transcript this waits for; keep the response for timeout diagnostics.
     const waitForTranscript = async (text: string, previousHistory?: string) => {
       for (const deadline = Date.now() + 5000;;) {
         const body = await read();
@@ -853,7 +847,6 @@ it.skipIf(process.platform !== "linux")("shows the pictures a recorded Copilot s
   const red = "copilot:db47bba5fe6470a832370fa0ca3cbfd9194dd1e36eaa3d67fdd33bea01d4b66a";
   const blue = "copilot:c75fe07b33afb7b182fa53cd500727a7cfa1699443a17d87d053d6536ad65438";
   mkdirSync(join(home, "session-state", pictured), { recursive: true });
-  // the recorded session under this test's id; a prompt that is only the red picture again, as Copilot names an asset it already holds
   writeFileSync(file(pictured), recorded.replace(/"sessionId":"[0-9a-f-]{36}"/, `"sessionId":"${pictured}"`)
     + event("user.message", { content: "", attachments: [{ type: "blob", mimeType: "image/png", assetId: `sha256:${red.slice(8)}`, byteLength: 140 }] }));
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-pictures" });
@@ -876,7 +869,6 @@ it.skipIf(process.platform !== "linux")("shows the pictures a recorded Copilot s
       expect(new Bun.CryptoHasher("sha256").update(new Uint8Array(await response.arrayBuffer())).digest("hex")).toBe(ref.slice(8));
     }
     expect((await image(`copilot:${"0".repeat(64)}`)).status).toBe(404);
-    // another pane's Copilot session never had these pictures: the ref names no picture there
     expect((await image(red, pane)).status).toBe(404);
   } finally {
     await workspaceClose(created.workspace.workspace_id);

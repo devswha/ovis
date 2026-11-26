@@ -33,12 +33,12 @@ import { checkTerminalKeyboardSuggestions } from "./terminal-keyboard-suggestion
 import { checkSplitView } from "./split-view-regression.ts";
 import { checkTakeOver } from "./take-over-regression.ts";
 import { checkTabOverflow } from "./tab-overflow-regression.ts";
+import { checkTabWorkspaceDrag } from "./tab-workspace-drag-regression.ts";
 import { checkAlertSound } from "./alert-sound-regression.ts";
 import { checkBackgroundTabKeepsTerminalSize, checkChatKeepsTerminalSize, checkFocusedWindowReclaimsTerminalSize, checkPaneSwitchKeepsTerminalSize } from "./chat-size-regression.ts";
 import { checkUpdateNotice } from "./update-notice-regression.ts";
 import { checkTelemetrySettings } from "./telemetry-regression.ts";
 import { chromePath } from "./chrome-path.ts";
-// machine events stay on SSE here: these checks hold or watch /api/machines/events (the socket transport has its own checks)
 process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 async function timed(name: string, check: () => Promise<void>): Promise<void> {
@@ -62,7 +62,6 @@ function isWorkspaceMissing(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "workspace_not_found";
 }
 
-/** main: every check but the two slowest; layout: those two (split view, a background tab's size). */
 export type UiContextGroup = "main" | "layout";
 
 export async function runUiContextChecks(group: UiContextGroup): Promise<void> {
@@ -88,7 +87,6 @@ export async function runUiContextChecks(group: UiContextGroup): Promise<void> {
     const paneB = createdB.root_pane.pane_id;
     await herdrRpc("pane.report_agent", { pane_id: paneB, source: "manual", agent: "codex", state: "idle" });
 
-    // herdr's config is none here, whatever HERDR_CONFIG_PATH the shell passed on: checkTerminalCopy asserts herdr's default
     server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: root, usage: new UsageService({ ...systemUsageContext(), home: root, env: {} }, []), herdrConfigPath: join(root, "no-herdr-config.toml") });
     const origin = `http://127.0.0.1:${server.port}`;
     browser = await chromium.launch({
@@ -128,6 +126,7 @@ export async function runUiContextChecks(group: UiContextGroup): Promise<void> {
       await timed("checkTerminalKeyboardSuggestions", () => checkTerminalKeyboardSuggestions(browser!, origin));
       await timed("checkTakeOver", () => checkTakeOver(browser!, origin));
       await timed("checkTabOverflow", () => checkTabOverflow(browser!, origin));
+      await timed("checkTabWorkspaceDrag", () => checkTabWorkspaceDrag(browser!, origin));
       await timed("checkAlertSound", () => checkAlertSound(browser!, origin));
       await timed("checkChatKeepsTerminalSize", () => checkChatKeepsTerminalSize(browser!, origin));
       await timed("checkPaneSwitchKeepsTerminalSize", () => checkPaneSwitchKeepsTerminalSize(browser!, origin));

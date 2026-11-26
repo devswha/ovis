@@ -1,21 +1,19 @@
-import type { Terminal } from "@xterm/xterm";
 import { promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
+import { screenRows } from "./terminalScreen.ts";
 
 /**
- * One asking of a prompt: its words, and how many lines of the same words stand directly above it (`cut`: they reach
- * the screen's first line, so there may have been more). A script that asks twice prints its second prompt under
- * the first, and that is all that tells the two apart. Nothing else on the screen is part of an asking: the lines
- * above a prompt change with the pane's width, scroll away, or are a clock.
+ * A script that asks twice prints its second prompt under the first, and that is all that tells the two apart.
+ * Nothing else on the screen is part of an asking: the lines above a prompt change with the pane's width, scroll
+ * away, or are a clock.
  */
 interface Asking { prompt: string; repeats: number; cut: boolean }
 
-/** Whether `now` is the asking `seen` was: the same words under as many of themselves, or under fewer once some scrolled off. */
 function sameAsking(seen: Asking, now: Asking): boolean {
   return seen.prompt === now.prompt && (seen.repeats === now.repeats || (now.cut && now.repeats < seen.repeats));
 }
 
 /**
- * The masked prompt a terminal's screen shows now, if any (shared/secret-prompt.ts), read off xterm's screen for
+ * The masked prompt a terminal's screen shows now, if any (shared/secret-prompt.ts), read off its screen for
  * `pane`. `cursorKnown`: whether the screen's cursor is the program's (an attached pane). A mirrored pane's
  * repaints carry none, so its prompt counts while it is the last text; so does one not known to be attached.
  *
@@ -26,17 +24,15 @@ function sameAsking(seen: Asking, now: Asking): boolean {
  * first seen after the answer. What was seen is one pane's: it is kept while that pane's screen is drawn again (a
  * reconnect, a phone that let the pane go while hidden), and dropped when the terminal shows another pane.
  */
-export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
-  // the asking last seen with the cursor on its line, and the pane it was seen on
+export function createSecretScreen(term: Parameters<typeof screenRows>[0] & { readonly cols: number }, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
   let seen: Asking | null = null;
   let seenOn: string | null = null;
   return {
     read(pane: string): string | null {
       if (pane !== seenOn) { seen = null; seenOn = pane; }
       const lines: string[] = [];
-      // each line's first screen row
       const starts: number[] = [];
-      const buffer = term.buffer.active;
+      const buffer = screenRows(term);
       // the screen only: a prompt is on its last lines, and a herdr-core pane's history (syncHistory) would
       // cost every output frame a pass over its 2,000 lines
       for (let row = buffer.baseY; row < buffer.length; row++) {

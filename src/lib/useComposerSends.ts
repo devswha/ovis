@@ -5,8 +5,9 @@ import { composerDelivery, pendingActionUncertain, submitNote, submitNotTyped, s
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import { pendingMessages, UNCONFIRMED_SEND } from "./pendingMessages.ts";
 import { paneStorageId } from "../../shared/machines.ts";
+import { FALLBACK_ENTER_WITHHELD_MESSAGE } from "../../shared/submit-outcome.ts";
 import { rememberWaitingSend, stampedBaseline, waitingBaseline, waitingKey } from "./sentWaiting.ts";
-import { composerDrafts } from "./composerDraft.ts";
+import { composerDraftKey, composerDrafts } from "./composerDraft.ts";
 import type { AgentStatus, InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import type { HerdrSocket, SubmitDelivery, SubmitResult } from "./ws.ts";
 import { plainError } from "./paneTerminalShared.ts";
@@ -18,25 +19,21 @@ export interface ComposerSendsDeps {
   agentStatus: AgentStatus | undefined;
   answerPanePrompt: (answer: { pane_id: string; prompt_id: string }) => Promise<unknown>;
   answering: InteractivePrompt | null;
-  /** the card's answer went out, but its next screen read has not answered yet */
   answerPending: boolean;
   draftHeldForRef: MutableRefObject<string | null>;
+  dropSecondEscape: () => void;
   ended: boolean;
   heldByOpenQueue: boolean;
   heldRef: MutableRefObject<boolean>;
   inputRowNow: () => string | null;
-  /** whether the cursor's agent can take a message now, whatever herdr reports (lib/compose.ts) */
   inputAtRest?: () => boolean;
   knownOutcomes: (pane: string | null) => readonly string[] | null;
   observeRef: MutableRefObject<boolean>;
   paneId: string | null;
   paneRef: MutableRefObject<string | null>;
-  /** the typed pick waiting in the card for Confirm (useChatCallbacks) */
   pendingAnswer: { pane: string; promptId: string; answer: TypedAnswer } | null;
   pendingScopeRef: MutableRefObject<string | null>;
-  /** the chat's navigation generation, read as a message goes out (ChatView `navigation`) */
   chatNavigation: MutableRefObject<number>;
-  /** advanced once this browser's own message from the box was accepted at once (ChatView `localSend`) */
   setChatLocalSend: (update: (current: { key: number; navigationGeneration: number }) => { key: number; navigationGeneration: number }) => void;
   sessionRef: MutableRefObject<MachineSession | null>;
   queueOwner: string | null;
@@ -51,15 +48,14 @@ export interface ComposerSendsDeps {
   stillOpenNote: (open: { pane: string; agent: string; command: string; named: boolean; history: string | undefined }) => string;
   stillOpenNotedRef: MutableRefObject<boolean>;
   stillOpenRef: MutableRefObject<{ pane: string; agent: string; command: string; named: boolean; history: string | undefined } | null>;
-  submitComposerMessage: (text: string, delivery: SubmitDelivery, clearDraft?: string, sendAnyway?: boolean, pendingId?: string, resendGeneration?: number, agentOnly?: boolean, holdOnly?: boolean) => Promise<SubmitResult> | null;
+  submitComposerMessage: (text: string, delivery: SubmitDelivery, clearDraft?: string, sendAnyway?: boolean, pendingId?: string, resendGeneration?: number, agentOnly?: boolean, holdOnly?: boolean, commandKey?: string) => Promise<SubmitResult> | null;
   submitRetention: PaneSubmitRetention | null;
   t: Translate;
 }
 
 export function useComposerSends(deps: ComposerSendsDeps) {
-  const { agent, agentStatus, answerPanePrompt, answering, answerPending, chatNavigation, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
+  const { agent, agentStatus, answerPanePrompt, answering, answerPending, chatNavigation, draftHeldForRef, dropSecondEscape, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, sessionRef, setChatLocalSend, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t } = deps;
 
-  /** An answer from the message box, not the card: its failure is the box's note. */
   const sendAnswer = useCallback((pane: string, prompt: InteractivePrompt, choice: TypedAnswer): Promise<boolean | string> => {
     setPendingAnswer(null);
     return answerPanePrompt({ pane_id: pane, prompt_id: prompt.id, ...choice }).then(
@@ -72,10 +68,6 @@ export function useComposerSends(deps: ComposerSendsDeps) {
     );
   }, [answerPanePrompt, setPendingAnswer, setPromptRefresh, t]);
 
-  /**
-   * The typed pick waiting in the card for Confirm, as the message box's keys: Enter in the empty
-   * box confirms it and Escape cancels it, as the card's two buttons do. null: none waits for this prompt.
-   */
   const waitingAnswer = useMemo(() => {
     if (answerPending || paneId === null || answering === null || pendingAnswer === null || pendingAnswer.pane !== paneId || pendingAnswer.promptId !== answering.id) return null;
     const pane = paneId, choice = pendingAnswer.answer;
@@ -85,14 +77,12 @@ export function useComposerSends(deps: ComposerSendsDeps) {
     };
   }, [answering, answerPending, paneId, pendingAnswer, sendAnswer, setPendingAnswer]);
 
-  // the latest Send now, for a Ctrl+Enter send whose receipt comes after a render
   const sendNowRef = useRef<(id: string) => Promise<void>>(async () => {});
 
   const composerSend = useCallback(
     // `hold`: Alt+Enter, kept in the queued list for its Send now alone, whatever automatic sending or the agent's state says
     (text: string, clearDraft?: string, sendAnyway = false, agentOnly = false, now = false, hold = false): boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal> => {
       const pane = paneRef.current;
-      // A refused send keeps the draft; no second choice goes to the card waiting on its read.
       if (pane !== null && answerPending) return false;
       // Codex's queue open in the terminal holds the input: a message would become the answer
       if (pane !== null && heldByOpenQueue) {
@@ -125,12 +115,13 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         stillOpenNotedRef.current = true;
         return { note: stillOpenNote(open), anyway: true, plain: true };
       }
-      // an older bridge is told apart by the socket, once this connection's snapshot has said what it supports.
-      // A draft is cleared only by a send at once: one that waits its turn is checked when it goes
-      // with automatic sending off, a follow-up waits for Send now; the socket queues it on a PC too old to hold one
       // herdr reads an idle Claude with a live subagent as working (a braille title spinner, and
       // "Waiting for N background agents to finish"); its own box at rest says it can take the message
-      const settled = composerDelivery(agent, agentStatus);
+      // a herdr-core server (`terminal-modes`) also shows a pane blocked while it reads a card its agent did not report.
+      // Until this connection's features are known that cannot be told apart: a blocked pane is then taken as one
+      const listening = socketRef.current;
+      const cardWaits = listening?.featuresListed?.() === true ? listening.typesArrows() : true;
+      const settled = composerDelivery(agent, agentStatus, cardWaits);
       const queued = settled === "queue" && inputAtRest?.() === true ? "immediate" : settled;
       const delivery: SubmitDelivery = hold ? "hold" : queued === "queue" && !settings.autoSendQueued ? "hold" : queued;
       // Send anyway answered a box seen at once: an agent that started working since would queue it unchecked.
@@ -138,51 +129,62 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       if ((sendAnyway || asDraft) && delivery !== "immediate") return t("Not sent: the agent started working since. Check the terminal, then send again.");
       const known = knownOutcomes(pane);
       const seen = inputRowNow() === "ready";
-      // before the receipt is awaited: navigation while it is on its way cancels the follow
       const navigation = chatNavigation.current;
       const socket = socketRef.current, session = sessionRef.current;
       const sentAt = Date.now();
       const sentAfter = pane === null ? null : waitingBaseline(waitingKey(machineId, pane));
       // a PC that cannot hold refuses a hold rather than queuing it to go on its own (HerdrSocket `holdOnly`)
-      const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly, hold);
+      const draftKey = pane === null ? null : composerDraftKey(paneStorageId(machineId, pane));
+      const command = draftKey === null ? undefined : composerDrafts.commandKey(draftKey, text);
+      const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly, hold, command);
       return result === null ? false : result.then((answer) => {
         // Neither a dropped connection nor a cleared old draft proves this message was typed.
         // Without a receipt, leave the retryable composer text and report the uncertainty.
-        if (!answer.ok) return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
-        // an older bridge took it with no receipt: the box lets it go, a row keeps it as not confirmed
+        if (!answer.ok) {
+          if (draftKey !== null && command !== undefined && answer.code === "submit_partial" && answer.message === FALLBACK_ENTER_WITHHELD_MESSAGE) {
+            composerDrafts.forgetCommand(draftKey, command);
+          }
+          return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
+        }
         if (answer.unconfirmed && pane !== null) pendingMessages.keepUnconfirmed(paneStorageId(machineId, pane), text);
-        // A confirmed send belongs to the original pane even if navigation outruns its receipt. A queued
-        // follow-up was typed now only when its receipt says so: an ok with no `pending` also answers a
-        // replayed id, or a row sent or discarded since
-        const typedNow = answer.pending === undefined && !answer.unconfirmed && (delivery === "immediate" || answer.typedNow === true);
+        // A queued follow-up was typed now only when its receipt says so: an ok with no `pending` also
+        // answers a replayed id, or a row sent or discarded since
+        const typedNow = answer.pending === undefined && !answer.unconfirmed && !answer.replayed && (delivery === "immediate" || answer.typedNow === true);
         if (typedNow) {
           if (paneRef.current === pane && socketRef.current === socket && sessionRef.current === session) {
             setChatLocalSend((current) => ({ key: current.key + 1, navigationGeneration: navigation }));
           }
-          // the PC's stamp before it typed bounds the send's turn on its clock alone (lib/sentWaiting.ts)
           if (pane !== null) rememberWaitingSend(waitingKey(machineId, pane), text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt));
         }
         if (pane !== null && typedNow) showSentCommand(pane, text, known, seen);
-        // Ctrl+Enter: the row it was queued as goes now, by the same steer as its Send now. A refused steer
-        // leaves that row with its reason, as a refused Send now does (#2596)
-        if (now && answer.pending !== undefined) void sendNowRef.current(answer.pending.id);
+        if (now && !answer.replayed && answer.pending !== undefined) void sendNowRef.current(answer.pending.id);
         return true;
       });
     },
     [agent, agentStatus, answering, answerPending, heldByOpenQueue, sendAnswer, submitComposerMessage, queueStore, machineId, settings.autoSendQueued, showSentCommand, inputAtRest, inputRowNow, stillOpenNote],
   );
 
-  const actOnPending = useCallback(async (id: string, action: "steer" | "discard" | "edit"): Promise<void> => {
+  const actOnPending = useCallback(async (id: string, action: "steer" | "discard" | "edit" | "dismiss"): Promise<void> => {
     const perform = async (): Promise<void> => {
       const owner = queueOwner, pane = paneId;
       const socket = socketRef.current, scope = pendingScopeRef.current;
       if (owner === null || pane === null || paneRef.current !== pane) return;
-      // what another tab saved since: a copy it is sending again is not confirmed here either
       pendingMessages.refresh(owner);
       const message = pendingMessages.read(owner).find((item) => item.id === id);
       if (!message || message.state === "sending") return;
-      // Editing needs this connection's withdrawal authority, not just a saved held
-      // copy. Uncertain Pi copies are receipts, not queued input.
+      // The X on an uncertain row dismisses only that copy, even offline, and never
+      // turns into a queue discard if a later publish changed the row to queued/held.
+      const dismiss = action === "dismiss" || action === "discard" && message.state === "uncertain";
+      if (dismiss && message.state !== "uncertain") return;
+      // This connection's own record goes to the bridge: its discard of an uncertain record is a "dismissed"
+      // outcome (no withdrawal, no draft restore) and lifts that record's hold on the pane's queue. A copy no
+      // live connection here owns, or one the bridge cannot dismiss, is hidden on this page alone.
+      if (dismiss && !(message.serverOwned && socket?.connected && pendingMessages.isOwned(owner, id, scope))) {
+        pendingMessages.dismissCopy(owner, id);
+        return;
+      }
+      let hideLocally = false;
+      // Editing needs this connection's withdrawal authority, not just a saved held copy.
       if (action === "edit" && (!message.serverOwned || message.state !== "queued" && message.state !== "held" || message.resendInFlight)) return;
       if (action === "steer" && (message.state === "uncertain" || !socket?.connected || heldRef.current || secretRef.current !== null || observeRef.current || ended || heldByOpenQueue || answering !== null)) return;
       if (message.serverOwned && !pendingMessages.isOwned(owner, id, scope)) return;
@@ -193,7 +195,6 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         pendingMessages.fail(owner, id, { code: "held_input", message: "send or discard the held input first" }, false);
         return;
       }
-      // a screen a peek left open would take it, as it would the composer's Send
       const open = stillOpenRef.current;
       if (action === "steer" && open !== null && open.pane === pane) {
         pendingMessages.fail(owner, id, { code: "still_open", message: stillOpenNote(open) }, false);
@@ -219,17 +220,24 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           try {
             const known = knownOutcomes(pane);
             const seen = inputRowNow() === "ready";
-            const result = socket?.pendingAction(pane, id, action === "edit" ? "discard" : action, message.resendGeneration ?? 0, action === "edit");
-            // offline: no frame left (the row shows submitNote's wording, not this message)
+            const generation = message.resendGeneration ?? 0;
+            const result = action === "steer"
+              ? socket?.pendingAction(pane, id, "steer", generation, false, () => {
+                if (paneRef.current === pane && socketRef.current === socket) dropSecondEscape();
+              })
+              : socket?.pendingAction(pane, id, "discard", generation, action === "edit");
+            if (!result && dismiss) { hideLocally = true; return; }
             if (!result) {
               pendingMessages.fail(owner, id, { code: "not_transmitted", message: "the connection dropped before this message was sent" }, pendingActionUncertain("not_transmitted", message.state));
               return;
             }
-            // as a composer send: the pane keeps its connection and lease until the receipt settles
             const releaseSubmit = submitRetention?.retain(pane);
             const answer = await result.finally(() => releaseSubmit?.());
             if (answer.ok && action === "steer" && delivered) showSentCommand(pane, message.text, known, seen);
-            if (!answer.ok) pendingMessages.fail(owner, id, { code: answer.code, message: answer.message }, pendingActionUncertain(answer.code, message.state),
+            // still in flight on the bridge, no longer there, or its connection ended (the bridge settles that one's
+            // records itself): the copy goes from this page only
+            if (!answer.ok && dismiss && ["pending_uncertain", "pending_not_found", "disconnected", "not_transmitted"].includes(answer.code)) hideLocally = true;
+            else if (!answer.ok) pendingMessages.fail(owner, id, { code: answer.code, message: answer.message }, pendingActionUncertain(answer.code, message.state),
               action === "steer" ? message.resendGeneration ?? 0 : undefined);
           } finally {
             off?.();
@@ -255,7 +263,6 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           else if (answer.ok) {
             pendingMessages.removeCopy(owner, id);
             if (answer.pending === undefined) {
-              // typed by this resend: a replay of a send another connection made has its own turn already
               if (answer.typedNow === true) rememberWaitingSend(waitingKey(machineId, pane), message.text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt));
               showSentCommand(pane, message.text, known, seen);
             }
@@ -266,14 +273,18 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           else pendingMessages.fail(owner, id, { code: answer.code, message: answer.message }, !submitNotTyped(answer.code), message.resendGeneration ?? 0);
         }
       } catch {
-        pendingMessages.fail(owner, id, { code: "disconnected", message: t("Not confirmed. Check the terminal before sending again.") }, true);
-      } finally { pendingMessages.end(owner, id); }
+        if (dismiss) hideLocally = true;
+        else pendingMessages.fail(owner, id, { code: "disconnected", message: t("Not confirmed. Check the terminal before sending again.") }, true);
+      } finally {
+        const now = pendingMessages.end(owner, id);
+        if (hideLocally) pendingMessages.dismissCopy(now, id);
+      }
     };
     // Web Locks reduce contention where supported; the bridge's stable resend ID is the
     // authority on LAN HTTP and when two tabs have already read the same held copy.
     if (navigator.locks) await navigator.locks.request(`pending:${queueOwner}:${id}`, perform);
     else await perform();
-  }, [answering, ended, heldByOpenQueue, paneId, queueOwner, submitComposerMessage, submitRetention, showSentCommand, inputRowNow, stillOpenNote]);
+  }, [answering, dropSecondEscape, ended, heldByOpenQueue, paneId, queueOwner, submitComposerMessage, submitRetention, showSentCommand, inputRowNow, stillOpenNote]);
 
   sendNowRef.current = (id) => actOnPending(id, "steer");
 

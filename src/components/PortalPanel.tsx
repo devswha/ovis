@@ -20,10 +20,10 @@ import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
  * `readOnly`: this browser reads it and changes nothing: a device that only watches, or a visitor
  * Portal's own sign-in let in, which the server refuses every action here.
  */
-export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
+/** `addressQr` false: its address without a QR code, where the phone's QR code above carries it already */
+export function PortalPanel({ readOnly = false, addressQr = true }: { readOnly?: boolean; addressQr?: boolean }) {
   const t = useT();
   const { status, error, pending, busy, request } = usePortal();
-  // what was typed; until then, the relay and the sign-in this PC used last
   const [typed, setTyped] = useState<string | null>(null);
   const [edited, setEdited] = useState<AuthDraft | null>(null);
   if (!status?.supported) return null;
@@ -32,7 +32,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const problem = draft.method === "none" ? null : authProblem(draft);
   const offered = draft.method === "none" || status.auth_methods.includes(draft.method);
   const on = status.phase !== "idle";
-  // a Portal that ended on its own is started again once by the server; Stop still ends it
   const progress = status.phase === "starting" ? t("Starting…") : status.phase === "recovering" ? t("Recovering…") : status.phase === "stopping" ? t("Stopping…") : null;
   let control;
   if (on) {
@@ -46,7 +45,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       </>
     );
   } else {
-    // Add a connection shows an idle Portal only where it can start (usable, nothing blocking it)
     control = (
       <>
         <PortalAuthChoice status={status} draft={draft} disabled={readOnly || busy} onChange={setEdited} />
@@ -64,14 +62,13 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
     <SettingsGroup title="Portal" note={t("A public HTTPS address for this PC through a Portal relay. Anyone on the internet can open it, so it needs an access token.")}>
       {status.url !== null && (
         <div className="settings-item phone-panel">
-          <Address url={status.url} title={t("Portal serves this PC")} />
+          <Address url={status.url} title={t("Portal serves this PC")} qr={addressQr} />
           <p className="settings-description">{status.auth.method === "none" ? t("Open it on your phone and sign in with the access token, or pair the phone with a pairing code.") : t("Open it on your phone and sign in the way you chose here. The access token is not asked after it.")}</p>
         </div>
       )}
       {control}
       {progress !== null && <p className="settings-item settings-hint portal-progress" role="status">{progress}</p>}
       {error !== null && <p className="settings-item settings-hint portal-error" role="alert">{error}</p>}
-      {/* the server's account of the last failure, then Portal's own words */}
       {status.phase === "error" && status.error !== null && (
         <div className="settings-item">
           <p className="settings-hint portal-error" role="alert">{status.error}</p>

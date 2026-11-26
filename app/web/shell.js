@@ -1,19 +1,27 @@
-// Shared by the app's own pages: the native plugin (ios/App/App/HerdrShellPlugin.swift) and
-// what an address typed or scanned becomes.
-
-/**
- * The hosted shell's origin (app.ovis.sh), where a PC paired over the Ovis relay opens, at its scope
- * `/s/<server_id>/`. app/scripts/build-web.ts puts in another for a test build (OVIS_APP_URL).
- */
 export const APP_ORIGIN = "https://app.ovis.sh";
 
-/** Whether the connect screen offers signing in to the account (the hosted shell's front page); app/scripts/build-web.ts turns it on with OVIS_APP_ACCOUNT=1. */
-export const ACCOUNT_SIGN_IN = false;
+/**
+ * The first screen this build of the pages was made for: `hosted`, the hosted app's Connect a PC screen with this page
+ * standing in when it does not load, or `bundled`, this page (OVIS_APP_HOME, build-web.ts). The native code opens it
+ * from its own copy of the value and tells the page which it is (HerdrShell getState); packaging compares the two.
+ */
+export const APP_HOME = "hosted";
 
-/** Whether the phone's first language is Korean, the one language the app's own pages have besides English. */
+export const ACCOUNT_SIGN_IN = true;
+
+/** The account service, which names the sign-ins it offers (`GET /v1/providers`), and those the app can draw, in its order. */
+export const ACCOUNT_SERVICE = "https://account.ovis.sh";
+export const ACCOUNT_PROVIDERS = ["github", "google", "apple"];
+
+/** The sign-ins a `/v1/providers` answer names, in the app's order, or null for an answer that names nothing readable. */
+export function listedProviders(body) {
+  // the hosted app's own reading (src/lib/account/store.ts): an answer without both lists names nothing
+  if (typeof body !== "object" || body === null || !Array.isArray(body.providers) || !Array.isArray(body.device)) return null;
+  return ACCOUNT_PROVIDERS.filter((provider) => body.providers.includes(provider));
+}
+
 export const korean = /^ko\b/i.test(navigator.language ?? "");
 
-/** The text in the phone's language. */
 export function t(en, ko) {
   return korean ? ko : en;
 }
@@ -23,16 +31,71 @@ export function localize() {
   if (!korean) return;
   document.documentElement.lang = "ko";
   for (const element of document.querySelectorAll("[data-ko]")) element.textContent = element.dataset.ko;
+  for (const element of document.querySelectorAll("[data-ko-label]")) element.setAttribute("aria-label", element.dataset.koLabel);
 }
 
-/** Calls the native HerdrShell plugin through Capacitor's bridge. */
 export function shell(method, options = {}) {
-  return window.Capacitor.nativePromise("HerdrShell", method, options);
+  const call = window.Capacitor.nativePromise("HerdrShell", method, options);
+  if (method !== "open") return call;
+  // a PC's page draws its own bars, on the app's dark start: they go back to light icons before it opens, and follow
+  // this screen again when it did not open (refused, cancelled), as the screen stays
+  barsFor(false);
+  return call.catch((err) => { barsForScreen(); throw err; });
+}
+
+/** The bars back to this screen's colours: an open that did not happen (refused, or cancelled before it answered). */
+export function barsForScreen() {
+  if (LIGHT !== null) barsFor(LIGHT.matches);
+}
+
+const LIGHT = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: light)") : null;
+
+/** The app's own screens' background, light and dark: the hosted page's Codex theme (shell.css --bg). */
+export const SCREEN_LIGHT = "#ffffff";
+export const SCREEN_DARK = "#181818";
+
+/**
+ * The system bars for the screen's colours: both apps take them from the page's theme-color (Android's MainActivity,
+ * BAR_COLOR_SCRIPT; iOS's HerdrBridgeViewController, followPageColor), with icons that stand out on it. The app's own
+ * screens follow the phone's light or dark mode (shell.css), so their theme-color does too; every PC opens on the dark
+ * one, and its page then gives its own.
+ */
+function barsFor(light) {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = light ? SCREEN_LIGHT : SCREEN_DARK;
+}
+
+/** The app's own screens follow the phone's light or dark mode, the system bars with them. */
+export function followScheme() {
+  if (LIGHT === null) return;
+  const apply = () => barsFor(LIGHT.matches);
+  LIGHT.addEventListener("change", apply);
+  apply();
+}
+
+/**
+ * What Manage on the connect screen says about an SSH PC (an entry of the Android OvisSsh plugin's
+ * `list`): its address, how the phone signs in there, and its host key, or that the key was forgotten
+ * on purpose and is confirmed again on Set up again.
+ */
+export function sshDetails(pc) {
+  const address = `${pc.user}@${pc.host}${pc.port === 22 ? "" : `:${pc.port}`}`;
+  const how = pc.auth === "imported"
+    ? t(`Signs in with a pasted ${pc.keyType ? `${pc.keyType} ` : ""}key`, `붙여 넣은 ${pc.keyType ? `${pc.keyType} ` : ""}키로 로그인해요`)
+    : pc.auth === "tailscale"
+      ? t("Signs in with Tailscale SSH, no key", "Tailscale SSH로 키 없이 로그인해요")
+      : t("Signs in with this phone's key", "이 휴대폰의 키로 로그인해요");
+  const hostKey = pc.fingerprint
+    ? t(`Host key ${pc.hostKeyAlgorithm} ${pc.fingerprint}`, `호스트 키 ${pc.hostKeyAlgorithm} ${pc.fingerprint}`)
+    : t("Host key forgotten: Set up again shows the key it has now, to check and confirm.", "호스트 키를 지웠어요. 다시 설정에서 지금의 키를 보고 확인하세요.");
+  return { address, how, hostKey, confirmed: Boolean(pc.fingerprint) };
 }
 
 /**
  * Whether opening url sends a pairing code and everything typed over the internet unencrypted:
- * plain http to an address outside a tailnet, a home network and this phone. The apps allow
+ * plain http to an address that does not look like a tailnet's, a home network's or this phone's.
+ * homeHost judges by the name or address alone: a dotless or .local name counts as home even if DNS
+ * sends it to a public server, so this is a heuristic, not proof. The apps allow
  * cleartext to any host, as Android cannot limit it to address ranges.
  */
 export function publicHttp(url) {
@@ -73,23 +136,21 @@ export function homeHost(hostname) {
   return !host.includes(".") || /\.(local|lan|home\.arpa|internal)$/.test(host);
 }
 
-/** How long the Android app waits for an address to answer before it says so (PCStore.ANSWER_SECONDS), as the iOS app's cover waits. */
 export const ANSWER_SECONDS = 20;
 
 /**
- * Why `url` did not open, for the connect screen, from the HerdrShell open's refusal: its `code`
- * (PCStore.check's kind) and `message` (the answer that was not Ovis, or the error). "" for a
- * cancelled open.
+ * Why an address did not open, in the hosted page's words for the same failures (src/lib/i18n/relay.ko.ts): where the PC
+ * shows its address is Settings → Devices and PCs → Add a connection there.
  */
 export function openFailure(url, code, message) {
   const host = url.host;
   const tailscale = tailnetHost(url.hostname) ? " " + t(
     "This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.",
-    "Tailscale 주소입니다. 이 휴대폰에서 Tailscale이 꺼져 있을 수 있으니 Tailscale 앱에서 연결을 켜세요.",
+    "Tailscale 주소예요. 이 휴대폰에서 Tailscale이 꺼져 있을 수 있으니 Tailscale 앱에서 연결을 켜세요.",
   ) : "";
   const where = t(
-    "Open the address Ovis shows under Settings → Phone & devices on the PC.",
-    "PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.",
+    "Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.",
+    "PC의 Ovis에서 설정 → 기기와 PC → 연결 추가에 표시된 주소를 여세요.",
   );
   switch (code) {
     case "cancelled": return "";
@@ -97,34 +158,33 @@ export function openFailure(url, code, message) {
       const answer = /^HTTP \d{3}$/.test(message ?? "") ? ` (${message})` : "";
       return t(
         `${host} answered${answer}, but it is not Ovis: another web server, or herdr itself, which the app cannot open. ${where}`,
-        `${host}이(가) 응답했지만${answer} Ovis가 아닙니다. 다른 웹 서버이거나, 앱이 열 수 없는 herdr 자체입니다. ${where}`,
+        `이 주소(${host})가 응답했지만${answer} Ovis가 아니에요. 다른 웹 서버이거나, 앱이 열 수 없는 herdr 자체예요. ${where}`,
       );
     }
     case "refused": return refusedHelp(url, host);
     case "timeout": return (homeHost(url.hostname) ? t(
       `${host} did not answer within ${ANSWER_SECONDS} seconds. The PC may be off, or out of this phone's reach: a home network address does not open over mobile data or another Wi-Fi, and a firewall on the PC can block the port.`,
-      `${host}이(가) ${ANSWER_SECONDS}초 안에 응답하지 않았습니다. PC가 꺼져 있거나 이 휴대폰에서 닿지 않을 수 있습니다. 집 네트워크 주소는 모바일 데이터나 다른 Wi-Fi에서 열리지 않고, PC의 방화벽이 포트를 막을 수도 있습니다.`,
+      `이 주소(${host})가 ${ANSWER_SECONDS}초 안에 응답하지 않았어요. PC가 꺼져 있거나 이 휴대폰에서 닿지 않을 수 있어요. 집 네트워크 주소는 모바일 데이터나 다른 Wi-Fi에서 열리지 않고, PC의 방화벽이 포트를 막을 수도 있어요.`,
     ) : t(
       `Nothing came back from ${host} within ${ANSWER_SECONDS} seconds. The server may be down, or this phone's connection (or a VPN on it) may not reach it.`,
-      `${ANSWER_SECONDS}초 동안 ${host}에서 아무 응답도 오지 않았습니다. 서버가 꺼져 있거나, 이 휴대폰의 연결(또는 VPN)이 서버에 닿지 않을 수 있습니다.`,
+      `${ANSWER_SECONDS}초 동안 이 주소(${host})에서 아무 응답도 오지 않았어요. 서버가 꺼져 있거나, 이 휴대폰의 연결(또는 VPN)이 서버에 닿지 않을 수 있어요.`,
     )) + tailscale;
     case "unknown-host": return t(
-      `${url.hostname} was not found. Check the name, or open the address Ovis shows under Settings → Phone & devices on the PC.`,
-      `${url.hostname}을(를) 찾지 못했습니다. 이름을 확인하거나, PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.`,
+      `${url.hostname} was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.`,
+      `이 이름(${url.hostname})을 찾지 못했어요. 이름을 확인하거나, PC의 Ovis에서 설정 → 기기와 PC → 연결 추가에 표시된 주소를 여세요.`,
     ) + tailscale;
-    default: return t(`${host} could not be reached: ${message}`, `${host}에 연결할 수 없습니다: ${message}`) + tailscale;
+    default: return t(`${host} could not be reached: ${message}`, `이 주소(${host})에 연결할 수 없어요: ${message}`) + tailscale;
   }
 }
 
-/** What a refused connection means: nothing listens on that address and port. */
 function refusedHelp(url, host) {
   const text = t(
-    `${host} refused the connection: nothing listens there. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Phone & devices on the PC.`,
-    `${host}이(가) 연결을 거부했습니다. 그 주소에서 기다리는 것이 없습니다. PC에서 Ovis가 실행 중이어야 하고(herdr만으로는 안 됩니다), Ovis는 기본으로 PC 자신(127.0.0.1)에서만 기다립니다. PC의 Ovis에서 설정 → 폰 및 기기에 표시된 주소를 여세요.`,
+    `${host} refused the connection: nothing listens there. Ovis has to run on the PC (herdr alone is not enough), and by default it listens only on the PC itself (127.0.0.1). Open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC.`,
+    `이 주소(${host})가 연결을 거부했어요. 그 주소에서 기다리는 것이 없어요. PC에서 Ovis가 실행 중이어야 하고(herdr만으로는 안 돼요), Ovis는 기본으로 PC 자신(127.0.0.1)에서만 기다려요. PC의 Ovis에서 설정 → 기기와 PC → 연결 추가에 표시된 주소를 여세요.`,
   );
   return loopbackHost(url.hostname) ? text + " " + t(
     "On a phone, localhost and 127.0.0.1 are the phone itself, not your PC.",
-    "휴대폰에서 localhost와 127.0.0.1은 PC가 아니라 휴대폰 자신입니다.",
+    "휴대폰에서 localhost와 127.0.0.1은 PC가 아니라 휴대폰 자신이에요.",
   ) : text;
 }
 
@@ -143,14 +203,99 @@ export function parseAddress(text) {
   return url;
 }
 
+const SSH_TARGET = /^(?:ssh:\/\/)?([^\s@/:]+)@([^\s@/:[\]]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?\/?$/i;
+
+/**
+ * What the SSH tab's one field holds: an SSH login, `user@host` or `user@host:port` (or `ssh://` with them), as
+ * `{ ssh: { user, host, port } }`, and anything else as an address (`{ address }`, for open). A `user@host` with a
+ * scheme other than ssh is an address with its credentials, never SSH.
+ */
+export function sshOrAddress(text) {
+  const value = String(text).trim();
+  const ssh = SSH_TARGET.exec(value);
+  if (ssh === null) return { address: value };
+  const port = ssh[3] === undefined ? 22 : Number(ssh[3]);
+  if (port < 1 || port > 65535) return { address: value };
+  return { ssh: { user: ssh[1], host: ssh[2].replace(/^\[|\]$/g, ""), port } };
+}
+
+/**
+ * The PCs an SSH PC knows (OvisSsh known: its own Ovis's /api/machines/ssh-candidates and /api/machines), as logins
+ * this phone can add over SSH, `{ user, host, port, name, source }`: an ssh config host by its user@hostname (an alias
+ * alone means nothing on the phone, which has no such config), a PC of its Tailscale login by its MagicDNS name, as
+ * `from`'s user (Tailscale SSH or a key there takes the same login), and a PC it added over SSH by its target. Those
+ * already saved on this phone (`saved`: SSH PCs as OvisSsh list gives them) and `from` itself are left out, each
+ * login once, at most 20.
+ */
+export function knownLogins(known, from, saved = []) {
+  const logins = [];
+  const take = (name, text, port, source, user = null) => {
+    const login = SSH_TARGET.exec(`${text.includes("@") ? "" : `${user ?? from.user}@`}${text}${port && port !== 22 ? `:${port}` : ""}`);
+    if (login === null) return;
+    const entry = { user: login[1], host: login[2].replace(/^\[|\]$/g, ""), port: login[3] === undefined ? 22 : Number(login[3]), name, source };
+    const same = (pc) => pc.user === entry.user && pc.host.toLowerCase() === entry.host.toLowerCase() && pc.port === entry.port;
+    if (same(from) || saved.some(same) || logins.some(same)) return;
+    logins.push(entry);
+  };
+  for (const pc of Array.isArray(known?.candidates?.pcs) ? known.candidates.pcs : []) {
+    if (typeof pc?.name !== "string") continue;
+    if (pc.source === "tailscale" && typeof pc.destination === "string") take(pc.name, pc.destination, 22, "tailscale");
+    else if (pc.source === "ssh_config" && typeof pc.detail === "string" && pc.detail.includes("@")) take(pc.name, pc.detail, 22, "ssh_config");
+  }
+  for (const machine of Array.isArray(known?.machines?.machines) ? known.machines.machines : []) {
+    if (machine?.kind !== "ssh" || typeof machine.target?.destination !== "string" || !machine.target.destination.includes("@")) continue;
+    take(typeof machine.name === "string" ? machine.name : machine.target.destination, machine.target.destination, machine.target.port ?? 22, "pc");
+  }
+  return logins.slice(0, 20);
+}
+
+/**
+ * A saved PC's name in the lists and on the way back to it: its saved name, else what its address says (a relay PC's
+ * id, as its host is the app's; a MagicDNS name's first word, as the hosted My PCs shortens it; an SSH login; the
+ * address, a Tailscale IP's whole).
+ */
+export function savedPcLabel(origin, names, ssh = {}) {
+  if (names[origin]) return names[origin];
+  if (ssh[origin]) return ssh[origin].label;
+  let url;
+  try { url = new URL(origin); } catch { return origin; }
+  const scope = /^\/s\/([0-9a-f]{32})\/?$/.exec(url.pathname);
+  if (scope) return scope[1].slice(0, 12);
+  return url.hostname.toLowerCase().endsWith(".ts.net") ? url.hostname.split(".")[0] : url.host;
+}
+
+/**
+ * The PCs this phone is already on, one list under each tab's controls, each PC in the one list of the way it connects:
+ * the relay tab's the PCs paired over the relay (a scope on the app's origin; the app's own front page is no PC, and the
+ * account's PCs come with its sign-in, never here), the Tailscale tab's those at a Tailscale address (a phone has no list
+ * of its tailnet's machines, only the ones opened here), and the SSH tab's the PCs added over SSH (way "ssh"), every
+ * other address (way "address") and an entry saved unreadable (way "broken"), there to be forgotten. Each is `{ origin, label, way }`
+ * (savedPcLabel). `saved` and `names` as HerdrShell's getState gives them, `ssh` the SSH PCs by origin (OvisSsh list).
+ */
+export function tabPcs(saved, list, names, ssh = {}, appOrigin = APP_ORIGIN) {
+  const app = new URL(appOrigin).origin;
+  return saved.flatMap((origin) => {
+    let url = null;
+    try { url = new URL(origin); } catch { /* a saved address to forget */ }
+    const way = url === null ? "broken"
+      : url.origin === app ? (/^\/s\/[0-9a-f]{32}\/?$/.test(url.pathname) ? "relay" : null)
+      : tailnetHost(url.hostname) ? "tailscale" : ssh[origin] ? "ssh" : "address";
+    const home = way === "address" || way === "broken" ? "ssh" : way;
+    return home === list ? [{ origin, label: savedPcLabel(origin, names, ssh), way }] : [];
+  });
+}
+
 const OFFER = "#offer=";
 const SCOPE = /^\/s\/([0-9a-f]{32})\/?$/;
+/** a PC's page that asks for that provider's sign-in first (the QR code a PC in an account shows): no key, code or token */
+const SIGN_IN = /^#sign-in=[a-z]{1,32}$/;
 
 /**
  * What `url` (from parseAddress) opens through the Ovis relay, or null for a PC's own address.
  * A PC's page on the app's origin, `/s/<server_id>/`, with its pairing offer (`#offer=`, the QR code
- * the PC shows for the relay) or without (a PC saved before), is `{ url, scope, name }`: the address
- * to open, the fragment kept, the scope the app saves the PC under, and its label from the offer.
+ * the PC shows for the relay), with a provider's sign-in (`#sign-in=`, the QR code a PC in an account
+ * shows) or with neither (a PC saved before), is `{ url, scope, name }`: the address to open, the
+ * fragment kept, the scope the app saves the PC under, and its label from the offer.
  * Anything else is `{ error }`: "foreign-offer" for an offer on another origin, which only the app's
  * origin may take, "bad-offer" for an offer that does not name this scope's PC, and "not-a-pc" for
  * another page of the app's origin. The hosted shell checks the offer in full before it pairs.
@@ -161,13 +306,13 @@ export function relayLink(url, appOrigin = APP_ORIGIN) {
   if (serverId === undefined) return { error: "not-a-pc" };
   const scope = `${url.origin}/s/${serverId}/`;
   if (url.hash === "") return { url: scope, scope, name: undefined };
+  if (SIGN_IN.test(url.hash)) return { url: scope + url.hash, scope, name: undefined };
   if (!url.hash.startsWith(OFFER)) return { error: "not-a-pc" };
   const offer = offerOf(url.hash.slice(OFFER.length));
   if (offer === null || offer.server_id !== serverId) return { error: "bad-offer" };
   return { url: scope + url.hash, scope, name: offer.name };
 }
 
-/** The offer's `server_id` and `name` from its base64url JSON, or null when it is none. */
 function offerOf(payload) {
   if (!/^[A-Za-z0-9_-]{1,2048}$/.test(payload) || payload.length % 4 === 1) return null;
   let offer;

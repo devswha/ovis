@@ -1,16 +1,7 @@
-// The download button follows the visitor's platform. A computer links to its build: the desktop
-// app for its CPU on a Mac (Apple silicon unless the browser says Intel) or on Linux (the .deb, for
-// Debian and Ubuntu) or on Windows; a phone links to its part of the Beta page, which
-// the page's language script points at the visitor's language. The page ships the Mac button, and
-// under it the Mac's other build (.dl-alt), so a visitor without JavaScript, on a Mac, or on a
-// platform this cannot tell keeps them; on Linux that line offers the AppImage instead, on Windows
-// it says how to get past SmartScreen, and on a phone it goes. This runs before the page's copy and language scripts, which then
-// pick up the button, the line and their English text.
 // Marks are from Simple Icons (CC0-1.0).
 (() => {
   /**
-   * The visitor's platform: navigator.userAgentData.platform where the browser has it, else the
-   * userAgent. An iPad asking for the desktop site says "Macintosh", so a Mac with touch is iOS.
+   * An iPad asking for the desktop site says "Macintosh", so a Mac with touch is iOS.
    * @param {{ userAgentData?: { platform?: string }, userAgent?: string, maxTouchPoints?: number }} nav
    * @returns {"mac" | "ios" | "windows" | "linux" | "android" | "unknown"}
    */
@@ -42,9 +33,9 @@
   }
 
   /**
-   * The CPU of a Linux desktop, for its package. Chromium's architecture hint ("arm" or "x86",
-   * from userAgentData.getHighEntropyValues) wins, since its userAgent says "Linux x86_64" on any
-   * CPU; without it, arm64 when the userAgent says so (Firefox writes "aarch64"), else x64.
+   * Chromium's architecture hint ("arm" or "x86", from userAgentData.getHighEntropyValues) wins,
+   * since its userAgent says "Linux x86_64" on any CPU; without it, arm64 when the userAgent says
+   * so (Firefox writes "aarch64"), else x64.
    * @param {{ userAgent?: string }} nav
    * @param {string} [architecture]
    * @returns {"x64" | "arm64"}
@@ -59,7 +50,6 @@
    * The download button's label on a desktop whose CPU is a guess: without Chromium's architecture
    * hint (Safari, Firefox) nothing corrects the build later, so the button names the CPU it
    * downloads, and an Intel Mac or arm64 Linux visitor looks to the other builds under it.
-   * Undefined where the hint will pick the build, or off a Mac or Linux.
    * @param {ReturnType<typeof downloadPlatform>} platform
    * @param {{ userAgentData?: { getHighEntropyValues?: unknown }, userAgent?: string }} nav
    * @returns {string | undefined}
@@ -71,20 +61,41 @@
     return undefined;
   }
 
+  // every desktop installer the download rows link, each through _redirects to releases/latest/download/
+  const INSTALLERS = ["Ovis-mac-arm64.dmg", "Ovis-mac-x64.dmg", "Ovis-win-x64.exe", "Ovis-linux-x64.deb", "Ovis-linux-arm64.deb", "Ovis-linux-x64.AppImage", "Ovis-linux-arm64.AppImage"];
+
+  /**
+   * The line under the download rows, from GitHub's latest release: the one the download links'
+   * releases/latest/download/ addresses (_redirects) hand out. Only a release that holds every
+   * installer the rows link gets a line (mac-dmg.yml and windows-app.yml can make a release latest
+   * with only Ovis.dmg and Ovis.exe), so it never names a version whose files are not there.
+   * @param {{ tag_name?: unknown, published_at?: unknown, assets?: unknown } | null} release the answer of GET /repos/devswha/ovis/releases/latest
+   * @returns {{ text: string, href: string } | undefined}
+   */
+  function releaseLine(release) {
+    const tag = release?.tag_name, published = release?.published_at, assets = release?.assets;
+    if (typeof tag !== "string" || !/^v\d+\.\d+\.\d+$/.test(tag)) return undefined;
+    if (typeof published !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(published)) return undefined;
+    const day = new Date(published);
+    if (Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== published.slice(0, 10)) return undefined;
+    // an upload that has not finished ("open") or failed ("starter") is listed too, as an empty file
+    const attached = new Set(Array.isArray(assets) ? assets.filter((asset) => asset?.state === "uploaded").map((asset) => asset.name) : []);
+    if (!INSTALLERS.every((name) => attached.has(name))) return undefined;
+    return { text: `${tag} · ${published.slice(0, 10)}`, href: `https://github.com/devswha/ovis/releases/tag/${tag}` };
+  }
+
   if (typeof module === "object" && module.exports) {
-    module.exports = { downloadPlatform, guessedCpuLabel, linuxArch, macArch };
+    module.exports = { INSTALLERS, downloadPlatform, guessedCpuLabel, linuxArch, macArch, releaseLine };
     return;
   }
 
   const platform = downloadPlatform(navigator);
   const arch = linuxArch(navigator);
   const APPLE = "M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.33c.64-.78 1.08-1.86.96-2.94-.93.04-2.06.62-2.72 1.4-.58.68-1.1 1.79-.96 2.84 1.04.08 2.08-.52 2.72-1.3z";
-  // the desktop app's builds, by CPU; the tip of the Mac's stays the one the page ships
   const DESKTOP = {
     linux: (cpu) => ({ href: `https://ovis.sh/Ovis-linux-${cpu}.deb`, tip: `Debian, Ubuntu · ${cpu}` }),
     mac: (cpu) => ({ href: `https://ovis.sh/Ovis-mac-${cpu}.dmg` }),
   };
-  // the line under the download row on Linux; its English HTML is its #i18n-data key
   // the line under the download row on Windows: the desktop app is not code-signed yet, so SmartScreen asks first
   const WINDOWS_ALT = "If Windows shows 'Windows protected your PC', choose More info → Run anyway.";
   const LINUX_ALT = 'Not on Debian or Ubuntu? Get the AppImage for <a href="https://ovis.sh/Ovis-linux-x64.AppImage">x64</a> or <a href="https://ovis.sh/Ovis-linux-arm64.AppImage">arm64</a>.';
@@ -100,6 +111,26 @@
     else if (platform !== "mac" && platform !== "unknown") alt.hidden = true;
   }
 
+  // a phone's button opens the store, whose app is versioned on its own: no line there
+  if (platform !== "ios" && platform !== "android") {
+    fetch("https://api.github.com/repos/devswha/ovis/releases/latest").then((r) => (r.ok ? r.json() : null)).then((release) => {
+      const line = releaseLine(release);
+      if (!line) return;
+      const show = () => {
+        for (const note of document.querySelectorAll(".dl-version")) {
+          const notes = document.createElement("a");
+          notes.href = line.href;
+          notes.textContent = window.ovisT ? window.ovisT("What's new") : "What's new";
+          note.replaceChildren(`${line.text} · `, notes);
+          note.hidden = false;
+        }
+      };
+      show();
+      // the language picker sets <html lang>: the link's text follows it
+      new MutationObserver(show).observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
+    }).catch((error) => console.warn("ovis.sh: could not read the latest release", error));
+  }
+
   const button = BUTTONS[platform];
   const guessed = guessedCpuLabel(platform, navigator);
   if (button) {
@@ -113,8 +144,6 @@
       svg.append(path);
       const label = document.createElement("span");
       label.textContent = button.label;
-      // a build of its own, or a phone's beta: the shipped link, pointed at it, with its own tip or
-      // none instead of the Mac's "macOS 13 or later"
       shipped.href = button.href;
       if (button.tip) shipped.dataset.tip = button.tip;
       else delete shipped.dataset.tip;
@@ -122,9 +151,6 @@
       shipped.replaceChildren(svg, label);
     }
   }
-  // the shipped Mac button and the Linux one above, named for their CPU where it is a guess, on
-  // screen and for screen readers (its aria-label is its accessible name); the page's language
-  // script, which runs next, translates both
   if (guessed) {
     for (const shipped of document.querySelectorAll(".dl-primary")) {
       shipped.setAttribute("aria-label", guessed);

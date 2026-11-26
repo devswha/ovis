@@ -1,11 +1,27 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
-import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, errorFrom, fetchAgentCatalog, fetchAgentKinds, fetchPanePromptState, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { chatReadDeadlineMs } from "./chatReadDeadline.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
+import { setCurrentLanguage } from "./i18n.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
 
 const realFetch = globalThis.fetch;
+it.each([
+  ["en", "This PC is in an account. Add PCs from your account.", "That PC is in an account. Add it from that account."],
+  ["ko", "이 PC는 계정에 연결돼 있어요. 계정에서 PC를 추가하세요.", "그 PC는 계정에 연결돼 있어요. 그 계정에서 추가하세요."],
+  ["ja", "この PC はアカウントに接続されています。PC はアカウントから追加してください。", "その PC はアカウントに接続されています。そのアカウントから追加してください。"],
+  ["zh", "这台 PC 已连接到账号。请从你的账号添加 PC。", "那台 PC 已连接到账号。请从对应的账号添加。"],
+] as const)("code-based PC add refusals name the right PC in %s", async (language, source, target) => {
+  setCurrentLanguage(language);
+  try {
+    for (const [code, detail] of [["pc_add_source_bound", source], ["pc_add_target_bound", target]] as const) {
+      const failure = await errorFrom("/api/machines/relay", Response.json({ error: { code, message: "Server fallback" } }, { status: 409 }));
+      expect(failure).toMatchObject({ status: 409, code, detail });
+    }
+  } finally { setCurrentLanguage("en"); }
+});
 const abortSignalStatics = Object.getOwnPropertyDescriptors(AbortSignal);
 afterEach(() => {
   globalThis.fetch = realFetch;
@@ -105,6 +121,75 @@ it("refuses a 40 MiB file in the browser with the 32 MB limit named, before uplo
   expect(MAX_ATTACHMENT_BYTES).toBe(32 * 1024 * 1024);
 });
 
+it("uploads an iPhone's HEIC or JPEG photo as the JPEG the browser drew, scaled to 2048 a side and never up", async () => {
+  const bodies: { content_type: string; name: string; data_base64: string }[] = [];
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, path: "/work/.ovis/paste-20261123-212127-ee17a8b2.jpg" });
+  }) as typeof fetch;
+  const drawn: number[][] = [], encoded: unknown[][] = [], revoked: string[] = [];
+  const sizes: [number, number][] = [[8064, 6048], [4032, 3024], [1024, 768]];
+  const saved = { Image: globalThis.Image, document: globalThis.document, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  Object.assign(globalThis, {
+    // a browser's image has no size until it is decoded
+    Image: class { src = ""; naturalWidth = 0; naturalHeight = 0; async decode() { [this.naturalWidth, this.naturalHeight] = sizes.shift() ?? [0, 0]; } },
+    document: { createElement: () => ({
+      width: 0, height: 0,
+      getContext() { return { drawImage: (_image: unknown, ...box: number[]) => drawn.push(box) }; },
+      toBlob(resolve: (blob: Blob) => void, ...format: unknown[]) { encoded.push(format); resolve(new Blob(["jpeg"], { type: "image/jpeg" })); },
+    }) },
+  });
+  URL.createObjectURL = () => "blob:photo";
+  URL.revokeObjectURL = (url: string) => { revoked.push(url); };
+  const stillHeic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63]);
+  try {
+    const paths = [
+      await uploadPaneImage("p1", new File([stillHeic], "IMG_0001.HEIC", { type: "image/heic" })),
+      await uploadPaneImage("p1", new File([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], "IMG_3718.jpeg", { type: "image/jpeg" })),
+      await uploadPaneImage("p1", new File([stillHeic], "IMG_0002.HEIC", { type: "image/heic" })),
+    ];
+    expect(paths).toEqual(Array(3).fill("/work/.ovis/paste-20261123-212127-ee17a8b2.jpg"));
+  } finally {
+    Object.assign(globalThis, { Image: saved.Image, document: saved.document });
+    URL.createObjectURL = saved.createObjectURL;
+    URL.revokeObjectURL = saved.revokeObjectURL;
+  }
+  expect(drawn).toEqual([[0, 0, 2048, 1536], [0, 0, 2048, 1536], [0, 0, 1024, 768]]);
+  expect(encoded).toEqual(Array(3).fill(["image/jpeg", 0.85]));
+  expect(revoked).toEqual(["blob:photo", "blob:photo", "blob:photo"]);
+  expect(bodies.map(({ content_type, name, data_base64 }) => [content_type, name, atob(data_base64)])).toEqual([["image/jpeg", "IMG_0001.jpg", "jpeg"], ["image/jpeg", "IMG_3718.jpg", "jpeg"], ["image/jpeg", "IMG_0002.jpg", "jpeg"]]);
+});
+
+it("falls back to the original HEIC file without encoding a blank JPEG when canvas 2D context is unavailable", async () => {
+  const bodies: { content_type: string; name: string; data_base64: string }[] = [];
+  let toBlobCalls = 0;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, path: "/work/.ovis/IMG_0001.heic" });
+  }) as typeof fetch;
+  const saved = { Image: globalThis.Image, document: globalThis.document, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  Object.assign(globalThis, {
+    Image: class { src = ""; naturalWidth = 0; naturalHeight = 0; async decode() { this.naturalWidth = 1000; this.naturalHeight = 800; } },
+    document: { createElement: () => ({
+      width: 0, height: 0,
+      getContext() { return null; },
+      toBlob(resolve: (blob: Blob) => void) { toBlobCalls += 1; resolve(new Blob(["blank-jpeg"], { type: "image/jpeg" })); },
+    }) },
+  });
+  URL.createObjectURL = () => "blob:photo";
+  URL.revokeObjectURL = () => {};
+  const stillHeic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63]);
+  try {
+    expect(await uploadPaneImage("p1", new File([stillHeic], "IMG_0001.HEIC", { type: "image/heic" }))).toBe("/work/.ovis/IMG_0001.heic");
+  } finally {
+    Object.assign(globalThis, { Image: saved.Image, document: saved.document });
+    URL.createObjectURL = saved.createObjectURL;
+    URL.revokeObjectURL = saved.revokeObjectURL;
+  }
+  expect(toBlobCalls).toBe(0);
+  expect(bodies.map(({ content_type, name, data_base64 }) => [content_type, name, Array.from(Uint8Array.from(atob(data_base64), (c) => c.charCodeAt(0)))])).toEqual([["image/heic", "IMG_0001.HEIC", Array.from(stillHeic)]]);
+});
+
 it("posts the full safe telemetry snapshot and current notice version", async () => {
   const settings = telemetrySettingsSnapshot({
     ...DEFAULT_SETTINGS,
@@ -172,6 +257,25 @@ it("gives up a summary request a stalled PC holds after SUMMARY_REQUEST_MS, as a
   } finally { jest.useRealTimers(); }
 });
 
+it("gives up a stalled prompt read so chat can poll again", async () => {
+  jest.useFakeTimers();
+  const requests = heldFetch();
+  const machine = "stalled-pc";
+  const read = fetchPanePromptState("w1:p1", machine).catch((error: unknown) => error);
+  const request = requests[0];
+  if (request === undefined) throw new Error("Expected a prompt request");
+  try {
+    jest.advanceTimersByTime(chatReadDeadlineMs(machine) - 1);
+    expect(request.signal.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(request.signal.aborted).toBe(true);
+    expect(await read).toMatchObject({ name: "TimeoutError" });
+  } finally {
+    request.answer(Response.json({ prompt: null }));
+    await read;
+  }
+});
+
 it("asks a PC for its panes' summaries, and answers null each time a bridge has no summary route", async () => {
   const requests: string[] = [];
   const summaries = { server_time: "2026-11-12T10:00:00.000Z", summaries: { "w1:p1": null } };
@@ -203,7 +307,6 @@ function withoutAbortSignalStatics(...names: ("any" | "timeout")[]): void {
   for (const name of names) Object.defineProperty(AbortSignal, name, { value: undefined, configurable: true });
 }
 
-/** a fetch that answers only when told, and fails as a browser does once its signal ends */
 function heldFetch() {
   const requests: { url: string; signal: AbortSignal; answer: (response: Response) => void }[] = [];
   globalThis.fetch = ((url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
@@ -226,7 +329,6 @@ it("proves a PC's source boot on a browser without AbortSignal.any, and lets go 
   requests[0]!.answer(Response.json({ machines: [], verified_source_boot: { machine_id: "pc 2", boot_id: "boot-b" } }));
   expect(await proof).toEqual({ machines: [], boot_id: "boot-b" });
 
-  // the coordinator aborts a check it replaced; one that already answered must not be ended by it
   caller.abort();
   expect(requests[0]!.signal.aborted).toBe(false);
 });
@@ -251,6 +353,24 @@ it("ends a source boot check when the caller aborts it or after 20 s, without Ab
   expect(requests[2]!.signal.aborted).toBe(false);
   jest.advanceTimersByTime(1);
   expect(await slow).toMatchObject({ name: "AbortError" });
+});
+
+it("ends a relay start that never answers after 20 s, so Turn on can be pressed again", async () => {
+  withoutAbortSignalStatics("any", "timeout");
+  jest.useFakeTimers();
+  const requests = heldFetch();
+
+  const stalled = requestRelay("start").catch((error: unknown) => error);
+  jest.advanceTimersByTime(19_999);
+  expect(requests[0]!.signal.aborted).toBe(false);
+  jest.advanceTimersByTime(1);
+  // the deadline's own words, not the abort the browser answered with
+  expect(await stalled).toMatchObject({ name: "TimeoutError", message: "No answer" });
+
+  // a stop may take the server longer: it is waited for
+  void requestRelay("stop").catch(() => undefined);
+  jest.advanceTimersByTime(60_000);
+  expect(requests[1]!.signal.aborted).toBe(false);
 });
 
 it("ends an agent catalog read that never answers after 30 s, so Check again can try again", async () => {

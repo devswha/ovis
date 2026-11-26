@@ -4,21 +4,21 @@ import { paneLifetimes } from "./paneLifetime.ts";
 import { fetchHealth, type HealthInfo } from "./api.ts";
 import { applyHealthRead, healthFreshness, machineHealth, type HealthBook } from "./healthPresentation.ts";
 import { sameData } from "./useMachineRoster.ts";
+import { CarrierDownError } from "./transport.ts";
 
 export function useLocalHealth() {
-  // this PC's health reads (lib/healthPresentation.ts): its newest answer is what its herdr can do,
-  // the failed reads since then only change what the header says
   const healthBook = useRef<HealthBook<HealthInfo>>(new Map());
   const healthReads = useRef(0);
   const [localHealth, setLocalHealth] = useState<{ confirmed: HealthInfo | null; failures: number }>({ confirmed: null, failures: 0 });
   const health = localHealth.confirmed;
   const localFreshness = healthFreshness(localHealth);
-  // what the app says about this PC beyond its herdr's capabilities: kept through one failed read, as the header's details are
   const shownHealth = localFreshness === "unavailable" ? null : health;
 
   const readLocalHealth = useCallback(async () => {
     const read = ++healthReads.current;
-    const answer = await fetchHealth().then((value) => ({ ok: true, value }) as const, () => ({ ok: false }) as const);
+    // a read the reconnecting relay carrier never sent is no answer from the PC: the header says Reconnecting
+    const answer = await fetchHealth().then((value) => ({ ok: true, value }) as const, (error: unknown) => error instanceof CarrierDownError ? null : ({ ok: false }) as const);
+    if (answer === null) return;
     const book = applyHealthRead(healthBook.current, "local", read, answer);
     if (book === healthBook.current) return;
     healthBook.current = book;

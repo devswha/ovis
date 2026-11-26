@@ -10,7 +10,6 @@ import { entryCommand } from "./entries.ts";
 import { shellQuote } from "./machine-security.ts";
 import { chunksOf } from "./remote-bundle.ts";
 
-/** A file streamed to a remote command's stdin, with how much of it went so far. */
 export interface StreamInput { path: string; onProgress?(done: number): void; onUploaded?(): void }
 
 const WINDOWS = process.platform === "win32";
@@ -48,7 +47,6 @@ export async function sweepSshDirs(root = SSH_DIR_ROOT, maxAgeMs = 60 * 60_000, 
  */
 function sshPath(path: string): string { return WINDOWS ? path.replaceAll("\\", "/") : path; }
 
-/** The OpenSSH programs a connection runs, all from one install. */
 export interface SshClient {
   ssh: string; sftp: string; keygen: string;
   /** Git for Windows' build, found where its installer put it, which does not read Windows' ssh-agent service */
@@ -96,7 +94,6 @@ export function sshClient({ env = process.env, platform = process.platform, exis
   };
   // a value pasted with its quotes; it is a path, never evaluated by a shell
   const override = env["OVIS_SSH"]?.trim().replace(/^"(.*)"$/, "$1");
-  // a bare name is looked up on PATH, so its sftp and ssh-keygen come from the same folder
   if (override) return beside(override.includes("/") || override.includes("\\") ? override : which(override) ?? override);
   if (platform !== "win32") return plain;
   // a machine-wide install (the registry and Program Files take an administrator to change),
@@ -142,10 +139,22 @@ function gitInstallPath(): string | null {
  * ("REMOTE HOST IDENTIFICATION HAS CHANGED") and never reaches the fingerprint question.
  */
 const UNKNOWN_HOST = /No \S+ host key is known for /;
-/** what a forward of the account's own SSH config would add next to ours */
 const CONFIG_FORWARD = /^(localforward|remoteforward|dynamicforward) /m;
+/** bytes askSocket reads of an answer before refusing it: a recovery socket's answers are a few hundred */
+const SOCKET_ANSWER_MAX = 65_536;
+export const SOCKET_SSH_TOO_OLD = "Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.";
 
-/** Whether something accepts connections on this loopback port yet. */
+/**
+ * Whether the ssh that printed `version` (`ssh -V`) reaches a Unix socket with `-W`: OpenSSH does from 9.4 on (its release
+ * notes); before that it reads the path as a host name and its port.
+ */
+export function stdioSocketForward(version: string): boolean {
+  const match = /OpenSSH_(?:for_Windows_)?(\d+)\.(\d+)/.exec(version);
+  if (!match) return false;
+  const [major, minor] = [Number(match[1]), Number(match[2])];
+  return major > 9 || (major === 9 && minor >= 4);
+}
+
 function listening(port: number): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
   const socket = tcpConnect({ host: "127.0.0.1", port });
@@ -199,15 +208,12 @@ export function decodeClixml(stderr: string): string {
  * receives a prompt's first line, not the fingerprint below it.
  */
 export class SshConnection {
-  /** made by start(), removed by close(): a connection that never starts leaves nothing behind */
   private dir = "";
   private get control(): string { return join(this.dir, "control"); }
   private client = sshClient();
   private master: Subprocess | null = null;
   private children = new Set<Subprocess>();
-  /** direct mode's forwards; one ending is the connection ending */
   private tunnels = new Set<Subprocess>();
-  /** forwards still waiting for ssh's word: close() ends each at once, not when ssh's stderr closes */
   private pending = new Set<(error: Error) => void>();
   private broken = false;
   private closed = false;
@@ -223,8 +229,12 @@ export class SshConnection {
   private answers = new Map<string, string>();
   private stderr = "";
   usedSecret = false;
+  /**
+   * Public keys only (the user's config, key files and agent; a key's passphrase may still be asked): no password or
+   * keyboard-interactive login. Set before start() for a connection that vouches for an account add (machines.ts).
+   */
+  publicKeyOnly = false;
   onExit: (() => void) | null = null;
-  /** ssh's recent stderr while the master connection is still being established */
   onOutput: ((text: string) => void) | null = null;
 
   constructor(readonly target: SshTarget, readonly stateDir: string, readonly keyPath?: string, readonly keyOnly = false, readonly multiplexed = !WINDOWS) {
@@ -245,6 +255,7 @@ export class SshConnection {
     const args = ["-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "PermitLocalCommand=no", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
     if (clearForwardings) args.unshift("-o", "ClearAllForwardings=yes");
     if (this.keyOnly) args.push("-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none");
+    if (this.publicKeyOnly) args.push("-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no");
     // the account's own `ControlMaster auto` would make every connection fail on Windows
     if (!this.multiplexed) args.push("-o", "ControlMaster=no", "-o", "ControlPath=none");
     if (this.target.port) args.push("-o", `Port=${this.target.port}`);
@@ -363,7 +374,6 @@ export class SshConnection {
     const keepalive = this.master = Bun.spawn([...this.direct(), "-N", "-T", this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: this.askEnv() });
     void keepalive.exited.then(() => { if (!this.closed) this.onExit?.(); });
   }
-  /** One ssh run to its end, its stderr reaching the dialog as it comes. */
   private async attempt(args: string[], until: number, report = true): Promise<{ code: number; stderr: string }> {
     const proc = Bun.spawn(args, { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
     this.children.add(proc);
@@ -525,6 +535,71 @@ export class SshConnection {
       throw error;
     } finally { clearTimeout(timer); this.pending.delete(ready.reject); }
   }
+  /**
+   * A Unix socket on the PC (its owner's recovery socket) reached at a socket in this connection's own folder, which only
+   * this account may enter. Multiplexed connections only (Linux, macOS); askSocket serves the others.
+   */
+  async forwardSocket(remotePath: string): Promise<string> {
+    if (this.closed) throw new Error("SSH connection closed");
+    if (!this.multiplexed) throw new Error("Forwarding a socket needs a multiplexed SSH connection");
+    if (/[\s:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
+    const local = join(this.makeDir(), `fwd-${randomBytes(8).toString("hex")}.sock`);
+    this.socketForwards.set(local, remotePath);
+    try { await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "forward", "-L", `${local}:${remotePath}`, this.target.destination]); }
+    catch (error) { await this.closeSocketForward(local); throw error; }
+    return local;
+  }
+  private socketForwards = new Map<string, string>();
+  /**
+   * One line to a Unix socket on the PC (its owner's recovery socket) and the first line it answers, for a connection with
+   * no master to forward it (Windows): on an ssh's own stdin and stdout (`ssh -W`), so nothing listens on this PC for it
+   * and no other process here can reach that socket. The socket's side stays open until it answered.
+   */
+  async askSocket(remotePath: string, line: string): Promise<string> {
+    if (this.closed) throw new Error("SSH connection closed");
+    if (this.multiplexed) throw new Error("A multiplexed connection reaches a socket with forwardSocket");
+    if (/[\s:]/.test(remotePath) || !remotePath.startsWith("/")) throw new Error("Invalid remote socket path");
+    if (line.includes("\n")) throw new Error("A socket request is one line");
+    // `ssh -V` says its version on stderr
+    const version = Bun.spawn([this.client.ssh, "-V"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [shown, also] = await Promise.all([new Response(version.stderr).text(), new Response(version.stdout).text(), version.exited]);
+    // close() may have run while the version was asked: it ends only the children it saw
+    if (this.closed) throw new Error("SSH connection closed");
+    if (!stdioSocketForward(shown + also)) throw new Error(SOCKET_SSH_TOO_OLD);
+    const proc = Bun.spawn([...this.direct(), "-W", remotePath, this.target.destination], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: this.askEnv() });
+    this.children.add(proc);
+    let said = "";
+    const stderr = (async () => {
+      const decoder = new TextDecoder();
+      for await (const chunk of proc.stderr) said = (said + decoder.decode(chunk, { stream: true })).slice(-4096);
+    })().catch(() => {});
+    try {
+      // an ssh that could not reach the socket may have closed its input already: its own words below say why
+      try { proc.stdin.write(`${line}\n`); await proc.stdin.flush(); } catch {}
+      const decoder = new TextDecoder();
+      let answer = "";
+      for await (const chunk of proc.stdout) {
+        answer += decoder.decode(chunk, { stream: true });
+        const end = answer.indexOf("\n");
+        if ((end < 0 ? answer.length : end) > SOCKET_ANSWER_MAX) throw new Error(`The PC sent more than ${SOCKET_ANSWER_MAX} bytes on its socket; it was not read`);
+        if (end >= 0) return answer.slice(0, end);
+      }
+      if (this.closed) throw new Error("Connection cancelled");
+      await stderr;
+      throw new Error(said.trim() || "The PC answered nothing on its socket");
+    } finally {
+      this.children.delete(proc);
+      proc.kill();
+    }
+  }
+  /** Ends a forward forwardSocket opened: the master stops listening there, and the local socket file goes. */
+  async closeSocketForward(local: string): Promise<void> {
+    const remote = this.socketForwards.get(local);
+    if (remote === undefined) return;
+    this.socketForwards.delete(local);
+    try { if (!this.closed && this.master !== null && this.master.exitCode === null) await this.exec([this.client.ssh, "-F", "none", "-S", this.control, "-O", "cancel", "-L", `${local}:${remote}`, this.target.destination]); }
+    finally { rmSync(local, { force: true }); }
+  }
   private async exec(args: string[], input?: Uint8Array | StreamInput, timeout = 30_000, maxOutput?: number): Promise<string> {
     const stream = input !== undefined && !(input instanceof Uint8Array) ? input : undefined;
     const proc = Bun.spawn(args, { stdin: stream ? "pipe" : input ? new Blob([new Uint8Array(input as Uint8Array)]) : "ignore", stdout: "pipe", stderr: "pipe", env: this.askEnv() });
@@ -558,7 +633,6 @@ export class SshConnection {
       };
       const [out, err, code, fed] = await Promise.all([read(proc.stdout), read(proc.stderr), proc.exited, feed]);
       if (this.closed) throw new Error("Connection cancelled");
-      // the remote side's own words say more than a broken pipe on this side
       if (code !== 0) throw new Error(err.trim().slice(-4096) || `SSH command failed (${code})`);
       if (fed) throw fed instanceof Error ? fed : new Error(String(fed));
       return out;

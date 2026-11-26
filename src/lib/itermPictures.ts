@@ -12,10 +12,9 @@
  * Every other picture goes to the addon as it came. The addon's own caps still apply to what it is given.
  */
 
-/** the addon's caps a picture is held to here too: decoded file bytes, and pixels */
-export interface PictureLimits { sizeLimit: number; pixelLimit: number }
+import { base64Length, decodedLength, fromBase64, ITERM_ARGS_ROOM, ITERM_PICTURE_COMMANDS, itermFile, itermMultipart, sizeOf, toBase64, validBase64, type PictureLimits } from "./itermPicturePayload.ts";
+export type { PictureLimits } from "./itermPicturePayload.ts";
 
-/** hands a whole `File=<args>:<base64>` payload to the addon's iTerm2 decoder */
 export type PictureFeed = (payload: string) => boolean | Promise<boolean>;
 
 /** an OSC handler of xterm's own parser, fed a payload piece by piece, as the addon's decoders are */
@@ -25,9 +24,6 @@ export interface OscStreamHandler {
   end(success: boolean): boolean | Promise<boolean>;
 }
 
-/** the most of a payload's command and arguments held to tell what it is, and room for them ahead of the base64 */
-const ARGS_ROOM = 65536;
-
 function textOf(data: Uint32Array, start: number, end: number): string {
   let out = "";
   // the parser hands code points; a slice at a time keeps the argument list short
@@ -35,54 +31,26 @@ function textOf(data: Uint32Array, start: number, end: number): string {
   return out;
 }
 
-const decodedLength = (base64: string): number => {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor(base64.length / 4) * 3 - padding);
-};
-
-/** the base64 text that decodes to at most `bytes` bytes */
-const base64Length = (bytes: number): number => Math.ceil(bytes / 3) * 4;
-
-const sizeOf = (args: string): number | null => {
-  const match = /(?:^|;)size=(\d+)/.exec(args);
-  return match ? Number(match[1]) : null;
-};
-
 const withSize = (args: string, size: number): string =>
   sizeOf(args) === null ? `${args};size=${size}` : args.replace(/(^|;)size=\d+/, `$1size=${size}`);
 
-const fromBase64 = (base64: string): Uint8Array => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-
-function toBase64(bytes: Uint8Array): string {
-  let out = "";
-  // btoa takes a string of bytes; one call per slice keeps the argument list of fromCharCode short, and a
-  // slice of a multiple of three bytes ends without padding, so the slices join into one base64 text
-  const slice = 3 * 0x2aaa;
-  for (let i = 0; i < bytes.length; i += slice) out += btoa(String.fromCharCode(...bytes.subarray(i, i + slice)));
-  return out;
-}
-
-/** the first bytes of a picture's data, enough to tell its format; none where they are no base64 */
 function headOf(base64: string): Uint8Array {
   try { return fromBase64(base64.slice(0, 8).replace(/=+$/, "")); } catch { return new Uint8Array(); }
 }
 
-const isTiff = (head: Uint8Array): boolean =>
+export const isTiff = (head: Uint8Array): boolean =>
   head.length >= 4 && ((head[0] === 0x49 && head[1] === 0x49 && head[2] === 0x2a && head[3] === 0)
     || (head[0] === 0x4d && head[1] === 0x4d && head[2] === 0 && head[3] === 0x2a));
 
-/** the tags decodeTiff reads; the strips' offsets and byte counts may hold one value a row */
 const READ_TAGS = new Set([256, 257, 258, 259, 262, 274, 277, 278, 284, 338]);
 const STRIP_TAGS = new Set([273, 279]);
 const MAX_STRIPS = 65536;
 
-/** a TIFF's size, and its pixels as RGBA when it is a kind decoded here (else null) */
 export interface DecodedTiff { width: number; height: number; rgba: Uint8Array | null }
 
 /**
  * Decodes a baseline TIFF's first image when it is uncompressed, 8 bits a sample, chunky, grey (with
- * or without alpha) or RGB (with or without alpha): what chafa writes. Null when it is no TIFF or its
- * directory cannot be read; `rgba` null when it is a TIFF of another kind, or larger than `pixelLimit`.
+ * or without alpha) or RGB (with or without alpha): what chafa writes.
  */
 export function decodeTiff(bytes: Uint8Array, pixelLimit: number): DecodedTiff | null {
   if (!isTiff(bytes) || bytes.length < 8) return null;
@@ -120,11 +88,9 @@ export function decodeTiff(bytes: Uint8Array, pixelLimit: number): DecodedTiff |
   const offsets = tags.get(273) ?? [];
   const counts = tags.get(279) ?? [];
   const grey = photometric === 0 || photometric === 1;
-  // another orientation than top left would need its rows or columns turned: taken as a kind not decoded here
   if (one(259, 1) !== 1 || one(284, 1) !== 1 || one(274, 1) !== 1 || bits.some((b) => b !== 8) || offsets.length === 0
     || offsets.length !== counts.length || !(grey ? samples === 1 || samples === 2 : photometric === 2 && (samples === 3 || samples === 4))
     || width * height >= pixelLimit) return decoded;
-  // gather the strips into one run of samples, row after row
   const total = width * height * samples;
   const pixels = new Uint8Array(total);
   let filled = 0;
@@ -167,7 +133,6 @@ function crc32(bytes: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-/** RGBA pixels as a PNG the addon decodes in the browser, its rows compressed with the browser's own zlib */
 export async function encodePng(width: number, height: number, rgba: Uint8Array): Promise<Uint8Array> {
   const row = width * 4;
   const raw = new Uint8Array((row + 1) * height);
@@ -199,7 +164,6 @@ export async function encodePng(width: number, height: number, rgba: Uint8Array)
 /** the side of the most pixels a placeholder holds: the addon scales it to the picture's place anyway */
 const PLACEHOLDER_SIDE = 256;
 
-/** a grey box with darker diagonal stripes, in the picture's proportions, where a picture could not be decoded */
 export function placeholderPng(width: number, height: number): Promise<Uint8Array> {
   const scale = Math.min(1, PLACEHOLDER_SIDE / Math.max(width, height, 1));
   const w = Math.max(1, Math.round(width * scale) || PLACEHOLDER_SIDE);
@@ -214,11 +178,6 @@ export function placeholderPng(width: number, height: number): Promise<Uint8Arra
   return encodePng(w, h, rgba);
 }
 
-/**
- * A TIFF as a PNG with the same arguments, or as a placeholder where it is of a kind not decoded here or
- * its PNG is past the addon's file cap. The placeholder is given the TIFF's own size where the arguments
- * name none, so the text after it lands where it would after the picture.
- */
 async function fromTiff(args: string, base64: string, limits: PictureLimits): Promise<{ args: string; png: Uint8Array }> {
   const tiff = decodeTiff(fromBase64(base64), limits.pixelLimit);
   if (tiff?.rgba) {
@@ -229,62 +188,34 @@ async function fromTiff(args: string, base64: string, limits: PictureLimits): Pr
   return { args: sized, png: await placeholderPng(tiff?.width ?? 0, tiff?.height ?? 0) };
 }
 
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-
 /**
  * An OSC 1337 handler, registered after the addon so it reads each payload first: true where it took
  * the payload (a multipart piece, or a picture it handed on in a form the addon takes), false where the
- * addon reads it as it came. `reset` drops a multipart picture still coming in.
+ * addon reads it as it came.
  */
 export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): { handle(data: string): boolean | Promise<boolean>; stream: OscStreamHandler; reset(): void } {
-  let multipart: { args: string; parts: string[]; length: number } | null = null;
-
   const picture = (args: string, base64: string): boolean | Promise<boolean> => {
-    // a length of one past a multiple of four is no base64 at all: atob would throw on it
-    if (base64.length === 0 || base64.length % 4 === 1 || !BASE64.test(base64)) return true;
+    if (!validBase64(base64)) return true;
     if (!isTiff(headOf(base64))) return feed(`File=${withSize(args, decodedLength(base64))}:${base64}`);
-    // a picture that cannot be read is dropped: the parser goes on with the output after it
     return fromTiff(args, base64, limits()).then(({ args: sized, png }) => feed(`File=${withSize(sized, png.length)}:${toBase64(png)}`), () => true);
   };
+  const multipart = itermMultipart(picture, limits);
 
   const handle = (data: string): boolean | Promise<boolean> => {
-    if (data.startsWith("MultipartFile=")) {
-      const args = data.slice("MultipartFile=".length);
-      const size = sizeOf(args);
-      multipart = size !== null && size > limits().sizeLimit ? null : { args, parts: [], length: 0 };
-      return true;
-    }
-    if (data.startsWith("FilePart=")) {
-      if (multipart) {
-        const part = data.slice("FilePart=".length);
-        multipart.length += part.length;
-        // past the addon's cap the picture is dropped now, not once all of it is held
-        if (multipart.length > base64Length(limits().sizeLimit)) multipart = null;
-        else multipart.parts.push(part);
-      }
-      return true;
-    }
-    if (data.startsWith("FileEnd")) {
-      const done = multipart;
-      multipart = null;
-      return done ? picture(done.args, done.parts.join("")) : true;
-    }
     if (data.startsWith("File=")) {
-      const colon = data.indexOf(":");
-      if (colon < 0) return false;
-      const args = data.slice("File=".length, colon);
-      const base64 = data.slice(colon + 1);
-      // a picture the addon reads as it is goes to it untouched
+      const file = itermFile(data);
+      if (!file) return false;
+      const { args, base64 } = file;
       if (sizeOf(args) !== null && !isTiff(headOf(base64))) return false;
       if (base64.length > base64Length(limits().sizeLimit)) return true;
       return picture(args, base64);
     }
+    if (ITERM_PICTURE_COMMANDS.some((command) => data.startsWith(command))) return multipart.handle(data) ?? true;
     return false;
   };
 
-  /** whether a payload's start already shows the addon reads it as it comes: it need not be held then */
   const leftToAddon = (head: string): boolean => {
-    if (!["File=", "MultipartFile=", "FilePart=", "FileEnd"].some((command) => head.startsWith(command) || command.startsWith(head))) return true;
+    if (!ITERM_PICTURE_COMMANDS.some((command) => head.startsWith(command) || command.startsWith(head))) return true;
     if (!head.startsWith("File=")) return false;
     const colon = head.indexOf(":");
     return colon >= 0 && head.length >= colon + 9 && sizeOf(head.slice("File=".length, colon)) !== null && !isTiff(headOf(head.slice(colon + 1)));
@@ -305,17 +236,15 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
     put: (data, start, end) => {
       if (state !== "hold") return;
       const text = textOf(data, start, end);
-      // the start up to the colon and a few characters of base64 after it
       const colon = head.indexOf(":");
-      const room = colon >= 0 ? colon + 16 : ARGS_ROOM;
+      const room = colon >= 0 ? colon + 16 : ITERM_ARGS_ROOM;
       if (head.length < room) head += text.slice(0, room - head.length);
       heldLength += text.length;
       // the cap is on the base64 after the arguments, as the addon's is on the file
-      const argsLength = head.indexOf(":") >= 0 ? head.indexOf(":") + 1 : ARGS_ROOM;
+      const argsLength = head.indexOf(":") >= 0 ? head.indexOf(":") + 1 : ITERM_ARGS_ROOM;
       if (heldLength - argsLength > base64Length(limits().sizeLimit)) { release(); state = "over"; return; }
       if (leftToAddon(head)) { release(); state = "addon"; return; }
-      // a piece of no multipart picture coming in is dropped by handle: nothing to hold for it
-      if (head.startsWith("FilePart=") && multipart === null) { release(); state = "drop"; return; }
+      if (head.startsWith("FilePart=") && !multipart.active()) { release(); state = "drop"; return; }
       recent.push(text);
       if (recent.length >= 1024) { held.push(recent.join("")); recent = []; }
     },
@@ -327,10 +256,10 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
         return handle(data);
       }
       // past the addon's cap: a picture, or a piece of one, is dropped as the addon would drop it
-      if (state === "over" && !head.startsWith("File=")) multipart = null;
+      if (state === "over" && !head.startsWith("File=")) multipart.reset();
       return true;
     },
   };
 
-  return { handle, stream, reset: () => { multipart = null; } };
+  return { handle, stream, reset: multipart.reset };
 }

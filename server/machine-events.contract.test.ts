@@ -6,6 +6,7 @@ import { type ServerMessage, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts"
 import { DEVICE_COOKIE } from "./auth.ts";
 import { createServer } from "./index.ts";
 import { authenticatedWebSocket } from "./remote-websocket.ts";
+import { withHeaders } from "./websocket.test-helpers.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { expandMachine, expandMachineEvent, type WireMachine, type WireMachineEvent } from "../shared/compact-agents.ts";
@@ -21,15 +22,11 @@ async function connection(base: string, open?: (url: string) => WebSocket) {
     waiting.add(check); check();
   });
   const features = await wait((frame) => frame.type === "features");
-  // a ping answered after a frame was sent proves the server has handled it, without a sleep
   let pings = 0;
   const fence = async () => { const id = ++pings; socket.send(JSON.stringify({ type: "ping", id })); await wait((frame) => frame.type === "pong" && frame.id === id); };
   return { socket, frames, wait, features, fence };
 }
 
-/** Bun takes handshake headers; lib.dom's browser constructor does not list them. */
-const withHeaders = (headers: Record<string, string>) => (url: string) =>
-  new (WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket)(url, { headers });
 const pairings = (frames: ServerMessage[]) => frames.filter((frame) => frame.type === "machine-event" && frame.event.type === "device-paired");
 
 it("negotiates compact agents over HTTP, SSE and WS without changing legacy responses or restored rows", async () => {
@@ -39,7 +36,6 @@ it("negotiates compact agents over HTTP, SSE and WS without changing legacy resp
   const pane = { pane_id: "w1:p1", terminal_id: "terminal", workspace_id: "w1", tab_id: "w1:t1", focused: true, revision: 1, agent_status: "working" as const, cwd: "/fixture/project" };
   const snapshot: SessionSnapshot = { version: "test", protocol: 22, workspaces: [], tabs: [], layouts: [], panes: [pane], agents: [{ ...pane, state_change_seq: 11 }] };
   const machines: Machine[] = [{ id: "local", name: "PC", kind: "local", enabled: true, state: "connected", error: null, snapshot }];
-  // This server and its state are isolated; no real pane is created or modified.
   const headers = { authorization: "Bearer test-token" };
   let client: Awaited<ReturnType<typeof connection>> | undefined;
   const abort = new AbortController();
@@ -105,7 +101,6 @@ it("multiplexes initial documents and live updates onto the existing authenticat
     const revision = (await change.json()).revision;
     await client.wait((frame) => frame.type === "machine-event" && frame.event.type === "preferences" && frame.event.preferences.revision === revision);
     expect(client.frames.filter((frame) => frame.type === "machine-event" && frame.event.type === "preferences" && frame.event.preferences.revision === revision)).toHaveLength(1);
-    // A ping fences unsubscribe, without a sleep or any terminal input.
     client.socket.send(JSON.stringify({ type: "machine-events", enabled: false }));
     client.socket.send(JSON.stringify({ type: "ping", id: 23 }));
     await client.wait((frame) => frame.type === "pong" && frame.id === 23);

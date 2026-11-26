@@ -1,47 +1,33 @@
+import type { SetupErrorCode, SetupStepCode } from "../../shared/machines.ts";
 import { ApiError } from "./api.ts";
 import { t, type Translate } from "./i18n.ts";
 
 export interface UserError {
   message: string;
-  /** the server's or the browser's own words, kept visible and selectable; null when they add nothing */
   detail: string | null;
 }
 
-/** How a request failed, as far as the browser can tell. */
 export type FailureKind = "signed-out" | "gone" | "changed" | "slow" | "unreachable" | "refused" | "unknown";
 
-/**
- * A failure in the parts a chat or composer surface draws (DESIGN.md, Messages say only what the
- * person needs now): the action that failed and the cause make one line ("Couldn't attach · PC disk
- * is full"); with no known cause the line is the action alone and Try again stands beside it; the
- * advice and the server's or the browser's own words sit behind a Details toggle.
- */
 export interface UserFailure {
   kind: FailureKind;
-  /** a short phrase with no full stop ("PC disk is full"); null when the cause is not known */
   cause: string | null;
-  /** what to do beyond trying again; null when trying again is all there is */
   advice: string | null;
-  /** the server's or the browser's own words, kept selectable; null when they add nothing */
   detail: string | null;
 }
 
 /** What fetch rejects with when the request never got an answer: Chrome, Firefox and Safari words. */
 const NETWORK_FAILURE = /failed to fetch|networkerror|network request failed|load failed/i;
 
-/** A cause the server's own words name outright, whatever the status: the words become the sentence. */
 const NAMED_CAUSES: ReadonlyArray<[RegExp, () => string]> = [
   [/\bENOSPC\b|disk full|no space left/i, () => t("PC disk is full")],
   [/\bEACCES\b|\bEPERM\b|permission denied/i, () => t("No permission on the PC")],
 ];
 
-/** A failure the server names by a code of its own, whatever the status: the sentence is the next step on the PC. */
 const SENTENCE_BY_CODE: Readonly<Record<string, () => string>> = {
-  // server/preferences.ts: its state folder refused the write, so no browser can save a shared setting
   preferences_unwritable: () => t("The server cannot save settings: check that its state folder is writable."),
 };
 
-/** The server's own words when herdr itself is away (server/herdr/client.ts names the socket it tried). */
 const HERDR_AWAY = /cannot reach herdr/i;
 
 function kindOf(cause: unknown): FailureKind {
@@ -92,7 +78,6 @@ const ADVICE: Record<FailureKind, (() => string) | null> = {
   unknown: null,
 };
 
-/** A plain sentence for a failure, with what the server or the browser said kept beside it. */
 export function userErrorMessage(cause: unknown): UserError {
   const coded = cause instanceof ApiError && cause.code !== null && Object.hasOwn(SENTENCE_BY_CODE, cause.code) ? SENTENCE_BY_CODE[cause.code] : undefined;
   const message = coded?.() ?? SENTENCE[kindOf(cause)]();
@@ -100,19 +85,10 @@ export function userErrorMessage(cause: unknown): UserError {
   return { message, detail: original.trim() === "" || original === message ? null : original };
 }
 
-/**
- * Whether the server's words say herdr itself is away on its PC: nothing in this browser helps, so
- * the sidebar's state line and the header's pill add the step to take there.
- */
 export function saysHerdrAway(words: string): boolean {
   return HERDR_AWAY.test(words);
 }
 
-/**
- * The server's fixed sentences for another PC's answer it would not hold (server/remote-json.ts).
- * They reach a PC's error and its setup job's error as they are, so the sidebar and the PC dialog
- * show them in the user's language; any other words pass through unchanged.
- */
 export function machineErrorText(words: string, translateIn: Translate): string {
   const t = translateIn;
   const known: ReadonlyArray<[string, string]> = [
@@ -125,11 +101,80 @@ export function machineErrorText(words: string, translateIn: Translate): string 
     ["Choose this PC's Ovis server or a running herdr session.", t("Choose this PC's Ovis server or a running herdr session.")],
     ["A herdr session is already running on this PC. Choose it, or start a new one.", t("A herdr session is already running on this PC. Choose it, or start a new one.")],
     ["The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", t("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.")],
+    ["That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.", t("That PC runs only a bridge this app started, not Ovis of its own. Install Ovis on it, then add it to your account.")],
+    ["Ovis is not running on that PC. Install it there, then add it to your account.", t("Ovis is not running on that PC. Install it there, then add it to your account.")],
+    ["Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.", t("Adding a Windows PC to your account over SSH is not supported yet. Add it with the number on its Ovis page.")],
+    ["Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.", t("Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.")],
+    ["That PC's Ovis is too old to be added over SSH. Update it there, then try again.", t("That PC's Ovis is too old to be added over SSH. Update it there, then try again.")],
   ];
   return known.reduce((text, [english, local]) => text.replaceAll(english, local), words);
 }
 
-/** What ssh itself said when a PC could not be reached: the kind of refusal, and the host and port it named. */
+/** a prerelease (-beta, -preview): offered only as a preview, never as a plain update */
+export function previewVersion(version: string | null | undefined): boolean {
+  return version?.includes("-") === true;
+}
+
+/**
+ * A failed setup's words in the app's language: from its code where the server gave one, else its English as
+ * machineErrorText reads it. A prerelease target is named a preview, with a line that it
+ * is a test build.
+ */
+export function setupErrorLines(job: { error: string | null; error_code?: SetupErrorCode | null }, t: Translate): string[] {
+  const coded = job.error_code;
+  if (!coded) return job.error ? [machineErrorText(job.error, t)] : [];
+  const older = coded.version ? t("This PC runs its own Ovis {version}, older than this app.", { version: `v${coded.version}` }) : t("This PC runs its own Ovis, older than this app.");
+  const preview = previewVersion(coded.target);
+  const update = coded.target === null ? t("Update it to reconnect.")
+    : preview ? t("Update it to the preview version {target} to reconnect.", { target: `v${coded.target}` })
+    : t("Update it to {target} to reconnect.", { target: `v${coded.target}` });
+  return [`${older} ${update}`, ...(preview ? [t("A preview version is a test build, not a stable release.")] : [])];
+}
+
+/**
+ * A setup step's words in the app's language: from its code where the server gave one, else as it came (an older
+ * server's English, a PC's own notice). An own Ovis's prerelease target is named a preview, as setupErrorLines does.
+ */
+export function setupStepText(job: { step: string; step_code?: SetupStepCode | null }, t: Translate): string {
+  const step = job.step_code;
+  if (!step) return job.step;
+  const ownStage = (stage: string): string => {
+    switch (stage) {
+      case "download": return t("downloading");
+      case "dependencies": return t("installing dependencies");
+      case "typecheck": return t("type-checking");
+      case "build": case "building": return t("building");
+      case "restart": case "restarting": return t("restarting");
+      default: return stage;
+    }
+  };
+  switch (step.code) {
+    case "connecting": return t("Connecting with SSH keys and ssh-agent…");
+    case "fingerprint": return t("Verify the server fingerprint");
+    case "authentication": return t("SSH authentication required");
+    case "checking": return t("Checking the remote environment…");
+    case "review": return t("Review the changes on this PC");
+    case "installing": return t("Installing on this PC…");
+    case "install_bundle": return t("Installing verified {platform} bundle…", { platform: step.platform });
+    case "install_herdr": return t("Installing herdr with its own installer…");
+    case "register_key": return t("Registering the app SSH key…");
+    case "restart_bridge": return t("Restarting the verified remote bridge…");
+    case "start_bridge": return t("Starting the remote bridge…");
+    case "own_update_ask": return step.target === null ? t("Asking this PC's own Ovis to update itself…")
+      : previewVersion(step.target) ? t("Asking this PC's own Ovis to update itself to the preview version {target}…", { target: `v${step.target}` })
+      : t("Asking this PC's own Ovis to update itself to {target}…", { target: `v${step.target}` });
+    case "own_update_running": return step.target === null ? t("This PC's own Ovis is updating itself: {stage}…", { stage: ownStage(step.stage) })
+      : previewVersion(step.target) ? t("This PC's own Ovis is updating itself to the preview version {target}: {stage}…", { target: `v${step.target}`, stage: ownStage(step.stage) })
+      : t("This PC's own Ovis is updating itself to {target}: {stage}…", { target: `v${step.target}`, stage: ownStage(step.stage) });
+    case "own_update_connect": return t("Connecting to this PC's updated Ovis…");
+    case "headless": return t("Starting without Windows sign-in…");
+    case "connected": return t("Connected");
+    case "failed": return t("Connection failed");
+    case "timed_out": return t("Connection timed out");
+    case "cancelled": return t("Cancelled");
+  }
+}
+
 export interface SshFailure {
   reason: "refused" | "unreachable" | "timeout" | "unknown-host" | "auth";
   host: string | null;
@@ -156,7 +201,6 @@ export function sshFailure(words: string): SshFailure | null {
   return { reason, host: target?.[1] ?? null, port: target?.[2] ?? null };
 }
 
-/** The failure's parts: the cause when the status or the server's words name one, the advice, the words. */
 export function userFailure(cause: unknown): UserFailure {
   const kind = kindOf(cause);
   const original = ownWords(cause).trim();
@@ -164,7 +208,42 @@ export function userFailure(cause: unknown): UserFailure {
   return { kind, cause: named?.() ?? CAUSE[kind]?.() ?? null, advice: ADVICE[kind]?.() ?? null, detail: original === "" ? null : original };
 }
 
-/** Whether Try again is the control beside the line: no cause is known, or the PC was only slow. */
 export function offersRetry(failure: UserFailure): boolean {
   return failure.cause === null || failure.kind === "slow";
+}
+
+const FAILURE_REASON_MAX = 160;
+const LINE_BREAK_RE = /\r\n|[\r\n\u0085\u2028\u2029]/;
+
+function singleLineReason(detail: string): string | null {
+  const first = detail.split(LINE_BREAK_RE).map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+  if (first === "") return null;
+  if (first.length <= FAILURE_REASON_MAX) return first;
+  let cut = first.slice(0, FAILURE_REASON_MAX);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return `${cut.trimEnd()}…`;
+}
+
+/** A failed upload: as `userFailure`, but an answer with no body words and no known status cause names its HTTP status. */
+export function uploadFailure(cause: unknown): UserFailure {
+  if (cause instanceof ApiError && cause.fromStatusText) {
+    const kind = kindOf(cause);
+    const statusCause = CAUSE[kind]?.() ?? null;
+    return {
+      kind,
+      cause: statusCause,
+      advice: ADVICE[kind]?.() ?? null,
+      detail: statusCause === null ? `HTTP ${cause.status}` : null,
+    };
+  }
+  const failure = userFailure(cause);
+  return failure.cause === null && failure.detail === null && cause instanceof ApiError
+    ? { ...failure, detail: `HTTP ${cause.status}` }
+    : failure;
+}
+
+/** What a one-line failure says after its subject: the plain cause, or else a compact single-line summary of the error's words. */
+export function failureReason(failure: UserFailure): string | null {
+  return failure.cause ?? (failure.detail === null ? null : singleLineReason(failure.detail));
 }

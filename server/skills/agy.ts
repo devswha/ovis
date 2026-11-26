@@ -66,6 +66,7 @@ const aliasForms = Object.fromEntries(
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions),
+  chatPaletteHidden: ["plan", "planning"],
   descriptions,
   // the recorded 1.4.0 palette the builtin list and descriptions were checked against
   pin: "1.4.0",
@@ -90,7 +91,7 @@ export const source: AgentCommandSource = {
       if (!existsSync(path)) return;
       let config: unknown;
       try { config = JSON.parse(readFileSync(path, "utf8")); }
-      catch { return; /* invalid optional registration file */ }
+      catch { return; }
       if (!config || typeof config !== "object" || !("entries" in config) || !Array.isArray(config.entries)) return;
       for (const entry of config.entries) {
         if (!entry || typeof entry !== "object" || typeof entry.path !== "string") continue;

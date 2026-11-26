@@ -3,9 +3,8 @@ import { AGENT_CATALOG, CATALOG_PLATFORMS, type CatalogPlatform } from "../share
 import type { AgentSessionInfo, AgentStatus } from "../shared/herdr-api.generated.ts";
 
 /**
- * Which agent a pane runs, decided in one place from the facts a runtime gives about it, so the
- * same answer holds whatever runtime serves the pane. Today herdr-core's snapshot names its panes
- * here (herdr's TUI names its own); sessions and status are to follow.
+ * Today herdr-core's snapshot names its panes here (herdr's TUI names its own); sessions and status
+ * are to follow.
  */
 export interface PaneFacts {
   /** the app the program reported itself as (herdr-core's OSC 7501 `app`), in the runtime's words */
@@ -18,10 +17,6 @@ export interface PaneFacts {
   launcher?: { readonly argv: readonly string[]; readonly pid?: number | null } | null;
 }
 
-/**
- * The platform a pane's programs run on, as far as it is known: one platform, `posix` for Linux or
- * macOS without saying which, or null for none known.
- */
 export type ProgramPlatform = CatalogPlatform | "posix" | null;
 
 function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
@@ -29,18 +24,15 @@ function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
   return platform === "posix" ? ["linux", "macos"] : [platform];
 }
 
-/** Runtimes' names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
 const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "grok-build": "grok" };
 
 /** The interpreters an agent's script runs under when its install is a script (npm's node bin, a Python entry point). */
 const INTERPRETERS = new Set(["node", "bun", "python", "python3"]);
 
-/** A program's name in a process listing: its path's last part, without a Windows or script extension. */
 export function programName(word: string): string {
   return nodePath.posix.basename(word.replace(/\\/g, "/")).replace(/\.(?:exe|cmd|js|mjs|cjs)$/i, "");
 }
 
-/** The agent a reported app names, by herdr's name; null for no report. */
 export function reportedAgent(app: string | null | undefined): string | null {
   if (!app) return null;
   return Object.hasOwn(REPORTED_NAMES, app) ? REPORTED_NAMES[app]! : app;
@@ -57,13 +49,55 @@ function fileName(word: string, platform: CatalogPlatform, program: boolean): st
 /** Interpreter options after which the next word is code or a module, not a script file. */
 const NOT_A_SCRIPT = new Set(["-e", "--eval", "-p", "--print", "-c", "-m", "-"]);
 
-/** The script an interpreter runs: the first word after its own options; null for code or a module given inline. */
 function scriptOf(argv: readonly string[]): string | null {
   for (const word of argv.slice(1)) {
     if (NOT_A_SCRIPT.has(word) || word === "--") return null;
     if (!word.startsWith("-")) return word;
   }
   return null;
+}
+
+const HERMES_ENV = `os.environ.pop('PYTHONHOME', None)
+os.environ.pop('PYTHONPATH', None)
+sys.path.insert(0, <install root>)
+`;
+const HERMES_MAIN = String.raw`from hermes_cli.main import main
+sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
+sys.exit(main())
+`;
+const HERMES_EARLIER_MAIN_PATH = `import os, re, sys
+${HERMES_ENV}if sys.argv[1:2] == ['--print-runtime-command']: sys.dont_write_bytecode = True
+from hermes_constants import get_default_hermes_root
+os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())
+import hermes_bootstrap
+${HERMES_MAIN}`;
+const HERMES_RECOVERY_MAIN_PATH = `import os, re, sys
+import contextlib, hashlib, io, pathlib, shutil, subprocess
+${HERMES_ENV}sys._hermes_pin_default_home = True
+try:
+    import hermes_bootstrap
+except Exception:
+    _hermes_closure_repair()
+    raise
+if not os.environ.get('HERMES_HOME'):
+    from hermes_constants import get_default_hermes_root
+    os.environ['HERMES_HOME'] = str(get_default_hermes_root())
+${HERMES_MAIN}`;
+
+/** The POSIX installer's inline CLI entry point, not Python running a helper module or printing the runtime command. */
+export function isHermesInstalledLauncher(argv: readonly string[]): boolean {
+  const [program, isolate, inline, source, flag] = argv;
+  if (!program || !/^python(?:3(?:\.\d+)?)?$/u.test(nodePath.posix.basename(program)) || isolate !== "-I" || inline !== "-c"
+    || !source?.startsWith("import os, re, sys\n") || flag === "--run-module" || flag === "--print-runtime-command") return false;
+  if (/[\r\f\u2028\u2029]/u.test(source)) return false;
+  // Compare the normal execution path from hermes_cli/_launchers.py. The install root is a
+  // Python string literal; recovery and the two explicitly skipped modes can vary inside their bodies.
+  const mainPath = source
+    .replace(/^sys\.path\.insert\(0, (?:'\/(?:[^'\\\n]|\\.)*'|"\/(?:[^"\\\n]|\\.)*")\)\n/mu, "sys.path.insert(0, <install root>)\n")
+    .replace(/^def _hermes_closure_repair\(\):\n(?: {4}[^\n]*\n|\n)+/mu, "")
+    .replace(/^if sys\.argv\[1:2\] == \['--print-runtime-command'\]:\n(?: {4}[^\n]*\n|\n)+/mu, "")
+    .replace(/^if sys\.argv\[1:2\] == \['--run-module'\]:\n(?: {4}[^\n]*\n|\n)+/mu, "");
+  return mainPath === HERMES_EARLIER_MAIN_PATH || mainPath === HERMES_RECOVERY_MAIN_PATH;
 }
 
 /**
@@ -77,6 +111,7 @@ function scriptOf(argv: readonly string[]): string | null {
  * reads it alike: neither `cmd` nor a shim names anyone there.
  */
 export function processAgent(argv: readonly string[], platform: ProgramPlatform): string | null {
+  if (isHermesInstalledLauncher(argv)) return "hermes";
   const named = new Set(candidatesOf(platform).map((candidate) => agentOn(argv, candidate)));
   return named.size === 1 ? [...named][0]! : null;
 }
@@ -114,7 +149,7 @@ export const LETTA_ASKING_TITLE = /^\[ [.!] \] Action Required \| /;
 /**
  * The status an agent's own terminal title says, for an agent known to set one: Letta's spinner
  * prefix while it works, its "Action Required" mark while it waits for the user's approval. The
- * program writes the title itself; nothing is read off the screen. Null for another agent or no title.
+ * program writes the title itself; nothing is read off the screen.
  */
 export function titleStatus(agent: string | null, title: string | null | undefined): "working" | "idle" | "blocked" | null {
   if (agent !== "letta" || typeof title !== "string" || title === "") return null;
@@ -122,11 +157,9 @@ export function titleStatus(agent: string | null, title: string | null | undefin
   return LETTA_BUSY_TITLE.test(title) ? "working" : "idle";
 }
 
-/** What a runtime tells about which conversation a pane's agent shows. */
 export interface SessionFacts {
   /** the sessions the agent named as busy while it ran here (OpenCode's OSC 7501 records), the newest last */
   named?: readonly string[];
-  /** the sessions in the agent's own store whose title is the pane's terminal title */
   titled?: readonly string[];
 }
 

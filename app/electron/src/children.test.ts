@@ -5,7 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { legacyName } from "../../../server/legacy-env.ts";
-import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
+import { readSaved } from "../../../shared/desktop-command-listener.ts";
+import { processStart, processStartSync, withoutInherited } from "../../../shared/desktop-process.ts";
+import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, serverEnv, startCore, startServer, stopServer, writeSaved } from "./children.ts";
 
 const dirs: string[] = [];
 const listeners: Server[] = [];
@@ -19,7 +21,6 @@ function tempDir(): string {
   return dir;
 }
 
-/** a stand-in server: server/ovis-server runs the given script on this Bun, and only as its `serve` entry */
 function fakeServer(script: string): ReturnType<typeof layout> {
   const root = tempDir();
   mkdirSync(join(root, "server"), { recursive: true });
@@ -65,7 +66,7 @@ describe("environments", () => {
 
   it("runs the server on herdr-core through the bundled hc, on loopback, in the app's state folder", () => {
     const env = serverEnv({ PATH: "/bin", HOST: "0.0.0.0", HERDR_PLUGIN_ROOT: "/p", OVIS_MANAGED: "1", HERDR_SOCKET: "/s", OVIS_TOKEN: "t" }, { hc: "/app/bin/herdr-core", stateDir: "/data/server", port: 4321 });
-    expect(env).toMatchObject({ PATH: "/bin", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: "/app/bin/herdr-core", OVIS_STATE_DIR: "/data/server", HOST: "127.0.0.1", PORT: "4321", HC_SESSION: "ovis", OVIS_DESKTOP_APP: "1" });
+    expect(env).toMatchObject({ PATH: "/bin", OVIS_RUNTIME: "herdr-core", OVIS_HC_BIN: "/app/bin/herdr-core", OVIS_HC_BIN_BUNDLED: "1", OVIS_STATE_DIR: "/data/server", HOST: "127.0.0.1", PORT: "4321", HC_SESSION: "ovis", OVIS_DESKTOP_APP: "1" });
     for (const name of ["HERDR_PLUGIN_ROOT", "OVIS_MANAGED", "HERDR_SOCKET", "OVIS_TOKEN"]) expect(env).not.toHaveProperty(name);
   });
 
@@ -178,7 +179,6 @@ describe.skipIf(!posix)("startServer", () => {
 });
 
 describe("installCore", () => {
-  /** an hc that records how it was run, beside itself */
   function fakeHc(dir: string, tag: string): string {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "herdr-core");
@@ -209,7 +209,6 @@ describe("installCore", () => {
     await installCore(bundled, join(root, "data", "bin"), process.env, log);
     expect(readFileSync(join(root, "data", "bin", "conpty", "conpty.dll"), "utf8")).toBe("dll");
     expect(readFileSync(join(root, "data", "bin", "conpty", "x64", "OpenConsole.exe"), "utf8")).toBe("exe");
-    // closed before afterEach removes the folder it writes in
     await new Promise<void>((resolve) => log.end(resolve));
   });
 

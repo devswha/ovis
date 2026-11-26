@@ -2,23 +2,17 @@ import { describe, expect, it, jest, type Mock, setSystemTime, spyOn } from "bun
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as conversation from "../conversation.ts";
+import { claudeApprovals } from "../approvals/claude.ts";
 import { claude, handlers, hub, line, root, workingClaude } from "./status.fake.ts";
 
 // Claude Code 2.1.321 at an API rate limit, as recorded: the turn's answer entry is the error (isApiErrorMessage)
 const failed = readFileSync(join(import.meta.dir, "..", "fixtures", "claude-api-error-2.1.321.jsonl"), "utf8");
-/** the recorded error entry alone, for a turn whose prompt a fixture wrote already */
 const failedEntry = `${failed.trim().split("\n").at(-1)!}\n`;
 const prompt = (text: string) => line({ type: "user", origin: { kind: "human" }, timestamp: new Date().toISOString(), message: { role: "user", content: text } });
 const answer = (text: string) => line({ type: "assistant", timestamp: new Date().toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text }] } });
-/** the stood-in lookup of a pane's transcript (status.fake.ts) */
 const lookup = () => conversation.claudePaneSession as Mock<typeof conversation.claudePaneSession>;
 
 let sessions = 0;
-/**
- * a hub whose Claude pane reads `path` as its transcript, found by a snapshot while the pane is at rest; `text` null: a
- * new session, whose transcript Claude Code writes only with its first message. `found`: the lookup finds the transcript
- * only once it exists, as the real one does (conversation.ts claudeTranscriptPath)
- */
 async function claudeHub(text: string | null, found = false) {
   const id = `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}`;
   const path = join(root, `${id}.jsonl`);
@@ -35,6 +29,103 @@ async function claudeHub(text: string | null, found = false) {
 }
 
 describe("a Claude pane whose turn ended on an API error", () => {
+  it("alerts for the failed Claude turn even when its successor is queued inside Claude", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    const first = { turn: "ended", prompt: "p1", failed: true } as const;
+    h.status.hookTurn(id, "claude", first);
+    h.status.hookTurn(id, "claude", first);
+    expect(h.failures).toEqual([id]);
+    expect(h.last().status).toBe("working");
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2", failed: true });
+    expect(h.failures).toEqual([id, id]);
+    expect(h.last().status).toBe("idle");
+  });
+
+  it("finishes a queued successor without a readable transcript after the preceding prompt fails", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2" });
+    handlers.onStatus(id, "done", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    expect(h.failures).toEqual([id]);
+  });
+
+  it("alerts for a queued successor's transcript failure after a named failure", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    writeFileSync(h.path, failed);
+    handlers.onStatus(id, "done", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id, id]);
+  });
+
+  it("alerts for two different prompts even when herdr has not sampled working for the second", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    for (const prompt of ["p1", "p2"]) {
+      h.status.hookTurn(id, "claude", { turn: "began", prompt });
+      const failure = { turn: "ended", prompt, failed: true } as const;
+      h.status.hookTurn(id, "claude", failure);
+      h.status.hookTurn(id, "claude", failure);
+      handlers.onStatus(id, "idle", "claude");
+    }
+    expect(h.failures).toEqual([id, id]);
+  });
+
+  it("does not apply an older dropped prompt's StopFailure to a newer done turn", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    handlers.onStatus(id, "working", "claude");
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p1" });
+    h.status.hookTurn(id, "claude", { turn: "began", prompt: "p2" });
+    handlers.onStatus(id, "done", "claude");
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p1", failed: true });
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([]);
+    h.status.hookTurn(id, "claude", { turn: "ended", prompt: "p2", failed: true });
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id]);
+  });
+
+  it("shows StopFailure before the transcript arrives without repeating the alert", async () => {
+    const h = await claudeHub(null, true);
+    const id = h.pane.pane_id;
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(id, "working", "claude");
+    // Claude Code's documented StopFailure schema (and common prompt_id), plus its recorded transcript below.
+    const input = { session_id: h.pane.agent_session.value, transcript_path: h.path, prompt_id: "p1" };
+    const submit = claudeApprovals.turn?.({ ...input, hook_event_name: "UserPromptSubmit" });
+    if (submit) h.status.hookTurn(id, "claude", submit);
+    const failure = claudeApprovals.turn?.({ ...input, hook_event_name: "StopFailure", error: "rate_limit",
+      error_details: "429 Too Many Requests", last_assistant_message: "API Error: Rate limit reached" });
+    if (failure) h.status.hookTurn(id, "claude", failure);
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([id]);
+
+    handlers.onStatus(id, "working", "claude");
+    expect(h.last().status).toBe("idle");
+    writeFileSync(h.path, failed);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    handlers.onStatus(id, "done", "claude");
+    if (failure) h.status.hookTurn(id, "claude", failure);
+    expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+    expect(h.failures).toEqual([id]);
+  });
+
   it("reads at rest and tells the failure once, never DONE, for a turn this server saw run", async () => {
     const h = await claudeHub("");
     handlers.onStatus(h.pane.pane_id, "working", "claude");
@@ -44,7 +135,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.alerts).toEqual(["working", "idle"]);
     expect(h.failures).toEqual([h.pane.pane_id]);
     expect(h.pending.current(h.pane.pane_id)).toBe("idle");
-    // herdr's own DONE for the pane, in a snapshot or an event, changes nothing and tells nothing again
     h.herdrSays({ ...h.pane, agent_status: "done" });
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
     handlers.onStatus(h.pane.pane_id, "done", "claude");
@@ -58,7 +148,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     writeFileSync(h.path, failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last().status).toBe("idle");
-    // the user sends again, and the retry gets through
     handlers.onStatus(h.pane.pane_id, "working", "claude");
     appendFileSync(h.path, `${prompt("again")}${answer("Done")}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
@@ -97,7 +186,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
     expect(h.last().status).toBe("idle");
     expect(h.failures).toEqual([h.pane.pane_id]);
-    // the same file read again finds nothing new and tells nothing again
     await h.snapshot();
     expect(h.failures).toEqual([h.pane.pane_id]);
     appendFileSync(h.path, answer("Done"));
@@ -114,10 +202,8 @@ describe("a Claude pane whose turn ended on an API error", () => {
       spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
       appendFileSync(h.path, failedEntry);
       handlers.onStatus(h.pane.pane_id, "idle", "claude");
-      // at rest, held on the subagent the turn started: the alerts take it for working, and no failure is told yet
       expect(h.last()).toEqual({ status: "idle", tasks: 1, bg: true });
       expect(failures).toEqual([]);
-      // the subagent ends, no turn follows it, and the wait runs out: the failure is told then, once
       appendFileSync(h.child, line({ type: "assistant", isSidechain: true, timestamp: new Date().toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [] } }));
       h.poll();
       jest.advanceTimersByTime(61_000);
@@ -135,7 +221,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last().status).toBe("done");
-    // status events are lost meanwhile: a turn begins and ends on an API error unseen, and a snapshot reads the pane at rest
     appendFileSync(h.path, `${prompt("next")}${failedEntry}`);
     h.herdrSays({ ...h.pane, agent_status: "done" });
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
@@ -148,7 +233,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     writeFileSync(h.path, failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.failures).toEqual([h.pane.pane_id]);
-    // /clear: the next turn writes a transcript of its own, and rests before a snapshot binds the pane to it
     handlers.onStatus(h.pane.pane_id, "working", "claude");
     writeFileSync(join(root, `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}.jsonl`), `${prompt("again")}${answer("Done")}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
@@ -183,7 +267,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last().status).toBe("done");
     expect(h.failures).toEqual([h.pane.pane_id]);
-    // the retry, written whole and answered, is the finish told already
     appendFileSync(h.path, `${retry.slice(20)}${answer("Done")}`);
     h.herdrSays({ ...h.pane, agent_status: "done" });
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
@@ -196,11 +279,9 @@ describe("a Claude pane whose turn ended on an API error", () => {
     handlers.onStatus(h.pane.pane_id, "working", "claude");
     writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
-    // no transcript found for the pane yet: herdr's word, as on main
     expect(h.last().status).toBe("done");
     expect(h.failures).toEqual([]);
     h.herdrSays({ ...h.pane, agent_status: "done" });
-    // the lookup is tried again only a while after the last one: the snapshot then finds the transcript, the next reads it
     setSystemTime(new Date(Date.now() + 6000));
     try {
       await h.snapshot();
@@ -229,7 +310,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     writeFileSync(h.path, failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.failures).toEqual([h.pane.pane_id]);
-    // /clear: herdr names the new session, and a snapshot reads it while the lookup still finds the old transcript
     const cleared = { ...h.pane, agent_session: { ...h.pane.agent_session, value: `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}` } };
     h.herdrSays(cleared);
     await h.snapshot();
@@ -246,7 +326,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
   it("reads nothing of a transcript older than the turn that the pane's lookup names only once the turn began", async () => {
     const h = await claudeHub(null);
     handlers.onStatus(h.pane.pane_id, "working", "claude");
-    // an older session's transcript, ending on an API error, appears where the lookup points
     const before = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     writeFileSync(h.path, `${line({ type: "user", origin: { kind: "human" }, timestamp: before, message: { role: "user", content: "go" } })}${failedEntry}`);
     await h.snapshot();
@@ -263,8 +342,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.failures).toEqual([h.pane.pane_id]);
-    // /clear at once: herdr names the new session, and the turn begins while the lookup for it, which names the
-    // previous session's transcript, is under way
     const cleared = { ...h.pane, agent_session: { ...h.pane.agent_session, value: `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}` } };
     h.herdrSays(cleared);
     const looking = Promise.withResolvers<{ path: string; startedAt: null; pid: null }>();
@@ -282,7 +359,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
   it("tells no failure of a turn that wrote no prompt into a new session's transcript of entries copied with fresh stamps", async () => {
     const h = await claudeHub(null);
     handlers.onStatus(h.pane.pane_id, "working", "claude");
-    // a session continued into a new file: its summary, then entries of the old one stamped anew, ending on its API error
     const now = new Date().toISOString();
     const summary = line({ type: "user", isCompactSummary: true, timestamp: now, message: { role: "user", content: "This session is being continued from a previous conversation." } });
     writeFileSync(h.path, `${summary}${answer("Earlier")}${line({ ...JSON.parse(failedEntry) as object, timestamp: now })}`);
@@ -293,17 +369,14 @@ describe("a Claude pane whose turn ended on an API error", () => {
 
   it("tells no failure of a turn that answered after /clear, while herdr still names the session before, which failed at once", async () => {
     const h = await claudeHub(null, true);
-    // a new session's first turn fails at once, its transcript not found for the pane yet: herdr's word, as on main
     handlers.onStatus(h.pane.pane_id, "working", "claude");
     writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last().status).toBe("done");
-    // /clear moments later: the next turn answers in a session of its own, while herdr still names the first
     handlers.onStatus(h.pane.pane_id, "working", "claude");
     writeFileSync(join(root, `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}.jsonl`), `${prompt("again")}${answer("Done")}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last().status).toBe("done");
-    // the lookup, tried again a while later, finds the first session's transcript: it began before the pane's last rest
     h.herdrSays({ ...h.pane, agent_status: "done" });
     setSystemTime(new Date(Date.now() + 6000));
     try {
@@ -354,7 +427,6 @@ describe("a Claude pane whose turn ended on an API error", () => {
     appendFileSync(h.path, failedEntry);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
     expect(h.last()).toEqual({ status: "idle", tasks: 1, bg: true });
-    // the user sends a new prompt: the tracker reads it before herdr says the pane works
     appendFileSync(h.path, line({ type: "user", origin: { kind: "human" }, timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "user", content: "next" } }));
     await h.poll();
     expect(h.last().bg).toBe(false);
@@ -369,5 +441,154 @@ describe("a Claude pane whose turn ended on an API error", () => {
     h.herdrSays({ ...h.pane, agent_status: "done" });
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
     expect(h.failures).toEqual([]);
+  });
+});
+
+// Claude's Stop hook, told through the approval hub (server/approvals/claude.ts), finishes the turn before herdr reads it
+describe("a Claude pane whose Stop hook told its turn ended", () => {
+  it("is DONE at the hook's word while herdr still reads it at work, and stays DONE when herdr's rest follows", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: "ended", prompt: null });
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    // the queue waits for herdr's own rest: another Stop hook may keep the turn going
+    expect(h.pending.current(h.pane.pane_id)).toBe("working");
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.pending.current(h.pane.pane_id)).toBe("done");
+    expect(h.alerts.filter((alert) => alert !== "done")).toEqual(["working"]);
+  });
+
+  it("tells nothing for a Stop after herdr's rest, or for an agent the pane no longer runs", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    const told = h.alerts.length;
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: "ended", prompt: null });
+    expect(h.alerts).toHaveLength(told);
+    handlers.onStatus(h.pane.pane_id, "working", "codex");
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: "ended", prompt: null });
+    expect(h.last().status).toBe("working");
+  });
+
+  it("reads herdr's working again once a prompt begins the next turn, or herdr tells working anew", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: "ended", prompt: null });
+    expect(h.last().status).toBe("done");
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: "began", prompt: null });
+    expect(h.last().status).toBe("working");
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("working");
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: "ended", prompt: null });
+    expect(h.last().status).toBe("done");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    expect(h.last().status).toBe("working");
+  });
+
+  // live, 2.1.330: a prompt typed under a turn is told as it is queued, before that turn's Stop
+  const turn = (h: { status: { hookTurn: (paneId: string, kind: string, event: { turn: "began" | "ended"; prompt: string | null }) => void }; pane: { pane_id: string } }, kind: "began" | "ended", prompt: string) =>
+    h.status.hookTurn(h.pane.pane_id, "claude", { turn: kind, prompt });
+
+  it("does not end unprompted work on an old dropped Stop after a newer prompt completed", async () => {
+    const h = await claudeHub("");
+    const id = h.pane.pane_id;
+    turn(h, "began", "old");
+    handlers.onStatus(id, "working", "claude");
+    handlers.onStatus(id, "idle", "claude");
+    turn(h, "began", "new");
+    handlers.onStatus(id, "working", "claude");
+    turn(h, "ended", "new");
+    handlers.onStatus(id, "idle", "claude");
+    handlers.onStatus(id, "working", "claude");
+    turn(h, "ended", "old");
+    expect(h.last().status).toBe("working");
+  });
+
+  it("stays at work through the Stop of a turn whose queued prompt was told, and rests at the queued turn's Stop", async () => {
+    const h = await claudeHub("");
+    turn(h, "began", "p1");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    turn(h, "began", "p2");
+    turn(h, "ended", "p1");
+    expect(h.last().status).toBe("working");
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("working");
+    turn(h, "ended", "p2");
+    expect(h.last().status).toBe("done");
+  });
+
+  it("rests at the Stop of the latest prompt a turn took in, and not at a Stop for a prompt no longer open", async () => {
+    const h = await claudeHub("");
+    turn(h, "began", "p1");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    turn(h, "began", "p2");
+    turn(h, "ended", "p2");
+    expect(h.last().status).toBe("done");
+    // herdr's rest, the next prompt, and only then the Stop of the one before: late, it ends nothing
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    turn(h, "began", "p3");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    turn(h, "ended", "p1");
+    expect(h.last().status).toBe("working");
+    turn(h, "ended", "p3");
+    expect(h.last().status).toBe("done");
+  });
+
+  it("ends nothing at the late Stop of a prompt herdr's rest dropped, while a turn it did not tell of runs", async () => {
+    const h = await claudeHub("");
+    turn(h, "began", "p1");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    // a turn Claude began by itself (a background task's notice): no prompt told
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    turn(h, "ended", "p1");
+    expect(h.last().status).toBe("working");
+  });
+
+  it("keeps a prompt it was told through a snapshot read at rest before herdr reads the turn", async () => {
+    const h = await claudeHub("");
+    turn(h, "began", "p1");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    turn(h, "began", "p2");
+    h.herdrSays({ ...h.pane, agent_status: "idle" });
+    await h.snapshot();
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    turn(h, "ended", "p1");
+    expect(h.last().status).toBe("working");
+  });
+
+  // the gate review: another Stop hook (the user's, or a plugin's review gate) may block the stop, and the turn goes on
+  it("takes back the DONE of a Stop once Claude answers again in the turn, before push's wait sends its alert", async () => {
+    jest.useFakeTimers();
+    try {
+      const h = await claudeHub(`${prompt("go")}${answer("first")}`);
+      turn(h, "began", "p1");
+      handlers.onStatus(h.pane.pane_id, "working", "claude");
+      h.herdrSays({ ...h.pane, agent_status: "working" });
+      turn(h, "ended", "p1");
+      expect(h.last().status).toBe("done");
+      // a message queued meanwhile is not typed into the turn that goes on
+      expect(h.pending.current(h.pane.pane_id)).toBe("working");
+      jest.advanceTimersByTime(1000);
+      expect(h.last().status).toBe("done");
+      appendFileSync(h.path, line({ type: "user", isMeta: true, timestamp: new Date().toISOString(), message: { role: "user", content: "Stop hook feedback: review failed" } }));
+      jest.advanceTimersByTime(1000);
+      expect(h.last().status).toBe("done");
+      appendFileSync(h.path, answer("fixing it"));
+      jest.advanceTimersByTime(1000);
+      expect(h.last().status).toBe("working");
+      expect(h.pending.current(h.pane.pane_id)).toBe("working");
+      // its real end: Claude's Stop again, for the same prompt
+      turn(h, "ended", "p1");
+      expect(h.last().status).toBe("done");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

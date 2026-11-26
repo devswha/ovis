@@ -1,4 +1,5 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { readFileSync } from "node:fs";
 import * as client from "../herdr/client.ts";
 import { GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { createSubmitText } from "./composer.ts";
@@ -6,12 +7,6 @@ import { grokScreen } from "./grok-screen.fake.ts";
 
 afterEach(() => mock.restore());
 
-/**
- * Chat's immediate send: the composer's Send, and a saved copy's Send now (`sendNow`, its resend).
- * herdr's agent.prompt pastes and sends one Enter. A working Grok queues that Enter. Only Send now
- * then sends one empty-prompt Enter, and only on Grok's empty prompt with the message the top row
- * queued and nothing over it. A plain Send and the terminal's input line stay one Enter.
- */
 const submitter = () => createSubmitText({
   options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => true,
   SUBMIT_DEADLINE_MS: 20_000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 0, SUBMIT_DELAY_MS: 0,
@@ -20,8 +15,7 @@ const submitter = () => createSubmitText({
 /**
  * A stand-in Grok in pane w:p1, drawn as Grok 1.0.77 draws its screen (grok-screen.fake.ts). Enter on a typed prompt
  * queues it during a turn, and sends it at rest; Enter on its empty prompt sends the top queued row now; Enter on its
- * approval card answers it. `queued`: what the user queued before; `onQueued`: what changes right after the Enter that
- * queued the chat's message; `herdr`: the status herdr reports, when it is not Grok's own (minimal mode reads `done`).
+ * approval card answers it.
  */
 function grok(options: { status?: string; herdr?: string; queued?: string[]; output?: string[]; minimal?: boolean; onQueued?: (state: GrokState) => void } = {}) {
   const state: GrokState = { status: options.status ?? "working", session: "s1", output: options.output ?? ["word1 word2 word3"], card: false, minimal: options.minimal ?? false, prompt: "", queue: [...options.queued ?? []], sent: [] };
@@ -99,7 +93,6 @@ it("presses nothing into Grok's approval card and says the send is unconfirmed, 
 });
 
 it("presses nothing and says the send is unconfirmed when no queued row is drawn while herdr reports Grok working", async () => {
-  // Grok took the message at once, or has not drawn it yet: its output quotes a queued row, indented as output is
   const { state, keys } = grok({ output: ["#1 hello from chat", "Enter:send now"], onQueued: (grok) => { grok.sent.push(grok.queue.pop()!); } });
   const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();
@@ -108,7 +101,6 @@ it("presses nothing and says the send is unconfirmed when no queued row is drawn
 });
 
 it("presses nothing when the one queued row is not the message", async () => {
-  // the turn ended at the Enter, so the message started a turn of its own, and a row typed in the terminal queued
   const { state, keys } = grok({ onQueued: (grok) => { grok.sent.push(grok.queue.pop()!); grok.queue.push("typed in the terminal"); } });
   const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();
@@ -126,7 +118,6 @@ it("leaves Send now in Grok's queue when another row was queued after it, as one
 
 it("sends a multi-line message Grok draws as its first line and a count", async () => {
   const { state, keys } = grok();
-  // the composer shapes the payload's line breaks as carriage returns
   await submitter()("w:p1", "first line\nsecond line", "first line\rsecond line", Date.now(), false, undefined, undefined, undefined, false, false, true);
   expect(keys).toHaveBeenCalledTimes(1);
   expect(state.sent).toEqual(["first line\nsecond line"]);
@@ -151,6 +142,32 @@ it("presses nothing in minimal mode, where herdr says done during a turn, and sa
   expect(keys).not.toHaveBeenCalled();
   expect(state.queue).toEqual(["hello from chat"]);
   expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
+});
+
+it("does not claim a minimal-mode send is done before the pending count is drawn (#3977)", async () => {
+  const { state, prompt, read } = grok({ minimal: true });
+  const draw = read.getMockImplementation()!;
+  read.mockImplementation(async (...args) => {
+    if (prompt.mock.calls.length === 0 || state.queue.length === 0) return await draw(...args);
+    return { text: grokScreen({ ...state, queue: [] }) } as Awaited<ReturnType<typeof client.paneRead>>;
+  });
+  const failed = await failure(sendNow());
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(failed?.code).toBe("submit_changed");
+});
+
+it("does not confirm a send when minimal Grok shows Responding but herdr says done", async () => {
+  const { state, keys, read } = grok({ herdr: "done", minimal: true });
+  const screen = readFileSync(new URL("../../src/lib/fixtures-input-rows/grok-1.0.77/minimal-working-119.txt", import.meta.url), "utf8");
+  const draw = read.getMockImplementation()!;
+  read.mockImplementation(async (...args) => ({ ...await draw(...args), text: screen }));
+
+  const failed = await failure(sendNow());
+
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(state.sent).toEqual([]);
+  expect(keys).not.toHaveBeenCalled();
+  expect(failed).toMatchObject({ code: "submit_changed", message: GROK_SEND_UNCONFIRMED_MESSAGE });
 });
 
 it("presses nothing while Grok's prompt holds text typed in the terminal", async () => {
@@ -211,7 +228,6 @@ it("sends Send now to a Grok at rest with no more Enter when Grok echoes the mes
 });
 
 it("says Send now is unconfirmed when a Grok read at rest runs another client's turn and has not drawn the message", async () => {
-  // another client started a turn before the Enter: Grok queued the message, and draws only that client's prompt yet
   const { state, keys } = grok({ status: "idle", onQueued: (grok) => { grok.status = "working"; grok.sent.pop(); grok.output.push("❯ from another device"); } });
   const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();

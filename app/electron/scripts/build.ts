@@ -1,21 +1,10 @@
-/**
- * Builds Ovis for the desktop on the machine it is for (Linux or macOS, x64 or arm64; Windows x64):
- *
- *   bun scripts/build.ts stage    pinned herdr-core and Bun, checked, plus the compiled Ovis server, into stage/
- *                                 (also `--stage-only`)
- *   bun scripts/build.ts bundle   the main process and preload into out/
- *   bun scripts/build.ts          both, then the installers into dist/ (AppImage; dmg and zip; NSIS setup exe)
- *   bun scripts/build.ts package  the bundle and the installers from the stage/ already there
- *   bun scripts/build.ts merge-feed <out> <latest-mac.yml>…   the Mac builds' feeds as one (scripts/feed.ts)
- *
- * OVIS_UPDATE_FEED=https://… builds the app to update itself from that generic feed.
- * OVIS_RELEASE_TAG=vX.Y.Z (the release workflow) stops the build unless package.json says X.Y.Z.
- */
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { mergeFeeds } from "./feed.ts";
+import { installedHelpers, releaseHelpers } from "./native.ts";
 import { stageServerArtifact } from "../../../scripts/server-artifact.ts";
 import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget, sha256, type Pinned } from "./runtimes.ts";
+import { updateFeed, writeStagingMarker } from "../src/stagingProfile.ts";
 
 const here = resolve(import.meta.dir, "..");
 const repo = resolve(here, "..", "..");
@@ -90,22 +79,19 @@ async function stageAll(): Promise<void> {
   const bun = (await sh([join(stage, "bin", `bun${exe}`), "--version"], stage)).trim();
   if (bun !== BUN_VERSION) throw new Error(`The staged Bun says ${bun}, not ${BUN_VERSION}`);
 
-  // the server as the remote bundles run it (scripts/server-artifact.ts): the compiled binary, the built client and
-  // what runs beside it, no sources. The release's Rust PTY host (checked against the release manifest) goes in
-  // with its record, which a sign-in the server follows in a terminal of its own needs on a PC without Node; without
-  // it the build goes on
   await sh(["bun", "run", "build"], repo);
-  await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
-  const host = join(repo, "bin", "ovis-pty-sidecar");
-  if (!existsSync(host)) console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
+  const tag = process.env["OVIS_RELEASE_TAG"]?.trim();
+  const version: string = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version;
+  if (tag && tag !== "v" + version) throw new Error("Release tag does not match package version");
+  if (!tag && !windows) await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
+  const helpers = windows ? {} : tag ? await releaseHelpers(cache, target, { version, at: "https://github.com/devswha/ovis/releases/download/" + tag }) : installedHelpers(join(repo, "bin"));
+  // the app's terminals run in hc; only a private sign-in terminal needs a PTY host of the server's own
+  if (!helpers.ptySidecar && !windows) console.log("no Rust PTY host for this version: a sign-in from Settings offers a terminal tab instead of a private one");
   await stageServerArtifact({
     platform: windows ? "windows-x64" : target,
     dir: join(stage, "server"),
-    nodePty: true,
-    downloads: join(cache, "server-downloads"),
-    ...(existsSync(host) ? { ptySidecar: { binary: host, ...(existsSync(`${host}.json`) ? { record: `${host}.json` } : {}) } } : {}),
+    ...helpers,
   });
-  // the project's own license and notices, for the client, server and assets the app carries
   for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) cpSync(join(repo, file), join(stage, file));
   writeFileSync(join(stage, "versions.json"), JSON.stringify({ hc: HC_VERSION, bun: BUN_VERSION }));
   cpSync(join(repo, "app", "web", "ovis-logo.png"), join(here, "renderer", "ovis-logo.png"));
@@ -121,7 +107,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 async function bundle(): Promise<void> {
   rmSync(join(here, "out"), { recursive: true, force: true });
   await sh(["bun", "build", "src/main.ts", "src/preload.ts", "--target=node", "--format=cjs", "--outdir=out", "--external", "electron"], here);
-  // the packages the bundle took in (electron-updater and what it uses) ship with their license texts
   const main = readFileSync(join(here, "out", "main.js"), "utf8");
   const packages = [...new Set([...main.matchAll(/^\/\/ node_modules\/((?:@[^/\n]+\/)?[^/\n]+)\//gm)].map((match) => match[1]!))].sort();
   const texts = packages.map((name) => {
@@ -184,18 +169,19 @@ async function dist(): Promise<void> {
   if (windows) await windowsIcon();
   if (target.startsWith("linux-")) await linuxIcons();
   const version = (JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as { version: string }).version;
-  // the app says the release's version, which is also the server's it carries
   const tag = process.env["OVIS_RELEASE_TAG"]?.trim();
   if (tag && tag !== `v${version}`) throw new Error(`OVIS_RELEASE_TAG is ${tag}, but package.json says ${version}`);
   const [os, arch] = target.split("-") as [string, string];
   const platform = os === "darwin" ? "mac" : windows ? "win" : "linux";
   // the CPU written out, since electron-builder's ${arch} says x86_64 in an AppImage's name and amd64 in a deb's
   const args = [join(here, "node_modules", ".bin", `electron-builder${windows ? ".exe" : ""}`), `--${platform}`, `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`, `-c.${platform}.artifactName=Ovis-${platform}-${arch}.\${ext}`];
-  const feed = process.env["OVIS_UPDATE_FEED"]?.trim();
+  const staging = platform === "mac" && process.env["OVIS_BUILD_STAGING"] === "1";
+  const feed = updateFeed(process.env, staging);
   if (feed) {
-    if (new URL(feed).protocol !== "https:") throw new Error("OVIS_UPDATE_FEED must be an https address");
+    if (new URL(feed).protocol !== "https:") throw new Error(`${staging ? "OVIS_PREVIEW_FEED" : "OVIS_UPDATE_FEED"} must be an https address`);
     args.push("-c.publish.provider=generic", `-c.publish.url=${feed}`);
   }
+  writeStagingMarker(stage, staging);
   const child = Bun.spawn(args, { cwd: here, stdout: "inherit", stderr: "inherit" });
   if (await child.exited !== 0) throw new Error("electron-builder failed");
 }

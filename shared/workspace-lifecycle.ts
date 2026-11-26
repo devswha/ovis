@@ -49,7 +49,6 @@ export interface CreateTabRequest extends CreateWorkspaceRequest {
   workspace_id: string;
 }
 
-/** POST /api/workspace/create: the workspace herdr made and the pane the agent (if any) runs in. */
 /** POST /api/worktree/create: branch is the new checkout's branch (created from base, or HEAD, unless it exists). */
 export interface CreateWorktreeRequest {
   workspace_id: string;
@@ -87,6 +86,14 @@ export interface WorktreeOpened {
 export interface RemoveWorktreeRequest {
   workspace_id: string;
   force?: boolean;
+  /**
+   * The checkout the confirmation showed: its folder, and the `git_id` its row carried. herdr-core
+   * refuses the delete when the workspace now names another folder, or the folder holds another
+   * checkout (worktree_target_changed); herdr keeps a workspace's checkout from its start and ignores
+   * them. Older clients send neither and delete as before.
+   */
+  expected_checkout?: string;
+  expected_git_id?: string;
 }
 
 export interface WorktreeRemoved {
@@ -127,6 +134,7 @@ export interface WorktreeInventory {
   entries: WorktreeInventoryEntry[];
 }
 
+/** POST /api/workspace/create: the workspace herdr made and the pane the agent (if any) runs in. */
 export interface WorkspaceCreated {
   workspace_id: string;
   pane_id: string;

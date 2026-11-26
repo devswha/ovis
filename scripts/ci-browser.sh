@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# The browser lane of CI: the lockfile's Playwright Chromium, then the scripts that drive it.
-# BROWSER_PARALLEL=1: run scripts concurrently (see ci-browser-parallel.ts)
-# BROWSER_WORKERS: worker count for parallel mode (default: min(cores/2, 6))
 set -euo pipefail
 
-# The relay scripts drive the hosted shell, a build of its own (dist-shell/).
 bun run build:shell
 if [ "${BROWSER_PARALLEL:-}" = "1" ]; then
   exec bun scripts/ci-browser-parallel.ts
@@ -50,11 +46,8 @@ if [ -n "${CI:-}${CHECK_DIR:-}" ]; then
 fi
 CHROME_PATH="$(bash scripts/ci-chromium.sh)"
 export CHROME_PATH
-# the relay media run encodes its test video with the pinned ffmpeg
 FFMPEG="${FFMPEG:-$(bash scripts/ci-ffmpeg.sh)}"
 export FFMPEG
-# The demo scripts below all show the same client: it is built once here and each copies it
-# (scripts/demo-build.ts), instead of each building it again.
 HERDR_DEMO_BUILD="$(mktemp -d)"
 export HERDR_DEMO_BUILD
 run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
@@ -68,7 +61,6 @@ run_script scripts/machine-events-browser-regression.ts
 run_script scripts/workspace-rows-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
 run_script scripts/lan-exposure-notice-regression.ts
-run_script scripts/terminal-dispose-browser-qa.ts
 run_script scripts/herdr-restart-regression.ts
 run_script scripts/sticky-modifiers-regression.ts
 run_script scripts/terminal-switch-regression.ts
@@ -84,11 +76,13 @@ run_script scripts/terminal-touch-burst-history-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
+run_script scripts/core-kept-grid-demo-regression.ts
 run_script scripts/codex-drag-demo-regression.ts
 run_script scripts/terminal-images-demo-regression.ts
 run_script scripts/terminal-ghostty-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
 run_script scripts/chat-no-rewind-demo-regression.ts
+run_script scripts/tab-switch-keeps-scroll-demo-regression.ts
 run_script scripts/terminal-cjk-punctuation-regression.ts
 run_script scripts/terminal-selection-cell-bg-regression.ts
 run_script scripts/terminal-late-faces-regression.ts
@@ -98,6 +92,7 @@ run_script scripts/terminal-bundled-mono-regression.ts
 run_script scripts/terminal-served-font-regression.ts
 run_script scripts/application-paging-regression.ts
 run_script scripts/pane-paging-demo-regression.ts
+run_script scripts/chat-reading-position-demo-regression.ts
 run_script scripts/link-menu-demo-regression.ts
 run_script scripts/external-link-tab-regression.ts
 run_script scripts/key-bar-customization-demo-regression.ts
@@ -121,14 +116,15 @@ run_script scripts/theme-file-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
 run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
-run_script scripts/security-summary-captures-light-demo-regression.ts
-run_script scripts/security-summary-captures-dark-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
 run_script scripts/alert-webhook-demo-regression.ts
 run_script scripts/relay-direct-demo-regression.ts
 run_script scripts/relay-join-browser-qa.ts
 run_script scripts/relay-qa-teardown-regression.ts
 run_script scripts/relay-device-indexeddb-regression.ts
+run_script scripts/account-list-seal-browser-qa.ts
+run_script scripts/account-list-device-browser-qa.ts
+run_script scripts/account-list-gossip-browser-qa.ts
 run_script scripts/install-hint-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
@@ -174,6 +170,7 @@ run_script scripts/file-viewer-page-scripts-browser-qa.ts
 run_script scripts/text-file-edit-regression.ts
 run_script scripts/web-panel-mobile-regression.ts
 run_script scripts/palette-local-page-demo-regression.ts
+run_script scripts/built-in-browser-demo-regression.ts
 run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
 run_script scripts/revision-bound-update-demo-regression.ts
@@ -205,7 +202,6 @@ run_script scripts/chat-request-details-demo-regression.ts
 run_script scripts/chat-svg-figures-demo-regression.ts
 run_script scripts/chat-math-demo-regression.ts
 run_script scripts/terminal-paste-insert-demo-regression.ts
-run_script scripts/terminal-paste-insert-variants-demo-regression.ts
 run_script scripts/composer-fit-demo-regression.ts
 run_script scripts/composer-send-demo-regression.ts
 run_script scripts/composer-draft-demo-regression.ts
@@ -245,7 +241,6 @@ run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts
 run_script scripts/agent-state-groups-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
-run_script scripts/pane-mute-captures-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts
 run_script scripts/prompt-card-timing-demo-regression.ts
@@ -272,9 +267,16 @@ run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
 run_script scripts/relay-pairing-prompt-regression.ts
 run_script scripts/relay-account-pcs-regression.ts
+run_script scripts/relay-first-link-regression.ts
+run_script scripts/relay-second-device-join-regression.ts
+run_script scripts/relay-new-pc-press-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 run_script scripts/relay-e2e-regression.ts
+run_script scripts/offline-typing-relay-regression.ts
+run_script scripts/add-pc-more-relay-regression.ts
+run_script scripts/my-pcs-ways-regression.ts
 run_script scripts/relay-shell-browser-qa.ts
-run_script scripts/relay-dashboard-browser-qa.ts
+run_script scripts/relay-client-skew-regression.ts
+run_script scripts/relay-offline-reasons-regression.ts
 run_script scripts/relay-media-browser-qa.ts

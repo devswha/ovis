@@ -102,6 +102,7 @@ function projectFolders(cwd: string, home: string): string[] {
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions).filter((name) => !(agentHidden as readonly string[]).includes(name)),
+  chatPaletteHidden: ["allow-all", "autopilot", "plan"],
   descriptions,
   pin: "1.0.105",
   agentHidden,
@@ -110,7 +111,7 @@ export const source: AgentCommandSource = {
     const copilotHome = environValue(env, "COPILOT_HOME") || join(home, ".copilot");
     let settings: Record<string, unknown> = {};
     try { settings = plainObject(parseJsonc(readConfigText(join(copilotHome, "settings.json")))); }
-    catch { /* no settings file, or one Copilot itself would not read */ }
+    catch {}
     const disabled = new Set(strings(settings.disabledSkills));
     // a relative folder is the Copilot process's, which works in the pane's folder
     const added = strings(settings.skillDirectories).flatMap((path) =>

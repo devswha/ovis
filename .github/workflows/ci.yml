@@ -12,7 +12,16 @@ on:
         required: false
         default: ''
         type: string
+  # hosted_only (pages.yml's validation and the Release's, through release-validate.yml): every job GitHub-hosted and no
+  # Actions cache restored, since every job of the caller's run can write the artifacts it publishes
+  # (scripts/privileged-jobs-workflow.test.ts).
   workflow_call:
+    inputs:
+      hosted_only:
+        description: 'Run every job on a GitHub-hosted runner and restore no Actions cache'
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -20,15 +29,14 @@ concurrency:
   # push cancels the one still waiting and takes its place, so a burst of merges runs main's checks at most
   # twice instead of once per merge on the self-hosted PC, and the newest run covers the merges in between.
   # Pages deploys only a successful push run of main (a cancelled one's Website run skips building), so a
-  # manual run gets a group of its own and never replaces a waiting push run. A pull request still cancels
-  # its superseded run.
+  # manual run gets a group of its own and never replaces a waiting push run.
   group: validation-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && '-manual' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
     name: Detect changes
     # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
     timeout-minutes: 5
     # actions: read lets the route count the self-hosted runners' queued and running jobs
     permissions:
@@ -36,9 +44,16 @@ jobs:
       actions: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      browser: ${{ steps.filter.outputs.browser }}
+      installer: ${{ steps.filter.outputs.installer }}
       draft: ${{ steps.filter.outputs.draft }}
+      server: ${{ steps.filter.outputs.server }}
       linux: ${{ steps.route.outputs.linux }}
       fast: ${{ steps.route.outputs.fast }}
+      integration: ${{ steps.route.outputs.integration }}
+      windows: ${{ steps.route.outputs.windows }}
+      rust: ${{ steps.route.outputs.rust }}
+      ratchet_base: ${{ steps.ratchet.outputs.base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,21 +68,62 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           REQUESTED_LABELS: ${{ inputs.self_hosted_labels }}
+          HOSTED_ONLY: ${{ inputs.hosted_only }}
           CONFIGURED_LABELS: ${{ vars.CI_SELF_HOSTED_LABELS }}
           # moves these Linux jobs of pull requests and pushes only (scripts/ci-runner-route.sh), e.g. to the cloud
           # VM runners: '["self-hosted","ovis-vm"]'; a workflow that calls ci.yml keeps CI_SELF_HOSTED_LABELS' routing
           # only in ci.yml's own runs: a workflow that calls ci.yml (relay-deploy on a push to main, say) is named otherwise
           LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
-          SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
+          # the fastest machine's own labels for Integration tests while its queue is short (scripts/ci-runner-route.sh)
+          INTEGRATION_LABELS: ${{ vars.CI_INTEGRATION_SELF_HOSTED_LABELS }}
+          # winvm's runner, while it waits for a job (scripts/self-hosted-runner/winvm-runner.sh); in ci.yml's own runs only
+          WINVM_READY: ${{ github.workflow == 'CI' && vars.CI_WINVM_READY || '' }}
+          # a draft's Native Windows install fails at its first step: it must not take winvm's one round
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          # "true" opts the Rust PTY host job in to the Rust runners; unset keeps it hosted (scripts/ci-runner-route.sh)
+          RUST_SELF_HOSTED: ${{ vars.CI_RUST_SELF_HOSTED }}
+          # when scripts/self-hosted-runner/rust-heartbeat.sh last saw a Rust runner online (epoch seconds)
+          RUST_SEEN: ${{ vars.CI_RUST_RUNNER_SEEN }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
+      # A push to main: the latest main commit in this push's history whose CI push run passed (of the last 100), for Fast checks'
+      # ratchets to compare with. A waiting push run that a newer push replaces (the concurrency group above) never
+      # runs, so the next run takes its change in too; a re-run keeps its old commit, so a later green one is no base
+      # for it. Empty for any other event, and when none is found or the API does not answer after three tries:
+      # Fast checks then fails rather than compare with less.
+      - id: ratchet
+        name: Find the last main commit CI passed
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$EVENT_NAME" != push ] || [ "$REF" != refs/heads/main ]; then exit 0; fi
+          for try in 1 2 3; do
+            if passed=$(gh run list --repo "$REPOSITORY" --workflow ci.yml --branch main --event push --status success --limit 100 --json headSha --jq '.[].headSha'); then
+              # the latest in history, not in the list's order: a run's date says nothing of where its commit stands
+              best=
+              for sha in $passed; do
+                git merge-base --is-ancestor "$sha" HEAD || continue
+                if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$sha"; then best=$sha; fi
+              done
+              if [ -n "$best" ]; then echo "base=$best" >> "$GITHUB_OUTPUT"; exit 0; fi
+              echo "::warning::No passed CI push run of main is in this push's history."; exit 0
+            fi
+            sleep $((try * 5))
+          done
+          echo "::warning::The Actions API did not list main's passed CI runs."
       - id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ "$PR_DRAFT" = "true" ]; then
             echo "draft=true" >> "$GITHUB_OUTPUT"
@@ -77,30 +133,50 @@ jobs:
           # Only a pull request may skip the heavy jobs as docs-only. Every other event validates in
           # full, including workflow_call for a release (release-validate.yml) and manual pages.yml
           # dispatches, where github.event_name is the caller's event and a docs-only last commit must
-          # not skip release validation. A Release run takes main's push run in place of its own call
-          # only when no job of it was skipped (scripts/release-ci-reuse.ts).
+          # not skip release validation.
           if [ "$EVENT_NAME" != "pull_request" ] || [ -z "$BASE_SHA" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "browser=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          CHANGED=$(git diff --name-only "$BASE_SHA" HEAD || echo "")
+          # github.event.pull_request.base.sha is the base branch as the pull request last saw it. Once the base has
+          # moved, this run's merge commit was made on a later one, and a difference from the older base would count
+          # the files of the pull requests merged in between as this one's. The merge commit's first parent is the
+          # base it was made on.
+          if git rev-parse -q --verify 'HEAD^2' > /dev/null; then BASE_SHA=$(git rev-parse 'HEAD^1'); fi
+          CHANGED=$(git diff --no-renames --name-only "$BASE_SHA" HEAD || echo "")
           if [ -z "$CHANGED" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "browser=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Docs-only: under docs/, any *.md or *.txt, the root LICENSE, or an issue template.
-          if echo "$CHANGED" | grep -qvE '^docs/|\.(md|txt)$|^LICENSE$|^\.github/ISSUE_TEMPLATE/'; then
+          if grep -q '^server/fixtures/' <<< "$CHANGED" || grep -qvE '^docs/|\.(md|txt)$|^LICENSE$|^\.github/ISSUE_TEMPLATE/' <<< "$CHANGED"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
             echo "Only documentation changes detected, skipping heavy tests"
           fi
+          # Only a pull request may skip the Browser regression jobs, and only when none of its paths can
+          # reach them (scripts/ci-browser-reach.sh, which keeps them for any path it does not name); one that
+          # changed the server alone runs them without the demo-only scripts (browser=live).
+          printf '%s\n' "$CHANGED" | bash scripts/ci-browser-reach.sh >> "$GITHUB_OUTPUT"
+          # A pull request that changes the Windows installer, or what it runs and checks it with, runs it for real in
+          # Native Windows install at its head (installer: that commit); the Windows install workflow runs the published
+          # one on a schedule. Not a fork's: its head is not among this repository's refs, which herdr's plugin install clones
+          if [ "$HEAD_REPO" = "$REPOSITORY" ] && [ -n "$HEAD_SHA" ] && grep -qE '^(install\.ps1|herdr-plugin\.toml|scripts/(plugin\.ps1|plugin-launch\.ts|windows-install-e2e\.ps1))$' <<< "$CHANGED"; then
+            echo "installer=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
+          # Only a pull request may skip herdr-core live contract, Rust PTY host and Native macOS session identity, and
+          # only when it changes nothing but the client (scripts/ci-server-reach.sh); unset, as in every other event, they run.
+          printf '%s\n' "$CHANGED" | bash scripts/ci-server-reach.sh >> "$GITHUB_OUTPUT"
   windows-install:
     name: Native Windows install
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: windows-latest
-    timeout-minutes: 10
+    # winvm when its runner waits for a job, else windows-latest; forks always windows-latest (scripts/ci-runner-route.sh)
+    runs-on: ${{ inputs.hosted_only && 'windows-latest' || fromJSON(needs.changes.outputs.windows) }}
+    # the installer's own run (below) adds a few minutes where a pull request changes it
+    timeout-minutes: 20
     env:
       HERDR_TEST_MODE: unit
     steps:
@@ -109,6 +185,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       # A required check: a draft run must not report it green without running it, or a stale
       # draft result could satisfy the merge gate. Marking the PR ready reruns CI.
       - name: Fail on draft PRs (Windows tests not run)
@@ -126,15 +204,22 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-stop-forms.test.ts ./scripts/plugin-stop-identity.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
         if: needs.changes.outputs.draft != 'true'
+      # This pull request's install.ps1 run on this runner as a user runs it, its plugin installed from the pull request's
+      # head (scripts/windows-install-e2e.ps1): with herdr stopped (one an earlier step left is stopped first) it must
+      # leave herdr and Ovis running, set to start at sign-in; -NoService takes the sign-in start away; -Account of another
+      # shape is refused at once, and fails the install with the add's own words when the add cannot run; run from session
+      # 0 as over SSH (an S4U task, where the runner runs one), it must start herdr in the desktop session
+      - name: The installer leaves Ovis running
+        if: needs.changes.outputs.draft != 'true' && needs.changes.outputs.installer != ''
+        env:
+          HEAD_SHA: ${{ needs.changes.outputs.installer }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install-e2e.ps1 -Ref $env:HEAD_SHA -StopHerdr
   macos-session:
     name: Native macOS session identity
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    # mac: fork pull requests stay on macos-15; ci.yml's own same-repository runs off main take the repository variable
-    # CI_MAC_LABELS (a JSON label list such as ["self-hosted","self-hosted-ovis-mac"]), macos-15 while it is unset. A release
-    # never validates on the Mac: a workflow that calls ci.yml (Release validation) runs under its own name, and main's
-    # run, which a Release run may take in place of its own, stays on macos-15 (scripts/release-ci-reuse.test.ts)
-    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(github.workflow == 'CI' && github.ref != 'refs/heads/main' && vars.CI_MAC_LABELS || '"macos-15"') }}
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
+    # mac: fork pull requests stay on macos-15
+    runs-on: ${{ inputs.hosted_only && 'macos-15' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(github.workflow == 'CI' && vars.CI_MAC_LABELS || '"macos-15"') }}
     timeout-minutes: 5
     env:
       HERDR_TEST_MODE: unit
@@ -147,6 +232,8 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
         run: |
@@ -154,16 +241,22 @@ jobs:
           exit 0
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/herdr-discovery.test.ts ./server/remote-entry.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts
+      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/herdr-discovery.test.ts ./server/remote-entry.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts ./scripts/install-herdr-service.test.ts
         if: needs.changes.outputs.draft != 'true'
+      # The Mac runner's job-started.sh (scripts/self-hosted-runner/README.md "Mac runner") under macOS's bash and
+      # jq: the job it allows, alone. Its refusals may kill and run only isolated, never on this host: in the Linux
+      # container of the check "Hook kill tests (container)" (hook-kill-tests.yml), through procps ps.
+      - name: Runner job-started hook allows a job on macOS
+        if: needs.changes.outputs.draft != 'true'
+        run: bun test ./scripts/self-hosted-runner.test.ts -t 'job-started hook runs a job from this repository'
   rust-pty-host:
-    # The Rust PTY host (crates/pty-sidecar) is the default where it is installed or built, and its
-    # PtySession checks skip without a build. The self-hosted runners have no Rust toolchain, so this job always runs on
-    # GitHub's image, which has one: it builds the host and runs the same checks on it as on Node.
+    # Builds the host and runs the same checks on it as on Node. Only the self-hosted runners whose image has the
+    # Rust toolchain carry the label it asks for; scripts/ci-runner-route.sh keeps forks hosted and sends it to
+    # GitHub's image, which has Rust too, when those runners are busy or gone.
     name: Rust PTY host
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.rust) }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
@@ -175,6 +268,8 @@ jobs:
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
+          rust: 'true'
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
         run: |
@@ -188,78 +283,126 @@ jobs:
       - name: Rust unit tests
         if: needs.changes.outputs.draft != 'true'
         run: cargo test --locked --manifest-path crates/pty-sidecar/Cargo.toml
+      - name: ACP keeper unit tests
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo test --locked --manifest-path crates/acp-keeper/Cargo.toml
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - name: PtySession on both hosts
+      - name: Build the ACP keeper and test agent
         if: needs.changes.outputs.draft != 'true'
-        run: bun test ./server/pty/host.test.ts
-      - name: The Node host's own checks, on the Rust host
+        run: cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins
+      - name: ACP keeper integration tests
         if: needs.changes.outputs.draft != 'true'
         env:
-          OVIS_PTY_SIDECAR: rust
+          OVIS_REQUIRE_ACP_KEEPER: '1'
+        run: bun test ./server/acp ./server/agent-tools/turns.test.ts ./server/agent-tools/child.contract.test.ts ./server/agent-tools/pane.test.ts ./server/agent-tools/stop.contract.test.ts ./server/approvals/acp.test.ts ./server/core/acp-composer.test.ts
+      - name: PtySession on the Rust PTY host
+        if: needs.changes.outputs.draft != 'true'
+        run: bun test ./server/pty/host.test.ts
+      - name: The session's own checks, on the Rust PTY host
+        if: needs.changes.outputs.draft != 'true'
         run: bun test ./server/pty/session.test.ts
   herdr-core-live:
-    # The hc client (server/herdr-core/connection.ts) against a real herdr-core, in a core of its
-    # own (server/herdr-core/live.test.ts). hc is pinned by version and sha256 from herdr-core's
+    # hc is pinned by version and sha256 from herdr-core's
     # release server, and only this step sees it: a failed download or checksum fails the job.
+    # Every supported hc runs in this one job: the oldest (0.1.17, what the installer and the desktop
+    # app ship) and the newest (0.1.18, what the generated types come from). It is not a matrix:
+    # a matrix would rename the job's check run, which scripts/release-ci-reuse.ts looks up by name.
     name: herdr-core live contract
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.server != 'false'
+    # GitHub-hosted: it runs there faster than on the self-hosted pool, where it took a slot of every run. The repository
+    # variable CI_HC_LIVE_LABELS (a self-hosted label list) moves it back; fork pull requests stay GitHub-hosted whatever
+    # it says (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(vars.CI_HC_LIVE_LABELS || '"ubuntu-24.04"') }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
-      HC_VERSION: 0.1.14
-      HC_SHA256: e9dbabdead0ce0ce3de51b6f54cc9549efedbb41b2f8448b6932ab0d1442343e
+      # "<version> <sha256 of its linux-x86_64 archive>", one per line: a new hc is added by adding its line
+      HC_RELEASES: |-
+        0.1.17 82ec44043f6894bfdb716b979b87cda43fd7fa46b0104e7b7bd93e64d1a9b877
+        0.1.18 5b2f97cb4b2a9d7a6b2cc5942628203ed9fbb7cc0c2b4b09ad8a6f5648e246b7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        if: needs.changes.outputs.draft != 'true'
         with:
-          cache: restore
+          pty-host: 'true'
+          cache: ${{ inputs.hosted_only && 'none' || 'restore' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
         run: |
           echo "Draft PR detected, skipping the herdr-core live contract"
           exit 0
       - name: Cache hc
-        if: needs.changes.outputs.draft != 'true'
+        if: needs.changes.outputs.draft != 'true' && !inputs.hosted_only
         id: hc-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/hc.tar.gz
-          key: hc-${{ env.HC_VERSION }}-linux-x86_64-${{ env.HC_SHA256 }}
+          path: ${{ runner.temp }}/hc-archives
+          key: hc-linux-x86_64-${{ hashFiles('.github/workflows/ci.yml') }}
       - name: Download hc
         if: needs.changes.outputs.draft != 'true' && steps.hc-cache.outputs.cache-hit != 'true'
-        run: curl -fsSL --retry 3 "https://releases.herdr.dev/core/$HC_VERSION/herdr-core-linux-x86_64.tar.gz" -o "$RUNNER_TEMP/hc.tar.gz"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hc-archives"
+          while read -r version sha256; do
+            [ -n "$version" ] || continue
+            curl -fsSL --retry 3 "https://releases.herdr.dev/core/$version/herdr-core-linux-x86_64.tar.gz" -o "$RUNNER_TEMP/hc-archives/$version.tar.gz"
+          done <<< "$HC_RELEASES"
       - name: Verify and unpack hc
         if: needs.changes.outputs.draft != 'true'
         run: |
           set -euo pipefail
-          echo "$HC_SHA256  $RUNNER_TEMP/hc.tar.gz" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/hc"
-          tar -xzf "$RUNNER_TEMP/hc.tar.gz" -C "$RUNNER_TEMP/hc" herdr-core
+          while read -r version sha256; do
+            [ -n "$version" ] || continue
+            echo "$sha256  $RUNNER_TEMP/hc-archives/$version.tar.gz" | sha256sum -c -
+            mkdir -p "$RUNNER_TEMP/hc/$version"
+            tar -xzf "$RUNNER_TEMP/hc-archives/$version.tar.gz" -C "$RUNNER_TEMP/hc/$version" herdr-core
+          done <<< "$HC_RELEASES"
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
       - name: hc client against a real hc
         if: needs.changes.outputs.draft != 'true'
-        env:
-          OVIS_TEST_HC_BIN: ${{ runner.temp }}/hc/herdr-core
         run: |
           set -euo pipefail
-          "$OVIS_TEST_HC_BIN" --version | grep -Fx "hc $HC_VERSION"
-          bun test ./server/herdr-core/live.test.ts
+          # one file per line: a new live test file is added by adding its line
+          files=(
+            ./server/acp/children.live.test.ts
+            ./server/herdr-core/live.test.ts
+            ./server/herdr-core/socket-transport.live.test.ts
+            ./server/herdr-core/core.fake.live.test.ts
+            ./tui/testing/with-core.contract.test.ts
+            ./tui/core/link.live.test.ts
+            ./tui/core/pane.live.test.ts
+            ./tui/core/layout.live.test.ts
+            ./tui/display.live.test.ts
+            ./tui/loop.live.test.ts
+            ./tui/fidelity.live.test.ts
+            ./tui/coexist.live.test.ts
+            ./tui/view/mouse.live.test.ts
+          )
+          while read -r version sha256; do
+            [ -n "$version" ] || continue
+            export OVIS_TEST_HC_BIN="$RUNNER_TEMP/hc/$version/herdr-core"
+            "$OVIS_TEST_HC_BIN" --version | grep -Fx "hc $version"
+            bun test "${files[@]}"
+          done <<< "$HC_RELEASES"
   fast:
     name: Fast checks
     needs: changes
-    runs-on: ${{ fromJSON(needs.changes.outputs.fast) }}
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.fast) }}
     timeout-minutes: 10
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4
+      # Whether this run's event gives the ratchets of scripts/conventions.test.ts (fixed sleeps, the
+      # tools typecheck's exclude list) a base to compare with: a pull request or a push to main does,
+      # a Release run (or a manual one) does not.
+      EVENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -268,12 +411,29 @@ jobs:
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
+          pty-host: 'true'
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
+      # The base: for a pull request
+      # its merge commit's first parent, which is main's head now (the event's base.sha stays where the
+      # pull request was opened). The shallow checkout does not hold it, so it is fetched, and a fetch
+      # that fails fails the job: a ratchet never passes without its base.
+      - name: Fetch the base the ratchets compare with
+        env:
+          LAST_GREEN: ${{ needs.changes.outputs.ratchet_base }}
+        run: |
+          if [ -z "$EVENT_BASE" ]; then echo "No base in this run: the ratchets compare with nothing."; exit 0; fi
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ -z "$LAST_GREEN" ]; then echo "::error::No passed main commit to compare the ratchets with (see Detect changes)."; exit 1; fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then base=$LAST_GREEN; else base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}'); fi
+          git fetch --no-tags --depth=1 origin "$base"
+          echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
+      - id: upgrade-fixtures
+        name: Fetch the pinned upgrade fixtures
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7 refs/tags/v0.5.4:refs/tags/v0.5.4 refs/tags/v0.5.9:refs/tags/v0.5.9
+          git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
+          git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
       - run: bun run check fast
-      # A release (package.json's version not tagged yet) must raise REMOTE_BUNDLE_VERSION when the
-      # bundle's inputs changed, record the telemetry Worker deploy and carry its patch notes. Only the
-      # change that bumps the version against BASE_SHA counts, so PRs merged before the Release run
-      # pass. The checkout is shallow, so the tags and the base it compares with are fetched first.
       - name: Release guards
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -298,14 +458,12 @@ jobs:
     name: Integration tests
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
+    # the Linux jobs' runners, or CI_INTEGRATION_SELF_HOSTED_LABELS' while their queue is short; forks always hosted (scripts/ci-runner-route.sh)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.integration) }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
-      # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
-      # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
-      # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
       CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
@@ -322,18 +480,20 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - name: Install hosted tmux test tools
-        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux procps
-      - name: Require native tmux contract tools
+      - name: Fetch the pinned upgrade fixtures
         if: needs.changes.outputs.draft != 'true'
         run: |
-          command -v tmux
-          command -v node
-          test -x /bin/ps
+          git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
+          git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
+          git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
+      - name: Install tmux for hosted integration tests
+        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
       - name: Integration tests (updater restart and rollback included)
         if: needs.changes.outputs.draft != 'true'
         env:
@@ -353,15 +513,12 @@ jobs:
   browser-main:
     name: Browser regression (ui-regression)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser != 'false'
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
-      # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
-      # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
-      # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
       CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
@@ -378,7 +535,9 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
       - name: Get Playwright version
@@ -386,7 +545,7 @@ jobs:
         id: playwright-version
         run: echo "version=$(bun -e 'console.log(require("playwright-core/package.json").version)')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browser
-        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
+        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted' && !inputs.hosted_only
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ci-cache/playwright
@@ -415,8 +574,8 @@ jobs:
   browser-other:
     name: Browser regression (other scripts${{ strategy.job-total > 1 && format(' {0}/{1}', matrix.shard, strategy.job-total) || '' }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.browser != 'false'
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
     # A hosted runner has 4 CPUs: one job running every script there took about 28 minutes, and
     # frame-timing checks failed under the load. So hosted runs split the scripts over four jobs
     # (scripts/ci-browser-parallel.ts's BROWSER_SHARD). On the self-hosted PC one job of six workers
@@ -432,9 +591,6 @@ jobs:
     timeout-minutes: 50
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
-      # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
-      # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
-      # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
       CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
@@ -451,7 +607,9 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
+          cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
       - name: Get Playwright version
@@ -459,14 +617,13 @@ jobs:
         id: playwright-version
         run: echo "version=$(bun -e 'console.log(require("playwright-core/package.json").version)')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browser
-        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
+        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted' && !inputs.hosted_only
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ci-cache/playwright
           key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
-      # the relay end-to-end run drives the hosted shell, and its media part encodes a video
       - run: bun run build:shell
         if: needs.changes.outputs.draft != 'true'
       - name: Pinned ffmpeg for the relay media run
@@ -478,10 +635,13 @@ jobs:
       - name: Browser regression (parallel)
         if: needs.changes.outputs.draft != 'true'
         env:
-          # Every script of scripts/ci-browser.sh except the browser-main runs.
           BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-terminal-regression.ts,scripts/ui-ime-regression.ts,scripts/ui-access-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
           BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
+          # a pull request that changed the server alone (scripts/ci-browser-reach.sh): the scripts that check the
+          # static demo alone and load no file of the server are left out (scripts/ci-browser-parallel.ts); in ci.yml's
+          # own runs only, so no workflow that calls it from a pull request leaves any out
+          BROWSER_LIVE_ONLY: ${{ github.workflow == 'CI' && needs.changes.outputs.browser == 'live' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       # About 2,000 screenshots of a green run cost ~50 s to upload on the job that ends a run last,
       # so they go up only when the job failed; the report and every script's log always do.
@@ -513,12 +673,13 @@ jobs:
     needs: [changes, integration, browser-main, browser-other]
     if: always()
     # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
-    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
     timeout-minutes: 5
     steps:
       - name: Check results
         env:
           CODE: ${{ needs.changes.outputs.code }}
+          BROWSER: ${{ needs.changes.outputs.browser }}
           DRAFT: ${{ needs.changes.outputs.draft }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           BROWSER_MAIN_RESULT: ${{ needs.browser-main.result }}
@@ -537,6 +698,17 @@ jobs:
           if [ "$INTEGRATION_RESULT" != "success" ]; then
             echo "Integration tests failed"
             exit 1
+          fi
+          # A change that cannot reach the browser jobs skipped them (Detect changes): only a skip counts
+          # then, never a job that failed or was cancelled. A change to the server alone (browser=live) ran
+          # them without the demo-only scripts, so they must pass as on any other change.
+          if [ "$BROWSER" = "false" ]; then
+            if [ "$BROWSER_MAIN_RESULT" != "skipped" ] || [ "$BROWSER_OTHER_RESULT" != "skipped" ]; then
+              echo "Browser regression was to be skipped and ended as $BROWSER_MAIN_RESULT and $BROWSER_OTHER_RESULT"
+              exit 1
+            fi
+            echo "Integration tests passed; Browser regression skipped: the change cannot reach it"
+            exit 0
           fi
           if [ "$BROWSER_MAIN_RESULT" != "success" ]; then
             echo "Browser regression (ui-regression) failed"

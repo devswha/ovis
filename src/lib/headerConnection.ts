@@ -1,71 +1,82 @@
-/**
- * The connection line in the header's title area: the selected PC's connection said in words where the
- * crumb (PC › workspace › folder) is, as a messenger says "Connecting…" under a chat's name. Lost after
- * this page had it, the line says Reconnecting; back, it says Connected for a moment, then the crumb
- * returns. The first connection to a pane is the chip's to tell: a pane opening is not a reconnect.
- * Each PC's news is its own: a recovery is shown only while the PC it came back on is the one shown.
- * Output stopped for a stall is not a reconnect (ws.ts retries nothing then): the chip says Disconnected.
- */
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import type { Translate } from "./i18n.ts";
+import { getTransport } from "./transport.ts";
 
-export type HeaderConnection = "reconnecting" | "connected" | null;
+/** `failed`: reconnecting has gone on RECONNECT_FAILED_AFTER_MS; the line then says why, once (connectionWord) */
+export type HeaderConnection = "reconnecting" | "failed" | "connected" | null;
 
 export interface ConnectionFacts {
-  /** the PC the header shows, with the split half showing it: the line is about that connection only */
   scope: string;
-  /** the half and PC whose terminal reported the facts below (null: none yet). Facts another half left
-   *  behind, before the active one reports, say nothing about it */
   reportedBy: string | null;
   connected: boolean;
-  /** this page has had the connection before (useConnectionChip) */
   connectedBefore: boolean;
-  /** the bridge stopped the output for a stall: nothing reconnects until an attach */
   outputStopped: boolean;
 }
 
-/** What the line remembers between renders: where it last said the connection was lost, and where it
- *  came back (null: no Connected to show) */
 export interface ConnectionTrack {
   lostOn: string | null;
   recoveredOn: string | null;
+  /** the loss has lasted RECONNECTING_SHOWN_AFTER_MS: shorter reconnects are never named, nor their return */
+  shown: boolean;
+  failed: boolean;
 }
 
-export const NO_TRACK: ConnectionTrack = { lostOn: null, recoveredOn: null };
+export const NO_TRACK: ConnectionTrack = { lostOn: null, recoveredOn: null, shown: false, failed: false };
 
-/** how long Connected stays before the crumb comes back */
 export const CONNECTED_SHOWN_MS = 2000;
+export const RECONNECTING_SHOWN_AFTER_MS = 1000;
+export const RECONNECT_FAILED_AFTER_MS = 10_000;
 
 const lost = (facts: ConnectionFacts): boolean => !facts.connected && facts.connectedBefore && !facts.outputStopped;
 
-/** The next track, given new facts: only a loss and a return on the same scope, both reported by it, make Connected. */
 export function stepConnection(track: ConnectionTrack, facts: ConnectionFacts): ConnectionTrack {
   if (facts.reportedBy !== facts.scope) return NO_TRACK;
-  if (lost(facts)) return { lostOn: facts.scope, recoveredOn: null };
-  if (facts.connected && track.lostOn === facts.scope) return { lostOn: null, recoveredOn: facts.scope };
+  if (lost(facts)) return track.lostOn === facts.scope ? track : { lostOn: facts.scope, recoveredOn: null, shown: false, failed: false };
+  if (facts.connected && track.lostOn === facts.scope) return track.shown ? { lostOn: null, recoveredOn: facts.scope, shown: false, failed: false } : NO_TRACK;
   if (facts.connected && track.recoveredOn === facts.scope) return track;
   return NO_TRACK;
 }
 
-/** What the line says, given the connection and the track. A loss on this scope says Connected the render
- *  the connection is back, before the effect moves the track: the crumb never shows between the two. */
 export function headerConnection(facts: ConnectionFacts, track: ConnectionTrack): HeaderConnection {
   if (facts.reportedBy !== facts.scope) return null;
-  if (!facts.connected) return lost(facts) ? "reconnecting" : null;
-  return track.recoveredOn === facts.scope || track.lostOn === facts.scope ? "connected" : null;
+  const shownLoss = track.lostOn === facts.scope && track.shown;
+  if (!facts.connected) return lost(facts) && shownLoss ? track.failed ? "failed" : "reconnecting" : null;
+  return track.recoveredOn === facts.scope || shownLoss ? "connected" : null;
 }
 
-/** The line, with Connected held for CONNECTED_SHOWN_MS after a reconnect on the scope shown. */
+/**
+ * The header's one line for a connection. A failed reconnect says what the relay found: nobody there for the PC
+ * (its Ovis is not running) or no relay at all.
+ */
+export function connectionWord(connection: Exclude<HeaderConnection, null>, t: Translate): string {
+  if (connection === "connected") return t("Connected");
+  if (connection === "reconnecting") return t("Reconnecting…");
+  return getTransport().unreached === "pc" ? t("Turn on Ovis on the PC") : t("Can't reach the PC");
+}
+
+const noChange = (): (() => void) => () => {};
+const subscribeTransport = (listener: () => void): (() => void) => getTransport().onRouteChange?.(listener) ?? noChange();
+const unreachedNow = (): string | undefined => getTransport().unreached;
+
 export function useHeaderConnection(facts: ConnectionFacts): HeaderConnection {
   const [track, setTrack] = useState<ConnectionTrack>(NO_TRACK);
+  // what a reconnect found changes the failed line's words: the page draws it again
+  useSyncExternalStore(subscribeTransport, unreachedNow, unreachedNow);
   const isLost = lost(facts);
   useEffect(() => {
     setTrack((previous) => stepConnection(previous, facts));
-    // the facts that move the track: a fact elsewhere in the object does not
   }, [isLost, facts.connected, facts.scope, facts.reportedBy]);
   useEffect(() => {
+    if (track.lostOn === null) return;
+    const lostOn = track.lostOn;
+    const mark = (after: Partial<ConnectionTrack>) => () => setTrack((previous) => previous.lostOn === lostOn ? { ...previous, ...after } : previous);
+    const timers = [window.setTimeout(mark({ shown: true }), RECONNECTING_SHOWN_AFTER_MS), window.setTimeout(mark({ shown: true, failed: true }), RECONNECT_FAILED_AFTER_MS)];
+    return () => { for (const timer of timers) window.clearTimeout(timer); };
+  }, [track.lostOn]);
+  useEffect(() => {
     if (track.recoveredOn === null) return;
-    const timer = setTimeout(() => setTrack((previous) => ({ ...previous, recoveredOn: null })), CONNECTED_SHOWN_MS);
-    return () => clearTimeout(timer);
+    const timer = window.setTimeout(() => setTrack((previous) => ({ ...previous, recoveredOn: null })), CONNECTED_SHOWN_MS);
+    return () => window.clearTimeout(timer);
   }, [track.recoveredOn]);
   return headerConnection(facts, track);
 }
