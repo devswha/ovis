@@ -1251,7 +1251,8 @@ export async function claudeForegroundWaiting(
   const only = claude[0]!;
   try {
     const dir = await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) || defaultClaudeConfigDir(home);
-    if (claudeAttachArgs(only.argv) !== null) return null;
+    // as claudeForegroundSession tells them: `attach` behind options in a background session's own Claude is no client
+    if (await claudeAttachSession(dir, only.pid, only.argv) !== null) return null;
     return (await claudeProcessRecord(home, only.pid, dir))?.waitingFor ?? null;
   } catch {
     return null;

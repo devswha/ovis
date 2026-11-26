@@ -18,6 +18,7 @@ let socketBefore: string | undefined;
 let calls: { method: string; params: Record<string, unknown> }[];
 let screen: string;
 let processInfoFails: boolean;
+let argv: string[];
 let claude: ReturnType<typeof Bun.spawn>;
 
 /** The PID record Claude Code 2.1.330 keeps for its process, with what it says it waits on. */
@@ -34,7 +35,9 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ovis-claude-dialog-"));
   store = join(root, "claude-config");
   mkdirSync(join(store, "sessions"), { recursive: true });
-  claude = Bun.spawn(["sleep", "30"], { env: { ...process.env, CLAUDE_CONFIG_DIR: store }, stdin: "ignore" });
+  // a background session's own Claude: its argv can name `attach` behind options, and it is no attach client
+  claude = Bun.spawn(["sleep", "30"], { env: { ...process.env, CLAUDE_CONFIG_DIR: store, CLAUDE_CODE_SESSION_KIND: "bg" }, stdin: "ignore" });
+  argv = ["/usr/bin/claude"];
   calls = [];
   processInfoFails = false;
   socketBefore = process.env["HERDR_SOCKET"];
@@ -56,7 +59,7 @@ beforeEach(() => {
         }
         const result = request.method === "pane.get"
           ? { pane: { pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: root, focused: false, revision: 0, agent: "claude", agent_status: "idle" } }
-          : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: claude.pid, argv: ["/usr/bin/claude"], cwd: root }] } }
+          : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: claude.pid, argv, cwd: root }] } }
           : request.method === "pane.read" ? { read: { text: screen } }
           : request.method === "pane.scroll_info" ? { scroll: { offset: 0, max: 0 } }
           : {};
@@ -86,7 +89,8 @@ const RULE = "─".repeat(40);
 
 it.skipIf(!linux)("refuses a Chat send while Claude's PID record says it waits on a dialog drawn in its box's place, typing nothing", async () => {
   screen = DIALOG;
-  for (const waitingFor of ["dialog open", "permission prompt", "input needed"]) {
+  for (const [waitingFor, named] of [["dialog open", "claude"], ["permission prompt", "claude"], ["input needed", "claude"], ["dialog open", "claude --model sonnet attach 7c5dcf5d"]] as const) {
+    argv = named.split(" ");
     record("waiting", waitingFor);
     calls = [];
     const refused = await submit()("w:p1", "hello from chat", "hello from chat", Date.now()).catch((error: unknown) => error);
