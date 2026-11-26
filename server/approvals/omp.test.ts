@@ -108,10 +108,10 @@ describe.skipIf(!posix)("omp's approval hook", () => {
     expect(hub.launchArgs("omp", "p1", ["--x"], "19.2.1")?.slice(2)).toEqual(["--x"]);
     for (const version of ["18.13.2", "20.0.0", null]) expect(hub.launchArgs("omp", "p1", ["--x"], version), String(version)).toEqual(["--x"]);
     // omp 19.2 refuses an extension beside these (cli/args.ts), so the launch keeps its own arguments
-    for (const args of [["--no-tools"], ["--trusted-extension", "/x/ext.ts"], ["--trusted-extension=/x/ext.ts"]]) {
+    for (const args of [["--no-tools"], ["--no-tools=true"], ["--trusted-extension", "/x/ext.ts"], ["--trusted-extension=/x/ext.ts"]]) {
       expect(hub.launchArgs("omp", "p1", args, "19.2.1"), args.join(" ")).toEqual(args);
     }
-    expect(hub.launchArgs("omp", "p1", ["--", "--no-tools"], "19.2.1")?.[0]).toBe("-e");
+    for (const after of ["--no-tools", "--no-tools=true"]) expect(hub.launchArgs("omp", "p1", ["--", after], "19.2.1")?.[0], after).toBe("-e");
   });
 
   it("answers omp's own dialog for a shell command from Ovis's card, the dialog closed", async () => {

@@ -109,13 +109,13 @@ function decision(label: string): ApprovalDecision | null {
 const OMP_HOOK_MAJORS = new Set(["18", "19"]);
 
 /**
- * Whether a launch's own arguments, before any `--`, take every extension out (`--no-tools`) or name the only one
- * allowed (`--trusted-extension`): omp 19.2 refuses to start with one beside them (cli/args.ts), so the launch keeps
+ * Whether a launch's own arguments, before any `--`, take every extension out (`--no-tools`, or `--no-tools=<any>`,
+ * which omp reads the same) or name the only one allowed (`--trusted-extension`): omp 19.2 refuses to start with one beside them (cli/args.ts), so the launch keeps
  * its arguments as they are.
  */
 function refusesExtensions(args: readonly string[] | undefined): boolean {
   const own = args === undefined ? [] : args.slice(0, args.includes("--") ? args.indexOf("--") : args.length);
-  return own.some((arg) => arg === "--no-tools" || arg === "--trusted-extension" || arg.startsWith("--trusted-extension="));
+  return own.some((arg) => /^--(?:no-tools|trusted-extension)(?:=|$)/u.test(arg));
 }
 
 const adapter = extensionApprovals("omp", (version) => meetsMinVersion(version, OMP_HOOK_MIN_VERSION) && OMP_HOOK_MAJORS.has(version.split(".")[0]!), GLUE);
