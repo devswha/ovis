@@ -1,12 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "../index.ts";
 import { isJsonObject } from "../http.ts";
+import { privateStateFs } from "../private-state.ts";
 import { askRecovery } from "./recovery.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
+import { RevokeAllIntent } from "./revoke-all-intent.ts";
 import { SafetyLog } from "./safety-log.ts";
 
 const roots: string[] = [];
@@ -47,6 +49,24 @@ posix("ordinary boot uses the surviving pairing time when twin rows disagree", (
   expect(devices.accountError).toBeNull();
 });
 
+posix("ordinary boot publishes readable tombstones independently of registry merging", () => {
+  const active = folder(), sibling = folder();
+  const removal = { key: key(), account: "previous", record_id: "local", removed_at: past };
+  put(sibling, "account-tombstones.json", { v: 1, tombstones: [removal] });
+  put(sibling, "devices.json", false);
+  start(active, sibling).stop();
+  expect(JSON.parse(readFileSync(join(active, "account-tombstones.json"), "utf8")).tombstones).toContainEqual(removal);
+});
+
+posix("ordinary boot checks the active folder's pending tombstones, not the sibling's", () => {
+  const active = folder(), sibling = folder();
+  put(sibling, "account-tombstones.pending.json", false);
+  const ordinary = start(active, sibling);
+  expect(ordinary.devices.accountError).toBeNull();
+  ordinary.stop();
+  expect(start(sibling).devices.accountError).toContain("account-tombstones.pending.json");
+});
+
 posix.each(["journal", "revoke", "lock"] as const)("restamp checks member accounts after ordinary %s removals", async cause => {
   const active = folder(), row = phone();
   RemovalEvidence.open(active, null).addRevoke(key(), null, future);
@@ -54,14 +74,70 @@ posix.each(["journal", "revoke", "lock"] as const)("restamp checks member accoun
   if (cause === "lock") expect(SafetyLog.open(active).appendLock({ account: "previous" }).outcome).toBe("applied");
   if (cause === "revoke") RemovalEvidence.open(active, null).addRevoke(row.relay_public_key, "previous", Date.now());
   if (cause === "journal") running.devices.journalEvent({ kind: "remove", how: "pc", key: row.relay_public_key, no: null, row: row.id, label: row.label, by: "pc", account: null });
+  running.stop();
   put(active, "devices.json", { gate_closed_at: past, devices: [{ ...row, account: "previous" }] });
+  const cold = start(active);
   const preview = await askRecovery(active, { act: "restamp" });
   if (!isJsonObject(preview) || typeof preview.confirm !== "string") throw new Error(`Expected a preview: ${JSON.stringify(preview)}`);
   expect(await askRecovery(active, { act: "restamp", confirm: preview.confirm })).toMatchObject({ queued: true });
-  running.stop();
+  cold.stop();
   const applied = start(active);
   expect(applied.devices.accountError).toBeNull();
   expect(applied.devices.list(null).some(device => device.id === row.id)).toBe(false);
+});
+
+async function queueRepair(active: string) {
+  const preview = await askRecovery(active, { act: "restamp" });
+  if (!isJsonObject(preview) || typeof preview.confirm !== "string") throw new Error(`Expected a preview: ${JSON.stringify(preview)}`);
+  expect(await askRecovery(active, { act: "restamp", confirm: preview.confirm })).toMatchObject({ queued: true });
+}
+
+const numbered = () => ({ ...phone(), created_at: new Date(future).toISOString(), origin: { from: "pc", how: "link", by: null, admit_no: 1, at: past } });
+
+posix("repair preserves an independently edited device label and leaves the plan pending", async () => {
+  const active = folder(), paired = numbered();
+  put(active, "account-pc.json", { v: 1, next_admit: 2 });
+  put(active, "devices.json", { gate_closed_at: past, devices: [paired] });
+  const running = start(active);
+  await queueRepair(active);
+  running.stop();
+  const path = join(active, "devices.json");
+  const open = privateStateFs.openSync;
+  privateStateFs.openSync = (file, ...args) => {
+    if (typeof file === "string" && file.startsWith(`${path}.`) && file.endsWith(".tmp")) {
+      put(active, "devices.json", { gate_closed_at: past, devices: [{ ...paired, label: "New name" }] });
+    }
+    return open(file, ...args);
+  };
+  try {
+    const restarted = start(active);
+    expect(JSON.parse(readFileSync(path, "utf8")).devices[0].label).toBe("New name");
+    expect(existsSync(join(active, "restamp.json"))).toBe(true);
+    expect(restarted.devices.failsClosed).toBe(true);
+  } finally { privateStateFs.openSync = open; }
+});
+
+posix("repair leaves an imported device's timestamp with its source", async () => {
+  const active = folder(), paired = numbered();
+  put(active, "account-pc.json", { v: 1, next_admit: 3 });
+  const imported = { ...numbered(), id: "2".repeat(16), imported: true, origin: { ...paired.origin, admit_no: 2 } };
+  put(active, "devices.json", { gate_closed_at: past, devices: [paired, imported] });
+  const running = start(active);
+  await queueRepair(active);
+  running.stop();
+  expect(start(active).devices.list(null).find(row => row.id === imported.id)?.created_at).toBe(imported.created_at);
+});
+
+posix("startup finishes an interrupted Revoke all before evaluating the clock plan", async () => {
+  const active = folder();
+  RemovalEvidence.open(active, null).addRevoke(key(), null, future);
+  const running = start(active);
+  await queueRepair(active);
+  running.stop();
+  new RevokeAllIntent(active, []).begin([], past, 0, null);
+  start(active);
+  expect(existsSync(join(active, "revoke-all.json"))).toBe(false);
+  expect(existsSync(join(active, "restamp-done.json"))).toBe(true);
 });
 
 
