@@ -852,6 +852,60 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     expect(written).toHaveLength(1);
   });
 
+  it("drains accepted OpenCode label writes on orderly shutdown, accepting no more writes", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      if (written.length === 1) {
+        started.resolve();
+        await first.promise;
+      }
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    labels.label("t1", "", ["ses_first"]);
+    await started.promise;
+    labels.label("t1", "", ["ses_first", "ses_second"]);
+    const stopping = labels.stop({ drain: true });
+    labels.label("t2", "", ["ses_third"]);
+    first.resolve();
+    await stopping;
+    expect(written).toEqual(["ses_first", "ses_first ses_second"]);
+  });
+
+  it("stops draining after its deadline without sending the next queued OpenCode label", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      started.resolve();
+      await first.promise;
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    jest.useFakeTimers();
+    try {
+      labels.label("t1", "", ["ses_first"]);
+      await started.promise;
+      labels.label("t1", "", ["ses_first", "ses_second"]);
+      let stopped = false;
+      void Promise.resolve(labels.stop({ drain: true })).then(() => { stopped = true; });
+      jest.advanceTimersByTime(499);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      jest.advanceTimersByTime(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(true);
+      first.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(written).toEqual(["ses_first"]);
+    } finally {
+      first.resolve();
+      jest.useRealTimers();
+    }
+  });
+
   it("remembers an OpenCode session a status event named, for a turn that ended before any snapshot", async () => {
     let channel = 0;
     const t1 = terminal("t1", { title: "OC | short", status: { app: "opencode", state: "idle" } });
@@ -1190,7 +1244,9 @@ describe("herdr-core adapter, new and closed terminals", () => {
     for (const core of [await labeling(start()), await living(start())]) {
       const shown = await sessionSnapshot(core.socket);
       const factsOf = (address: string) => shown.workspaces.find((workspace) => workspace.workspace_id === shown.panes.find((pane) => pane.pane_id === address)?.workspace_id)?.worktree ?? null;
-      expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([head, { ...head, checkout_path: linked, is_linked_worktree: true }, null]);
+      // each row carries the identity of the checkout's git folder it was drawn with (#4211)
+      const drawn = { ...head, git_id: expect.any(String) };
+      expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([drawn, { ...drawn, checkout_path: linked, is_linked_worktree: true }, null]);
       expect(core.runs).toEqual([]);
     }
     // what the sidebar draws is what its actions do, as on herdr: the repository's workspace closes over the
@@ -1333,6 +1389,51 @@ describe("herdr-core adapter, new and closed terminals", () => {
     release();
     expect(await worktreeRemove("S", true, socket)).toMatchObject({ type: "worktree_removed", path: a });
     expect(existsSync(join(b, "README.md"))).toBeTrue();
+  }, 15_000);
+
+  it("deletes no checkout added again at the path a row was first drawn at from a cached answer, though the delete names that path (#4211)", async () => {
+    const { dir, repo, git } = repository();
+    const a = join(dir, "a");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "a", a).exitCode).toBe(0);
+    const terminals = [terminal("t1", { cwd: a, labels: { "herdr.space": "X", "herdr.tab": "T0" } })];
+    const find = (params: Record<string, unknown>) => terminals.find((entry) => entry.address === params["terminal"]) ?? (() => { throw new Error("no terminal"); })();
+    const { socket, cores } = await labeling(terminals, {
+      "terminal.list": () => ({ terminals, hidden_finished: 0 }), "terminal.get": find,
+      "terminal.kill": (params) => Object.assign(find(params), { state: "finished" }),
+      "terminal.rm": (params) => { terminals.splice(terminals.indexOf(find(params)), 1); return { removed: params["terminal"] }; },
+      "events.subscribe": () => ({ channel: cores.at(-1)!.channel(), seq: 1, terminals: [] }),
+    });
+    // git answered for a's folder once, for another workspace
+    expect((await sessionSnapshot(socket)).workspaces[0]?.worktree?.checkout_path).toBe(a);
+    const started = Promise.withResolvers<void>();
+    const answered = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "layout.updated" }], { onEvent: (frame) => { if (frame.event === "layout.updated") answered.resolve(); }, onStarted: () => started.resolve(), onClose() {} }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    terminals.splice(0, 1, terminal("t2", { cwd: a, labels: { "herdr.space": "S", "herdr.tab": "T1" } }));
+    // past the time that answer is kept, and git slow to answer again: S's row is drawn from the cached answer
+    setSystemTime(new Date(Date.now() + 60_000));
+    cleanups.push(() => setSystemTime());
+    const release = gitHeld(dir);
+    const asked = (await sessionSnapshot(socket)).workspaces[0]!;
+    expect([asked.workspace_id, asked.worktree?.checkout_path, typeof asked.worktree?.git_id]).toEqual(["S", a, "string"]);
+    // the user opens Delete over that row; meanwhile the checkout is removed and another added at its path
+    expect(git("-C", repo, "worktree", "remove", a).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "replacement", a).exitCode).toBe(0);
+    release();
+    // git answers again, and the next snapshot draws the row from that answer
+    await answered.promise;
+    const redrawn = (await sessionSnapshot(socket)).workspaces[0]!.worktree;
+    expect([redrawn?.checkout_path, redrawn?.git_id === asked.worktree?.git_id]).toEqual([a, false]);
+    // the delete confirmed over the first row is refused, here and on a server started since
+    const confirmed = { expected_checkout: a, expected_git_id: asked.worktree!.git_id! };
+    await expect(worktreeRemove("S", true, socket, confirmed)).rejects.toMatchObject({ code: "worktree_target_changed" });
+    const restarted = await labeling(terminals);
+    await expect(worktreeRemove("S", true, restarted.socket, confirmed)).rejects.toMatchObject({ code: "worktree_target_changed" });
+    expect(existsSync(join(a, "README.md"))).toBeTrue();
+    // one confirmed over the row as drawn now deletes the checkout that row shows
+    expect(await worktreeRemove("S", true, socket, { expected_checkout: a, expected_git_id: redrawn!.git_id! })).toMatchObject({ type: "worktree_removed", path: a });
+    expect(existsSync(a)).toBeFalse();
   }, 15_000);
 
   it("deletes no checkout added again at the path after git was asked again (#3890)", async () => {

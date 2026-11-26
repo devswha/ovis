@@ -32,7 +32,7 @@ import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
 import { resolveGrokStore } from "../grok-store.ts";
-import { createLettaStatus, lettaPanes, lettaTitleStatus } from "../letta-status.ts";
+import { createLettaStatus, lettaPanes, lettaTitleName, lettaTitleStatus } from "../letta-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
 import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
 import { resolveAgent, versionSourceOf } from "../pane-context.ts";
@@ -159,7 +159,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
   const lettaTitled = new Map<string, AgentStatus>();
-  const lettaRests = new Map<string, OmoRest>();
+  const lettaRests = new Map<string, { path: string; title: string; rest: OmoRest }>();
+  const sameLettaApproval = (paneId: string, saved: { path: string; title: string }): boolean => {
+    const path = letta.pathOf(paneId);
+    // A peer can make the transcript temporarily ambiguous without ending the title's approval.
+    return lettaTitleName(lastPanes?.get(paneId)) === saved.title && (path === null || path === saved.path);
+  };
   let titleReads = 0;
   let titleApplied = 0;
   const letta = createLettaStatus({
@@ -167,7 +172,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     snapshot: omoSnapshot,
     onChange: (paneId, derived, _background, turn, rest) => {
       if (lettaTitled.get(paneId) !== "blocked") { gjcChanged(paneId, derived, turn, rest, "letta"); return; }
-      if (turn && rest !== undefined && derived !== "working") lettaRests.set(paneId, rest); else if (turn) lettaRests.delete(paneId);
+      if (turn) {
+        const path = letta.pathOf(paneId);
+        if (path !== null && rest !== undefined && derived !== "working") {
+          lettaRests.set(paneId, { path, title: lettaTitleName(lastPanes?.get(paneId)), rest });
+        }
+        else lettaRests.delete(paneId);
+      }
     },
     onFound: (paneId) => completions.adopt(paneId, "letta", []),
   });
@@ -470,9 +481,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     if (newest) notePaneFolders(named.panes.flatMap((pane) => [pane.cwd, pane.foreground_cwd]));
     if (capabilities().agents === "reported") for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) {
-      const rest = status === "idle" ? lettaRests.get(paneId) : undefined;
+      const saved = lettaRests.get(paneId);
+      const rest = status === "idle" && saved && sameLettaApproval(paneId, saved) ? saved.rest : undefined;
       if (status !== "blocked") lettaRests.delete(paneId);
       gjcChanged(paneId, status, true, rest, "letta");
+    }
+    if (newest) for (const [paneId, saved] of lettaRests) {
+      if (lettaTitled.get(paneId) !== "blocked" || !sameLettaApproval(paneId, saved)) lettaRests.delete(paneId);
     }
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
@@ -578,7 +593,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     ({ type: "pane-status", pane_id: paneId, agent_status: cards.status(paneId, status), ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
   const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
-  if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine) => startMachineBridge(machine, options.stateDir ?? defaultStateDir()));
+  if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine, signal) => startMachineBridge(machine, options.stateDir ?? defaultStateDir(), signal));
 
   const desktopActivity = options.desktopActivity === true ? trackDesktopActivity({
     path: join(options.stateDir ?? defaultStateDir(), DESKTOP_ACTIVITY_FILE),
@@ -685,7 +700,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       hearClaude(paneId, agent, read, replay === undefined);
       if (agent === "claude") claudeAgents.poll(paneId);
     } finally { settling = was; }
-    if (agent === "letta" && read !== "unknown" && replay === undefined) lettaTitled.delete(paneId);
+    if (replay === undefined && (agent !== "letta" || read !== "unknown")) {
+      lettaTitled.delete(paneId);
+      lettaRests.delete(paneId);
+    }
     const titled = agent === "letta" && read === "unknown" && capabilities().agents === "reported" && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, titled ?? read));
     gjc.poll();
@@ -1058,7 +1076,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       options.paneVacated?.(paneId);
       push.closed(paneId);
     },
-    onPaneMoved: (from, to) => {
+    onPaneMoved: (from, to, status) => {
       options.paneVacated?.(from);
       const renumber = finishes.moved(from, to);
       for (const state of [codexFailedAt, codexTurns, codexLooked] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
@@ -1073,7 +1091,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
       broadcastAll({ type: "pane-moved", from, to });
-      push.moved(from, to);
+      // A provider's work is not a tracked agent resuming, nor does it answer a card managed here.
+      const ownsQuestion = omo.tracks(from) || gjc.tracks(from) || letta.tracks(from) || cards.waiting(from);
+      push.moved(from, to, ownsQuestion ? "unknown" : status);
       paneMoved?.(from, to);
     },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
+import { answerKeys, claudeBoxRows, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -2630,6 +2630,24 @@ describe("Claude's suggested next prompt", () => {
     expect(viewportShowsLive(bottom, bottom, colors, live.replace("run the tests", "run the test"), live)).toBe(false);
   });
 
+  test("without scroll from herdr, Claude's box counts from its top rule down when the reads lay out older rows apart (#4321)", () => {
+    const box = screen("❯ \u001b[2mrun the tests\u001b[0m");
+    // the colored read and the text read put the rows above the box a row apart after a redraw, the same height
+    const colors = ["  - a caption row", "❯ an older prompt", box].join("\r\n");
+    const live = ["    a caption row:", "", box.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")].join("\r\n");
+    expect(claudeBoxRows(live)).not.toBeNull();
+    expect(viewportShowsLive(null, null, colors, live, live)).toBe(false);
+    expect(viewportShowsLive(null, null, colors, live, live, claudeBoxRows(live))).toBe(true);
+    // a different height is another view, and a different box is another box
+    expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live, claudeBoxRows(live))).toBe(false);
+    expect(viewportShowsLive(null, null, colors.replace("run the tests", "run the test"), live, live, claudeBoxRows(live))).toBe(false);
+    // the box's top rule is compared too: a named session's rule on one read only is another box
+    const rule = "\u2500".repeat(10);
+    const named = colors.replace(rule, "\u2500\u2500 main " + "\u2500".repeat(4));
+    expect(named).not.toBe(colors);
+    expect(viewportShowsLive(null, null, named, live, live, claudeBoxRows(live))).toBe(false);
+  });
+
   test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
     const live = screen("❯ \u001b[2mrun the tests\u001b[0m").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
     const colors = screen("❯ \u001b[2mrun the tests\u001b[0m");
@@ -5023,23 +5041,37 @@ ${omoRule}
     });
   });
 
-  test.each(["editor stays open", "editor closes during the look"])("Antigravity submits a write-in only if the %s", async (state) => {
+  test.each([
+    ["editor stays open", "notes.txt", "notes.txt", true],
+    ["editor closes during the look", "notes.txt", "notes.txt", false],
+    ["editor redraws a read late", "notes.txt", "", true],
+    ["editor redraws a prefix first", "notes.txt", "not", true],
+    ["editor changes whitespace", "notes.txt", "notes .txt", false],
+    ["editor adds a nonbreaking space at a wrap", "notes.txt", "notes.\u00a0\ntxt", false],
+    ["editor adds plain spaces at a wrap", "notes.txt", "notes.  \ntxt", false],
+    ["editor wraps at a word", "new notes.txt", "new\nnotes.txt", true],
+    ["editor wraps inside a word", "notes.txt", "notes.\ntxt", true],
+  ] as const)("Antigravity write-in: %s", async (state, draft, drawn, submits) => {
     const initial = readFileSync(new URL("./fixtures/agy-1.5.6-ask.txt", import.meta.url), "utf8");
     const selected = initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  3. Write-in...", "> 3. Write-in...");
     const editor = (text: string) => selected.replace(/  ↑\/↓ Navigate[\s\S]*$/, `  Your answer:\n  > ${text}\n\nenter Submit · esc Back\n`);
     await withPane("agy", "blocked", initial, async (pane) => {
       const prompt = (await card())!;
+      const text = `text:${draft}`;
+      let reads = 0;
+      if (state.startsWith("editor redraws")) {
+        pane.onRead = () => { if (pane.sent.at(-1) === text && ++reads === 3) pane.screen = editor(draft); };
+      }
       pane.onSent = (sent) => {
         if (sent === "down") pane.screen = pane.sent.length === 1
           ? initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  2. bye.txt", "> 2. bye.txt") : selected;
         if (sent === "enter" && pane.sent.length === 3) pane.screen = editor("");
-        if (sent === "text:notes.txt") pane.screen = editor("notes.txt");
+        if (sent === text) pane.screen = editor(drawn);
       };
-      const closes = state === "editor closes during the look";
-      const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:notes.txt") pane.screen = "❯ unsent draft"; };
-      expect(await answer(prompt.id, { custom_text: "notes.txt" }, { beforeKey })).toEqual(closes
-        ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
-      expect(pane.sent).toEqual(["down", "down", "enter", "text:notes.txt", ...(closes ? [] : ["enter"])]);
+      const beforeKey = async () => { if (state === "editor closes during the look" && pane.sent.at(-1) === text) pane.screen = "❯ unsent draft"; };
+      expect(await answer(prompt.id, { custom_text: draft }, { beforeKey })).toEqual(submits
+        ? { status: 200, code: undefined } : { status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter", text, ...(submits ? ["enter"] : [])]);
     });
   });
 

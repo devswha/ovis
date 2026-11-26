@@ -3,24 +3,25 @@ import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { HubConnections } from "./connections.ts";
 import { HARNESS_CONTRACT, HARNESS_LIMITS, TOOL_SCHEMAS, VIEW_VERBS, answer, harnessVerb, isRecord, isView, refuse, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { parseVersion } from "../../shared/agent-catalog.ts";
 import { projectSafeCommand } from "../entries.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import { AcpStartFailed, AcpUnavailable, type AcpChildren } from "../acp/children.ts";
-import { KeeperRequestError } from "../acp/client.ts";
-import { resolveHarness, type HarnessCommand } from "./harnesses.ts";
-import { AGENT_MCP_SERVER, askable, askRefusal, permissionLaunch } from "./permission-launch.ts";
+import { KeeperDisconnected, KeeperRequestError } from "../acp/client.ts";
+import { harnessVersionExecutable, resolveHarness, type HarnessCommand } from "./harnesses.ts";
 import { RunStore, type Run } from "./runs.ts";
 import { Ledger, type ToolChild } from "./ledger.ts";
 import { validArgs } from "./guards.ts";
-import { ChildTurns, childRef, childState } from "./turns.ts";
+import { ChildTurns, childRef, childState, delegatedMode } from "./turns.ts";
 import { HarnessView, type ViewOptions } from "./view.ts";
-import { PaneGrants } from "./pane-grants.ts";
 import { provePane, socketPeer, stillIn, type PaneReader } from "./pane-proof.ts";
+import { OVIS_AGENT_LAUNCH_LABEL } from "./launch.ts";
 
 interface Options extends ViewOptions {
   readonly acp: AcpChildren;
   readonly dir: string;
   readonly setting: () => HarnessToolSetting;
+  readonly paneRunEpoch?: () => string | null;
   readonly now?: () => number;
   readonly resolve?: (kind: string) => HarnessCommand | null;
   /** this PC's herdr-core panes; tests give their own */
@@ -31,11 +32,9 @@ const hcPanes: PaneReader = {
   list: async () => (await coreConnection().call("terminal.list", {})).terminals,
   get: address => coreConnection().call("terminal.get", { terminal: address }).catch(() => null),
 };
-const paneLabel = (t: { name?: string | null; title?: string }, address: string) => (t.name || t.title || address).replace(/[\p{Cc}\p{Cf}]/gu, "").trim().slice(0, 80) || address;
 export class AgentToolHub {
   readonly address: string;
   readonly runs: RunStore;
-  readonly grants: PaneGrants;
   private server: Server | null = null;
   private readonly connections = new HubConnections();
   private readonly ledger: Ledger;
@@ -48,8 +47,7 @@ export class AgentToolHub {
   private closed = false;
   constructor(private readonly options: Options) {
     this.address = join(options.dir, "hub.sock");
-    this.runs = new RunStore(options.dir);
-    this.grants = new PaneGrants(options.dir, this.runs);
+    this.runs = new RunStore(options.dir, options.paneRunEpoch);
     this.now = options.now ?? Date.now;
     this.ledger = new Ledger(options.dir);
     this.turns = new ChildTurns(this.ledger, options.acp, this.now);
@@ -65,26 +63,19 @@ export class AgentToolHub {
     this.settingsChanged();
   }
   get setting() { return this.options.setting(); }
-  private verbs(principal: { depth: number; ceiling?: string }): readonly string[] {
+  private verbs(principal: { depth: number }): readonly string[] {
     const policy = this.setting;
-    return policy.level === "off" ? [] : policy.level === "start" && (principal.ceiling || policy.harnesses.some(askable)) && principal.depth < policy.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS;
+    return policy.level === "off" ? [] : policy.level === "start" && policy.harnesses.length > 0 && principal.depth < policy.depth ? Object.keys(TOOL_SCHEMAS) : VIEW_VERBS;
   }
   reconcileLaunches() { return this.ledger.reconcile(this.options.acp); }
   settingsChanged(): void {
-    if (this.setting.level !== "start") this.grants.clear();
     if (this.setting.level === "off") this.runs.revokeAll();
+    else if (this.setting.level === "view") this.runs.clearPaneRuns();
   }
-  /** Drops the words on panes that closed while nobody asked (an Ovis restart, a missed vacate). */
+  /** Drops runs of panes that closed or changed root while Ovis was away. */
   async reconcilePanes(): Promise<void> {
-    const before = this.grants.known();
-    this.grants.reconcile(await (this.options.panes ?? hcPanes).list(), before);
-  }
-  async answerPane(id: string, allow: boolean): Promise<"ok" | "gone"> {
-    const pane = this.grants.view().pending.find(p => p.id === id)?.pane;
-    const live = pane ? await (this.options.panes ?? hcPanes).get(pane) : null;
-    // a pane Ovis launched since (its own token) or an ACP child is never also a tokenless one
-    const taken = !pane || !!this.options.acp.forPane(pane) || this.runs.tokenManaged(pane) || !!live?.labels["ovis.acp"] || !!live?.labels["ovis.run"];
-    return this.setting.level === "start" ? this.grants.answer(id, allow, taken ? null : live) : "gone";
+    const before = this.runs.knownPaneRuns();
+    this.runs.reconcilePanes(await (this.options.panes ?? hcPanes).list(), before);
   }
   listen(): void {
     if (this.server) return;
@@ -104,7 +95,7 @@ export class AgentToolHub {
   command(tokenFile: string) {
     const [command, ...args] = projectSafeCommand("agent-mcp");
     if (!command) throw new Error("Missing relay command.");
-    return { name: AGENT_MCP_SERVER, command, args: [...args, "--socket", this.address, "--token-file", tokenFile], env: [] };
+    return { name: "ovis-agent", command, args: [...args, "--socket", this.address, "--token-file", tokenFile], env: [] };
   }
   private async serial<T>(id: string, action: () => Promise<T>): Promise<T> {
     const prior = this.tails.get(id) ?? Promise.resolve();
@@ -128,9 +119,8 @@ export class AgentToolHub {
     return this.act(run, auth, deny, verb, args, signal, began);
   }
   /**
-   * A call from a pane hc started, with no token: the kernel and hc say which pane (pane-proof.ts), and its owner's
-   * word says whether that pane may (pane-grants.ts). The first call raises his card and does nothing else; nothing
-   * the caller sends names the pane, and HC_TERMINAL_ID (`pane_hint`) can only fail the proof.
+   * A call from a pane hc started, with no token: the kernel and hc say which pane (pane-proof.ts).
+   * Nothing the caller sends names the pane, and HC_TERMINAL_ID (`pane_hint`) can only fail the proof.
    */
   private async paneCall(input: Record<string, unknown>, signal: AbortSignal, socket: Socket): Promise<object> {
     const { verb, args, pane_hint: hint } = input;
@@ -143,40 +133,39 @@ export class AgentToolHub {
     const peer = socketPeer(socket);
     if (!peer) return refuse("not_granted", "This process could not be traced to a pane.");
     try {
-      const before = this.grants.known();
+      const before = this.runs.knownPaneRuns();
       const proof = await provePane(peer, hint, this.options.panes ?? hcPanes);
       if (!proof) return refuse("not_granted", "This process is not in one of this PC's herdr-core panes.");
       const { key, terminal } = proof;
-      // the panes hc lists now: cards and grants of panes that closed unseen free their places before this one is counted
-      this.grants.reconcile(proof.live, before);
-      if (this.options.acp.forPane(key.pane) || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"] || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "Ovis started this pane's agent with a tool of its own.");
+      this.runs.reconcilePanes(proof.live, before);
+      if (terminal.labels[OVIS_AGENT_LAUNCH_LABEL] || terminal.labels["ovis.acp"] || terminal.labels["ovis.run"]
+        || this.options.acp.forPane(key.pane) || this.runs.tokenManaged(key.pane)) return refuse("not_granted", "This pane is managed by Ovis.");
       if (signal.aborted || this.closed || this.setting.level !== "start") return refuse("not_granted", "The grant changed.");
-      const word = this.grants.decide(key, paneLabel(terminal, key.pane));
-      if (word.state !== "allowed") return word.state === "pending" ? refuse("approval_required", "Ask the person to allow this pane in Ovis, then run the command again.")
-        : word.state === "denied" ? refuse("approval_denied", "The person did not allow this pane.") : refuse("rate_limited", "Too many panes are waiting for an answer.");
-      const run = this.runs.paneRun(word.run);
-      if (!run) return refuse("not_granted", "This pane's grant has ended.");
-      // checked again at every step of the call: still a process of that pane, and the pane still allowed
-      const auth = () => !signal.aborted && !this.closed && this.setting.level === "start" && stillIn(peer, key) && this.grants.allows(key, run.id);
-      return await this.act(run, auth, () => refuse("not_granted", "This pane's grant has ended."), verb, args, signal, began);
+      const run = this.runs.bindPane(key);
+      const auth = () => !signal.aborted && !this.closed && this.setting.level === "start" && stillIn(peer, key) && this.runs.hasPaneRun(run.id);
+      return await this.act(run, auth, () => refuse("not_granted", "This pane's run has ended."), verb, args, signal, began);
     } finally { peer.close(); }
   }
   private async act(run: Run, auth: () => unknown, deny: () => ReturnType<typeof refuse>, verb: unknown, args: unknown, signal: AbortSignal, began: number): Promise<object> {
     if (!this.runs.takeCall(run.id, this.now())) return refuse("rate_limited", "Too many calls in the past minute.");
-    if (verb === "scope") return answer("scope", { verbs: this.verbs(run) });
+    if (verb === "scope") {
+      const verbs = this.verbs(run);
+      const ownsChild = !verbs.includes("stop") && [...this.ledger.children.values()].some(row => row.starter === run.id);
+      return answer("scope", { verbs: ownsChild ? [...verbs, "stop"] : verbs });
+    }
     if (!harnessVerb(verb)) return refuse("bad_request", "Unknown verb.");
-    if (!isView(verb) && this.setting.level !== "start") return deny();
+    if (!isView(verb) && verb !== "stop" && this.setting.level !== "start") return deny();
     if (!validArgs(verb, args)) return refuse("bad_request", "Invalid or unexpected argument.");
     const privilegedRead = verb === "read" && (args.what === "result" || args.what === "screen");
     if (privilegedRead && !this.verbs(run).includes("result")) return deny();
     if (isView(verb)) {
-      const result = await this.view.query(verb, args, this.turns);
+      const result = await this.view.query(verb, args, this.turns, run.id);
       return auth() && (!privilegedRead || this.verbs(run).includes("result")) ? result : deny();
     }
-    const allowed = () => !!auth() && this.verbs(run).includes(verb);
+    const allowed = () => !!auth() && (verb === "stop" || this.verbs(run).includes(verb));
     const session = String(args.session ?? "");
     if (verb === "start" || verb === "ask") {
-      if (!run.ceiling && run.depth < this.setting.depth && (!askable(String(args.harness)) || !this.setting.harnesses.includes(String(args.harness)))) return refuse("not_granted", "This harness has no verified ask-for-everything launch.");
+      if (run.depth < this.setting.depth && !this.setting.harnesses.includes(String(args.harness))) return refuse("not_granted", "This harness was not enabled.");
       if (!allowed()) return refuse("depth_exceeded", "This run is at its depth limit.");
       const started = await this.serial(run.id, async () => {
         if (!allowed()) return deny();
@@ -214,18 +203,13 @@ export class AgentToolHub {
     return this.serial(run.id, async () => {
       if (!allowed()) return deny();
       if (this.options.acp.forPane(session) !== child) return refuse("unknown_session", "The child has ended.");
-      if (verb === "send") {
-        const cmd = (this.options.resolve ?? resolveHarness)(row.harness);
-        const verified = cmd && permissionLaunch(row.harness, run.ceiling, row.run, cmd)?.ceiling;
-        if (!verified || verified.mode !== child.client.sessionMode) return deny();
-        return this.turns.send(child, row, args, verified.mode);
-      }
+      if (verb === "send") return this.turns.send(child, row, args);
+      if (verb === "answer") return this.turns.answerQuestion(child, row, args);
       if (row.held || child.client.terminalReady) return refuse("taken_over", "A person holds this session.");
       try {
         const receipt = await child.client.request("_keeper/tool_stop", {}, signal);
         if (!isRecord(receipt) || receipt.stopping !== true) return refuse("unavailable", "Keeper did not confirm stop.");
       } catch (error) {
-        if (error instanceof KeeperRequestError && error.code === -32003) return refuse("waiting_human", "A person must answer the child's card.");
         if (error instanceof KeeperRequestError && error.code === -32002) return refuse("taken_over", "A person holds this child.");
         throw error;
       }
@@ -269,35 +253,40 @@ export class AgentToolHub {
     }
     const command = (this.options.resolve ?? resolveHarness)(kind);
     if (!command) return refuse("start_failed", "This harness has no supported ACP adapter.");
-    if (command.ceiling?.profile !== run.ceiling || !run.ceiling) {
-      const refusal = await askRefusal(kind, command);
-      if (refusal) return refuse("not_granted", refusal);
-    }
     const cwd = typeof args.cwd === "string" ? args.cwd : (await coreConnection().call("terminal.get", { terminal: run.self })).cwd;
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return refuse("bad_request", "The folder does not exist.");
-    if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) return refuse("not_granted", "The grant changed.");
-    if (expired()) return refuse("time_limit", "This child no longer starts new work.");
-    const key = this.runs.reserve(run.depth + 1, run.ceiling);
-    const launch = permissionLaunch(kind, run.ceiling, key.id, command);
-    if (!launch) { key.cancel(); return refuse("not_granted", "The child launch is not proven within the parent's permission ceiling."); }
-    const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, created: this.now() };
+    const key = this.runs.reserve(run.depth + 1);
+    const launch = { ...command, cwd, env: { ...command.env, OVIS_AGENT_SOCKET: this.address, OVIS_AGENT_TOKEN_FILE: key.tokenFile } };
     try {
+      const executable = harnessVersionExecutable(kind, command);
+      const output = executable === undefined ? null : await this.options.acp.versionOutput(executable, launch);
+      if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) { key.cancel(); return refuse("not_granted", "The grant changed."); }
+      if (expired()) { key.cancel(); return refuse("time_limit", "This child no longer starts new work."); }
+      const version = output === null ? undefined : parseVersion(output, "reported") ?? undefined;
+      const intent = { run: key.id, parent: run.self, starter: run.id, harness: kind, version, created: this.now() };
       if (typeof args.key === "string") this.runs.rememberStart(run.id, args.key, key.id);
       this.ledger.begin(intent);
-      const child = await this.options.acp.start({ harness: kind, argv: launch.argv, env: { ...launch.env, OVIS_AGENT_SOCKET: this.address, OVIS_AGENT_TOKEN_FILE: key.tokenFile },
-        cwd, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)], askEveryTime: launch.askEveryTime, sessionMeta: launch.sessionMeta, configOptions: launch.configOptions, privateFiles: launch.privateFiles });
+      const child = await this.options.acp.start({ ...launch, harness: kind, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)], askEveryTime: true });
       this.view.signInNeeded.delete(kind);
-      if (child.client.sessionMode !== launch.ceiling.mode) {
+      const startMode = delegatedMode(kind, child.client);
+      const permitted = startMode !== null && await child.client.request("_keeper/tool_check",
+        { sessionId: child.client.session, expectedMode: startMode }, AbortSignal.timeout(5000)).catch((error: unknown) => {
+        if (error instanceof KeeperRequestError || error instanceof KeeperDisconnected) return false;
+        throw error;
+      });
+      if (permitted !== true || delegatedMode(kind, child.client) !== startMode) {
+        key.cancel();
         await this.options.acp.stop(child.id);
-        this.ledger.finish(key.id); key.cancel();
-        return refuse("not_granted", "The child did not open in its verified mode.");
+        this.ledger.finish(key.id);
+        this.runs.forgetFailedStart(run.id, key.id);
+        return refuse("not_granted", "The child's starting permissions could not be confirmed.");
       }
-      const row: ToolChild = { id: child.id, terminal: child.terminal, harness: kind, starter: run.id, parent: run.self, run: key.id, created: this.now(), held: false, turns: [] };
+      const row: ToolChild = { ...intent, id: child.id, terminal: child.terminal, created: this.now(), held: false, turns: [] };
       this.ledger.children.set(child.terminal, row); this.ledger.save(); this.ledger.audit(row, "start", null); this.turns.watch(child);
       this.ledger.finish(key.id);
       if (!allowed() || !this.setting.harnesses.includes(kind) || run.depth >= this.setting.depth) { key.cancel(); return refuse("not_granted", "The grant changed while starting."); }
-      key.bind({ self: child.terminal, depth: run.depth + 1, root: run.root, harness: kind, started_by: run.id, ceiling: launch.ceiling.profile });
-      const accepted = args.task ? await this.turns.send(child, row, args, launch.ceiling.mode) : null;
+      key.bind({ self: child.terminal, depth: run.depth + 1, root: run.root, harness: kind, started_by: run.id });
+      const accepted = args.task ? await this.turns.send(child, row, args) : null;
       if (accepted?.kind === "refusal") return answer("session", { session: childRef(row, child), state: childState(child, row), sent: null, send_error: accepted.error });
       const sent = accepted ? { accepted: true, turn_id: accepted.turn_id, key: accepted.key, duplicate: accepted.duplicate } : null;
       return answer("session", { session: childRef(row, child), state: childState(child, row), sent });

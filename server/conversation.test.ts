@@ -4294,6 +4294,42 @@ describe("Agy native ledger through shared paging", () => {
     try { expect(await page().catch((error: unknown) => error)).toBeInstanceOf(ConversationUnavailable); }
     finally { spy.mockRestore(); }
   });
+  it("reads a longer in-place Agy ledger rewrite after a WAL checkpoint", async () => {
+    db.exec("PRAGMA journal_mode=WAL");
+    add(0, "USER_INPUT", "old");
+    const initial = await page();
+    expect(initial.turns[0]?.parts[0]).toEqual({ kind: "text", text: "old" });
+    const inode = fs.statSync(path).ino;
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    writeFileSync(path, row(0, "USER_INPUT", "a longer replacement prompt"));
+    expect(fs.statSync(path).ino).toBe(inode);
+    const rewritten = await page();
+    expect(rewritten.history_id).not.toBe(initial.history_id);
+    expect(rewritten.turns[0]?.parts[0]).toEqual({ kind: "text", text: "a longer replacement prompt" });
+  });
+  it("reads a growing Agy ledger with a rewritten prefix and unchanged old tail", async () => {
+    db.exec("PRAGMA journal_mode=WAL");
+    add(0, "USER_INPUT", "old");
+    const hidden = "x".repeat(32);
+    const tail = row(2, "PLANNER_RESPONSE", "tail");
+    appendFileSync(path, row(1, "EPHEMERAL_MESSAGE", hidden));
+    add(2, "PLANNER_RESPONSE", "tail");
+    const initial = await page();
+    const inode = fs.statSync(path).ino;
+    const oldTail = fs.statSync(path).size - Buffer.byteLength(tail);
+    db.exec("INSERT INTO steps VALUES (3); PRAGMA wal_checkpoint(TRUNCATE)");
+    const prefix = row(0, "USER_INPUT", "new longer") + row(1, "EPHEMERAL_MESSAGE", hidden.slice(7));
+    expect(Buffer.byteLength(prefix)).toBe(oldTail);
+    writeFileSync(path, prefix + tail + row(3, "USER_INPUT", "next"));
+    expect(fs.statSync(path).ino).toBe(inode);
+    for (let read = 0; read < 2; read++) {
+      const rewritten = await page();
+      expect(rewritten.history_id).not.toBe(initial.history_id);
+      expect(rewritten.turns.map((turn) => turn.parts[0])).toEqual(
+        ["new longer", "tail", "next"].map((text) => ({ kind: "text", text })),
+      );
+    }
+  });
   it("distinguishes unreadable database from verified empty history", async () => {
     add(0, "USER_INPUT", "one");
     (await page());
@@ -4319,9 +4355,10 @@ describe("Agy native ledger through shared paging", () => {
     const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
     try {
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      const greeting = await paneConversation(pane.pane_id);
+      expect(greeting).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
       db.query("INSERT INTO steps VALUES (0)").run();
-      expect(await paneConversation(pane.pane_id)).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: greeting.history_id })).toMatchObject({ source: "agy-transcript", turns: [], history_id: `unwritten:${session}` });
       writeFileSync(path, row(0, "USER_INPUT", "first prompt"));
       const written = await paneConversation(pane.pane_id);
       expect(written.turns).toHaveLength(1);
@@ -4334,6 +4371,19 @@ describe("Agy native ledger through shared paging", () => {
       db.exec("DELETE FROM steps");
       db.query("INSERT INTO steps VALUES (500)").run();
       expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it("does not greet on a cold Agy read with only catalog step zero and no ledger", async () => {
+    rmSync(path);
+    db.query("INSERT INTO steps VALUES (0)").run();
+    const pane = { pane_id: "agy-cold", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [pane], agents: [], layouts: [], tabs: [], workspaces: [], protocol: 1, version: "test",
+    });
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    try {
+      await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it("records nothing for a pane forgotten while its status row was read", async () => {
@@ -4540,6 +4590,27 @@ describe("Agy native ledger through shared paging", () => {
       expect(JSON.stringify(fresh)).not.toContain("THIRD SESSION SECRET");
       expect(fresh).toBeInstanceOf(ConversationReadPending);
     } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
+  it.skipIf(!linksRefused).each(["different inode", "same inode"])("leaves an unpaged Agy read pending when a symlink to the %s replaces its ledger", async (target) => {
+    add(0, "USER_INPUT", "one");
+    const other = `${path}.other`;
+    writeFileSync(other, row(0, "USER_INPUT", "other"));
+    const pane = { pane_id: "agy-symlink-race", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      panes: [pane], agents: [], layouts: [], tabs: [], workspaces: [], protocol: 1, version: "test",
+    });
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session: "test", path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    const catalog = duringCatalog(1, () => {
+      if (target === "same inode") renameSync(path, other);
+      else rmSync(path);
+      symlinkSync(other, path);
+      throw new Error("transient WAL copy race");
+    });
+    try {
+      await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+      await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    } finally { catalog.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
     const screen = [
@@ -4949,7 +5020,7 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
 async function claudeStandIns(count: number): Promise<{ leader: number; pids: number[]; start: (pid: number) => string; stop: () => void }> {
   // a background job's stdin would be /dev/null: each stand-in reads the test's pipe through fd 3
   const one = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";
-  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const job = Bun.spawn(["bash", "-c", `exec 3<&0; ${Array.from({ length: count }, () => `${one} &`).join(" ")} wait`], { env: { PATH: process.env["PATH"] ?? "" }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
   const reader = job.stdout.getReader();
   let text = "";
   while (text.split("\n").length <= count) {
@@ -5049,6 +5120,26 @@ describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs o
 // herdr-core names only the first process of the foreground job: a launcher in front of Claude hid it (#3009)
 describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name in front (#3009)", () => {
   const launcher = (leader: number) => ({ process_info: { pane_id: "t1", shell_pid: 1, foreground_processes: [{ pid: leader, name: "bun", argv: ["bun", "launch.ts"] }] } });
+
+  it("reads a pane's default Claude transcript even when the server has a different store (#4618)", async () => {
+    const job = await claudeStandIns(1);
+    const pid = job.pids[0]!;
+    const store = claudeHome(pid, job.start(pid));
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+      ? { agent: {} }
+      : { process_info: { foreground_processes: [{ pid, name: "claude", argv: ["claude"] }] } }) as unknown as typeof herdr.herdrRpc);
+    try {
+      process.env["CLAUDE_CONFIG_DIR"] = join(store.home, "server-store");
+      mkdirSync(process.env["CLAUDE_CONFIG_DIR"], { recursive: true });
+      const pane = { pane_id: "default-claude-store", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane;
+      expect((await claudePaneSession(pane))?.path).toBe(store.transcript);
+    } finally {
+      delete process.env["CLAUDE_CONFIG_DIR"];
+      rpc.mockRestore();
+      job.stop();
+      store.restore();
+    }
+  });
 
   it("finds the one Claude a launcher runs, and its session by the PID record", async () => {
     const job = await claudeStandIns(1);
