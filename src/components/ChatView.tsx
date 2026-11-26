@@ -1867,9 +1867,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           setPromptStale(false);
           // a read begun under a herdr that has gone since draws no card and keeps nothing for the new one
           if (paneLifetimes.generation(machineId) === lifetime) {
-            // Old and blank frames can both precede Claude's redraw. Allow a short retry window;
-            // a resize that doesn't change the ID must still let the user answer.
-            if (needsReflowRead() && reflowRetries > 0 && (next.prompt === null || next.prompt.id === approvalReflowPromptId)) {
+            // The old card, a blank frame and a fallback menu can all precede Claude's redraw.
+            // Bound the wait so a resize that doesn't change the ID still lets the user answer.
+            if (needsReflowRead() && reflowRetries > 0
+              && (next.prompt === null || next.prompt.fallback === true || next.prompt.id === approvalReflowPromptId)) {
               reflowRetries -= 1;
               quick = true;
               return;

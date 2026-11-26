@@ -358,7 +358,7 @@ try {
       }
       console.log("PASS the approval card sits outside the transcript, directly over the input card on its column, at 1440 and 390, dark and light");
 
-      for (const optionIndex of [0, 1]) {
+      for (const [firstFrame, optionIndex] of [["old", 0], ["blank", 1], ["fallback", 1]] as const) {
         const approval = {
           id: "claude-wide", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
           body: "touch probe.txt", multi_select: false, custom_option_index: null,
@@ -369,17 +369,22 @@ try {
           const card = page.locator(".prompt-card");
           const option = card.locator(".prompt-card-option").nth(optionIndex);
           assert.ok(await option.isEnabled());
-          await page.evaluate(([pane, narrow, showOld]) => {
+          await page.evaluate(([pane, narrow, firstFrame]) => {
             const mock = window as unknown as {
               formPrompt: unknown; formSocket: WebSocket; formReflowGate?: Promise<void>; finishReflow?: () => void; formReflowFirst?: unknown;
             };
-            mock.formReflowFirst = showOld ? mock.formPrompt : null;
+            mock.formReflowFirst = firstFrame === "old" ? mock.formPrompt : firstFrame === "blank" ? null : {
+              id: "claude-fallback", agent: "claude", kind: "menu", fallback: true,
+              title: "Waiting for input", question: "The agent is waiting for input.",
+              body: null, multi_select: false, custom_option_index: null,
+              options: [{ label: "Enter", description: null }, { label: "Esc", description: null }],
+            };
             mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
             mock.formPrompt = narrow;
             mock.formSocket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
               type: "pane-geometry", pane_id: pane, cols: 40, rows: 44,
             }) }));
-          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }, optionIndex === 0] as const);
+          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }, firstFrame] as const);
           await page.waitForFunction(() => (window as unknown as { formReflowReadStarted?: boolean }).formReflowReadStarted === true);
           await card.locator('.prompt-card-option:disabled').nth(optionIndex).waitFor();
           assert.ok(await option.isDisabled());
@@ -391,8 +396,8 @@ try {
             mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
           });
           await page.waitForFunction(() => Reflect.get(window, "formReflowReadStarted") === true);
-          assert.equal(await option.count(), 1, "keep the card when the first read catches a blank redraw");
-          assert.ok(await option.isDisabled(), "the first read was inconclusive; wait for the redraw");
+          assert.deepEqual(await card.locator(".prompt-card-body").allTextContents(), [approval.body], `keep the approval after the ${firstFrame} frame`);
+          assert.ok(await option.isDisabled(), `${firstFrame} is inconclusive; wait for the redraw`);
           await page.evaluate(() => {
             const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void> };
             mock.finishReflow();
