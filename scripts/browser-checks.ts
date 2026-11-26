@@ -53,7 +53,7 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
     id: "chat",
     summary: "Agent conversation lens, streaming turns, working state, quotes, reply comments, math, search and session history",
     sources: /^(?:src\/components\/(?:Chat|Conversation|Turn|Reply|Markdown|Math|SessionHistory|SkillActivity|Background)|src\/lib\/(?:chat|conversation|markdown|sessionHistory|i18n\/chat)|server\/(?:conversation|transcript|agy|claude|codex|copilot|grok|omp|omo|session-history)|shared\/session-history)/,
-    scripts: /^scripts\/(?:chat-|agy-chat-|copilot-chat-|conversation-search-|reply-comments-|math-browser-|session-history-|omo-plan-|plan-chip-|background-agent-|command-outcome-|todo-snapshots-)/,
+    scripts: /^scripts\/(?:chat-|[a-z]+-chat-browser|[a-z-]+-image-browser-qa|gjc-status-|agy-chat-|copilot-chat-|conversation-search-|reply-comments-|math-browser-|session-history-|omo-plan-|plan-chip-|background-agent-|command-outcome-|todo-snapshots-)/,
   },
   {
     id: "composer",
@@ -77,7 +77,7 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
     id: "files",
     summary: "Files dialog and docked panel, Markdown/source/media viewer, in-app text editor and local web panel",
     sources: /^(?:src\/components\/(?:Files|FileViewer|DirectoryBrowser|TextFile|HighlightedCode|MarkdownOutline|BrowserPanel|BrowserSidePanel)|src\/lib\/(?:file|saveImage|sourcePreview|textPreview|highlight|i18n\/files)|server\/(?:fs|files)|shared\/files)/,
-    scripts: /^scripts\/(?:files-|file-viewer-|file-text-size-|text-file-edit-|docked-file-link-|web-panel-|palette-local-page-|artifacts-browser-|virtual-source-)/,
+    scripts: /^scripts\/(?:files-|file-viewer-|file-preview-|markdown-outline-|built-in-browser-|file-text-size-|text-file-edit-|docked-file-link-|web-panel-|palette-local-page-|artifacts-browser-|virtual-source-)/,
   },
   {
     id: "diff",
@@ -101,7 +101,7 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
     id: "settings",
     summary: "Settings dialog pages, segmented controls, search, interface/chat fonts and synced preferences",
     sources: /^(?:src\/components\/(?:Settings|AgentsSettings|Font)|src\/lib\/(?:settings|preferencesSync|i18n\/settings))/,
-    scripts: /^scripts\/(?:settings-|interface-font-|preferences-sync-|agent-entry-points-|agents-sign-in-|setup-dialog-)/,
+    scripts: /^scripts\/(?:settings-|setup-row-|cliproxy-settings-|interface-font-|preferences-sync-|agent-entry-points-|agents-sign-in-|setup-dialog-)/,
   },
   {
     id: "palette",
@@ -113,19 +113,19 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
     id: "relay",
     summary: "E2EE relay pairing, hosted shell, offline reasons, client version floor and relayed media",
     sources: /^(?:relay\/|src\/components\/Relay|src\/lib\/(?:relay|i18n\/relay)|server\/relay\/|shared\/relay)/,
-    scripts: /^scripts\/(?:relay-|ui-access-|add-pc-more-relay-)/,
+    scripts: /^scripts\/(?:relay-|offline-typing-relay-|ui-access-|add-pc-more-relay-)/,
   },
   {
     id: "account",
     summary: "Account sign-in, signed PC/device list, join approvals and device security",
     sources: /^(?:src\/components\/(?:Account|AccessGate|Device)|src\/lib\/(?:account|i18n\/devices)|server\/(?:account\/|auth\.ts|devices\.ts|access\.ts)|shared\/account)/,
-    scripts: /^scripts\/(?:account-|device-security-|security-summary-|lan-exposure-notice-|ui-access-)/,
+    scripts: /^scripts\/(?:account-|relay-account-|my-pcs-|device-security-|security-summary-|lan-exposure-notice-|ui-access-)/,
   },
   {
     id: "machines",
     summary: "Local and SSH remote PCs, machine event transport, workspaces and worktrees",
     sources: /^(?:src\/components\/(?:AddPc|Machine|NewWorkspace|Worktree)|src\/lib\/(?:machines|i18n\/(?:machines|workspace))|server\/(?:machines|workspace-routes|herdr\/|herdr-core\/)|shared\/machines)/,
-    scripts: /^scripts\/(?:machine-events-|recent-folders-|phone-worktree-|newtab-typeahead-|folder-filter-|herdr-restart-|herdr-profiles-)/,
+    scripts: /^scripts\/(?:machine-|my-pcs-|recent-folders-|phone-worktree-|newtab-typeahead-|folder-filter-|herdr-restart-|herdr-profiles-)/,
   },
   {
     id: "alerts",
@@ -143,13 +143,13 @@ export const BROWSER_SURFACES: readonly BrowserSurface[] = [
     id: "updates",
     summary: "Release update notices, PWA install hints, service worker and usage quotas",
     sources: /^(?:src\/components\/(?:Update|Install|Usage)|src\/(?:pwa\.ts|sw\.ts)|src\/lib\/(?:i18n\/(?:updates|usage))|server\/(?:supervisor|updater|usage)|shared\/(?:update|usage))/,
-    scripts: /^scripts\/(?:update-notice-|revision-bound-update-|install-hint-|usage-)/,
+    scripts: /^scripts\/(?:update-notice-|pwa-update-|install-state-|revision-bound-update-|install-hint-|usage-)/,
   },
   {
     id: "shell",
     summary: "App shell layout, split panes, tabs, mobile viewport/keyboard, sheets, Back navigation and Safari polyfills",
     sources: /^(?:index\.html$|src\/(?:App\.tsx|main\.tsx)|src\/components\/(?:AppCrash|Header|Pane|Split|Tab|Sheet)|src\/lib\/(?:sheet|viewport|externalLink))/,
-    scripts: /^scripts\/(?:ui-regression|ui-contexts-|boot-loading-|render-crash-|old-safari-|keyboard-viewport-|mobile-viewport-|phone-safe-area-|phone-back-|phone-glass-header-|sheet-outside-tap-|narrow-pane-|tab-|pane-lifetime-|pane-mute-|header-lens-|link-menu-|external-link-|wake-lock-|tap-targets-)/,
+    scripts: /^scripts\/(?:ui-regression|ui-contexts-|reconnect-header-|header-context-|drawer-modal-|phone-split-grid-|touch-long-press-|context-menu-|deep-link-|health-flap-|boot-loading-|render-crash-|old-safari-|keyboard-viewport-|mobile-viewport-|phone-safe-area-|phone-back-|phone-glass-header-|sheet-outside-tap-|narrow-pane-|tab-|pane-lifetime-|pane-mute-|header-lens-|link-menu-|external-link-|wake-lock-|tap-targets-)/,
   },
 ];
 
@@ -468,7 +468,7 @@ export function findBrowserChecks(targets: readonly string[], options: { root?: 
     if (importers.length > 0 && importers.length <= MAX_CALLER_FAN_IN) {
       for (const importer of importers) {
         oneHopTargets.add(importer);
-        addTokensFrom(importer, 0.6);
+        addTokensFrom(importer, 0.25);
       }
     }
   }
@@ -516,7 +516,7 @@ export function findBrowserChecks(targets: readonly string[], options: { root?: 
     const scriptSurfaces = BROWSER_SURFACES.filter((surface) => matchedSurfaces.has(surface.id) && surface.scripts.test(script));
     if (scriptSurfaces.length > 0) {
       const explicit = scriptSurfaces.some((surface) => requestedSurfaces.has(surface.id));
-      score += explicit ? 25 : 8;
+      score += explicit ? 25 : 20;
       reasons.push(`surface ${scriptSurfaces.map((surface) => surface.id).join(", ")}`);
     }
 

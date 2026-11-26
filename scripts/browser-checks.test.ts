@@ -28,6 +28,9 @@ describe("browser-checks feature map and matcher", () => {
 
     const inbox = findBrowserChecks(["src/components/InboxMode.tsx"], { root: REPO, limit: 5 });
     expect(inbox.matches.map((match) => match.script)).toContain("scripts/inbox-mode-demo-regression.ts");
+
+    const machineDialog = findBrowserChecks(["src/components/MachineDialog.tsx"], { root: REPO, limit: 5 });
+    expect(machineDialog.matches.map((match) => match.script)).toContain("scripts/machine-dialog-regression.ts");
   });
 
   it("excludes demo-only scripts when a change touches server/ alone", () => {
