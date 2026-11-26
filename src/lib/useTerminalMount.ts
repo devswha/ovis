@@ -989,6 +989,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the masked prompt the screen shows now, if any (lib/secretScreen.ts). An attached pane's cursor is the
       // program's; a mirrored pane's repaints carry none, and a pane not known to be attached is read the same way
       const secretScreen = createSecretScreen(term, () => mirroredRef.current === false);
+      // the pane whose last frame parsed was whole (read for its prompt), null after one that ended inside a frame
+      let wholeFrameOf: string | null = null;
       // What the field shows: the prompt, and whether its answer is typed unchecked (HerdrSocket.typesSecret). That
       // changes when the bridge says what it takes, which can come after the prompt was drawn
       const showSecret = (pane: string, prompt: string | null): void => {
@@ -1005,6 +1007,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         else if (recoveringPane !== null) rejoin = true;
         frameGateRef.current.reset();
         if (!writingOutput) replayOscOpen = oscMayCopy();
+        wholeFrameOf = null;
       };
       retireOutputRef.current = retireOutput;
       // libghostty answers the program's questions itself: only in the live output of the pane shown, never in a replay,
@@ -1367,7 +1370,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // A herdr-core pane's stream is the program's own bytes, with no frame of herdr's to wait for: a program
             // that opened a synchronized update and never closed it (a TUI killed mid-draw, `cat` of a raw log)
             // would leave every later chunk inside one, and a later prompt unread
-            if (stamp.boundary || socket.hasTerminalHistory()) {
+            wholeFrameOf = stamp.boundary || socket.hasTerminalHistory() ? owner : null;
+            if (wholeFrameOf !== null) {
               const prompt = secretScreen.read(owner);
               secretRef.current = prompt;
               if (promptUnknownFor === owner && lifetime === outputLifetime && recoveringPane !== owner) promptUnknownFor = null;
@@ -2330,8 +2334,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         invalidateArrowModes();
         endRecovery();
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
-        // A frame the old stream left open is not the new one's
+        // A frame the old stream left open is not the new one's, nor is a whole frame it ended on
         frameGateRef.current.reset();
+        wholeFrameOf = null;
         const drewView = viewBuffer !== null && viewBuffer.length > 1;
         const viewReset = viewDropped || viewBuffer !== null;
         if (drewView && viewBuffer !== null) {

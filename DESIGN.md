@@ -4720,9 +4720,18 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and the full server words when a cause already stands on the line or the diagnostic was shortened,
   fold behind a dim Details toggle under the line, never on it; the size limit's own sentence is the
   whole note. Removing the tile removes its note.
-- An iPhone's HEIC or HEIF photo is drawn to a JPEG in the browser before it uploads (at most 4096
-  pixels a side), since the agents read PNG, JPEG, GIF and WebP only; one the browser cannot decode
-  uploads as it is (`uploadableImage`, `lib/composerImageMime.ts`).
+- A JPEG or HEIC photo is drawn to a JPEG of at most 2048 pixels a side in the browser before it
+  uploads, about 1 MB, so it uploads fast on mobile data, at the cost of detail an agent's newest
+  models could read.
+  An iPhone's still HEIC or HEIF photo always is, since the agents read PNG, JPEG, GIF and WebP
+  only; a JPEG one always too, since the redraw drops its camera metadata (location, device,
+  date); an animated HEIC sequence and a PNG screenshot never. A JPEG the browser cannot redraw
+  keeps only JFIF, ICC and valid Exif orientation alongside the first image's pixel data, so a
+  portrait stored sideways still stands up. If the JPEG's markers cannot be parsed through the
+  end of the first image, or if a HEIC cannot be redrawn, it uploads as it is, metadata included.
+  A name can suggest an image type when the browser leaves it empty; its bytes must agree before
+  the composer treats it as an image
+  (`uploadableImage`, `lib/composerImageMime.ts`).
 - While a phone's keyboard is up, a tap on the transcript or a drag down it (`32px`) puts the
   keyboard away. Each only blurs the field, so the draft stays. The prompt card, which can stand
   where the transcript was on a short screen, does the same: a tap on its text (never on an
@@ -5586,8 +5595,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
-  replaces its hypothesis in place (`thi`, `this`, `this is a test`), so sending each one typed
-  every draft. A chord typed or tapped with the key bar's held modifier sends that preedit first,
+  replaces its hypothesis in place (`thi`, `this`, `this is a test`). On iOS, the first hypothesis
+  can be a plain insertion without a typing key. Later keyless edits over the whole hypothesis
+  or just its suffix revise the preedit; typing Space or inserting at the caret still commits it.
+  A chord typed or tapped with the key bar's held modifier sends that preedit first,
   as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
   provisional input stays marked text and only the inserted result reaches the shell. A pane
   switch drops a pending preedit. A view-only terminal starts no dictation preedit, and one still
