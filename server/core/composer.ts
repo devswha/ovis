@@ -352,8 +352,14 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   const refusal = (error: unknown): never => { throw refused ?? error; };
   const [live, colors] = await claudeBoxReads(paneId);
   if (!claudeInputDraft(live, colors)) return;
-  if (working || automatic || (claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) === null && !await restoredPaste(paneId, live))) {
+  const typed = claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) !== null;
+  if (working || automatic || (!typed && !await restoredPaste(paneId, live))) {
     throw new InputDraftError(claudeClearableDraft(live, colors), undefined, claudeSendAnywayBox(live), claudeRefusalMessage(live));
+  }
+  // Claude's records were read meanwhile: the box they were checked for must still be the one the Esc presses clear
+  if (!typed) {
+    const [now] = await claudeBoxReads(paneId);
+    if (claudeInputBoxContent(now) !== claudeInputBoxContent(live)) throw new InputDraftError(null, undefined, claudeSendAnywayBox(now), claudeRefusalMessage(now));
   }
   if (deadline - Date.now() < RESTORED_CLEAR_RESERVE_MS) throw new HerdrError("submit_timeout", "Too little time was left to clear Claude Code's input box and send; nothing was typed");
   // the read proved the box holds the copy: a lone Esc on an EMPTY box would open Claude's

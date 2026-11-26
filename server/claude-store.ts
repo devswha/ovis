@@ -1241,6 +1241,7 @@ export async function claudeForegroundSession(
 
 const HISTORY_TAIL_BYTES = 256 * 1024;
 const PASTE_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
 
 /**
  * Whether Claude Code's input box, holding only `box`, one folded paste (`[Pasted text #2 +12 lines]`), is `sent`,
@@ -1248,10 +1249,12 @@ const PASTE_CACHE_MAX_BYTES = 4 * 1024 * 1024;
  * no proof: anyone's paste of as many lines reads the same. Claude's own records are: the last prompt the pane's
  * session wrote to `history.jsonl` is that one paste holding exactly `sent` (inline, or in `paste-cache/<hash>.txt`
  * when long), and Claude puts a stopped prompt's paste back under the next number with the same line count, while
- * any paste after it takes a later one (both measured on 2.1.330). Anything else, or a record that cannot be read: false.
+ * any paste after it takes a later one (both measured on 2.1.330). A turn that went on is no stop: the paste a person
+ * makes after its answer takes that same next number, so the session's transcript must hold no reply after its last
+ * prompt, as when Claude dropped the turn before answering. Anything else, or a record that cannot be read: false.
  */
 export async function claudeRestoredPaste(
-  processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null }[],
+  processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null; cwd?: string | null }[],
   box: string, sent: string, home = userHome(),
 ): Promise<boolean> {
   const shown = /^\[Pastedtext#(\d+)((?:\+\d+lines?)?)\]$/.exec(box.replace(/^❯/, "").replace(/\s+/g, ""));
@@ -1280,7 +1283,19 @@ export async function claudeRestoredPaste(
       : "contentHash" in paste && typeof paste.contentHash === "string" && /^[0-9a-f]{8,128}$/.test(paste.contentHash)
         ? await readSmallFile(join(dir, "paste-cache", `${paste.contentHash}.txt`), PASTE_CACHE_MAX_BYTES) : null;
     const lf = (text: string): string => text.replace(/\r\n?/g, "\n");
-    return content !== null && lf(content) === lf(sent);
+    // Claude keeps a paste with each tab as four spaces
+    if (content === null || lf(content) !== lf(sent).replace(/\t/g, "    ")) return false;
+    const transcript = await claudeTranscriptFile(home, session, [only.cwd], dir);
+    if (transcript === null) return false;
+    const records = (await readClaudeFileTail(transcript, TRANSCRIPT_TAIL_BYTES)).split("\n");
+    for (let index = records.length - 1; index > 0; index--) {
+      let entry: unknown;
+      try { entry = JSON.parse(records[index]!); } catch { continue; }
+      if (entry === null || typeof entry !== "object" || !("type" in entry)) continue;
+      if (entry.type === "assistant") return false;
+      if (entry.type === "user" && "origin" in entry && entry.origin !== null && typeof entry.origin === "object" && "kind" in entry.origin && entry.origin.kind === "human") return true;
+    }
+    return false;
   } catch {
     return false;
   }
