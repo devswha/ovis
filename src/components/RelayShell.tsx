@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { ACCOUNT_PCS_CHANGED_EVENT, type MyPc } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import { hasNativePlugin } from "../lib/nativeApp.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -87,7 +88,7 @@ export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: 
       <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and type the code it shows.")}</p>
       <form id={formId} className="relay-shell-code-form" onSubmit={submit}>
         <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{label}</label>
-        <input id={`${id}-code`} name="code" className="input relay-shell-code-input" aria-label={label} placeholder="XXXXX-XXXXX" disabled={looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
+        <input id={`${id}-code`} name="code" className="input relay-shell-code-input" aria-label={label} placeholder="XXXXX-XXXXX" disabled={looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus onInput={typePairCode} onCompositionEnd={endPairCodeComposition} />
         {failure !== null && <p className="account-error" role="alert">{codeFailureText(t, failure)}</p>}
         {back !== undefined && <div className="relay-shell-actions"><button type="submit" className="btn btn-primary" aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button>{back}</div>}
       </form>
@@ -132,7 +133,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
             <CodeEntry omitHeading formId={codeFormId} failure={state.kind === "code-entry" ? state.failure : null} looking={looking} onSubmit={onCodeSubmit} />
           ) : mode === "compare" && state.kind === "code-compare" ? (
             <>
-              <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs. Pair only if every group matches.")}</p>
+              <p className="relay-shell-copy">{t("The PC shows its ID under the code. Pair only if every group matches. On older versions, check Settings → Devices and PCs → Connected to this PC, or go back and use a code from Settings → Agents → Setup guide → Other ways → Show a code to type.")}</p>
               <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
             </>
           ) : (
