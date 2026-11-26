@@ -11,17 +11,6 @@ import { Turn } from "./ChatView.tsx";
 // so a test can compute legacy output byte-for-byte and wrap the spy without re-entering it.
 const originalPlainText = plainTextModule.plainText;
 
-/**
- * TASK-001/TASK-002 baseline and regression gate for an assistant turn's TXT copy button
- * (`docs/plans/performance-optimization-2026-11.md`, AC-002/AC-006): deriving an answer's plain
- * text must happen only when the reader copies it as TXT - never while its row renders - while
- * MD/TXT copies keep byte-for-byte what they always copied of the content visible at activation,
- * including while the turn streams new words in just before the click. Counts are the gate
- * (`plainText` invocations); timing stays an observation recorded under
- * docs/plans/performance-evidence/TASK-COPY/, never asserted on - these are isolated component
- * fixtures on one host, never a claim about any device or session (`docs/performance-audit-2026-10-21.md`).
- */
-
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
 
 function installBrowserGlobals(): void {
