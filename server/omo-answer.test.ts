@@ -110,10 +110,14 @@ describe("an OmO question that does not wait, answered on its control socket", (
   test("types no key where OmO waits on no such question, or answers in a way that may mean it applied the answer", async () => {
     const body = { pane_id: "p", prompt_id: "c", option_indices: [0] };
     // answered meanwhile, or by this very answer sent before an acknowledgment that was lost
-    const answered = omoSocket("/s/session.jsonl", { success: false, error: "unknown_request", disposition: "unknown" });
     const unclear = omoSocket("/s/session.jsonl", { disposition: "applied" });
-    await Promise.all([answered.listening, unclear.listening]);
-    expect(await answerOmoPending(answered.path, card("one"), body, () => true, Date.now() + 4_000)).toBe("gone");
+    await unclear.listening;
+    const closed = card("one", "/s/closed.jsonl");
+    const answeredHere = omoSocket("/s/closed.jsonl", { success: false, error: "unknown_request", disposition: "unknown" });
+    await answeredHere.listening;
+    expect(await answerOmoPending(answeredHere.path, closed, body, () => true, Date.now() + 4_000)).toBe("gone");
+    // a later request that finds no socket types no key for that call either
+    expect(await answerOmoPending(null, closed, body, () => true, Date.now() + 4_000)).toBe("gone");
     expect(await answerOmoPending(unclear.path, card("one"), body, () => true, Date.now() + 4_000)).toBe("gone");
   });
   test("waits for OmO's word only within the answer's time, then types no key for that call, also without a socket", async () => {

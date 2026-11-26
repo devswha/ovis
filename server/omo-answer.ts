@@ -82,5 +82,6 @@ export async function answerOmoPending(socket: string | null, card: ParsedPrompt
     return "sent";
   }
   if (sent["success"] === false && REFUSED_UNAPPLIED.has(String(sent["error"]))) return unconfirmed.has(call) ? "gone" : null;
-  return sent["success"] === false && sent["error"] === "unknown_request" ? "gone" : unconfirmedAnswer(call);
+  // OmO waits on no such question (unknown_request), or its word is unclear: no later request types a key for it either
+  return unconfirmedAnswer(call);
 }

@@ -2172,6 +2172,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (omoData === "sent") {
           delivered = true;
           way = "native";
+          // as the keys' answer marks it, so the widget closing is not read as an unknown screen meanwhile
+          formsAnswered.set(body.pane_id, Date.now());
+          if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
           askingEnded(body.pane_id);
           form.still = sameContent(contentId(prompt));
           return jsonResponse({ ok: true });

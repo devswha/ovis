@@ -107,8 +107,9 @@ export async function omoPaneSocket(pane: HerdrPane): Promise<string | null> {
   const agentDir = roots.omo?.agentDir;
   const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
   if (socket === null) return null;
-  const now = await paneGet(pane.pane_id);
-  return now.terminal_id === pane.terminal_id && JSON.stringify(now.agent_session ?? null) === JSON.stringify(pane.agent_session ?? null) ? socket : null;
+  // a pane herdr cannot name now is no pane to send to: no socket, as if none were found
+  const now = await paneGet(pane.pane_id).catch(() => null);
+  return now !== null && now.terminal_id === pane.terminal_id && JSON.stringify(now.agent_session ?? null) === JSON.stringify(pane.agent_session ?? null) ? socket : null;
 }
 
 /** Whether herdr reports a Codex session in `pane` other than `threadId` (by its id, or by its rollout file's name). */
