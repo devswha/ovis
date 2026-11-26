@@ -74,14 +74,15 @@ it("reads names within the last 64 KiB, including the line at the window boundar
   });
 });
 
-it("keeps the session list when Codex stores a non-text first message", () => {
+it.each([["a blob", Uint8Array.of(255)], ["a number", 73]] as const)("keeps the session list and ignores %s stored as the first message", (_, stored) => {
   using fixture = codexFixture();
   const id = threadId(1);
   fixture.rollout(id, null);
   {
     using db = fixture.db();
-    db.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, first_user_message TEXT)");
-    db.query("INSERT INTO threads VALUES (?, ?, ?)").run(id, "Still a valid title", Uint8Array.of(255));
+    // an untyped column keeps a number as a number (a TEXT column would store "73")
+    db.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, first_user_message)");
+    db.query("INSERT INTO threads VALUES (?, ?, ?)").run(id, "Still a valid title", stored);
   }
 
   expect(fixture.rows().map(({ title, firstMessage }) => [title, firstMessage])).toEqual([["Still a valid title", null]]);

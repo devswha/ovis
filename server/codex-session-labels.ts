@@ -30,9 +30,11 @@ export function codexStoredLabels(db: Database, ids: readonly string[], limits: 
   const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map(({ name }) => name));
   if (!columns.has("id")) return new Map();
   // In current Codex schemas, title can be a prompt preview even when no name was saved.
-  const name = columns.has("name") ? `substr(name, 1, ${limits.title})` : "NULL";
-  const legacyTitle = !columns.has("name") && columns.has("title") ? `substr(title, 1, ${limits.title})` : "NULL";
-  const first = columns.has("first_user_message") ? `substr(first_user_message, 1, ${limits.message})` : "NULL";
+  // substr would turn a number into text: only text values count
+  const textOf = (column: string, limit: number) => `CASE WHEN typeof(${column}) = 'text' THEN substr(${column}, 1, ${limit}) END`;
+  const name = columns.has("name") ? textOf("name", limits.title) : "NULL";
+  const legacyTitle = !columns.has("name") && columns.has("title") ? textOf("title", limits.title) : "NULL";
+  const first = columns.has("first_user_message") ? textOf("first_user_message", limits.message) : "NULL";
   const labels = db.query<{ readonly id: unknown; readonly name: unknown; readonly legacyTitle: unknown; readonly firstMessage: unknown }, string[]>(
     `SELECT id, ${name} AS name, ${legacyTitle} AS legacyTitle, ${first} AS firstMessage
      FROM threads WHERE id COLLATE NOCASE IN (${ids.map(() => "?").join(", ")}) LIMIT ${ids.length}`,
