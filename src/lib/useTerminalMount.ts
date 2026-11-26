@@ -2429,18 +2429,25 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         term.options.disableStdin = observeRef.current || heldRef.current;
       };
       reattachRef.current = reattach;
+      // the server replays a pane only to an attach that is new: the pane lets go first, so a terminal that started over
+      // is drawn from the pane's screen, not left blank until the program writes again
+      let redrawOnReturn = false;
+      const redrawFresh = (): void => {
+        redrawOnReturn = false;
+        const current = paneRef.current;
+        if (current && !mirroredRef.current && !releasedRef.current) {
+          socket.detach(current);
+          retireOutput();
+        }
+        reattach();
+      };
       // libghostty stopped drawing: the terminal starts over with a new engine and the pane is attached again, so the
       // server draws it anew; once it gives up, the pane says so and takes no typing a blank grid would hide
       const onTerminalFailed = (event: Event): void => {
         if ((event as CustomEvent<TerminalFailure>).detail.restarting) {
-          // the server replays a pane only to an attach that is new: this one lets go first, so the new engine is drawn
-          // from the pane's screen, not left blank until the program writes again
-          const current = paneRef.current;
-          if (current && !mirroredRef.current && !releasedRef.current) {
-            socket.detach(current);
-            retireOutput();
-          }
-          reattach();
+          // a pane put away is attached again when it is shown (back)
+          if (!presentedRef.current) { redrawOnReturn = true; return; }
+          redrawFresh();
           return;
         }
         const t = tRef.current; // the language of now, not of the attach
@@ -2461,7 +2468,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // A pane that kept its attach while put away (a queued message, a mirror) stopped because its
         // frozen page sent no ACKs, not because this device is too slow: coming back attaches again,
         // once. A stop while the page stays in use is final (no reconnect loop).
-        if (stalledRef.current && socket.stoppedWhileHidden && inUse()) reattach();
+        if (redrawOnReturn) redrawFresh();
+        else if (stalledRef.current && socket.stoppedWhileHidden && inUse()) reattach();
         else if (releasedRef.current) resume();
         else refit();
       };

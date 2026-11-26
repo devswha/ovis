@@ -86,8 +86,11 @@ const TRACKING_NAME = { none: "none", x10: "x10", normal: "vt200", button: "drag
 const WRITE_BUDGET_MS = 12;
 /** how long a synchronized update may hold the screen before it is shown anyway (xterm's limit) */
 const SYNC_HOLD_MS = 1000;
-/** how many times a terminal starts over with a new engine before it gives up */
+/** how many times in a row a terminal starts over with a new engine before it gives up */
 const MAX_RESTARTS = 3;
+const RESTART_DELAY_MS = 500;
+/** an engine that drew this long without failing counts as well again: a later failure has every restart again */
+const RESTARTS_FORGOTTEN_MS = 60_000;
 
 /** told on the pane's host when libghostty stopped drawing a terminal (ghostty/terminal.ts) */
 export const TERMINAL_FAILED_EVENT = "ovis-terminal-failed";
@@ -380,6 +383,10 @@ export class GhosttyTerminal {
     }
     if (this.disposed) { vt.dispose(); return; }
     this.vt = vt;
+    if (this.restarts > 0) {
+      const restarted = vt;
+      setTimeout(() => { if (this.vt === restarted && this.failed === null) this.restarts = 0; }, RESTARTS_FORGOTTEN_MS);
+    }
     this.renderer = createRowsRenderer(this.screen!, vt, () => ({
       fontFamily: this.options.fontFamily, fontSize: this.options.fontSize, fontWeight: this.options.fontWeight,
       fontWeightBold: this.options.fontWeightBold, theme: this.options.theme, minimumContrastRatio: this.options.minimumContrastRatio,
@@ -421,7 +428,8 @@ export class GhosttyTerminal {
     const restarting = this.restarts < MAX_RESTARTS;
     if (restarting) {
       this.restarts++;
-      setTimeout(() => this.restart(), 0);
+      // a moment between attempts, longer each time: a fetch that failed for a moment (a relay's hiccup) gets its chance
+      setTimeout(() => this.restart(), RESTART_DELAY_MS * this.restarts);
     } else {
       // given up: a blank grid takes no typing, whatever the mount says about input later
       this.broken = true;

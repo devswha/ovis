@@ -238,11 +238,6 @@ export function textPresentation(text: string): string | null {
   return textForm === text ? null : textForm;
 }
 
-/**
- * Keeps every row the DOM renderer draws adjusted. The renderer rebuilds a row's spans on
- * each render (and on link hover, which fires no render event), so a MutationObserver
- * catches them all; it runs before the frame paints. Returns the stop function.
- */
 export interface ViewFont { readonly family: string; readonly size: number; readonly weight?: string | number }
 
 /**
@@ -316,6 +311,11 @@ export function fitCompositionView(view: HTMLElement, cellWidth: () => number, f
   };
 }
 
+/**
+ * Keeps every row the DOM renderer draws adjusted. The renderer rebuilds a row's spans on
+ * each render (and on link hover, which fires no render event), so a MutationObserver
+ * catches them all; it runs before the frame paints. Returns the stop function.
+ */
 export function adjustTerminalGlyphs(term: Terminal): () => void {
   const rows = term.element?.querySelector<HTMLElement>(".xterm-rows");
   const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
