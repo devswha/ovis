@@ -7,6 +7,7 @@ import { isJsonObject } from "../http.ts";
 import { preparePrivateState, publishPrivateState, syncDirectory, writePrivateState } from "../private-state.ts";
 import { DeviceJournal, type JournalInput } from "./device-journal.ts";
 import { RESTAMP_PARTICIPANT as PARTICIPANT, RESTAMP_PLAN as FILE, RESTAMP_ROLLBACK as ROLLBACK } from "./restamp-files.ts";
+import { replayRestampRevokeAll } from "./restamp-revoke-all.ts";
 import { checkRestampFile, checkRestampInputs, openRestampAudit, readRestampJson, readRestampState, restampAddress, restampLinks, restampRelayId, RestampTrustError, rewriteRestamp, type RestampAddress, type RestampFolders, type RestampLink, type RestampMove } from "./restamp-state.ts";
 
 const DAY = 86_400_000;
@@ -269,6 +270,10 @@ export function applyRestamp(folders: RestampFolders): Applied {
     }
     if (plan.sibling && pendingAt(plan.sibling)) throw new Error("Multiple restamp plans are pending across the two folders");
     checkRelayScope(plan);
+    if (present(join(dir, "revoke-all.json"))) replayRestampRevokeAll(dir, plan.originRelay, journal);
+    if (plan.sibling && present(join(plan.sibling, "revoke-all.json"))) {
+      replayRestampRevokeAll(plan.sibling, plan.siblingRelay, DeviceJournal.open(plan.sibling));
+    }
     const state = readRestampState(scope, plan.originRelay);
     const matches = matchesPlan(plan, state);
     const limit = Date.now() + DAY;
@@ -296,7 +301,15 @@ export function applyRestamp(folders: RestampFolders): Applied {
     if (rollback && !entry.rollback) publishPrivateState(entry.path, rollbackMarker);
     syncRestampDirectory(dir);
     if (plan.sibling) syncRestampDirectory(plan.sibling);
-    for (const { path, doc } of writes) writePrivateState(path, doc, undefined, true);
+    for (const { path, doc, original } of writes) {
+      const temp = preparePrivateState(path, doc, undefined, true);
+      try {
+        // Ordinary writers publish by rename without a cross-process lock. Do not
+        // publish an older image over a change made while the new image was staged.
+        if (JSON.stringify(readRestampJson(path)) !== original) throw new RestampTrustError(`${path} changed while applying the clock repair; restart Ovis`);
+        publishPrivateState(temp, path);
+      } finally { rmSync(temp, { force: true }); }
+    }
     if (plan.sibling) syncRestampDirectory(plan.sibling);
     if (unmatched !== undefined && !acknowledged) {
       const problem = "Independently changed restamp values remain; run ovis recover --restamp to reconcile them.";

@@ -82,8 +82,7 @@ import { AccountWitness } from "./account/witness.ts";
 import { migrateTimeScale } from "./account/migrate-time.ts";
 import type { Readmission } from "./account/readmission.ts";
 import { AccountOrder } from "./account/account-order.ts";
-import { accountRowsFor } from "./account/account-devices.ts";
-import { listNotices } from "./account/list-notices.ts";
+import { deviceStoreRows } from "./account/device-store-rows.ts";
 import { AccountCatchUp } from "./account/account-catch-up.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
@@ -360,7 +359,7 @@ export function createServer(
   let tombstoneProblem: string | null = null;
   let carried: ReturnType<typeof folderTombstones> = [];
   if (opensAll && sibling && !untouched) {
-    try { carried = [...folderTombstones(stateDir), ...folderTombstones(sibling)]; }
+    try { carried = [...folderTombstones(stateDir, "active"), ...folderTombstones(sibling, "sibling")]; }
     catch (error) { tombstoneProblem = error instanceof Error ? error.message : String(error); }
   }
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
@@ -395,7 +394,6 @@ export function createServer(
     try {
       if (removals !== null && carried.length > 0) {
         if (safetyLog?.strict) throw new Error(safetyLog.strict);
-        if (merge?.devicesBlocked) throw new Error(merge.devicesBlocked);
         const siblingEvidence = RemovalEvidence.open(sibling, safetyLog);
         if (pcAccount?.evidenceWritten()) removals.missingAfterWritten();
         if (PcAccountState.open(sibling).evidenceWritten()) siblingEvidence.missingAfterWritten();
@@ -423,33 +421,12 @@ export function createServer(
   const journal = opensAll ? DeviceJournal.open(stateDir, () => safetyLog?.ensureFile()) : null;
   // Step 2 (S2-24): with the release flag on, each pull is followed by a whole read applied to this PC's log and rows
   // Step 2 (S2-25): the rows the account's list admits, kept apart from devices.json and judged by the device store
-  const opened: { rows: ReturnType<typeof accountRowsFor> | null; witness: AccountWitness | null } = { rows: null, witness: null };
+  const opened: { rows: ReturnType<typeof deviceStoreRows> | null; witness: AccountWitness | null } = { rows: null, witness: null };
   // Recovery can use row ports inside the DeviceStore constructor, before its caller has a reference.
-  const rowsForDevices = (devices: DeviceStore) => opened.rows = restamp.problem === undefined && safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? accountRowsFor(stateDir, serverIdNow, {
-    evidence: removals,
-    ...listNotices(journal, removals, (entry) => devices.publish(entry)),
-    settleNotices: rows => devices.settleListNotices(rows),
-    closeSessions: (id) => { devices.closeAccountSessions(id); },
-    heldByDevicesJson: (key) => devices.hasKey(key),
+  const rowsForDevices = (devices: DeviceStore) => opened.rows = restamp.problem === undefined && safetyLog !== null && pcAccount !== null && journal !== null && removals !== null ? deviceStoreRows({ stateDir, serverId: serverIdNow, pc: pcAccount, journal, removals }, devices, {
     checkFreshness: () => accountCatchUp.checkFreshness(),
     releaseOf: id => recoveryReleases?.releaseOf(id) ?? null,
-    // the account service turning Step 2 off closes no row of a PC that takes its rows from its signed list
-    serviceStep2Off: () => pcAccount.serviceStep2Off() && !devices.listFollowed(),
     admits: (key, account) => devices.admitsFromList(key, account) && !accountMailbox.listHeld(key),
-    now: () => Date.now(),
-    setTimeout: (run, ms) => devices.waitClock().setTimeout(run, ms),
-    admitOrigin: (at) => pcAccount.admit("remote", "list", null, Date.parse(devices.nextStamp(at))),
-    firstDevice: {
-      othersEver: () => pcAccount.othersEver(),
-      setOthersEver: () => { pcAccount.setOthersEver(); },
-      listKey: () => pcAccount.first()?.list_key ?? null,
-      otherRows: () => {
-        const bound = pcAccount.first()?.key;
-        return devices.list(null).length > (bound !== undefined && devices.hasKey(bound) ? 1 : 0);
-      },
-    },
-    admitListedRows: write => devices.admitListedRows(write),
-    admitted: (rows) => { devices.announceListAdmissions(rows); },
     // a row that goes and comes back between two of the record's own steps is not taken for one that stayed
     rowsWritten: () => { opened.witness?.step(); },
   }) : null;

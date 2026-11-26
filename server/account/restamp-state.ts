@@ -80,7 +80,7 @@ export function restampAddress({ store, ref, field }: RestampAddress): string {
 
 export function readRestampState(folders: RestampFolders, serverId: string | null) {
   const own = new Map<string, Slot>();
-  const docs = new Map<string, { path: string; doc: Doc }>();
+  const docs = new Map<string, { path: string; doc: Doc; original: string }>();
   const revokes = new Set<Slot>();
   const localTombstones = new Set<Slot>();
   const unrevokes = new Map<string, readonly Unrevoke[]>();
@@ -100,7 +100,7 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
     const doc = readRestampJson(path);
     if (doc === undefined) return undefined;
     if (!isJsonObject(doc)) throw new Error(`Cannot read ${path}`);
-    docs.set(store, { path, doc });
+    docs.set(store, { path, doc, original: JSON.stringify(doc) });
     return doc;
   };
   const slot = (store: string, ref: string, field: RestampField, row: Doc) => {
@@ -148,7 +148,7 @@ export function readRestampState(folders: RestampFolders, serverId: string | nul
       const entries = isJournalDoc(journal) ? journal.entries : [];
       rows(devices.devices, (row, index) => {
         const device = parsed.devices[index];
-        if (device && device.untrusted_created_at !== device.created_at && !futureLegacyPairing(device, entries, Date.now())) {
+        if (device && !device.imported && device.untrusted_created_at !== device.created_at && !futureLegacyPairing(device, entries, Date.now())) {
           slot(store, device.id, "created_at", row);
         }
       });

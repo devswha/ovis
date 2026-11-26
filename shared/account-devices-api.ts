@@ -14,14 +14,9 @@ import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 /** How long this PC's screen keeps an asked act open (server/account/local-confirm.ts); the app shows its deadline. */
 export const CONFIRM_MS = 2 * 60_000;
 
-export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
+export { accountOpensAll, OVIS_ACCOUNT_OPENS_ALL } from "./account-opens-all.ts";
 /** The capability a PC advertises while Step 2 is on; an app shows nothing of Step 2 for a PC without it. */
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
-
-export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
-  // Require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
-  return value !== "0";
-}
 
 export class AccountDevicesApiError extends Error {
   readonly code = "request_invalid";

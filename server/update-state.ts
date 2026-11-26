@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { accountOpensAll } from "../shared/account-opens-all.ts";
 import { RESTAMP_PARTICIPANT, RESTAMP_PLAN, RESTAMP_ROLLBACK } from "./account/restamp-files.ts";
 
 type SupervisorRelease = { readonly root: string; readonly port: number; readonly directory: string };
@@ -90,7 +91,7 @@ export function currentStateDir(legacy: string, next: string): string {
 }
 
 function restampPinsFolders(legacy: string, next: string): boolean {
-  return [legacy, next].some(dir => [RESTAMP_PLAN, RESTAMP_ROLLBACK, RESTAMP_PARTICIPANT].some(file => {
+  return accountOpensAll() && [legacy, next].some(dir => [RESTAMP_PLAN, RESTAMP_ROLLBACK, RESTAMP_PARTICIPANT].some(file => {
     try { return lstatSync(join(dir, file), { throwIfNoEntry: false }) !== undefined; }
     catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOTDIR"; }
   }));

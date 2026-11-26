@@ -128,16 +128,19 @@ posix("repair leaves an imported device's timestamp with its source", async () =
   expect(start(active).devices.list(null).find(row => row.id === imported.id)?.created_at).toBe(imported.created_at);
 });
 
-posix("startup finishes an interrupted Revoke all before evaluating the clock plan", async () => {
+posix.each([false, true])("startup finishes Revoke all before evaluating the clock plan; projection already published=%p", async published => {
   const active = folder();
-  RemovalEvidence.open(active, null).addRevoke(key(), null, future);
+  const ledger = RemovalEvidence.open(active, null);
+  ledger.addRevoke(key(), null, future);
+  if (published) put(active, "account-tombstones.json", { v: 1, tombstones: ledger.tombstones() });
   const running = start(active);
   await queueRepair(active);
   running.stop();
   new RevokeAllIntent(active, []).begin([], past, 0, null);
-  start(active);
+  const restarted = start(active);
   expect(existsSync(join(active, "revoke-all.json"))).toBe(false);
-  expect(existsSync(join(active, "restamp-done.json"))).toBe(true);
+  expect(restarted.devices.failsClosed).toBe(!published);
+  expect(existsSync(join(active, published ? "restamp-done.json" : "restamp-refused.json"))).toBe(true);
 });
 
 

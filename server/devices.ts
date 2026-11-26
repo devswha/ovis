@@ -410,12 +410,13 @@ function withRecords(records: readonly unknown[] | undefined, more: readonly unk
 }
 
 /** Every tombstone a folder holds, its pending file's included, as read before any merge coalesces them (T48). */
-export function folderTombstones(dir: string): AccountTombstone[] {
+export function folderTombstones(dir: string, source: "active" | "sibling"): AccountTombstone[] {
   return ["account-tombstones.json", "account-tombstones.pending.json"].flatMap(file => {
     const path = join(dir, file);
     const read = readTombstones(path);
-    if (read === null) throw new Error(`Cannot read ${path}: account records are refused until it is restored or fixed.`);
-    return read;
+    if (read !== null) return read;
+    if (source === "sibling" && file === "account-tombstones.pending.json") return [];
+    throw new Error(`Cannot read ${path}: account records are refused until it is restored or fixed.`);
   });
 }
 
@@ -644,7 +645,7 @@ export class DeviceStore {
   private waitingForListedRestore = false;
   private futureProblem: string | null = null;
   private readonly restampProblem: string | null;
-  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | ((devices: DeviceStore) => AccountRowSource | null) | null; held?: (key: string) => boolean; restampProblem?: string | undefined; restampRetry?: boolean; reconcileRestamp?: boolean; siblingLegacyCredential?: (row: StoredDevice) => boolean } = {}) {
+  constructor(stateDir: string, blocked: string | null = null, accountBlocked: string | null = null, account: { safety?: SafetyLog | null; pc?: PcAccountState | null; removals?: RemovalEvidence | null; journal?: DeviceJournal | null; carried?: readonly AccountTombstone[]; joinedRows?: AccountRowSource | ((devices: DeviceStore) => AccountRowSource | null) | null; held?: (key: string) => boolean; restampProblem?: string | undefined; restampRetry?: boolean; reconcileRestamp?: boolean; revokeAllOnly?: boolean; siblingLegacyCredential?: (row: StoredDevice) => boolean } = {}) {
     this.joinedRows = typeof account.joinedRows === "function" ? account.joinedRows(this) : account.joinedRows ?? null;
     this.safety = account.safety ?? null;
     this.handedLifts = new HandedLifts(stateDir);
@@ -712,6 +713,7 @@ export class DeviceStore {
         this.gateClosedAt ??= new Date().toISOString();
       }
     }
+    if (account.revokeAllOnly) return;
     // a strict order changes nothing else on disk, not even a repair: its damage stays visible (S29)
     // a damaged pending file beside a readable tombstone file: the Revokes the readable one holds are evidence at once,
     // and neither file is touched until the damaged one is repaired (T26, S19)
@@ -997,10 +999,15 @@ export class DeviceStore {
    */
   private migrate(): void {
     if (this.pc === null || this.error !== null) return;
+    // When removal replay was postponed, recovery checks the projected survivors,
+    // not the stale members on disk. A migrated binding needs no startup write.
+    if (this.futureProblem !== null && !this.pc.migrating) return;
+    const rows = this.futureProblem === null ? this.devices : this.devices.filter(row =>
+      !this.journalEnded(row.id) && !this.lockHeld.has(row.id) && !this.coveredByEvidence(row));
     const numbered = this.devices.flatMap((d) => d.origin === undefined || d.origin.from === "legacy" ? [] : [d.origin.admit_no]);
-    try { this.pc.settlePending(this.devices); }
+    try { this.pc.settlePending(rows); }
     catch (error) { this.pc.unwritten(error); return; }
-    const members = [...new Set(this.devices.flatMap((d) => d.account === undefined ? [] : [d.account]))];
+    const members = [...new Set(rows.flatMap((d) => d.account === undefined ? [] : [d.account]))];
     if (!this.pc.migrating) {
       this.pc.checkAbove(numbered);
       this.pc.checkMembers(members);
@@ -1011,14 +1018,14 @@ export class DeviceStore {
     // S2-03's counter file: the rows are numbered already, and only the binding is migrated (T50)
     if (this.pc.upgrading) {
       this.pc.checkAbove(numbered);
-      const account = this.pc.migrationAccount(this.devices);
+      const account = this.pc.migrationAccount(rows);
       if (this.pc.strict !== null) return;
       try { this.pc.migrate(account, hadDevices); } catch (error) { this.pc.unwritten(error); }
       return;
     }
     // a row numbered here means this folder had an account file: its loss is damage, and nothing is stamped (P21)
     if (numbered.length > 0) { this.pc.missingBeside(); return; }
-    const account = this.pc.migrationAccount(this.devices);
+    const account = this.pc.migrationAccount(rows);
     if (this.pc.strict !== null) return;
     if (!this.stampLegacyRows()) return;
     try { this.pc.migrate(account, hadDevices); } catch (error) { this.pc.unwritten(error); }

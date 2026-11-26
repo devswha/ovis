@@ -851,7 +851,7 @@ posix.each(["preview", "confirmation", "replay"] as const)(
   },
 );
 
-posix("restamp keeps the working phone when ordinary merge drops conflicting twins", async () => {
+posix.each([false, true])("restamp keeps the working phone when ordinary merge drops conflicting twins; imported copy became native=%p", async becameNative => {
   const [active, sibling] = [dir(), dir()];
   const phone = { ...row(), account };
   registry(active, phone);
@@ -860,9 +860,17 @@ posix("restamp keeps the working phone when ordinary merge drops conflicting twi
   closed.stop();
   const twin = { ...row(stamp(-HOUR), key(), other), account: "other_account" };
   registry(active, phone, twin);
-  registry(sibling, phone, { ...twin, relay_public_key: key() });
+  // Only the conflict changes in the ordinary case. Replacing the imported copy
+  // with the native phone also adds an own timestamp outside the approved plan.
+  registry(sibling, ...(becameNative ? [phone] : registered(sibling)), { ...twin, relay_public_key: key() });
 
   const restarted = start(active, sibling);
+  if (becameNative) {
+    expect(restarted.devices.failsClosed).toBe(true);
+    expect(existsSync(join(active, "restamp-refused.json"))).toBe(true);
+    expect(registered(sibling).find(device => device.id === phone.id)?.created_at).toBe(FUTURE);
+    return;
+  }
   expect(restarted.devices.accountError).toBeNull();
   expect(restarted.devices.hasKey(phone.relay_public_key)).toBe(true);
   expect(registered(active).map(device => device.id)).toEqual([phone.id]);
