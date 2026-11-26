@@ -75,7 +75,7 @@ if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && earl
     process.exit(1);
   }
   const record = desktopCommandRecord(process.env);
-  const { desktopCommandListener } = await import("../app/electron/src/children.ts");
+  const { desktopCommandListener } = await import("../shared/desktop-command-listener.ts");
   const listener = record ? await desktopCommandListener(record) : null;
   if (!record || listener === null || String(listener.port) !== process.env["PORT"]) {
     process.stderr.write("ovis: open the Ovis app first, then run this again\n");

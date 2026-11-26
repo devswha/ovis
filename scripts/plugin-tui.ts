@@ -317,7 +317,7 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
   let origin: string | null;
   if (parts.caller["OVIS_DESKTOP_COMMAND"] === "1") {
     const record = desktopCommandRecord(parts.caller);
-    const listener = record ? await (await import("../app/electron/src/children.ts")).desktopCommandListener(record) : null;
+    const listener = record ? await (await import("../shared/desktop-command-listener.ts")).desktopCommandListener(record) : null;
     screenEnv[SCREEN_DESKTOP_RECORD] = record ?? "";
     if (listener !== null && String(listener.port) === parts.caller["PORT"]) {
       screenEnv[SCREEN_DESKTOP_IDENTITY] = listener.identity;

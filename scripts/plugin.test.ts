@@ -17,7 +17,8 @@ import { trustRefusal } from "../server/herdr-core/discovery.ts";
 import { profileGroups } from "../server/herdr-discovery.ts";
 import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 import { newInvite } from "../shared/account-list-join.ts";
-import { processStartSync, writeSaved } from "../app/electron/src/children.ts";
+import { writeSaved } from "../app/electron/src/children.ts";
+import { processStartSync } from "../shared/desktop-process.ts";
 import { recordDesktopListener } from "../server/desktop-listener.ts";
 
 const ROOT = join(import.meta.dir, "..");

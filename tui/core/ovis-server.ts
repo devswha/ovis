@@ -50,7 +50,7 @@ export function ovisServer(
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(CALL_MS), redirect: "manual", proxy: false,
     };
     if (record !== undefined) {
-      const { desktopCommandListener } = await import("../../app/electron/src/children.ts");
+      const { desktopCommandListener } = await import("../../shared/desktop-command-listener.ts");
       const current = await desktopCommandListener(record);
       if (current === null || current.identity !== identity || `http://127.0.0.1:${current.port}` !== origin) {
         return { ok: false, code: "ovis_desktop_changed", message: "" };
