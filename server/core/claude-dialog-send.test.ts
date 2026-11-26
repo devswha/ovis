@@ -17,6 +17,7 @@ let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
 let calls: { method: string; params: Record<string, unknown> }[];
 let screen: string;
+let processInfoFails: boolean;
 let claude: ReturnType<typeof Bun.spawn>;
 
 /** The PID record Claude Code 2.1.330 keeps for its process, with what it says it waits on. */
@@ -35,6 +36,7 @@ beforeEach(() => {
   mkdirSync(join(store, "sessions"), { recursive: true });
   claude = Bun.spawn(["sleep", "30"], { env: { ...process.env, CLAUDE_CONFIG_DIR: store }, stdin: "ignore" });
   calls = [];
+  processInfoFails = false;
   socketBefore = process.env["HERDR_SOCKET"];
   const socket = join(root, "herdr.sock");
   process.env["HERDR_SOCKET"] = socket;
@@ -48,6 +50,10 @@ beforeEach(() => {
         const request = JSON.parse(socket.data.buffer) as { id: string; method: string; params?: Record<string, unknown> };
         calls.push({ method: request.method, params: request.params ?? {} });
         const id = String(request.params?.["pane_id"] ?? request.params?.["target"] ?? "");
+        if (request.method === "pane.process_info" && processInfoFails) {
+          socket.end(`${JSON.stringify({ id: request.id, error: { code: "internal_error", message: "timed out" } })}\n`);
+          return;
+        }
         const result = request.method === "pane.get"
           ? { pane: { pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: root, focused: false, revision: 0, agent: "claude", agent_status: "idle" } }
           : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: claude.pid, argv: ["/usr/bin/claude"], cwd: root }] } }
@@ -88,6 +94,14 @@ it.skipIf(!linux)("refuses a Chat send while Claude's PID record says it waits o
     expect((refused as HerdrError).code, waitingFor).toBe("agent_blocked");
     expect(typed(), waitingFor).toEqual([]);
   }
+});
+
+it.skipIf(!linux)("sends as before when the pane's processes cannot be read", async () => {
+  screen = DIALOG;
+  record("waiting", "dialog open");
+  processInfoFails = true;
+  await submit()("w:p1", "hello from chat", "hello from chat", Date.now());
+  expect(typed().some((call) => call.method === "agent.prompt" && call.params["text"] === "hello from chat")).toBeTrue();
 });
 
 it.skipIf(!linux)("sends once the record says Claude rests, and over a box the screen shows whatever the record says", async () => {
