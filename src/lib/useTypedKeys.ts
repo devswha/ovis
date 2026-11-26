@@ -3,7 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import { hasModifiers, navigationSequence, stepModifier, terminalChord, type ModifierLatch, type StickyModifiers } from "./keys.ts";
 import { keyBarInputSequence, type KeyBarKeyItem } from "./keyBar.ts";
 import { DOUBLE_ESCAPE_GAP_MS, hermesCtrlCTooSoon, stopKey } from "./hermesStop.ts";
-import { terminalScreen } from "./terminalScreen.ts";
+import { frameRows } from "./terminalScreen.ts";
 import type { Translate } from "./i18n.ts";
 import { markTyped, type HerdrSocket } from "./ws.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
@@ -75,13 +75,16 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   }, []);
   // one terminal serves the pane it is switched to: a pending Escape must not follow it there
   useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
+  useEffect(() => {
+    if (agentStatus !== "working" && agentStatus !== "blocked") dropSecondEscape();
+  }, [agentStatus, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
     const socket = socketRef.current;
     if (!term || !socket || !socket.connected) return;
     const now = Date.now();
     const key = stopKey(agent, () => {
-      const buffer = terminalScreen(term).active();
+      const buffer = frameRows(term);
       return Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "");
     }, hermesStopSentRef.current, hermesCtrlCAtRef.current, now);
     if (key === null) {
@@ -122,5 +125,5 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     }, DOUBLE_ESCAPE_GAP_MS);
   }, [agent, paneId, dropSecondEscape]);
 
-  return { pressKey, toggleModifier, abortTurn };
+  return { pressKey, toggleModifier, abortTurn, dropSecondEscape };
 }
