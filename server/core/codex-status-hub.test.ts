@@ -209,12 +209,12 @@ describe("a Codex pane whose turn ended in an error", () => {
       await h.looked();
       appendFileSync(h.path, `${failed.trimEnd().split("\n").at(-1)}\n`);
       await h.snapshot();
-      await h.settled();
-      expect(h.read).toHaveBeenCalledTimes(3);
+      // the snapshot's read begins only once the rollout's stat returns
       await h.looked();
+      expect(h.read).toHaveBeenCalledTimes(3);
       expect(h.failures).toEqual(["w1:p1"]);
     } finally { h.restore(); }
-  });
+  }, 2_000);
 
   it("does not attribute a pending rollout read to a successor agent (#3760)", async () => {
     const h = codexHub(failed);
