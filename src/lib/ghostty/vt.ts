@@ -8,7 +8,9 @@ import {
   GhosttyEngine,
   GhosttyModule,
   type EngineCell,
+  type EngineEvents,
   type EngineHistory,
+  type EngineModes,
   type EngineRowText,
   type GhosttyCursor,
   type GhosttyImage,
@@ -54,6 +56,8 @@ const PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
 /** decoded pictures one terminal keeps; every terminal on the page shares the module's one memory */
 const IMAGE_STORAGE_BYTES = 64n * 1024n * 1024n;
 
+let loadedModule: GhosttyModule | null = null;
+let widthProbe: GhosttyVt | null = null;
 let modulePromise: Promise<GhosttyModule> | null = null;
 
 function loadModule(): Promise<GhosttyModule> {
@@ -72,16 +76,18 @@ function loadModule(): Promise<GhosttyModule> {
     const { instance } = await WebAssembly.instantiate(await response.arrayBuffer(), { env });
     const module = new GhosttyModule(instance);
     memory = module.exports.memory;
+    loadedModule = module;
+    widthProbe = null;
     return module;
   })();
   modulePromise.catch(() => { modulePromise = null; });
   return modulePromise;
 }
 
-function rgb(color: string): [number, number, number] | null {
-  const match = /^#([0-9a-f]{6})/i.exec(color.trim());
-  if (!match) return null;
-  const value = Number.parseInt(match[1]!, 16);
+export function rgb(color: string): [number, number, number] | null {
+  const hex = /^#([0-9a-f]{6})/i.exec(color.trim())?.[1];
+  if (!hex) return null;
+  const value = Number.parseInt(hex, 16);
   return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
 }
 
@@ -99,21 +105,52 @@ export class GhosttyVt {
   private afterZwj = false;
   private broken = true;
 
-  private constructor(module: GhosttyModule, cols: number, rows: number) {
+  private constructor(module: GhosttyModule, cols: number, rows: number, events?: EngineEvents) {
     this.cols = cols;
     this.rows = rows;
     // history is cut by lines alone, as xterm cuts it: libghostty's byte limit would keep far fewer than a herdr-core pane's 2,000
-    this.engine = new GhosttyEngine(module, cols, rows, { widths: "xterm", images: IMAGE_STORAGE_BYTES, scrollbackLines: 0 });
+    this.engine = new GhosttyEngine(module, cols, rows, { widths: "xterm", images: IMAGE_STORAGE_BYTES, scrollbackLines: 0, ...(events ? { events } : {}) });
   }
 
-  static async create(cols: number, rows: number): Promise<GhosttyVt> {
-    return new GhosttyVt(await loadModule(), cols, rows);
+  /** `events`: a terminal libghostty alone parses (terminal.ts) hears its replies to the program and its holds */
+  static async create(cols: number, rows: number, events?: EngineEvents): Promise<GhosttyVt> {
+    const loading = loadModule();
+    let module = await loading;
+    // a module that trapped makes no terminal again: a terminal starting over loads a fresh one, once for every
+    // terminal that found the same module trapped
+    if (module.trap) {
+      if (modulePromise === loading) modulePromise = null;
+      module = await loadModule();
+    }
+    return new GhosttyVt(module, cols, rows, events);
+  }
+
+  /** Measure printable text with the same layout as a pane, without starting a WASM load. */
+  static textCells(text: string): number | null {
+    if (!loadedModule || loadedModule.trap) return null;
+    const printable = text.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+    // Leave the cursor a spare column even if every code unit takes two cells.
+    const cols = Math.min(0xffff, Math.max(2000, printable.length * 2 + 1));
+    const probe = widthProbe ??= new GhosttyVt(loadedModule, 2000, 1);
+    probe.reset();
+    if (probe.cols !== cols) probe.resize(cols, 1, 8, 16);
+    probe.write(printable);
+    return probe.screenCursor().x;
+  }
+
+  modes(): EngineModes {
+    return this.engine.modes();
+  }
+
+  /** ends a synchronized update the program left open: the next frame shows what it wrote since */
+  releaseHold(): void {
+    this.engine.releaseHold();
   }
 
   write(data: string | Uint8Array): void {
     const bytes = typeof data === "string" ? this.encoder.encode(data) : data;
     if (bytes.length === 0) return;
-    // xterm (terminalWidths.ts) and herdr give an emoji sequence (ZWJ family, skin tone, flag, keycap,
+    // herdr and herdr-core give an emoji sequence (ZWJ family, skin tone, flag, keycap,
     // an emoji-presentation selector) one two-column cell, an emoji with a text form and the
     // text-presentation selector (\u26bd\ufe0e) one one-column cell, and otherwise lay out as libghostty
     // does with grapheme clustering (mode 2027) off: clustering also joins spacing marks and Indic
@@ -202,6 +239,8 @@ export class GhosttyVt {
   reset(): void {
     // libghostty keeps a sequence it is in the middle of across a reset, and so does the scanner
     this.engine.reset();
+    this.afterZwj = false;
+    this.broken = true;
   }
 
   resize(cols: number, rows: number, cellW: number, cellH: number): void {
@@ -284,3 +323,5 @@ export class GhosttyVt {
     this.engine.dispose();
   }
 }
+
+export const textCells = GhosttyVt.textCells;

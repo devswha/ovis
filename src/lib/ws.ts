@@ -210,8 +210,13 @@ export class HerdrSocket {
   private linkUpAt: number | null = null;
   /** the current network loss was noted (noteNetwork); the network coming back or the link confirmed opens the next */
   private lossNoted = false;
+  /**
+   * a pong answered while the browser said it was offline: a WebView can say so all along on a working network (a Galaxy
+   * Z Flip6's did), so that pong confirms the link, and the flag staying false notes no further loss until it turns
+   */
+  private answeredOffline = false;
   /** keys queued before the network went (an attach's resume, a new tab's catch) are held even when none is typed during it */
-  private readonly onOffline = (): void => { this.noteNetwork(); };
+  private readonly onOffline = (): void => { this.answeredOffline = false; this.noteNetwork(); };
   private probeDrops = 0;
   private pathLost = false;
   private pingKnown = false;
@@ -426,7 +431,7 @@ export class HerdrSocket {
       if (message.type === "pong" && this.probeIds.has(message.id)) {
         this.trace.record("pong");
         this.probeDrops = 0;
-        this.endProbe();
+        this.endProbe(true);
       }
       // The server can force this connection to observe. Apply its authority before
       // waking pending submits or notifying UI handlers about the acknowledged role.
@@ -597,6 +602,7 @@ export class HerdrSocket {
     this.clearConnectTimer();
     this.clearLiveness();
     this.linkUpAt = null;
+    this.answeredOffline = false;
     // typing no pong confirmed may never have reached the server: the panes' terminals hold it for review
     for (const [paneId, typed] of this.unconfirmed) {
       const earlier = this.lostInput.get(paneId);
@@ -682,14 +688,15 @@ export class HerdrSocket {
     try { this.rawSend({ type: "ping", id }); } catch { /* see above */ }
   }
 
-  private endProbe(): void {
+  /** `answered`: a pong to a ping of this probe ended it, which confirmLink takes as proof over the browser's flag */
+  private endProbe(answered = false): void {
     if (this.probeTimer !== null) window.clearTimeout(this.probeTimer);
     this.probeTimer = null;
     this.probePaused = false;
     this.probeIds.clear();
     this.markProbeDone();
     if (this.connectionState === "probing") this.connectionState = "open";
-    this.confirmLink();
+    this.confirmLink(answered);
   }
 
   /**
@@ -700,6 +707,8 @@ export class HerdrSocket {
    * Each loss counts once (lossNoted), so a second loss before the first probe's pong invalidates that probe too.
    */
   noteNetwork(): void {
+    if (typeof navigator !== "undefined" && navigator.onLine !== false) this.answeredOffline = false;
+    if (this.answeredOffline) return;
     if (this.lossNoted || typeof navigator === "undefined" || navigator.onLine !== false || deviceLocal(this.url)) return;
     this.lossNoted = true;
     this.linkUpAt = null;
@@ -713,11 +722,15 @@ export class HerdrSocket {
 
   /**
    * The link is up again once its connection opened or answered a probe (or, on a bridge without "ping", the network
-   * came back), and the browser reports a network or the server is on this device.
+   * came back), and the browser reports a network or the server is on this device. While the browser says it has none,
+   * only a pong to a probe sent since (`answered`) confirms it (answeredOffline).
    */
-  private confirmLink(): void {
+  private confirmLink(answered = false): void {
     if (this.linkUpAt !== null || !this.connected || this.probing) return;
-    if (typeof navigator !== "undefined" && navigator.onLine === false && !deviceLocal(this.url)) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false && !deviceLocal(this.url)) {
+      if (!answered) return;
+      this.answeredOffline = true;
+    }
     this.linkUpAt = ++keyClock;
     this.lossNoted = false;
   }
@@ -1209,7 +1222,7 @@ export class HerdrSocket {
    * `clearDraft`: an immediate send over the draft an input_draft refusal named (ClientMessage `clear_draft`)
    * `sendAnyway`: an immediate send after a refusal that showed the box (ClientMessage `send_anyway`)
    * `holdOnly`: a hold that must never go on its own (the composer's Alt+Enter): refused, not queued, where the bridge cannot hold */
-  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string): Promise<SubmitResult> | null {
+  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     if (resendId !== undefined && sendAnyway) return Promise.resolve({ ok: false, code: "invalid_delivery", message: "Use a held-copy resend id only for an immediate chat message" });
@@ -1231,17 +1244,18 @@ export class HerdrSocket {
       if (!this.features.has("submit")) {
         if (clearDraft !== undefined || sendAnyway) return { ok: false, code: "unsupported", message: "Update this PC to clear a terminal draft before sending. Nothing was sent." };
         this.rawSend({ type: "input", pane_id: paneId, text: `${payload}\r` });
+        onSent?.();
         return { ok: true, unconfirmed: true };
       }
       const id = this.nextSubmit++;
       return this.submitRequest({ type: "submit", id, pane_id: paneId, text, payload, ...(typed ? { typed: true } : {}), ...(delivery !== "immediate" ? { delivery } : {}),
         ...(commandKey !== undefined ? { command_key: commandKey } : {}),
-        ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) });
+        ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) }, onSent);
     })();
   }
 
   /** Explicitly steer or discard one server-owned pending item. Never queued or replayed. */
-  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false): Promise<SubmitResult> | null {
+  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     return (async (): Promise<SubmitResult> => {
@@ -1250,7 +1264,7 @@ export class HerdrSocket {
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot change pending messages." };
       if (!this.canQueueMessages()) return { ok: false, code: "pending_input_unsupported", message: "Update this PC to manage pending messages." };
       return this.submitRequest({ type: "pending-action", id: this.nextSubmit++, pane_id: paneId, pending_id: pendingId, action,
-        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) });
+        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) }, onSent);
     })();
   }
 
@@ -1284,7 +1298,7 @@ export class HerdrSocket {
   }
 
   /** Only an acknowledgement callback is retained, never a frame to resend. */
-  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>): Promise<SubmitResult> {
+  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>, onSent?: () => void): Promise<SubmitResult> {
     const id = message.id;
     this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" || message.delivery === "hold" } : message.type === "pending-action" ? { pendingId: message.pending_id } : {}) });
     const result = new Promise<SubmitResult>((resolve) => {
@@ -1311,7 +1325,9 @@ export class HerdrSocket {
       this.submits.get(id)?.(NOT_TRANSMITTED);
       this.submits.delete(id);
       this.requests.delete(id);
+      return result;
     }
+    onSent?.();
     return result;
   }
 
