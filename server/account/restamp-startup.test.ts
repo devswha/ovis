@@ -47,6 +47,16 @@ posix("ordinary boot keeps an independently readable sibling Revoke on a later s
   expect(start(active).devices.hasKey(row.relay_public_key)).toBe(false);
 });
 
+posix("ordinary boot leaves a damaged sibling pending tombstone file to the sibling", () => {
+  const active = folder(), sibling = folder(), row = phone();
+  put(active, "devices.json", { gate_closed_at: past, devices: [row] });
+  put(sibling, "devices.json", { gate_closed_at: past, devices: [row] });
+  put(sibling, "account-tombstones.pending.json", false);
+  const { devices } = start(active, sibling);
+  expect(devices.accountError).toBeNull();
+  expect(devices.hasKey(row.relay_public_key)).toBe(true);
+});
+
 posix("ordinary boot uses the surviving pairing time when twin rows disagree", () => {
   const active = folder(), sibling = folder(), row = phone();
   put(active, "devices.json", { gate_closed_at: past, devices: [row] });
