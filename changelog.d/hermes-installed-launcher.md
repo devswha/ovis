@@ -1,2 +1,2 @@
 ### Fixed
-- Recognize a Hermes pane and its prompt cards when the official POSIX installer launches its CLI.
+- Recognize Hermes panes, approval cards, and native conversations when the official POSIX installer launches its CLI, and confirm that Hermes started.
