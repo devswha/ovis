@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { ACCOUNT_PCS_CHANGED_EVENT, type MyPc } from "../lib/account/myPcs.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import { hasNativePlugin } from "../lib/nativeApp.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -16,7 +17,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { useOffline } from "../lib/useOffline.ts";
+import { checkNetwork, useOffline } from "../lib/useOffline.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
 import { AddPcSheet } from "./AddPcSheet.tsx";
@@ -87,7 +88,7 @@ export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: 
       <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and type the code it shows.")}</p>
       <form id={formId} className="relay-shell-code-form" onSubmit={submit}>
         <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{label}</label>
-        <input id={`${id}-code`} name="code" className="input relay-shell-code-input" aria-label={label} placeholder="XXXXX-XXXXX" disabled={looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
+        <input id={`${id}-code`} name="code" className="input relay-shell-code-input" aria-label={label} placeholder="XXXXX-XXXXX" disabled={looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus onInput={typePairCode} onCompositionEnd={endPairCodeComposition} />
         {failure !== null && <p className="account-error" role="alert">{codeFailureText(t, failure)}</p>}
         {back !== undefined && <div className="relay-shell-actions"><button type="submit" className="btn btn-primary" aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button>{back}</div>}
       </form>
@@ -244,7 +245,7 @@ export function RelayShell(props: RelayShellProps) {
     if (wasOffline.current && !offline) readAgain.current();
     wasOffline.current = offline;
   }, [offline]);
-  const noneOnline = offline ? <OfflineLine onRetry={() => readAgain.current()} /> : checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
+  const noneOnline = offline ? <OfflineLine onRetry={() => { readAgain.current(); void checkNetwork({ fresh: true }); }} /> : checkAgain ? <NoPcOnline onCheck={checkAgain} /> : null;
   // a pairing's sign-in reads on the plain page, with nothing around it; its other steps are on the step frame
   const plain = state.kind === "failed" && state.failure === "sign-in-first" && onSignIn !== undefined;
 
