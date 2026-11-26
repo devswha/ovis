@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, createElement, type ComponentProps } from "react";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 
+import * as i18n from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { ChatView } from "./ChatView.tsx";
 import { loadChatTimeline } from "./chatTimelineLoader.ts";
@@ -19,21 +20,29 @@ const descriptors = new Map<string, PropertyDescriptor | undefined>();
 let page: Page;
 let scroller: Scroller;
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
+let translationSpy: ReturnType<typeof spyOn<typeof i18n, "useT">>;
+const translateEnglish: i18n.Translate = (key, vars) => i18n.translate("en", key, vars);
 const observers = new Set<TestResizeObserver>();
+const listResize = Symbol.for("ovis.test.legendListResize");
 class TestResizeObserver {
   readonly targets = new Set<Element>();
-  constructor(readonly callback: (entries: readonly ResizeObserverEntry[]) => void) { observers.add(this); }
-  observe(target: Element) { this.targets.add(target); }
-  unobserve(target: Element) { this.targets.delete(target); }
-  disconnect() { this.targets.clear(); }
+  constructor(readonly callback: (entries: readonly ResizeObserverEntry[]) => void) {}
+  observe(target: Element) { this.targets.add(target); observers.add(this); }
+  unobserve(target: Element) {
+    this.targets.delete(target);
+    if (this.targets.size === 0) observers.delete(this);
+  }
+  disconnect() { this.targets.clear(); observers.delete(this); }
 }
 const resize = (target: Element, height: number) => {
   const contentRect = new DOMRect(0, 0, 600, height);
+  const size = [{ blockSize: height, inlineSize: 600 }];
+  const entries = [{ target, contentRect, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size }];
   for (const observer of observers) {
-    if (!observer.targets.has(target)) continue;
-    const size = [{ blockSize: height, inlineSize: 600 }];
-    observer.callback([{ target, contentRect, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size }]);
+    if (observer.targets.has(target)) observer.callback(entries);
   }
+  const notify: unknown = Object.getOwnPropertyDescriptor(target, listResize)?.value;
+  if (typeof notify === "function") notify(entries);
 };
 const box = () => page.one<HTMLDivElement>(".chat-view");
 const scroll = () => {
@@ -45,13 +54,15 @@ const measure = (height: number) => {
   const row = page.one("[data-chat-row]");
   const targets = new Set([...observers].flatMap((observer) => [...observer.targets]));
   let target = row.parentElement;
-  while (target !== null && target !== box() && !targets.has(target)) target = target.parentElement;
+  while (target !== null && target !== box() && !targets.has(target) && !Object.hasOwn(target, listResize)) target = target.parentElement;
   if (!target || target === box()) throw new Error("The list did not observe its item");
   resize(target, height);
 };
 
 beforeEach(() => {
   page = openPage();
+  // Keep the translator stable across renders, even after suites that mock useT.
+  translationSpy = spyOn(i18n, "useT").mockReturnValue(translateEnglish);
   scroller = new Scroller();
   const proto = page.window.HTMLElement.prototype;
   const bounds = proto.getBoundingClientRect;
@@ -103,6 +114,7 @@ beforeEach(() => {
 afterEach(async () => {
   await page.close();
   fetchSpy.mockRestore();
+  translationSpy.mockRestore();
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
     else Reflect.deleteProperty(globalThis, key);

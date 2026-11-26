@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { openPage, type Page } from "../lib/page.fixture.ts";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -72,6 +72,9 @@ describe("AccountSignIn", () => {
     for (const btn of buttons) {
       expect(btn.disabled).toBe(true);
       await act(async () => { btn.click(); });
+      const { onClick } = reactProps(btn);
+      if (typeof onClick !== "function") throw new Error("Missing provider click handler");
+      await act(async () => { onClick(); });
     }
     expect(tapped).toEqual([]);
     await page.render(null);

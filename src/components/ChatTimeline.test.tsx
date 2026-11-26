@@ -5,6 +5,7 @@ import { openPage, type Page } from "../lib/page.fixture.ts";
 import { ChatTimeline, type ChatTimelineProps, type ChatTimelineRow } from "./ChatTimeline.tsx";
 
 const saved = new Map<string, PropertyDescriptor | undefined>();
+const listResize = Symbol.for("ovis.test.legendListResize");
 let page: Page;
 let hidden: boolean;
 
@@ -21,7 +22,16 @@ beforeEach(() => {
   const values = {
     requestAnimationFrame: page.window.requestAnimationFrame.bind(page.window),
     cancelAnimationFrame: page.window.cancelAnimationFrame.bind(page.window),
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    // LegendList keeps its first observer across suites. Leave its callback on the
+    // observed item so scrollInput can deliver a measurement even if we ran first.
+    ResizeObserver: class {
+      constructor(readonly notify: (entries: readonly ResizeObserverEntry[]) => void) {}
+      observe(target: Element, options?: ResizeObserverOptions) {
+        if (options?.box === "border-box") Object.defineProperty(target, listResize, { configurable: true, value: this.notify });
+      }
+      unobserve(target: Element) { Reflect.deleteProperty(target, listResize); }
+      disconnect() {}
+    },
     HTMLDivElement: page.window.HTMLDivElement,
   };
   for (const [key, value] of Object.entries(values)) {

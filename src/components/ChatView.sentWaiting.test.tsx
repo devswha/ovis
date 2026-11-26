@@ -8,6 +8,7 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { ChatView } from "./ChatView.tsx";
 
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
+const listResize = Symbol.for("ovis.test.legendListResize");
 let page: Page;
 let answer: ConversationResponse;
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
@@ -26,7 +27,16 @@ beforeEach(() => {
     Node: page.window.Node, Element: page.window.Element, HTMLElement: page.window.HTMLElement, HTMLDivElement: page.window.HTMLDivElement,
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
     CSS: page.window.CSS,
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    // LegendList keeps its first observer across suites. Leave its callback on the
+    // observed item so scrollInput can deliver a measurement even if we ran first.
+    ResizeObserver: class {
+      constructor(readonly notify: (entries: readonly ResizeObserverEntry[]) => void) {}
+      observe(target: Element, options?: ResizeObserverOptions) {
+        if (options?.box === "border-box") Object.defineProperty(target, listResize, { configurable: true, value: this.notify });
+      }
+      unobserve(target: Element) { Reflect.deleteProperty(target, listResize); }
+      disconnect() {}
+    },
     MutationObserver: page.window.MutationObserver,
   };
   for (const [key, value] of Object.entries(values)) {

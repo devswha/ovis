@@ -1,6 +1,6 @@
 import { afterEach, expect, it, jest, spyOn } from "bun:test";
 import { act } from "react";
-import { openPage, type Page } from "../lib/page.fixture.ts";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
@@ -334,10 +334,18 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   await select("lab");
   await select("local");
   const [again] = actions();
-  expect(again?.disabled).toBe(true);
+  if (again === undefined) throw new TypeError("Missing remounted admission action");
+  expect(again).not.toBe(button);
+  expect(again.disabled).toBe(true);
   const notMe = noticeButton(view.container, "Not me");
   expect(notMe.disabled).toBe(true);
-  await act(async () => { again?.click(); notMe.click(); });
+  await act(async () => { again.click(); notMe.click(); });
+  for (const action of [again, notMe]) {
+    const { onClick } = reactProps(action);
+    if (typeof onClick !== "function") throw new Error("Missing notice click handler");
+    // Do not await a conflicting answer: if it starts, the wire assertions below must catch it.
+    await act(async () => { void onClick(); });
+  }
   expect(answers(desk)).toEqual([answer]);
   expect(answers(lab)).toEqual([]);
   await act(async () => { lab.read({ type: "device-notice", notice: confirmation }); jest.advanceTimersByTime(5_000); });
