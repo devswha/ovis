@@ -996,7 +996,8 @@ export class DeviceStore {
     const numbered = this.devices.flatMap((d) => d.origin === undefined || d.origin.from === "legacy" ? [] : [d.origin.admit_no]);
     try { this.pc.settlePending(this.devices); }
     catch (error) { this.pc.unwritten(error); return; }
-    const members = [...new Set(this.devices.flatMap((d) => d.account === undefined ? [] : [d.account]))];
+    // a row the journal already ended is no member, also on a start that could not replay its removal yet (P24)
+    const members = [...new Set(this.devices.flatMap((d) => d.account === undefined || this.journalEnded(d.id) ? [] : [d.account]))];
     if (!this.pc.migrating) {
       this.pc.checkAbove(numbered);
       this.pc.checkMembers(members);
