@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { shellQuote } from "./machine-security.ts";
 import type { ProcessInfo } from "./herdr/client.ts";
 import type { TerminalProcess } from "./kiro-terminal.ts";
-import { parseTerminalProcesses, tmuxCodexProcess as discoverTmux, tmuxPaneView, tmuxWrapper } from "./tmux-terminal.ts";
+import { parseTerminalProcesses, tmuxCodexProcess as discoverTmux, tmuxWrapper } from "./tmux-terminal.ts";
 
 // Synthetic interpreter PIDs must never read the host's argv unless a test supplies its own reader.
 const tmuxCodexProcess: typeof discoverTmux = (info, platform, clients, rows, birth, argv = () => null) =>
@@ -25,7 +25,7 @@ const wrapped = processes.map((row) => row.pid === 20 ? { ...row, foreground: 25
   .concat({ pid: 25, parent: 20, group: 25, foreground: 25, tty: "pts/2", command: "/bin/sh" });
 
 describe("tmux native process proof", () => {
-  it.skipIf(process.platform === "win32")("requests UTF8 for native metadata and pane reads under a C locale", async () => {
+  it.skipIf(process.platform === "win32")("requests UTF8 for native metadata under a C locale", async () => {
     const root = fs.mkdtempSync(join(tmpdir(), "ovis-tmux-read-"));
     const previousPath = process.env["PATH"], previousLocale = process.env["LC_ALL"];
     fs.writeFileSync(join(root, "tmux"), `#!/bin/sh
@@ -33,8 +33,6 @@ describe("tmux native process proof", () => {
 [ "$1" = -u ] || exit 3
 case "$4" in
   list-clients) printf '%s' ${shellQuote(mapping)} ;;
-  capture-pane) printf '%s\n' 'synthetic Codex answer' ;;
-  display-message) printf '%s\n' '/work/été' ;;
   *) exit 4 ;;
 esac
 `, { mode: 0o755 });
@@ -43,7 +41,6 @@ esac
     try {
       const found = await discoverTmux(info, "linux", undefined, async () => processes, births, () => ["/opt/bin/codex"]);
       expect(found).toMatchObject({ pid: 30, argvState: "local" });
-      expect(await tmuxPaneView(found!.pane)).toEqual({ text: "synthetic Codex answer\n", cwd: "/work/été" });
     } finally {
       if (previousPath === undefined) delete process.env["PATH"]; else process.env["PATH"] = previousPath;
       if (previousLocale === undefined) delete process.env["LC_ALL"]; else process.env["LC_ALL"] = previousLocale;
@@ -361,17 +358,16 @@ esac
     expect(found!.pane).toEqual({ args: ["-S", "/fixture/tmux.sock"], id: "%4" });
   });
 
-  it("reads the proven pane's own screen and folder from the client's server, never the client's view", async () => {
-    const pane = { args: ["-S", "/fixture/tmux.sock"], id: "%4" };
-    const asked: (readonly string[])[] = [];
-    expect(await tmuxPaneView(pane, async (args) => {
-      asked.push(args);
-      return args.includes("capture-pane") ? "Codex screen\n" : "/work/project\n";
-    })).toEqual({ text: "Codex screen\n", cwd: "/work/project" });
-    expect(asked).toContainEqual(["-S", "/fixture/tmux.sock", "capture-pane", "-p", "-t", "%4", "-S", "-400"]);
-    expect(asked).toContainEqual(["-S", "/fixture/tmux.sock", "display-message", "-p", "-t", "%4", "#{pane_current_path}"]);
-    expect(await tmuxPaneView(pane, async (args) => args.includes("capture-pane") ? "" : "relative\n")).toBeNull();
-    expect(await tmuxPaneView(pane, async () => { throw new Error("pane gone"); })).toBeNull();
+  it.each([
+    ["a local TUI", 30, 30, ["codex"], "unix:///fixture/local.sock"],
+    ["a nonlocal listener", 30, 30, ["codex", "--remote", "ws://127.0.0.1:1234"], "ws://127.0.0.1:1234"],
+    ["the wrong socket", 30, 30, ["codex", "--remote", "unix:///fixture/local.sock"], "unix:///fixture/other.sock"],
+    ["an unrelated process", 1, 30, ["codex", "--remote", "unix:///fixture/local.sock"], "unix:///fixture/local.sock"],
+    ["inconsistent foreground metadata", 30, 99, ["codex", "--remote", "unix:///fixture/local.sock"], "unix:///fixture/local.sock"],
+  ] as const)("refuses a foreground app server beside %s", async (_name, parent, foreground, tui, listen) => {
+    const rows = [...processes, { pid: 31, parent, group: 30, foreground, tty: "pts/2", command: "codex" }];
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => rows, births,
+      (pid) => pid === 30 ? tui : ["codex", "app-server", "--listen", listen])).toBeNull();
   });
 
   it.each([

@@ -13,11 +13,12 @@ export function isCodexInterpreter(executable: string): boolean {
   return /(?:^|[\\/])(?:node|bun|sh|bash|dash|zsh)(?:\.exe)?$/.test(executable);
 }
 
+const CODEX_EXECUTABLE = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
+
 export function isCodexExecutable(argv: readonly string[]): boolean {
   const executable = argv[0] ?? "";
   // also a release binary named for its target, and any letter case of Windows' file names
-  const codex = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
-  if (codex.test(executable)) return true;
+  if (CODEX_EXECUTABLE.test(executable)) return true;
   // `node codex.js` and shell shebangs name the script after the interpreter and its
   // `--flag` options (`node --no-warnings codex.js`). Only options known to take no
   // value may precede the script, plus `--name=value` forms that do not run code: an
@@ -32,9 +33,23 @@ export function isCodexExecutable(argv: readonly string[]): boolean {
     if (CODE_OPTIONS.has(name)) return false;
     if (!option.includes("=") && !VALUELESS_OPTIONS.has(name)) return false;
   }
-  return codex.test(argv[script] ?? "");
+  return CODEX_EXECUTABLE.test(argv[script] ?? "");
 }
 
+/** The value of a long option, before the end-of-options marker. */
+export function optionValue(argv: readonly string[], name: string): string | null {
+  for (const [index, arg] of argv.entries()) {
+    if (arg === "--") return null;
+    if (arg === name) return argv[index + 1] ?? null;
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return null;
+}
+
+export function codexAppServerSocket(argv: readonly string[]): string | null {
+  const options = argv.slice(0, argv.includes("--") ? argv.indexOf("--") : undefined);
+  return CODEX_EXECUTABLE.test(argv[0] ?? "") && options.includes("app-server") ? optionValue(argv, "--listen") : null;
+}
 
 export type CodexConversationMode = "local" | "remote" | "rejected" | "unavailable";
 

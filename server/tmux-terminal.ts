@@ -8,7 +8,7 @@ import type { ProcessInfo } from "./herdr/client.ts";
 import type { TerminalProcess } from "./kiro-terminal.ts";
 import { processStartIdentity } from "./process-start.ts";
 import { darwinArgv } from "./darwin-process.ts";
-import { codexConversationMode, type CodexConversationMode, isCodexExecutable, isCodexInterpreter } from "./codex-executable.ts";
+import { codexAppServerSocket, codexConversationMode, type CodexConversationMode, isCodexExecutable, isCodexInterpreter, optionValue } from "./codex-executable.ts";
 
 function attachClient(client: { pid: number; argv?: readonly string[] | null }) {
   const argv = client.argv ?? [];
@@ -62,22 +62,6 @@ export async function processTable(): Promise<TerminalProcess[]> {
 
 /** The pane a proven attach client shows: its server (the client's own -S/-L) and the pane's id there. */
 export type TmuxPane = { readonly args: readonly string[]; readonly id: string };
-
-/**
- * What the proven pane itself shows, its last 400 lines as herdr reads a pane's, and the folder its foreground
- * process runs in. Never the attach client's view, which may draw another pane beside it, the session tree with
- * other sessions' previews, or a popup. null when either cannot be read.
- */
-export async function tmuxPaneView(pane: TmuxPane, read: (args: readonly string[]) => Promise<string> = run): Promise<{ text: string; cwd: string } | null> {
-  try {
-    const [text, folder] = await Promise.all([
-      read([...pane.args, "capture-pane", "-p", "-t", pane.id, "-S", "-400"]),
-      read([...pane.args, "display-message", "-p", "-t", pane.id, "#{pane_current_path}"]),
-    ]);
-    const cwd = folder.endsWith("\n") ? folder.slice(0, -1) : folder;
-    return isAbsolute(cwd) ? { text, cwd } : null;
-  } catch { return null; }
-}
 
 const tty = (value: string) => value.replace(/^\/dev\//, "");
 const pid = (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
@@ -159,7 +143,8 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
           const readable = before !== null && argv !== null && birth(row.pid) === before;
           return { row, argv: argv === null ? [row.command] : [...argv], argvBirth: readable ? before : null,
             argvRead: readable, candidateBirth: before, argvState: codexConversationMode(readable ? argv : null) };
-        });
+        })
+        .filter(({ argv, argvRead }) => !argvRead || codexAppServerSocket(argv) === null);
       // Existing native proof stays first; interpreter argv is evidence only for the script fallback.
       if (candidates.length === 0) for (const row of foreground) {
         const before = birth(row.pid);
@@ -169,9 +154,12 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
         // comm is mutable (Node may name its main thread); the kernel's argv names the interpreter.
         if (isCodexInterpreter(argv[0] ?? "") && isCodexExecutable(argv)) candidates.push({ row, argv: [...argv], argvBirth: before, argvRead: true, candidateBirth: before, argvState: codexConversationMode(argv) });
       }
-      if (candidates.length !== 1) return null;
-      const selected = candidates[0]!;
+      // Non-interactive launchers can leave their app server in the TUI's foreground group.
+      // Only a child or sibling listening on this TUI's named local socket can be that peer.
+      const [selected] = candidates;
+      if (candidates.length !== 1 || selected === undefined) return null;
       const codex = selected.row;
+      const remote = selected.argvRead ? optionValue(selected.argv, "--remote") : null;
       if (codex.group !== codex.foreground) return null;
       const chain: TerminalProcess[] = [codex];
       const argvProofs = new Map<number, { pid: number; birth: number; key: string }>();
@@ -198,9 +186,11 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
         seen.add(parent.pid);
         chain.push(parent);
       }
-      // Tools may share Codex's job, but only through its own live descendants, never siblings or another TUI.
+      // Apart from its own app server, only verified non-Codex descendants may share the job.
       const auxiliary = foreground.filter((row) => !chain.includes(row));
       for (const row of auxiliary) {
+        if (row.foreground === root.foreground && remote?.startsWith("unix:///") && (row.parent === codex.pid || row.parent === codex.parent)
+          && codexAppServerSocket(checkedArgv(row) ?? []) === remote) continue;
         const visited = new Set<number>();
         let current = row;
         while (current.pid !== codex.pid) {

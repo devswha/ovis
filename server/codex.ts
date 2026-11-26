@@ -21,6 +21,8 @@ import { resolveAgent } from "./pane-context.ts";
 import { FOOTER } from "./codex-steering.ts";
 import { codexStartScreenUnused } from "./start-screen.ts";
 import { servedConversations } from "./approvals/codex.ts";
+import { codexAppServerSocket, type CodexConversationMode, isCodexExecutable, optionValue } from "./codex-executable.ts";
+import { tmuxCodexProcess, tmuxWrapper } from "./tmux-terminal.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -2153,7 +2155,7 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
 export async function codexFreshSession(paneId: string, cwds: readonly string[], configured: string | undefined, screen: string): Promise<string | null> {
   if (!codexStartScreenUnused(screen)) return null;
   const { list, key } = await codexProcessesOf(paneId).catch(() => ({ list: [], key: "" }));
-  if (list.length === 0 || list.some((codex) => (codex.argv ?? []).some((word) => word === "resume" || word === "fork"))) return null;
+  if (key.startsWith("tmux:") || list.length === 0 || list.some((codex) => (codex.argv ?? []).some((word) => word === "resume" || word === "fork"))) return null;
   // Else every Codex's home must be placed for
   // certain, and the first decides: one paneCodexHome cannot place (a relative CODEX_HOME) falls
   // back to the default store, where this pane's conversation is not
@@ -2721,23 +2723,16 @@ function theirs(rollouts: string[], paneId: string, claimed: ReadonlySet<string>
   return rollouts.filter((rollout) => !elsewhere.has(rollout) && !claimed.has(rollout));
 }
 
-/** A Codex executable, also a release binary named for its target, and any letter case of Windows' file names. */
-const CODEX_EXECUTABLE = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
-
-const CODE_OPTIONS = new Set(["eval", "print", "require", "import", "loader", "experimental-loader", "input-type"]);
-const VALUELESS_OPTIONS = new Set([
-  "", "no-warnings", "no-deprecation", "trace-warnings", "trace-deprecation", "pending-deprecation", "throw-deprecation",
-  "enable-source-maps", "preserve-symlinks", "preserve-symlinks-main", "expose-gc", "abort-on-uncaught-exception",
-  "experimental-strip-types", "experimental-transform-types", "experimental-vm-modules", "experimental-require-module",
-  "no-experimental-fetch", "harmony", "bun", "smol", "hot", "watch", "noprofile", "norc", "posix", "login",
-]);
-
 export async function paneCodexProcess(paneId: string, known?: ProcessInfo | null): Promise<{ pid: number; argv?: string[] } | null> {
   return (await codexProcessesOf(paneId, known)).list[0] ?? null;
 }
 
-async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[] }[]; key: string }> {
+async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[]; argvState?: CodexConversationMode }[]; key: string }> {
   const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId);
+  if (tmuxWrapper(processInfo)) {
+    const attached = await tmuxCodexProcess(processInfo);
+    return { list: attached === null ? [] : [attached], key: `tmux:${attached?.identity ?? ""}` };
+  }
   // herdr's schema allows `argv: null`; this reader has always read argv as absent or a list
   // (the cast is the inline result type herdrRpc was given before the typed seam)
   const list = ((processInfo?.foreground_processes ?? []) as { pid: number; argv?: string[] }[])
@@ -2749,26 +2744,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
         return { ...foreground, argv: readFileSync(`/proc/${foreground.pid}/cmdline`, "utf8").split("\0") };
       } catch { return foreground; }
     })
-    .filter((foreground) => {
-      const argv: string[] = Array.isArray(foreground.argv) ? foreground.argv : [];
-      const executable = argv[0] ?? "";
-      if (CODEX_EXECUTABLE.test(executable)) return true;
-      // `node codex.js` and shell shebangs name the script after the interpreter and its
-      // `--flag` options (`node --no-warnings codex.js`). Only options known to take no
-      // value may precede the script, plus `--name=value` forms that do not run code: an
-      // option that takes the next argument (`--title x`, `-e`, `-c`) or one that evaluates
-      // code or loads a module ends the search, since what follows it is not the script.
-      // Later arguments (echo, etc.) are not executables.
-      if (!/(?:^|[\\/])(?:node|bun|sh|bash|dash|zsh)(?:\.exe)?$/.test(executable)) return false;
-      let script = 1;
-      for (; argv[script]?.startsWith("--"); script++) {
-        const option = argv[script] ?? "";
-        const name = option.slice(2, option.includes("=") ? option.indexOf("=") : undefined);
-        if (CODE_OPTIONS.has(name)) return false;
-        if (!option.includes("=") && !VALUELESS_OPTIONS.has(name)) return false;
-      }
-      return CODEX_EXECUTABLE.test(argv[script] ?? "");
-    });
+    .filter((foreground) => isCodexExecutable(Array.isArray(foreground.argv) ? foreground.argv : []));
   if (list.length === 0) {
     const nested = await kiroCodexProcess(processInfo);
     // A PID can be reused between reads: the verified births identify the whole nested chain.
@@ -3220,16 +3196,6 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
   return { codexProcesses, processes, open, held };
 }
 
-/** The value of `--name value` or `--name=value` among `argv`'s options (before `--`), or null. */
-function optionValue(argv: readonly string[], name: string): string | null {
-  for (const [index, arg] of argv.entries()) {
-    if (arg === "--") return null;
-    if (arg === name) return argv[index + 1] ?? null;
-    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
-  }
-  return null;
-}
-
 /** The descriptors `pid` has open, each with the file it names, or null when they cannot be listed. */
 function descriptorTargets(pid: number): Map<string, string> | null {
   let descriptors: string[];
@@ -3245,7 +3211,7 @@ function descriptorTargets(pid: number): Map<string, string> | null {
 /**
  * The rollout the Codex app server beside a pane's TUI holds, with the identity of the held file. A TUI on
  * `codex --remote unix://<socket>` holds no rollout: the server its launcher started beside it does
- * (server/approvals/codex.ts). That server is the TUI's own when it is the TUI's sibling under the launcher, its
+ * (server/approvals/codex.ts). That server is the TUI's own when it is the TUI's sibling under the launcher or its child, its
  * command line listens on the socket the TUI names, and the kernel shows it listening there (/proc/net/unix).
  * null when no such server is proven: the lookup goes on as before. "unproven" when it is, but does not say which
  * conversation the TUI shows: it holds more or other than one rollout and that thread's write flock (a /new not
@@ -3260,12 +3226,14 @@ function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[
     try {
       const stat = readFileSync(`/proc/${tui.pid}/stat`, "utf8");
       const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
-      for (const sibling of readFileSync(`/proc/${parent}/task/${parent}/children`, "utf8").trim().split(/\s+/).map(Number)) {
-        if (sibling === tui.pid || !Number.isInteger(sibling) || sibling <= 0) continue;
-        let argv: string[];
-        try { argv = readFileSync(`/proc/${sibling}/cmdline`, "utf8").split("\0"); } catch { continue; }
-        const options = argv.slice(0, argv.includes("--") ? argv.indexOf("--") : undefined);
-        if (CODEX_EXECUTABLE.test(argv[0] ?? "") && options.includes("app-server") && optionValue(argv, "--listen") === remote) servers.set(sibling, remote.slice("unix://".length));
+      for (const owner of [tui.pid, parent]) {
+        const children = readFileSync(`/proc/${owner}/task/${owner}/children`, "utf8").trim().split(/\s+/).map(Number);
+        for (const pid of children) {
+          if (pid === tui.pid || !Number.isInteger(pid) || pid <= 0) continue;
+          let argv: string[];
+          try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { continue; }
+          if (codexAppServerSocket(argv) === remote) servers.set(pid, remote.slice("unix://".length));
+        }
       }
     } catch { return null; }
   }
@@ -3356,9 +3324,23 @@ async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: 
   return { among };
 }
 
+/** The only native histories behind tmux are those proved by descriptors, while still attached. */
+async function tmuxRollout(paneId: string, home: string, found: Awaited<ReturnType<typeof openRollouts>>): Promise<{ path: string; identity: string } | null> {
+  const { codexProcesses, processes, open, held } = found;
+  const [tui] = codexProcesses;
+  const [only] = open;
+  const proof = tui?.argvState === "remote" ? ownServerRollout(codexProcesses, home)
+    : tui?.argvState === "local" && open.size === 1 && only !== undefined ? { path: only, identity: held.get(only) ?? "" } : null;
+  if (proof === null || proof === "unproven") return null;
+  const again = await codexProcessesOf(paneId).catch(() => null);
+  return again?.key === processes ? proof : null;
+}
+
 export async function codexOpenRollout(paneId: string, cwd: string | null | undefined, home = defaultCodexHome()): Promise<string | null> {
   const agent = await codexAgentInfo(paneId);
-  const { codexProcesses, processes, open } = await openRollouts(paneId, home);
+  const found = await openRollouts(paneId, home);
+  const { codexProcesses, processes, open } = found;
+  if (processes.startsWith("tmux:")) return (await tmuxRollout(paneId, home, found))?.path ?? null;
   if (open.size === 1) return [...open][0]!;
   const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
   // the pane's server knows it holds more than one: no earlier report or binding says which the TUI shows
@@ -3542,9 +3524,11 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // read now, never the caller's earlier answer (agent.get's own read, when herdr gave one): a screen match below
   // binds the rollout to these processes, and one read before a Codex left (or before its pid came back) would
   // bind a conversation to the wrong one
-  const { codexProcesses, processes, open, held } = await openRollouts(paneId, home, agent.processRead?.info);
+  const found = await openRollouts(paneId, home, agent.processRead?.info);
+  const { codexProcesses, processes, open, held } = found;
   if (codexProcesses.length === 0) return null;
-  const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
+  const attached = processes.startsWith("tmux:");
+  const told = !attached && open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
   if (told !== null) {
     if ("only" in told) {
       proofs?.set(told.only.path, told.only.identity);
@@ -3566,13 +3550,18 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   }
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
   // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
-  if (agent.unlabelled && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
+  if (!attached && agent.unlabelled && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
   const first = codexProcesses[0];
   if (homeUnplaced && first !== undefined && await processCodexHome(first.pid, first.argv) !== home) return null;
   // `home` was placed by the Codex an earlier read named (the caller's, or paneCodexHomePlaced's own): the one seen
   // now must write there too, or another Codex started since with a store of its own would be shown this store's
   // conversation (#2774)
   if (homeFromEarlierRead && first !== undefined && ((await processCodexHome(first.pid, first.argv)) ?? defaultCodexHome()) !== home) return null;
+  if (attached) {
+    const proof = await tmuxRollout(paneId, home, found);
+    if (proof !== null) proofs?.set(proof.path, proof.identity);
+    return proof?.path ?? null;
+  }
   if (open.size === 1) {
     const only = [...open][0]!;
     // held, but its file not provable (a conflict, a closed descriptor, lsof without D or i): an empty proof, which

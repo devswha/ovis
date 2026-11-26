@@ -7,6 +7,7 @@ import { createServer } from "./index.ts";
 import { herdrRpc, paneProcessInfo, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { shellQuote } from "./machine-security.ts";
 import { processTable, tmuxCodexProcess } from "./tmux-terminal.ts";
+import { testTmuxOwnAppServers } from "./tmux-own-server.test-helpers.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 
 // A real private tmux client in the test herdr, a stand-in executable, and synthetic native files.
@@ -14,11 +15,11 @@ const native = process.platform === "linux";
 const root = mkdtempSync(join(tmpdir(), "ovis-tmux-"));
 const socket = join(root, "tmux.sock");
 const home = join(root, "store");
-const rollout = join(home, "sessions", "rollout-00000000-0000-4000-8000-000000000001.jsonl");
-// A Codex on the shared app-server daemon holds no rollout: only its tmux pane's own screen tells
+const rollout = join(home, "sessions", "rollout-2026-11-15T00-00-00-00000000-0000-4000-8000-000000000001.jsonl");
+// A Codex on the shared daemon holds no rollout, even when its screen matches a stored thread.
 const shownThread = "00000000-0000-4000-8000-000000000002";
 const shownRollout = join(home, "sessions", `rollout-${shownThread}.jsonl`);
-const shownAnswer = "This conversation is read from the tmux pane's own screen while the shared daemon holds its rollout.";
+const shownAnswer = "This answer is visible on the tmux pane while the shared daemon holds its rollout.";
 let shownWorkspace: string | undefined;
 let shownPane: string;
 let workspace: string | undefined;
@@ -204,15 +205,17 @@ afterAll(() => cleanup([
   () => rmSync(root, { recursive: true, force: true }),
 ]));
 
-it.skipIf(!native)("serves the conversation a tmux pane's own screen shows while its Codex holds no rollout", async () => {
+it.skipIf(!native)("keeps scrollback for a shared-daemon TUI even when its screen matches a stored thread", async () => {
   const pid = Number(readFileSync(join(root, "shown-ready"), "utf8"));
   expect(readdirSync(`/proc/${pid}/fd`).some((fd) => readlinkSync(`/proc/${pid}/fd/${fd}`).endsWith(".jsonl"))).toBe(false);
   const response = await fetch(`http://127.0.0.1:${server!.port}/api/pane/conversation?pane_id=${encodeURIComponent(shownPane)}`);
   expect(response.status).toBe(200);
   const conversation = await response.json() as ConversationResponse;
-  expect(conversation.source).toBe("codex-transcript");
-  expect(JSON.stringify(conversation)).toContain("Read the daemon chat");
+  expect(conversation.source).toBe("scrollback");
+  expect(JSON.stringify(conversation)).not.toContain("Read the daemon chat");
 });
+
+testTmuxOwnAppServers({ root, socket, home, rollout, tmux, port: () => server?.port });
 
 it.skipIf(!native)("serves native turns behind a foreground shell launcher instead of its tmux terminal chrome", async () => {
   const pid = Number(readFileSync(join(root, "ready"), "utf8"));
