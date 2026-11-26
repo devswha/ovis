@@ -12,6 +12,7 @@ import { TerminalInput, type TerminalInputModes, type TextAreaViewportBounds } f
 import { createLinkifier, createSelection, type ILinkProvider, type Linkifier, type LinkUnderline, type Selection } from "../terminalSelection/index.ts";
 import { holdScreenRows, type ScreenRows } from "../terminalScreen.ts";
 import { requestShownFrame } from "../shownFrame.ts";
+import { fitCompositionView } from "../terminalGlyphs.ts";
 import type { PictureLimits } from "../itermPictures.ts";
 import { GHOSTTY_DREW_EVENT, GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ownView } from "./viewMoved.ts";
 import { ghosttyRows } from "./screenRows.ts";
@@ -291,6 +292,8 @@ export class GhosttyTerminal {
     });
     this.inputLayer = input;
     this.textarea = input.textarea;
+    const view = screen.querySelector<HTMLElement>(".composition-view");
+    if (view) this.cleanups.push(fitCompositionView(view, () => this.dims?.cell.width ?? 0, () => ({ family: this.options.fontFamily, size: this.options.fontSize, weight: this.options.fontWeight })));
     input.disableStdin = this.options.disableStdin;
     this.cleanups.push(
       input.onData((data) => this.onDataEmitter.fire(data)).dispose,
