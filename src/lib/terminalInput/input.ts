@@ -103,7 +103,8 @@ export class TerminalInput {
     Object.assign(this.container.style, { position: "absolute", left: "0", top: "0", zIndex: "5" });
 
     const textarea = this.textarea = doc.createElement("textarea");
-    textarea.className = "terminal-input-textarea";
+    // xterm's class name, which the page's styles and the browser scripts look the field up by
+    textarea.className = "xterm-helper-textarea";
     textarea.setAttribute("aria-label", "Terminal input");
     if (!this.platform.isChromeOS) textarea.setAttribute("aria-multiline", "false");
     textarea.setAttribute("autocorrect", "off");
