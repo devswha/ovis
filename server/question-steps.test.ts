@@ -335,6 +335,14 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
 }
 
 const ompForm = (name: string): string => readFileSync(new URL(`./fixtures/omp-form-19.1.0-${name}.txt`, import.meta.url), "utf8");
+const ompNotesHtml = "<form><label>Notes<textarea name=\"notes\"></textarea></label></form>";
+function ompNotesDraft(screen: string, lines: readonly string[]): string {
+  let row = 0;
+  return screen.replace(/│   │ {3}/gu, (prefix) => {
+    const line = lines[row++];
+    return line === undefined ? prefix : `│   │ ${line}`;
+  });
+}
 
 test.skipIf(process.platform === "win32")("omp form: a multiline draft cannot be confirmed when the final read sees the shell in front", async () => {
   const screen = ompForm("textarea-100");
@@ -342,8 +350,7 @@ test.skipIf(process.platform === "win32")("omp form: a multiline draft cannot be
     const prompt = await card();
     pane.onSent = (key) => {
       if (!key.startsWith("text:")) return;
-      let row = 0;
-      pane.screen = screen.replace(/│   │ {3}/gu, (prefix) => ["│   │ line 1", "│   │ line 2"][row++] ?? prefix);
+      pane.screen = ompNotesDraft(screen, ["line 1", "line 2"]);
       pane.onRpc = (method) => {
         if (method === "pane.read") pane.foreground = "bash";
       };
@@ -353,7 +360,7 @@ test.skipIf(process.platform === "win32")("omp form: a multiline draft cannot be
       result: { status: 409, code: "prompt_changed" },
       sent: ["ctrl+k", "ctrl+u", "text:\u001b[200~line 1\nline 2\u001b[201~"],
     });
-  }, QUESTIONS, "<form><label>Notes<textarea name=\"notes\"></textarea></label></form>");
+  }, QUESTIONS, ompNotesHtml);
 });
 
 test("omp form: a scrolled Contact card cannot answer another Contact field", async () => {
@@ -375,6 +382,48 @@ test("omp form: a scrolled Contact card cannot answer another Contact field", as
     pane.screen = frame(" second");
     expect(await move(first.id, { custom_text: "new contact" })).toEqual({ status: 409, code: "prompt_changed" });
     expect(pane.sent).toEqual([]);
+  }, QUESTIONS, html);
+});
+
+test.each([
+  { fixture: "number-100", input: "7", changed: false, draw: (screen: string) => screen.replace("│   │ 30 ", "│   │ 7  ") },
+  { fixture: "number-100", input: "7", changed: true, draw: (screen: string) => screen.replace("│   │ 30 ", "│   │ 71 ") },
+  { fixture: "textarea-100", input: "line 1\nline 2", changed: false, draw: (screen: string) => ompNotesDraft(screen, ["line 1", "line 2"]) },
+  { fixture: "textarea-100", input: "line 1\nline 2", changed: true, draw: (screen: string) => ompNotesDraft(screen, ["line 1", "different"]) },
+])("omp form: confirms the pasted draft only if it matches ($fixture, changed=$changed)", async ({ fixture, input, changed, draw }) => {
+  const screen = ompForm(fixture);
+  const html = fixture === "textarea-100" ? ompNotesHtml : "<form><label>Session lifetime (days)<input type=\"number\" name=\"days\"></label></form>";
+  await withPane("omp", screen, async pane => {
+    const prompt = await card();
+    pane.onSent = (key) => {
+      if (key.startsWith("text:")) pane.screen = draw(screen);
+    };
+    const result = await move(prompt.id, { custom_text: input });
+    expect({ status: result.status, sent: pane.sent }).toEqual({
+      status: changed ? 409 : 200,
+      sent: ["ctrl+k", "ctrl+u", `text:\u001b[200~${input}\u001b[201~`, ...(changed ? [] : ["enter"])],
+    });
+  }, QUESTIONS, html);
+});
+
+test.each([{ extra: false }, { extra: true }])("omp form: confirms only the requested checkboxes (extra tick=$extra)", async ({ extra }) => {
+  const screen = ompForm("checkbox-100");
+  const html = `<form><fieldset><legend>Q2 · Targets</legend>${["Desktop", "Phone", "Tablet"].map((name) => `<label><input type="checkbox" name="target">${name}</label>`).join("")}</fieldset></form>`;
+  await withPane("omp", screen, async pane => {
+    const prompt = await card();
+    pane.onSent = (key) => {
+      if (key === "down") pane.screen = pane.screen.replace("❯ ☐ Desktop", "  ☐ Desktop").replace("  ☐ Phone", "❯ ☐ Phone");
+      if (key === "space" && pane.screen.includes("❯ ☑ Desktop")) pane.screen = pane.screen.replace("❯ ☑ Desktop", "❯ ☐ Desktop");
+      else if (key === "space") {
+        pane.screen = pane.screen.replace("❯ ☐ Phone", "❯ ☑ Phone");
+        if (extra) pane.screen = pane.screen.replace("  ☐ Desktop", "  ☑ Desktop");
+      }
+    };
+    const result = await move(prompt.id, { option_indices: [1] });
+    expect({ status: result.status, sent: pane.sent }).toEqual({
+      status: extra ? 409 : 200,
+      sent: ["space", "down", "space", ...(extra ? [] : ["enter"])],
+    });
   }, QUESTIONS, html);
 });
 
