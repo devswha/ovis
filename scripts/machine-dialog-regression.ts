@@ -352,8 +352,10 @@ try {
           await destination.fill("old-desktop");
           await destination.press("Enter");
           const card = dialog.locator(".machine-progress");
-          await card.locator("strong", { hasText: "검증된 linux-x64 번들을 설치하는 중…" }).waitFor();
+          // the step on its way is a stage of four, with its bar; the failure is words alone
+          await card.locator('[role="progressbar"][aria-label="검증된 linux-x64 번들을 설치하는 중…"][aria-valuenow="75"][aria-valuetext="4단계 중 3"]').waitFor();
           await card.locator("strong", { hasText: "연결 실패" }).waitFor();
+          assert.equal(await card.getByRole("progressbar").count(), 0, "a failed setup shows no bar");
           assert.deepEqual(await card.locator("p").allTextContents(), [
             "이 PC에서 도는 자체 Ovis(v0.5.1)가 이 앱보다 오래됐습니다. 다시 연결하려면 미리보기 버전(v0.5.10-beta.2)으로 업데이트하세요.",
             "미리보기 버전은 정식 출시 전의 테스트 빌드입니다.",
