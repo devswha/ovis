@@ -28,6 +28,7 @@ import type { SessionHistoryAgent, SessionHistoryRow } from "../shared/protocol.
 import { agyUserText } from "./agy.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { cmdSlug } from "./cmd.ts";
+import { codexIndexedNames, codexStoredLabels } from "./codex-session-labels.ts";
 import { grokSessionGroups } from "./grok-store.ts";
 import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefix } from "./codex.ts";
 import { hermesHome } from "./hermes-home.ts";
@@ -580,10 +581,8 @@ function codexRow(scan: Scan, file: Found, cwds: readonly string[]): Row | null 
   return row("codex", id, { firstMessage, startedAt, updatedAt: new Date(file.mtimeMs).toISOString() });
 }
 
-function codexSessions(cwds: readonly string[], codexHome: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
-  const sessions = join(codexHome, "sessions");
-  const scan = scanOf(budget, sessions, read);
-  if (scan === null) return [];
+function codexRolloutRows(scan: Scan, sessions: string, cwds: readonly string[]): Row[] {
+  const { budget } = scan;
   const desc = (dir: string) => budget.list(dir, (entry) => /^\d+$/.test(entry.name)).map((entry) => entry.name).sort().reverse();
   const files: Found[] = [];
   walk: for (const year of desc(sessions)) {
@@ -596,6 +595,33 @@ function codexSessions(cwds: readonly string[], codexHome: string, budget: Budge
   }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return rowsOf(files, (file) => codexRow(scan, file, cwds));
+}
+
+function codexSessions(cwds: readonly string[], codexHome: string, budget: Budget, read: SessionHistoryOptions["readHead"]): Row[] {
+  const sessions = join(codexHome, "sessions");
+  const scan = scanOf(budget, sessions, read);
+  if (scan === null) return [];
+  // Check the optional stores before walking rollouts, which can use the remaining stat budget.
+  const index = scanOf(budget, codexHome, undefined)?.file(join(codexHome, "session_index.jsonl")) ?? null;
+  let names: ReadonlyMap<string, string> | undefined;
+  if (index !== null) {
+    try {
+      const fd = openChecked(budget, index);
+      try { names = codexIndexedNames(fd, index.size); } finally { closeSync(fd); }
+    } catch { /* An unavailable index does not hide the rollout. */ }
+  }
+  let rows: Row[] | undefined;
+  const listed = () => rows ??= codexRolloutRows(scan, sessions, cwds);
+  const metadata = withDatabase(budget, codexHome, join(codexHome, "state_5.sqlite"), (db) =>
+    codexStoredLabels(db, listed().map(({ id }) => id), { title: TITLE_CHARS * 4, message: MESSAGE_CHARS * 4 }));
+  return listed().map((entry) => {
+    const stored = metadata?.get(entry.id);
+    return {
+      ...entry,
+      title: clip(names?.get(entry.id) ?? stored?.title ?? null, TITLE_CHARS),
+      firstMessage: entry.firstMessage ?? clip(stored?.firstMessage ?? null, MESSAGE_CHARS),
+    };
+  });
 }
 
 /* ---------------------------------------------------------------------------------------------
