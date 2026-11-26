@@ -11,6 +11,8 @@ import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./p
 import { commandInvocations, commandOutcome, CommandReservations, dialogSettlingScreen, ownsCommandDialog, WINDOW_MS as COMMAND_WINDOW_MS, type CommandSend } from "./outcome.ts";
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
+import { isKiroChatProcess, kiroRecordStillOpenInFile } from "./kiro.ts";
+import { kiroRecord } from "./dialogs/kiro-record.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
@@ -894,6 +896,17 @@ async function hermesOwnsInput(paneId: string): Promise<boolean> {
 }
 
 /**
+ * Whether Kiro CLI holds the pane's input (its chat TUI is in the pane's foreground), not a shell it was suspended
+ * behind (Ctrl+Z) or exited to: the screen can still hold Kiro's approval box after it leaves, and a key answered
+ * there would go to the shell. Windows lists no foreground process group, so Kiro stays readable there.
+ */
+async function kiroOwnsInput(paneId: string): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  const info = await paneProcessInfo(paneId).catch(() => null);
+  return (info?.foreground_processes ?? []).some((entry) => Array.isArray(entry.argv) && isKiroChatProcess(entry.argv));
+}
+
+/**
  * The foreground process is Hermes itself: its own executable, Python running its entry script,
  * or the installer's inline CLI launcher. Other Python code must not take an approval's keys
  * even when its arguments contain a path named Hermes.
@@ -1266,7 +1279,7 @@ async function readKnownPrompt(
     return heldOnly(parsed) && !approvalHeld(paneId) ? null : parsed;
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
-  if ((agent === "letta" || agent === "agy") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
+  if ((agent === "letta" || agent === "agy" || agent === "kiro") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
   let rebind = (card: InteractivePrompt): InteractivePrompt => card;
   if (prompt && agent === "omp") {
     const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown === true, ompBindings);
@@ -1288,6 +1301,21 @@ async function readKnownPrompt(
   // its dangerous-command panel, with the command its state.db holds when the panel shows it whole (record-cards.ts)
   const hermesApproval = agent === "hermes" && prompt !== null ? parsedByPublicPrompt.get(prompt) : undefined;
   if (hermesApproval?.responder === "hermes-approval") {
+    const request = await recordRequest(paneId, agent);
+    const bound = (card: InteractivePrompt): InteractivePrompt => {
+      const parsed = parsedByPublicPrompt.get(card);
+      return parsed ? publicPrompt(withRecord(parsed, request, screen, recordFor(agent)!)) : card;
+    };
+    prompt = bound(prompt!);
+    rebind = bound;
+  }
+  // Kiro's approval answers by keys that grant or refuse: offered only while Kiro holds the input
+  if (agent === "kiro" && prompt !== null && parsedByPublicPrompt.get(prompt)?.responder === "kiro-approval" && !(await kiroOwnsInput(paneId))) {
+    return { prompt: null, screen, suppressFallback: true };
+  }
+  // Kiro V3's tool approval, with the verbatim command its session record holds when the dialog shows it whole (record-cards.ts)
+  const kiroApproval = agent === "kiro" && prompt !== null ? parsedByPublicPrompt.get(prompt) : undefined;
+  if (kiroApproval?.responder === "kiro-approval") {
     const request = await recordRequest(paneId, agent);
     const bound = (card: InteractivePrompt): InteractivePrompt => {
       const parsed = parsedByPublicPrompt.get(card);
@@ -1581,7 +1609,7 @@ export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], optio
 const WAITING_RESPONDERS: ReadonlySet<string> = new Set([
   "claude-approval", "claude-confirm", "claude-plan", "claude-question", "claude-submit", "cmd-question",
   "codex-approval", "codex-question", "codex-async-question", "codex-queued-question", "codex-menu",
-  "agy-question", "hermes-approval", "hermes-question", "hermes-input", "omo-question", "omo-review", "omo-pending",
+  "agy-question", "hermes-approval", "hermes-question", "hermes-input", "kiro-approval", "omo-question", "omo-review", "omo-pending",
   "omp-approval", "omp-question", "omp-submit", "opencode-v1-question", "opencode-question", "opencode-permission",
 ]);
 
@@ -1790,6 +1818,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // a card showing its record's command goes to that request only: after the screen's last read, the record must
         // still hold it open, so another request that opened meanwhile with the same command takes none of its keys
         if (parsedPrompt?.record !== undefined && (await recordRequest(body.pane_id, agent))?.id !== parsedPrompt.record.id) throw new RecordChanged();
+        // Kiro's record lookup yields: re-check the live screen and cursor immediately after it, then check the bound
+        // messages file synchronously with no further yield before write, so a cursor move during the lookup cannot
+        // commit the wrong option and a record change during the final screen read cannot take the key either.
+        if (parsedPrompt?.responder === "kiro-approval" && parsedPrompt.record !== undefined) {
+          const afterRecord = await Promise.race([liveScreen(body.pane_id).catch(() => null), Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
+          if (request.signal.aborted || afterRecord === null || Date.now() > readUntil) throw new KeyRefused();
+          const reparsed = parsePrompt("kiro", afterRecord);
+          const rebound = reparsed?.responder === "kiro-approval" ? withRecord(reparsed, parsedPrompt.record, afterRecord, kiroRecord) : null;
+          if (!same(rebound, afterRecord, rebound)) throw new KeyRefused();
+          if (!kiroRecordStillOpenInFile(parsedPrompt.record.id, kiroRecord.pending)) throw new RecordChanged();
+        }
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
