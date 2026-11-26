@@ -209,7 +209,7 @@ export interface PushService {
   firstStatus(paneId: string, created: AgentStatus, status: AgentStatus, machineId?: string): Promise<void>;
   onStatus(paneId: string, status: AgentStatus, machineId?: string): Promise<void>;
   onEnded(paneId: string, machineId?: string): Promise<void>;
-  onFailed(paneId: string, machineId?: string): Promise<void>;
+  onFailed(paneId: string, machineId?: string, failedBeforeQueuedTurn?: true): Promise<void>;
   mutesChanged(): void;
   settled(): Promise<void>;
 }
@@ -1076,10 +1076,10 @@ export function createPushService(options: PushServiceOptions): PushService {
       return statusChanged(paneId, status, machineId, true);
     },
 
-    async onFailed(paneId, machineId = "local") {
+    async onFailed(paneId, machineId = "local", failedBeforeQueuedTurn) {
       const key = paneStorageId(machineId, paneId);
       const at = lastStatus.get(key);
-      if (at === "working" || at === "blocked" || muted(machineId, paneId)) return;
+      if ((at === "working" && !failedBeforeQueuedTurn) || at === "blocked" || muted(machineId, paneId)) return;
       const to = [...store().values()].filter((subscription) => {
         const prefs = subscription.alerts ?? DEFAULT_ALERTS;
         return alertKindAllowed(prefs, "error") && alertPcAllowed(prefs, ...pcKeys(machineId));

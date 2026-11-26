@@ -428,6 +428,7 @@ class Connection {
     if (thread !== null && thread["id"] === this.thread && isObject(answer["result"])) {
       this.model = text(answer["result"]["model"]) ?? this.model;
       this.idle = isObject(thread["status"]) && thread["status"]["type"] === "idle";
+      if (this.turn === null && isObject(thread["status"]) && thread["status"]["type"] === "active") this.turn = "running";
     }
   }
 
@@ -578,6 +579,9 @@ class Connection {
         if (this.turn === "failed" && threadId === this.thread && id !== null) {
           this.turnId = id;
           this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "ended", prompt: id, failed: true });
+        } else if (threadId === this.thread && id !== null) {
+          this.turnId = id;
+          this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "ended", prompt: id });
         }
         break;
       }

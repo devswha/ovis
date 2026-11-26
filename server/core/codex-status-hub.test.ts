@@ -41,6 +41,23 @@ function codexHub(text: string) {
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
+  it("does not re-alert the same served turn after an in-flight working read outlasts herdr's done event", async () => {
+    const h = codexHub(failed);
+    const told = spyOn(served, "servedTurnEnd").mockReturnValue("failed");
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      h.status.hookTurn("w1:p1", "codex", { turn: "began", prompt: "u1" });
+      h.status.hookTurn("w1:p1", "codex", { turn: "ended", prompt: "u1", failed: true });
+      const release = await h.heldSnapshot();
+      h.herdrSays(pane("done"));
+      handlers.onStatus("w1:p1", "done", "codex");
+      await release();
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { told.mockRestore(); h.restore(); }
+  });
+
   it("reports a served failure before herdr rests, but releases queued input only at rest", async () => {
     const h = codexHub(failed);
     try {
@@ -56,7 +73,7 @@ describe("a Codex pane whose turn ended in an error", () => {
       h.herdrSays(pane("done"));
       expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
       expect(h.status.queueHeld("w1:p1", true)).toBe(false);
-      await h.looked();
+      expect(h.read).not.toHaveBeenCalled();
       handlers.onStatus("w1:p1", "done", "codex");
       h.status.hookTurn("w1:p1", "codex", event);
       expect(h.pending.current("w1:p1")).toBe("idle");

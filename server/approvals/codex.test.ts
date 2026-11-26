@@ -502,6 +502,18 @@ describe("Ovis on the pane's Codex server", () => {
     await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
   }
 
+  it("reports a terminal usage limit on a resumed main thread whose turn started before attachment", async () => {
+    const { codex, failures } = launched("0.171.0", ["t1"]);
+    codex.resumeWith("t1", { id: "t1", parentThreadId: null, ephemeral: false, status: { type: "active", activeFlags: [] } });
+    await codex.next((message) => message["method"] === "thread/resume");
+    await read(codex);
+    expect(servedStatus("w1:p1")?.threadId).toBe("t1");
+    codex.send({ method: "error", params: { threadId: "t1", turnId: "u1", willRetry: false,
+      error: { message: "Usage limit reached", codexErrorInfo: "usageLimitExceeded" } } });
+    await read(codex);
+    expect(failures).toEqual(["u1"]);
+  });
+
   it("tells a terminal usage-limit error before completion and tells the turn's failure only once", async () => {
     const { codex, failures } = launched();
     await running(codex);
