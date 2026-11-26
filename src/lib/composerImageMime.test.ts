@@ -194,19 +194,19 @@ describe("uploadableImage", () => {
   });
 
   test("sends every JPEG photo redrawn, which drops its camera metadata, even when that is no smaller", async () => {
-    const photo = new File(["x".repeat(4096)], "IMG_3718.jpeg", { type: "image/jpeg", lastModified: 7 });
+    const photo = new File([jpegBytes], "IMG_3718.jpeg", { type: "image/jpeg", lastModified: 7 });
     const smaller = await uploadableImage(photo, jpeg);
     expect([smaller.name, smaller.type, smaller.lastModified, await smaller.text()]).toEqual(["IMG_3718.jpg", "image/jpeg", 7, "jpeg bytes"]);
 
-    const small = new File(["tiny"], "IMG_3719.jpg", { type: "image/jpeg" });
+    const small = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], "IMG_3719.jpg", { type: "image/jpeg" });
     expect(await (await uploadableImage(small, jpeg)).text()).toBe("jpeg bytes");
 
-    const names = await Promise.all(["photo.jfif", "photo.JPE", "photo.JPG"].map(async (name) => (await uploadableImage(new File(["x"], name, { type: "image/jpeg" }), jpeg)).name));
+    const names = await Promise.all(["photo.jfif", "photo.JPE", "photo.JPG"].map(async (name) => (await uploadableImage(new File([jpegBytes], name, { type: "image/jpeg" }), jpeg)).name));
     expect(names).toEqual(["photo.jpg", "photo.jpg", "photo.jpg"]);
   });
 
   test("redraws a JPEG whose type the browser left empty, as a terminal attachment brings it", async () => {
-    const cases = [new File(["x"], "IMG_3721.JPG", { type: "" }), new File(["x"], "IMG_3722.jpeg", { type: "application/octet-stream" })];
+    const cases = [new File([jpegBytes], "IMG_3721.JPG", { type: "" }), new File([jpegBytes], "IMG_3722.jpeg", { type: "application/octet-stream" })];
     const sent = await Promise.all(cases.map((file) => uploadableImage(file, jpeg)));
     expect(await Promise.all(sent.map(async (file) => [file.name, file.type, await file.text()]))).toEqual([
       ["IMG_3721.jpg", "image/jpeg", "jpeg bytes"], ["IMG_3722.jpg", "image/jpeg", "jpeg bytes"],
@@ -217,10 +217,23 @@ describe("uploadableImage", () => {
   });
 
   test("cuts the location, device and date out of a JPEG this browser cannot redraw", async () => {
-    const photo = new File([jpegBytes], "IMG_3720.jpg", { type: "image/jpeg", lastModified: 7 });
+    const comment = new Uint8Array(segment(0xfe, [...new TextEncoder().encode("Device: Camera Model; captured 2026-08-17")]));
+    const photo = new File([jpegBytes.subarray(0, 2), comment, jpegBytes.subarray(2)], "IMG_3720.jpg", { type: "image/jpeg", lastModified: 7 });
     const sent = await uploadableImage(photo, async () => null);
     expect([sent.name, sent.type, sent.lastModified]).toEqual(["IMG_3720.jpg", "image/jpeg", 7]);
     expect([...new Uint8Array(await sent.arrayBuffer())]).toEqual(withoutMetadataBytes);
+  });
+
+  test("does not flatten a PNG the browser mislabeled as JPEG", async () => {
+    const photo = new File([PNG_BYTES], "screen.jpg", { type: "image/jpeg" });
+    const sent = await uploadableImage(photo, jpeg);
+    expect(new Uint8Array(await sent.arrayBuffer())).toEqual(PNG_BYTES);
+  });
+
+  test("preserves a generic named attachment even if its extension is .jpg", async () => {
+    const notes = new File(["notes"], "notes.jpg", { type: "application/octet-stream" });
+    const sent = await uploadableImage(notes, async () => null);
+    expect([sent.name, sent.type, await sent.text()]).toEqual(["notes.jpg", "application/octet-stream", "notes"]);
   });
 
   test("leaves non-HEIF payloads and other files alone without decoding them", async () => {

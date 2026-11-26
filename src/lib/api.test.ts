@@ -144,7 +144,7 @@ it("uploads an iPhone's HEIC or JPEG photo as the JPEG the browser drew, scaled 
   try {
     const paths = [
       await uploadPaneImage("p1", new File([stillHeic], "IMG_0001.HEIC", { type: "image/heic" })),
-      await uploadPaneImage("p1", new File(["x".repeat(4096)], "IMG_3718.jpeg", { type: "image/jpeg" })),
+      await uploadPaneImage("p1", new File([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], "IMG_3718.jpeg", { type: "image/jpeg" })),
       await uploadPaneImage("p1", new File([stillHeic], "IMG_0002.HEIC", { type: "image/heic" })),
     ];
     expect(paths).toEqual(Array(3).fill("/work/.ovis/paste-20261123-212127-ee17a8b2.jpg"));

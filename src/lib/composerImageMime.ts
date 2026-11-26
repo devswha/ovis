@@ -104,14 +104,18 @@ const JPEG_END = 0xd9;
 const JPEG_SCAN = 0xda;
 const JPEG_EXIF = 0xe1;
 const JPEG_MPF = 0xe2;
-/** APP1 holds Exif and XMP (location, device, date), APP13 IPTC: https://exiftool.org/TagNames/JPEG.html */
-const JPEG_METADATA: ReadonlySet<number> = new Set([JPEG_EXIF, 0xed]);
+/** APP1 holds Exif and XMP, APP13 IPTC, and COM text comments: https://exiftool.org/TagNames/JPEG.html */
+const JPEG_METADATA: ReadonlySet<number> = new Set([JPEG_EXIF, 0xed, 0xfe]);
 const EXIF_HEADER = [0x45, 0x78, 0x69, 0x66, 0, 0] as const;
 const MPF_HEADER = [0x4d, 0x50, 0x46, 0] as const;
 const EXIF_ORIENTATION = 0x0112;
 
 function startsWith(body: Uint8Array, header: readonly number[]): boolean {
   return body.length >= header.length && header.every((byte, index) => body[index] === byte);
+}
+
+function hasJpegStart(bytes: Uint8Array): boolean {
+  return bytes[0] === 0xff && bytes[1] === JPEG_START;
 }
 
 /** A marker with no length after it: TEM and RST0 to RST7, https://www.w3.org/Graphics/JPEG/itu-t81.pdf table B.1 */
@@ -168,7 +172,7 @@ function scanEnd(bytes: Uint8Array, start: number): number {
 }
 
 /**
- * The JPEG's first image without its APP1 and APP13 segments, but for its Exif orientation, kept so
+ * The JPEG's first image without its APP1, APP13 and COM segments, but for its Exif orientation, kept so
  * a portrait stored sideways still stands up. Anything after that image's end goes too: a second
  * frame of a multi-picture file carries its own Exif, so its MPF index goes with it. Stray bytes
  * between segments are skipped, as libjpeg does, so they cannot hide a segment after them
@@ -177,7 +181,7 @@ function scanEnd(bytes: Uint8Array, start: number): number {
  */
 export async function withoutJpegMetadata<T extends Blob>(file: T): Promise<T | Blob> {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes[0] !== 0xff || bytes[1] !== JPEG_START) return file;
+  if (!hasJpegStart(bytes)) return file;
 
   const kept: Uint8Array<ArrayBuffer>[] = [bytes.subarray(0, 2)];
   let offset = 2;
@@ -232,6 +236,9 @@ export async function uploadableImage<T extends Blob>(file: T, toJpeg: (image: B
   if (heicCandidate) {
     const header = new Uint8Array(await file.slice(0, MAX_FTYP_INSPECT_BYTES).arrayBuffer());
     if (!isStillHeifContainer(header)) return file;
+  } else {
+    const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    if (!hasJpegStart(header)) return file;
   }
 
   const jpeg = await toJpeg(file).catch(() => null);
