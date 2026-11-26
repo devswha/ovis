@@ -78,7 +78,10 @@ export function shortcutKeys(id: ShortcutId, overrides: ShortcutOverrides): stri
 
 export function shortcutDisplayKeys(id: ShortcutId, overrides: ShortcutOverrides): string[] {
   const shortcut = SHORTCUTS.find((candidate) => candidate.id === id)!;
-  if (listedOnly(id) || !Object.hasOwn(overrides, id)) return [...shortcut.keys];
+  if (listedOnly(id) || !Object.hasOwn(overrides, id)) {
+    // An existing custom binding can already own the newly introduced Quote default.
+    return id === "quote-chat" && shortcutConflict(id, shortcutKeys(id, {}), overrides) ? [] : [...shortcut.keys];
+  }
   const value = overrides[id];
   return value ? bindingDisplayKeys(value) : [];
 }
