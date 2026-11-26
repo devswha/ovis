@@ -6,7 +6,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
-import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, privateChain, privateFolder, serverArgs, servedTurnEnd, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, servedPlan, servesCommands, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
 import { parsePrompt } from "../dialogs/live.ts";
 import { ApprovalHub } from "./hub.ts";
 
@@ -20,6 +20,14 @@ const RECORDED = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures",
  */
 const COMMANDS = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-commands-0.171.0.json"), "utf8")) as
   { shape: string; request: { method: string; params: Record<string, unknown> }; executed: string; screen: string }[];
+
+/**
+ * What Codex 0.171.0's server sent Ovis's connection while its real TUI, on the same server, asked a question, ran a
+ * subagent and titled the thread aside: the question as resuming the thread brought it back to a client that connected
+ * while it waited, then the subagent's turn inside the pane's own. Recorded in an isolated CODEX_HOME.
+ */
+const STATUS = readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-status-0.171.0.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+const MAIN = "01a210a7-62bd-79a2-9c7b-0c09d625d336";
 
 const roots: string[] = [];
 const cleanups: (() => void)[] = [];
@@ -326,13 +334,14 @@ describe("Ovis on the pane's Codex server", () => {
   type Message = Record<string, unknown>;
 
   /** A Codex app server of `version` on the launch's socket: what Ovis sends comes in order, and the test sends as Codex. */
-  function codexServer(program: string, version = "0.171.0") {
+  function codexServer(program: string, version = "0.171.0", loaded: string[] = []) {
     const received: Message[] = [];
     const waiting: { match: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
     let client: ServerWebSocket<undefined> | null = null;
     const connected = Promise.withResolvers<void>();
     const closed = Promise.withResolvers<void>();
     const resumeErrors = new Set<string>();
+    const resumed = new Map<string, Message>();
     const server: Server<undefined> = Bun.serve({
       unix: join(dirname(program), "codex.sock"),
       fetch: (request, bun) => bun.upgrade(request) ? undefined : new Response("no", { status: 400 }),
@@ -345,10 +354,10 @@ describe("Ovis on the pane's Codex server", () => {
           for (const wait of [...waiting]) if (wait.match(message)) { waiting.splice(waiting.indexOf(wait), 1); wait.resolve(message); }
           const params = (message["params"] ?? {}) as Message;
           if (message["method"] === "initialize") socket.send(JSON.stringify({ id: message["id"], result: { userAgent: `ovis/${version} (Ubuntu; x86_64) xterm (ovis; 0)` } }));
-          if (message["method"] === "thread/loaded/list") socket.send(JSON.stringify({ id: message["id"], result: { data: [], nextCursor: null } }));
+          if (message["method"] === "thread/loaded/list") socket.send(JSON.stringify({ id: message["id"], result: { data: loaded, nextCursor: null } }));
           if (message["method"] === "thread/resume") {
             const refused = resumeErrors.delete(String(params["threadId"]));
-            socket.send(JSON.stringify(refused ? { id: message["id"], error: { code: -32600, message: "no rollout found" } } : { id: message["id"], result: {} }));
+            socket.send(JSON.stringify(refused ? { id: message["id"], error: { code: -32600, message: "no rollout found" } } : { id: message["id"], result: resumed.get(String(params["threadId"])) ?? {} }));
           }
         },
       },
@@ -363,21 +372,23 @@ describe("Ovis on the pane's Codex server", () => {
         else waiting.push({ match, resolve });
       }),
       refuseResume: (threadId: string) => resumeErrors.add(threadId),
+      /** What resuming `threadId` answers: the thread as Codex describes it. */
+      resumeWith: (threadId: string, thread: Message) => resumed.set(threadId, { thread }),
       drop: () => client!.close(),
     };
   }
 
-  function launched(version = "0.171.0") {
+  function launched(version = "0.171.0", loaded: string[] = []) {
     const waiting: (() => void)[] = [];
     const settling: (() => void)[] = [];
     const hub = new ApprovalHub(join(root(), "h"), [], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
     const servers = new CodexServers(hub, { tmp: root() });
     cleanups.push(() => { servers.stop(); hub.stop(); });
     const program = servers.launch("w1:p1", ["--model", "m"], "0.171.0")!;
-    const codex = codexServer(program, version);
+    const codex = codexServer(program, version, loaded);
     const held = () => new Promise<void>((resolve) => waiting.push(resolve));
     const settled = () => new Promise<void>((resolve) => settling.push(resolve));
-    return { hub, servers, codex, held, settled };
+    return { hub, servers, codex, held, settled, program };
   }
 
   /** Codex runs thread `id`: Ovis subscribes to it. */
@@ -478,6 +489,244 @@ describe("Ovis on the pane's Codex server", () => {
     codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u2", status: "completed", error: null } } });
     await subagentRuns();
     expect(servedTurnEnd("w1:p1")).toBe("answered");
+  });
+
+  /** Resolves once Ovis has read everything sent before: it subscribes to a subagent's thread only after reading it. */
+  let barriers = 0;
+  async function read(codex: ReturnType<typeof codexServer>) {
+    const id = `b${++barriers}`;
+    codex.send({ method: "thread/started", params: { thread: { id, parentThreadId: "x", ephemeral: false } } });
+    codex.send({ method: "thread/status/changed", params: { threadId: id, status: { type: "active", activeFlags: [] } } });
+    await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
+  }
+
+  it("follows the pane's own thread as its server tells it, the side threads and a subagent's turn aside", async () => {
+    const { codex } = launched();
+    await codex.next((message) => message["method"] === "thread/loaded/list");
+    const subagentEnds = STATUS.findIndex((message) => message["method"] === "turn/completed" && (message["params"] as Message)["threadId"] !== MAIN);
+    const asked = STATUS.findIndex((message) => message["method"] === "item/tool/requestUserInput");
+    for (const message of STATUS.slice(0, asked + 1)) codex.send(message);
+    await read(codex);
+    expect(servedQuestions("w1:p1")).toMatchObject([{ key: "1", threadId: MAIN, questions: [{ id: "size", header: "Size", question: "Pick a size", isOther: true, isSecret: false, options: [{ label: "Small (Recommended)" }, { label: "Large" }] }] }]);
+    for (const message of STATUS.slice(asked + 1, subagentEnds + 1)) codex.send(message);
+    await read(codex);
+    expect(servedQuestions("w1:p1")).toEqual([]);
+    expect(servedTurnEnd("w1:p1")).toBe("running");
+    expect(servedStatus("w1:p1")).toEqual({ threadId: MAIN, context: { used: 12_844, window: 475_000 }, model: null });
+    for (const message of STATUS.slice(subagentEnds + 1)) codex.send(message);
+    await read(codex);
+    expect(servedTurnEnd("w1:p1")).toBe("answered");
+    expect(servedStatus("w1:p1")).toEqual({ threadId: MAIN, context: { used: 12_955, window: 475_000 }, model: null });
+  });
+
+  it("forgets a thread's turn end, questions and figures when the pane runs another thread", async () => {
+    const { codex } = launched();
+    await running(codex);
+    codex.send({ id: 4, method: "item/tool/requestUserInput", params: { threadId: "t1", turnId: "u1", itemId: "i", isBlocking: false, questions: [{ id: "q", header: "Q", question: "Which?", options: null }] } });
+    codex.send({ method: "thread/tokenUsage/updated", params: { threadId: "t1", turnId: "u1", tokenUsage: { last: { totalTokens: 500 }, total: { totalTokens: 900 }, modelContextWindow: 1000 } } });
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u1", status: "failed", error: null } } });
+    await read(codex);
+    expect(servedTurnEnd("w1:p1")).toBe("failed");
+    expect(servedQuestions("w1:p1")).toHaveLength(1);
+    codex.send({ method: "thread/started", params: { thread: { id: "t2", parentThreadId: null, ephemeral: false } } });
+    await read(codex);
+    expect([servedTurnEnd("w1:p1"), servedQuestions("w1:p1"), servedStatus("w1:p1")]).toEqual([null, [], { threadId: "t2", context: null, model: null }]);
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u1", status: "completed", error: null } } });
+    codex.send({ method: "thread/tokenUsage/updated", params: { threadId: "t1", turnId: "u1", tokenUsage: { last: { totalTokens: 600 }, total: { totalTokens: 900 }, modelContextWindow: 1000 } } });
+    await read(codex);
+    expect([servedTurnEnd("w1:p1"), servedStatus("w1:p1")?.context]).toEqual([null, null]);
+  });
+
+  it("takes no subagent's turn for the pane's own, also when it starts before the parent tells of it", async () => {
+    const { codex } = launched();
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1", rootTurnId: "u1" } } });
+    codex.send({ method: "turn/started", params: { threadId: "s1", turn: { id: "v1", rootTurnId: "u1" } } });
+    codex.send({ method: "turn/completed", params: { threadId: "s1", turn: { id: "v1", status: "completed", error: null } } });
+    await read(codex);
+    expect([servedTurnEnd("w1:p1"), servedStatus("w1:p1")?.threadId]).toEqual(["running", "t1"]);
+  });
+
+  it("takes, of the threads loaded as it connects, one that runs over an idle one", async () => {
+    const { codex } = launched("0.171.0", ["a", "b"]);
+    codex.resumeWith("a", { id: "a", parentThreadId: null, ephemeral: false, status: { type: "idle" } });
+    codex.resumeWith("b", { id: "b", parentThreadId: null, ephemeral: false, status: { type: "active", activeFlags: [] } });
+    await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === "b");
+    await read(codex);
+    expect(servedStatus("w1:p1")?.threadId).toBe("b");
+  });
+
+  it("names the model Codex moved a turn to until the next turn, and forgets all with the server", async () => {
+    const { codex } = launched();
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1" } } });
+    codex.send({ method: "model/rerouted", params: { threadId: "t1", turnId: "u1", fromModel: "m", toModel: "m-safe", reason: "highRiskCyberActivity" } });
+    codex.send({ method: "model/rerouted", params: { threadId: "t2", turnId: "v1", fromModel: "m", toModel: "other", reason: "highRiskCyberActivity" } });
+    codex.send({ id: 3, method: "item/tool/requestUserInput", params: { threadId: "t1", turnId: "u1", itemId: "i", isBlocking: true, questions: [{ id: "q", header: "Q", question: "Which?", options: null }] } });
+    await read(codex);
+    expect(servedStatus("w1:p1")).toEqual({ threadId: "t1", context: null, model: "m-safe" });
+    expect(servedQuestions("w1:p1")).toHaveLength(1);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u2" } } });
+    // a late reroute of the turn before names no model of this one
+    codex.send({ method: "model/rerouted", params: { threadId: "t1", turnId: "u1", fromModel: "m", toModel: "m-safe", reason: "highRiskCyberActivity" } });
+    await read(codex);
+    expect(servedStatus("w1:p1")?.model).toBeNull();
+    const told = new Promise<string>((resolve) => { const stop = onServedStatus((paneId) => { stop(); resolve(paneId); }); });
+    codex.drop();
+    expect(await told).toBe("w1:p1");
+    expect(servedStatus("w1:p1")).toBeNull();
+    expect(servedQuestions("w1:p1")).toEqual([]);
+  });
+
+  const request = (codex: ReturnType<typeof codexServer>, method: string) => codex.next((message) => message["method"] === method);
+  const idle = (codex: ReturnType<typeof codexServer>) => codex.send({ method: "thread/status/changed", params: { threadId: "t1", status: { type: "idle" } } });
+
+  it.each(["other thread loaded during pane checks", "parent with a loaded subagent"])("checks the steer target at the write: %s", async (scenario) => {
+    const loaded = ["t1"];
+    const { codex, servers, program } = launched("0.171.0", loaded);
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "turn" } } });
+    if (scenario === "parent with a loaded subagent") {
+      codex.send({ method: "thread/started", params: { thread: { id: "child", parentThreadId: "t1" } } });
+      loaded.push("child");
+    }
+    await read(codex);
+    const target = servers.steerTarget("w1:p1", ["codex", "--remote", `unix://${join(dirname(program), "codex.sock")}`])!;
+    const result = target.send("message", crypto.randomUUID(), async () => {
+      if (scenario === "other thread loaded during pane checks") loaded.push("t2");
+    }, () => {});
+    const outcome = await Promise.race([result, request(codex, "turn/steer")]);
+    if (scenario === "other thread loaded during pane checks") expect(outcome).toBe("changed");
+    else {
+      expect(outcome).toMatchObject({ method: "turn/steer" });
+      codex.send({ id: (outcome as Message).id, result: { turnId: "turn" } });
+      expect(await result).toBe("accepted");
+    }
+  });
+
+  it.each(["matching reply", "wrong turn", "lost reply"])("attributes a Send now to its own turn/steer request: %s", async (reply) => {
+    const { codex, servers, program } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "turn" } } });
+    await read(codex);
+    expect(servers.steerTarget("w1:p1", ["codex"])).toBeNull();
+    const target = servers.steerTarget("w1:p1", ["codex", "--remote", `unix://${join(dirname(program), "codex.sock")}`])!;
+    const id = crypto.randomUUID();
+    const result = target.send("repeat", id, async () => {}, () => {});
+    const steer = await request(codex, "turn/steer");
+    expect(steer.params).toEqual({ threadId: "t1", expectedTurnId: "turn", clientUserMessageId: id, input: [{ type: "text", text: "repeat", text_elements: [] }] });
+    codex.send({ id: -1, result: { turnId: "turn" } });
+    if (reply === "lost reply") codex.drop();
+    else codex.send({ id: steer.id, result: { turnId: reply === "matching reply" ? "turn" : "other" } });
+    expect(await result).toBe(reply === "matching reply" ? "accepted" : "unknown");
+  });
+
+  it("runs a bare /plan as the TUI does: Plan mode with Plan's own effort and the thread's model as it is then", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "gpt-6.2-astra", effort: "low" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    const modes = await request(codex, "collaborationMode/list");
+    const config = await request(codex, "config/read");
+    // the user switched models while Ovis looked Plan up: the update keeps the new one
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "gpt-6.2-sol" } } });
+    await read(codex);
+    codex.send({ id: modes["id"], result: { data: [{ name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" }, { name: "Default", mode: "default", model: null, reasoning_effort: null }] } });
+    codex.send({ id: config["id"], result: { config: {} } });
+    const update = await request(codex, "thread/settings/update");
+    expect(update["params"]).toEqual({ threadId: "t1", collaborationMode: { mode: "plan", settings: { model: "gpt-6.2-sol", reasoning_effort: "medium", developer_instructions: null } } });
+    codex.send({ id: update["id"], result: {} });
+    expect(await sent).toBe("applied");
+  });
+
+  it("takes Plan's effort from Codex's config where it sets one", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], result: { config: { plan_mode_reasoning_effort: "high" } } });
+    const update = await request(codex, "thread/settings/update");
+    expect((update["params"] as { collaborationMode: { settings: { reasoning_effort: string } } }).collaborationMode.settings.reasoning_effort).toBe("high");
+    codex.send({ id: update["id"], result: {} });
+    expect(await sent).toBe("applied");
+  });
+
+  it("sends no /plan while a turn runs or may run, for another thread, before the model is known, or once the sender is revoked", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    // running(): the thread is active, so not idle
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    await read(codex);
+    expect(await servedPlan("w1:p1", "t1", () => true)).toBe("unsent");
+    idle(codex);
+    await read(codex);
+    expect(await servedPlan("w1:p1", "t2", () => true)).toBe("unsent");
+    expect(await servedPlan("w9:p9", "t1", () => true)).toBe("unsent");
+    const revoked = servedPlan("w1:p1", "t1", () => false);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], result: { config: {} } });
+    expect(await revoked).toBe("unsent");
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1" } } });
+    await read(codex);
+    expect(await servedPlan("w1:p1", "t1", () => true)).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
+    expect(servesCommands("w1:p1")).toBe(true);
+    expect(servesCommands("w9:p9")).toBe(false);
+  });
+
+  it("calls a /plan whose server went before it answered unknown, and one it refused unsent", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const answerLookups = async () => {
+      codex.send({ id: (await codex.next((message) => message["method"] === "collaborationMode/list" && !answered.has(message)))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+      codex.send({ id: (await codex.next((message) => message["method"] === "config/read" && !answered.has(message)))["id"], result: { config: {} } });
+      for (const message of codex.received) if (message["method"] === "collaborationMode/list" || message["method"] === "config/read") answered.add(message);
+    };
+    const answered = new Set<Record<string, unknown>>();
+    const refused = servedPlan("w1:p1", "t1", () => true);
+    await answerLookups();
+    const first = await request(codex, "thread/settings/update");
+    codex.send({ id: first["id"], error: { code: -32600, message: "no" } });
+    expect(await refused).toBe("unsent");
+    const dropped = servedPlan("w1:p1", "t1", () => true);
+    await answerLookups();
+    await codex.next((message) => message["method"] === "thread/settings/update" && message !== first);
+    codex.drop();
+    expect(await dropped).toBe("unknown");
+  });
+
+  it("sends no /plan when Codex's config cannot be read, which may set Plan's effort", async () => {
+    const { codex } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], error: { code: -32603, message: "unreadable" } });
+    expect(await sent).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
+  });
+
+  it("sends no /plan while another thread is loaded, which the TUI may show after a /resume or /new", async () => {
+    const { codex } = launched("0.171.0", ["t1", "t9"]);
+    await running(codex);
+    codex.send({ method: "thread/settings/updated", params: { threadId: "t1", threadSettings: { model: "m" } } });
+    idle(codex);
+    await read(codex);
+    const sent = servedPlan("w1:p1", "t1", () => true);
+    codex.send({ id: (await request(codex, "collaborationMode/list"))["id"], result: { data: [{ name: "Plan", mode: "plan", reasoning_effort: "medium" }] } });
+    codex.send({ id: (await request(codex, "config/read"))["id"], result: { config: {} } });
+    expect(await sent).toBe("unsent");
+    expect(codex.received.filter((message) => message["method"] === "thread/settings/update")).toEqual([]);
   });
 
   it("leaves a server of a version not measured to the TUI and the screen", async () => {

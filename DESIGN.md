@@ -3021,7 +3021,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The snapshot's tab order is authoritative: a tab's stable `number` is not its place. A drop calls
   `tab.move` with an insertion boundary before removal, within that workspace and PC. The visible
   order changes with herdr's snapshot, keeping selection and keyboard focus; a refusal shows an
-  inline error. One request waits for acknowledgement before another move is accepted. Escape,
+  inline error. One request waits for acknowledgement before another move is accepted. Dragging a
+  one-pane tab out of the strip onto another workspace's sidebar row on the same PC outlines that
+  row (`--accent` on `--accent-tint`, hiding `SplitDropPreview` while aimed at a row) and moves the
+  tab there via `POST /api/tab/move-to-workspace`, matching the tab menu's **Move to workspace…**
+  guards (no highlight and no move for the tab's own workspace, a split tab, a watching device, a
+  PC whose layout Ovis does not keep, or another PC); it follows VS Code and Zed dragging an editor
+  tab across groups and Chrome/Firefox dragging a tab across windows (#4458). Escape,
   a tab-list change or leaving the workspace cancels an unsent drag. Touch keeps native sideways
   scrolling and uses Move tab left/right in the selected tab's menu; Alt+Shift+Left/Right provides
   the same adjacent moves only while a tab has keyboard focus.
@@ -3663,6 +3669,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   look and take a `--pointer-target` hit area through an invisible `::before` expander.
 - A message carries no rewind action: an agent's own `/rewind` (Claude Code, grok, Antigravity) is run in the pane's terminal, and
   Chat follows the native transcript's active branch once the agent records it; it never guesses a restore from a dialog's wording.
+- A stop in Claude Code (Esc) is one quiet line where the turn stopped, **Stopped** and its time
+  (`.chat-stopped`, drawn as a goal's wait is: `--text-dim` `--fs-sm` between hairlines), not a bubble.
+  Claude Code records a stop in the person's seat, `[Request interrupted by user for tool use]` after
+  the call it refused or `[Request interrupted by user]`; nobody typed it, and it starts no turn. It
+  follows Claude Code's own terminal, which draws a stop as a dim **Interrupted** line rather than as
+  the person's message; the word is the chat's own (**Stopped on an error**).
 - A terminal-only command sent from Chat is one quiet right-aligned row, not a bubble:
   `SquareTerminal`, the command in mono `--fs-sm`, **Ran in terminal** in `--text-dim`,
   and one **Open Terminal** text button, which opens a terminal peek over the chat (see the
@@ -4697,11 +4709,29 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   text they sit in, so typing while files upload is not disturbed.
 - An upload that failed is one note on the box's top edge (`.composer-note`, `role="alert"`): what
   failed and the cause when it is known (`Couldn't attach · PC disk is full`, from the status or the
-  server's own words, `lib/userError.ts` `userFailure`); with no known cause the line is
-  `Couldn't attach` and Try again beside it uploads the file again (`offersRetry`: no cause, or the
-  PC was only slow). The advice and the server's words fold behind a dim Details toggle under the
-  line, never on it; the size limit's own sentence is the whole note. Removing the tile removes its
-  note.
+  server's own words, `lib/userError.ts` `userFailure`); with no known cause the line names the
+  first line of the error's own words instead, capped so a long diagnostic never pushes the
+  composer controls off screen (`IMG_4242.jpg could not be attached: Relay request failed`,
+  `failureReason`), or the HTTP status of an answer with no body words (`uploadFailure`), and Try
+  again beside it uploads the file again (`offersRetry`: no cause, or the PC was only slow). Unlike
+  the Claude and Codex apps, which show a generic attachment error without surfacing transport
+  details inline, Ovis places the cause or single-line error reason directly on the note so phone
+  users do not need to open a disclosure to see why a relay or bridge upload failed. The advice,
+  and the full server words when a cause already stands on the line or the diagnostic was shortened,
+  fold behind a dim Details toggle under the line, never on it; the size limit's own sentence is the
+  whole note. Removing the tile removes its note.
+- A JPEG or HEIC photo is drawn to a JPEG of at most 2048 pixels a side in the browser before it
+  uploads, about 1 MB, so it uploads fast on mobile data, at the cost of detail an agent's newest
+  models could read.
+  An iPhone's still HEIC or HEIF photo always is, since the agents read PNG, JPEG, GIF and WebP
+  only; a JPEG one always too, since the redraw drops its camera metadata (location, device,
+  date); an animated HEIC sequence and a PNG screenshot never. A JPEG the browser cannot redraw
+  keeps only JFIF, ICC and valid Exif orientation alongside the first image's pixel data, so a
+  portrait stored sideways still stands up. If the JPEG's markers cannot be parsed through the
+  end of the first image, or if a HEIC cannot be redrawn, it uploads as it is, metadata included.
+  A name can suggest an image type when the browser leaves it empty; its bytes must agree before
+  the composer treats it as an image
+  (`uploadableImage`, `lib/composerImageMime.ts`).
 - While a phone's keyboard is up, a tap on the transcript or a drag down it (`32px`) puts the
   keyboard away. Each only blurs the field, so the draft stays. The prompt card, which can stand
   where the transcript was on a short screen, does the same: a tap on its text (never on an
@@ -5565,8 +5595,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
-  replaces its hypothesis in place (`thi`, `this`, `this is a test`), so sending each one typed
-  every draft. A chord typed or tapped with the key bar's held modifier sends that preedit first,
+  replaces its hypothesis in place (`thi`, `this`, `this is a test`). On iOS, the first hypothesis
+  can be a plain insertion without a typing key. Later keyless edits over the whole hypothesis
+  or just its suffix revise the preedit; typing Space or inserting at the caret still commits it.
+  A chord typed or tapped with the key bar's held modifier sends that preedit first,
   as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
   provisional input stays marked text and only the inserted result reaches the shell. A pane
   switch drops a pending preedit. A view-only terminal starts no dictation preedit, and one still

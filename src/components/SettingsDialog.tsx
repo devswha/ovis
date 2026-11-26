@@ -27,6 +27,7 @@ import { awaitRestart, restartState, subscribeRestart } from "../lib/runtimeSwit
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { KeyBarSettings, KeyBarToggles } from "./KeyBarSettings.tsx";
 import { OwnJoins } from "./OwnJoins.tsx";
+import { ListReason } from "./ListReason.tsx";
 import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
@@ -77,7 +78,7 @@ import { ADD_CONNECTION_EVENT, takeAddConnection, type AddConnectionTab } from "
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
-import { HerdrUpdateControls, UpdateControls } from "./UpdateControls.tsx";
+import { HerdrUpdateControls, PreviewAppUpdate, UpdateControls } from "./UpdateControls.tsx";
 import { TelemetryControls } from "./TelemetryControls.tsx";
 import { AgentsSettings } from "./AgentsSettings.tsx";
 import { MemorySettings } from "./MemorySettings.tsx";
@@ -1320,6 +1321,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
 
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup section="devices">
+        <ListReason />
         <OwnJoins />
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} account={account.account} accountPcs={account.pcs} onAccountChanged={readAccountAgain} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
@@ -1688,6 +1690,7 @@ function AboutPage({ updates, herdrVersion, herdrRuntime, herdrCore, herdrRuntim
       {/* the facts read as one list, as herdr-app's About */}
       <div className="settings-joined">
       <RuntimeFacts version={herdrVersion} runtime={herdrRuntime} core={herdrCore} facts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} onOpenPane={onOpenPane} />
+      <PreviewAppUpdate />
       <UpdateControls updates={updates} bridgesFollow={bridgesFollow} />
       {/* herdr's own version and update: on herdr-core there is no herdr TUI here, and Terminals names the core */}
       {herdrRuntime !== "herdr-core" && <HerdrUpdateControls enabled herdrVersion={herdrVersion} showVersion={(herdrRuntimeFacts?.serving ?? herdrRuntime) === null} />}
@@ -1951,7 +1954,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "chat": return <ChatPage />;
       case "terminal": return <TerminalPage keyBarButtonRef={keyBarButtonRef} onEditKeyBar={openKeyBar} picturesByDefault={picturesByDefault} />;
       case "alerts": return <AlertsPage onEnableNotifications={onEnableNotifications} machines={machines} />;
-      case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
+      case "agents": return <AgentsSettings watching={auth?.role === "watch"} agentCalls={herdrRuntime === "herdr-core"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "memory": return <MemorySettings view={memory.view} loadError={memory.error} reload={loadMemory} watching={auth?.role === "watch"} />;
       case "shortcuts": return <ShortcutsPage />;
       // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
