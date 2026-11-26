@@ -778,15 +778,36 @@ posix("r3 L9b: a changed relay identity does not inherit the folder's approved r
   expect(pending(active)).toBe(true);
 });
 
-posix("a failed sibling registry read leaves the gate closed on a later standalone start", () => {
+posix("without a plan, an unreadable sibling gates the registry, not the whole account, also on standalone restart", () => {
   const [active, sibling] = [dir(), dir()];
   writeFileSync(join(sibling, "devices.json"), "{broken", { mode: 0o600 });
-  const failed = start(active, sibling);
-  expect(failed.devices.failsClosed).toBe(true);
-  failed.stop();
-
-  expect(start(active).devices.gated).toBe(true);
+  for (const candidate of [sibling, undefined]) {
+    const running = start(active, candidate);
+    expect({ registryGated: running.devices.gated, accountClosed: running.devices.failsClosed }).toEqual({ registryGated: true, accountClosed: false });
+    running.stop();
+  }
   expect(JSON.parse(bytes(active, "devices.json"))).toMatchObject({ placeholder: true, devices: [] });
+});
+
+posix("an approved restamp refuses an unreadable sibling registry without publishing a repair", async () => {
+  const [active, sibling] = [dir(), dir()];
+  registry(active, row());
+  const running = start(active, sibling);
+  await queue(active);
+  running.stop();
+  writeFileSync(join(sibling, "devices.json"), "{broken", { mode: 0o600 });
+  const files = ["devices.json", "account-pc.json", "account-devices.json", "account-log.json", "account-removed.json",
+    "account-tombstones.json", "account-tombstones.pending.json", "restamp.json", "restamp-participant.json",
+    "restamp-rollback.json", "restamp-done.json", "restamp-refused.json"];
+  const repairState = () => [active, sibling].flatMap(folder => files.map(file =>
+    existsSync(join(folder, file)) ? bytes(folder, file) : null));
+  const before = repairState();
+  const refused = start(active, sibling);
+  expect(refused.devices.failsClosed).toBe(true);
+  expect(refused.devices.accountError).toContain(join(sibling, "devices.json"));
+  expect(repairState()).toEqual(before);
+  const refusals = DeviceJournal.open(active).entries().filter(entry => entry.how === "restamp refused");
+  expect(refusals.map(entry => entry.label)).toEqual([expect.stringContaining(join(sibling, "devices.json"))]);
 });
 
 posix.each(["preview", "confirmation", "replay"] as const)(
