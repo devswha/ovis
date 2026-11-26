@@ -1328,7 +1328,7 @@ describe("GET /api/sessions/history", () => {
       return { ...base, panes: base.panes.map((pane) => pane.pane_id === "p1" ? { ...pane, agent: "claude" } : pane) };
     };
 
-    it.skipIf(process.platform !== "linux")("lists a sandbox wrapper's store without offering bare Resume (#3931)", async () => {
+    it.skipIf(process.platform !== "linux").each(["node", "claude"])("lists a sandbox wrapper with argv[0]=%s without offering bare Resume (#3931)", async (argv0) => {
       const home = newHome();
       const alternate = join(home, "sandbox-store");
       claudeStore(join(home, ".claude"), ID(1), "default store prompt");
@@ -1339,13 +1339,31 @@ describe("GET /api/sessions/history", () => {
         const url = "workspace_id=w1&agent=claude&pane_id=p1";
         const read = async (paneProcesses: (paneId: string) => Promise<PaneProcesses>) =>
           await (await handleSessionHistoryRequest(...request(url), { readOnly: false, ...base, paneProcesses })).json() as ClaudeListing;
-        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, argv: ["node", "srt-cli.js"] }] });
+        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, name: argv0, argv: [argv0, "srt-cli.js"] }] });
         expect((await read(paneProcesses)).sessions.map(({ firstMessage, resume }) => [firstMessage, resume]))
           .toEqual([["sandbox store prompt", null]]);
       } finally { await stop(wrapper); }
     });
 
-    it.skipIf(process.platform !== "linux")("refuses an old Resume request when its source is now a sandbox wrapper (#3931)", async () => {
+    it.skipIf(process.platform !== "linux")("lists the wrapper's HOME store when CLAUDE_CONFIG_DIR is empty (#3931)", async () => {
+      const home = newHome();
+      const wrapperHome = newHome();
+      claudeStore(join(home, ".claude"), ID(1), "default store prompt");
+      claudeStore(join(wrapperHome, ".claude"), ID(1), "sandbox home prompt");
+      const wrapper = await claudeStandIn({ HOME: wrapperHome, HERDR_AGENT: "claude", CLAUDE_CONFIG_DIR: "" });
+      try {
+        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, argv: ["node", "srt-cli.js"] }] });
+        const response = await handleSessionHistoryRequest(...request("workspace_id=w1&agent=claude&pane_id=p1"),
+          { readOnly: false, stores: { home, env: {} }, snapshot: reportedClaude, paneProcesses, launchSource: launchAbsent });
+        expect(response.status).toBe(200);
+        const listed = await response.json() as ClaudeListing;
+        expect(listed.sessions.map(({ firstMessage, resume }) => [firstMessage, resume])).toEqual([["sandbox home prompt", null]]);
+      } finally { await stop(wrapper); }
+    });
+
+    it.skipIf(process.platform !== "linux").each([
+      { argv0: "node", staleLabel: false }, { argv0: "claude", staleLabel: false }, { argv0: "node", staleLabel: true },
+    ])("refuses an old Resume for a sandbox wrapper ($argv0, stale label=$staleLabel) (#3931)", async ({ argv0, staleLabel }) => {
       const home = newHome();
       claudeStore(join(home, ".claude"), ID(1), "default store prompt");
       const bare = await claudeStandIn({ HOME: home });
@@ -1360,8 +1378,8 @@ describe("GET /api/sessions/history", () => {
         const fake = fakeTabs([], false);
         const tabs = { ...fake, create: async () => { created.push("tab"); return fake.create(); } };
         const body = { workspace_id: "w1", pane_id: "p1", agent: "claude", session_id: ID(1), store_key: key };
-        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, argv: ["node", "srt-cli.js"] }] });
-        const [status, json] = await answer(await resume(body, { ...base, paneProcesses, tabs }));
+        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, name: argv0, argv: [argv0, "srt-cli.js"] }] });
+        const [status, json] = await answer(await resume(body, { ...base, snapshot: staleLabel ? async () => twoWorkspaces() : reportedClaude, paneProcesses, tabs }));
         expect([status, json.error?.code, created]).toEqual([409, "launch_wrapped", []]);
       } finally { await stop(bare, wrapper); }
     });

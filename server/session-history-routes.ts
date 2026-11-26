@@ -97,13 +97,14 @@ async function paneStore(paneId: string, options: StoreOptions, reportedClaude =
     if (below === null) return null;
     foreground = below;
   }
-  const source = await paneClaudeSource(foreground, home, platform, table);
   let wrapper: Awaited<ReturnType<typeof hintedClaudeSource>> = null;
-  if (source === null && reportedClaude && platform === "linux" && capabilities().foreground === "job") {
-    try { wrapper = await hintedClaudeSource(foreground); }
+  if (platform === "linux" && capabilities().foreground === "job") {
+    // The snapshot's agent can lag the foreground job, and its argv can say "claude" even for a wrapper.
+    try { wrapper = await hintedClaudeSource(foreground, { requireReadable: reportedClaude && !foreground.some(isClaude) }); }
     catch (error) { if (error instanceof AmbiguousClaudeStore) return null; throw error; }
   }
-  const store = await claudeStoreOf(source ?? wrapper?.source ?? null, wrapper?.home ?? home, options.stores?.env ?? process.env);
+  const source = wrapper === null ? await paneClaudeSource(foreground, home, platform, table) : null;
+  const store = await claudeStoreOf(wrapper?.source ?? source, wrapper?.home ?? home, options.stores?.env ?? process.env);
   const claude = foreground.filter(isClaude);
   return store === null ? null : { store, claude: source !== null, wrapped: wrapper !== null, pid: claude.length === 1 ? claude[0]!.pid : null };
 }
