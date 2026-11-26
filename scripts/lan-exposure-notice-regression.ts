@@ -6,7 +6,6 @@ import { chromium, type Browser, type Page } from "playwright-core";
 
 import "./test-herdr.ts";
 import { createServer } from "../server/index.ts";
-import { checkChromeTmpdir } from "./chrome-path.ts";
 
 /**
  * The line that says this server can be reached from the network with no token and nothing
@@ -78,7 +77,6 @@ if (!existsSync(dist)) {
   process.exit(1);
 }
 
-checkChromeTmpdir();
 const browser = await chromium.launch({ headless: true });
 try {
   const exposed = await read(browser, "0.0.0.0");

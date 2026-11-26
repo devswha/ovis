@@ -12,7 +12,6 @@ import { serveStatic } from "../server/static.ts";
 import { formatBytes } from "../src/lib/bridgeProgress.ts";
 import { SOURCE_PREVIEW_LINES, TEXT_PREVIEW_BYTES } from "../src/lib/filePreviewText.ts";
 import { VIRTUAL_HIGHLIGHT_LINES, VIRTUAL_SOURCE_LINES } from "../src/lib/sourcePreview.ts";
-import { checkChromeTmpdir } from "./chrome-path.ts";
 
 function numberedSource(lines: number, longLines: boolean): string {
   const out: string[] = [];
@@ -235,7 +234,6 @@ try {
   } });
   const origin = `http://127.0.0.1:${server.port}`;
   // the headless shell, not the full browser of CHROME_PATH: its clipboard is in memory, so the real copy below is owned here
-  checkChromeTmpdir();
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   assert.match(browser.version(), /^\d+\./, "a browser launched");
 

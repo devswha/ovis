@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { chromium, type Locator, type Page } from "playwright-core";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import type {} from "./chat-virtual-fixture.tsx";
-import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-virtual-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -240,7 +239,6 @@ try {
     if (url.pathname === "/") return new Response('<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chat virtualization QA</title><link rel="stylesheet" href="/chat-virtual-fixture.css"></head><body><div id="root"></div><script type="module" src="/chat-virtual-fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } });
     return new Response(Bun.file(join(root, url.pathname.slice(1))));
   } });
-  checkChromeTmpdir();
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   for (const [width, status, reducedMotion] of [[1440, "idle", "no-preference"], [390, "idle", "no-preference"], [1440, "working", "no-preference"], [390, "working", "no-preference"], [1440, "working", "reduce"], [390, "working", "reduce"]] as const) {
     longRead = { asked: Promise.withResolvers<void>(), answer: Promise.withResolvers<void>() };

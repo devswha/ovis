@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import { forgetTranscriptState, HistoryChanged, transcriptPage } from "../server/conversation.ts";
 import type {} from "./chat-virtual-fixture.tsx";
-import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-gjc-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
@@ -148,7 +147,6 @@ try {
     if (url.pathname === "/") return new Response('<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>GJC streaming QA</title><link rel="stylesheet" href="/chat-virtual-fixture.css"></head><body><div id="root"></div><script type="module" src="/chat-virtual-fixture.js"></script></body></html>', { headers: { "content-type": "text/html" } });
     return new Response(Bun.file(join(root, url.pathname.slice(1))));
   } });
-  checkChromeTmpdir();
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   for (const width of [1440, 390] as const) {
     for (const scenario of ["reading", "short", "following", "scrolled", "todo", "jump"] as const) {

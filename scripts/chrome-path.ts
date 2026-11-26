@@ -5,14 +5,16 @@ const LINUX_CHROME = "/opt/google/chrome/chrome";
 
 /**
  * The longest TMPDIR Chromium starts with on Linux: it binds `<TMPDIR>/org.chromium.Chromium.XXXXXX/SingletonSocket`
- * (46 characters past TMPDIR), and a socket path holds at most 107. One character longer, the launch aborts or hangs.
+ * (46 bytes past TMPDIR), and a socket path holds at most 107 bytes. One byte longer, the launch aborts or hangs.
+ * Playwright's headless shell binds no such socket, so a script that launches it needs no check.
  */
 export const MAX_CHROME_TMPDIR = 61;
 
 /** Throws when `tmpdir` is too long for Chromium's socket on Linux, naming the TMPDIR to use instead. */
 export function checkChromeTmpdir(tmpdir: string = process.env["TMPDIR"] || "/tmp", platform: NodeJS.Platform = process.platform): void {
-  if (platform !== "linux" || tmpdir.length <= MAX_CHROME_TMPDIR) return;
-  throw new Error(`TMPDIR is ${tmpdir.length} characters (${tmpdir}); Chromium cannot start with more than ${MAX_CHROME_TMPDIR} on Linux. Run browser scripts with a shorter one, such as TMPDIR=/var/tmp/ovis-ui.`);
+  const bytes = Buffer.byteLength(tmpdir);
+  if (platform !== "linux" || bytes <= MAX_CHROME_TMPDIR) return;
+  throw new Error(`TMPDIR is ${bytes} bytes (${tmpdir}); Chromium cannot start with more than ${MAX_CHROME_TMPDIR} on Linux. Run browser scripts with a shorter one, such as TMPDIR=/var/tmp/ovis-ui.`);
 }
 
 /**
