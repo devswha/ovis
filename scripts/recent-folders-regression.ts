@@ -237,7 +237,7 @@ try {
             for (let loaded = 10; loaded < paged.length; loaded += 10) {
               assert.deepEqual(await titles(chips), paged.slice(0, loaded), "a phone's row holds ten folders, then ten more for each +N");
               assert.equal(await more.innerText(), `+${paged.length - loaded}`);
-              assert.equal(await more.getAttribute("aria-label"), nextPage(loaded));
+              assert.equal(await more.getAttribute("aria-label"), `+${paged.length - loaded}: ${nextPage(loaded)}`);
               if (loaded === 10) {
                 await more.scrollIntoViewIfNeeded();
                 await page.screenshot({ path: join(evidence, `recent-folders-paged-${width}-${theme}.png`) });
