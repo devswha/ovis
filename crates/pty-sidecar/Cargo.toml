@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "Runs one command on a pseudo-terminal for the Ovis server (server/pty/session.ts)"
+description = "Runs one command on a pseudo-terminal for the Ovis server (same protocol as server/pty/pty-host.mjs)"
 
 [[bin]]
 name = "ovis-pty-sidecar"

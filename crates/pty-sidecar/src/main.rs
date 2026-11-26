@@ -1,5 +1,5 @@
-//! Runs ONE command on a pseudo-terminal and bridges it to its parent, the Ovis server
-//! (server/pty/session.ts):
+//! Runs ONE command on a pseudo-terminal and bridges it to its parent, with the protocol of
+//! server/pty/pty-host.mjs:
 //!   argv:   <cols> <rows> <command> [args...]
 //!   stdin:  newline-delimited JSON control frames (see frames.rs)
 //!   stdout: the pty's bytes
@@ -263,7 +263,7 @@ fn control(shared: &Arc<Shared>, input: &InputQueue, master: RawFd) {
             eprintln!("pty-sidecar: discarded a control frame longer than {MAX_FRAME_BYTES} bytes");
         }
     }
-    // a last line without its newline is not a frame
+    // a last line without its newline is not a frame (pty-host.mjs drops it too)
     stop(shared);
 }
 

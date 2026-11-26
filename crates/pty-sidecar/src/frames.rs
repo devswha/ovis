@@ -55,7 +55,7 @@ pub fn initial_size(text: &str, fallback: u16) -> u16 {
     }
 }
 
-/// The server's size, clamped as JavaScript's `parseInt(String(value), 10)` reads it: below 1 (or no number) is 1, above 1000 is 1000.
+/// pty-host.mjs's `clamp`: `parseInt(String(value), 10)`, below 1 (or no number) is 1, above 1000 is 1000.
 /// Except a float String() writes with an exponent (2e21, 5e-7): parseInt takes its leading digits, this 1.
 fn js_dimension(value: Option<&Value>) -> u16 {
     let parsed = match value {

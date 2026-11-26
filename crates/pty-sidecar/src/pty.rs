@@ -15,7 +15,7 @@ fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
     }
 }
 
-/// node-pty 1.1.0's termios (src/unix/pty.cc), the Node host this one replaced, so a program sees the line discipline it always saw.
+/// node-pty 1.1.0's termios (src/unix/pty.cc), so a program sees the same line discipline under either host.
 fn termios() -> libc::termios {
     let mut term: libc::termios = unsafe { std::mem::zeroed() };
     term.c_iflag = libc::ICRNL | libc::IXON | libc::IXANY | libc::IMAXBEL | libc::BRKINT | libc::IUTF8;
@@ -63,7 +63,7 @@ fn set_flags(fd: &OwnedFd, nonblocking: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// The command runs in `HOME`, or `/` without one; an empty one means this process's own cwd.
+/// pty-host.mjs runs the command in `HOME`, or `/` without one; node-pty takes an empty one as its own cwd.
 fn working_directory() -> io::Result<PathBuf> {
     match std::env::var_os("HOME") {
         None => Ok(PathBuf::from("/")),
@@ -72,7 +72,7 @@ fn working_directory() -> io::Result<PathBuf> {
     }
 }
 
-/// This process's environment as the command gets it: no bridge token under either name,
+/// This process's environment as pty-host.mjs and node-pty hand it on: no bridge token under either name,
 /// `TERM=xterm-256color`, `PWD` the working directory.
 fn environment(cwd: &OsStr) -> Vec<(OsString, OsString)> {
     let mut env: Vec<(OsString, OsString)> = std::env::vars_os()
@@ -240,7 +240,7 @@ pub fn reap(pid: libc::pid_t, nohang: bool) -> Option<libc::c_int> {
 }
 
 /// A wait status as the host's exit code: the child's own code, or 128 + the signal's number when a
-/// signal ended it (as a shell reports it); 0 when that signal is in `sent`, one the
+/// signal ended it (as a shell reports it, and pty-host.mjs); 0 when that signal is in `sent`, one the
 /// host itself sent to stop it.
 pub fn exit_code(status: libc::c_int, sent: &[libc::c_int]) -> i32 {
     if libc::WIFEXITED(status) {
