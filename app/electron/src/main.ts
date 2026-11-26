@@ -4,7 +4,9 @@ import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileS
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { choosePort, coreEnv, coreSession, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { readSaved } from "../../../shared/desktop-command-listener.ts";
+import { isFile, processStartSync } from "../../../shared/desktop-process.ts";
+import { choosePort, coreEnv, coreSession, endLeftover, installCore, layout, openLog, processCommand, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
 import { appUpdateState, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
@@ -37,15 +39,13 @@ export interface UpdateLine {
 }
 
 const resources = app.isPackaged ? join(process.resourcesPath, "ovis") : process.env["OVIS_DESKTOP_STAGE"] || join(app.getAppPath(), "stage");
-if (app.isPackaged && process.platform === "darwin") {
-  const staging = readStagingProfile({ resources, env: process.env });
-  if (staging) {
-    Object.assign(process.env, staging.env);
-    if (!app.commandLine.hasSwitch("user-data-dir")) {
-      mkdirSync(staging.userData, { recursive: true, mode: 0o700 });
-      app.setPath("userData", staging.userData);
-      app.setPath("sessionData", staging.userData);
-    }
+const staging = app.isPackaged && process.platform === "darwin" ? readStagingProfile({ resources, env: process.env }) : null;
+if (staging) {
+  Object.assign(process.env, staging.env);
+  if (!app.commandLine.hasSwitch("user-data-dir")) {
+    mkdirSync(staging.userData, { recursive: true, mode: 0o700 });
+    app.setPath("userData", staging.userData);
+    app.setPath("sessionData", staging.userData);
   }
 }
 const programs = layout(resources);
@@ -648,7 +648,8 @@ async function startUpdates(): Promise<void> {
     try { accessSync(folder, constants.W_OK | constants.X_OK); return true; } catch { return false; }
   };
   const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")),
-    channel: updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
+    // a staging (preview) build reads only the preview feed it was built with: the beta channel would swap in the public beta feed
+    channel: staging ? "stable" : updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
   if (!plan.enabled) {
     updateLog(`Updates are off: ${plan.reason}.`);
     return;

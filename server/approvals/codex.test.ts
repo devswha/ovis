@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +7,11 @@ import type { Server, ServerWebSocket } from "bun";
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
 import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, servedPlan, servesCommands, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import * as rollout from "../codex.ts";
+import { ConversationMonitor } from "../conversation-monitor.ts";
+import { paneConversation } from "../conversation.ts";
 import { parsePrompt } from "../dialogs/live.ts";
+import * as herdr from "../herdr/client.ts";
 import { ApprovalHub } from "./hub.ts";
 
 // a command approval recorded from Codex 0.171.0 on its own app server (`codex --remote` TUI, read-only sandbox)
@@ -373,7 +377,7 @@ describe("Ovis on the pane's Codex server", () => {
       }),
       refuseResume: (threadId: string) => resumeErrors.add(threadId),
       /** What resuming `threadId` answers: the thread as Codex describes it. */
-      resumeWith: (threadId: string, thread: Message) => resumed.set(threadId, { thread }),
+      resumeWith: (threadId: string, thread: Message, settings: Message = {}) => resumed.set(threadId, { ...settings, thread }),
       drop: () => client!.close(),
     };
   }
@@ -381,14 +385,16 @@ describe("Ovis on the pane's Codex server", () => {
   function launched(version = "0.171.0", loaded: string[] = []) {
     const waiting: (() => void)[] = [];
     const settling: (() => void)[] = [];
-    const hub = new ApprovalHub(join(root(), "h"), [], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.() });
+    const failures: (string | null)[] = [];
+    const hub = new ApprovalHub(join(root(), "h"), [], { onHeld: () => waiting.shift()?.(), onSettled: () => settling.shift()?.(),
+      onTurn: (_pane, _kind, event) => { if ("failed" in event && event.failed) failures.push(event.prompt); } });
     const servers = new CodexServers(hub, { tmp: root() });
     cleanups.push(() => { servers.stop(); hub.stop(); });
     const program = servers.launch("w1:p1", ["--model", "m"], "0.171.0")!;
     const codex = codexServer(program, version, loaded);
     const held = () => new Promise<void>((resolve) => waiting.push(resolve));
     const settled = () => new Promise<void>((resolve) => settling.push(resolve));
-    return { hub, servers, codex, held, settled };
+    return { hub, servers, codex, held, settled, failures, program };
   }
 
   /** Codex runs thread `id`: Ovis subscribes to it. */
@@ -500,6 +506,45 @@ describe("Ovis on the pane's Codex server", () => {
     await codex.next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
   }
 
+  it("reports a terminal usage limit on a resumed main thread whose turn started before attachment", async () => {
+    const { codex, failures } = launched("0.171.0", ["t1"]);
+    codex.resumeWith("t1", { id: "t1", parentThreadId: null, ephemeral: false, status: { type: "active", activeFlags: [] } });
+    await codex.next((message) => message["method"] === "thread/resume");
+    await read(codex);
+    expect(servedStatus("w1:p1")?.threadId).toBe("t1");
+    codex.send({ method: "error", params: { threadId: "t1", turnId: "u1", willRetry: false,
+      error: { message: "Usage limit reached", codexErrorInfo: "usageLimitExceeded" } } });
+    await read(codex);
+    expect(failures).toEqual(["u1"]);
+  });
+
+  it("tells a terminal usage-limit error before completion and tells the turn's failure only once", async () => {
+    const { codex, failures } = launched();
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1" } } });
+    // codex-cli 0.171.0 generated v2/ErrorNotification.json and TurnCompletedNotification.json.
+    const error = { message: "Usage limit reached", codexErrorInfo: "usageLimitExceeded" };
+    const notice = { error, threadId: "t1", turnId: "u1", willRetry: false };
+    for (const params of [{ ...notice, willRetry: true }, { ...notice, threadId: "other" }, { ...notice, turnId: "old" }]) {
+      codex.send({ method: "error", params });
+    }
+    await read(codex);
+    expect(failures).toEqual([]);
+    expect(servedTurnEnd("w1:p1")).toBe("running");
+
+    codex.send({ method: "error", params: notice });
+    await read(codex);
+    expect(servedTurnEnd("w1:p1")).toBe("running");
+    expect(failures).toEqual(["u1"]);
+    const failedTurn = { status: "failed", items: [], error };
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u1" } } });
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "u2" } } });
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u1" } } });
+    codex.send({ method: "turn/completed", params: { threadId: "t1", turn: { ...failedTurn, id: "u2" } } });
+    await read(codex);
+    expect(failures).toEqual(["u1", "u2"]);
+  });
+
   it("follows the pane's own thread as its server tells it, the side threads and a subagent's turn aside", async () => {
     const { codex } = launched();
     await codex.next((message) => message["method"] === "thread/loaded/list");
@@ -578,8 +623,172 @@ describe("Ovis on the pane's Codex server", () => {
     expect(servedQuestions("w1:p1")).toEqual([]);
   });
 
+  function chatRollouts() {
+    const paneId = "w1:p1";
+    const dir = root();
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+      protocol: 1, version: "test", workspaces: [], tabs: [], layouts: [], agents: [],
+      panes: [{ pane_id: paneId, workspace_id: "w1", tab_id: "w1:t1", terminal_id: paneId, cwd: dir, agent: "codex", agent_status: "idle", revision: 0, focused: true }],
+    });
+    const processInfo = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: paneId, foreground_processes: [] });
+    const transcript = spyOn(rollout, "codexTranscriptPath").mockResolvedValue(null);
+    cleanups.push(() => { transcript.mockRestore(); processInfo.mockRestore(); snapshot.mockRestore(); });
+    const show = (threadId: string) => {
+      const path = join(dir, `rollout-2026-11-26T00-00-00-${threadId}.jsonl`);
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: threadId, cwd: dir } },
+        { type: "turn_context", payload: { model: "gpt-6.2-sol", effort: "low" } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      transcript.mockResolvedValue(path);
+    };
+    return { paneId, dir, show, conversation: () => paneConversation(paneId, dir) };
+  }
+
+  it("refreshes chat model, effort and Plan mode from its own Codex thread without a rollout write", async () => {
+    const { codex } = launched();
+    const { paneId, dir, show, conversation } = chatRollouts();
+    show(MAIN);
+    let update = Promise.withResolvers<string>();
+    const monitor = new ConversationMonitor((_, signature) => update.resolve(signature), dir);
+    cleanups.push(() => monitor.stop());
+
+    // A fixture from Codex 0.171.0's generated ThreadSettingsUpdatedNotification and ThreadSettings.
+    const settings = (threadId: string, effort: string | null, mode: "plan" | "default", model = "gpt-6.2-sol") => ({
+      method: "thread/settings/updated",
+      params: { threadId, threadSettings: {
+        disabledPluginIds: [], cwd: dir, approvalPolicy: "on-request", approvalsReviewer: "user",
+        sandboxPolicy: { type: "readOnly", networkAccess: false }, activePermissionProfile: null,
+        model, modelProvider: "openai", serviceTier: null, effort, summary: null,
+        collaborationMode: { mode, settings: { model, reasoning_effort: effort, developer_instructions: null } },
+        personality: null,
+      } },
+    });
+    await running(codex, MAIN);
+    monitor.watch(paneId);
+    const beforeSignature = await update.promise;
+    const before = await conversation();
+    expect(before.metadata).toEqual({ model: "gpt-6.2-sol", reasoning_effort: "low" });
+
+    update = Promise.withResolvers<string>();
+    codex.send(settings(MAIN, "high", "plan", "gpt-6.2-astra"));
+    codex.send(settings("another-thread", "medium", "default"));
+    await read(codex);
+    const planned = await conversation();
+    expect(planned.metadata).toEqual({ model: "gpt-6.2-astra", reasoning_effort: "high", permission_mode: "plan" });
+    expect(planned.version).not.toBe(before.version);
+    expect(await update.promise).not.toBe(beforeSignature);
+
+    codex.send({ method: "turn/started", params: { threadId: MAIN, turn: { id: "turn" } } });
+    codex.send({ method: "model/rerouted", params: { threadId: MAIN, turnId: "turn", toModel: "rerouted" } });
+    codex.send({ method: "turn/completed", params: { threadId: MAIN, turn: { status: "completed" } } });
+    await read(codex);
+    expect((await conversation()).metadata.model).toBe("rerouted");
+    codex.send(settings(MAIN, null, "default"));
+    await read(codex);
+    expect((await conversation()).metadata).toEqual(before.metadata);
+  });
+
+  it("shows start settings, then picks up a greeting's unsent Plan change on the first successful resume", async () => {
+    const { codex } = launched();
+    const { paneId, show, conversation } = chatRollouts();
+    const active = { method: "thread/status/changed", params: { threadId: MAIN, status: { type: "active", activeFlags: [] } } };
+    await codex.next((message) => message["method"] === "thread/loaded/list");
+    codex.send({ method: "thread/started", params: { thread: { id: MAIN, parentThreadId: null, status: { type: "idle" }, model: "gpt-6.2-sol", reasoningEffort: "low" } } });
+    await read(codex);
+    expect(servedStatus(paneId)).toMatchObject({ settings: { model: "gpt-6.2-sol", effort: "low", plan: null } });
+
+    // Observed on 0.171.0: the greeting sends no settings notification to the observer, and
+    // even an early subscription is refused until the rollout exists.
+    codex.refuseResume(MAIN);
+    codex.send(active);
+    await read(codex);
+    codex.resumeWith(MAIN, { id: MAIN, parentThreadId: null, status: { type: "active" } }, {
+      model: "gpt-6.2-astra", reasoningEffort: "high",
+      collaborationMode: { mode: "plan", settings: { model: "gpt-6.2-astra", reasoning_effort: "high", developer_instructions: null } },
+    });
+    show(MAIN);
+    codex.send(active);
+    await read(codex);
+    expect((await conversation()).metadata).toEqual({ model: "gpt-6.2-astra", reasoning_effort: "high", permission_mode: "plan" });
+  });
+
+  it("follows the chat's verified idle resume without taking another loaded thread's settings", async () => {
+    const other = "01a210a7-62bd-79a2-9c7b-0c09d625d337";
+    const loaded = [MAIN];
+    const { codex } = launched("0.171.0", loaded);
+    const { paneId, show, conversation } = chatRollouts();
+    await running(codex, MAIN);
+    show(MAIN);
+    expect((await conversation()).metadata.reasoning_effort).toBe("low");
+
+    // Loading B in the TUI broadcasts idle, not thread/started or turn/started. A remains loaded.
+    loaded.push(other);
+    codex.resumeWith(other, { id: other, parentThreadId: null, status: { type: "idle" } }, {
+      model: "gpt-6.2-astra", reasoningEffort: "medium", collaborationMode: { mode: "default" },
+    });
+    codex.send({ method: "thread/status/changed", params: { threadId: other, status: { type: "idle" } } });
+    await read(codex);
+    expect(servedStatus(paneId)?.threadId).toBe(MAIN);
+    const followed = Promise.withResolvers<void>();
+    const stop = onServedStatus((pane) => {
+      if (pane === paneId && servedStatus(pane)?.threadId === other) followed.resolve();
+    });
+    const timer = setTimeout(() => followed.reject(new Error("Ovis did not follow the verified idle rollout")), 1_000);
+    try {
+      show(other);
+      await conversation();
+      await followed.promise;
+      codex.send({ method: "thread/settings/updated", params: { threadId: MAIN, threadSettings: { model: "other-model", effort: "high", collaborationMode: { mode: "plan" } } } });
+      await read(codex);
+      expect((await conversation()).metadata).toEqual({ model: "gpt-6.2-astra", reasoning_effort: "medium" });
+    } finally {
+      clearTimeout(timer);
+      stop();
+    }
+  });
+
   const request = (codex: ReturnType<typeof codexServer>, method: string) => codex.next((message) => message["method"] === method);
   const idle = (codex: ReturnType<typeof codexServer>) => codex.send({ method: "thread/status/changed", params: { threadId: "t1", status: { type: "idle" } } });
+
+  it.each(["other thread loaded during pane checks", "parent with a loaded subagent"])("checks the steer target at the write: %s", async (scenario) => {
+    const loaded = ["t1"];
+    const { codex, servers, program } = launched("0.171.0", loaded);
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "turn" } } });
+    if (scenario === "parent with a loaded subagent") {
+      codex.send({ method: "thread/started", params: { thread: { id: "child", parentThreadId: "t1" } } });
+      loaded.push("child");
+    }
+    await read(codex);
+    const target = servers.steerTarget("w1:p1", ["codex", "--remote", `unix://${join(dirname(program), "codex.sock")}`])!;
+    const result = target.send("message", crypto.randomUUID(), async () => {
+      if (scenario === "other thread loaded during pane checks") loaded.push("t2");
+    }, () => {});
+    const outcome = await Promise.race([result, request(codex, "turn/steer")]);
+    if (scenario === "other thread loaded during pane checks") expect(outcome).toBe("changed");
+    else {
+      expect(outcome).toMatchObject({ method: "turn/steer" });
+      codex.send({ id: (outcome as Message).id, result: { turnId: "turn" } });
+      expect(await result).toBe("accepted");
+    }
+  });
+
+  it.each(["matching reply", "wrong turn", "lost reply"])("attributes a Send now to its own turn/steer request: %s", async (reply) => {
+    const { codex, servers, program } = launched("0.171.0", ["t1"]);
+    await running(codex);
+    codex.send({ method: "turn/started", params: { threadId: "t1", turn: { id: "turn" } } });
+    await read(codex);
+    expect(servers.steerTarget("w1:p1", ["codex"])).toBeNull();
+    const target = servers.steerTarget("w1:p1", ["codex", "--remote", `unix://${join(dirname(program), "codex.sock")}`])!;
+    const id = crypto.randomUUID();
+    const result = target.send("repeat", id, async () => {}, () => {});
+    const steer = await request(codex, "turn/steer");
+    expect(steer.params).toEqual({ threadId: "t1", expectedTurnId: "turn", clientUserMessageId: id, input: [{ type: "text", text: "repeat", text_elements: [] }] });
+    codex.send({ id: -1, result: { turnId: "turn" } });
+    if (reply === "lost reply") codex.drop();
+    else codex.send({ id: steer.id, result: { turnId: reply === "matching reply" ? "turn" : "other" } });
+    expect(await result).toBe(reply === "matching reply" ? "accepted" : "unknown");
+  });
 
   it("runs a bare /plan as the TUI does: Plan mode with Plan's own effort and the thread's model as it is then", async () => {
     const { codex } = launched("0.171.0", ["t1"]);
