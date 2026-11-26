@@ -99,7 +99,9 @@ process.stdin.setRawMode(true);
 process.stdin.resume();
 process.stdin.on("data", (chunk) => {
   const data = chunk.toString("utf8");
-  appendFileSync(out, (data.includes("~") ? "input drained" : JSON.stringify(data)) + "\\n");
+  const keys = data.replace(/~/g, "");
+  if (keys !== "") appendFileSync(out, JSON.stringify(keys) + "\\n");
+  if (data.includes("~")) appendFileSync(out, "input drained\\n");
 });
 writeFileSync(out, "");
 `;
