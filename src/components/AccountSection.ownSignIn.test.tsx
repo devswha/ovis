@@ -34,6 +34,7 @@ describe("signing in on the PC's own window", () => {
   let enrolling: boolean;
   /** holds the code's exchange until released, and says when it was asked */
   let exchange: { asked: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>> } | null;
+  let revoke: ReturnType<typeof Promise.withResolvers<void>> | null;
 
   beforeEach(() => {
     fake = new FakeAccountService();
@@ -45,6 +46,7 @@ describe("signing in on the PC's own window", () => {
     pcAccount = null;
     enrolling = false;
     exchange = null;
+    revoke = null;
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -82,6 +84,7 @@ describe("signing in on the PC's own window", () => {
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
       if (url.pathname === "/v1/token" && exchange !== null) { exchange.asked.resolve(); await exchange.release.promise; }
+      if (url.pathname === "/v1/signout" && revoke !== null) { revoke.resolve(); return new Response(null, { status: 503 }); }
       return fake.fetch(input, init);
     };
     setTransport({ ...nativeTransport, fetch: fetch as typeof nativeTransport.fetch });
@@ -151,6 +154,25 @@ describe("signing in on the PC's own window", () => {
     stop();
     expect(await indexedAccountStore.get("session")).toBeUndefined();
     expect(links).toBe(0);
+  });
+
+  it("shows no sign-in failure when revocation fails after Cancel", async () => {
+    const token = { asked: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    const revoked = Promise.withResolvers<void>();
+    exchange = token;
+    revoke = revoked;
+    await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
+    await until(() => buttons().includes("Continue with Google"));
+    await press("Continue with Google");
+    const stop = handOverReturn(await back(await sent.promise), () => undefined);
+    try {
+      await act(async () => { await token.asked.promise; });
+      await press("Cancel");
+      await act(async () => { token.release.resolve(); await revoked.promise; });
+
+      expect(words()).not.toContain("The sign-in did not finish. Try again.");
+      expect(await indexedAccountStore.get("session")).toBeUndefined();
+    } finally { stop(); }
   });
 });
 

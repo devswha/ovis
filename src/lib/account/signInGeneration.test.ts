@@ -72,6 +72,19 @@ it("does not redeem a sign-in that returns after sign-out", async () => {
   expect(await store.get("session")).toBeUndefined();
 });
 
+it("lets a pending redirect finish after signing out with no stored session", async () => {
+  const fake = new FakeAccountService();
+  fake.signInAs("github", "acct_1");
+  const store = memoryAccountStore();
+  const returned = await start(fake, store);
+
+  await new AccountService({ store, fetch: fake.fetch, lock: memoryLock() }).signOut();
+
+  const session = await finishSignIn(returned, { store, fetch: fake.fetch });
+  expect(await store.get("session")).toEqual(session);
+  expect(fake.requests).not.toContain("POST /v1/signout");
+});
+
 it("redeems a pending sign-in from the previous build exactly once", async () => {
   const { fake, store } = await setup();
   const legacy = memoryAccountStore();
@@ -106,6 +119,23 @@ it("revokes a sign-in whose token answer arrives after sign-out instead of stori
   await expect(finishing).rejects.toBeInstanceOf(SignedOutError);
   expect(await store.get("session")).toBeUndefined();
   expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${access_token}` } }))).status).toBe(401);
+});
+
+it("keeps a successful link when revoking the replaced sign-in returns 503", async () => {
+  const { fake, store } = await setup();
+  const fetch = async (input: Request | string | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).pathname === "/v1/signout") return new Response(null, { status: 503 });
+    return fake.fetch(request);
+  };
+  const account = new AccountService({ store, fetch, lock: memoryLock() });
+
+  const linked = await account.addMethod("google", async (linkToken, bearer) =>
+    finishSignIn(await start(fake, store, "google", linkToken), { store, fetch: fake.fetch, bearer }));
+
+  expect(linked.provider).toBe("google");
+  expect(await store.get("session")).toEqual(linked);
+  expect((await account.identities()).map((identity) => identity.provider)).toContain("google");
 });
 
 it("reports a failed revoke of a link discarded after sign-out", async () => {

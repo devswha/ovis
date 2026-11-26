@@ -816,13 +816,13 @@ export class AccountService {
       await end(after);
       throw new SignedOutError();
     }
-    if (outcome === "moved-on") {
-      await end(after);
-      return this.current(started);
+    // The link already holds at the service. Cleanup failure does not undo it.
+    try {
+      await end(outcome === "moved-on" ? after : before);
+    } catch {
+      console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
     }
-    // the old sign-in's tokens would otherwise live on at the service until they expire
-    await end(before);
-    return this.current({ generation: started.generation, session: after });
+    return this.current(outcome === "moved-on" ? started : { generation: started.generation, session: after });
   }
 
   /**
@@ -1124,6 +1124,7 @@ export class AccountService {
         ended = from;
         return current;
       }
+      if (current.session === undefined) return current;
       ended = current.session;
       cleared = true;
       return { generation: crypto.randomUUID() };

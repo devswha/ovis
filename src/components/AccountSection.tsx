@@ -1453,7 +1453,12 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
       return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store: holdingSessionStore(store), signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
         .then(async (session) => {
           if (!await AccountService.storeSignIn(store, session, () => !controller.signal.aborted)) {
-            await AccountService.revokeSession(session);
+            try {
+              await AccountService.revokeSession(session);
+            } catch (error) {
+              if (!controller.signal.aborted) throw error;
+              console.warn("Ovis: the cancelled sign-in could not be revoked");
+            }
             controller.signal.throwIfAborted();
             throw new SignedOutError();
           }
