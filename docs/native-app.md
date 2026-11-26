@@ -490,6 +490,11 @@ app's own page (the released front page does), bring the SSH setup up over home 
 SSH](#pcs-over-ssh)): Back or Cancel there is home again as it was, and the current PC is untouched. A pairing link tapped outside the app (Android) still waits for the app's own page, which
 checks it and opens its PC.
 
+`HerdrShell.appId` (Android) answers `{ id }`, the application id the build was made as. The client reads it once
+for one thing: only the QA twin (`sh.ovis.app.previewqa`) may turn the waits of moving an account onto its signed list
+down ([account-list.md](account-list.md), "In the app"); every other build, a browser and an app that does not answer
+wait the full time.
+
 `HerdrShell.identify` (both platforms) lets a PC's own page say which PC it is: its relay ID, as its own
 `/api/health` gives it to that page (`web_ui.server_id`, authenticated only; `""` once a health read names none, which
 drops the one kept), and its name (64 characters at most, counted as grapheme clusters on both platforms,
@@ -791,7 +796,11 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   through the relay), to `SaveImagePlugin` (`OvisSave`), which writes them to Downloads through
   MediaStore with no storage permission, as Chrome saves a download. Android 8 and 9 give an app
   that without the storage permission, so there it opens the share sheet with the picture instead.
-  An app built before the plugin makes the viewer say it couldn't save.
+  An app built before the plugin makes the viewer say it couldn't save. Download in the file
+  viewer takes the same way for a file of any type (`saveFile`): the page reads the file through
+  its transport and hands its bytes over, up to the plugin's 20 MB (a larger file is not offered:
+  the viewer says to download it on the PC). An app without `saveFile` makes the viewer ask for
+  an update.
 - A PC's link on the hosted shell tapped outside the app (a message, the camera app reading the
   PC's QR code) opens in the app: the manifest's `autoVerify` intent-filter takes
   `https://app.ovis.sh/s/`, which Android verifies against

@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
 import { lstat, open, readFile, readdir, readlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import nodePath, { basename, dirname, isAbsolute, join, type PlatformPath } from "node:path";
+import nodePath, { basename, dirname, isAbsolute, join, normalize, type PlatformPath } from "node:path";
 import { directoryKey, withoutVerbatimPrefix } from "./codex.ts";
 import { darwinStartTime, sysctlCall } from "./darwin-process.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
@@ -34,9 +34,13 @@ function isClaudeExecutable(text = ""): boolean {
   return /(?:^|[\\/])claude(?:\.exe)?$/.test(/\\|\.exe$/i.test(text) ? text.toLowerCase() : text);
 }
 
+const isNodeExecutable = (path = "") => /(?:^|[\\/])node(?:\.exe)?$/i.test(path);
+const isClaudeCliScript = (path = "") => /(?:^|[\\/])node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js$/.test(path);
+
 export function isClaudeProcess(entry: { name?: string; argv0?: string; argv?: readonly string[] }): boolean {
   // macOS keeps the executable name "node" for npm installs; the process title is argv0.
   if (isClaudeExecutable(entry.name) || isClaudeExecutable(entry.argv0) || isClaudeExecutable(entry.argv?.[0])) return true;
+  if (isNodeExecutable(entry.argv?.[0]) && isClaudeCliScript(entry.argv?.[1])) return true;
   // the native build runs under its version as the name and titles itself "Claude": both its
   // argv0 and its argv[0] say so, which one field alone does not prove
   return /^\d+\.\d+\.\d+$/.test(entry.name ?? "") && entry.argv0 === "Claude" && entry.argv?.[0] === "Claude";
@@ -296,7 +300,7 @@ async function namedDirectory(dir: string | null): Promise<string | null> {
   try { return (await stat(dir)).isDirectory() ? dir : null; } catch { return null; }
 }
 
-interface SourceRead { source: ClaudeSource; legacy: string | null }
+interface SourceRead { source: ClaudeSource; legacy: string | null; home?: string }
 
 async function overrideSource(value: string): Promise<ClaudeSource> {
   if (value === "") return { state: "override", dir: "" };
@@ -312,7 +316,11 @@ async function environSource(environ: string): Promise<SourceRead> {
   const named = entries.filter((entry) => entry.startsWith("CLAUDE_CONFIG_DIR=")).map((entry) => entry.slice(18));
   const legacy = await namedDirectory(named[0] || null);
   if (named.length > 1) return { source: { state: "unreadable" }, legacy };
-  return { source: named.length === 0 ? { state: "absent" } : await overrideSource(named[0]!), legacy };
+  const override = named[0];
+  if (override !== undefined && override !== "") return { source: await overrideSource(override), legacy };
+  const homes = entries.flatMap((entry) => entry.startsWith("HOME=") ? [entry.slice(5)] : []);
+  const home = homes.length === 1 && isAbsolute(homes[0]!) ? homes[0] : undefined;
+  return { source: override === "" ? { state: "override", dir: "" } : { state: "absent" }, legacy, home };
 }
 
 async function readClaudeSource(pid: number, home: string, platform: string, table: () => Promise<ProcessRow[]>): Promise<SourceRead> {
@@ -327,7 +335,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
     if (platform === "linux") return await environSource(await readFile(`/proc/${pid}/environ`, "utf8"));
     if (platform === "darwin") {
       const environ = darwinProcess.environment(pid);
-      const source: ClaudeSource = environ === null ? { state: "unreadable" } : (await environSource(environ)).source;
+      const read = environ === null ? unreadable : await environSource(environ);
       const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
       const timer = setTimeout(() => child.kill(), 3000);
       let text: string;
@@ -335,7 +343,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
         text = await new Response(child.stdout).text();
         await child.exited;
       } finally { clearTimeout(timer); }
-      return { source, legacy: await namedDirectory(configDirInPsLine(text)) };
+      return { ...read, legacy: await namedDirectory(configDirInPsLine(text)) };
     }
     return unreadable;
   } catch (error) {
@@ -497,6 +505,15 @@ export async function processClaudeConfigDir(
 ): Promise<string | null> {
   const read = await processRead(pid, argv, home, platform, table);
   if (read.source.state === "ambiguous") throw new AmbiguousClaudeStore(pid);
+  // A complete read without an override is proof of Claude's own default, not the server's.
+  if (read.source.state === "absent") {
+    const paneHome = normalize(read.home ?? home);
+    const store = join(paneHome, ".claude");
+    try {
+      if (await trustedClaudeHomeAncestors(paneHome) && await ownedClaudeDirectory(paneHome) && await ownedClaudeDirectory(store)) return store;
+    } catch { /* an unverified pane store falls back to the server's configured store */ }
+    return defaultClaudeConfigDir(home);
+  }
   return read.legacy;
 }
 
@@ -504,34 +521,46 @@ export async function processClaudeConfigDir(
  * The store of a Claude the pane's processes cannot show (#3931): a sandbox wrapper such as
  * `bwrap --new-session` runs it in a session of its own, outside the pane's job. herdr's agent hint,
  * HERDR_AGENT=claude, marks the foreground processes the wrapper put in front of it, and their
- * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only). Only
- * the whole foreground job counts, so `processes` is herdr's list, never herdr-core's leader alone. Null
- * when none carries the hint or it names the default store; AmbiguousClaudeStore when they name more than
- * one, or a live one cannot be read, which may carry the hint and another store: a guess could be another
- * account's store.
+ * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only).
+ * Check the kernel's executable path before discounting a hint: `exec -a claude` changes argv[0],
+ * not the executable or the script it runs. For Node, also check its script. Only the whole
+ * foreground job counts, not herdr-core's leader alone.
+ * An unreadable live process may carry the hint and another store. Refuse to guess if we found
+ * any hinted wrapper, or if the caller already expected a wrapper in the job.
  */
-export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
+export async function hintedClaudeSource(processes: readonly { pid?: number | null }[], { proc = "/proc", requireReadable = true } = {}): Promise<(SourceRead & { pids: readonly number[] }) | null> {
   if (process.platform !== "linux") return null;
   const reads: { pid: number; read: SourceRead }[] = [];
   let unread: number | null = null;
   for (const { pid } of processes) {
     if (typeof pid !== "number") continue;
+    const processDir = join(proc, String(pid));
     let environ = "";
-    try { environ = await readFile(join(proc, String(pid), "environ"), "utf8"); } catch { /* read as empty */ }
+    try { environ = await readFile(join(processDir, "environ"), "utf8"); } catch { /* read as empty */ }
     // read empty: gone, or not ours to read, which may hide the hint and another store
     if (environ === "") {
       if (processAlive(pid)) unread ??= pid;
       continue;
     }
     if (!environ.split("\0").includes("HERDR_AGENT=claude")) continue;
+    const executable = (await readlink(join(processDir, "exe")).catch(() => "")).replace(/ \(deleted\)$/, "");
+    if (isClaudeExecutable(executable) || /\/claude\/versions\/\d+\.\d+\.\d+$/.test(executable)) continue;
+    if (isNodeExecutable(executable)) {
+      const [, script] = (await readFile(join(processDir, "cmdline"), "utf8").catch(() => "")).split("\0");
+      if (isClaudeCliScript(script)) continue;
+    }
     reads.push({ pid, read: await environSource(environ) });
   }
-  if (unread !== null) throw new AmbiguousClaudeStore(unread);
+  if (unread !== null && (requireReadable || reads.length > 0)) throw new AmbiguousClaudeStore(unread);
   const first = reads[0];
   if (first === undefined) return null;
   const differs = reads.find(({ read }) => read.source.state === "unreadable" || JSON.stringify(read) !== JSON.stringify(first.read));
   if (differs !== undefined) throw new AmbiguousClaudeStore(differs.pid);
-  return first.read.legacy;
+  return { ...first.read, pids: reads.map(({ pid }) => pid) };
+}
+
+export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
+  return (await hintedClaudeSource(processes, { proc }))?.legacy ?? null;
 }
 
 /** Only an absent path is a miss: an unreadable store is an error to report, not an empty one. */
@@ -540,8 +569,44 @@ function absent(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+const ownUid = (uid: number | bigint): boolean => {
+  const own = process.getuid?.();
+  return own === undefined || (typeof uid === "bigint" ? BigInt(own) === uid : own === uid);
+};
+
+async function ownedClaudeDirectory(path: string): Promise<boolean> {
+  const info = await lstat(path);
+  return info.isDirectory() && ownUid(info.uid);
+}
+
+async function trustedClaudeHomeAncestors(home: string): Promise<boolean> {
+  const ancestors: string[] = [];
+  for (let dir = dirname(home); ; dir = dirname(dir)) {
+    ancestors.push(dir);
+    if (dir === dirname(dir)) break;
+  }
+  for (const dir of ancestors.reverse()) {
+    const info = await lstat(dir);
+    if (info.isSymbolicLink() && info.uid !== 0 && !ownUid(info.uid)) return false;
+  }
+  return true;
+}
+
+async function ownedClaudeFile(path: string): Promise<boolean> {
+  // Inspect the implicit store and each directory beneath it without following links.
+  const parents: string[] = [];
+  for (let parent = dirname(path); dirname(parent) !== parent; parent = dirname(parent)) {
+    parents.push(parent);
+    if (basename(parent) !== ".claude") continue;
+    for (const dir of parents.reverse()) if (!await ownedClaudeDirectory(dir)) return false;
+    break;
+  }
+  const info = await lstat(path);
+  return info.isFile() && ownUid(info.uid);
+}
+
 async function isFile(path: string): Promise<boolean> {
-  try { return (await stat(path)).isFile(); } catch (error) { if (absent(error)) return false; throw error; }
+  try { return await ownedClaudeFile(path); } catch (error) { if (absent(error)) return false; throw error; }
 }
 
 const found = new Map<string, string>();
@@ -551,11 +616,12 @@ const CONTINUED_TAIL_BYTES = 64 * 1024;
 
 async function transcriptTail(path: string): Promise<{ text: string; identity: string } | null> {
   try {
+    if (!await ownedClaudeFile(path)) return null;
     // no links and no blocking: a FIFO in its place must not hold the lookup (as branchedFrom)
     const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     try {
       const info = await file.stat({ bigint: true });
-      if (!info.isFile()) return null;
+      if (!info.isFile() || !ownUid(info.uid)) return null;
       const size = Number(info.size);
       const start = Math.max(0, size - CONTINUED_TAIL_BYTES);
       const buffer = Buffer.alloc(size - start);
@@ -648,10 +714,13 @@ const headDigest = (bytes: Uint8Array): string => createHash("sha256").update(by
  */
 async function branchedFrom(path: string): Promise<string | null> {
   let file;
-  try { file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    if (!await ownedClaudeFile(path)) return null;
+    file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch { return null; }
   try {
     const info = await file.stat();
-    if (!info.isFile()) return null;
+    if (!info.isFile() || !ownUid(info.uid)) return null;
     const known = branchParents.get(path);
     if (known && known.dev === info.dev && known.ino === info.ino && info.size >= known.length) {
       const head = Buffer.alloc(known.length);
@@ -776,9 +845,12 @@ export async function claudeProcessSession(
  * hang the read. The cap holds on the read itself, which a file growing after its stat cannot pass.
  */
 async function readSmallFile(path: string, max: number): Promise<string | null> {
+  const unsafe = () => Object.assign(new Error("Unverified Claude record"), { code: "EACCES" });
+  if (!await ownedClaudeFile(path)) throw unsafe();
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
-    if (!(await file.stat()).isFile()) return null;
+    const info = await file.stat();
+    if (!info.isFile() || !ownUid(info.uid)) throw unsafe();
     const bytes = Buffer.alloc(max + 1);
     let length = 0;
     // One read may return less than the file holds; only a read of nothing is its end.
@@ -1251,10 +1323,13 @@ const ENTRYPOINT_TAIL_BYTES = 256 * 1024;
  */
 async function lastEntrypoint(path: string): Promise<string | null> {
   let file;
-  try { file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); } catch { return null; }
+  try {
+    if (!await ownedClaudeFile(path)) return null;
+    file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  } catch { return null; }
   try {
     const info = await file.stat();
-    if (!info.isFile()) return null;
+    if (!info.isFile() || !ownUid(info.uid)) return null;
     const length = Math.min(info.size, ENTRYPOINT_TAIL_BYTES);
     const bytes = Buffer.alloc(length);
     let read = 0;

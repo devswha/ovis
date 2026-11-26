@@ -16,17 +16,14 @@ function matches(fileList: string[], pattern: RegExp): { file: string; at: strin
 }
 
 describe("PTY sidecar boundary", () => {
-  // node-pty panics Bun (oven-sh/bun#18546): only the Node sidecar loads it. `Bun.resolveSync`
-  // in server/pty/sidecar.ts only finds the package for Node and is not a load.
-  const NODE_SIDE = new Set(["server/pty/pty-host.mjs", "server/pty/smoke.mjs"]);
+  // node-pty panics Bun (oven-sh/bun#18546); terminals run on the Rust PTY host instead
   const LOAD = /\bfrom\s*["'](?:@lydell\/)?node-pty[^"']*["']|\bimport\s*\(?\s*["'](?:@lydell\/)?node-pty[^"']*["']|\b(?:require|createRequire\s*\([^()]*(?:\([^()]*\))?[^()]*\))\s*\(\s*["'](?:@lydell\/)?node-pty[^"']*["']/;
 
-  it("loads node-pty only in the Node sidecar", () => {
+  it("never loads node-pty", () => {
     const code = [...files("{server,src,shared,scripts,site,telemetry,tui}/**/*.{ts,tsx,mjs,cjs,js}"), "vite.config.ts"].filter((file) => file !== "server/conventions.test.ts");
     const loads = matches(code, LOAD);
-    fail(loads.filter((load) => !NODE_SIDE.has(load.file)).map((load) => load.at),
-      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts): the Rust PTY host (crates/pty-sidecar), or the Node sidecar server/pty/pty-host.mjs as its fallback.");
-    expect(loads.map((load) => load.file)).toContain("server/pty/pty-host.mjs");
+    fail(loads.map((load) => load.at),
+      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts) on the Rust PTY host (crates/pty-sidecar).");
   });
 
   it("knows an import from a mention", () => {
@@ -242,12 +239,13 @@ describe("herdr socket", () => {
     "server/herdr-core/socket-transport.ts": "herdr-core's socket, not herdr's: a line that never starts a core, for a client that must not",
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
+    "server/line-call.ts": "one request to a private tool broker's socket, never herdr's",
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
     "server/approvals/relay.ts": "an agent's approval hook reaching the approval hub's own socket or pipe, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
-    "server/browser-mcp.ts": "the desktop app's built-in browser socket (app/electron/src/browserBroker.ts), not herdr's: one call per connection",
+    "server/omo-control.ts": "OmO's own terminal-control socket, the one the pane's OmO process listens on, not herdr's: one request per connection",
     "server/acp/client.ts": "an ACP keeper's own socket in this server's state folder (crates/acp-keeper), not herdr's: one connection the keeper streams its log on",
   };
 

@@ -54,7 +54,6 @@ export const SETUP_KO: Record<string, string> = {
   "Copy the command for {name}": "{name} 명령 복사",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "이 PC의 브리지는 아직 에이전트 통합을 제공하지 않습니다. 다음 런타임 업데이트 후에 사용할 수 있습니다.",
   "Open setup guide": "안내 열기",
-  "Expired": "만료됨",
   "Edit": "수정",
   "Remove hub?": "허브를 제거할까요?",
   "Its accounts disappear from this list. The hub itself is not changed.": "허브 계정이 목록에서 사라져요. 허브 자체는 그대로예요.",
@@ -87,4 +86,8 @@ export const SETUP_KO: Record<string, string> = {
   "Install another agent ({count})": "다른 에이전트 설치 ({count})",
   "None": "없음",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "에이전트가 다룰 수 있는 브라우저입니다. Ovis가 이 에이전트를 띄울 때 버전을 고정한 MCP 서버를 붙입니다. 그 브라우저는 따로 만든 프로필을 써서 내 로그인은 쓰지 않고, Ovis가 지켜보거나 막지 않습니다. 다음에 띄울 때부터 적용되고, 터미널에서 직접 띄운 에이전트는 바뀌지 않습니다.",
+  "Let agents call other agents": "다른 에이전트 부르기",
+  "On this PC only. Only you can approve requests.": "이 PC에서만. 승인은 직접 해요.",
+  "Agents they may call": "부를 수 있는 에이전트",
+  "Not saved: this PC did not answer. Try again.": "저장하지 못했습니다: 이 PC가 답하지 않았습니다. 다시 시도하세요.",
 };

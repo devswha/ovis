@@ -10,8 +10,8 @@
  * its message or its fields. No I/O; WebCrypto only.
  */
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
-import { ListEntryError, canonicalBase64Url, isListHash, readBody, readFieldsUnder, verifySignature, writeBody, type Entry, type EntryBody } from "./account-list-entry.ts";
-import { inviteRedeemBytes, isAccountId, type InviteRedeem } from "./account-list-invite.ts";
+import { ListEntryError, canonicalBase64Url, isListHash, isListNumber, readBody, readFieldsUnder, verifySignature, writeBody, type Entry, type EntryBody } from "./account-list-entry.ts";
+import { inviteRedeemBytes, isAccountId, lineProofBytes, type InviteRedeem, type LineProof } from "./account-list-invite.ts";
 import { toBase64Url } from "./relay-pair-sas.ts";
 
 export const JOIN_LINE_PREFIX = "ovis-join:1:";
@@ -33,7 +33,7 @@ export const JOIN_LINE_MAX_CHARS = 1024;
 export type JoinLineReason = "prefix" | "length" | "base64url" | "json" | "members" | "version" | "service" | "account" | "list" | "secret" | "scalar"
   | "not_one_form" | "not_extractable" | "other_service" | "needs_lists";
 
-/** What a line that was read will not sign: anything but its own redeem message, its own `join` and its own read proof. */
+/** What a line that was read will not sign: anything but its own redeem message, its own proof for a PC's card, its own `join` and its own read proof. */
 export class JoinLineSignError extends Error {
   readonly code = "not_signed";
   constructor(message: string) {
@@ -78,7 +78,8 @@ export type JoinLineRedeem = Omit<InviteRedeem, "account">;
 
 /**
  * What a line holds once it is read. It holds no key that signs what a caller hands it: `signRedeem` signs the
- * redeem message of this line's account and nothing else, and `encryptionKey` only derives bits.
+ * redeem message of this line's account and nothing else, `signLineProof` the proof of this line's account and
+ * list for a card, and `encryptionKey` only derives bits.
  */
 export interface JoinLine {
   /** The account service's origin: the caller's own, or the line was refused. */
@@ -95,6 +96,13 @@ export interface JoinLine {
    */
   readonly signRedeem: (redeem: JoinLineRedeem) => Promise<string>;
   /**
+   * The line's word that the PC with this card joins this line's list with the invite (lineProofBytes), as 86
+   * characters of base64url. The line works the message out from the card itself and its own account and list: no
+   * caller hands it a challenge, and it is no redeem message. Refuses `not_signed` for a line that names no list,
+   * and `redeem_malformed` for a value out of its form or a card for another list.
+   */
+  readonly signLineProof: (proof: { readonly server_id: string; readonly card: LineProof["card"] }) => Promise<string>;
+  /**
    * The entry of this body, signed with the invite's key, when the body is a `join` of this line's own key on
    * this line's list that adds no key and ends none; refuses `not_signed` for any other body, and for a line that
    * names no list. So whatever a caller is handed, the invite's key makes nobody a signer and signs for no other
@@ -102,8 +110,9 @@ export interface JoinLine {
    */
   readonly signJoin: (body: EntryBody) => Promise<Entry>;
   /**
-   * The signature over a proof for reading (`ovis-list-read/1`) that names this line's key and this line's list;
-   * refuses `not_signed` for any other bytes.
+   * The signature over a proof for reading (`ovis-list-read/1`): exactly the fields `after at key list`, the key
+   * and the list this line's own, `at` a number and `after` a number or empty, which is what a reader of proofs
+   * takes (shared/account-list.ts, checkReadProof). Refuses `not_signed` for any other bytes.
    */
   readonly signRead: (proof: Uint8Array) => Promise<Uint8Array>;
   /**
@@ -302,6 +311,11 @@ export async function readJoinLine(line: string, reader: JoinLineReader): Promis
     const bytes = inviteRedeemBytes({ account, server_id, public_key, challenge_id });
     return toBase64Url(new Uint8Array(await webCrypto().sign(SIGN, privateKey, bytes)));
   };
+  const signLineProof = async (proof: { readonly server_id: string; readonly card: LineProof["card"] }): Promise<string> => {
+    if (list === "") notSigned("This invite names no list, so it names none to a PC");
+    const bytes = lineProofBytes({ account, server_id: proof?.server_id, list, card: proof?.card });
+    return toBase64Url(new Uint8Array(await webCrypto().sign(SIGN, privateKey, bytes)));
+  };
   const sign = async (bytes: Uint8Array): Promise<Uint8Array> => new Uint8Array(await webCrypto().sign(SIGN, privateKey, new Uint8Array(bytes)));
   const signJoin = async (body: EntryBody): Promise<Entry> => {
     if (list === "") notSigned("This invite names no list, so there is no list to join by an entry");
@@ -329,14 +343,21 @@ export async function readJoinLine(line: string, reader: JoinLineReader): Promis
       if (error instanceof ListEntryError) notSigned("That is no proof for reading");
       throw error;
     }
+    // A value is its bytes, one character for each, as the reader of proofs takes it: a decoder would drop a byte order mark and
+    // read bytes that are no text as some, and so pass a value that the reader refuses.
     const text = (name: string): string | null => {
       const field = fields.find((item) => item.name === name);
-      return field === undefined ? null : new TextDecoder().decode(field.value);
+      return field === undefined ? null : Array.from(field.value, (byte) => String.fromCharCode(byte)).join("");
     };
     if (list === "" || text("key") !== key || text("list") !== list) notSigned("An invite signs only the proof for reading its own list with its own key");
+    // No proof that the reader of proofs calls malformed: the four fields and no other, the place and the time in their form.
+    const [after, at] = [text("after"), text("at")];
+    if (fields.map(({ name }) => name).join(" ") !== "after at key list" || at === null || !isListNumber(at) || after === null || !(after === "" || isListNumber(after))) {
+      notSigned("A proof for reading has the fields after, at, key and list, and no other: at is a number, after a number or empty");
+    }
     return await sign(bytes);
   };
-  return Object.freeze({ service, account, list: list === "" ? null : list, key, signRedeem, signJoin, signRead, encryptionKey });
+  return Object.freeze({ service, account, list: list === "" ? null : list, key, signRedeem, signLineProof, signJoin, signRead, encryptionKey });
 }
 
 /**

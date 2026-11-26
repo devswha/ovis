@@ -61,7 +61,6 @@ run_script scripts/machine-events-browser-regression.ts
 run_script scripts/workspace-rows-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
 run_script scripts/lan-exposure-notice-regression.ts
-run_script scripts/terminal-dispose-browser-qa.ts
 run_script scripts/herdr-restart-regression.ts
 run_script scripts/sticky-modifiers-regression.ts
 run_script scripts/terminal-switch-regression.ts
@@ -124,6 +123,8 @@ run_script scripts/relay-join-browser-qa.ts
 run_script scripts/relay-qa-teardown-regression.ts
 run_script scripts/relay-device-indexeddb-regression.ts
 run_script scripts/account-list-seal-browser-qa.ts
+run_script scripts/account-list-device-browser-qa.ts
+run_script scripts/account-list-gossip-browser-qa.ts
 run_script scripts/install-hint-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts

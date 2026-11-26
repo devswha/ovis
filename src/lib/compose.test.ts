@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
@@ -199,6 +199,10 @@ describe("composerMessage and submitNote", () => {
     expect(submitRefusal("input_draft", "x", "ㅔ")).toEqual({ note: "Not sent: Claude Code's input box in the terminal already holds “ㅔ”.", draft: "ㅔ" });
     expect(submitRefusal("input_draft", "x")).toBe(submitNote("input_draft", "x"));
     expect(submitRefusal("agent_blocked", "x", "ㅔ")).toBe(submitNote("agent_blocked", "x"));
+  });
+
+  it("reports an unconfirmed Grok delivery without claiming it was never sent", () => {
+    expect(submitRefusal("submit_changed", GROK_SEND_UNCONFIRMED_MESSAGE)).toStartWith("Not confirmed:");
   });
 
   it("names the draft after a Send it that did not go, and offers another draft's buttons", () => {
@@ -594,18 +598,32 @@ describe("the menu over a catalog the server built", () => {
   }
   const slash: ActiveTrigger = { kind: "slash", query: "", start: 0, end: 1 };
 
-  it("lists the terminal screens in the terminal group and never lists the agent-hidden rows", () => {
+  it("keeps terminal handoffs and drawable controls but hides unsupported ordinary live controls", () => {
     const rows = codexRows();
     const listed = commandsForTrigger(rows, "codex", slash);
     const names = new Set(listed.map((row) => row.name));
     const terminal = new Set(listed.filter((row) => commandGroup(row) === "terminal").map((row) => row.name));
-    for (const name of ["config", "resume", "permissions", "mcp", "status", "review"]) expect(terminal.has(name)).toBeTrue();
+    for (const name of ["config", "resume", "permissions", "setup-default-sandbox", "mcp", "status", "review"]) expect(terminal.has(name)).toBeTrue();
     for (const name of ["model", "compact", "init"]) expect(names.has(name) && !terminal.has(name)).toBeTrue();
+    expect(names.has("plan")).toBeFalse();
+    expect(typedTerminalCommand(rows, "/plan")).toBeNull();
+    expect(typedTerminalCommand(rows, "/permissions")?.name).toBe("permissions");
     for (const name of ["apps", "debug-config", "debug-m-drop", "debug-m-update"]) {
       expect(rows.some((row) => row.name === name && row.visibility === "agent-hidden")).toBeTrue();
       expect(names.has(name)).toBeFalse();
     }
     expect(commandsForTrigger(rows, "codex", { ...slash, prefix: "$" }).map((row) => [row.name, commandGroup(row)])).toEqual([["deploy", "skill-user"]]);
+  });
+
+  it("offers no other command for a hidden control typed whole, so Enter sends it as typed", () => {
+    const rows = codexRows();
+    expect(commandsForTrigger(rows, "codex", { ...slash, query: "plan", end: 5 })).toEqual([]);
+    expect(namesHiddenCommand(rows, "plan", "/")).toBeTrue();
+    expect(commandsForTrigger(rows, "codex", { ...slash, query: "pla", end: 4 }).some((row) => row.name === "plan")).toBeFalse();
+    expect(namesHiddenCommand(rows, "pla", "/")).toBeFalse();
+    const skill: SlashCommand = { name: "plan-review", description: "", source: "skill", trigger: "$" };
+    // inline, `use /plan` still offers the skill: only a leading command typed whole is sent as typed
+    expect(commandsForTrigger([...rows, skill], "codex", { kind: "slash", query: "plan", start: 4, end: 9 }).some((row) => row.name === "plan-review")).toBeTrue();
   });
 
   it("lists Claude's terminal screens apart and leaves out what Claude's own menu hides", () => {

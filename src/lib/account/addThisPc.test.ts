@@ -4,12 +4,48 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import { AddPcWaitOver, addInOnePress, ownWindowHere, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
+import { AddPcWaitOver, addByList, addInOnePress, ownWindowHere, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
+import { readSeenPcs } from "./seenPcs.ts";
 import { AccountService, AccountServiceError } from "./service.ts";
 import { memoryAccountStore, memoryLock } from "./store.ts";
 
 afterEach(() => setTransport(nativeTransport));
+
+test("Add this PC is kept in the device's record of its PCs only from the PC's own window: one press from any other page proves nothing", async () => {
+  const savedLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const [hostname, kept] of [["127.0.0.1", { how: "window" }], ["desk.tailnet.ts.net", undefined]] as const) {
+      const keys = generateKeyPair();
+      const publicKey = exportPublicKey(keys.publicKey);
+      const serverId = deriveServerId(importPublicKey(publicKey));
+      const stored = new Map<string, string>();
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: { getItem: (name: string) => stored.get(name) ?? null, setItem: (name: string, value: string) => { stored.set(name, value); }, removeItem: (name: string) => { stored.delete(name); } } });
+      Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { hostname, pathname: "/", origin: `http://${hostname}`, href: `http://${hostname}/`, search: "", hash: "" } });
+      const answer = async (input: RequestInfo | URL): Promise<Response> => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/account/status") return Response.json({ account: null });
+        if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: serverId, server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh") });
+        return Response.json({});
+      };
+      setTransport({ ...nativeTransport, fetch: answer });
+      const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
+      const service = { listPcs: async () => [], putPc: async () => {}, deletePc: async () => {}, session: async () => ({ account: "acct_1" }), forSignIn() { return this; } } as unknown as AccountService;
+      try {
+        await listThisPc(service, { relistMs: 540_000 });
+        // the record is written behind the add, in turns of this thread: fifty of them pass before it is read
+        for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+        expect(readSeenPcs("acct_1").pcs[Buffer.from(keys.publicKey).toString("hex")]).toEqual(kept as never);
+      } finally { fetchSpy.mockRestore(); }
+    }
+  } finally {
+    warn.mockRestore();
+    if (savedLocation) Object.defineProperty(globalThis, "location", savedLocation); else Reflect.deleteProperty(globalThis, "location");
+    if (savedStorage) Object.defineProperty(globalThis, "localStorage", savedStorage); else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
 
 test("a failure of the relay pass setup never keeps Add this PC from its pairing wait", async () => {
   const keys = generateKeyPair();
@@ -327,6 +363,39 @@ test("the PC's own window, as the server judges it: its owner socket, or the acc
   expect(ownWindowHere({ via: "token" }, "192.168.1.10")).toBe(false);
   for (const via of ["device", "relay", "open", "portal"]) expect(ownWindowHere({ via }, "127.0.0.1")).toBe(false);
   expect(ownWindowHere(null, "127.0.0.1")).toBe(false);
+});
+
+const RUN = "0123456789abcdef";
+
+test("an add by the account's list names this PC's account first, then asks the PC to start it, as `ovis add` does", async () => {
+  const f = onePress({ pc: (path) => path === "/api/account/list/add" ? Response.json({ state: "waiting", run: RUN, account: "acct_1", list: "f".repeat(64), until: "x" }) : new Response(null, { status: 204 }) });
+  try {
+    expect(await addByList("acct_1")).toEqual({ kind: "run", run: RUN });
+    expect(f.calls).toEqual(['/api/account/relay-account {"account":"acct_1"}', '/api/account/list/add {"account":"acct_1"}']);
+  } finally { f.restore(); }
+});
+
+test("a naming the PC refuses does not stop the ask: the PC says itself what it lacks", async () => {
+  const f = onePress({ pc: (path) => path === "/api/account/list/add" ? Response.json({ error: { code: "account_mismatch", message: "x" } }, { status: 409 }) : Response.json({ error: { code: "internal", message: "x" } }, { status: 500 }) });
+  try {
+    expect(await addByList("acct_1")).toEqual({ kind: "refused", why: "account_mismatch" });
+    expect(f.calls.map((call) => call.split(" ")[0])).toEqual(["/api/account/relay-account", "/api/account/list/add"]);
+  } finally { f.restore(); }
+});
+
+test.each([
+  ["an account that keeps no list", 200, { state: "no_list", account: "acct_1" }, { kind: "none" }],
+  ["a PC that follows no list", 404, { error: { code: "not_found", message: "x" } }, { kind: "none" }],
+  ["a window that is not the PC's own", 403, { error: { code: "owner_only", message: "x" } }, { kind: "none" }],
+  ["an Ovis without the route", 405, { error: { code: "method_not_allowed", message: "x" } }, { kind: "none" }],
+  ["the account service away", 503, { error: { code: "account_unavailable", message: "x" } }, { kind: "refused", why: "account_unavailable" }],
+  ["a PC its account's list removed", 409, { error: { code: "list_removed", message: "x" } }, { kind: "refused", why: "list_removed" }],
+  ["an add that ended as it began", 200, { state: "ended", run: RUN, account: "acct_1", why: "unavailable" }, { kind: "refused", why: "unavailable" }],
+  ["a PC that is in the account by its list already", 200, { state: "added", run: RUN, account: "acct_1", list: "f".repeat(64) }, { kind: "added" }],
+] as const)("an add by the list where the PC answers for %s", async (_, status, body, outcome) => {
+  const f = onePress({ pc: (path) => path === "/api/account/list/add" ? Response.json(body, { status }) : new Response(null, { status: 204 }) });
+  try { expect(await addByList("acct_1")).toEqual(outcome); }
+  finally { f.restore(); }
 });
 
 test("a PC that cannot be reached after the account service admitted it is no one press: the digit wait comes, nothing is thrown", async () => {

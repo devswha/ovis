@@ -17,6 +17,9 @@ import { trustRefusal } from "../server/herdr-core/discovery.ts";
 import { profileGroups } from "../server/herdr-discovery.ts";
 import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 import { newInvite } from "../shared/account-list-join.ts";
+import { writeSaved } from "../app/electron/src/children.ts";
+import { processStartSync } from "../shared/desktop-process.ts";
+import { recordDesktopListener } from "../server/desktop-listener.ts";
 
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
@@ -53,6 +56,23 @@ function portFor(env: Record<string, string | undefined>): string | null {
   const kept = savedPort(join(merged["OVIS_STATE_DIR"] || join(config, "ovis"), "plugin-port")) ?? savedPort(join(config, "herdr-web-ui", "plugin-port"));
   return kept === null ? null : String(kept);
 }
+
+/**
+ * A server on a port the system hands out (port 0), but never one of REAL_PORTS: the system's range holds two of them
+ * (37317 and 47317), and launchEnv refuses to hand those to a command. A server that lands on one is held while the
+ * next is taken, so the next cannot land there again; then it is let go.
+ */
+function offRealPorts<T extends { port?: number; stop(closeActiveConnections?: boolean): unknown }>(start: () => T): T {
+  const held: T[] = [];
+  let server = start();
+  while (REAL_PORTS.includes(Number(server.port))) {
+    held.push(server);
+    server = start();
+  }
+  for (const extra of held) void extra.stop(true);
+  return server;
+}
+const serveOffRealPorts = ((options: Parameters<typeof Bun.serve>[0]) => offRealPorts(() => Bun.serve(options))) as typeof Bun.serve;
 
 /**
  * The command's environment. PORT is a quiet port unless `extra` names it: with none, the command would ask DEFAULT_PORT
@@ -96,6 +116,16 @@ afterEach(() => {
 });
 
 describe("the launch helper", () => {
+  it("takes a stand-in's port from the system but never one of REAL_PORTS, holding one that landed there until another is had", () => {
+    const handedOut = [37317, 47317, 40000];
+    const stopped: number[] = [];
+    const server = offRealPorts(() => {
+      const port = handedOut.shift()!;
+      return { port, stop: () => { stopped.push(port); } };
+    });
+    expect({ port: server.port, stopped, left: handedOut }).toEqual({ port: 40000, stopped: [37317, 47317], left: [] });
+  });
+
   it("names a quiet port, and never one this PC's own Ovis may be on", () => {
     const port = Number(launchEnv()["PORT"]);
     expect(Number.isInteger(port) && port > 0).toBe(true);
@@ -503,7 +533,7 @@ describe("starts at the same moment", () => {
     };
     keepPort(portA);
     const holder = await holdLock();
-    const ours = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(APP_HEALTH) });
+    const ours = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(APP_HEALTH) });
     const { server, root } = recordedSleeper((pid) => { const reading = readProcessBirth(pid); return reading.state === "identified" ? reading.birth : null; });
     rmSync(join(scratch, "state", "server.pid"));
     try {
@@ -571,7 +601,7 @@ describe("port", () => {
   });
 
   it("does not start on another port when the PORT the user set cannot be opened, and says so", async () => {
-    const holder = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) });
+    const holder = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) });
     try {
       writeFileSync(join(configDir, ".env"), `PORT=${holder.port}\n`);
       const started = await run("start");
@@ -585,7 +615,7 @@ describe("port", () => {
   });
 
   it("does not take another program's 200 on the port for the app", async () => {
-    const stranger = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<html>not us</html>", { headers: { "content-type": "text/html" } }) });
+    const stranger = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<html>not us</html>", { headers: { "content-type": "text/html" } }) });
     try {
       writeFileSync(join(configDir, ".env"), `PORT=${stranger.port}\n`);
       const started = await run("start");
@@ -597,7 +627,7 @@ describe("port", () => {
 
   it("does not take another program's JSON, or the app's shape with a failing status, for the app's bridge health", async () => {
     for (const bridge of [Response.json({ ok: true }), Response.json(BRIDGE_HEALTH, { status: 503 })]) {
-      const stranger = Bun.serve({
+      const stranger = serveOffRealPorts({
         hostname: "127.0.0.1",
         port: 0,
         fetch: (request) => new URL(request.url).searchParams.get("scope") === "bridge"
@@ -615,7 +645,7 @@ describe("port", () => {
   });
 
   it("does not take another program answering ok on both health URLs for the app", async () => {
-    const stranger = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ok: true }) });
+    const stranger = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ok: true }) });
     try {
       writeFileSync(join(configDir, ".env"), `PORT=${stranger.port}\n`);
       const started = await run("start");
@@ -626,8 +656,8 @@ describe("port", () => {
   });
 
   it("follows a start that is coming up on another port instead of opening a second server", async () => {
-    const ours = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(APP_HEALTH) });
-    const stranger = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => { keep(ours.port!); return new Response(null, { status: 404 }); } });
+    const ours = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(APP_HEALTH) });
+    const stranger = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: () => { keep(ours.port!); return new Response(null, { status: 404 }); } });
     try {
       keep(stranger.port!);
       mkdirSync(join(scratch, "state"), { recursive: true });
@@ -641,7 +671,7 @@ describe("port", () => {
   });
 
   it("keeps the port of its own server that cannot reach herdr instead of moving the app (#428)", async () => {
-    const ours = Bun.serve({
+    const ours = serveOffRealPorts({
       hostname: "127.0.0.1",
       port: 0,
       fetch: (request) => new URL(request.url).searchParams.get("scope") === "bridge"
@@ -664,7 +694,7 @@ describe("port", () => {
 
   it("reports its own server as running when herdr comes back while start asks why it cannot reach it", async () => {
     let afterBridge = -1;
-    const ours = Bun.serve({
+    const ours = serveOffRealPorts({
       hostname: "127.0.0.1",
       port: 0,
       fetch: (request) => {
@@ -866,12 +896,132 @@ describe("ovis join, as the command runs it", () => {
   });
 });
 
+it("does not send a desktop approval request after the listener was withdrawn during health", async () => {
+  const record = join(scratch, "desktop.json");
+  const withdraw = recordDesktopListener(record, process.pid);
+  const requests: string[] = [];
+  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const path = new URL(request.url).pathname;
+    requests.push(path);
+    if (path === "/api/health") {
+      withdraw();
+      return Response.json(APP_HEALTH);
+    }
+    return Response.json({ pairings: [], joins: [] });
+  } });
+  try {
+    writeSaved(record, { port: Number(server.port), server: { pid: process.pid, ready: true, bun: process.execPath, started: processStartSync(process.pid) } });
+    const result = await run("approve", { PORT: String(server.port), OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record });
+    expect(requests).toEqual(["/api/health"]);
+    expect(result.exitCode).toBe(1);
+  } finally { withdraw(); await server.stop(true); }
+});
+
+it.skipIf(process.platform === "win32").each(["restart", "proxy"] as const)("keeps a typed desktop approval on the original local server (%s)", async (scenario) => {
+  const record = join(scratch, "desktop.json");
+  const direct: string[] = [];
+  const proxied: string[] = [];
+  const answer = (seen: string[]) => async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    switch (path) {
+      case "/api/health": return Response.json(APP_HEALTH);
+      case "/api/relay/pairings": return Response.json({ pairings: [] });
+      case "/api/relay/joins": return Response.json({ joins: [{ id: "j1", label: "Fixture phone" }] });
+      case "/api/relay/join":
+        seen.push(await request.text());
+        return new Response(null, { status: 204 });
+      default: return new Response(null, { status: 404 });
+    }
+  };
+  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: answer(direct) });
+  const proxy = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: answer(proxied) });
+  const next = scenario === "restart" ? Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { env: process.env, stdin: "ignore" }) : null;
+  const save = (pid: number) => {
+    writeSaved(record, { port: server.port, server: { pid, ready: true, bun: process.execPath, started: processStartSync(pid) } });
+    return recordDesktopListener(record, pid);
+  };
+  let withdraw = save(process.pid);
+  let out = "";
+  let typed = false;
+  let reply: ReturnType<typeof setTimeout> | undefined;
+  const child = Bun.spawn([process.execPath, "scripts/plugin.ts", "approve"], {
+    cwd: ROOT,
+    env: launchEnv({
+      PORT: String(server.port), OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record,
+      ...(scenario === "proxy" ? { HTTP_PROXY: proxy.url.origin, http_proxy: proxy.url.origin, NO_PROXY: "", no_proxy: "" } : {}),
+    }),
+    timeout: 6_000, killSignal: "SIGKILL",
+    terminal: { cols: 80, rows: 24, data(terminal, bytes) {
+      out += new TextDecoder().decode(bytes);
+      if (typed || !out.endsWith("leave it waiting: ")) return;
+      typed = true;
+      if (next !== null) { withdraw(); withdraw = save(next.pid); }
+      // An answer typed too soon to have read the prompt is discarded by the command.
+      reply = setTimeout(() => terminal.write("123456\n"), 1_550);
+    } },
+  });
+  try {
+    const exit = await child.exited;
+    expect(typed, out).toBe(true);
+    expect({ direct, proxied }).toEqual({
+      direct: scenario === "proxy" ? ['{"id":"j1","digits":"123456"}'] : [], proxied: [],
+    });
+    expect(exit, out).toBe(scenario === "proxy" ? 0 : 1);
+  } finally {
+    clearTimeout(reply);
+    child.terminal?.close();
+    if (next !== null) { next.kill(); await next.exited; }
+    withdraw();
+    await server.stop(true);
+    await proxy.stop(true);
+  }
+}, 8_000);
+
+for (const encoding of ["ASCII", "Unicode"]) {
+  it.skipIf(process.platform === "win32")(`logout reads a healthy ${encoding} token-protected server without printing the token`, async () => {
+    const { pairingPc } = await import("../server/account/pairing.test-helpers.ts");
+    const token = encoding === "ASCII" ? "logout-fixture-token" : "logout-fixture-🔒";
+    const herdrSocket = process.env["HERDR_SOCKET"];
+    const unix = join(scratch, "herdr.sock");
+    const herdr = Bun.listen<{ line: string }>({ unix, socket: {
+      open(client) { client.data = { line: "" }; },
+      data(client, chunk) {
+        client.data.line += chunk.toString();
+        if (!client.data.line.includes("\n")) return;
+        const { id, method } = JSON.parse(client.data.line) as { id: string; method: string };
+        const result = method === "ping" ? { version: "fixture", protocol: 22 } : { snapshot: { workspaces: [], panes: [] } };
+        client.end(`${JSON.stringify({ id, result })}\n`);
+      },
+    } });
+    process.env["HERDR_SOCKET"] = unix;
+    try {
+      const pc = await pairingPc({ startRelay: false, server: { token, accountOpensAll: true } });
+      try {
+        expect(await pc.local("/api/health")).toMatchObject({ status: 200, body: { ok: true, auth: { reason: "token_required" } } });
+        expect((await pc.local("/api/account/status")).status).toBe(401);
+        const result = await run("logout", {
+          HOST: "127.0.0.1", PORT: String(pc.app.port), OVIS_STATE_DIR: pc.stateDir, OVIS_TOKEN: token,
+          OVIS_PROFILE: undefined, OVIS_PREVIEW: undefined, OVIS_ACCOUNT_OPENS_ALL: "1", BUN_CONFIG_VERBOSE_FETCH: "curl",
+        }, { timeout: 5_000 });
+        expect(result.out).not.toContain(token);
+        expect(result.err).not.toContain(token);
+        expect(result.exitCode, result.out + result.err).toBe(0);
+        expect(result.out).toContain("This PC is in no Ovis account.");
+      } finally { await pc.close(); }
+    } finally {
+      herdr.stop(true);
+      if (herdrSocket === undefined) delete process.env["HERDR_SOCKET"];
+      else process.env["HERDR_SOCKET"] = herdrSocket;
+    }
+  });
+}
+
 describe("the devices status lists apart", () => {
   const GROUPS = { unlinked: [{ id: "6a1f0c9e2b7d4a10", label: "Old phone" }], own_word: [{ id: "0d4c1b7a9e2f3c58", label: "Tab\u001b]0;let\u0007let" }, { id: "1e5d2c8b0a3f4d69", label: "Laptop" }] };
   /** An Ovis on a port of its own whose health answer is `answer` for each request, by the request's authorization. */
   function answering(answer: (authorization: string | null) => Record<string, unknown>, account?: Record<string, unknown>) {
     const asked: (string | null)[] = [];
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       if (account !== undefined && new URL(request.url).pathname === "/api/account/status") return Response.json(account);
       if (new URL(request.url).pathname !== "/api/health") return new Response(null, { status: 404 });
       asked.push(request.headers.get("authorization"));
@@ -884,7 +1034,7 @@ describe("the devices status lists apart", () => {
 
   it("--json is one object an agent reads: version, running, server id, relay, account and whether it waits for Add, with no token or address in it", async () => {
     const serverId = "0123456789abcdef0123456789abcdef";
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json({ ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] }, relay: { phase: "connecting" } });
       if (path === "/api/account/status") return Response.json({ account: null, members: 0, waiting_for_add: true });
@@ -899,7 +1049,7 @@ describe("the devices status lists apart", () => {
       const said = JSON.parse(result.out) as Record<string, unknown>;
       expect({ ...said, version: typeof said["version"] }).toEqual({
         version: "string", running: true, server_id: serverId, relay: { on: true, connected: false, phase: "connecting" },
-        account: null, account_known: true, waiting_for_add: true,
+        account: null, account_known: true, waiting_for_add: true, list: null, problem: null,
       });
       expect(result.out).not.toContain("the-token");
     } finally { await server.stop(true); }
@@ -907,7 +1057,37 @@ describe("the devices status lists apart", () => {
     const down = await run("status", { HOST: "127.0.0.1", PORT: "1", OVIS_STATE_DIR: join(scratch, "app-state") }, { args: ["--json"] });
     expect(down.exitCode).toBe(0);
     const said = JSON.parse(down.out) as Record<string, unknown>;
-    expect({ ...said, version: typeof said["version"] }).toEqual({ version: "string", running: false, server_id: null, relay: null, account: null, account_known: false, waiting_for_add: null });
+    expect({ ...said, version: typeof said["version"] }).toEqual({ version: "string", running: false, server_id: null, relay: null, account: null, account_known: false, waiting_for_add: null, list: null, problem: null });
+  });
+
+  it("--json says of a PC pinned to its account's list which list it is, where the PC stands in it and why it lets nobody in; and of a PC that cannot read its account state, what it cannot read", async () => {
+    const reason = "This PC cannot read its copy of your account's list (account-list.json), so it lets no device of your account in.";
+    let strict = false;
+    const answers: { status: () => Response } = { status: () => Response.json({ account: "acct_1a2b3c4d5e6f", members: 1, waiting_for_add: false, list: { pinned_list: "ab".repeat(32), standing: null, reason } }) };
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      // a PC that is closed tells this command, as any caller, no owner's fields: only that it is closed
+      if (path === "/api/health") return Response.json(strict ? { ...APP_HEALTH, auth: { required: true, authenticated: false, reason: "strict" }, relay: { phase: "online" } }
+        : { ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] }, relay: { phase: "online" } });
+      if (path === "/api/account/status") return answers.status();
+      return new Response(null, { status: 404 });
+    } });
+    writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
+    const env = { HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" };
+    try {
+      const pinned = JSON.parse((await run("status", env, { args: ["--json"] })).out) as Record<string, unknown>;
+      expect(pinned).toMatchObject({ account: "acct_1a2b3c4d5e6f", account_known: true, list: { pinned_list: "ab".repeat(32), standing: null, reason }, problem: null });
+      expect("migrate_time_scale" in pinned).toBe(false);
+      // a staging run that turned the waits of a move onto the list down says so
+      answers.status = () => Response.json({ account: "acct_1a2b3c4d5e6f", members: 1, waiting_for_add: false, migrate_time_scale: 60 });
+      expect(JSON.parse((await run("status", env, { args: ["--json"] })).out)).toMatchObject({ migrate_time_scale: 60 });
+      // closed altogether: the PC says what it cannot read, and nothing else of its account
+      const why = "This PC is pinned to a signed list in /home/me/.herdr, and /home/me/.herdr/account-list-keys.json could not be brought beside it (ENOENT)";
+      strict = true;
+      answers.status = () => Response.json({ error: { code: "strict", message: "This PC cannot read its safety log", reason: why } }, { status: 403 });
+      const closed = JSON.parse((await run("status", env, { args: ["--json"] })).out) as Record<string, unknown>;
+      expect(closed).toMatchObject({ account: null, account_known: false, list: null, problem: why });
+    } finally { await server.stop(true); }
   });
 
   it("are the two groups of the owner's health answer, each device by its name with no control character, and its id", async () => {
@@ -1006,7 +1186,7 @@ await runPlugin();`], { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: launchEn
 
 describe("add and login", () => {
   function linkedPc() {
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       if (path === "/api/account/status") return Response.json({ account: "acct_1", unlinked: [], removals: [], adds: [], blocked: [] });
@@ -1061,7 +1241,7 @@ describe("add and login", () => {
     let codes = 0;
     let cancelled: (() => void) | null = null;
     const taken = new Promise<void>((resolve) => { cancelled = resolve; });
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       calls.push(`${request.method} ${path}`);
@@ -1208,7 +1388,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     } });
     chmodSync(socket, 0o600);
     if (more.linked) symlinkSync(socket, own);
-    const tcp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const tcp = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       if (seen("tcp", request) === "/api/health") return Response.json(more.tcp === undefined ? { ok: true } : more.tcp === true ? APP_HEALTH : more.tcp);
       return Response.json({ error: { code: "unauthorized", message: "Unauthorized" } }, { status: 401 });
     } });
@@ -1320,7 +1500,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
   it("does not take an app on the PORT it was given for the profile when starting, and starts nothing", async () => {
     const pc = profilePc({ door: 1 }, { folderMode: 0o777 });
     const asked: string[] = [];
-    const app = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
+    const app = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
       asked.push(`${request.method} ${new URL(request.url).pathname}${new URL(request.url).search}`);
       return Response.json(new URL(request.url).searchParams.get("scope") === "bridge" ? BRIDGE_HEALTH : APP_HEALTH);
     } });
@@ -1568,8 +1748,9 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     const herdrSocket = process.env["HERDR_SOCKET"];
     process.env["HERDR_SOCKET"] = join(scratch, "herdr.sock");
     const account = new FakeAccountService();
-    const server = createServer({ profile: "machine", stateDir: state, port: 0, hostname: "127.0.0.1", tailscaleOwner: null, sidecar: false,
-      relay: new RelayService({ stateDir: state, relay: "wss://relay.invalid" }), accountService: { url: "https://account.test", fetch: account.fetch } });
+    // its port goes into the command's .env, so it is never one the guard refuses
+    const server = offRealPorts(() => createServer({ profile: "machine", stateDir: state, port: 0, hostname: "127.0.0.1", tailscaleOwner: null, sidecar: false,
+      relay: new RelayService({ stateDir: state, relay: "wss://relay.invalid" }), accountService: { url: "https://account.test", fetch: account.fetch } }));
     try {
       const socket = join(realpathSync(state), "serve.sock");
       mkdirSync(join(state, "serve.lock"));
@@ -1599,7 +1780,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
 describe("pair --approve", () => {
   function waitingPc() {
     const decisions: unknown[] = [];
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       if (path === "/api/relay/pairings") return Response.json({ pairings: [{ id: "p1", label: "Phone one", digits: "111222" }, { id: "p2", label: "Phone two", digits: "333444" }] });
@@ -1651,7 +1832,7 @@ describe("pair --approve", () => {
     const decisions: unknown[] = [];
     let asked = (): void => undefined;
     const typedAhead = new Promise<void>((resolve) => { asked = resolve; });
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       if (path === "/api/relay/pairings") { await typedAhead; return Response.json({ pairings: [{ id: "p1", label: "Phone one", digits: "111222" }] }); }
@@ -1682,7 +1863,7 @@ describe("pair --approve", () => {
   /** A PC with a members-only account join waiting (#28): `refusal` answers every relay read, as a locked PC does. */
   function joinWaitingPc(options: { refusal?: "locked" | "strict"; answer?: Response } = {}) {
     const typed: { body: unknown; machine: string | null }[] = [];
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       if (options.refusal !== undefined && path.startsWith("/api/relay/")) return Response.json({ error: { code: options.refusal, message: "refused" } }, { status: 403 });
@@ -1741,7 +1922,7 @@ describe("pair --approve", () => {
    */
   function firstJoinWaitingPc(answer: (body: { id: string; digits: string }) => Response | undefined = () => undefined) {
     const typed: unknown[] = [];
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       if (path === "/api/relay/pairings") return Response.json({ pairings: [] });
@@ -1819,7 +2000,7 @@ describe("pair --approve", () => {
   });
 
   it("says so when no device waits", async () => {
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
       return path === "/api/health" ? Response.json(APP_HEALTH) : path === "/api/relay/pairings" ? Response.json({ pairings: [] }) : new Response(null, { status: 404 });
     } });
@@ -1855,7 +2036,7 @@ globalThis.fetch = async (input, init = {}) => {
  */
 function lateAnswerPc(late: string, answer: (path: string) => Response | undefined = () => undefined, reached = (): void => undefined) {
   const limits: Record<string, string | null> = {};
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const path = new URL(request.url).pathname;
     limits[path] = request.headers.get("x-test-limit");
     if (path === "/api/health") return Response.json(APP_HEALTH);
@@ -1911,7 +2092,7 @@ describe("pair relay offer", () => {
     const key = generateKeyPair();
     let offerRequests = 0;
     let validOfferUrl = "";
-    const server = Bun.serve({
+    const server = serveOffRealPorts({
       hostname: "127.0.0.1",
       port: 0,
       async fetch(request) {
@@ -2129,7 +2310,7 @@ describe("a checkout whose packages are not installed", () => {
   it.skipIf(process.platform === "win32")("the commands that need a package fail before they change anything: no pairing code asked for, nothing published or decided", async () => {
     const copy = await withoutPackages();
     const changes: string[] = [];
-    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
       if (request.method !== "GET") changes.push(`${request.method} ${path}`);
       if (path === "/api/health") return Response.json(APP_HEALTH);

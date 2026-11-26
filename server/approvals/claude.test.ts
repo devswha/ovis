@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,8 @@ import { preloaded } from "./relay.ts";
 import { parsedByPublicPrompt } from "../dialogs/shared.ts";
 import { ROOT } from "../entries.ts";
 import { parseInteractivePrompt } from "../prompt.ts";
+import { readStatusline, readStatuslineContext } from "../statusline.ts";
+import { installStatusline, removeStatusline } from "../statusline-install.ts";
 
 // the folder's and socket's modes and links are those of Linux and macOS; on Windows the hub is a named pipe
 const posix = process.platform !== "win32";
@@ -17,7 +19,7 @@ const launch = (hooks: ApprovalHub, paneId: string, args: string[] | undefined) 
 const ULTRACODE = JSON.stringify({ ultracode: true });
 type CommandHook = { type: string; command: string; args: string[] };
 type HookEntry = { matcher?: string; hooks: CommandHook[] };
-type HookSettings = { ultracode?: boolean; hooks: { PermissionRequest: HookEntry[]; UserPromptSubmit: HookEntry[]; Stop: HookEntry[] } };
+type HookSettings = { ultracode?: boolean; hooks: Record<"PermissionRequest" | "UserPromptSubmit" | "Stop" | "StopFailure" | "SessionStart" | "PostCompact" | "UserPromptExpansion", HookEntry[]> };
 
 const roots: string[] = [];
 const started: ApprovalHub[] = [];
@@ -85,10 +87,19 @@ describe.skipIf(!posix)("launchArgs", () => {
     // the turns, told to the same relay
     expect(settings.hooks.UserPromptSubmit).toEqual([{ hooks: [entry.hooks[0]!] }]);
     expect(settings.hooks.Stop).toEqual([{ hooks: [entry.hooks[0]!] }]);
+    // and the commands it ran
+    const told = [{ ...entry.hooks[0]!, timeout: 10 }];
+    expect([settings.hooks.SessionStart, settings.hooks.PostCompact, settings.hooks.UserPromptExpansion])
+      .toEqual([[{ matcher: "clear", hooks: told }], [{ matcher: "manual", hooks: told }], [{ hooks: told }]]);
     expect(entry.hooks[0]).toMatchObject({ type: "command", command: process.execPath });
     expect(entry.hooks[0]!.args.slice(0, 3)).toEqual(relayCommand().slice(1));
     expect(entry.hooks[0]!.args).toContain(join(dir, "hub.sock"));
-    expect(plain.join(" ")).not.toContain(entry.hooks[0]!.args.at(-1)!);
+    // the launch's key is in a file of its own, never in the command Claude Code writes into its transcript
+    const keyFile = entry.hooks[0]!.args[entry.hooks[0]!.args.indexOf("--launch-file") + 1]!;
+    expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+    const key = readFileSync(keyFile, "utf8");
+    expect(key.length).toBeGreaterThan(20);
+    expect([...plain, readFileSync(path, "utf8")].join(" ")).not.toContain(key);
     expect(settings.ultracode).toBeUndefined();
 
     const merged = launch(hooks, "p1", ["--model", "opus", "--settings", ULTRACODE, "--", "--settings"])!;
@@ -131,6 +142,101 @@ describe.skipIf(!posix)("launchArgs", () => {
     expect(relayCommand("/opt/ovis", true)).toEqual([process.execPath, "approval-hook"]);
     expect(relayCommand("/opt/ovis", false)).toEqual([process.execPath, "--config=/opt/ovis/bunfig.toml", "--no-env-file", join("/opt/ovis", "server", "approvals", "relay.ts")]);
     expect(relayCommand()).toEqual([process.execPath, `--config=${join(ROOT, "bunfig.toml")}`, "--no-env-file", join(ROOT, "server", "approvals", "relay.ts")]);
+  });
+});
+
+describe.skipIf(!posix)("the status line of a Claude Ovis starts", () => {
+  /** what Claude Code 2.1.330 handed its status line at start, in a folder and config directory named /project and /config */
+  const PAYLOAD = readFileSync(join(ROOT, "server", "fixtures", "claude-statusline-2.1.330.json"), "utf8");
+  const SESSION = (JSON.parse(PAYLOAD) as { session_id: string }).session_id;
+  const given = process.env["CLAUDE_CONFIG_DIR"];
+  afterEach(() => { if (given === undefined) delete process.env["CLAUDE_CONFIG_DIR"]; else process.env["CLAUDE_CONFIG_DIR"] = given; });
+  type StatusLine = { type: string; command: string; padding?: number; refreshInterval?: number };
+
+  /** A home with Claude's config directory and a project, each with the settings given, and Ovis's hub. */
+  function claudeIn(settings: { user?: unknown; project?: unknown } = {}) {
+    const { hooks, root } = hooksIn();
+    const home = join(root, "home"), config = join(home, ".claude"), project = join(root, "project");
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    mkdirSync(config, { recursive: true });
+    if (settings.user !== undefined) writeFileSync(join(config, "settings.json"), JSON.stringify(settings.user));
+    if (settings.project !== undefined) writeFileSync(join(project, ".claude", "settings.json"), JSON.stringify(settings.project));
+    process.env["CLAUDE_CONFIG_DIR"] = config;
+    const transcript = join(config, "projects", "-project", `${SESSION}.jsonl`);
+    /** The status line of a Claude started in the project (or in no folder Ovis knows) with these arguments. */
+    const statusLine = (args?: string[], cwd: string | null = project): StatusLine | undefined =>
+      (settingsOf(hooks.launchArgs("claude", "p1", args, VERSION, cwd)!).settings as unknown as { statusLine?: StatusLine }).statusLine;
+    /** What the status line draws for a payload, run as Claude runs it, and what Ovis then reads of its context window. */
+    const draw = async (line: StatusLine, payload = PAYLOAD.replaceAll("/config", config).replaceAll("/project", project)) => {
+      const run = Bun.spawn(["sh", "-c", line.command], { cwd: project, stdin: Buffer.from(payload), stdout: "pipe", stderr: "pipe", env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config } });
+      const drawn = await new Response(run.stdout).text();
+      return { line: drawn, exit: await run.exited, window: readStatuslineContext(home, SESSION, "claude-haiku-4-5-20251001", transcript) };
+    };
+    return { statusLine, draw, home, config, project };
+  }
+  const line = (command: string, more: Record<string, unknown> = {}) => ({ statusLine: { type: "command", command, ...more } });
+
+  it("draws the user's own line, with its padding and refresh, and keeps the context window Claude gave it", async () => {
+    const { statusLine, draw } = claudeIn({ user: line("printf 'my line'", { padding: 2, refreshInterval: 5 }) });
+    const drawn = statusLine()!;
+    expect(drawn).toMatchObject({ type: "command", padding: 2, refreshInterval: 5 });
+    expect(await draw(drawn)).toEqual({ line: "my line", exit: 0, window: 200_000 });
+  });
+
+  it("sets none where the user has none, any status line taking Claude's shortcuts hint off the screen", () => {
+    expect(claudeIn({ user: { theme: "dark" } }).statusLine()).toBeUndefined();
+  });
+
+  it("draws the line the project sets over the user's, with the project's padding", async () => {
+    const { statusLine, draw } = claudeIn({ user: line("printf mine", { padding: 0 }), project: line("printf theirs", { padding: 4 }) });
+    const drawn = statusLine()!;
+    expect(drawn.padding).toBe(4);
+    expect((await draw(drawn)).line).toBe("theirs");
+    // with the project's folder unknown, the user's line could be the wrong one: none
+    expect(statusLine(undefined, null)).toBeUndefined();
+  });
+
+  it("looks only in the settings sources the launch lets Claude read", async () => {
+    const { statusLine, draw } = claudeIn({ user: line("printf mine"), project: line("printf theirs") });
+    expect((await draw(statusLine(["--setting-sources", "user"])!)).line).toBe("mine");
+    const userOnly = claudeIn({ user: line("printf mine") });
+    expect(userOnly.statusLine(["--setting-sources=project,local"])).toBeUndefined();
+  });
+
+  it("draws the line of a --settings the launch already had, and its exit", async () => {
+    const { statusLine, draw } = claudeIn();
+    expect(await draw(statusLine(["--settings", JSON.stringify({ ultracode: true, ...line("printf 'it''s given'; exit 3") })])!))
+      .toEqual({ line: "its given", exit: 3, window: 200_000 });
+  });
+
+  it("keeps no limits or account: only the Settings switch keeps them", async () => {
+    const { statusLine, draw, home } = claudeIn({ user: line("printf mine") });
+    const limited = JSON.stringify({ ...JSON.parse(PAYLOAD), rate_limits: { five_hour: { used_percentage: 12, resets_at: 2_000_000_000 } } });
+    expect((await draw(statusLine()!, limited)).line).toBe("mine");
+    expect(existsSync(join(home, ".herdr", "statusline-last.json"))).toBe(false);
+  });
+
+  it("keeps the limits while the Settings switch is on, as its wrapper would", async () => {
+    const { statusLine, draw, home, config } = claudeIn({ user: line("printf mine") });
+    installStatusline({ home, configDir: config });
+    const limited = JSON.stringify({ ...JSON.parse(PAYLOAD), rate_limits: { five_hour: { used_percentage: 12, resets_at: 2_000_000_000 } } });
+    expect((await draw(statusLine()!, limited)).line).toBe("mine");
+    expect(readStatusline(home)?.fiveHour?.usedPercent).toBe(12);
+  });
+
+  it("draws the line the Settings switch's wrapper wraps, which turning the switch off deletes", async () => {
+    const { statusLine, draw, home, config } = claudeIn({ user: line("printf wrapped") });
+    installStatusline({ home, configDir: config });
+    expect(JSON.parse(readFileSync(join(config, "settings.json"), "utf8")).statusLine.command).toContain("statusline-tee.sh");
+    const drawn = statusLine()!;
+    removeStatusline({ home, configDir: config });
+    expect((await draw(drawn)).line).toBe("wrapped");
+  });
+
+  it("hands the user's line a payload too large to capture whole", async () => {
+    const { statusLine, draw } = claudeIn({ user: line("wc -c") });
+    const big = JSON.stringify({ ...JSON.parse(PAYLOAD), padding: "x".repeat(300 * 1024) });
+    expect(Number((await draw(statusLine()!, big)).line.trim())).toBe(Buffer.byteLength(big));
   });
 });
 
@@ -595,5 +701,60 @@ describe("Claude's other tools on a card from the hook's request", () => {
     // a turn left with background or scheduled work can begin again with no prompt: no rest from its Stop
     expect(claudeApprovals.turn!({ ...stop, background_tasks: [{ id: "b1" }] })).toBeNull();
     expect(claudeApprovals.turn!({ ...stop, session_crons: [{ id: "c1" }] })).toBeNull();
+  });
+
+  it("relays StopFailure for the main Claude turn without waiting for an answer", async () => {
+    const turns: unknown[] = [];
+    const hooks = new ApprovalHub(join(tempRoot(), "h"), [claudeApprovals], { onTurn: (_pane, _kind, event) => { turns.push(event); } });
+    started.push(hooks);
+    const args = launch(hooks, "p1", undefined);
+    const hook = args && settingsOf(args).settings.hooks.StopFailure?.at(-1)?.hooks[0];
+    if (!hook) throw new Error("Missing StopFailure hook in the launch's settings");
+    // Claude Code StopFailure schema, with common prompt_id; agent_id is only present in a subagent.
+    const event = { hook_event_name: "StopFailure", error: "server_error", error_details: "529 overloaded",
+      last_assistant_message: "API Error: 529 overloaded", session_id: "session", prompt_id: "prompt", transcript_path: "/project/session.jsonl", cwd: "/project" };
+    await ask(hook, { ...event, agent_id: "child" }).answer();
+    expect(await ask(hook, event).answer()).toBeNull();
+    expect(turns).toEqual([{ turn: "ended", prompt: "prompt", failed: true }]);
+    expect(hooks.held("p1")).toEqual([]);
+  });
+
+  it("tells the commands Claude's hooks said it ran, in the order it ran them, with nothing printed for Claude", async () => {
+    // Claude Code 2.1.330 as recorded (Haiku, an isolated config): `/hello` (a user skill), `/compact`, then `/clear`
+    const events = readFileSync(new URL("../fixtures/claude-result-hooks-2.1.330.jsonl", import.meta.url), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const root = tempRoot();
+    const commands: string[] = [];
+    const hooks = new ApprovalHub(join(root, "h"), [claudeApprovals], { onCommand: (paneId, kind, { name, builtin }) => commands.push(`${paneId} ${kind} ${name} ${builtin}`) });
+    started.push(hooks);
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const printed: unknown[] = [];
+    for (const event of events.filter((event) => event["hook_event_name"] !== "UserPromptSubmit")) printed.push(await ask(hook, event).answer());
+    expect(commands).toEqual(["p1 claude hello false", "p1 claude compact true", "p1 claude clear true"]);
+    expect(printed.every((answer) => answer === null || JSON.stringify(answer) === "{}")).toBe(true);
+    // a compact Claude began by itself, or a session it started or resumed, is no command of the user's
+    const compacted = events.find((event) => event["hook_event_name"] === "PostCompact")!;
+    expect(claudeApprovals.command!({ ...compacted, trigger: "auto" })).toBeNull();
+    for (const source of ["startup", "resume", "compact"]) expect(claudeApprovals.command!({ hook_event_name: "SessionStart", source }), source).toBeNull();
+    expect(claudeApprovals.command!({ hook_event_name: "UserPromptExpansion", command_name: "" })).toBeNull();
+  });
+
+  it("keeps the permission mode each hook was sent under, for the pane its agent was started in alone", async () => {
+    // Claude Code 2.1.330 as recorded: the hooks of the prompts under auto, default (after Shift+Tab) and acceptEdits
+    const events = readFileSync(new URL("../fixtures/claude-permission-mode-hooks-2.1.330.jsonl", import.meta.url), "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const { hooks } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const told: (string | null)[] = [];
+    for (const event of events) {
+      await ask(hook, event).answer();
+      told.push(hooks.toldMode("p1")?.mode ?? null);
+    }
+    expect(told).toEqual(["auto", "auto", "default", "default", "acceptEdits", "acceptEdits"]);
+    expect(hooks.toldMode("p1")?.session).toBe(events[0]!["session_id"] as string);
+    // a subagent's hook has its own mode
+    expect(claudeApprovals.mode!({ ...events[0], agent_id: "a1", permission_mode: "bypassPermissions" })).toBeNull();
+    expect(hooks.toldMode("p2")).toBeNull();
+    // another agent started in the pane has told nothing yet
+    launch(hooks, "p1", undefined);
+    expect(hooks.toldMode("p1")).toBeNull();
   });
 });

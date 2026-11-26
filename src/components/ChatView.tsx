@@ -1,5 +1,6 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal, flushSync } from "react-dom";
+import { legacyEditText } from "../../shared/edit-output.ts";
 import {
   ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, SquareTerminal, Target,
   type LucideProps,
@@ -30,6 +31,7 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
+import { plainText } from "../lib/plainText.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
@@ -196,6 +198,10 @@ export interface ChatViewProps {
   onSuggestion?: (paneId: string, suggestion: string | null) => void;
   onRestored?: (paneId: string, restored: string | null) => void;
   promptRefreshKey?: number;
+  approvalReflowRevision?: number;
+  approvalReflowPromptId?: string;
+  refreshingApproval?: boolean;
+  onApprovalReflowRead?: (paneId: string, revision: number) => void;
   pendingAnswer?: { promptId: string; answer: TypedAnswer } | null;
   onPendingAnswerDone?: (paneId: string, promptId?: string) => void;
   promptDock?: HTMLElement | null;
@@ -255,20 +261,13 @@ function conversationState(conversation: ConversationResponse): ChatState {
 }
 
 
-function plainText(markdown: string): string {
-  return markdown
-    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1")
-    .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
-    .replace(/(?:\*\*|__|~~|`)(.*?)(?:\*\*|__|~~|`)/g, "$1")
-    .replace(/^#{1,3}\s+/gm, "")
-    .replace(/^>\s?/gm, "");
-}
-
-function CopyButton({ text, label, className = "icon-button chat-copy", children, onResult }: { text: string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
+function CopyButton({ text, getText, label, className = "icon-button chat-copy", children, onResult }: { text?: string; getText?: () => string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async (): Promise<void> => {
-    const ok = await copyText(text);
+    // Derive lazily when a getter is supplied (e.g. an answer's plain text): the conversion runs
+    // synchronously inside the click gesture, never while the row renders (TASK-002).
+    const ok = await copyText(getText !== undefined ? getText() : text!);
     setCopied(ok);
     onResult(ok);
     if (ok) window.setTimeout(() => setCopied(false), 1500);
@@ -358,6 +357,9 @@ function PatchView({ patch }: { patch: string }) {
 function ToolInputView({ part }: { part: ToolPartType }) {
   const open = useContext(OpenFileContext);
   const t = useT();
+  if (part.edits?.length) return <div className="chat-tool-io">{part.edits.map((edit, index) => <div key={index}>
+    <ToolFile path={edit.path} /><EditDiff before={edit.before} after={edit.after} />
+  </div>)}</div>;
   if (part.arguments_omitted) return <pre className="chat-tool-io">{t("Arguments omitted (too large)")}</pre>;
   const after = isTodoTool(part.name) ? parseTodoAnswer(part.output) ?? todoSnapshot(part) : null;
   if (after !== null && after.length > 0) return <TodoList items={after} />;
@@ -598,7 +600,12 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
   const { verb, narration } = useMemo(() => workRowLabel({ name: part.name, input: part.input }, summary), [part.name, part.input, summary]);
   const name = toolDisplayName(part.name);
   const renamed = narration || verb !== null || name !== part.name;
-  const output = !attempt && isTodoTool(part.name) && parseTodoAnswer(part.output) !== null ? "" : whole.text ?? part.output;
+  const legacy = useMemo(() => legacyEditText(part.edits), [part.edits]);
+  const raw = whole.text ?? part.output;
+  const clippedEdit = legacy && raw.endsWith("\n… trimmed") && legacy.startsWith(raw.slice(0, -"\n… trimmed".length));
+  const output = raw === legacy || clippedEdit || (!attempt && isTodoTool(part.name) && parseTodoAnswer(part.output) !== null) ? ""
+    : legacy && raw.startsWith(`${legacy}\n`) ? raw.slice(legacy.length + 1) : raw;
+  const canLoad = part.output_ref !== undefined && whole.text === null && (!clippedEdit || (part.output_size ?? 0) > legacy.length + 1);
   const stateWord = state === undefined || part.error ? null
     : state === "ok" ? t("succeeded") : state === "pending" ? t("pending") : state === "error" ? t("failed") : t("outcome not recorded");
   const images = useMemo(() => linePictures([part]), [part]);
@@ -617,9 +624,9 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
       {/* opened, the row shows its pictures larger in its detail */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
-    {open && <div className="work-row-detail">{(verb !== null || name !== part.name) && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
-      <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />
-      {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
+    {open && <div className="work-row-detail">{(verb !== null || name !== part.name) && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{(output.length > 0 || (clippedEdit && canLoad)) && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
+      {output.length > 0 && <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />}
+      {canLoad && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}
   </div>;
@@ -1077,6 +1084,8 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     </section>;
   }
   const notice = turn.parts.find((part): part is Extract<ConversationPart, { kind: "notice" }> => part.kind === "notice");
+  // a stop (Esc): a quiet line where the turn stopped, as Claude Code's own terminal draws it
+  if (notice?.source === "stopped") return <p className="chat-goal-wait chat-stopped"><span>{t("Stopped|chat")}{time !== null && <> · {time}</>}</span></p>;
   if (notice !== undefined) {
     return <ChatDetails memoryKey="notice" className="chat-compact chat-notice">
       <summary><span className="chat-notice-label">{noticeLabel(t, notice)}</span>{time !== null && <> · {time}</>}</summary>
@@ -1149,7 +1158,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
       <CopyButton className="chat-meta-btn" text={answerText} label={t("Copy as markdown")} onResult={copied}><span className="chat-meta-fmt">MD</span></CopyButton>
-      <CopyButton className="chat-meta-btn chat-meta-plain" text={plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
+      <CopyButton className="chat-meta-btn chat-meta-plain" getText={() => plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
       {time}
     </div>}
     {copyError}
@@ -1276,7 +1285,7 @@ function TerminalFallback({ paneId, visible, explained = false }: { paneId: stri
   </details>;
 }
 
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, agentSession = null, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, watching = false, quotable = false, cwd = null, promptContext = null, searchRequest = 0 }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, unsentKey = 0, pendingRows = NO_ROWS, localSend, navigation, connected, ended, agent, agentStatus, agentSession = null, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, approvalReflowRevision = 0, approvalReflowPromptId, refreshingApproval = false, onApprovalReflowRead, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, watching = false, quotable = false, cwd = null, promptContext = null, searchRequest = 0 }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1818,6 +1827,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // menu can appear while idle without any file mutation. Keep their independent 2s poll.
   const [promptStale, setPromptStale] = useState(false);
   const failedPromptReads = useRef(0);
+  const [readApprovalReflow, setReadApprovalReflow] = useState(0);
+  const readApprovalReflowRef = useRef(0);
   const promptGone = ended || agent === null;
   const pollPrompt = connected && !promptGone;
   const blocked = agentStatus === "blocked";
@@ -1833,24 +1844,41 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (promptGone) { lastPrompts.delete(promptKey); keepCardText(null, null); setPrompt(null); }
     if (!pollPrompt) { setPromptStale(false); failedPromptReads.current = 0; setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
     if (!visible) return;
+    const controller = new AbortController();
     let cancelled = false;
     let timer = 0;
     let quickReads = blocked ? BLOCKED_PROMPT_READS : 0;
+    const needsReflowRead = () => approvalReflowRevision !== 0 && readApprovalReflowRef.current !== approvalReflowRevision;
+    let reflowRetries = needsReflowRead() ? BLOCKED_PROMPT_READS : 0;
+    const finishReflowRead = () => {
+      if (!needsReflowRead()) return;
+      readApprovalReflowRef.current = approvalReflowRevision;
+      setReadApprovalReflow(approvalReflowRevision);
+    };
     const readPrompt = async (): Promise<void> => {
       const sent = sentKeyRef.current;
       const session = sessionRef.current;
       const lifetime = paneLifetimes.generation(machineId);
       let quick = false;
       try {
-        const next = await fetchPanePromptState(paneId);
+        const next = await fetchPanePromptState(paneId, controller.signal);
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
           // a read begun under a herdr that has gone since draws no card and keeps nothing for the new one
           if (paneLifetimes.generation(machineId) === lifetime) {
+            // The old card, a blank frame and a fallback menu can all precede Claude's redraw.
+            // Bound the wait so a resize that doesn't change the ID still lets the user answer.
+            if (needsReflowRead() && reflowRetries > 0
+              && (next.prompt === null || next.prompt.fallback === true || next.prompt.id === approvalReflowPromptId)) {
+              reflowRetries -= 1;
+              quick = true;
+              return;
+            }
             keepCardText(next.prompt?.id ?? null, session);
             setPrompt((current) => polledPrompt(current, next.prompt));
             if (next.prompt === null) lastPrompts.delete(promptKey); else lastPrompts.set(promptKey, { machineId, session, prompt: next.prompt });
+            finishReflowRead();
           }
           if (next.prompt === null && quickReads > 0) { quickReads -= 1; quick = true; } else quickReads = 0;
           setAnsweredPrompt(null);
@@ -1870,17 +1898,36 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // a read that failed (a network error, a server hiccup) says nothing about the screen: the card,
       // the suggestion and the restored send stay as they are until the next read answers. Reads that
       // keep failing let the card say so (#1335): answering stays safe, the server re-reads first
-      catch { if (!cancelled) { setOutcomesRead(true); failedPromptReads.current += 1; if (failedPromptReads.current >= PROMPT_STALE_READS) setPromptStale(true); } }
+      catch {
+        if (!cancelled) {
+          setOutcomesRead(true);
+          failedPromptReads.current += 1;
+          if (failedPromptReads.current >= PROMPT_STALE_READS) {
+            setPromptStale(true);
+            // Restore the normal stale-card path: the answer still checks the live prompt.
+            finishReflowRead();
+          }
+        }
+      }
       finally { if (!cancelled) timer = window.setTimeout(() => void readPrompt(), quick ? BLOCKED_PROMPT_READ_MS : PROMPT_POLL_MS); }
     };
-    void readPrompt();
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [pollPrompt, promptGone, paneId, machineId, promptPollKey, promptRefreshKey, fetchPanePromptState, visible, blocked]);
+    // The geometry frame can precede the PTY resize and Claude's redraw. Coalesce resize bursts
+    // before reading again; the answer endpoint still checks against the live screen.
+    if (needsReflowRead()) {
+      timer = window.setTimeout(() => void readPrompt(), BLOCKED_PROMPT_READ_MS);
+    } else void readPrompt();
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer); };
+  }, [pollPrompt, promptGone, paneId, machineId, promptPollKey, promptRefreshKey, approvalReflowRevision, approvalReflowPromptId, fetchPanePromptState, visible, blocked]);
 
   useEffect(() => {
     onPrompt?.(paneId, prompt, prompt !== null && answeredPrompt === prompt.id);
     return () => onPrompt?.(paneId, null);
   }, [onPrompt, paneId, prompt, answeredPrompt]);
+
+  // The effect above gives the composer its new card before it can send an answer again.
+  useEffect(() => {
+    if (readApprovalReflow !== 0 && readApprovalReflow === approvalReflowRevision) onApprovalReflowRead?.(paneId, readApprovalReflow);
+  }, [approvalReflowRevision, onApprovalReflowRead, paneId, readApprovalReflow]);
 
   useEffect(() => () => { onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); }, [paneId]);
 
@@ -2572,7 +2619,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       input card, where PaneTerminal keeps its place. The prompt itself (its poll, the answer, the
       re-read) stays here. */}
   {prompt !== null && promptDock !== null && createPortal(
-    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} context={promptContext} watching={watching} answered={answeredPrompt === prompt.id} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} initialText={heldCardText?.promptId === prompt.id && heldCardText.session === agentSession ? heldCardText.text : undefined} onTextChange={(text, cardGone) => trackCardText(prompt.id, cardLifetime, text, cardGone)} onAnswered={(toMessageBox) => {
+    <PromptCard key={promptOccurrence.current.count} paneId={paneId} prompt={prompt} context={promptContext} watching={watching} answered={answeredPrompt === prompt.id} refreshing={refreshingApproval} stale={promptStale} screenWords={screenWordsToShow(prompt, state.source === "conversation" ? state.turns : [])} typedAnswer={pendingAnswer?.promptId === prompt.id ? pendingAnswer.answer : null} onTypedAnswerDone={() => onPendingAnswerDone?.(paneId, prompt.id)} onPromptChanged={() => setPromptPollKey((key) => key + 1)} initialText={heldCardText?.promptId === prompt.id && heldCardText.session === agentSession ? heldCardText.text : undefined} onTextChange={(text, cardGone) => trackCardText(prompt.id, cardLifetime, text, cardGone)} onAnswered={(toMessageBox) => {
       onPromptAnswered?.(toMessageBox);
       setAnsweredPrompt(prompt.id);
       lastPrompts.delete(paneStorageId(machineId, paneId));

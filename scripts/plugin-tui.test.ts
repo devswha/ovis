@@ -2,11 +2,17 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { writeSaved } from "../app/electron/src/children.ts";
+import { processStartSync } from "../shared/desktop-process.ts";
+import { recordDesktopListener } from "../server/desktop-listener.ts";
 import { ENTRIES } from "../server/entries.ts";
+import { DEFAULT_PORT } from "../shared/protocol.ts";
+import { ovisServer } from "../tui/core/ovis-server.ts";
 import { type Held, LEAVE, LEAVE_ALL } from "../tui/host/guard.ts";
 import * as libc from "./libc.ts";
+import { waiterCommand } from "./plugin-tui-waiter.ts";
 import { importClosure, read } from "./source-scan.ts";
-import { answersWithin, callerEnv, launchTui, readLine, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
+import { answersWithin, callerEnv, launchBareTui, launchTui, readLine, screenStart, shellEnv, systemParts, tuiEnv, WINDOWS_MESSAGE, type LaunchParts, type Probe } from "./plugin-tui.ts";
 
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
@@ -27,6 +33,77 @@ const SOCKET = "/scratch/hc.sock";
 const HOLD = "/scratch/held";
 /** a home with nothing in it: hc's own config.toml is looked for under it, never under the real one */
 const HOME = "/nonexistent-home";
+const APP_ORIGIN = `http://127.0.0.1:${DEFAULT_PORT}`;
+
+describe("bare terminal screen selection", () => {
+  it.each([
+    { args: [], over: {}, expected: 0, calls: ["probe /scratch/hc.sock", "run screen"] },
+    { args: ["--session", "work"], over: {}, expected: 0, calls: ["probe /run/test/herdr-core/work.sock", "run screen"] },
+    { args: ["--session=work"], over: {}, expected: 0, calls: ["probe /run/test/herdr-core/work.sock", "run screen"] },
+    { args: ["--session"], over: {}, expected: null, calls: [] },
+    { args: [], over: { platform: "darwin" as const }, expected: 0, calls: ["probe /scratch/hc.sock", "run screen"] },
+    { args: [], over: { platform: "win32" as const }, expected: null, calls: [] },
+    { args: [], over: { isTty: false }, expected: null, calls: [] },
+    { args: ["--session=work"], over: { isTty: false }, expected: null, calls: [] },
+    ...["", "status", "tui", "--help", "--bogus", "--sessions"].map((arg) => ({ args: [arg], over: {}, expected: null, calls: [] })),
+  ])("dispatches $args with $over", async ({ args, over, expected, calls }) => {
+    const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, XDG_RUNTIME_DIR: "/run/test" }, ...over } });
+    expect(await launchBareTui(args, run.parts)).toBe(expected);
+    expect(run.calls.filter((call) => /^(probe|run|find|start|discard|line)/u.test(call))).toEqual([...calls]);
+  });
+
+  it.each([{ args: [] }, { args: ["--session=work"] }])("returns to status without asking when the selected core does not answer ($args)", async ({ args }) => {
+    const run = fake({ probes: [{ kind: "none" }] });
+    expect(await launchBareTui(args, run.parts)).toBeNull();
+    expect(run.calls).toHaveLength(1);
+    expect(run.calls[0]).toStartWith("probe ");
+    expect(run.said).toEqual([]);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("the small terminal waiter", () => {
+  function runWaiter(command: string, hold = "", input = "") {
+    const child = Bun.spawn(waiterCommand(["/bin/sh", "-c", command], hold), {
+      env: { PATH: "/usr/bin:/bin", A: "x=y z" }, cwd: scratch, stdin: new Blob([input]), stdout: "pipe", stderr: "ignore",
+    });
+    return { child, out: new Response(child.stdout).text() };
+  }
+
+  it("preserves the screen's stdin, exported values and exit status", async () => {
+    const { child, out } = runWaiter('read line; printf "%s %s" "$A" "$line"; exit 3', "", "typed\n");
+    expect(await child.exited).toBe(3);
+    expect(await out).toBe("x=y z typed");
+  });
+
+  it.each([["0", ""], ["1", LEAVE], ["2", LEAVE_ALL]])("after a crash undoes only the modes recorded by the screen (%s)", async (held, undo) => {
+    const dir = mkdtempSync(join(scratch, "held-"));
+    const path = join(dir, "held");
+    writeFileSync(path, held);
+    const { child, out } = runWaiter("kill -KILL $$", path);
+    expect(await child.exited).toBe(137);
+    expect(await out).toBe(undo);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it.each([["SIGTERM", 143], ["SIGHUP", 129]] as const)("forwards %s immediately after an ignored SIGINT", async (signal, status) => {
+    for (let round = 0; round < 20; round++) {
+      const child = Bun.spawn(waiterCommand(["/bin/sh", "-c", "echo up; exec /bin/sleep 15"], ""), {
+        env: { PATH: "/usr/bin:/bin" }, cwd: scratch, stdin: "ignore", stdout: "pipe", stderr: "ignore",
+      });
+      const reader = child.stdout.getReader();
+      try {
+        expect(new TextDecoder().decode((await reader.read()).value)).toBe("up\n");
+        child.kill("SIGINT");
+        child.kill(signal);
+        expect(await child.exited).toBe(status);
+      } finally {
+        reader.releaseLock();
+        if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+        await child.exited;
+      }
+    }
+  }, 30_000);
+});
 
 type End = { code: number | null; signal: NodeJS.Signals | null };
 
@@ -229,15 +306,79 @@ describe("core choice", () => {
     expect(picked(run.runs[0]!.env)).toEqual(expected);
   });
 
+  it("probes a relative socket from the user's folder and passes that same path to the screen", async () => {
+    const run = fake({ over: { caller: { HOME, HC_SOCKET: "./relative.sock" } } });
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(work(run.calls)).toEqual(["probe /home/me/project/relative.sock", "run screen"]);
+    expect(run.runs[0]?.env["HC_SOCKET"]).toBe("/home/me/project/relative.sock");
+  });
+
   it("is what the screen gets in its environment, without the Ovis server's token", async () => {
     const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, XDG_RUNTIME_DIR: "/run/test", OVIS_TOKEN: "secret", PATH: "/usr/bin" } } });
     expect(await launchTui(["--session", "work"], run.parts)).toBe(0);
     expect(work(run.calls)).toEqual(["probe /run/test/herdr-core/work.sock", "run screen"]);
-    expect(run.runs[0]!.env).toEqual({ HOME, HC_SESSION: "work", XDG_RUNTIME_DIR: "/run/test", PATH: "/usr/bin", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_HOLD: HOLD });
+    expect(run.runs[0]!.env).toEqual({ HOME, HC_SESSION: "work", XDG_RUNTIME_DIR: "/run/test", PATH: "/usr/bin", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_HOLD: HOLD, OVIS_TUI_SERVER: APP_ORIGIN });
     const fromSettings = fake({ over: { caller: { HOME, XDG_RUNTIME_DIR: "/run/test" }, settings: { HC_SESSION: "ovis", OVIS_TOKEN: "secret" } } });
     expect(await launchTui([], fromSettings.parts)).toBe(0);
     expect(work(fromSettings.calls)).toEqual(["probe /run/test/herdr-core/ovis.sock", "run screen"]);
-    expect(fromSettings.runs[0]!.env).toEqual({ HOME, HC_SESSION: "ovis", XDG_RUNTIME_DIR: "/run/test", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_HOLD: HOLD });
+    expect(fromSettings.runs[0]!.env).toEqual({ HOME, HC_SESSION: "ovis", XDG_RUNTIME_DIR: "/run/test", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_HOLD: HOLD, OVIS_TUI_SERVER: APP_ORIGIN });
+  });
+
+  it("hands off only the local server origin resolved from the configured or saved port", async () => {
+    writeFileSync(join(scratch, "plugin-port"), "17551\n");
+    for (const [settings, address] of [
+      [{ OVIS_STATE_DIR: scratch }, "http://127.0.0.1:17551"],
+      [{ OVIS_STATE_DIR: scratch, HOST: "0.0.0.0", PORT: "18555" }, "http://127.0.0.1:18555"],
+      [{ OVIS_STATE_DIR: scratch, HOST: "example.test", PORT: "18555" }, ""],
+    ] as const) {
+      const run = fake({ over: { settings, caller: { HOME, HC_SOCKET: SOCKET, OVIS_TUI_SERVER: "http://evil.test:80" } } });
+      expect(await launchTui([], run.parts)).toBe(0);
+      expect(run.runs[0]?.env["OVIS_TUI_SERVER"]).toBe(address);
+    }
+  });
+
+  it("keeps the desktop terminal screen usable without a verified desktop listener", async () => {
+    const record = join(scratch, "desktop.json");
+    writeFileSync(record, JSON.stringify({ port: 18555, server: null }));
+    const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, PORT: "18555", OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record } } });
+    expect(await launchTui([], run.parts)).toBe(0);
+    expect(run.runs[0]?.env["OVIS_TUI_SERVER"]).toBe("");
+    const env = run.runs[0]?.env ?? {};
+    const server = ovisServer(env["OVIS_TUI_SERVER"] ?? null, undefined, env);
+    expect(await server.createWorktree("w1", "worktree/a")).toMatchObject({ ok: false, code: "ovis_desktop_not_running" });
+  });
+
+  it("refuses both worktree actions when a desktop restarts on the same port while the screen is open", async () => {
+    const record = join(scratch, "desktop.json");
+    const seen: string[] = [];
+    const http = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      seen.push(new URL(request.url).pathname);
+      return Response.json({ ok: true, path: "/p", forced: false, workspace_id: "w2", pane_id: "p1", branch: "worktree/a", already_open: false });
+    } });
+    const next = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { env: process.env, stdin: "ignore" });
+    const save = (pid: number) => {
+      writeSaved(record, { port: Number(http.port), server: { pid, ready: true, bun: process.execPath, started: processStartSync(pid) } });
+      return recordDesktopListener(record, pid);
+    };
+    const withdraw = save(process.pid);
+    try {
+      const run = fake({ over: { caller: { HOME, HC_SOCKET: SOCKET, PORT: String(http.port), OVIS_DESKTOP_COMMAND: "1", OVIS_DESKTOP_COMMAND_RECORD: record } } });
+      expect(await launchTui([], run.parts)).toBe(0);
+      const env = run.runs[0]?.env ?? {};
+      const server = ovisServer(env["OVIS_TUI_SERVER"] ?? null, undefined, env);
+      expect(await server.removeWorktree("w1")).toMatchObject({ ok: true });
+      const withdrawNext = save(next.pid);
+      try {
+        const results = await Promise.all([server.createWorktree("w1", "worktree/a"), server.removeWorktree("w1")]);
+        expect(seen).toEqual(["/api/worktree/remove-checked"]);
+        for (const result of results) expect(result).toMatchObject({ ok: false, code: "ovis_desktop_changed" });
+      } finally { withdrawNext(); }
+    } finally {
+      withdraw();
+      next.kill();
+      await next.exited;
+      await http.stop(true);
+    }
   });
 
   it.each([
@@ -408,7 +549,7 @@ describe("the shell's environment", () => {
       process.exit(await runTui([], () => null, () => ${JSON.stringify(account)}));
     `], {
       cwd: project, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", XDG_RUNTIME_DIR: join(scratch, "run"), HC_SESSION: "row60-home", HERDR_TEST_SESSION: "row60-home", PORT: "1", TMPDIR: scratch },
+      env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HC_SOCKET: join(scratch, "hc.sock"), HC_SESSION: "row60-home", HERDR_TEST_SESSION: "row60-home", PORT: "1", TMPDIR: scratch },
     });
     const [err, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
     expect(code, err).toBe(1);
@@ -537,7 +678,7 @@ describe("the screen's start", () => {
     for (const [held, hold] of [["none", { OVIS_TUI_HOLD: HOLD }], [null, {}]] as const) {
       const run = fake({ held, over: { caller } });
       expect(await launchTui([], run.parts)).toBe(0);
-      expect(run.runs[0]!.env).toEqual({ HOME, HC_SOCKET: SOCKET, OVIS_TUI_STATE_DIR: "/state", OVIS_TUI_CWD: "/home/me/project", ...hold });
+      expect(run.runs[0]!.env).toEqual({ HOME, HC_SOCKET: SOCKET, OVIS_TUI_STATE_DIR: "/state", OVIS_TUI_CWD: "/home/me/project", OVIS_TUI_SERVER: APP_ORIGIN, ...hold });
     }
   });
 });
@@ -718,5 +859,24 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)("ovis 
       const help = await tui(join(scratch, "config"), flag);
       expect([help.code, help.err, help.out.startsWith("Usage: ovis tui")], flag).toEqual([0, "", true]);
     }
+  }, 30_000);
+
+  it("uses the core session from herdr's plugin config directory when called from a shell", async () => {
+    const config = join(scratch, "plugin-config");
+    const bin = join(scratch, "bin");
+    mkdirSync(config);
+    mkdirSync(bin);
+    writeFileSync(join(config, "env"), "HC_SESSION=work\n");
+    writeFileSync(join(bin, "herdr"), "#!/bin/sh\nprintf '%s\\n' \"$HOME/plugin-config\"\n", { mode: 0o755 });
+    const result = Bun.spawnSync([process.execPath, "scripts/plugin.ts", "tui"], {
+      cwd: ROOT,
+      env: {
+        HOME: scratch, PATH: bin, TMPDIR: scratch, XDG_CONFIG_HOME: join(scratch, "xdg-config"),
+        XDG_RUNTIME_DIR: join(scratch, "run"), BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+      },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("herdr-core session work is not running");
   }, 30_000);
 });

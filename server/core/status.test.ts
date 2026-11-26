@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import * as claudeStore from "../claude-store.ts";
 import * as conversation from "../conversation.ts";
+import { CopilotActivity } from "../copilot-activity.ts";
+import * as copilot from "../copilot-foreground.ts";
 import * as herdr from "../herdr/client.ts";
 import * as gjc from "../gjc-status.ts";
 import * as omo from "../omo.ts";
@@ -18,6 +20,77 @@ import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
 import { at, claude, collectorSnapshot, handlers, hub, line, opencode, originalCollector, root, workingClaude } from "./status.fake.ts";
 import { notePaneFolders, otherHostsShare } from "../windows-share.ts";
+
+it.skipIf(process.platform !== "linux")("exposes a Copilot badge change without announcing a Chat session change", async () => {
+  jest.useFakeTimers();
+  const h = hub(undefined, undefined, undefined, () => "copilot-herdr");
+  const pane: HerdrPane = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "copilot-term", agent: "copilot", agent_status: "idle", focused: false, revision: 1 };
+  const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+    pane_id: pane.pane_id, shell_pid: 41000,
+    foreground_processes: [{ pid: 41001, name: "copilot", argv: ["/usr/bin/copilot", "--ui-server"] }],
+  });
+  const foreground = spyOn(copilot, "readCopilotForeground").mockResolvedValue({ state: "selected", sessionId: "copilot-session", binding: "fixture", processing: true });
+  const settled = Promise.withResolvers<void>();
+  const tick = CopilotActivity.prototype.tick;
+  const sampled = spyOn(CopilotActivity.prototype, "tick").mockImplementation(function (this: CopilotActivity, ...args: Parameters<typeof tick>) {
+    return tick.apply(this, args).then(settled.resolve, settled.reject);
+  });
+  try {
+    handlers.herdrLive?.onChange("copilot-herdr");
+    h.herdrSays(pane);
+    await h.snapshot();
+    const before = h.sessionChanges();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(true);
+    expect(h.sessionChanges()).toBe(before);
+  } finally {
+    sampled.mockRestore();
+    foreground.mockRestore();
+    info.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it.skipIf(process.platform !== "linux")("drops a cached Copilot idle sample when Herdr reports new work", async () => {
+  jest.useFakeTimers();
+  const h = hub(undefined, undefined, undefined, () => "copilot-herdr");
+  const pane: HerdrPane = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "copilot-term", agent: "copilot", agent_status: "idle", focused: false, revision: 1 };
+  const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+    pane_id: pane.pane_id, shell_pid: 41000,
+    foreground_processes: [{ pid: 41001, name: "copilot", argv: ["/usr/bin/copilot", "--ui-server"] }],
+  });
+  const foreground = spyOn(copilot, "readCopilotForeground").mockResolvedValue({ state: "selected", sessionId: "copilot-session", binding: "fixture", processing: false });
+  let settled = Promise.withResolvers<void>();
+  const tick = CopilotActivity.prototype.tick;
+  const sampled = spyOn(CopilotActivity.prototype, "tick").mockImplementation(function (this: CopilotActivity, ...args: Parameters<typeof tick>) {
+    return tick.apply(this, args).then(settled.resolve, settled.reject);
+  });
+  try {
+    handlers.herdrLive?.onChange("copilot-herdr");
+    h.herdrSays(pane);
+    await h.snapshot();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(false);
+
+    h.herdrSays({ ...pane, agent_status: "working" });
+    handlers.onStatus(pane.pane_id, "working", "copilot");
+    const snapshot = await h.snapshot();
+    expect(snapshot.panes[0]?.agent_status).toBe("working");
+    expect(snapshot.panes[0]?.copilot_processing).toBeUndefined();
+
+    settled = Promise.withResolvers<void>();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(false);
+  } finally {
+    sampled.mockRestore();
+    foreground.mockRestore();
+    info.mockRestore();
+    jest.useRealTimers();
+  }
+});
 
 describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native OpenCode ownership reconciliation (%s)", (mode) => {
   it.each([
@@ -1416,7 +1489,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         options: { submitDelayMs: 0 }, clients: new Set([client]), attachments: new Map(), serialize, lastTyped: new Map(),
         sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
         submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
-        clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null },
+        clientSnapshot: () => h.status.deliverySnapshot(), omo: { sessionOf: () => null },
         queueHeld: (paneId, fresh) => { steps.push(fresh === true ? "hold read now" : "hold as last read"); const held = on.held?.(fresh === true) ?? h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
         SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
@@ -1487,6 +1560,29 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       d.on.read = () => { if (d.asked.length > 0 && !fired.yet) { fired.yet = true; fires(d.h.path); } };
       return fired;
     };
+
+    it.each(["claude", "codex"] as const)("sends queued input for %s on herdr readiness, not on the failure notice", async (agent) => {
+      const { h, writes, submit, flush, waiting } = await delivering();
+      const id = h.pane.pane_id;
+      const report = (status: "working" | "idle") => {
+        h.herdrSays({ ...h.pane, agent, agent_status: status });
+        handlers.onStatus(id, status, agent);
+      };
+      report("working");
+      h.status.hookTurn(id, agent, { turn: "began", prompt: "u1" });
+      await submit(91, "not yet");
+      expect(waiting()).toEqual(["queued"]);
+      h.status.hookTurn(id, agent, { turn: "ended", prompt: "u1", failed: true });
+      await flush();
+      expect(writes).toEqual([]);
+      expect(waiting()).toEqual(["queued"]);
+      // A new app-server turn notice without a matching end cannot hold herdr's ready event.
+      if (agent === "codex") h.status.hookTurn(id, agent, { turn: "began", prompt: "u2" });
+      report("idle");
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~not yet\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
+    });
 
     it("keeps a message sent as the wakeup fires waiting, and types it at the resumed turn's rest", async () => {
       const { h, delivery, writes, client, submit, flush } = await delivering();

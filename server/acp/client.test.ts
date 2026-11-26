@@ -1,20 +1,32 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createConnection, Socket } from "node:net";
 import { dirname } from "node:path";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, watch } from "node:fs";
+import { join } from "node:path";
 import { KeeperClient } from "./client.ts";
 import { keeperBuilt, keeperRoot, startKeeper, until } from "./keeper.fake.ts";
 
 const prompt = (client: KeeperClient, text: string) =>
   client.request("session/prompt", { sessionId: client.session, prompt: [{ type: "text", text }] }) as Promise<{ stopReason: string }>;
 
+it("a disconnected caller can cancel its keeper-readiness wait before replay", async () => {
+  const client = new KeeperClient("", { connect: () => new Socket() });
+  const abort = new AbortController();
+  try {
+    const ready = client.ready(abort.signal).then(() => "ready", () => "cancelled");
+    abort.abort();
+    expect(await Promise.race([ready, new Promise(resolve => setImmediate(() => resolve("still pending")))])).toBe("cancelled");
+  } finally { client.close(); }
+});
+
 it("reserves an answer while replay is pending, without waiting for the watermark twice", async () => {
   const socket = new Socket();
   const client = new KeeperClient("", { connect: () => socket });
   const raw = JSON.stringify({ id: "example", method: "session/request_permission", params: {
+    sessionId: "s",
     options: [{ optionId: "dismiss", name: "Dismiss", kind: "reject_once" }],
   } });
-  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "from-agent", raw })}\n`);
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n${JSON.stringify({ seq: 2, dir: "from-agent", raw })}\n`);
   const first = client.answer("example", "dismiss");
   try {
     const duplicate = client.answer("example", "dismiss");
@@ -23,6 +35,39 @@ it("reserves an answer while replay is pending, without waiting for the watermar
     client.close();
     expect(await first).toBe("gone");
   }
+});
+
+it("ignores a question arriving after the client closes", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket, questionHarness: "claude" });
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n`);
+  const raw = JSON.stringify({ id: "late-question", method: "elicitation/create", params: { sessionId: "s", message: "What color?" } });
+
+  client.close();
+  socket.emit("data", `${JSON.stringify({ seq: 2, dir: "from-agent", raw })}\n`);
+
+  expect(client.questions.current).toBeNull();
+});
+
+it("captures the replacement session's opening selection but does not refresh it for the same session", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  let seq = 0;
+  const note = (method: string, params: object) => {
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method, params }) })}\n`);
+  };
+  try {
+    note("_keeper/selections", { mode: "agent", allowAll: false });
+    note("_keeper/session", { sessionId: "first" });
+    expect(client.initialPermissions).toEqual({ mode: "agent", allowAll: false });
+
+    note("_keeper/selections", { mode: "read-only", allowAll: true });
+    note("_keeper/session", { sessionId: "replacement" });
+    note("_keeper/selections", { mode: "read-only", allowAll: false });
+    note("_keeper/session", { sessionId: "replacement" });
+
+    expect(client.initialPermissions).toEqual({ mode: "read-only", allowAll: true });
+  } finally { client.close(); }
 });
 
 describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scripted agent", () => {
@@ -43,6 +88,21 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     return client;
   }
 
+  it("names its process before its socket appears, so a client refused by a socket not listening yet waits for it", async () => {
+    const root = keeperRoot();
+    const created: string[] = [];
+    const socket = Promise.withResolvers<unknown>();
+    const watcher = watch(root, (_event, name) => {
+      if (name !== null && !created.includes(name)) created.push(name);
+      if (name === "acp.sock") socket.resolve(JSON.parse(readFileSync(join(root, "process.json"), "utf8")));
+    });
+    cleanups.push(() => watcher.close());
+    const { pid } = await keeper([], root);
+    expect(await socket.promise).toMatchObject({ keeper: pid });
+    expect(created.indexOf("process.json")).toBeGreaterThanOrEqual(0);
+    expect(created.indexOf("process.json")).toBeLessThan(created.indexOf("acp.sock"));
+  });
+
   it("replays what happened before it attached, then follows live, and reports the turn's stop reason and text", async () => {
     const { root } = await keeper();
     const first = attach(root);
@@ -61,6 +121,15 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     await until(later, "the next turn's end", () => later.turn?.text === "echo bytes=11" && !later.turn.running);
     expect(later.turn?.stopReason).toBe("end_turn");
     await next;
+  });
+
+  it("refuses a chat submission after the agent closed stdin but stayed alive", async () => {
+    const { root } = await keeper();
+    const client = attach(root);
+    await client.ready();
+    await until(client, "session", () => client.session !== null);
+    expect(await prompt(client, "end-and-close-input")).toEqual({ stopReason: "end_turn" });
+    await expect(client.submit("not delivered")).rejects.toThrow("could not write");
   });
 
   it("shows a permission request with the agent's options unchanged, and the chosen option reaches the agent", async () => {

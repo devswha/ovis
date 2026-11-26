@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create as createRenderer, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import type { AccountList } from "../lib/account/accountList.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { signInLink } from "./ConnectPhoneDialog.tsx";
 import { keyIdGroups } from "./KeyId.tsx";
@@ -138,6 +142,21 @@ describe("the front page's account part", () => {
     // signed out the same: the saved version is this device's own word
     const out = render({ ...props({ kind: "list", devices: [outdated], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, pcStatus });
     expect(rowsOf(out)).toEqual([[`/s/${"a".repeat(32)}/`, "old-desk Relay Update needed"]]);
+  });
+
+  it("says of a PC that the account's list does not hold that it is not in the list yet, and of a list this device cannot read, above the rows", () => {
+    const join = { server_public_key: "k", relay: "wss://relay.example" };
+    const pcs = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, byList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
+    const html = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs } }), scoped: false, onSignIn: none });
+    expect(rowsOf(html)).toEqual([[`/s/${"c".repeat(32)}/`, "desk Relay On"], [`/s/${"d".repeat(32)}/`, "old-box Relay Not in your account&#x27;s list yet On"]]);
+    expect(html).not.toContain("data-list-unread");
+    // a copy only a newer app reads, and one that does not read: one line each, and every row marked
+    const marked = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, notInList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
+    const newer = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "newer" } }), scoped: false, onSignIn: none });
+    expect(newer).toContain("This device cannot read your account&#x27;s list. Update the app.");
+    expect(rowsOf(newer).map(([, text]) => text)).toEqual(["desk Relay Not in your account&#x27;s list yet On", "old-box Relay Not in your account&#x27;s list yet On"]);
+    const damaged = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "damaged" } }), scoped: false, onSignIn: none });
+    expect(damaged).toMatch(/data-list-unread="damaged"[^>]*>This device cannot read your account&#x27;s list\. Sign out and in again on this device, then allow it from another device\.</);
   });
 
   it("lists on My PCs this device's own PCs and then the account's it can open, each once, by way and state, whatever the address", () => {
@@ -279,6 +298,36 @@ describe("the hosted front page", () => {
     const shown = (node: ReactTestInstance): boolean => { for (let at: ReactTestInstance | null = node; at !== null; at = at.parent) if (at.props?.hidden === true) return false; return true; };
     const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label && shown(node));
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
+
+    it("puts up the card of a change that still waits when another change is refused for it, and the card acts on that request alone", async () => {
+      const first = { account: "acct", list: "5c".repeat(32), key: "member", on: { seq: 3, hash: "aa".repeat(32) }, place: { seq: 4, hash: "bb".repeat(32) }, for: "allow:k", at: 1 };
+      const calls: string[] = [];
+      let waits: typeof first | null = first;
+      setPageAccountList({
+        waiting: async () => waits, cancel: async (given: typeof first) => { calls.push(`cancel ${given.place.hash}`); },
+        sync: async () => { calls.push("sync"); throw new Error("nothing is sent in this test"); },
+        subscribe: () => () => {}, view: () => ({ account: null, reached: false, status: { at: "off" }, devices: [], pcs: [] }),
+        // Add PC's relay tab asks every page list whether this device may write it (InvitePc): this one may not
+        writer: () => null,
+      } as unknown as AccountList);
+      const cards = () => renderer!.root.findAll((node) => node.props["data-testid"] === "list-allow-notice");
+      const refusedElsewhere = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event(LIST_WRITE_WAITING_EVENT)); await Promise.resolve(); await Promise.resolve(); }); };
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: () => {} });
+        expect(cards()).toHaveLength(0);
+        // a Remove on this screen was refused because an earlier change still waits
+        await refusedElsewhere();
+        expect(cards().map(textOf).join("")).toContain("An earlier change is still waiting");
+        // Cancel lets go of the request the card was put up for
+        await act(async () => { button("Cancel").props.onClick(); await Promise.resolve(); await Promise.resolve(); });
+        expect([calls, cards().length]).toEqual([[`cancel ${first.place.hash}`], 0]);
+        // put up again; another change took the place meanwhile: Try again on this card sends nothing of it
+        await refusedElsewhere();
+        waits = { ...first, place: { seq: 4, hash: "cc".repeat(32) }, for: "remove-pc:x" };
+        await act(async () => { button("Try again").props.onClick(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+        expect([calls, cards().length]).toEqual([[`cancel ${first.place.hash}`], 0]);
+      } finally { setPageAccountList(null); }
+    });
 
     describe("a pairing's step frame", () => {
       const offer = { v: 1 as const, server_id: EXPECTED, server_public_key: "k", relay: "wss://relay.example", name: "Desk" };
@@ -437,6 +486,8 @@ describe("the hosted front page", () => {
       expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(0);
       await act(async () => { line.props.onClick(); });
       const form = renderer!.root.find((node) => node.type === "form" && node.props["data-code-form"] !== undefined);
+      const field = form.findByType("input");
+      expect([field.props.onInput, field.props.onCompositionEnd]).toEqual([typePairCode, endPairCodeComposition]);
       expect(form.findAll((node) => node.type === "button" && node.props.type === "submit").map(textOf)).toEqual(["Pair"]);
       await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: code }) } } }); });
     };
@@ -947,6 +998,57 @@ describe("the hosted front page", () => {
           (navigator as { onLine?: boolean }).onLine = true;
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
+        }
+      });
+
+      it("believes the account service over a WebView that says offline: its answer takes the line away and a row opens, asked again on each open", async () => {
+        // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7)
+        const meta = { getAttribute: (name: string) => name === "content" ? "https://account.example" : null };
+        Object.assign(document, { querySelector: (selector: string) => selector === 'meta[name="ovis-account-service"]' ? meta : null });
+        const asks: { readonly url: string; readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }[] = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
+          const answer = Promise.withResolvers<Response>();
+          asks.push({ url: String(input), answer });
+          return await answer.promise;
+        }, { preconnect: realFetch.preconnect });
+        const settle = async (ask: { readonly answer: ReturnType<typeof Promise.withResolvers<Response>> }, answered: boolean): Promise<void> => {
+          await act(async () => {
+            if (answered) ask.answer.resolve(new Response(null, { status: 200 }));
+            else ask.answer.reject(new TypeError("Failed to fetch"));
+            await ask.answer.promise.catch(() => undefined);
+            for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+          });
+        };
+        const relayRow = () => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a");
+        const assigned: string[] = [];
+        Object.assign(window.location, { assign: (href: string) => { assigned.push(href); } });
+        try {
+          offline(true);
+          await mount(offlinePage());
+          // the screen asks on its own as it starts watching; no answer: the device is offline, as before
+          expect(asks.map((ask) => ask.url)).toEqual(["https://account.example/v1/providers"]);
+          await settle(asks[0]!, false);
+          expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
+          // Try again asks again, and its answer takes the line away
+          await act(async () => { renderer!.root.find((node) => node.type === "button" && textOf(node) === "Try again" && shown(node)).props.onClick(); });
+          expect(asks).toHaveLength(2);
+          await settle(asks[1]!, true);
+          expect(alerts().filter((text) => text.includes("internet"))).toEqual([]);
+          // a tap asks once more rather than trusting that answer, and goes to the PC's page once it answers
+          let held = 0;
+          await act(async () => { relayRow().props.onClick({ preventDefault: () => { held++; } }); });
+          expect([held, asks.length, assigned]).toEqual([1, 3, []]);
+          await settle(asks[2]!, true);
+          expect(assigned).toEqual([`/s/${ids.mac}/`]);
+          // the network gone since, with the flag still false: the next tap's ask goes unanswered, and the row says so
+          await act(async () => { relayRow().props.onClick({ preventDefault: () => { held++; } }); });
+          await settle(asks[3]!, false);
+          expect(assigned).toHaveLength(1);
+          expect(alerts()).toContain("Connect this device to the internet to open the PC.");
+        } finally {
+          globalThis.fetch = realFetch;
+          offline(false);
         }
       });
 
@@ -2233,6 +2335,13 @@ describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on 
     const removed = failed("revoked");
     expect(plain(removed)).toBe("removed");
     expect(removed).toContain("This device was removed from Mac. Ask again to join it.");
+    // refused before anybody was asked (a PC in no account yet, one paused after too many tries): nobody declined it
+    const refused = failed("pair-unavailable");
+    expect(plain(refused)).toBe("refused");
+    expect(refused).toContain("Mac cannot take this device yet");
+    expect(refused).toContain('data-action="ask-again"');
+    expect(refused).not.toContain("Not allowed");
+    expect(refused).not.toContain("[Allow]");
     const off = failed("pc-offline");
     expect(plain(off)).toBe("off");
     expect(off).toContain('data-action="check-again"');

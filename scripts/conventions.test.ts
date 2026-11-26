@@ -36,7 +36,7 @@ describe("imports", () => {
 });
 
 describe("the frontend build", () => {
-  const BUILD_SCRIPTS = ["vite.config.ts", "scripts/build-xterm.ts", "scripts/compressed-assets.ts", "scripts/service-worker-build.ts", "scripts/theme-bootstrap-build.ts", "scripts/shell-build.ts", "scripts/build-cache.ts"];
+  const BUILD_SCRIPTS = ["vite.config.ts", "scripts/compressed-assets.ts", "scripts/service-worker-build.ts", "scripts/theme-bootstrap-build.ts", "scripts/shell-build.ts", "scripts/build-cache.ts"];
 
   it("imports nothing from server/ or relay/", () => {
     const offenders = BUILD_SCRIPTS.flatMap((file) => specifiers(file).filter(({ specifier }) => /(?:^|\/)(?:server|relay)\//.test(specifier)).map(({ at }) => at));
@@ -285,7 +285,7 @@ describe("killing by name", () => {
     expect(found("Bun.spawnSync([\"pgrep\", \"-f\", tag]);")).toBe(0);
     expect(found("spawnSync(\"pkill\", [\"-KILL\", \"-f\", tempDir]);")).toBe(0);
     expect(found("pkill -f \"$r/remote.sh\" || true", "example.sh")).toBe(0);
-    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"pty-host.mjs\"]);")).toBe(0);
+    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"ovis-pty-sidecar\"]);")).toBe(0);
     expect(found("kill -HUP \"$(pgrep -o -x sshd)\"", "example.sh")).toBe(0);
     expect(found("# pkill -f server/index.ts", "example.sh")).toBe(0);
     expect(found("// pkill -f server/index.ts")).toBe(0);
@@ -450,11 +450,31 @@ describe("demo transport", () => {
   const answered = (route: string) => exact.has(route) || prefixes.some((prefix) => route.startsWith(prefix));
 
   const DEMO_404: Record<string, string> = {
+    "/api/pane/turn/cancel": "only a live ACP keeper has a turn a person can cancel",
+    "/api/pane/turn/release": "only a live ACP keeper can be handed back",
+    "/api/pane/turn/cancel-children": "only a pane that started live ACP keepers has children a person can stop",
+    "/api/worktree/create-checked": "Only the terminal screen sends checkout mutations bound to a herdr-core identity.",
+    "/api/worktree/remove-checked": "Only the terminal screen sends checkout mutations bound to a herdr-core identity.",
     "/api/account/confirm": "a PC-local screen confirmation (the PC's own confirm page); a browser over the demo never answers one",
     "/api/account/confirm-page": "opens the PC's own confirm page for a key that waits: only with the release flag on, which the demo never is",
     "/api/account/forget": "a PC-local recovery act (ovis recover / the PC's screen); the demo's browser never asks for it",
     "/api/account/leave": "the PC leaving its account is a PC-local act; the app's own leave goes through the account service",
     "/api/account/pc-proof": "this PC's own proof for its listing: asked only by a signed-in window on this PC itself, which the demo never is",
+    "/api/account/list": "how this PC follows its account's signed list: read by this PC's own window and CLI for diagnosis, and no screen of the app asks for it",
+    "/api/account/list/pin": "a person at the PC names the list it pins: this PC's own window and CLI alone, and no screen of the app asks for it yet",
+    "/api/account/list/head": "a device and the PC say where the account's signed list stands: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/page": "a device hands the PC entries of the account's signed list: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/named": "a device that scanned a PC's QR code names its account's list in the place of its link: the demo's PC is in its account and shows no such code",
+    "/api/account/list/witness": "a device asks a PC whom it lets in before its account moves onto a signed list: the demo's account never moves",
+    "/api/account/list/name": "a device names its account's signed list to a PC that follows none: the demo's account has no list",
+    "/api/account/list/card": "a device asks a PC its list carried in for its card: the demo's PC follows no list, and refuses it as such a PC does",
+    "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` and by Add this PC in the PC's own window, and the demo's PC is in its account",
+    "/api/account/list/add/confirm": "the person at the PC says the adding device shows the same number: asked by `ovis add` on the PC",
+    "/api/account/list/add/cancel": "the person at the PC says the numbers differ: asked by `ovis add` on the PC",
+    "/api/account/list/join": "`ovis join` with an invite's line that names the account's list: the CLI on the PC alone",
+    "/api/account/list/join/prepare": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/account/list/join/body": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/account/list/join/place": "`ovis join` with an auto invite: the CLI on the PC alone",
     "/api/runtime/move/install": "the demo reports runtime move unavailable (not_herdr), so the app never offers an install",
     "/api/runtime/move/stop": "the demo reports runtime move unavailable (not_herdr), so the app never offers a stop",
     "/api/runtime/move/stop-all": "the demo reports runtime move unavailable (not_herdr), so the app never offers a stop",
@@ -530,10 +550,9 @@ describe("names from before Ovis", () => {
     "src/lib/legacyStorage.test.ts": "tests that move",
     "server/auth.ts": "still accepts and clears the old cookies",
     "server/auth.test.ts": "tests the old cookies",
-    "server/pty/pty-host.mjs": "keeps the token from the attach under either name",
-    "server/pty/session.ts": "keeps the token from the sidecar under either name",
-    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name, as pty-host.mjs does",
-    "server/pty/host.test.ts": "tests that both PTY hosts keep the token from the command under either name",
+    "server/pty/session.ts": "keeps the token from the PTY host under either name",
+    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name",
+    "server/pty/host.test.ts": "tests that the PTY host keeps the token from the command under either name",
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
     "install.sh": "reads the old settings of an earlier install",
     "scripts/plugin-tui.ts": "withholds the old token name from ovis tui too, as a shell set up for an earlier install may export it",
