@@ -4575,7 +4575,8 @@ describe("an answer and the menu it was made for", () => {
       const started = Promise.withResolvers<void>();
       pane.holdRead = held.promise;
       pane.onReadHeld = started.resolve;
-      const older = card();
+      const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
+      const older = handlePromptRequest(new Request(url), url);
       try {
         await started.promise;
         pane.screen = screen("/projects/ demo");
@@ -4583,7 +4584,9 @@ describe("an answer and the menu it was made for", () => {
         if (!refreshed) throw new Error("Expected a redrawn approval");
         expect(refreshed.id).not.toBe(initial?.id);
         held.resolve();
-        await older;
+        const stale = await older;
+        expect(stale?.status).toBe(409);
+        expect(await stale?.json()).toMatchObject({ error: { code: "prompt_changed" } });
         if (changed) pane.screen = screen("/projects/different");
         const result = await answer(refreshed.id, { option_index: 0 });
         expect(result.status).toBe(changed ? 409 : 200);
