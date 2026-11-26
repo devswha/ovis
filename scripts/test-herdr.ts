@@ -106,15 +106,20 @@ export async function useTestHerdr(): Promise<string | null> {
     return null;
   }
   const socket = testSocketPath();
+  // herdr runs every plugin in its config folder's plugins.json (XDG_CONFIG_HOME/herdr), in each server it starts:
+  // the user's installed Ovis would start the user's own Ovis from inside this session. The server reads a
+  // config folder of its own instead (no plugins, nor the user's config.toml), and listens where the session's
+  // socket is (HERDR_SOCKET_PATH), so `herdr --session <name> server stop` still stops it.
+  const config = join(dirname(socket), "config");
   // an empty ZDOTDIR: a pane's zsh (macOS's login shell) reads none of the user's own files,
   // where a shell integration can start a CLI herdr takes for an agent, ending the agent a test
   // reported, or set a title that names the pane's tab
   const zdotdir = join(dirname(socket), "zdotdir");
   // Windows panes cannot run the stand-ins (and keep their own PATH)
   const standIns = process.platform === "win32" ? null : join(dirname(socket), "agent-stand-ins");
-  // a server left running from before either directory existed has panes reading those files, or
-  // the user's agents on their PATH: it is stopped once, and started again below
-  if ((!existsSync(zdotdir) || (standIns !== null && !existsSync(join(standIns, "muse")))) && await answers(socket)) {
+  // a server left running from before any of these directories existed has panes reading those files, the
+  // user's agents on their PATH, or the user's plugins: it is stopped once, and started again below
+  if ((!existsSync(zdotdir) || !existsSync(config) || (standIns !== null && !existsSync(join(standIns, "muse")))) && await answers(socket)) {
     Bun.spawnSync([herdr, "--session", TEST_SESSION, "server", "stop"]);
     for (const deadline = Date.now() + 15_000; await answers(socket);) {
       if (Date.now() > deadline) throw new Error(`The test herdr session "${TEST_SESSION}" did not stop`);
@@ -128,15 +133,16 @@ export async function useTestHerdr(): Promise<string | null> {
   mkdirSync(zdotdir, { recursive: true });
   if (!existsSync(join(zdotdir, ".zshrc"))) writeFileSync(join(zdotdir, ".zshrc"), "");
   if (!(await answers(socket))) {
+    mkdirSync(config, { recursive: true });
     const path = standIns === null ? {} : { PATH: [agentStandIns(standIns), process.env["PATH"]].filter(Boolean).join(delimiter) };
-    Bun.spawn([herdr, "--session", TEST_SESSION, "server"], {
+    Bun.spawn([herdr, "server"], {
       stdin: "ignore",
       stdout: Bun.file(join(dirname(socket), "test-server.log")),
       stderr: Bun.file(join(dirname(socket), "test-server.log")),
       // run from inside a herdr pane, this process carries that pane's HERDR_* variables; run by
       // an agent, it carries the agent's too (OMO_CODING_AGENT_DIR moves where a pane's omo is
       // read from), and every pane of this server would inherit them
-      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(HERDR|OMO|SENPI|PI)_/.test(name))), ...testShellEnv(dirname(socket)), ...path, ZDOTDIR: zdotdir },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(HERDR|OMO|SENPI|PI)_/.test(name))), ...testShellEnv(dirname(socket)), ...path, ZDOTDIR: zdotdir, XDG_CONFIG_HOME: config, HERDR_SOCKET_PATH: socket },
     }).unref();
     const deadline = Date.now() + 15_000;
     while (!(existsSync(socket) && await answers(socket))) {
