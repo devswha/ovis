@@ -18,7 +18,7 @@ inputs:
     required: false
     default: 'false'
   pty-host:
-    description: "'true' builds the Rust PTY host from this checkout's crates/pty-sidecar (Linux and macOS), where the server finds it, so the job's terminal attaches run on it; it implies rust."
+    description: "'true' puts the Rust PTY host for this checkout's crates/pty-sidecar where the server finds it (Linux and macOS): the release's binary when the crate tree matches, else a cargo build. The step fails unless the server's own check takes it, so the job's terminal attaches run on it."
     required: false
     default: 'false'
   cache:
@@ -48,7 +48,7 @@ runs:
         EXPECTED_BUN_VERSION: ${{ inputs.bun-version }}
         NEED_NODE: ${{ inputs.node }}
         NEED_HERDR: ${{ inputs.herdr }}
-        NEED_RUST: ${{ inputs.rust == 'true' || inputs.pty-host == 'true' }}
+        NEED_RUST: ${{ inputs.rust }}
       run: bash scripts/ci-preinstalled-tools.sh
     # The runner host's copy of the default branch's packages (scripts/self-hosted-runner/run.sh),
     # read-only to jobs: bun install downloads only what this checkout's lockfile adds.
@@ -94,14 +94,18 @@ runs:
         key: bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-${{ hashFiles('bun.lock') }}
         restore-keys: |
           bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-
-    # the server's default host when bin/ has no installed release binary (server/pty/host.ts): built from these
-    # very sources, it needs no release for them, and installs no ACP keeper beside it
-    - name: Build the Rust PTY host
+    # the PTY host alone (no ACP keeper beside it): the release's, checked against its manifest and crate tree, into bin/;
+    # a crate tree no release was built from is built here, where the server takes it without one in bin/
+    # (server/pty/host.ts). Only that build needs Rust.
+    - name: Rust PTY host
       if: inputs.pty-host == 'true' && runner.os != 'Windows'
       shell: bash
       run: |
-        cargo build --release --locked --manifest-path crates/pty-sidecar/Cargo.toml
-        crates/pty-sidecar/target/release/ovis-pty-sidecar 1 1 true
+        if ! bun -e 'const { install } = await import("./scripts/pty-sidecar.ts"); const result = await install(); console.log(result.message); process.exit(result.ok ? 0 : 1)'; then
+          command -v cargo >/dev/null || { echo "::error::no release Rust PTY host for this crate tree, and no cargo on this runner to build one" >&2; exit 1; }
+          cargo build --release --locked --manifest-path crates/pty-sidecar/Cargo.toml
+        fi
+        bun -e 'const { rustSidecar } = await import("./server/pty/host.ts"); process.exit(rustSidecar() ? 0 : 1)'
     - name: Install checksum-pinned herdr 0.9.3
       if: inputs.herdr == 'true' && runner.environment != 'self-hosted'
       shell: bash

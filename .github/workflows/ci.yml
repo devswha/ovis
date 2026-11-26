@@ -329,6 +329,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
         with:
+          pty-host: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'restore' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
