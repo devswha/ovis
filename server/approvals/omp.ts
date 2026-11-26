@@ -108,8 +108,21 @@ function decision(label: string): ApprovalDecision | null {
 /** The majors measured on (omp 18.x from 18.14.0, and 19.x): a later major may change the UI context under the hook. */
 const OMP_HOOK_MAJORS = new Set(["18", "19"]);
 
+/**
+ * Whether a launch's own arguments, before any `--`, take every extension out (`--no-tools`) or name the only one
+ * allowed (`--trusted-extension`): omp 19.2 refuses to start with one beside them (cli/args.ts), so the launch keeps
+ * its arguments as they are.
+ */
+function refusesExtensions(args: readonly string[] | undefined): boolean {
+  const own = args === undefined ? [] : args.slice(0, args.includes("--") ? args.indexOf("--") : args.length);
+  return own.some((arg) => arg === "--no-tools" || arg === "--trusted-extension" || arg.startsWith("--trusted-extension="));
+}
+
+const adapter = extensionApprovals("omp", (version) => meetsMinVersion(version, OMP_HOOK_MIN_VERSION) && OMP_HOOK_MAJORS.has(version.split(".")[0]!), GLUE);
+
 export const ompApprovals = {
-  ...extensionApprovals("omp", (version) => meetsMinVersion(version, OMP_HOOK_MIN_VERSION) && OMP_HOOK_MAJORS.has(version.split(".")[0]!), GLUE),
+  ...adapter,
+  launchArgs: (...launch: Parameters<typeof adapter.launchArgs>) => refusesExtensions(launch[0]) ? null : adapter.launchArgs(...launch),
   decision,
   context: contextUsage,
 };
