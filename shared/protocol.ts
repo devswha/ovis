@@ -503,9 +503,10 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
- *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
+ *  POST   /api/worktree/remove { workspace_id, force?, expected_checkout? } -> WorktreeRemoved (worktree.remove: deletes the
  *         checkout and closes its workspace, keeps the branch; a dirty checkout is refused without force:
- *         dirty_worktree_requires_force)
+ *         dirty_worktree_requires_force; a herdr-core server refuses one other than expected_checkout:
+ *         worktree_target_changed; 400 invalid_expected_checkout when it is not an absolute path)
  *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
  *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices, then the account-joined ones

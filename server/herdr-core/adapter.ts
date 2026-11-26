@@ -621,8 +621,9 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       let pin = pinned.get(workspace.workspace_id);
       // the folder drawn is kept from the first draw; a pin a newer read took stands over this older one
       if (!pin || (pin.folder !== folder && pin.at < began)) pinned.set(workspace.workspace_id, pin = { folder, gitId: null, at: Date.now() });
-      // its identity only from an answer git gave since: a cached one may be of a checkout no longer there
-      if (pin.folder === folder && pin.gitId === null && (checkoutFacts.get(folder)?.until ?? 0) > Date.now()) pin.gitId = answer.gitId;
+      // its identity is the one the row was first drawn with, a cached answer's too: a checkout added again at
+      // the path since is not the one drawn, so its delete is refused rather than the replacement removed
+      if (pin.folder === folder && pin.gitId === null) pin.gitId = answer.gitId;
       gitIds.set(workspace.workspace_id, pin.folder === folder ? pin.gitId ?? answer.gitId : answer.gitId);
     }));
     return { shown, own, gitIds, started };

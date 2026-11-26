@@ -1389,6 +1389,42 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect(existsSync(join(b, "README.md"))).toBeTrue();
   }, 15_000);
 
+  it("deletes no checkout added again at the path a row was first drawn at from a cached answer, though the delete names that path (#4211)", async () => {
+    const { dir, repo, git } = repository();
+    const a = join(dir, "a");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "a", a).exitCode).toBe(0);
+    const terminals = [terminal("t1", { cwd: a, labels: { "herdr.space": "X", "herdr.tab": "T0" } })];
+    const find = (params: Record<string, unknown>) => terminals.find((entry) => entry.address === params["terminal"]) ?? (() => { throw new Error("no terminal"); })();
+    const { socket, cores } = await labeling(terminals, {
+      "terminal.list": () => ({ terminals, hidden_finished: 0 }), "terminal.get": find,
+      "terminal.kill": (params) => Object.assign(find(params), { state: "finished" }),
+      "terminal.rm": (params) => { terminals.splice(terminals.indexOf(find(params)), 1); return { removed: params["terminal"] }; },
+      "events.subscribe": () => ({ channel: cores.at(-1)!.channel(), seq: 1, terminals: [] }),
+    });
+    // git answered for a's folder once, for another workspace
+    expect((await sessionSnapshot(socket)).workspaces[0]?.worktree?.checkout_path).toBe(a);
+    const started = Promise.withResolvers<void>();
+    const answered = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "layout.updated" }], { onEvent: (frame) => { if (frame.event === "layout.updated") answered.resolve(); }, onStarted: () => started.resolve(), onClose() {} }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    terminals.splice(0, 1, terminal("t2", { cwd: a, labels: { "herdr.space": "S", "herdr.tab": "T1" } }));
+    // past the time that answer is kept, and git slow to answer again: S's row is drawn from the cached answer
+    setSystemTime(new Date(Date.now() + 60_000));
+    cleanups.push(() => setSystemTime());
+    const release = gitHeld(dir);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.checkout_path])).toEqual([["S", a]]);
+    // the user opens Delete; meanwhile the checkout is removed and another added at its path
+    expect(git("-C", repo, "worktree", "remove", a).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "replacement", a).exitCode).toBe(0);
+    release();
+    // git answers again, and the next snapshot draws the row from that answer
+    await answered.promise;
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.worktree?.checkout_path)).toEqual([a]);
+    await expect(worktreeRemove("S", true, socket, { expected_checkout: a })).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(existsSync(join(a, "README.md"))).toBeTrue();
+  }, 15_000);
+
   it("deletes no checkout added again at the path after git was asked again (#3890)", async () => {
     const { dir, repo, git } = repository();
     const linked = join(dir, "linked");
