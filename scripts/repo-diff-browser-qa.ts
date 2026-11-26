@@ -13,6 +13,7 @@ import { serveStatic } from "../server/static.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { startRendererTiming } from "./repo-diff-task-timing.ts";
 import { KO as KO_TEXT } from "../src/lib/i18n.ko.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
 process.env["GIT_CONFIG_NOSYSTEM"] = "1";
@@ -709,6 +710,7 @@ try {
   const moneyPatch = await (await repoDiffResponse("file", repos.main, new URLSearchParams({ scope: "workspace", path: "src/money.ts" }))).json() as { patch: string };
   assert.ok(moneyPatch.patch.includes("@@"), "the fixture's money.ts has a patch");
   // the headless shell, not the full browser of CHROME_PATH: its clipboard is in memory, so the real copy below is owned here
+  checkChromeTmpdir();
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
   assert.match(browser.version(), /^\d+\./, "a browser launched");
 
