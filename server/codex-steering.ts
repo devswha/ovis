@@ -98,16 +98,17 @@ export async function interruptCodexSteering(explicit: boolean, text: string, su
     const current = await io.read();
     if (current.agent !== agent) throw unconfirmed();
     if (now() >= deadline) break;
-    if (!current.working) return;
+    if (!current.working) break;
     if (steer.pending(current.screen, text)) {
       if (steer.restart) io.restarting();
       // the RPC's connect is awaited: by the time herdr is written to, the deadline may have passed
       await io.press(steer.key, () => now() < deadline);
-      return;
+      break;
     }
     // A user row in scrollback can belong to an earlier terminal send. It cannot acknowledge Enter.
     await wait(Math.min(50, deadline - now()));
   }
+  // Neither an idle Codex nor an Escape write acknowledges this particular send.
   // agy draws no queued row for a message it took straight away (e.g. its turn ended before the status
   // said so), and a missed row only leaves it in agy's own queue: Enter went either way, so no resend
   if (!steer.restart) return;

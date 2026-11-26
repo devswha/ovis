@@ -97,7 +97,8 @@ function fixture(contexts: CodexSteeringContext[] = [pending]) {
 
 describe("explicit Codex Send now", () => {
   it("arms the restart gate before one Escape on a freshly checked native panel", async () => {
-    const f = fixture(); await interruptCodexSteering(true, "send this now", working, f.io);
+    const f = fixture();
+    await expect(interruptCodexSteering(true, "send this now", working, f.io)).rejects.toThrow("not confirmed");
     expect(f.effects).toEqual(["restart gate", "Escape"]);
     expect(f.reads()).toBe(1);
   });
@@ -106,7 +107,7 @@ describe("explicit Codex Send now", () => {
     for (const composer of ["»", "» Ask Codex to do anything"]) {
       const ultra = { ...working, screen: frame(hint, composer).replace("default ·", "ultra ·") };
       const f = fixture([ultra]);
-      await interruptCodexSteering(true, "send this now", working, f.io);
+      await expect(interruptCodexSteering(true, "send this now", working, f.io)).rejects.toThrow("not confirmed");
       expect(f.effects).toEqual(["restart gate", "Escape"]);
       expect(f.reads()).toBe(1);
     }
@@ -181,14 +182,15 @@ describe("explicit Codex Send now", () => {
 
   it("waits for the native panel instead of appending Escape blindly", async () => {
     const f = fixture([working, pending]);
-    await interruptCodexSteering(true, "send this now", working, f.io);
+    await expect(interruptCodexSteering(true, "send this now", working, f.io)).rejects.toThrow("not confirmed");
     expect(f.reads()).toBe(2); expect(f.elapsed()).toBeGreaterThan(0);
     expect(f.effects).toEqual(["restart gate", "Escape"]);
   });
 
   it("does not interrupt a turn that already finished after Enter", async () => {
     const f = fixture([{ ...working, working: false }]);
-    await interruptCodexSteering(true, "send this now", working, f.io); expect(f.effects).toEqual([]);
+    await expect(interruptCodexSteering(true, "send this now", working, f.io)).rejects.toThrow("not confirmed");
+    expect(f.effects).toEqual([]);
   });
 
   for (const cause of ["disconnected", "read_only", "agent_blocked", "pending_target_changed", "input_not_ready"]) it(`keeps additional input cancelled after ${cause}`, async () => {
@@ -205,7 +207,7 @@ describe("explicit Codex Send now", () => {
 
   it("hands the key write a freshness check that fails once the deadline has passed", async () => {
     const f = fixture(); f.io.press = async (key, fresh) => { f.advance(1600); f.effects.push(fresh() ? key : `${key} withheld`); };
-    await interruptCodexSteering(true, "send this now", working, f.io);
+    await expect(interruptCodexSteering(true, "send this now", working, f.io)).rejects.toThrow("not confirmed");
     expect(f.effects).toEqual(["restart gate", "Escape withheld"]);
   });
 
