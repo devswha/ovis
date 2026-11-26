@@ -78,6 +78,24 @@ describe("a Copilot pane whose Stop hook told its turn ended", () => {
     expect(h.last().status).toBe("working");
   });
 
+  it("keeps the prompt open through an approval wait, and takes a turn that failed with no Stop as over at the next prompt", async () => {
+    const h = await copilotHub();
+    const id = h.pane.pane_id;
+    h.tell(firstPrompt);
+    handlers.onStatus(id, "working", "copilot");
+    handlers.onStatus(id, "blocked", "copilot");
+    handlers.onStatus(id, "working", "copilot");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    h.tell(firstStop);
+    expect(h.last().status).toBe("done");
+    // a model error ends a turn with no Stop (1.0.109); herdr read no rest before the next prompt
+    h.tell(secondPrompt);
+    expect(h.last().status).toBe("working");
+    h.tell(secondPrompt);
+    h.tell(secondStop);
+    expect(h.last().status).toBe("done");
+  });
+
   it("takes back the DONE of a Stop once Copilot begins another turn in the transcript (another Stop hook blocked it)", async () => {
     jest.useFakeTimers();
     try {

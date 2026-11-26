@@ -256,6 +256,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * that leaves none open is the rest, and one for a prompt not open (late, after herdr's rest) tells nothing.
    */
   const hookPrompts = new Map<string, (string | null)[]>();
+  /**
+   * Copilot panes whose UserPromptSubmit hook told a prompt that no Stop has ended yet. Copilot tells a prompt only as a
+   * turn takes it in (1.0.109), so the latest is the turn that runs: a turn that failed with no Stop is over by then.
+   */
+  const copilotPrompted = new Set<string>();
   /** the prompts herdr's rest dropped from hookPrompts with no Stop: their Stop, if it comes, is late and ends nothing */
   const droppedPrompts = new Map<string, Set<string>>();
   /** Only the latest prompt from this rest can still supply a failure for it. Older IDs remain Stop tombstones. */
@@ -291,10 +296,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (agent !== "claude" || status !== "working") restedOnTranscript.delete(paneId);
     const stopped = stoppedOnHook.get(paneId);
     if (stopped !== undefined && (agent !== stopped.kind || status !== "working" || event)) stoppedOnHook.delete(paneId);
-    const hooked = agent === "claude" || agent === "copilot";
-    if (!hooked) { hookPrompts.delete(paneId); droppedPrompts.delete(paneId); }
+    if (agent !== "claude") { hookPrompts.delete(paneId); droppedPrompts.delete(paneId); }
     if (agent !== "claude" || (event && status === "working")) lateClaudeFailure.delete(paneId);
-    if (hooked && event && status !== "working") dropPrompts(paneId, agent === "claude" && atRest(status));
+    else if (event && status !== "working") dropPrompts(paneId, atRest(status));
+    // a Copilot's prompt stays open through its approval wait (blocked); herdr's rest, or another agent, ends it
+    if (agent !== "copilot" || (event && atRest(status))) copilotPrompted.delete(paneId);
     // a Copilot's turn its hook ended stands only while herdr reads it at work: what herdr read last is kept for it
     if (agent === "copilot") { heard.set(paneId, status); return; }
     if (agent !== "claude") { heard.delete(paneId); return; }
@@ -572,6 +578,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       restedOnTranscript.delete(paneId);
       stoppedOnHook.delete(paneId);
       hookPrompts.delete(paneId);
+      copilotPrompted.delete(paneId);
       droppedPrompts.delete(paneId);
       lateClaudeFailure.delete(paneId);
       toldClaudePrompts.delete(paneId);
@@ -995,21 +1002,19 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /**
    * Copilot's hooks (server/approvals/copilot.ts) name no prompt, and tell a prompt only as its turn takes it in: a Stop
-   * ends the one prompt open, with the transcript it names. A Stop with no prompt open (one herdr's rest dropped, or a
-   * turn Copilot began with no prompt) and one under another prompt end nothing early: herdr's reading stands.
+   * ends the prompt open (copilotPrompted), with the transcript it names. A Stop with none open (herdr's rest ended it,
+   * or Copilot began the turn with no prompt) ends nothing early: herdr's reading stands.
    */
   function copilotHookTurn(paneId: string, event: TurnEvent): void {
     if (agentNow.get(paneId) !== "copilot" || omo.runs(paneId) || gjc.runs(paneId)) return;
-    const open = hookPrompts.get(paneId) ?? [];
     if (event.turn === "began") {
-      hookPrompts.set(paneId, [...open, null]);
+      copilotPrompted.add(paneId);
       hookRestEnds(paneId);
       return;
     }
-    if (open.length > 1) { hookPrompts.set(paneId, open.slice(1)); return; }
-    hookPrompts.delete(paneId);
-    const file = open.length === 1 && event.transcript !== undefined ? plain(event.transcript) : null;
-    if (completions.current(paneId) !== "working" || file === null || event.transcript === undefined) return;
+    if (!copilotPrompted.delete(paneId) || event.transcript === undefined) return;
+    const file = plain(event.transcript);
+    if (completions.current(paneId) !== "working" || file === null) return;
     stoppedOnHook.set(paneId, { kind: "copilot", path: event.transcript, id: file.id, size: file.size });
     reportStatus(paneId, "idle", "copilot");
   }
@@ -1167,6 +1172,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     restedOnTranscript.delete(paneId);
     stoppedOnHook.delete(paneId);
     hookPrompts.delete(paneId);
+    copilotPrompted.delete(paneId);
     droppedPrompts.delete(paneId);
     lateClaudeFailure.delete(paneId);
     toldClaudePrompts.delete(paneId);
@@ -1282,6 +1288,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (claudeFailed.delete(from)) claudeFailed.add(to);
       if (stoppedOnHook.has(from)) { stoppedOnHook.set(to, stoppedOnHook.get(from)!); stoppedOnHook.delete(from); }
       if (hookPrompts.has(from)) { hookPrompts.set(to, hookPrompts.get(from)!); hookPrompts.delete(from); }
+      if (copilotPrompted.delete(from)) copilotPrompted.add(to);
       if (droppedPrompts.has(from)) { droppedPrompts.set(to, droppedPrompts.get(from)!); droppedPrompts.delete(from); }
       const late = lateClaudeFailure.get(from);
       if (late !== undefined) { lateClaudeFailure.set(to, late); lateClaudeFailure.delete(from); }

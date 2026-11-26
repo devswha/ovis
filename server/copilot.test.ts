@@ -1855,11 +1855,21 @@ it.skipIf(process.platform !== "linux")("shows the session the hook of the Copil
       forgetTranscriptState();
       await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing" });
     }
-    // a session another pane's Copilot holds is not shown here
+    // a session another pane's Copilot holds, by its own hook or its log, is not shown here
+    const peerBirth = processOwner.readProcessBirth(peer.pid);
+    const peerTold = { session, pid: peer.pid, birth: peerBirth.state === "identified" ? peerBirth.birth.value : null };
+    readToldSessions((paneId) => paneId === "own" ? told : paneId === "peer" ? peerTold : null);
+    forgetTranscriptState();
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_peer_conflict" });
     readToldSessions((paneId) => paneId === "own" ? told : null);
     appendFileSync(peer.log, register(session));
     forgetTranscriptState();
     await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_peer_conflict" });
+    // the lifecycle line the Copilot in front writes is its current session, over what its hook told before
+    writeFileSync(join(own.root, "session-state", other, "events.jsonl"), line("session.start", { sessionId: other, copilotVersion: "1.0.109" }) + prompt("switched history"));
+    appendFileSync(own.log, register(other));
+    forgetTranscriptState();
+    expect(JSON.stringify((await paneConversation("own")).turns)).toContain("switched history");
   } finally {
     readToldSessions(null);
     snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();

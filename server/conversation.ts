@@ -1858,6 +1858,17 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
   return authorized === null ? { path: held, blobs: null } : { ...ompAuthorizedTranscript(authorized), identity: authorized.identity };
 }
 
+/**
+ * The session the hook Ovis gave a Copilot (server/approvals/copilot.ts) told it runs, while the process `pid` that told it
+ * still runs (the same start), or null.
+ */
+function hookCopilotSession(paneId: string, pid: number): string | null {
+  const told = toldSession(paneId);
+  if (told === null || told.pid !== pid || told.birth === null) return null;
+  const now = readProcessBirth(pid);
+  return now.state === "identified" && now.birth.value === told.birth ? told.session : null;
+}
+
 async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[], previousClaims?: ReadonlySet<string>, peerInfo?: Map<string, Awaited<ReturnType<typeof paneProcessInfo>> | null>): Promise<{ path: string; binding: string; peerClaims: ReadonlySet<string> }> {
   const report = pane.agent_session;
   let peerClaims: Promise<ReadonlySet<string>> | undefined = previousClaims === undefined ? undefined : Promise.resolve(previousClaims);
@@ -1871,6 +1882,8 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
       const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
       // A cached peer process that has exited may have been replaced by one we never asked about.
       if (cached && processes.some((entry) => typeof entry.pid === "number" && !processAlive(entry.pid))) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_process_replaced");
+      const told = processes.length === 1 && typeof processes[0]?.pid === "number" ? hookCopilotSession(peer.pane_id, processes[0].pid) : null;
+      if (told !== null) claims.add(told);
       if (processes.length === 1 && typeof processes[0]?.pid === "number") {
         const api = await readCopilotForeground(processes[0].pid);
         if (api.state === "selected") {
@@ -1906,18 +1919,6 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   const foreground = processes[0];
   if (process.platform !== "linux" || ![1, 2].includes(processes.length) || typeof foreground?.pid !== "number") {
     throw new ConversationUnavailable("no_session_path", undefined, "copilot_process_set_unproved");
-  }
-  // the session the Copilot in front told through the hook Ovis gave it (server/approvals/copilot.ts): that very
-  // process, by its pid and start, and the transcript in its own store
-  const told = processes.length === 1 ? toldSession(pane.pane_id) : null;
-  if (told !== null && told.pid === foreground.pid && told.birth !== null) {
-    const now = readProcessBirth(foreground.pid);
-    const path = now.state === "identified" && now.birth.value === told.birth
-      ? copilotApiTranscript(told.session, processEnviron(foreground.pid), foreground.argv ?? []) : null;
-    if (path !== null) {
-      if (await claimedByPeer(told.session)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
-      return { path, binding: `hook:${foreground.pid}:${told.session}`, peerClaims: await peerClaims! };
-    }
   }
   if (processes.length === 1) {
     const api = await readCopilotForeground(foreground.pid);
@@ -1968,6 +1969,14 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     const path = copilotTranscriptFile(logged.sessionId, selected);
     if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged.sessionId)
       return { path, binding: `${foreground.pid}:${logged.generation}`, peerClaims: await peerClaims! };
+  }
+  // with no lifecycle line in its log (its API answered first, above), the session the hook of this very Copilot told,
+  // and the transcript in its own store
+  const told = logged === null ? hookCopilotSession(pane.pane_id, foreground.pid) : null;
+  const toldPath = told === null ? null : copilotApiTranscript(told, environment, argv);
+  if (told !== null && toldPath !== null) {
+    if (await claimedByPeer(told)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict", hint);
+    return { path: toldPath, binding: `hook:${foreground.pid}:${told}`, peerClaims: await peerClaims! };
   }
   if (report != null) {
     if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id", undefined, "copilot_peer_conflict", hint);

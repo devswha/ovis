@@ -116,6 +116,27 @@ describe("the session the hub keeps", () => {
     expect(hub.toldSession("p1")).toBeNull();
   });
 
+  it("goes with the launch whose key it was told under, when the hub lets that launch go or stops", async () => {
+    const { hub } = hubIn();
+    const { hook } = pluginOf(hub.launchArgs("copilot", "p1", [], COPILOT_HOOK_MIN_VERSION)!);
+    await run(hook, recorded[0]);
+    expect(hub.toldSession("p1")).not.toBeNull();
+    // the hub keeps 256 launches: past them the oldest one's key goes, and its /clear could no longer be told
+    for (let pane = 0; pane < 256; pane++) hub.launchArgs("copilot", `other-${pane}`, [], COPILOT_HOOK_MIN_VERSION);
+    expect(hub.toldSession("p1")).toBeNull();
+    const next = pluginOf(hub.launchArgs("copilot", "p2", [], COPILOT_HOOK_MIN_VERSION)!).hook;
+    await run(next, recorded[0]);
+    expect(hub.toldSession("p2")).not.toBeNull();
+    hub.stop();
+    expect(hub.toldSession("p2")).toBeNull();
+  });
+
+  it("is told by a hook that answers no approval, which the harness list does not offer as one", () => {
+    const { hub } = hubIn();
+    expect(hub.handles("copilot")).toBe(true);
+    expect(hub.answers("copilot")).toBe(false);
+  });
+
   it("is not told by a request whose process is not the one sealed into it", async () => {
     const { hub } = hubIn();
     const { hook } = pluginOf(hub.launchArgs("copilot", "p1", [], COPILOT_HOOK_MIN_VERSION)!);

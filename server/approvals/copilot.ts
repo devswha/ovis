@@ -38,6 +38,7 @@ const eventOf = (event: unknown): { name: unknown; session: string | null; trans
 
 export const copilotApprovals: ApprovalAdapter = {
   kind: "copilot",
+  toldOnly: true,
 
   supports: (version) => meetsMinVersion(version, COPILOT_HOOK_MIN_VERSION) && version.split(".")[0] === "1",
 

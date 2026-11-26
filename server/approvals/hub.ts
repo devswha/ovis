@@ -109,6 +109,8 @@ export interface HeldApproval extends ApprovalRequest {
 export interface ApprovalAdapter {
   /** the agent kind it serves, as herdr names it */
   readonly kind: string;
+  /** its hook only tells (turns, the session) and never answers an approval: Copilot's */
+  readonly toldOnly?: true;
   /** whether this version of the agent takes the hook as launchArgs adds it; an unknown version gets none */
   supports(version: string): boolean;
   /**
@@ -236,8 +238,8 @@ export class ApprovalHub {
   private readonly pending = new Map<string, Pending[]>();
   /** each pane's agent's permission mode, as its hook last told */
   private readonly modes = new Map<string, ToldMode>();
-  /** each pane's agent's session, as its hook last told */
-  private readonly sessions = new Map<string, ToldSession>();
+  /** each pane's agent's session, as its hook last told, with the launch whose hook told it */
+  private readonly sessions = new Map<string, ToldSession & { launch: Launch }>();
   private readonly contexts = new Map<string, ContextLaunch>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
@@ -270,21 +272,23 @@ export class ApprovalHub {
 
   /** The session the hook of the agent started in `paneId` last told it runs, with the process that told it, or null. */
   toldSession(paneId: string): ToldSession | null {
-    return this.sessions.get(paneId) ?? null;
+    const told = this.sessions.get(paneId);
+    return told === undefined ? null : { session: told.session, pid: told.pid, birth: told.birth };
   }
 
   /** Only a hook run by the agent itself (its pid named in the sealed request) tells its session. */
-  private tellSession(paneId: string, told: SessionEvent, pid: number | undefined): void {
+  private tellSession(launch: Launch, told: SessionEvent, pid: number | undefined): void {
+    const paneId = launch.paneId;
     const before = this.sessions.get(paneId);
     if ("ended" in told) {
       if (before?.session === told.ended) this.sessions.delete(paneId);
       return;
     }
-    if (pid === undefined || (before?.pid === pid && before.session === told.session)) return;
+    if (pid === undefined || (before?.launch === launch && before.pid === pid && before.session === told.session)) return;
     // read once per process, and only where it is cheap: Chat proves a Copilot's session on Linux alone
     const reading = before?.pid === pid ? null : this.platform === "linux" ? readProcessBirth(pid) : null;
     const birth = before?.pid === pid ? before.birth : reading?.state === "identified" ? reading.birth.value : null;
-    this.sessions.set(paneId, { session: told.session, pid, birth });
+    this.sessions.set(paneId, { session: told.session, pid, birth, launch });
   }
 
   /** No report (undefined) differs from a running extension that reported unknown context (null). */
@@ -314,6 +318,12 @@ export class ApprovalHub {
   /** Whether an agent of this kind asks its approvals through the hub. */
   handles(kind: string): boolean {
     return this.adapters.has(kind);
+  }
+
+  /** Whether the hook of an agent of this kind can answer an approval, not only tell. */
+  answers(kind: string): boolean {
+    const adapter = this.adapters.get(kind);
+    return adapter !== undefined && adapter.toldOnly !== true;
   }
 
   /**
@@ -431,7 +441,7 @@ export class ApprovalHub {
     const mode = launch.adapter.mode?.(parsed) ?? null;
     if (mode !== null) this.modes.set(launch.paneId, mode);
     const session = launch.adapter.session?.(parsed) ?? null;
-    if (session !== null) this.tellSession(launch.paneId, session, pid);
+    if (session !== null) this.tellSession(launch, session, pid);
     // told, not asked: the hook prints nothing, so the agent goes on as it would without it
     const turn = launch.adapter.turn?.(parsed) ?? null;
     const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
@@ -590,6 +600,8 @@ export class ApprovalHub {
     const launch = this.launches.get(digest);
     this.launches.delete(digest);
     this.dropKey(digest);
+    // a session told through a key no request is taken for any more could not be told again (its /clear): it goes too
+    if (launch !== undefined && this.sessions.get(launch.paneId)?.launch === launch) this.sessions.delete(launch.paneId);
     if (launch !== undefined && this.contexts.get(launch.paneId)?.launch === launch) this.dropContext(launch.paneId);
   }
 
@@ -600,6 +612,7 @@ export class ApprovalHub {
   stop(): void {
     this.stopped = true;
     this.contexts.clear();
+    this.sessions.clear();
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes
     for (const list of [...this.pending.values()]) for (const entry of [...list]) entry.settle(null);
     if (this.listener === null) return;
