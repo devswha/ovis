@@ -518,11 +518,11 @@ export async function processClaudeConfigDir(
  * HERDR_AGENT=claude, marks the foreground processes the wrapper put in front of it, and their
  * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only). Only
  * the whole foreground job counts, so `processes` is herdr's list, never herdr-core's leader alone. Null
- * when none carries the hint or it names the default store; AmbiguousClaudeStore when they name more than
+ * when none carries the hint; AmbiguousClaudeStore when they name more than
  * one, or a live one cannot be read, which may carry the hint and another store: a guess could be another
  * account's store.
  */
-export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
+export async function hintedClaudeSource(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<SourceRead | null> {
   if (process.platform !== "linux") return null;
   const reads: { pid: number; read: SourceRead }[] = [];
   let unread: number | null = null;
@@ -543,7 +543,11 @@ export async function hintedClaudeConfigDir(processes: readonly { pid?: number |
   if (first === undefined) return null;
   const differs = reads.find(({ read }) => read.source.state === "unreadable" || JSON.stringify(read) !== JSON.stringify(first.read));
   if (differs !== undefined) throw new AmbiguousClaudeStore(differs.pid);
-  return first.read.legacy;
+  return first.read;
+}
+
+export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
+  return (await hintedClaudeSource(processes, proc))?.legacy ?? null;
 }
 
 /** Only an absent path is a miss: an unreadable store is an error to report, not an empty one. */

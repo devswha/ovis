@@ -1323,6 +1323,48 @@ describe("GET /api/sessions/history", () => {
       start: async () => started ? { agent_started: true as const } : { agent_started: false as const, error: { code: "agent_start_failed", message: "not in this test" } },
       close: async (tabId: string) => { closed.push(tabId); },
     });
+    const reportedClaude = async () => {
+      const base = twoWorkspaces();
+      return { ...base, panes: base.panes.map((pane) => pane.pane_id === "p1" ? { ...pane, agent: "claude" } : pane) };
+    };
+
+    it.skipIf(process.platform !== "linux")("lists a sandbox wrapper's store without offering bare Resume (#3931)", async () => {
+      const home = newHome();
+      const alternate = join(home, "sandbox-store");
+      claudeStore(join(home, ".claude"), ID(1), "default store prompt");
+      claudeStore(alternate, ID(1), "sandbox store prompt");
+      const wrapper = await claudeStandIn({ HOME: home, HERDR_AGENT: "claude", CLAUDE_CONFIG_DIR: alternate });
+      try {
+        const base = { stores: { home, env: {} }, snapshot: reportedClaude, launchSource: launchAbsent };
+        const url = "workspace_id=w1&agent=claude&pane_id=p1";
+        const read = async (paneProcesses: (paneId: string) => Promise<PaneProcesses>) =>
+          await (await handleSessionHistoryRequest(...request(url), { readOnly: false, ...base, paneProcesses })).json() as ClaudeListing;
+        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, argv: ["node", "srt-cli.js"] }] });
+        expect((await read(paneProcesses)).sessions.map(({ firstMessage, resume }) => [firstMessage, resume]))
+          .toEqual([["sandbox store prompt", null]]);
+      } finally { await stop(wrapper); }
+    });
+
+    it.skipIf(process.platform !== "linux")("refuses an old Resume request when its source is now a sandbox wrapper (#3931)", async () => {
+      const home = newHome();
+      claudeStore(join(home, ".claude"), ID(1), "default store prompt");
+      const bare = await claudeStandIn({ HOME: home });
+      const wrapper = await claudeStandIn({ HOME: home, HERDR_AGENT: "claude" });
+      try {
+        const base = { stores: { home, env: {} }, snapshot: reportedClaude, launchSource: launchAbsent };
+        const listed = await (await handleSessionHistoryRequest(...request("workspace_id=w1&agent=claude&pane_id=p1"),
+          { readOnly: false, ...base, paneProcesses: claudePane(bare.pid) })).json() as ClaudeListing;
+        const key = listed.sessions[0]?.resume?.source?.store_key;
+        expect(key).toMatch(/^[0-9a-f]{24}$/);
+        const created: string[] = [];
+        const fake = fakeTabs([], false);
+        const tabs = { ...fake, create: async () => { created.push("tab"); return fake.create(); } };
+        const body = { workspace_id: "w1", pane_id: "p1", agent: "claude", session_id: ID(1), store_key: key };
+        const paneProcesses = async () => ({ foreground_processes: [{ pid: wrapper.pid, argv: ["node", "srt-cli.js"] }] });
+        const [status, json] = await answer(await resume(body, { ...base, paneProcesses, tabs }));
+        expect([status, json.error?.code, created]).toEqual([409, "launch_wrapped", []]);
+      } finally { await stop(bare, wrapper); }
+    });
 
     it.skipIf(process.platform !== "linux")("closes a resumed Claude's tab when its shell chose another store, and keeps one on the listed store", async () => {
       const home = newHome();
