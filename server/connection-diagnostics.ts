@@ -1,4 +1,28 @@
 import { randomUUID } from "node:crypto";
+import type { DeviceRole } from "../shared/access.ts";
+import type { SessionError } from "../shared/relay-mux.ts";
+import type { ClearReason } from "./account/pc-binding.ts";
+
+type AccessEvent =
+  | { event: "relay.session.accepted"; origin: "local-pairing" | "account"; role: DeviceRole; device_no: number | null }
+  /** `carrier_lost`: nothing ended the session, its channel went away (the device's side closed, or the relay link dropped). */
+  | { event: "relay.session.closed"; reason: SessionError | "carrier_lost" }
+  | { event: "account.snapshot.refused"; status: 403; reason: "not_listed" }
+  | { event: "account.listing.replaced" }
+  | { event: "account.binding.cleared"; reason: ClearReason }
+  | { event: "account.sessions.closed"; count: number }
+  /** The signed list would have decided a sign-in otherwise than the snapshot did (server/account/list-follow.ts): no key, no name. */
+  | { event: "account.list.differs"; snapshot: "admitted" | "none"; list: string; of: "credential" | "device" }
+  /** This PC lets its account's devices in by its signed list from now on. */
+  | { event: "account.list.pinned" }
+  /** The list this PC is pinned to removed it: the PC leaves its account. */
+  | { event: "account.list.removed" };
+
+/** Server-owned fields only. Use the same timestamped JSON console sink as connection diagnostics. */
+export function logAccess(event: AccessEvent): void {
+  try { console.info(JSON.stringify({ time: new Date().toISOString(), ...event })); }
+  catch { /* Diagnostics must not affect admission or revocation. */ }
+}
 
 const REPEAT_MS = 30_000;
 const MAX_FAILURES = 128;
@@ -39,7 +63,6 @@ export class ConnectionDiagnostics {
 
   constructor(
     private component: "herdr.rpc" | "machine.local" | "machine.remote" | "websocket" | "conversation",
-    /** a budgeted sink returns false to decline a line: the failure then stays unseen */
     private write: (line: string) => unknown = (line) => console.warn(line),
     private now: () => number = Date.now,
     private wallNow: () => number = () => Date.now(),
@@ -49,10 +72,10 @@ export class ConnectionDiagnostics {
     const now = this.now();
     let failure = this.failures.get(key);
     if (failure) {
-      this.failures.delete(key); // re-insert: the oldest entry is then the least recently used
+      this.failures.delete(key);
     } else {
       // Retain recent healthy keys too: clearing their throttle lets rapid failure/recovery
-      // cycles flood the log. This one bounded map owns both episodes and throttle history.
+      // cycles flood the log.
       if (this.failures.size >= MAX_FAILURES) this.failures.delete(this.failures.keys().next().value!);
       failure = { id: randomUUID(), since: now, loggedAt: -Infinity, code, count: 0, suppressed: 0, active: false, visible: false };
     }
@@ -68,7 +91,6 @@ export class ConnectionDiagnostics {
       failure.suppressed++;
       return;
     }
-    // A declined line shows nothing, so no recovery may follow it; the next failure tries again.
     if (!this.emit("failed", failure, fields, now)) {
       failure.suppressed++;
       return;
@@ -82,8 +104,6 @@ export class ConnectionDiagnostics {
     const failure = this.failures.get(key);
     if (!failure?.active) return;
     failure.active = false;
-    // A silent flapping episode must not produce an orphan recovery line. Its suppressed
-    // failures are carried to the next visible episode; each visible episode recovers once.
     if (!failure.visible) return;
     this.emit("recovered", failure, fields, this.now());
     failure.visible = false;

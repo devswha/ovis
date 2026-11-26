@@ -65,8 +65,7 @@ describe("server entries", () => {
   });
 
   it("serves every entry the installers, bundles and Windows task name", () => {
-    // the binary's command line: `ovis-server <name>` is what launchers and other processes run
-    expect(Object.keys(ENTRIES).sort()).toEqual(["askpass", "machine", "managed", "plugin", "remote", "serve", "supervisor", "windows-launch"]);
+    expect(Object.keys(ENTRIES).sort()).toEqual(["agent-mcp", "approval-hook", "askpass", "browser-mcp", "machine", "managed", "plugin", "remote", "serve", "supervisor", "tui", "windows-launch"]);
   });
 
   it("roots the server in its checkout from source and in the binary's folder when compiled", () => {
@@ -127,7 +126,6 @@ process.stdout.write(JSON.parse(readFileSync(fileURLToPath(new URL("./launch.jso
   });
 
   it("names the Windows task's program as from source, and the launcher entry only when compiled", () => {
-    // from source the payload is what it always was: Bun, and no prefix before the launcher's quoted path
     expect(launcherAction(false)).toEqual({ bun: process.execPath });
     expect(launcherAction(true)).toEqual({ bun: process.execPath, prefix: "windows-launch " });
   });

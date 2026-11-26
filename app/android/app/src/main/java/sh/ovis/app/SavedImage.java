@@ -4,18 +4,16 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Base64;
 
-/** What SaveImagePlugin takes from a page, checked before anything is written. */
 final class SavedImage {
     /**
      * Far above any chat picture, and low enough that the bytes and their base64 copies stay a
-     * small part of a phone's memory. The client checks it too, before it encodes anything.
+     * small part of a phone's memory.
      */
     static final int MAX_BYTES = 20 * 1024 * 1024;
 
     /** Saves a page may start in one minute: a user tapping Download stays far below it. */
     static final int MAX_PER_MINUTE = 10;
 
-    /** Saves, and their bytes, in one run of the app: past either, saving waits for a restart. */
     static final int MAX_PER_RUN = 100;
 
     static final long MAX_BYTES_PER_RUN = 500L * 1024 * 1024;
@@ -29,7 +27,21 @@ final class SavedImage {
         return type != null && type.matches("image/[A-Za-z0-9.+-]+");
     }
 
-    /** The bytes of base64 `data`, or null when it is missing, empty, not base64 or over MAX_BYTES. */
+    /** A well-formed MIME type (`type/subtype`, parameters dropped by the page), of any kind. */
+    static boolean isFileType(String type) {
+        return type != null && type.matches("[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}");
+    }
+
+    /**
+     * The type Downloads files `name` under: the one its extension stands for in `byExtension`
+     * (Android's MimeTypeMap), so Downloads keeps the name as given, or application/octet-stream.
+     */
+    static String typeForName(String name, java.util.function.Function<String, String> byExtension) {
+        int dot = name.lastIndexOf('.');
+        String mapped = dot > 0 && dot < name.length() - 1 ? byExtension.apply(name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT)) : null;
+        return isFileType(mapped) ? mapped : "application/octet-stream";
+    }
+
     static byte[] decode(String data) {
         if (data == null || data.isEmpty() || data.length() / 4 * 3 > MAX_BYTES + 3) return null;
         try {
@@ -46,6 +58,11 @@ final class SavedImage {
      * nothing is left.
      */
     static String fileName(String name) {
+        return fileName(name, "image");
+    }
+
+    /** `name` as a file name Downloads takes, or `fallback` when nothing of it is left. */
+    static String fileName(String name, String fallback) {
         String last = name == null ? "" : name.substring(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
         String clean = last.replaceAll("[\\p{Cntrl}:*?\"<>|]", "").trim().replaceFirst("^\\.+", "");
         if (utf8(clean) > MAX_NAME_BYTES) {
@@ -61,7 +78,7 @@ final class SavedImage {
             }
             clean = stem.substring(0, end) + extension;
         }
-        return clean.isEmpty() ? "image" : clean;
+        return clean.isEmpty() ? fallback : clean;
     }
 
     private static int utf8(String text) {
@@ -76,7 +93,6 @@ final class SavedImage {
 
         private long bytes;
 
-        /** Whether a save of `size` bytes may start at `now` (ms); counts it when it may. */
         synchronized boolean take(long now, int size) {
             while (!started.isEmpty() && now - started.peekFirst() >= 60_000) started.removeFirst();
             if (started.size() >= MAX_PER_MINUTE || saves >= MAX_PER_RUN || bytes + size > MAX_BYTES_PER_RUN) return false;

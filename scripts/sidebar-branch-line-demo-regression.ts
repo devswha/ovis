@@ -6,11 +6,9 @@ import { chromium, type Locator, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
-// The demo roster in the compact rows (herdr-app's list): checkout-api is a repository with export-guard
-// and flaky-retry-test as its linked worktrees, cli-tools is rewritten into a git folder herdr has
-// not marked, and retry-flag and changelog into folders with no git at all. Only this disposable demo
-// fixture is rewritten; no live session is read.
+// Only this disposable demo fixture is rewritten; no live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-branch-line-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const patch = `(() => {
@@ -79,15 +77,7 @@ try {
   writeFileSync(join(app, "sidebar-branch-line.js"), patch);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-branch-line.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    let file: string;
-    try { file = decodeURIComponent(path.slice(1)); } catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app, { prefix: "/" });
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -102,10 +92,7 @@ try {
           page.on("pageerror", (error) => errors.push(error.message));
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           if (phone) await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
-          // one line per row, as herdr-app's list: a branch other than the default dim at the row's end, without its
-          // feature/-style prefix; the default branch says nothing
           const branchOf = (id: string) => row(page, id).locator(":scope > .workspace-header .workspace-branch-tail");
-          // a mouse's row keeps its branch out of sight until the pointer or the focus is on it; a finger's shows it
           const shown = async (id: string) => {
             if (!phone) {
               await branchOf(id).waitFor({ state: "attached" });
@@ -122,10 +109,6 @@ try {
           for (const id of ["w1D", "w1H"]) assert.equal(await page.locator(`.worktree-children .workspace-group[data-workspace="${id}"]`).count(), 1, `${id} sits under its repository`);
           const one = await height(page, "w1K");
           for (const id of ["w1C", "w1J", "w1D"]) assert.equal(await height(page, id), one, `${id} keeps one line's height, its branch beside its name`);
-          // the branch follows the name a gap's width after it, and the state sits at the row's very end in a cell its
-          // glyph's size; under a pointer the ⋯ shows just before that cell, over the words' faded end, so nothing in the
-          // row moves and the state stays in sight, while a finger keeps the ⋯ in the row beside the state. The Agents
-          // list's one-line rows do the same.
           const gap = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--space-2")));
           const cell = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--space-6")));
           const measure = (item: Locator, parts: { start: string; after?: string; state: string; menu: string }) => item.evaluate((node, parts) => {
@@ -145,7 +128,6 @@ try {
           const headerParts = { start: ".workspace-name", after: ".workspace-branch-tail", state: ".workspace-select > .sidebar-pane-meta", menu: ".workspace-actions" };
           const agent = page.locator(".agents-sidebar .agent-item:not([hidden])").first();
           const agentParts = { start: ".agent-title", state: ".agent-row-state", menu: ".agent-actions" };
-          // a phone's drawer starts with Agents folded: open it, as a reader would
           const agentsToggle = page.locator(".agent-section-toggle");
           if (await agentsToggle.getAttribute("aria-expanded") !== "true") await agentsToggle.click();
           await agent.waitFor();
@@ -164,6 +146,35 @@ try {
             const hovered = await measure(item, parts);
             assert.deepEqual([hovered.startLeft, hovered.startRight, hovered.afterLeft], [rest.startLeft, rest.startRight, rest.afterLeft], `${what}: the name and branch stay put under the pointer`);
             assert.equal(hovered.menuShown && hovered.menuBeforeState && !hovered.menuOverState && hovered.stateShown, true, `${what}: the ⋯ shows just before the state, which stays in sight`);
+            await page.mouse.move(1270, 890);
+            await item.locator(":scope > .workspace-select, :scope > .agent-row").focus();
+            const focused = await measure(item, parts);
+            assert.equal(focused.menuShown && focused.menuBeforeState && !focused.menuOverState && focused.stateShown, true, `${what}: focus-within shows the ⋯ just before the state`);
+            if (what === "w1D") assert.equal(await branchOf("w1D").isVisible(), true, "w1D: focus-within reveals the branch tail");
+            await item.locator(`${parts.menu} button`).click();
+            await page.getByRole("menu").waitFor();
+            const menuOpen = await measure(item, parts);
+            assert.equal(menuOpen.menuShown && menuOpen.menuBeforeState && !menuOpen.menuOverState && menuOpen.stateShown, true, `${what}: an open menu keeps the ⋯ just before the state`);
+            if (what === "w1D") assert.equal(await branchOf("w1D").isVisible(), true, "w1D: an open menu keeps the branch tail in sight");
+            await page.keyboard.press("Escape");
+            await page.getByRole("menu").waitFor({ state: "detached" });
+            await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+            await page.mouse.move(1270, 890);
+          }
+          if (!phone) {
+            assert.equal(await branchOf("w1D").evaluate((el) => getComputedStyle(el).minWidth), "0px", "short branches are not padded by a 2.5em min-width");
+            await header.hover();
+            await header.locator(".workspace-actions button").click();
+            await page.getByRole("menuitem", { name: "Rename workspace" }).click();
+            const renameInput = header.locator(".workspace-rename-input");
+            await renameInput.waitFor();
+            const actionsHidden = await header.locator(".workspace-actions").evaluate((el) => {
+              const style = getComputedStyle(el);
+              return style.display === "none" || style.visibility === "hidden" || el.getBoundingClientRect().width === 0;
+            });
+            assert.equal(actionsHidden, true, "w1D: renaming hides the ⋯ overlay over the rename field");
+            await renameInput.press("Escape");
+            await renameInput.waitFor({ state: "detached" });
             await page.mouse.move(1270, 890);
           }
           // herdr's tree: the first worktree's branch runs on (a tee), the last one's stops halfway (an elbow)

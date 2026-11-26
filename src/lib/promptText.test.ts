@@ -6,7 +6,6 @@ import { approvalScope, optionName, polledPrompt, promptWords, screenWordsToShow
 
 const inLanguage = (language: Language) => (key: string, vars?: Record<string, string | number>) => translate(language, key, vars);
 
-/** Claude Code's /goal card as the bridge hands it over: its title and Close are the bridge's, the goal and its status Claude's */
 const goal: InteractivePrompt = {
   id: "g", agent: "claude", kind: "menu", title: "Goal active", question: "the file hello.txt exists", body: "running 25s · 0 tokens",
   options: [{ label: "Close", description: null }], multi_select: false, custom_option_index: null,
@@ -29,6 +28,31 @@ describe("a polled prompt card (#2220 review)", () => {
     const fallen = polledPrompt(markdown, plain)!;
     expect(fallen.text_format).toBeUndefined();
     expect(fallen).toMatchObject({ question: plain.question, options: plain.options });
+  });
+
+  it("takes the body that goes with the words of the same card: gjc's whole question takes the rows its screen read put in the body", () => {
+    const screen = { ...plain, agent: "gjc", question: "Which one?", body: "First paragraph.\n- item" };
+    const rebound = { ...screen, question: "First paragraph.\n\n- item\n\nWhich one?", body: null, text_format: "markdown" as const };
+    expect(polledPrompt(screen, rebound)).toMatchObject({ question: rebound.question, body: null, text_format: "markdown" });
+    const fallen = polledPrompt(rebound, screen)!;
+    expect(fallen).toMatchObject({ question: "Which one?", body: "First paragraph.\n- item" });
+    expect(fallen.text_format).toBeUndefined();
+  });
+
+  it("uses the explicit recommended flag on Markdown options and keeps literal (Recommended) text untouched", () => {
+    const card = {
+      ...markdown,
+      agent: "gjc",
+      options: [
+        { label: "Keep `local` socket", description: null, recommended: true as const },
+        { label: "Literal (Recommended)", description: null },
+      ],
+    };
+    expect(optionName(card, card.options[0]!)).toEqual({ text: "Keep `local` socket", recommended: true, words: "Keep local socket" });
+    expect(optionName(card, card.options[1]!)).toEqual({ text: "Literal (Recommended)", recommended: false, words: "Literal (Recommended)" });
+    expect(optionName(card, "[x](recommended)")).toMatchObject({ recommended: false, words: "x" });
+    const ompCard = { ...markdown, agent: "omp", options: [{ label: "Use local socket (Recommended)", description: null }] };
+    expect(optionName(ompCard, ompCard.options[0]!)).toEqual({ text: "Use local socket (Recommended)", recommended: false, words: "Use local socket (Recommended)" });
   });
 
   it("takes the words read off the screen over the same card as they change (#2088)", () => {
@@ -84,7 +108,6 @@ describe("a prompt card's words", () => {
   it("caps a translated body as the bridge caps the English one", () => {
     const long: InteractivePrompt = { ...goal, body: "x".repeat(12_000), own_text: { body: { key: "Comment: {comment}", vars: { comment: "x".repeat(20_000) } } } };
     expect(promptWords(long, inLanguage("ko")).body).toHaveLength(12_000);
-    // the cap lands between the two halves of an emoji: the emoji goes whole, never half of it
     const prefix = translate("ko", "Comment: {comment}", { comment: "" }).length;
     const split: InteractivePrompt = { ...long, own_text: { body: { key: "Comment: {comment}", vars: { comment: `${"x".repeat(11_999 - prefix)}\u{1F600}` } } } };
     const body = promptWords(split, inLanguage("ko")).body!;
@@ -135,7 +158,6 @@ describe("Claude's words read off the screen over its question (#2088)", () => {
   });
 
   it("shows them while the same question asked in an earlier, interrupted turn still waits there", () => {
-    // the call left waiting by an interrupt; the new turn has nothing in the session file yet
     expect(screenWordsToShow(asked, [asking, call("pending"), asking])).toBe("There are two ways to fix it.");
   });
 

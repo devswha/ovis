@@ -4,8 +4,7 @@
 # Usage: scripts/self-hosted-runner/run.sh [--repo OWNER/NAME] [--count N] [--labels self-hosted-ovis]
 #          [--reserved N] [--reserved-labels self-hosted-ovis-main] [--env-file FILE] [--build] [--once]
 #          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache] [--build-cache DIR [--build-cache-mb N] [--build-cache-writer LOGIN]]
-#          [--cpuset-cpus LIST]
-#          [--work-tmpfs SIZE]
+#          [--cpuset-cpus LIST] [--cgroup-parent SLICE] [--work-tmpfs SIZE] [--offer-when-room]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,12 +24,20 @@ CACHE_WAIT=120
 BUILD_CACHE=""
 BUILD_CACHE_MB=2048
 BUILD_CACHE_WRITER=""
-# docker run's --cpuset-cpus for every container this launcher starts (README "Per-host limits")
-CPUSET_ARGS=()
+CPUSET=""
+CGROUP_PARENT=""
 WORK_TMPFS=""
+# A runner container is an offer to GitHub: GitHub hands it any job whose labels it matches, so a
+# host that is already busy keeps taking work. --offer-when-room makes a slot that is not reserved
+# wait until this host has room (README "Offering a runner only when there is room").
+OFFER=0
+# The gate's poll interval and its quiet time after a start, in seconds. The tests set them.
+OFFER_POLL="${OVIS_RUNNER_OFFER_POLL:-5}"
+OFFER_PAUSE="${OVIS_RUNNER_OFFER_PAUSE:-30}"
 
 usage() {
-  sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # the header: every comment line after the shebang, up to the first line that is not one
+  sed -n '2,/^[^#]/{/^#/!d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
 }
 
 while [ $# -gt 0 ]; do
@@ -49,8 +56,10 @@ while [ $# -gt 0 ]; do
     --build-cache) BUILD_CACHE="${2:?--build-cache needs a value}"; shift 2 ;;
     --build-cache-mb) BUILD_CACHE_MB="${2:?--build-cache-mb needs a value}"; shift 2 ;;
     --build-cache-writer) BUILD_CACHE_WRITER="${2:?--build-cache-writer needs a value}"; shift 2 ;;
-    --cpuset-cpus) CPUSET_ARGS=(--cpuset-cpus "${2:?--cpuset-cpus needs a value}"); shift 2 ;;
+    --cpuset-cpus) CPUSET="${2:?--cpuset-cpus needs a value}"; shift 2 ;;
+    --cgroup-parent) CGROUP_PARENT="${2:?--cgroup-parent needs a value}"; shift 2 ;;
     --work-tmpfs) WORK_TMPFS="${2:?--work-tmpfs needs a value}"; shift 2 ;;
+    --offer-when-room) OFFER=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -64,11 +73,12 @@ case "$COUNT" in ''|*[!0-9]*|0) echo "--count must be a positive integer" >&2; e
 case "$RESERVED" in ''|*[!0-9]*|?????*) echo "--reserved must be a whole number up to --count" >&2; exit 2 ;; esac
 if [ "$((10#$RESERVED))" -gt "$((10#$COUNT))" ]; then echo "--reserved must not exceed --count" >&2; exit 2; fi
 case "$CACHE_WAIT" in ''|*[!0-9]*|?????*) echo "--cache-wait must be a whole number of seconds" >&2; exit 2 ;; esac
-# 00 is zero too: past the digit check, as a number
 case "$BUILD_CACHE_MB" in ''|*[!0-9]*|??????*) echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2 ;; esac
 if [ "$((10#$BUILD_CACHE_MB))" -eq 0 ]; then echo "--build-cache-mb must be a positive whole number of MiB" >&2; exit 2; fi
-# a GitHub login: letters, digits and single hyphens
 case "$BUILD_CACHE_WRITER" in *[!A-Za-z0-9-]*|-*|??????????????????????????????????????*) echo "--build-cache-writer must be a GitHub login" >&2; exit 2 ;; esac
+PLACE_ARGS=()
+if [ -n "$CPUSET" ]; then PLACE_ARGS+=(--cpuset-cpus "$CPUSET"); fi
+if [ -n "$CGROUP_PARENT" ]; then PLACE_ARGS+=(--cgroup-parent "$CGROUP_PARENT"); fi
 # The job's checkout (/w) and /tmp in RAM: a job's files die with its container anyway, and on disk
 # its browser profiles and installs are most of the host's writes. SIZE caps each mount; only what
 # a job writes takes memory.
@@ -78,6 +88,44 @@ if [ -n "$WORK_TMPFS" ]; then
   case "${WORK_TMPFS%?}" in *[!0-9]*|??????*) echo "--work-tmpfs must be a size like 4g or 4096m" >&2; exit 2 ;; esac
   WORK_TMPFS_ARGS=(--tmpfs "/w:rw,exec,nosuid,size=$WORK_TMPFS,uid=1001,gid=1001,mode=0755"
     --tmpfs "/tmp:rw,exec,nosuid,size=$WORK_TMPFS,mode=1777")
+fi
+# Every slot's docker network is a /28 of this block (README "Run"), never a range docker
+# picks from its own pools: with those used up docker goes on to 192.168.0.0/20, and a network made
+# at boot, before the LAN's route was there, took 192.168.0.1, the home router's address.
+NETWORK_BLOCK="${OVIS_CI_NETWORK_BLOCK:-10.213.0.0/16}"
+# docker's gateway (the first address), the runner container, and room to spare
+NETWORK_PREFIX=28
+NETWORK_SIZE=$(( 1 << (32 - NETWORK_PREFIX) ))
+ip_number() {
+  local part='(0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])'
+  [[ $1 =~ ^$part\.$part\.$part\.$part$ ]] || return 1
+  echo "$(( BASH_REMATCH[1] << 24 | BASH_REMATCH[2] << 16 | BASH_REMATCH[3] << 8 | BASH_REMATCH[4] ))"
+}
+cidr_range() {
+  local bits=32 number size
+  case "$1" in */*) bits="${1#*/}" ;; esac
+  case "$bits" in [0-9]|[12][0-9]|3[0-2]) ;; *) return 1 ;; esac
+  number="$(ip_number "${1%/*}")" || return 1
+  size=$(( 1 << (32 - bits) ))
+  echo "$(( number - number % size )) $(( number - number % size + size - 1 ))"
+}
+inside() {
+  local outer
+  outer="$(cidr_range "$2")" && [ "${1% *}" -ge "${outer% *}" ] && [ "${1#* }" -le "${outer#* }" ]
+}
+network_block_refused() {
+  echo "OVIS_CI_NETWORK_BLOCK=$NETWORK_BLOCK $1" >&2
+  exit 2
+}
+case "$NETWORK_BLOCK" in */[89]|*/1[0-9]|*/2[0-4]) ;; *) network_block_refused "must be a network address from /8 to /24, like 10.213.0.0/16" ;; esac
+if ! BLOCK_RANGE="$(cidr_range "$NETWORK_BLOCK")" || [ "${BLOCK_RANGE% *}" != "$(ip_number "${NETWORK_BLOCK%/*}")" ]; then
+  network_block_refused "must be a network address from /8 to /24, like 10.213.0.0/16"
+fi
+# Private: inside 10.0.0.0/8, or inside 172.16.0.0/16 for a host that routes all of 10.0.0.0/8 (a
+# VPN). Never where home networks (192.168.0.0/16), carrier-grade NAT and Tailscale (100.64.0.0/10)
+# or docker's own pools (172.17.0.0/16 to 172.31.0.0/16) are.
+if ! inside "$BLOCK_RANGE" 10.0.0.0/8 && ! inside "$BLOCK_RANGE" 172.16.0.0/16; then
+  network_block_refused "must be inside 10.0.0.0/8 or 172.16.0.0/16: never 192.168.0.0/16, 100.64.0.0/10, docker's 172.17.0.0/16 to 172.31.0.0/16 or a public range"
 fi
 # What this host can take (CHECK_HOST_* in scripts/check.ts), for every runner container: read now,
 # so a missing file stops the launcher instead of every container failing to start.
@@ -91,11 +139,11 @@ if [ -n "$ENV_FILE" ]; then
   # number only: its value may be a credential, and stderr ends up in the journal.
   status=0
   # -a: a NUL byte would make grep call the file binary and name no line; -- : a path may start with -
-  bad="$(grep -anvE -e '^[[:space:]]*(#.*)?$|^CHECK_HOST_(MAX_RUNS|TEST_SHARDS|BROWSER_WORKERS|UNIT_WORKERS)=[0-9]+$' -- "$ENV_FILE")" || status=$?
+  bad="$(grep -anvE -e '^[[:space:]]*(#.*)?$|^CHECK_HOST_(MAX_RUNS|TEST_SHARDS|BROWSER_WORKERS|UNIT_WORKERS|OFFER_CPU_PSI|OFFER_MEMORY_PSI)=[0-9]+$' -- "$ENV_FILE")" || status=$?
   case "$status" in
     0) echo "--env-file: $ENV_FILE may hold only CHECK_HOST_*=<number> lines; refused line(s): $(printf '%s\n' "$bad" | cut -d: -f1 | paste -sd, -)" >&2
        exit 2 ;;
-    1) ;; # every line is allowed
+    1) ;;
     *) echo "--env-file: could not read $ENV_FILE to check it" >&2; exit 2 ;;
   esac
   ENV_ARGS=(--env-file "$ENV_FILE")
@@ -110,6 +158,14 @@ SLOTS_ENV=(-e CHECK_SLOTS_DIR=/check-slots
 if [ -n "$ENV_FILE" ]; then
   max_runs="$(sed -n 's/^CHECK_HOST_MAX_RUNS=//p' "$ENV_FILE" | tail -n 1)"
   if [ -n "$max_runs" ]; then SLOTS_ENV+=(-e "CHECK_SLOTS_MAX_RUNS=$max_runs"); fi
+fi
+# The offer gate's thresholds: whole percents, read here and by no job (a job's CHECK_MAX_RUNS is what
+# bounds the host's heavy jobs). Unset: that half of the pressure gate does not exist.
+OFFER_CPU_PSI=""
+OFFER_MEMORY_PSI=""
+if [ -n "$ENV_FILE" ]; then
+  OFFER_CPU_PSI="$(sed -n 's/^CHECK_HOST_OFFER_CPU_PSI=//p' "$ENV_FILE" | tail -n 1)"
+  OFFER_MEMORY_PSI="$(sed -n 's/^CHECK_HOST_OFFER_MEMORY_PSI=//p' "$ENV_FILE" | tail -n 1)"
 fi
 
 if [ -z "$REPO" ]; then
@@ -129,18 +185,48 @@ PREFIX="herdr-ci-${HOST}-"
 # it: a run that finds none empties every file no run holds (holdFile in scripts/check.ts). A
 # container of the same name keeps the volume (start_slots).
 SLOTS="${PREFIX}check-slots"
-# The ports a run of check.ts would listen on, each a file: DEFAULT_LOCK_PORT, then the slots, the
-# admission port, the ticket desk and the tickets (MAX_RUNS_LIMIT + 2 + QUEUE_TICKETS in all).
 SLOT_FILES=()
 for port in $(seq 41737 41770); do SLOT_FILES+=("$port"); done
 
-if [ "$BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  docker build -t "$IMAGE" "$SCRIPT_DIR"
+# Runner containers of every launcher on this host, whatever a copy's own PREFIX says.
+PEER_PREFIX="herdr-ci-${HOST}-"
+# The gate's state, host-wide so that the slot loops of every launcher copy decide one at a time: a
+# lock file and the time this host last started a runner container.
+# Not under XDG_RUNTIME_DIR: a launcher started outside a login session has none, and would decide alone.
+OFFER_STATE="${OVIS_RUNNER_OFFER_DIR:-$HOME/.cache/ovis-ci-runner}"
+OFFER_LOCK="$OFFER_STATE/offer-$HOST.lock"
+OFFER_STAMP="$OFFER_STATE/offer-$HOST.started"
+# /proc/pressure per resource, "some avg10" in percent. The tests point this elsewhere.
+PSI_DIR="${OVIS_RUNNER_PSI_DIR:-/proc/pressure}"
+if [ "$OFFER" = 1 ]; then
+  case "$OFFER_POLL" in ''|*[!0-9]*|0) echo "OVIS_RUNNER_OFFER_POLL must be a whole number of seconds from 1" >&2; exit 2 ;; esac
+  case "$OFFER_PAUSE" in ''|*[!0-9]*) echo "OVIS_RUNNER_OFFER_PAUSE must be a whole number of seconds" >&2; exit 2 ;; esac
+  for threshold in CPU:"$OFFER_CPU_PSI" MEMORY:"$OFFER_MEMORY_PSI"; do
+    case "${threshold#*:}" in ''|*[!0]*) ;; *) echo "--env-file: CHECK_HOST_OFFER_${threshold%%:*}_PSI must be 1 or more: no pressure is under 0, so 0 would hold every slot" >&2; exit 2 ;; esac
+  done
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "--offer-when-room: flock (util-linux) is needed to decide between this host's slot loops" >&2
+    exit 2
+  fi
+  if ! mkdir -p "$OFFER_STATE"; then
+    echo "--offer-when-room: cannot use $OFFER_STATE for the state that keeps this host's slot loops apart (OVIS_RUNNER_OFFER_DIR names another directory)" >&2
+    exit 2
+  fi
+  psi_skipped=()
+  if [ -n "$OFFER_CPU_PSI" ] && [ ! -r "$PSI_DIR/cpu" ]; then psi_skipped+=(CPU); fi
+  if [ -n "$OFFER_MEMORY_PSI" ] && [ ! -r "$PSI_DIR/memory" ]; then psi_skipped+=(memory); fi
+  if [ "${#psi_skipped[@]}" -gt 0 ]; then
+    echo "[offer] PSI is off on this host (no $PSI_DIR/${psi_skipped[0]}): the offer gate skips the ${psi_skipped[*]} pressure" >&2
+  fi
 fi
-# A CPU list docker cannot give fails every container, and every slot would then ask for a token every
-# few seconds: refuse it now, with one throwaway container, before anything starts.
-if [ "${#CPUSET_ARGS[@]}" -gt 0 ] && ! docker run --rm "${CPUSET_ARGS[@]}" --network none --entrypoint true "$IMAGE" >/dev/null 2>&1; then
-  echo "--cpuset-cpus ${CPUSET_ARGS[1]}: docker cannot run a container on those CPUs" >&2
+
+if [ "$BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  docker build ${CGROUP_PARENT:+--cgroup-parent "$CGROUP_PARENT"} -t "$IMAGE" "$SCRIPT_DIR"
+fi
+# A CPU list or cgroup parent docker cannot use fails every container, and every slot would then ask for
+# a token every few seconds: refuse it now, with one throwaway container, before anything starts.
+if [ "${#PLACE_ARGS[@]}" -gt 0 ] && ! docker run --rm "${PLACE_ARGS[@]}" --network none --entrypoint true "$IMAGE" >/dev/null 2>&1; then
+  echo "${PLACE_ARGS[*]}: docker cannot start a container there" >&2
   exit 2
 fi
 
@@ -154,9 +240,8 @@ fi
 start_slots() {
   local try
   if [ "$(docker container inspect -f '{{.State.Running}}' "$SLOTS" 2>/dev/null || true)" != true ]; then
-    # one that is not running holds the name; a missing one leaves nothing to remove
     docker rm "$SLOTS" >/dev/null 2>&1 || true
-    docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} -d --rm \
+    docker run ${PLACE_ARGS[@]+"${PLACE_ARGS[@]}"} -d --rm \
       --name "$SLOTS" \
       --network none \
       --security-opt no-new-privileges \
@@ -199,7 +284,6 @@ case "$REPO" in
   *) [ "$CACHE" = 1 ] && echo "[cache] $REPO is not an OWNER/NAME this launcher can keep caches for: running without them" >&2; CACHE=0 ;;
 esac
 if [ "$CACHE" = 1 ]; then
-  # an unusable cache directory costs downloads, never the runners
   if REPO_CACHE="$(umask 022 && mkdir -p "$CACHE_DIR/$REPO" && cd "$CACHE_DIR/$REPO" && pwd -P)"; then
     MIRROR="$REPO_CACHE/git/repo.git"
     BUN_CACHES="$REPO_CACHE/bun"
@@ -214,6 +298,7 @@ fi
 # under that run (entries/<run id>/<key>), where only that run's jobs read.
 BUILD_CACHE_ROOT=""
 BUILD_CACHE_OUTBOXES=""
+BUILD_CACHE_LABEL=""
 # which job of a run builds it: a volume of its own in RAM, capped, so a job filling it fills nothing else
 BUILD_CACHE_LOCKS="${PREFIX}build-cache-locks"
 if [ -n "$BUILD_CACHE" ]; then
@@ -226,7 +311,21 @@ if [ -n "$BUILD_CACHE" ]; then
       if BUILD_CACHE_ROOT="$(umask 022 && mkdir -p "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/used" && cd "$BUILD_CACHE/$REPO" && pwd -P)" &&
         BUILD_CACHE_OUTBOXES="$(umask 022 && mkdir -p "$outboxes" && cd "$outboxes" && pwd -P)" &&
         docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=16m,mode=1777 "$BUILD_CACHE_LOCKS" >/dev/null; then
-        :
+        # Under SELinux a container reads and writes only what is labelled container_file_t, and a new file
+        # takes its directory's label: without this, no job could hand in a build or read the cache. The
+        # cache holds only this user's files; an outbox may hold an earlier job's, which this user may not
+        # relabel, so each slot's outbox is labelled once it is emptied (build_cache_args).
+        # Only directories this user owns are relabelled (a path through a link elsewhere is not), and at
+        # level s0, which every container may use: a level a `:Z` mount once gave stays one container's.
+        if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+          if [ -O "$BUILD_CACHE_ROOT" ] && [ -O "$BUILD_CACHE_OUTBOXES" ] &&
+            chcon -R -t container_file_t -l s0 "$BUILD_CACHE_ROOT" && chcon -t container_file_t -l s0 "$BUILD_CACHE_OUTBOXES"; then
+            BUILD_CACHE_LABEL=1
+          else
+            echo "[build-cache] cannot label $BUILD_CACHE_ROOT and its outboxes container_file_t for SELinux: running without it" >&2
+            BUILD_CACHE_ROOT=""
+          fi
+        fi
       else
         echo "[build-cache] cannot use $BUILD_CACHE/$REPO, its outboxes or the $BUILD_CACHE_LOCKS volume: running without it" >&2
         BUILD_CACHE_ROOT=""
@@ -246,10 +345,9 @@ build_cache_args() {
   # are that user's only, so a throwaway container of the image, as that user, empties what is left
   if [ -d "$outbox" ]; then
     find "$outbox" -mindepth 1 -maxdepth 1 ! -type d -delete 2>/dev/null || true
-    # the promoter's own verdicts (build-cache-promote.sh)
     find "$outbox" -mindepth 1 -maxdepth 1 -type d -name 'judged-*' -user "$(id -u)" -empty -delete 2>/dev/null || true
     if [ -n "$(find "$outbox" -mindepth 1 -print -quit 2>/dev/null)" ]; then
-      docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} --rm --network none --security-opt no-new-privileges --cap-drop ALL --user 1001:1001 \
+      docker run ${PLACE_ARGS[@]+"${PLACE_ARGS[@]}"} --rm --network none --security-opt no-new-privileges --cap-drop ALL --user 1001:1001 \
         -v "$outbox:/outbox" --entrypoint sh "$IMAGE" -c 'chmod -R u+rwX /outbox 2>/dev/null; find /outbox -mindepth 1 -delete' </dev/null >/dev/null 2>&1 || true
     fi
     # A file that is still there would be read as this runner's own claim or build: the runner starts
@@ -261,6 +359,10 @@ build_cache_args() {
     fi
   fi
   mkdir -p "$outbox" && chmod 1777 "$outbox" || return 0
+  if [ -n "$BUILD_CACHE_LABEL" ] && ! chcon -t container_file_t -l s0 "$outbox"; then
+    echo "[$1] cannot label its build cache outbox container_file_t for SELinux: starting it without the build cache" >&2
+    return 0
+  fi
   BUILD_CACHE_ARGS=(-v "$BUILD_CACHE_ROOT/entries:/build-cache:ro" -v "$BUILD_CACHE_LOCKS:/build-cache-locks"
     -v "$outbox:/build-cache-outbox" -e OVIS_BUILD_CACHE_DIR=/build-cache -e OVIS_BUILD_CACHE_LOCKS=/build-cache-locks
     -e OVIS_BUILD_CACHE_OUTBOX=/build-cache-outbox ${BUILD_CACHE_WRITER:+-e "OVIS_BUILD_CACHE_WRITER=$BUILD_CACHE_WRITER"})
@@ -270,11 +372,10 @@ build_cache_args() {
 # throwaway container of the image, no network, allowed only past file permissions, removes it.
 clean_taken() {
   [ -n "$(find "$BUILD_CACHE_OUTBOXES/.taken" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ] || return 0
-  docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} --rm --network none --security-opt no-new-privileges --cap-drop ALL --cap-add DAC_OVERRIDE --user 0:0 \
+  docker run ${PLACE_ARGS[@]+"${PLACE_ARGS[@]}"} --rm --network none --security-opt no-new-privileges --cap-drop ALL --cap-add DAC_OVERRIDE --user 0:0 \
     -v "$BUILD_CACHE_OUTBOXES/.taken:/taken" --entrypoint find "$IMAGE" /taken -mindepth 1 -delete </dev/null >/dev/null 2>&1 || true
 }
 
-# Every second: the trusted builds in the outboxes go into the cache. In its own process group, which cleanup stops.
 promote_loop() {
   trap 'exit 143' TERM
   local names=() slot
@@ -282,13 +383,10 @@ promote_loop() {
   while true; do
     bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_OUTBOXES" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
     clean_taken
-    # with --once too: until cleanup stops it, after the slots' containers end
     sleep 1
   done
 }
 
-# The cache loop runs in its own process: files here tell the launcher it warmed the caches, and it
-# that the launcher is stopping. Made with the EXIT trap that removes it.
 STATE_DIR=""
 # Git over a saturated or stalled link: give up on a transfer slower than 1 KB/s for a minute, and on
 # any command after its deadline, rather than hold every refresh (and, at start, every runner).
@@ -364,8 +462,6 @@ refresh_mirror() {
   DEFAULT_REF="$head"
 }
 
-# One directory per bun.lock (named after its blob), and `current` pointing at the default branch's
-# (DEFAULT_REF, which refresh_mirror has just confirmed).
 refresh_bun_cache() {
   local lock commit version tmp failed old dir status
   [ -n "$DEFAULT_REF" ] || return 1
@@ -386,7 +482,7 @@ refresh_bun_cache() {
     # the container a PID 1 that passes the deadline's SIGTERM on (a bare PID 1 ignores it), and -k
     # ends the client if it still waits. Whatever ended it, docker rm -f below ends the container.
     status=0
-    timeout --foreground -k 5 900 docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} --rm --init \
+    timeout --foreground -k 5 900 docker run ${PLACE_ARGS[@]+"${PLACE_ARGS[@]}"} --rm --init \
       --name "$CACHE_CONTAINER" \
       --security-opt no-new-privileges \
       --cap-drop ALL \
@@ -414,12 +510,10 @@ refresh_bun_cache() {
     rm -f "$failed"
     # mktemp's 0700, or a package's own modes, would keep the runner's own user out
     chmod -R a+rX "$tmp"
-    # another launcher may have finished the same lockfile first
     mv -T "$tmp" "$version" 2>/dev/null || rm -rf "$tmp"
   fi
   old="$(readlink "$BUN_CACHES/current" 2>/dev/null || true)"
   if [ "$old" != "$lock" ]; then
-    # its mtime now says when it was replaced
     if [ -n "$old" ] && [ -d "$BUN_CACHES/$old" ]; then touch "$BUN_CACHES/$old"; fi
     ln -sfn "$lock" "$BUN_CACHES/.current-new" && mv -T "$BUN_CACHES/.current-new" "$BUN_CACHES/current"
   fi
@@ -446,20 +540,17 @@ refresh_caches() (
   return 0
 )
 
-# The first refresh says when it is done, so runners can start with warm caches; then one a minute.
 cache_loop() {
   trap 'exit 143' TERM
   refresh_caches
   : > "$STATE_DIR/warm"
   [ "$ONCE" = 1 ] && return 0
   while true; do
-    # a schedule, not a wait: one small fetch a minute keeps the mirror near GitHub
     sleep 60
     refresh_caches
   done
 }
 
-# Set when each runner starts, so a cache that appeared since is used.
 cache_args() {
   CACHE_ARGS=()
   [ "$CACHE" = 1 ] || return 0
@@ -471,9 +562,252 @@ cache_args() {
   fi
 }
 
-# The slot's own docker network, made when it is not there.
+# The ranges this host has now, each "<first> <last>" in HOST_RANGES: its routes in every table and
+# its own addresses. A route broader than /8 is no network but a default (`default`, 0.0.0.0/0, or a
+# full-tunnel VPN's /1 pair or four /2s): a runner network inside it takes those few addresses from
+# it, as it does from a default route. /8 and narrower count.
+host_ranges() {
+  local routes addrs words dest range
+  routes="$(ip -4 route show table all)" && addrs="$(ip -4 -o addr show)" || return 1
+  HOST_RANGES=()
+  while read -r -a words; do
+    [ "${#words[@]}" -gt 0 ] || continue
+    case "${words[0]}" in
+      broadcast|multicast) continue ;;
+      # local: an address of the host, as a /32 (one with a peer has no network in `ip -o addr`)
+      local|unicast|anycast|unreachable|blackhole|prohibit|throw|nat) words=("${words[@]:1}") ;;
+    esac
+    dest="${words[0]:-}"
+    case "$dest" in default|0.0.0.0/0|*/[0-7]) continue ;; esac
+    if range="$(cidr_range "$dest")"; then HOST_RANGES+=("$range"); fi
+  done <<< "$routes"
+  # "<index>: <device> inet <address>[/<bits>] ...": an address with a peer has no /<bits>, a /32
+  while read -r -a words; do
+    [ "${words[2]:-}" = inet ] || continue
+    if range="$(cidr_range "${words[3]:-}")"; then HOST_RANGES+=("$range"); fi
+  done <<< "$addrs"
+}
+
+host_overlap() {
+  local range
+  for range in ${HOST_RANGES[@]+"${HOST_RANGES[@]}"}; do
+    if [ "${range% *}" -le "${1#* }" ] && [ "${range#* }" -ge "${1% *}" ]; then
+      OVERLAP_END="${range#* }"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Whether the kernel would route a packet to the internet now, as it decides: `ip route get` follows
+# policy routing, every table and a VPN's split default, and fails where there is no route or an
+# unreachable, prohibit or blackhole one. At boot, before the LAN is up, it fails. So does a host with
+# no IPv4 route to the internet at all (IPv6 only, or a proxy only) and one without `ip`: their
+# slots report "no default route yet" and start no runner.
+host_routed() {
+  ip -4 route get 1.1.1.1 >/dev/null 2>&1
+}
+
+# The slot's own docker network "$1", for slot "$2": a /28 of NETWORK_BLOCK. One that is there is kept
+# when its only IPv4 range is a /28 of the block, and made again otherwise, unless a container is on
+# it. One that is kept is not checked against the host's ranges again: a host that later joins a
+# network inside the block needs another block (README "Run"). Nothing is removed or made while the
+# host has no route to the internet: at boot, before the LAN's route is there, any range could be
+# the LAN's. On failure, NETWORK_PROBLEM says why.
 slot_network() {
-  docker network inspect "$1" >/dev/null 2>&1 || docker network create --driver bridge "$1" >/dev/null 2>&1
+  local name="$1" slot="$2" found fields subnet range ranges=() first last start candidate refused=0 wrapped=0
+  local unrouted="this host has no default route yet: not making a docker network ($name)"
+  NETWORK_PROBLEM="could not make the docker network $name"
+  if ! host_routed; then NETWORK_PROBLEM="$unrouted"; return 1; fi
+  if found="$(docker network inspect -f '{{len .Containers}}{{range .IPAM.Config}} {{.Subnet}}{{end}}' "$name" 2>/dev/null)"; then
+    read -r -a fields <<< "$found"
+    for subnet in ${fields[@]+"${fields[@]:1}"}; do
+      case "$subnet" in *:*) ;; *) ranges+=("$subnet") ;; esac
+    done
+    if [ "${#ranges[@]}" = 1 ] && [ "${ranges[0]#*/}" = "$NETWORK_PREFIX" ] && range="$(cidr_range "${ranges[0]}")" &&
+      inside "$range" "$NETWORK_BLOCK"; then
+      return 0
+    fi
+    # Made by docker from its own pools (by a launcher from before the block), or by hand: a
+    # container on it would lose its network, so it stays until none is.
+    if [ "${fields[0]:-}" != 0 ]; then
+      found="${fields[*]:1}"
+      NETWORK_PROBLEM="the docker network $name (${found:-no address range}) is not a /28 of $NETWORK_BLOCK, and a container is on it: leaving it as it is"
+      return 1
+    fi
+    docker network rm "$name" >/dev/null 2>&1 || return 1
+    if ! host_routed; then NETWORK_PROBLEM="$unrouted"; return 1; fi
+  fi
+  if ! host_ranges; then
+    NETWORK_PROBLEM="could not read this host's routes and addresses (ip -4) to choose a range for the docker network $name"
+    return 1
+  fi
+  # Slot N first tries the block's Nth /28, so the slots of one launcher never race for one, or the
+  # one where its last search stopped, so its retries walk the whole block; then the ones after it,
+  # and on from the block's start. A range the host has is passed whole. Docker refuses a /28 that
+  # another of its networks overlaps: the next is tried, up to 16 refusals a search.
+  read -r first last <<< "$BLOCK_RANGE"
+  start=${SEARCH_FROM:-$(( first + (slot - 1) % ((last - first + 1) / NETWORK_SIZE) * NETWORK_SIZE ))}
+  candidate=$start
+  while [ "$refused" -lt 16 ]; do
+    if [ "$candidate" -gt "$last" ]; then
+      [ "$wrapped" = 0 ] || break
+      candidate=$first wrapped=1
+    fi
+    if [ "$wrapped" = 1 ] && [ "$candidate" -ge "$start" ]; then break; fi
+    if host_overlap "$candidate $(( candidate + NETWORK_SIZE - 1 ))"; then
+      candidate=$(( (OVERLAP_END / NETWORK_SIZE + 1) * NETWORK_SIZE ))
+      continue
+    fi
+    subnet="$(( candidate >> 24 & 255 )).$(( candidate >> 16 & 255 )).$(( candidate >> 8 & 255 )).$(( candidate & 255 ))/$NETWORK_PREFIX"
+    if docker network create --driver bridge --subnet "$subnet" "$name" >/dev/null 2>&1; then
+      unset SEARCH_FROM
+      return 0
+    fi
+    refused=$(( refused + 1 ))
+    candidate=$(( candidate + NETWORK_SIZE ))
+  done
+  if [ "$refused" -ge 16 ]; then
+    if [ "$candidate" -gt "$last" ]; then SEARCH_FROM=$first; else SEARCH_FROM=$candidate; fi
+    return 1
+  fi
+  unset SEARCH_FROM
+  NETWORK_PROBLEM="no /28 of $NETWORK_BLOCK is free for the docker network $name: this host's routes and addresses, or docker's networks, cover all of it (OVIS_CI_NETWORK_BLOCK names another block, inside 10.0.0.0/8 or 172.16.0.0/16)"
+  return 1
+}
+
+# ---------------------------------------------------------------- the offer gate
+# One idle runner per host and pool (a repository and a label set: a runner of another repository never
+# takes this one's jobs, whatever its labels), at least $OFFER_PAUSE s after this host started a runner, and only
+# while this host's CPU and memory pressure are under its thresholds. A runner counts as running a job
+# while a Runner.Worker process is in it: one still registering is an offer already on its way.
+psi_avg10() {
+  sed -n 's/^some avg10=\([0-9][0-9.]*\).*/\1/p' "$PSI_DIR/$1" 2>/dev/null
+}
+
+psi_under() {
+  awk -v value="$1" -v limit="$2" 'BEGIN { exit !(value + 0 < limit + 0) }'
+}
+
+# Sets OFFER_HOLD to the reason to wait when this host has no room right now.
+offer_room() {
+  local name slot pool procs youngest="" age value started claim
+  OFFER_HOLD=""
+  # a slot that claimed room and has not started its container yet (token, network): an offer on its way.
+  # Once that container runs, docker ps below counts it. Claims are removed only under the lock ($3), so
+  # a look outside it never deletes a claim a slot has just made again.
+  for claim in "$OFFER_STATE/offer-$HOST.claim."*; do
+    [ -f "$claim" ] || continue
+    name="${claim##*.claim.}"
+    [ "$name" = "$1" ] && continue
+    if [ "$(docker container inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] || [ -n "$(find "$claim" -mmin +10 2>/dev/null)" ]; then
+      if [ "${3:-}" = locked ]; then rm -f "$claim" || true; fi
+      continue
+    fi
+    if [ "$(cat "$claim" 2>/dev/null)" = "$2" ]; then
+      OFFER_HOLD="the slot $name of this pool is starting its runner"
+      return 1
+    fi
+  done
+  for name in $(docker ps --filter "name=$PEER_PREFIX" --format '{{.Names}}' 2>/dev/null || true); do
+    # <prefix><slot> or a launcher copy's <prefix><word>-<slot> (pr-3, main-1, appb-2)
+    slot="${name#"$PEER_PREFIX"}"
+    slot="${slot##*-}"
+    case "$slot" in ''|*[!0-9]*) continue ;; esac
+    # seconds since it started, and the command line: a Runner.Worker is a job; one still registering
+    # has none, so the container counts as idle and an offer of this pool is already on its way. A
+    # container whose processes cannot be read is neither: a broken docker top must not stop every
+    # offer this host would make.
+    # docker top needs the pid column ("Couldn't find PID field in ps output" without it)
+    procs="$(docker top "$name" -eo pid,etimes,args 2>/dev/null)" || continue
+    age="$(printf '%s\n' "$procs" | awk 'NR > 1 && $3 ~ /Runner\.Worker/ && $2 ~ /^[0-9]+$/ { print $2; exit }')"
+    if [ -n "$age" ]; then
+      if [ -z "$youngest" ] || [ "$age" -lt "$youngest" ]; then youngest="$age"; fi
+      continue
+    fi
+    [ "$name" = "$1" ] && continue
+    pool="$(docker container inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null \
+      | awk -F= '$1 == "RUNNER_URL" { url = substr($0, 12) } $1 == "RUNNER_LABELS" { labels = substr($0, 15) } END { print url " " labels }' || true)"
+    [ "$pool" = "$2" ] || continue
+    OFFER_HOLD="the runner $name of this pool is idle and waiting for a job"
+    return 1
+  done
+  # a job started this host over again: its pressure shows up late, so the next offer waits it out
+  if [ "$OFFER_PAUSE" -gt 0 ] && [ -n "$youngest" ] && [ "$youngest" -lt "$OFFER_PAUSE" ]; then
+    OFFER_HOLD="a job started on this host ${youngest}s ago, less than ${OFFER_PAUSE}s"
+    return 1
+  fi
+  if [ "$OFFER_PAUSE" -gt 0 ] && [ -r "$OFFER_STAMP" ]; then
+    started="$(cat "$OFFER_STAMP" 2>/dev/null || true)"
+    case "$started" in
+      ''|*[!0-9]*) ;;
+      *)
+        age=$(( $(date +%s) - started ))
+        if [ "$age" -lt 0 ]; then age=0; fi
+        if [ "$age" -lt "$OFFER_PAUSE" ]; then
+          OFFER_HOLD="this host started a runner ${age}s ago, less than ${OFFER_PAUSE}s"
+          return 1
+        fi ;;
+    esac
+  fi
+  if [ -n "$OFFER_CPU_PSI" ]; then
+    value="$(psi_avg10 cpu)"
+    if [ -n "$value" ] && ! psi_under "$value" "$OFFER_CPU_PSI"; then
+      OFFER_HOLD="CPU pressure is ${value}% (this host's limit is under ${OFFER_CPU_PSI}%)"
+      return 1
+    fi
+  fi
+  if [ -n "$OFFER_MEMORY_PSI" ]; then
+    value="$(psi_avg10 memory)"
+    if [ -n "$value" ] && ! psi_under "$value" "$OFFER_MEMORY_PSI"; then
+      OFFER_HOLD="memory pressure is ${value}% (this host's limit is under ${OFFER_MEMORY_PSI}%)"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Host-wide, so that the next slot's gate sees this start even before the container shows up.
+offer_record() {
+  printf '%s\n' "$(date +%s)" > "$OFFER_STAMP.new.$$" && mv -f "$OFFER_STAMP.new.$$" "$OFFER_STAMP"
+}
+
+# The slot's claim stays until its container shows up (another slot's gate then removes it) or for ten
+# minutes; the slot removes it itself when it gives up this try.
+offer_claim() {
+  printf '%s\n' "$2" > "$OFFER_STATE/.new-claim.$1" && mv -f "$OFFER_STATE/.new-claim.$1" "$OFFER_STATE/offer-$HOST.claim.$1" && offer_record
+}
+
+# Waits for room, then claims it under the host-wide lock and records the start before releasing it.
+offer_wait() {
+  local name="$1" pool="$2" claimed reason=""
+  while true; do
+    if offer_room "$name" "$pool"; then
+      claimed=0
+      # >> and never >: the lock lives in the file's inode, which a truncation keeps. A lock file that
+      # cannot be opened holds the slot instead of ending its loop.
+      if ! {
+        if flock -w 60 9; then
+          if offer_room "$name" "$pool" locked; then
+            if offer_claim "$name" "$pool"; then claimed=1; else OFFER_HOLD="the gate cannot write its state in $OFFER_STATE"; fi
+          fi
+        else
+          OFFER_HOLD="another slot of this host has held the gate's lock for 60s"
+        fi
+      } 2>/dev/null 9>>"$OFFER_LOCK"; then
+        OFFER_HOLD="the gate cannot open its lock $OFFER_LOCK"
+      fi
+      if [ "$claimed" = 1 ]; then
+        [ -z "$reason" ] || echo "[$name] there is room on this host: starting a runner" >&2
+        return 0
+      fi
+    fi
+    if [ "$OFFER_HOLD" != "$reason" ]; then
+      echo "[$name] waiting for room on this host: $OFFER_HOLD" >&2
+      reason="$OFFER_HOLD"
+    fi
+    sleep "$OFFER_POLL"
+  done
 }
 
 slot_loop() {
@@ -500,11 +834,15 @@ slot_loop() {
     # The check slots and the slot's network first: without the first a job's check.ts stops, without
     # the second no container starts, and neither is worth a registration token.
     problem=""
+    # the pool: this runner's repository and labels, as its container's RUNNER_URL and RUNNER_LABELS say
+    if [ "$OFFER" = 1 ] && [ "$slot" -gt "$((10#$RESERVED))" ]; then offer_wait "$name" "https://github.com/$REPO $labels"; fi
     if ! start_slots; then problem="could not make the check slots in $SLOTS"
-    elif ! slot_network "$name-net"; then problem="could not make the docker network $name-net"
-    elif ! token="$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"; then problem="could not fetch a registration token"
+    elif ! slot_network "$name-net" "$slot"; then problem="$NETWORK_PROBLEM"
+    # bounded, so an offer claim (ten minutes) always outlives the attempt that made it
+    elif ! token="$(timeout 120 gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"; then problem="could not fetch a registration token"
     fi
     if [ -n "$problem" ]; then
+      rm -f "$OFFER_STATE/offer-$HOST.claim.$name" || true
       echo "[$name] $problem; retrying in ${delay}s" >&2
       [ "$ONCE" = 1 ] && return 1
       sleep "$delay"
@@ -514,20 +852,23 @@ slot_loop() {
       continue
     fi
     delay=30
-    # No docker socket, no host mount but the read-only caches, no privileges. tini is already the entrypoint.
+    # No docker socket, no host mount but the read-only caches and the slot's build cache outbox, no privileges.
+    # tini is already the entrypoint.
     # No core dumps: with the host's relative core_pattern ("core") a crash writes one into the
-    # checkout, which scripts/check.ts then counts as a source change of the run.
+    # checkout, which scripts/check.ts then counts as a source change of the run. A hard limit of 1 byte, under which
+    # the kernel writes none either, lets server/pty/host.test.ts check that it lowers a crashing command's to 1.
     # The token goes in on stdin (entrypoint.sh), so it is never in the container's environment.
     cache_args
     build_cache_args "$name"
-    if printf '%s\n' "$token" | docker run ${CPUSET_ARGS[@]+"${CPUSET_ARGS[@]}"} --rm -i \
+    [ "$OFFER" = 1 ] && { offer_record || true; }
+    if printf '%s\n' "$token" | docker run ${PLACE_ARGS[@]+"${PLACE_ARGS[@]}"} --rm -i \
       --name "$name" \
       --network "$name-net" \
       --security-opt no-new-privileges \
       --cap-drop ALL \
       --pids-limit 8192 \
       --shm-size 2g \
-      --ulimit core=0 \
+      --ulimit core=0:1 \
       -v "$SLOTS:/check-slots" \
       -e RUNNER_URL="https://github.com/$REPO" \
       -e RUNNER_NAME="$name" \
@@ -544,6 +885,7 @@ slot_loop() {
       echo "[$name] container exited with status $container_status" >&2
     fi
     token=""
+    rm -f "$OFFER_STATE/offer-$HOST.claim.$name" || true
     [ "$ONCE" = 1 ] && return "$container_status"
   done
 }
@@ -557,7 +899,6 @@ cleanup() {
   cleaned=1
   trap '' INT TERM
   echo "stopping runner slots..." >&2
-  # the whole refresh, git and the Bun cache build included: none may outlive the launcher
   if [ -n "$STATE_DIR" ]; then : > "$STATE_DIR/stopping"; fi
   if [ -n "$CACHE_PID" ]; then kill -TERM -- "-$CACHE_PID" 2>/dev/null || true; fi
   if [ -n "$PROMOTE_PID" ]; then kill -TERM -- "-$PROMOTE_PID" 2>/dev/null || true; fi
@@ -568,19 +909,14 @@ cleanup() {
   for slot in $(seq 1 "$COUNT"); do
     docker stop -t 30 "${PREFIX}${slot}" >/dev/null 2>&1 || true
   done
-  # the runners, and the cache loop with every git and docker client it started
   wait 2>/dev/null || true
   # a build client killed while its container still ran left the container behind
   docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
-  # the slots' networks, with no container left on them, and the check slots' keeper last
   for slot in $(seq 1 "$COUNT"); do
     docker network rm "${PREFIX}${slot}-net" >/dev/null 2>&1 || true
   done
   docker stop -t 5 "$SLOTS" >/dev/null 2>&1 || true
-  # what a launcher from before the slots had networks of their own left when it was killed rather
-  # than stopped: the container whose network namespace all its runners shared
   docker stop -t 5 "${PREFIX}net" >/dev/null 2>&1 || true
-  # Remove any runner of this host that is still registered.
   ids="$(gh api "repos/$REPO/actions/runners" --paginate \
     --jq ".runners[] | select(.name | startswith(\"$PREFIX\")) | .id" 2>/dev/null || true)"
   for id in $ids; do
@@ -594,13 +930,10 @@ trap 'exit 143' TERM
 
 if [ "$CACHE" = 1 ]; then
   STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovis-ci-runner.XXXXXX")"
-  # in a process group of its own (job control on for this one start), so cleanup stops it whole
   set -m
   cache_loop &
   CACHE_PID="$!"
   set +m
-  # The first runners wait for warm caches, up to --cache-wait: a refresh that hangs or fails costs
-  # downloads, never the runners. Short naps, so a stop signal is handled at once.
   deadline=$((SECONDS + 10#$CACHE_WAIT))
   while [ ! -e "$STATE_DIR/warm" ] && kill -0 "$CACHE_PID" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
     sleep 0.1
@@ -611,7 +944,6 @@ if [ "$CACHE" = 1 ]; then
 fi
 
 if [ -n "$BUILD_CACHE_ROOT" ]; then
-  # what an earlier launcher's promoter left
   clean_taken
   set -m
   promote_loop &
@@ -632,5 +964,4 @@ if [ "$ONCE" = 1 ]; then
   exit "$rc"
 fi
 
-# Slot loops run until a signal arrives; `wait` is interrupted by the traps.
 wait

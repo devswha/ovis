@@ -1,16 +1,14 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { SlashCommand } from "../../shared/protocol.ts";
 import { fetchAgentCommands } from "./api.ts";
 import { type AgentSkills, SKILLS_MS, useAgentSkills } from "./useAgentSkills.ts";
 
 const skill: SlashCommand = { name: "deploy", description: "Ship it", source: "skill" };
 
-// React, the hook and the API function are real; only the network is a stand-in (#2254).
 describe("useAgentSkills while the PC is busy scanning", () => {
-  let renderer: ReactTestRenderer | null = null;
-  /** answers left that are a busy PC's 503, each with this Retry-After (seconds) */
+  let page: Page;
   let busy: { left: number; retryAfter: string | null } = { left: 0, retryAfter: null };
   let seen: AgentSkills = null;
   let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
@@ -18,13 +16,12 @@ describe("useAgentSkills while the PC is busy scanning", () => {
     [seen] = useAgentSkills(open, "claude", folder, (agent, cwd) => fetchAgentCommands(agent, cwd), (text) => text);
     return null;
   }
-  /** Lets a read's promise chain finish: a bounded number of turns, each inside act. */
   const settle = async (done: () => boolean) => { for (let turn = 0; turn < 50 && !done(); turn++) await act(async () => { await Promise.resolve(); }); };
   const calls = () => fetchSpy.mock.calls.length;
   const advance = async (ms: number) => { await act(async () => { jest.advanceTimersByTime(ms); }); };
 
-  beforeAll(() => { Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true }); });
   beforeEach(() => {
+    page = openPage();
     jest.useFakeTimers();
     busy = { left: 0, retryAfter: null };
     seen = null;
@@ -37,14 +34,13 @@ describe("useAgentSkills while the PC is busy scanning", () => {
     }, { preconnect: globalThis.fetch.preconnect }));
   });
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = null;
-    fetchSpy.mockRestore();
     jest.useRealTimers();
+    await page.close();
+    fetchSpy.mockRestore();
   });
 
   const open = async (folder = "/work") => {
-    await act(async () => { renderer = create(createElement(Probe, { open: true, folder })); });
+    await page.render(createElement(Probe, { open: true, folder }));
     await advance(SKILLS_MS);
     await settle(() => calls() >= 1);
   };
@@ -54,7 +50,6 @@ describe("useAgentSkills while the PC is busy scanning", () => {
     await open();
     await settle(() => false);
     expect(calls()).toBe(1);
-    // no error note, no empty list: still on its way
     expect(seen).toBeNull();
     await advance(1_000);
     await settle(() => seen !== null);
@@ -97,7 +92,7 @@ describe("useAgentSkills while the PC is busy scanning", () => {
     busy = { left: 100, retryAfter: "1" };
     await open();
     await settle(() => false);
-    await act(async () => { renderer?.update(createElement(Probe, { open: false, folder: "/work" })); });
+    await page.render(createElement(Probe, { open: false, folder: "/work" }));
     await advance(60_000);
     await settle(() => false);
     expect(calls()).toBe(1);

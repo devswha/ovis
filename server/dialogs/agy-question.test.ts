@@ -30,6 +30,14 @@ test("takes the write-in field for open only while it ends the screen", () => {
   expect(agyWriteInWaits(`${editor}user@host:~$ echo pending\n`)).toBe(false);
 });
 
+test("accepts an aligned Antigravity model footer, not indented output", () => {
+  const question = screen.trimEnd().split("\n").slice(0, -1).join("\n");
+  expect(parseInteractivePrompt("agy", `${question}\n                    Gemini 3.8 Flash · high\n`)).not.toBeNull();
+  expect(parseInteractivePrompt("agy", `${question}\n                    auto · Gemini 4 Hydrogen · medium\n`)).not.toBeNull();
+  expect(parseInteractivePrompt("agy", `${question}\n                    $ echo unexpected\n`)).toBeNull();
+  expect(parseInteractivePrompt("agy", `${question}\n                    $ echo unexpected · high\n`)).toBeNull();
+});
+
 test("does not read the folder-trust picker as a question", () => {
   expect(parseInteractivePrompt("agy", readFileSync(new URL("../fixtures/agy-1.5.6-trust.txt", import.meta.url), "utf8"))).toBeNull();
 });
@@ -54,7 +62,6 @@ test("gives a multiple choice a new card when its ticks change in the terminal",
 });
 
 test("refuses ticks with typed text for a card whose own steps cannot take both", () => {
-  // a multiple choice that says it takes ticks with text, as pi-ask's form does, but has no steps of its own for them
   const parsed = finishPrompt("pi", { kind: "question", title: "Question", question: "Which?", body: null, options: [{ label: "A", description: null }, { label: "B", description: null }], multi_select: true, checks_with_text: true, custom_option_index: 2 },
     { responder: "pi-ask-question", menuLabels: ["A", "B", "Other"], selectedIndex: 0, checkedOptionIndices: [], customMenuIndex: 2, rejectWithEscapeIndex: null });
   expect(() => answerKeys(publicPrompt(parsed), { option_indices: [0], custom_text: "C" })).toThrow("This prompt does not take ticks and typed text together.");

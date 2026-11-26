@@ -1,12 +1,8 @@
 /**
  * A yes-or-no question before something that cannot be undone. Cancel takes the focus, so Enter
- * answers no; Escape and the scrim answer no as well, and Tab stays between the two buttons. A
- * no gives the focus back to what opened the dialog; after a yes the owner decides, since the
- * row that opened it is usually gone. The action runs here, so its failure shows in the dialog.
- * A refusal the owner named (git refusing a dirty checkout) turns the action into its escalation
- * (Delete anyway), with the refusal's own words above it.
+ * answers no; Escape and the scrim answer no as well, and Tab stays between the two buttons.
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import "./ConfirmDialog.css";
@@ -21,20 +17,19 @@ interface Props {
   title: string;
   body: string;
   confirmLabel: string;
-  /** resolves once the deed is done; the owner then takes the dialog down */
   onConfirm: () => Promise<void>;
-  /** when the deed is refused with this error code, the action becomes this one */
   escalation?: { label: string; code: string; run: () => Promise<void> };
   onClose: () => void;
+  /** what the question also covers, below its body (DevicesPanel: the Tailscale devices a removal keeps out) */
+  children?: ReactNode;
 }
 
-export function ConfirmDialog({ title, body, confirmLabel, onConfirm, escalation, onClose }: Props) {
+export function ConfirmDialog({ title, body, confirmLabel, onConfirm, escalation, onClose, children }: Props) {
   const t = useT();
   const id = useId();
   const cancel = useRef<HTMLButtonElement>(null);
   const action = useRef<HTMLButtonElement>(null);
   const done = useRef(false);
-  // the trap and the hand-back, which every aria-modal surface now shares
   const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: cancel, shouldRestore: () => !done.current });
   const [pending, setPending] = useState(false);
   useSheetSwipe(surface, pending ? null : onClose);
@@ -45,7 +40,6 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, escalation
   // both buttons disable while the deed runs, which would drop the focus into the page: the
   // dialog itself holds it, and Tab stays put until the dialog goes
   useEffect(() => { if (pending) surface.current?.focus(); }, [pending]);
-  // Escape is this dialog's while it is up, even while the deed runs and cannot be undone
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       // a native modal over it (Add PC, from the palette) takes its own Escape
@@ -76,6 +70,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, escalation
         <header className="modal-header"><h2 className="modal-title" id={`${id}-title`}>{title}</h2></header>
         <div className="modal-body">
           <p className="confirm-body" id={`${id}-body`}>{body}</p>
+          {children}
           {error && <p className="confirm-error" role="alert">{error}</p>}
         </div>
         <footer className="modal-footer">

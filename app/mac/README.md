@@ -42,6 +42,12 @@ cookies and drafts stay in the app's own WebKit store, apart from any browser's.
   does not fit in the new page's storage stays in the app and is written on the next try.
 - Another app's link (a site in a web panel can make one) asks before it opens that app, as Safari
   does, and only the Ovis page itself opens app windows.
+- **Browser for links** (Settings → Chat → Files, the default browser unless chosen): the page's
+  web links (`kind` link in `src/lib/externalLink.ts`) open in the app chosen there, from the apps
+  LaunchServices opens https with, or agent-browser when its program is on the Mac (headed, in a
+  session `ovis-links` of its own). The page reaches it through the `ovisBrowsers` bridge
+  (`LinkBrowsers.swift`), from the Ovis page's own main frame only, and names an app by its id. When
+  the chosen app is gone or cannot open the link, the default browser opens it.
 - The user agent ends like Safari's, then `OvisMac/<version>`: the terminal's Korean input
   (xterm.js's Hangul handling in `patches/`) goes by "Safari", and the page treats the app as
   installed (`src/lib/nativeApp.ts`).
@@ -52,7 +58,7 @@ cookies and drafts stay in the app's own WebKit store, apart from any browser's.
 
 | Button | What runs |
 | --- | --- |
-| **Install** | `install.sh`, downloaded fresh from https://ovis.sh/install.sh over HTTPS (following only a redirect to ovis.sh or herdrweb.dev, where it is served from), with `OVIS_NO_OPEN=1` and an empty stdin. Then a LaunchAgent, `~/Library/LaunchAgents/sh.ovis.herdr-server.plist`, runs `herdr server` at login. |
+| **Install** | `install.sh`, downloaded fresh from https://ovis.sh/install.sh over HTTPS (following only a redirect to ovis.sh or herdrweb.dev, where it is served from), with `OVIS_NO_OPEN=1` and an empty stdin. Then a LaunchAgent, `~/Library/LaunchAgents/sh.ovis.herdr-server.plist`, runs `herdr server` at login. Where herdr was not running, install.sh writes and loads that same LaunchAgent itself (unless given `--no-service`, which leaves one that is there), and the app then finds it loaded. |
 | Status (on open) | `herdr plugin list --json` finds the plugin, `scripts/plugin.ts status` gives its address, and `GET /api/access` gives the phone address, drawn as a QR code. The app asks only a loopback address, never through a redirect, and draws the code only for Tailscale's HTTPS name of this Mac (`https://<name>.ts.net`). |
 | **Make the phone address** | `scripts/plugin.ts phone`, the installer's Tailscale step, from the code the server runs now. Settings → Updates runs newer releases from the state dir while herdr's checkout stays at the first one, so the app reads it from the processes: `plugin.ts status` names the launcher (`server/managed.ts` of this checkout), whose supervisor runs the bridge (`server/index.ts`) in the code's dir. When that cannot be read, or the dir is neither the checkout nor a `release-*` dir with its own `plugin.ts`, the checkout's runs. When it fails, the window shows its output. |
 | **Restart** / **Start** | The plugin's `stop` and `start`, or the LaunchAgent when herdr is not running. herdr set up from a terminal has no LaunchAgent: Start then runs herdr for this login only and makes no login item. |

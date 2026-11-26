@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { Composer, type ComposerProps } from "./Composer.tsx";
 import * as settingsModule from "../lib/settings.ts";
 import * as commandsModule from "../lib/usePaneCommands.ts";
@@ -11,22 +12,19 @@ import { replyComments } from "../lib/replyComments.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
 const pane = "restored-pane", draftKey = `ovis:composer-draft:${pane}`, commentsKey = `ovis:reply-comments:${pane}`;
-const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
+const browserGlobals = ["requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver"] as const;
 const saved = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
 beforeEach(() => {
-  for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    navigator: { languages: ["en"], userAgent: "test", maxTouchPoints: 0 },
-    window: { ...listen, location: { href: "https://ovis.test/" }, matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout },
-    document: { ...listen, querySelector: () => null },
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => {},
-  };
-  for (const key of globals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: values[key] });
+  page = openPage("https://ovis.test/");
+  for (const [key, value] of Object.entries({ languages: ["en"], userAgent: "test", maxTouchPoints: 0 })) {
+    Object.defineProperty(page.window.navigator, key, { configurable: true, value });
+  }
+  for (const key of browserGlobals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+  Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: () => 1 });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: page.window.ResizeObserver });
   const data = new Map<string, string>();
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
@@ -39,9 +37,8 @@ beforeEach(() => {
   composerDrafts.set(draftKey, "");
 });
 
-afterEach(() => {
-  act(() => { renderer?.unmount(); });
-  renderer = undefined;
+afterEach(async () => {
+  await page.close();
   composerDrafts.set(draftKey, "");
   replyComments.clear(commentsKey);
   mock.restore();
@@ -52,15 +49,14 @@ afterEach(() => {
   saved.clear();
 });
 
-/** Sends what Claude put back in its box after the user edited it, once Claude has exited: the sends' agentOnly flags. */
 async function resendRestored(restored: string): Promise<unknown[]> {
   const calls: unknown[][] = [];
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
-  await act(async () => { renderer = create(<Composer {...props} restored={restored} />); });
+  await page.render(<Composer {...props} restored={restored} />);
   expect(composerDrafts.read(draftKey).text).toBe(restored);
   await act(async () => { composerDrafts.set(draftKey, `${restored} please`); });
-  await act(async () => { renderer!.update(<Composer {...props} agent={null} restored={null} />); });
-  await act(async () => { renderer!.root.findByProps({ "aria-label": "Send message" }).props.onClick(); });
+  await page.render(<Composer {...props} agent={null} restored={null} />);
+  await act(async () => { page.one('[aria-label="Send message"]').click(); });
   return calls.map((call) => call[3]);
 }
 
@@ -73,7 +69,6 @@ it("sends any other restored message as before (control)", async () => {
   expect(await resendRestored("Keep this backup")).toEqual([undefined]);
 });
 
-// #2596: Ctrl+Enter sends the message now, as the queued row's Send now would; Enter keeps its queue
 it.each([
   ["Ctrl+Enter", { ctrlKey: true }, [true]],
   ["Enter", {}, [undefined]],
@@ -82,33 +77,36 @@ it.each([
   const calls: unknown[][] = [];
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
   composerDrafts.set(draftKey, "steer this");
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
-  await act(async () => {
-    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, ...keys, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
-  });
+  await page.render(<Composer {...props} />);
+  await keyDown(keys);
   expect(calls.map((call) => call[4])).toEqual([...expected]);
 });
 
+async function keyDown(
+  { nativeEvent, ...keys }: { altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; nativeEvent?: { isComposing: boolean; keyCode: number } },
+  key = "Enter",
+): Promise<boolean> {
+  const event = new page.window.KeyboardEvent("keydown", {
+    key, code: key, keyCode: 13, bubbles: true, cancelable: true, ...keys, ...nativeEvent,
+  });
+  const box = page.one<HTMLTextAreaElement>("textarea.composer-text");
+  await act(async () => { box.dispatchEvent(event as unknown as Event); });
+  return event.defaultPrevented;
+}
+
 let prevented = false;
-/** The `now` and `hold` flags of each onSend a key in the box made. `layout`: "phone" matches every query (a coarse pointer),
- * "narrow" only the width (a mouse in a window 640px wide or less); `enterSends`: this device's Enter sends setting */
-async function pressIn(keys: Record<string, unknown>, agentStatus: "working" | "idle", layout: "desktop" | "phone" | "narrow" = "desktop", enterSends: boolean | null = null): Promise<unknown[][]> {
+async function pressIn(keys: Parameters<typeof keyDown>[0], agentStatus: "working" | "idle", layout: "desktop" | "phone" | "narrow" = "desktop", enterSends: boolean | null = null): Promise<unknown[][]> {
   const calls: unknown[][] = [];
   prevented = false;
-  if (layout !== "desktop") Object.assign(window, { matchMedia: (query: string) => ({ matches: layout === "phone" || query.includes("max-width"), addEventListener() {}, removeEventListener() {} }) });
+  if (layout !== "desktop") Object.defineProperty(page.window, "matchMedia", { configurable: true, value: (query: string) => ({ matches: layout === "phone" || query.includes("max-width"), addEventListener() {}, removeEventListener() {} }) });
   spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, enterSends }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus, connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
   composerDrafts.set(draftKey, "keep this for later");
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
-  await act(async () => {
-    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() { prevented = true; }, ...keys });
-  });
+  await page.render(<Composer {...props} />);
+  prevented = await keyDown(keys);
   return calls.map((call) => [call[4], call[5]]);
 }
 
-// Alt+Enter (Option+Enter) holds the message in the queued list for its Send now, whatever automatic sending says
 for (const agentStatus of ["working", "idle"] as const) {
   it.each([
     ["Alt+Enter", { altKey: true }, [[false, true]]],
@@ -125,8 +123,6 @@ for (const agentStatus of ["working", "idle"] as const) {
   });
 }
 
-// the phone layout (a coarse pointer, or a window 640px wide or less) keeps Alt+Enter as it was: the box's line break.
-// Never a send, even where this device's Enter sends: a hold that is not a hold must not go at once instead
 it.each([
   ["a phone", "phone", null],
   ["a phone where Enter sends", "phone", true],
@@ -137,9 +133,8 @@ it.each([
     expect(await pressIn({ altKey: true }, agentStatus, layout, enterSends)).toEqual([]);
     expect(prevented).toBe(false);
     expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
-    act(() => { renderer?.unmount(); });
+    await page.render(null);
   }
-  // control: Enter itself still sends where Enter sends
   if (enterSends === true || layout === "narrow") expect(await pressIn({}, "working", layout, enterSends)).toEqual([[undefined, undefined]]);
 });
 
@@ -159,21 +154,16 @@ it.each([
 
 // #3460: with the completion menu open, Ctrl/Cmd+Enter with Alt (AltGr on Windows, Cmd+Option on a Mac) picks nothing and
 // leaves the key to the box, as it sends nothing without the menu; Enter, Tab and Alt+Enter alone still pick
-async function pressInMenu(keys: Record<string, unknown>, enterSends: boolean, key = "Enter"): Promise<{ sends: number; text: string }> {
+async function pressInMenu(keys: Parameters<typeof keyDown>[0], enterSends: boolean, key = "Enter"): Promise<{ sends: number; text: string }> {
   let sends = 0;
   prevented = false;
-  // the open menu scrolls its highlighted row into view
-  Object.assign(document, { getElementById: () => null });
   spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, enterSends }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   spyOn(commandsModule, "usePaneCommands").mockReturnValue([{ name: "review", description: "Review the changes", source: "user" }]);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: () => { sends += 1; return true; }, onAbort() {}, onUploadImage: async () => "" };
   composerDrafts.set(draftKey, "/rev");
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  expect(renderer!.root.findAll((node) => node.props.role === "listbox").length).toBeGreaterThan(0);
-  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
-  await act(async () => {
-    box.props.onKeyDown({ key, shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() { prevented = true; }, ...keys });
-  });
+  await page.render(<Composer {...props} />);
+  expect(page.container.querySelectorAll('[role="listbox"]').length).toBeGreaterThan(0);
+  prevented = await keyDown(keys, key);
   return { sends, text: composerDrafts.read(draftKey).text };
 }
 
@@ -203,17 +193,10 @@ it("keeps the draft and says why when a hold is refused", async () => {
   const refusal = "Update this PC to hold messages. Your draft stayed here.";
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return refusal; }, onAbort() {}, onUploadImage: async () => "" };
   composerDrafts.set(draftKey, "keep this for later");
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
-  await act(async () => {
-    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: true, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
-  });
-  // it went as a hold, not a send now
+  await page.render(<Composer {...props} />);
+  await keyDown({ altKey: true });
   expect(calls.map((call) => [call[4], call[5]])).toEqual([[false, true]]);
   expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
-  // the composer's note (role="alert") says why
-  type Node = ReturnType<ReactTestRenderer["root"]["findAll"]>[number];
-  const textOf = (node: Node | string): string => typeof node === "string" ? node : node.children.map(textOf).join("");
-  const alerts = renderer!.root.findAll((node) => node.type === "div" && node.props.role === "alert" && node.props.className === "composer-note");
-  expect(alerts.map(textOf)).toEqual([refusal]);
+  const alerts = [...page.container.querySelectorAll('div[role="alert"][class="composer-note"]')];
+  expect(alerts.map((alert) => alert.textContent)).toEqual([refusal]);
 });

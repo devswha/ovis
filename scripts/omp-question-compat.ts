@@ -1,4 +1,3 @@
-/** Native OMP ask-tool canary. Run through `bun run check run --build` only. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -199,7 +198,6 @@ process.on("SIGTERM", () => { app.stop(); process.exit(0); });
     if (index === 0) await browser(cli, browserEnv, ["screenshot", join(out, "desktop.png")]);
     if (index === 3) {
       await browser(cli, browserEnv, ["set", "viewport", String(cases[1]!.viewport[0]), "1400"]);
-      // a 390px phone's one lens button goes to the terminal, and back below
       await browser(cli, browserEnv, ["click", ".app-header .lens-toggle"]);
       const nativeRows = await waitForTerminalRows(cli, browserEnv, 30_000);
       assert.ok(nativeRows > 24, `tall native terminal should expose more than 24 rows (got ${nativeRows})`);
@@ -208,7 +206,6 @@ process.on("SIGTERM", () => { app.stop(); process.exit(0); });
       await browser(cli, browserEnv, ["click", ".app-header .lens-toggle"]);
       await browser(cli, browserEnv, ["set", "viewport", String(cases[1]!.viewport[0]), String(cases[1]!.viewport[1])]);
       const drawerOpen = JSON.parse(await browser(cli, browserEnv, ["eval", "document.querySelector('#workspace-drawer.is-open') !== null"])) as boolean;
-      // the open drawer's head is the Ovis mark; its named close is drawn only for the keyboard, so it is pressed from the page
       if (drawerOpen) await browser(cli, browserEnv, ["eval", "document.querySelector('.drawer-close')?.click()"]);
       question = await waitForPrompt(origin, paneId, fixture.question, 30_000);
       assert.equal(question.question, fixture.question, "narrow terminal resize preserves the exact wrapped question");
@@ -266,7 +263,7 @@ process.on("SIGTERM", () => { app.stop(); process.exit(0); });
     await browser(browserCli, browserEnvForCleanup, ["screenshot", join(out, "failure.png")]).catch(() => "");
     const snapshot = await browser(browserCli, browserEnvForCleanup, ["snapshot"]).catch((error) => String(error));
     writeFileSync(join(out, "browser-failure.txt"), snapshot);
-    const dom = await browser(browserCli, browserEnvForCleanup, ["eval", "({title:document.title,url:location.href,body:document.body?.innerText?.slice(0,12000),promptCards:document.querySelectorAll('.prompt-card').length,conversationUnavailable:document.body?.innerText?.includes('Conversation unavailable')??false,terminalRows:document.querySelectorAll('.xterm-rows > div').length,terminalHeight:document.querySelector('.xterm-screen')?.getBoundingClientRect().height})"]).catch((error) => String(error));
+    const dom = await browser(browserCli, browserEnvForCleanup, ["eval", "({title:document.title,url:location.href,body:document.body?.innerText?.slice(0,12000),promptCards:document.querySelectorAll('.prompt-card').length,conversationUnavailable:document.body?.innerText?.includes('Conversation unavailable')??false,terminalRows:document.querySelectorAll('.ghostty-row').length,terminalHeight:document.querySelector('.xterm-screen')?.getBoundingClientRect().height})"]).catch((error) => String(error));
     writeFileSync(join(out, "browser-dom.txt"), dom);
     const errors = await browser(browserCli, browserEnvForCleanup, ["errors"]).catch((error) => String(error));
     writeFileSync(join(out, "browser-errors.txt"), errors);

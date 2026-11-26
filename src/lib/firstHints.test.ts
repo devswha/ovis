@@ -1,11 +1,21 @@
 import { describe, expect, it } from "bun:test";
 
-import { armHints, browserStorage, finishHints, FIRST_HINTS_KEY, hideSetupRow, hintsPending, setupRowOn, setupRowState } from "./firstHints.ts";
+import { armHints, browserStorage, finishHints, FIRST_HINTS_KEY, hideSetupRow, hintsPending, setupRowOn, setupRowState, usageReadAllowed } from "./firstHints.ts";
 
 const memory = () => {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value) };
 };
+
+describe("the guide's usage read", () => {
+  it("waits for Continue, and once usage was on reads only while the server's settings say it stays on", () => {
+    expect(usageReadAllowed(null, true, true)).toBe(false);
+    expect(usageReadAllowed("1", false, false)).toBe(true);
+    expect(usageReadAllowed("on", true, true)).toBe(true);
+    expect(usageReadAllowed("on", true, false)).toBe(false);
+    expect(usageReadAllowed("on", false, true)).toBe(false);
+  });
+});
 
 describe("first-start hints", () => {
   it("are armed once, by the first run, and stay done once finished", () => {
@@ -15,7 +25,6 @@ describe("first-start hints", () => {
     expect(hintsPending(storage)).toBe(true);
     finishHints(storage);
     expect(hintsPending(storage)).toBe(false);
-    // a later first run (the guide opened again from Settings, another workspace) does not bring them back
     armHints(storage);
     expect(storage.values.get(FIRST_HINTS_KEY)).toBe("done");
   });
@@ -30,7 +39,6 @@ describe("first-start hints", () => {
 describe("the sidebar's setup row", () => {
   it("shows only once a begun guide closed, and stays hidden once hidden", () => {
     const storage = memory();
-    // an older guide's record, or I've used Ovis before: no row
     expect(setupRowState(storage)).toBeNull();
     setupRowOn(storage);
     expect(setupRowState(storage)).toBe("on");

@@ -6,9 +6,10 @@
  * refuses to start with `identity_unreadable`, since a silent new identity would orphan every
  * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
  */
-import { chmodSync, linkSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, linkSync, readFileSync, statSync, unlinkSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { equalBytes } from "@noble/curves/utils.js";
 import { exportPublicKey, exportSecretKey, generateKeyPair, importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
@@ -32,6 +33,32 @@ export class RelayIdentityError extends Error {
 
 export const relayIdentityPath = (stateDir: string): string => join(stateDir, "relay", "identity.json");
 
+/** An offline lookup observes replacement and removal, but never creates a key. */
+export function savedIdentityReader(stateDir: string): () => RelayIdentity | undefined {
+  const path = relayIdentityPath(stateDir);
+  let cached: { stat: BigIntStats; identity: RelayIdentity } | undefined;
+  const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size
+    && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.mode === b.mode;
+  return () => {
+    try {
+      let before = statSync(path, { bigint: true, throwIfNoEntry: false });
+      if (before && cached && same(before, cached.stat)) return { ...cached.identity };
+      cached = undefined;
+      // Permission repair can change the stamp, as can a concurrent replacement. Return only a stable read.
+      for (let attempt = 0; before && attempt < 2; attempt++) {
+        const identity = loadExisting(path, readFileSync(path, "utf8"));
+        const after = statSync(path, { bigint: true, throwIfNoEntry: false });
+        if (after && same(before, after)) {
+          cached = { stat: after, identity };
+          return { ...identity };
+        }
+        before = after;
+      }
+      return undefined;
+    } catch { cached = undefined; return undefined; }
+  };
+}
+
 /** The saved identity, or a new one written on first use. Throws RelayIdentityError on a bad file. */
 export function loadRelayIdentity(stateDir: string): RelayIdentity {
   const path = relayIdentityPath(stateDir);
@@ -49,7 +76,7 @@ export function savedServerId(stateDir: string): string | undefined {
   try { return parseIdentity(readFileSync(relayIdentityPath(stateDir), "utf8")).server_id; } catch { return undefined; }
 }
 
-/** Makes a saved identity private again before parsing it, even if its content is corrupt. */
+/** Off Windows, makes a saved identity private again before parsing it, even if its content is corrupt. */
 function loadExisting(path: string, text: string): RelayIdentity {
   if (process.platform !== "win32") {
     try {
@@ -111,8 +138,7 @@ function parseIdentity(text: string): RelayIdentity {
     }
     const publicKey = importPublicKey(o.public_key);
     const secretKey = importSecretKey(o.secret_key);
-    const derived = nacl.box.keyPair.fromSecretKey(secretKey).publicKey;
-    if (!nacl.verify(derived, publicKey)) throw new Error("mismatch");
+    if (!equalBytes(x25519.getPublicKey(secretKey), publicKey)) throw new Error("mismatch");
   } catch { throw new RelayIdentityError("the key pair is invalid"); }
   // the relay admits only the PC whose key derives its server_id
   if (deriveServerId(importPublicKey(o.public_key)) !== o.server_id) throw new RelayIdentityError("the server_id is not derived from the public key");

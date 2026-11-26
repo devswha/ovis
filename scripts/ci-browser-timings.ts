@@ -1,13 +1,4 @@
 /**
- * Refreshes scripts/ci-browser-timings.json, the seconds scripts/ci-browser-parallel.ts orders and
- * shards the browser scripts by, from the summary.json that lane writes beside its logs:
- *   bun scripts/ci-browser-timings.ts --runs 5            # the newest 5 green runs of ci.yml on main
- *   bun scripts/ci-browser-timings.ts <summary.json>...   # summaries already on disk; both may be given
- * Every script scripts/ci-browser.sh lists gets its median over the summaries that hold it, in
- * whole seconds. Only a pass on the first run counts: a failure's seconds say nothing of a pass,
- * and a pass on the second run has both runs in its seconds. A listed script no summary holds
- * keeps the seconds it has, a script the list no longer holds leaves the table, and the table is
- * written longest first. With no summary at all, that leaving and that order are all it changes.
  * `--runs` reads through `gh` and changes nothing there: the runs' browser-main-* and
  * browser-other-* artifacts go to a temporary folder that is removed again.
  */
@@ -20,7 +11,6 @@ import { serialBrowserScripts } from "./ci-browser-parallel.ts";
 const repo = join(import.meta.dir, "..");
 const TABLE = "scripts/ci-browser-timings.json";
 
-/** What the command line asks for: how many CI runs to read, and the summaries already on disk. */
 export function refreshRequest(argv: string[]): { runs: number; summaries: string[] } {
   const { values, positionals } = parseArgs({ args: argv, options: { runs: { type: "string" } }, allowPositionals: true });
   if (values.runs === undefined) return { runs: 0, summaries: positionals };
@@ -29,7 +19,6 @@ export function refreshRequest(argv: string[]): { runs: number; summaries: strin
   return { runs, summaries: positionals };
 }
 
-/** The seconds of every script in one summary.json that passed on its first run. */
 export function firstRunSeconds(summary: unknown): Record<string, number> {
   const scripts = (summary as { scripts?: unknown } | null)?.scripts;
   if (!Array.isArray(scripts)) throw new Error("not a browser-logs summary.json: it has no list of scripts");
@@ -42,18 +31,12 @@ export function firstRunSeconds(summary: unknown): Record<string, number> {
   return seconds;
 }
 
-/** The middle value, or the mean of the two middle ones; `values` holds at least one. */
 export function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-/**
- * The table for the `listed` scripts: each one's median over the `summaries` that hold it, in whole
- * seconds, or the seconds `existing` has for one that none holds. Longest first, and the listed
- * order between scripts of the same seconds, so the same input always writes the same file.
- */
 export function refreshTimings(listed: readonly string[], existing: Readonly<Record<string, number>>, summaries: readonly Readonly<Record<string, number>>[]): Record<string, number> {
   const rows = listed.flatMap((script, index) => {
     const seen = summaries.flatMap((summary) => Number.isFinite(summary[script]) ? [summary[script]!] : []);
@@ -63,7 +46,7 @@ export function refreshTimings(listed: readonly string[], existing: Readonly<Rec
   return Object.fromEntries(rows.sort((a, b) => b.seconds - a.seconds || a.index - b.index).map(({ script, seconds }) => [script, seconds]));
 }
 
-async function gh(args: string[]): Promise<string> {
+export async function gh(args: string[]): Promise<string> {
   const child = Bun.spawn(["gh", ...args], { cwd: repo, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error(stderr.trim() || stdout.trim() || `gh ${args[0]} ${args[1]} exited ${code}`);
@@ -71,14 +54,15 @@ async function gh(args: string[]): Promise<string> {
 }
 
 /**
- * Of a run's artifact names, the browser lanes' logs of each job's last attempt. A run that was
- * run again keeps the artifacts of every attempt (`browser-main-<run>-<attempt>`,
+ * Of a run's artifact names, the logs of each job's last attempt: by default the browser lanes'.
+ * A run that was run again keeps the artifacts of every attempt (`browser-main-<run>-<attempt>`,
  * `browser-other-<shard>-<run>-<attempt>`), and an earlier attempt would count the run twice.
+ * `kind` captures the job's name and run, then the attempt.
  */
-export function lastAttemptArtifacts(names: readonly string[]): string[] {
+export function lastAttemptArtifacts(names: readonly string[], kind = /^(browser-(?:main|other-\d+)-\d+)-(\d+)$/): string[] {
   const last = new Map<string, { name: string; attempt: number }>();
   for (const name of names) {
-    const match = /^(browser-(?:main|other-\d+)-\d+)-(\d+)$/.exec(name);
+    const match = kind.exec(name);
     if (!match) continue;
     const attempt = Number(match[2]);
     if (attempt > (last.get(match[1]!)?.attempt ?? 0)) last.set(match[1]!, { name, attempt });

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,9 +6,9 @@ import { join } from "node:path";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { agentPickerOwnsScreen } from "./dialogs/fallback.ts";
 import { handlePromptRequest, parseFallbackPrompt } from "./prompt.ts";
+import * as recordCards from "./record-cards.ts";
 
-/** A herdr holding one pane whose screen the test sets; every key the answer route sends is kept. */
-interface Pane { agent: string; screen: string; sent: string[]; /** called as each screen read arrives, before its text is taken */ onRead?: () => void }
+interface Pane { agent: string; screen: string; sent: string[]; onRead?: () => void }
 
 async function withPane(agent: string, status: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "herdr-fallback-answer-"));
@@ -82,7 +82,26 @@ test.each([
   });
 });
 
-// Antigravity's question has a reader of its own since (dialogs/agy.ts): its rows are the card's options, not "Enter"
+// A card showing its record's command (record-cards.ts) answers that request only: the record is read again right
+// before the key, and a request no longer open there (answered in the terminal meanwhile) takes no key
+test.each([[200, true], [409, false]] as const)("a card read from Copilot's record answers with %i when its request is still open: %p", async (status, open) => {
+  const turn = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/copilot.json"), "utf8")) as { turns: { turn: string; screen: string; command: string }[] }).turns
+    .find((recorded) => recorded.turn === "short-a1")!;
+  const request = { id: "events.jsonl\0request-1", command: turn.command };
+  let reads = 0;
+  const records = spyOn(recordCards, "recordRequest").mockImplementation(async () => (reads++ < 2 || open ? request : null));
+  try {
+    await withPane("copilot", "blocked", turn.screen, async (pane) => {
+      const prompt = (await card())!;
+      expect(prompt.body).toContain(turn.command);
+      const result = await answer(prompt.id, { option_index: labels(prompt).indexOf("Yes") });
+      expect(result.status).toBe(status);
+      expect(pane.sent.length > 0).toBe(open);
+      expect(reads).toBeGreaterThanOrEqual(3);
+    });
+  } finally { records.mockRestore(); }
+});
+
 test("answers agy's question through its reader, as a card of its options", async () => {
   await withPane("agy", "blocked", recorded("agy-1.5.6-ask"), async (pane) => {
     const prompt = (await card())!;
@@ -172,7 +191,6 @@ test("refuses the key when the question changed after the answer's first read", 
   await withPane("copilot", "blocked", screen, async (pane) => {
     const prompt = (await card())!;
     let reads = 0;
-    // the answer's first read draws the card as shown; every read after it shows another question
     pane.onRead = () => { if (++reads === 2) pane.screen = screen.replace("Which color?", "Which size?"); };
     expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") })).toEqual({ status: 409, code: "prompt_changed" });
     expect(reads).toBeGreaterThanOrEqual(2);
@@ -186,17 +204,13 @@ test("sends nothing for an answer given up during the read before its key", asyn
     const prompt = (await card())!;
     const given = new AbortController();
     let reads = 0;
-    // the screen stays the card's; the request is given up while the read before the key is answered
     pane.onRead = () => { if (++reads === 2) given.abort(); };
     expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") }, given.signal)).toEqual({ status: 409, code: "prompt_changed" });
     expect(pane.sent).toEqual([]);
   });
 });
 
-// The agent lab's agents whose generic cards changed id every second (agent-lab audit, 2026-11-12): each recorded twice,
-// a few seconds apart, while its question or approval waited, then a change of words that must still be another card
 test.each([
-  // the waiting line's own words, each found once on the screen, so the change is to that line and nothing else
   ["hermes", "\u2753 Which color?", "\u2753 Which size?"],
   ["muse", "Request user input Color", "Request user input Size"],
   ["maki", "bash> List directory contents", "bash> Remove directory contents"],
@@ -210,6 +224,71 @@ test.each([
   if (agent === "muse") expect(parseFallbackPrompt(agent, after.replace("\u25c7 Request", "\u25c6 Request")).id).toBe(parseFallbackPrompt(agent, before).id);
   expect(after.split(from).length).toBe(2);
   expect(parseFallbackPrompt(agent, after.replace(from, to)).id).not.toBe(parseFallbackPrompt(agent, before).id);
+});
+
+// Grok 1.0.92 redraws the tool call its permission panel asks about every tenth of a second (server/fixtures/record-cards)
+test.each(["long-a1", "phone-a1"])("keeps Grok's permission card (%s) while its tool call's timers tick, and not once its words change", (name) => {
+  const turns = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/grok.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns;
+  const screen = turns.find((turn) => turn.turn === name)!.screen;
+  const row = screen.split("\n").find((line) => line.includes("[↓][stop]"))!;
+  const ticked = row.replace(/(\d+)s ⇣([\d.]+)k/u, (_all, seconds: string, tokens: string) => `${Number(seconds) + 3}s ⇣${(Number(tokens) + 0.4).toFixed(1)}k`).replace("0.0s", "0.3s");
+  expect(ticked).not.toBe(row);
+  expect(parseFallbackPrompt("grok", screen.replace(row, ticked)).id).toBe(parseFallbackPrompt("grok", screen).id);
+  expect(parseFallbackPrompt("grok", screen.replace(row, row.replace("◆ Run", "◆ Remove"))).id).not.toBe(parseFallbackPrompt("grok", screen).id);
+});
+
+// The refusal on each recorded approval (short-d) sends the one key that refuses in that CLI, measured on the real
+// TUIs: Copilot 1.0.109 only moves its cursor to a typed 3 and Letta 0.34.23 ignores it, where Esc refuses; Esc in
+// Grok 1.0.92 moves its focus to the scrollback, where the panel's own number for "No, reject" refuses (#4570, #4571)
+const recordedTurn = (agent: string, name: string): string => (JSON.parse(readFileSync(join(import.meta.dir, `fixtures/record-cards/${agent}.json`), "utf8")) as { turns: { turn: string; screen: string }[] }).turns
+  .find((recorded) => recorded.turn === name)!.screen;
+
+test.each([
+  ["copilot", "short-d", "No, and tell Copilot what to do differently (Esc to stop)", ["esc"]],
+  ["letta", "short-d", "No, and tell Letta Code what to do differently", ["esc"]],
+  ["grok", "short-d", "No, reject", ["text:4"]],
+  // a phone-wide pane cuts the row's hint, and Grok numbers this panel's rows from 2
+  ["grok", "phone-a1", "No, reject", ["text:3"]],
+])("refuses %s's recorded approval (%s) from its card with the key that refuses", async (agent, name, refusal, keys) => {
+  await withPane(agent, "blocked", recordedTurn(agent, name), async (pane) => {
+    const prompt = (await card())!;
+    expect(labels(prompt)).toContain(refusal);
+    expect(await answer(prompt.id, { option_index: labels(prompt).indexOf(refusal) })).toEqual({ status: 200, code: undefined });
+    expect(pane.sent).toEqual(keys);
+  });
+});
+
+// Grok's refusal is read off the permission panel that ends the screen only: a Grok question drawn like one (its own
+// footer says "Tab:next answer"), or a row like the refusal above the panel, gets no key that the panel would take
+// for another row
+test("offers no refusal row on a Grok question drawn like a permission panel", () => {
+  const screen = recorded("grok-1.0.77-ask");
+  const alike = screen.replace("┃  Option A or option B?", "┃  ›  Run setup?")
+    .replace(/1 \(○\) Option A[^\n]*/u, "1 (●) Yes, proceed").replace(/2 \(○\) Option B[^\n]*/u, "2 (○) No, reject (type to add feedback)");
+  expect(alike).toContain("No, reject");
+  expect(labels(parseFallbackPrompt("grok", alike))).toEqual(["Enter", "Esc"]);
+});
+
+test("takes Grok's refusal from the panel itself, not from a row like it above the panel", async () => {
+  const screen = recordedTurn("grok", "phone-a1");
+  const above = screen.replace("  ┃\n  ┃  ›", "  ┃  2 (○) No, reject (type to add feedback)\n\n  ┃\n  ┃  ›");
+  expect(above).not.toBe(screen);
+  await withPane("grok", "blocked", above, async (pane) => {
+    const prompt = (await card())!;
+    expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("No, reject") })).toEqual({ status: 200, code: undefined });
+    expect(pane.sent).toEqual(["text:3"]);
+  });
+});
+
+// Muse 1.4.25 keeps "◇ Calling tools (21s · esc to interrupt)" over its approval dialog, its time and glyph ticking
+test("keeps Muse's approval card while the row over it ticks, and not once its words change", () => {
+  const turn = (JSON.parse(readFileSync(join(import.meta.dir, "fixtures/record-cards/muse.json"), "utf8")) as { turns: { turn: string; screen: string }[] }).turns
+    .find((recorded) => recorded.turn === "long-a1")!;
+  const row = turn.screen.split("\n").find((line) => line.includes("· esc to interrupt)"))!;
+  const ticked = row.replace(/\((\d+)s · /u, (_all, seconds: string) => `(${Number(seconds) + 7}s · `).replace(/[◆◈◇]/u, "◇");
+  expect(ticked).not.toBe(row);
+  expect(parseFallbackPrompt("muse", turn.screen.replace(row, ticked)).id).toBe(parseFallbackPrompt("muse", turn.screen).id);
+  expect(parseFallbackPrompt("muse", turn.screen.replace(row, row.replace("Calling tools", "Deleting files"))).id).not.toBe(parseFallbackPrompt("muse", turn.screen).id);
 });
 
 test("keeps Hermes's card in its first ten seconds, where the timer is padded with two spaces", () => {
@@ -229,13 +308,11 @@ test("keeps the words Hermes's status bar echoes, blanking only its ticking segm
   expect(after.split(echo).length).toBe(2);
   expect(parseFallbackPrompt("hermes", after).id).toBe(parseFallbackPrompt("hermes", before).id);
   expect(parseFallbackPrompt("hermes", after.replace(echo, "\u2500 Delete the staging data...")).id).not.toBe(parseFallbackPrompt("hermes", before).id);
-  // the model's name does not tick either: it stays in the id
   expect(after.split("\u2624 gpt-6-luna \u2502").length).toBe(2);
   expect(parseFallbackPrompt("hermes", after.replace("\u2624 gpt-6-luna \u2502", "\u2624 gpt-6-sol \u2502")).id).not.toBe(parseFallbackPrompt("hermes", before).id);
 });
 
 test("keeps the ids of Copilot's and Grok's cards as #3730 gave them", () => {
-  // their one waiting line is still read as one index, so a card already on screen keeps its id across this change
   expect(parseFallbackPrompt("copilot", recorded("copilot-1.0.109-ask-32s")).id).toBe("2af485654211");
   expect(parseFallbackPrompt("grok", recorded("grok-1.0.77-ask")).id).toBe("09168e691891");
 });
@@ -280,7 +357,6 @@ test("offers and answers Devin's folder trust while herdr reports Devin at rest"
 
 test.each([
   ["devin", "idle", recorded("devin-3000.12.43-composer")],
-  // a reader knows Claude's screens: a picker-shaped screen of its at rest is left to that reader
   ["claude", "idle", recorded("devin-3000.12.43-trust")],
 ])("offers no card for %s at rest without a picker of its own", async (agent, status, screen) => {
   await withPane(agent, status, screen, async () => {

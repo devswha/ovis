@@ -1,55 +1,46 @@
 /**
- * OpenCode's own session store, read-only (2.0.24).
- *
  * OpenCode 2 keeps every session in one SQLite database, written by its background service
  * (`opencode serve --service`) rather than by the TUI in the pane: `<data dir>/opencode.db`, the
  * data dir being `$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode` (on macOS too), and
  * `OPENCODE_DB` naming another file, relative to the data dir (what `opencode debug paths` prints).
  * The service is started with the user's environment, so this server's environment finds it; the
  * pane's process environment would not. A session is a `session_v2` row and its conversation the
- * `session_message` rows of its id, ordered by `seq`, each a `type` and a JSON `data`. OpenCode 1.x
- * wrote `session`/`message`/`part` instead (2.0 copies them into `session_v2` when it migrates); a
- * store without `session_v2` is read by the 1.x reader at the foot of this file, which folds the same
- * turns, and keeps the terminal only when neither table set is there.
+ * `session_message` rows of its id, ordered by `seq`, each a `type` and a JSON `data`. OpenCode 2.4
+ * can store assistant content separately in `session_part`, ordered by `ordinal`. OpenCode 1.x
+ * wrote `session`/`message`/`part` instead (2.0 copies them into `session_v2` when it migrates).
  *
  * herdr's OpenCode integration reports the session the TUI shows (`herdr:opencode`, kind `id`),
  * so a pane is bound by that id, never by a guess from its cwd.
  *
- * A page is a range of `seq`, so a cursor names a row and stays valid while rows are appended.
  * A row is rewritten in place while its step streams (`time_updated` moves). `/undo` hides the
- * rows from a message on (`session_v2.revert`), which changes the history id, until the next
- * prompt deletes them. `seq` is never handed out again: a row's `seq` is its event's sequence
- * number, which `Bus.publish` takes as `event_sequence.seq + 1` under a per-session lock and
- * `Bus.reserveSequence` only raises, and the revert commit deletes `session_message` rows without
- * touching `event_sequence` (read from 2.0.24). So a cursor naming a deleted row is refused, and a
- * chat holding pages from before the deletion reloads.
+ * rows from a message on (`session_v2.revert`) until the next prompt deletes them. `seq` is never
+ * handed out again: a row's `seq` is its event's sequence number, which `Bus.publish` takes as
+ * `event_sequence.seq + 1` under a per-session lock and `Bus.reserveSequence` only raises, and the
+ * revert commit deletes `session_message` rows without touching `event_sequence` (read from 2.0.24).
  */
 
 import { Database } from "bun:sqlite";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import type { ConversationMetadata, ConversationPart, ConversationTurn, HerdrPane, SkillActivity } from "../shared/protocol.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
+import { processStartIdentity, processStartLowerBound } from "./process-start.ts";
 import { opencodeSkillInvocation } from "./skill-invocations/opencode.ts";
+import { opencodeStartScreenUnused } from "./start-screen.ts";
 import { trimOutput } from "./tool-output.ts";
 import { MAX_TURNS, OMO_TASK_RESULT_MAX, toolSummary } from "./transcript-records.ts";
 
-/** A page never holds more prompts than this (each opens a user + assistant pair). */
 const MAX_PAGE_PROMPTS = MAX_TURNS / 2;
-/** The newest page is read on every poll while the agent works: at most this much of the store. */
 export const OPENCODE_WINDOW_BYTES = 16 * 1024 * 1024;
-/** A notice carries its whole text on every poll: a `!` command's output is cut here. */
 const NOTICE_CHARS = 16_000;
-/** The service may hold the write lock for a moment; a read waits this long, never more. */
 const BUSY_TIMEOUT_MS = 250;
 
 const SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
-const MESSAGE_ID = /^msg_[A-Za-z0-9]{1,64}$/;
-/** A tool call's whole output: the message holding it and the call's place in its content. */
-export const OPENCODE_TOOL_REF = /^(msg_[A-Za-z0-9]{1,64}):(\d{1,4})$/;
-/** An image in a message, by its place among that message's images. */
-export const OPENCODE_IMAGE_REF = /^opencode:(msg_[A-Za-z0-9]{1,64}):(\d{1,3})$/;
-/** The image types a chat shows; anything else stays out of the page. */
+const MESSAGE_ID = /^msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}$/;
+export const OPENCODE_TOOL_REF = /^(msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}):(\d{1,4})$/;
+export const OPENCODE_IMAGE_REF = /^opencode:(msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}):(\d{1,3})$/;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 type Row = Record<string, unknown>;
@@ -57,11 +48,9 @@ const record = (value: unknown): Row => value !== null && typeof value === "obje
 const text = (value: unknown): string | null => typeof value === "string" && value.trim().length > 0 ? value : null;
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 const iso = (value: unknown): string | null => typeof value === "number" && Number.isFinite(value) && value > 0 ? new Date(value).toISOString() : null;
-/** A skill's name as the chat shows it on a chip: one short line. */
 const skillName = (value: unknown): string | null => typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\r\n<>]/.test(value) ? value : null;
 const cut = (value: string): string => value.length > NOTICE_CHARS ? `${value.slice(0, NOTICE_CHARS)}\n… trimmed` : value;
 
-/** The database OpenCode writes to, by the rules it reads its own paths by; null for an in-memory one. */
 export function opencodeDatabasePath(env: Record<string, string | undefined> = process.env, home = homedir()): string | null {
   const named = env["OPENCODE_DB"];
   if (named === ":memory:") return null;
@@ -69,28 +58,97 @@ export function opencodeDatabasePath(env: Record<string, string | undefined> = p
   return named ? resolve(data, named) : join(data, "opencode.db");
 }
 
-/** The session herdr's OpenCode integration reported for the pane, or null for any other report. */
 export function opencodeSessionId(pane: Pick<HerdrPane, "agent_session">): string | null {
   const session = pane.agent_session;
   if (session?.agent !== "opencode" || session.source !== "herdr:opencode" || session.kind !== "id" || !SESSION_ID.test(session.value)) return null;
   return session.value;
 }
 
-/** One `session_message` row as the chat needs it: no image bytes, tool outputs already cut. */
+/** Flags an OpenCode TUI may be started with and still open no session; any other (`-c`, `-s`, `--prompt`, `--server`) may open one. */
+const NO_SESSION_FLAGS = new Set(["--standalone", "--auto", "--print-logs"]);
+
+function noSessionFolder(argv: readonly string[] | null | undefined, cwd: string | null | undefined): string | null {
+  // after the program itself: a launcher script runs under its shell (`sh …/opencode`)
+  const program = argv?.findIndex((word) => basename(word) === "opencode") ?? -1;
+  if (program < 0 || !cwd) return null;
+  let folder: string | null = null;
+  for (let index = program + 1; index < argv!.length; index++) {
+    const word = argv![index]!;
+    if (NO_SESSION_FLAGS.has(word) || word.startsWith("--log-level=")) continue;
+    if (word === "--log-level" && index + 1 < argv!.length) { index++; continue; }
+    if (word.startsWith("-") || folder !== null) return null;
+    folder = resolve(cwd, word);
+    try { if (!statSync(folder).isDirectory()) return null; } catch { return null; }
+  }
+  return folder ?? cwd;
+}
+
+async function noSessionProcesses(paneId: string): Promise<{ pid: number; identity: number; folder: string }[] | null> {
+  const foreground = (await paneProcessInfo(paneId))?.foreground_processes ?? [];
+  const found: { pid: number; identity: number; folder: string }[] = [];
+  for (const entry of foreground.filter((candidate) => candidate.name === "opencode")) {
+    const folder = noSessionFolder(entry.argv, entry.cwd);
+    const identity = Number.isSafeInteger(entry.pid) && entry.pid > 1 ? processStartIdentity(entry.pid) : null;
+    if (folder === null || identity === null) return null;
+    found.push({ pid: entry.pid, identity, folder });
+  }
+  return found.length === 0 ? null : found.sort((a, b) => a.pid - b.pid);
+}
+
+/**
+ * herdr reports no session for an OpenCode at its home screen: its integration names one from the
+ * first prompt on (#3600). `--session` opens the home screen too for an id the store does not hold yet.
+ */
+export async function opencodeFreshSession(pane: Pick<HerdrPane, "pane_id" | "cwd">, screen: string, store: string | null): Promise<string | null> {
+  if (store === null || !opencodeStartScreenUnused(screen)) return null;
+  try {
+    const processes = await noSessionProcesses(pane.pane_id);
+    if (processes === null) return null;
+    const starts = processes.map((entry) => processStartLowerBound(entry.pid));
+    if (starts.some((started) => started === null)) return null;
+    const folders = [...new Set([pane.cwd, ...processes.map((entry) => entry.folder)].filter((folder): folder is string => typeof folder === "string" && folder !== "").flatMap((folder) => {
+      try { return [folder, realpathSync(folder)]; } catch { return [folder]; }
+    }))];
+    if (statSync(store, { throwIfNoEntry: false }) !== undefined) {
+      const begun = withStore(store, (db) => db.query<unknown, (string | number)[]>(
+        `SELECT 1 FROM session_v2 WHERE directory IN (${folders.map(() => "?").join(", ")}) AND time_created >= ? LIMIT 1`,
+      ).get(...folders, Math.min(...(starts as number[]))) !== null);
+      if (begun !== false) return null;
+    }
+    const key = (list: { pid: number; identity: number }[]) => list.map((entry) => `${entry.pid}:${entry.identity}`).join(",");
+    const again = await noSessionProcesses(pane.pane_id);
+    return again !== null && key(again) === key(processes) ? `unwritten:opencode:${pane.pane_id}:${key(processes)}` : null;
+  } catch { return null; }
+}
+
 export type OpencodeRecord =
   | { role: "user"; ts: string | null; parts: ConversationPart[] }
   | { role: "assistant"; ts: string | null; end: string | null; parts: ConversationPart[]; stop: boolean }
   | { role: "idle" };
 
-/** The images a row carries, in the order its refs count them. Only inline data: a path is never followed. */
-function rowImages(type: string, data: Row): { media_type: string; data: string }[] {
-  const images: { media_type: string; data: string }[] = [];
+const MEDIA_REF = /^media:([0-9a-f]{64})$/i;
+
+type RowImage = { media_type: string; data: string } | { media_type: string; blobHash: string };
+
+/** The images a row carries, in the order its refs count them. Only inline data or session-scoped blob_ref entries: a path is never followed. */
+function rowImages(type: string, data: Row, hasBlobRef?: (hash: string) => boolean): RowImage[] {
+  const images: RowImage[] = [];
   const add = (value: unknown) => {
     const file = record(value);
     const uri = typeof file.uri === "string" ? /^data:([\w.+/-]+);base64,(.*)$/s.exec(file.uri) : null;
-    const type = uri?.[1] ?? file.mime;
+    const mediaType = uri?.[1] ?? file.mime;
     const base64 = uri?.[2] ?? (record(file.source).type === "inline" ? file.data : undefined);
-    if (typeof type === "string" && IMAGE_TYPES.has(type) && typeof base64 === "string" && base64.length > 0) images.push({ media_type: type, data: base64 });
+    if (typeof mediaType === "string" && IMAGE_TYPES.has(mediaType) && typeof base64 === "string" && base64.length > 0) {
+      images.push({ media_type: mediaType, data: base64 });
+      return;
+    }
+    if (hasBlobRef !== undefined && typeof file.uri === "string") {
+      const media = MEDIA_REF.exec(file.uri);
+      const hash = media?.[1]?.toLowerCase();
+      if (hash !== undefined && typeof file.mime === "string" && IMAGE_TYPES.has(file.mime) && hasBlobRef(hash)) {
+        images.push({ media_type: file.mime, blobHash: hash });
+      }
+    }
   };
   if (type === "user") (Array.isArray(data.files) ? data.files : []).forEach(add);
   if (type === "assistant") {
@@ -102,13 +160,20 @@ function rowImages(type: string, data: Row): { media_type: string; data: string 
   return images;
 }
 
-/** A tool's own output: its error, else the text it returned (a subagent's answer without the tag around it). */
 function toolText(state: Row, name: string): string {
   if (state.status === "error") return text(record(state.error).message) ?? "";
   const output = (Array.isArray(state.content) ? state.content : []).map(record)
     .filter((item) => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text as string).join("\n");
   return name === "subagent" ? unwrap(output) : output;
+}
+
+/**
+ * A call's `state.status` as the transcript's outcome (shared/protocol.ts): not answered yet (1.x `pending`,
+ * 2.x `streaming` while the model still writes its input, then `running`), answered, or failed.
+ */
+function toolState(status: unknown): Extract<ConversationPart, { kind: "tool" }>["state"] {
+  return status === "pending" || status === "streaming" || status === "running" ? "pending" : status === "completed" ? "ok" : status === "error" ? "error" : undefined;
 }
 
 /** OpenCode's `skill` tool names the skill it loads by `id` (1.x: `name`). */
@@ -125,15 +190,13 @@ function unwrap(body: string): string {
   return (match?.[2] ?? body).trim();
 }
 
-/** One row as the chat shows it, or null for one it does not (instructions, agent switches, …). */
-export function opencodeRecord(id: string, type: string, data: Row): OpencodeRecord | null {
+export function opencodeRecord(id: string, type: string, data: Row, hasBlobRef?: (hash: string) => boolean): OpencodeRecord | null {
   const time = record(data.time);
   if (type === "user") {
-    const images = rowImages(type, data).map((image, index): ConversationPart => ({ kind: "image", media_type: image.media_type, ref: `opencode:${id}:${index}` }));
+    const images = rowImages(type, data, hasBlobRef).map((image, index): ConversationPart => ({ kind: "image", media_type: image.media_type, ref: `opencode:${id}:${index}` }));
     const display = text(record(data.metadata).displayText);
     const raw = text(data.text);
     const prompt = display ?? (raw === null ? null : opencodeSkillInvocation(raw));
-    // a skill the prompt mentions (`@name`) is loaded with it: the chip says so, the text keeps the mention
     const skills = (Array.isArray(data.skills) ? data.skills : []).map(record).flatMap((skill): ConversationPart[] => {
       const name = skillName(skill.name) ?? skillName(skill.id);
       return name === null ? [] : [{ kind: "skill", skill: { name, evidence: "instructions", status: "loaded" } }];
@@ -156,17 +219,20 @@ export function opencodeRecord(id: string, type: string, data: Row): OpencodeRec
         const part: Extract<ConversationPart, { kind: "tool" }> = {
           kind: "tool",
           name: block.name,
-          // a web search names its query, which the shared summary does not look for
           summary: skill?.name ?? (summary === block.name && typeof input.query === "string" ? input.query.slice(0, 120) : summary),
           input: JSON.stringify(input, null, 2),
           output: "",
         };
+        const callId = text(block.id);
+        if (callId !== null) part.call_id = callId;
         if (skill !== null) part.skill = skill;
+        const outcome = toolState(state.status);
+        if (outcome !== undefined) part.state = outcome;
         trimOutput(part, toolText(state, block.name), `${id}:${index}`);
         const exit = record(state.metadata).exit;
         if (state.status === "error" || (typeof exit === "number" && exit !== 0)) part.error = true;
         const files = (Array.isArray(state.content) ? state.content : []).map(record).filter((item) => item.type === "file");
-        const shown = files.length === 0 ? [] : rowImages("assistant", { content: [block] });
+        const shown = files.length === 0 ? [] : rowImages("assistant", { content: [block] }, hasBlobRef);
         if (shown.length > 0) part.images = shown.map((found) => ({ media_type: found.media_type, ref: `opencode:${id}:${image++}` }));
         parts.push(part);
       }
@@ -178,7 +244,6 @@ export function opencodeRecord(id: string, type: string, data: Row): OpencodeRec
     return { role: "assistant", ts: iso(time.created), end, parts, stop: data.finish === "stop" };
   }
   if (type === "idle") return { role: "idle" };
-  // a command the user ran with `!`: it sits in the user's seat, with what it printed
   if (type === "shell" && typeof data.command === "string") {
     const output = record(data.output).output;
     const printed = typeof output === "string" && output.length > 0 ? `\n${output.replace(/[\r\n]+$/, "")}` : "";
@@ -213,10 +278,9 @@ export function opencodeRecord(id: string, type: string, data: Row): OpencodeRec
 }
 
 /**
- * Records in `seq` order -> turns. A model step is a row of its own, so consecutive steps merge
+ * A model step is a row of its own, so consecutive steps merge
  * into one assistant turn, until the turn ends: OpenCode marks that with an `idle` row, and a step
- * that finished with `stop` is the turn's answer. Whatever woke the model after it (a background
- * result, a restart) starts a turn of its own instead of folding that answer into the next work.
+ * that finished with `stop` is the turn's answer.
  */
 export function opencodeTurns(records: readonly (OpencodeRecord | null)[]): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
@@ -238,15 +302,8 @@ export function opencodeTurns(records: readonly (OpencodeRecord | null)[]): Conv
   return turns.filter((turn) => turn.parts.length > 0);
 }
 
-/** One row of a page, without its data: what choosing the page's start needs. */
-export interface RowMeta { id: string; seq: number; type: string; updated: number; size: number }
+export interface RowMeta { id: string; seq: number; type: string; updated: number; size: number; partsUpdated?: string | null; partsMaxUpdated?: number | null }
 
-/**
- * Where the page ending before `rows` (newest first) starts: at the prompt `pagePrompts` back,
- * else at the earliest prompt inside the window, else at `floor` when the window reaches it. With
- * no prompt in the window the newest page starts mid-turn, at a whole row; an older page is read
- * once, so it reaches further back for one, up to four windows.
- */
 export function pageStart(rows: Iterable<RowMeta>, floor: number, widen: boolean, window = OPENCODE_WINDOW_BYTES, pagePrompts = MAX_PAGE_PROMPTS): number {
   let bytes = 0;
   let prompts = 0;
@@ -264,10 +321,8 @@ export function pageStart(rows: Iterable<RowMeta>, floor: number, widen: boolean
   return floor;
 }
 
-/** The page asked for: as conversation.ts's ConversationPage. */
 export type OpencodePage = { before?: string; since?: string; from?: string; prompts?: number };
 
-/** The prompts a page keeps: the reader's choice inside MAX_PAGE_PROMPTS, else MAX_PAGE_PROMPTS. */
 function pagePrompts(page: OpencodePage): number {
   const asked = page.prompts;
   return typeof asked === "number" && Number.isFinite(asked) ? Math.min(MAX_PAGE_PROMPTS, Math.max(1, Math.floor(asked))) : MAX_PAGE_PROMPTS;
@@ -279,13 +334,12 @@ export type OpencodeAnswer =
   | { kind: "page"; turns: ConversationTurn[]; metadata: ConversationMetadata; cursor: string | null; history_id: string; signature: string };
 
 /**
- * Per session: the newest page's rows as records, kept by row id while their `time_updated` and
- * size hold. Every update of a row moves its `time_updated` (OpenCode's timestamp columns are
+ * Every update of a row moves its `time_updated` (OpenCode's timestamp columns are
  * `$onUpdate(Date.now)`), but two writes in one millisecond leave it where it was: the size tells
  * those apart too.
  */
-const newestRecords = new Map<string, Map<string, { updated: number; size: number; record: OpencodeRecord | null }>>();
-/** Per page asked for: the answer, while the session's signature holds. */
+type CachedRecord = Pick<RowMeta, "updated" | "size" | "partsUpdated"> & { revision: number | null; record: OpencodeRecord | null };
+const newestRecords = new Map<string, Map<string, CachedRecord>>();
 const answers = new Map<string, { signature: string; answer: Extract<OpencodeAnswer, { kind: "page" }> }>();
 
 function remember<T>(map: Map<string, T>, key: string, value: T, limit: number): void {
@@ -294,23 +348,19 @@ function remember<T>(map: Map<string, T>, key: string, value: T, limit: number):
   if (map.size > limit) map.delete(map.keys().next().value!);
 }
 
-/** Forget every answer and record kept between polls (tests compare against a cold read). */
 export function forgetOpencodeState(): void {
   newestRecords.clear();
   answers.clear();
   settings.clear();
 }
 
-/** What every cache here is keyed by: a pane's chat is remembered against it (conversation.ts `rememberPaneRead`). */
 export const opencodeReadKey = (path: string, sessionId: string): string => `${path}\0${sessionId}`;
 
-/** Drop what one session's chat kept, when the last pane reading it closes; any other key is not one of these. */
 export function forgetOpencodeRead(key: string): void {
   newestRecords.delete(key);
   for (const map of [answers, settings]) for (const entry of [...map.keys()]) if (entry.startsWith(`${key}\0`)) map.delete(entry);
 }
 
-/** The store, read-only; null when it cannot be opened (no file, not SQLite, not readable). */
 function openStore(path: string, busyMs: number): Database | null {
   try {
     const db = new Database(path, { readonly: true, create: false });
@@ -319,7 +369,6 @@ function openStore(path: string, busyMs: number): Database | null {
   } catch { return null; }
 }
 
-/** `busyMs`: how long a read waits on a store held by its writer; a poll that runs on the event loop waits not at all. */
 export function withStore<T>(path: string, read: (db: Database) => T, busyMs = BUSY_TIMEOUT_MS): T | null {
   const db = openStore(path, busyMs);
   if (db === null) return null;
@@ -327,7 +376,6 @@ export function withStore<T>(path: string, read: (db: Database) => T, busyMs = B
   finally { db.close(); }
 }
 
-/** A store this reader cannot use (1.x tables, not a database at all), as opposed to one busy for a moment. */
 function unusable(error: unknown): boolean {
   return error instanceof Error && (/no such (table|column)/.test(error.message) || (error as { code?: unknown }).code === "SQLITE_NOTADB");
 }
@@ -342,23 +390,20 @@ function busy(error: unknown): boolean {
 }
 
 interface SessionView {
-  /** one past the last row the chat shows: a staged `/undo` hides the rows from its message on */
   end: number;
   historyId: string;
   signature: string;
 }
 
-/** The session's visible extent, its history id and what any change to it changes. */
 export function sessionView(db: Database, sessionId: string): SessionView | null {
   const session = db.query<{ revert: string | null }, [string]>("SELECT revert FROM session_v2 WHERE id = ?").get(sessionId);
   if (session === null) return null;
   const stats = db.query<{ count: number; last: number | null; updated: number | null }, [string]>(
     "SELECT count(*) AS count, max(seq) AS last, max(time_updated) AS updated FROM session_message WHERE session_id = ?",
   ).get(sessionId)!;
-  // read before the page: a row appended meanwhile waits for the next poll, whose signature names it
   let end = (stats.last ?? -1) + 1;
   let revert: unknown = null;
-  try { revert = session.revert === null ? null : JSON.parse(session.revert); } catch { /* not JSON: nothing staged */ }
+  try { revert = session.revert === null ? null : JSON.parse(session.revert); } catch {}
   const boundary = record(revert).messageID;
   if (typeof boundary === "string") {
     const row = db.query<{ seq: number }, [string, string]>("SELECT seq FROM session_message WHERE session_id = ? AND id = ?").get(sessionId, boundary);
@@ -368,17 +413,15 @@ export function sessionView(db: Database, sessionId: string): SessionView | null
   return { end, historyId, signature: `${historyId}:${stats.count}:${stats.last}:${stats.updated}` };
 }
 
-/** What a step or `/model` row says about the session's settings, kept while its `time_updated` and size hold. */
 const settings = new Map<string, { updated: number; size: number; model: string | null; variant: string | null; tokens: Row | null; completed: boolean }>();
 
 /**
- * Latest recorded settings at `end`, as OpenCode's own footer reads them. The rows are walked from
+ * The rows are walked from
  * the newest and parsed here: JSON1 is not part of every SQLite Bun may run on (on macOS it uses the
  * system's own), so nothing is asked of SQL beyond the index.
  */
 function sessionMetadata(db: Database, key: string, sessionId: string, end: number, measure: OpencodeRowSize): ConversationMetadata {
   const data = db.query<{ data: string }, [string, string]>("SELECT data FROM session_message WHERE id = ? AND session_id = ?");
-  // asked of each row walked, not in the walk: it sorts what it selects, and the fallback reads the row
   const sizeOf = db.query<{ size: number }, [string, string]>(ROW_QUERIES[measure].size);
   let setting: { model: string | null; variant: string | null } | null = null;
   let usage: Row | null = null;
@@ -428,8 +471,36 @@ function parseData(data: string): Row {
   try { return record(JSON.parse(data)); } catch { return {}; }
 }
 
+function messageReader(db: Database, sessionId: string) {
+  const parts = storeHasTable(db, "session_part") ? db.query<{ data: string }, [string, string]>(
+    "SELECT data FROM session_part WHERE session_id = ? AND message_id = ? ORDER BY ordinal",
+  ) : null;
+  const blobRef = storeHasTable(db, "blob") && storeHasTable(db, "blob_ref") ? db.query<{ ok: number }, [string, string, string]>(
+    "SELECT 1 AS ok FROM blob_ref WHERE session_id = ? AND message_id = ? AND hash = ?",
+  ) : null;
+  return {
+    split: parts !== null,
+    hasBlobRef(id: string): ((hash: string) => boolean) | undefined {
+      return blobRef === null ? undefined : (hash: string) => blobRef.get(sessionId, id, hash) !== null;
+    },
+    data(id: string, type: string, raw: string): Row {
+      const data = parseData(raw);
+      if (type !== "assistant" || parts === null) return data;
+      const blocks = parts.all(sessionId, id);
+      if (blocks.length === 0) return data;
+      const inline = Array.isArray(data.content) ? data.content : [];
+      return { ...data, content: [...blocks.map((block) => parseData(block.data)), ...inline] };
+    },
+  };
+}
+
+function sessionRevision(db: Database, sessionId: string): number | null {
+  if (!storeHasTable(db, "event_sequence")) return null;
+  return db.query<{ seq: number }, [string]>("SELECT seq FROM event_sequence WHERE aggregate_id = ?").get(sessionId)?.seq ?? null;
+}
+
 /**
- * The row a cursor names, or null for one from another history. Every cursor is the `seq` of a
+ * Every cursor is the `seq` of a
  * page's first row, and a committed `/undo` deletes every row from its message on: a chat whose
  * pages reach a deleted turn holds a cursor to a deleted row. Reading the store answers that the
  * same way after a restart, which nothing kept in memory could.
@@ -443,7 +514,7 @@ function cursorOf(db: Database, sessionId: string, historyId: string, cursor: st
 }
 
 /**
- * How a row's size in bytes is read. `octet_length` (SQLite 3.43) answers without reading the row;
+ * `octet_length` (SQLite 3.43) answers without reading the row;
  * on macOS Bun runs the system's own SQLite, which can be older, and there the bytes are counted.
  */
 export const OPENCODE_ROW_SIZE = { octets: "octet_length(data)", bytes: "length(CAST(data AS BLOB))" } as const;
@@ -458,7 +529,6 @@ export function supportedRowSize(db: Database): OpencodeRowSize {
   return supported;
 }
 
-/** The queries that read a row's size, whole for each way of measuring it: no SQL is assembled. */
 const ROW_QUERIES: Record<OpencodeRowSize, { page: string; pageDescending: string; size: string }> = {
   [OPENCODE_ROW_SIZE.octets]: {
     page: "SELECT id, seq, type, time_updated AS updated, octet_length(data) AS size FROM session_message WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq",
@@ -472,19 +542,31 @@ const ROW_QUERIES: Record<OpencodeRowSize, { page: string; pageDescending: strin
   },
 };
 
-/**
- * One page of the session's conversation (as conversation.ts's transcriptPage, over rows):
- * without `before` the newest page, from `from` while that start is still inside it; with
- * `before` the page ending there, never reaching back past `since`. `rowSize` is how a row is
- * measured, by default the cheapest way this SQLite has.
- */
+function* withPartStats(db: Database, sessionId: string, measure: OpencodeRowSize, rows: Iterable<RowMeta>): Iterable<RowMeta> {
+  const bytes = measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : OPENCODE_ROW_SIZE.bytes;
+  // Use max + modulo sum instead of raw sum(time_updated) so millions of parts never overflow SQLite's 64-bit integer sum.
+  const stats = db.query<{ count: number; size: number; maxUpdated: number | null; modUpdated: number | null }, [string, string]>(
+    `SELECT count(*) AS count, coalesce(sum(${bytes}), 0) AS size, max(time_updated) AS maxUpdated, sum(time_updated % 1000000000) AS modUpdated
+      FROM session_part WHERE session_id = ? AND message_id = ?`,
+  );
+  for (const row of rows) {
+    if (row.type !== "assistant") { yield row; continue; }
+    const part = stats.get(sessionId, row.id)!;
+    yield {
+      ...row,
+      size: row.size + part.size,
+      partsUpdated: part.count === 0 ? null : `${part.count}:${part.maxUpdated}:${part.modUpdated}`,
+      partsMaxUpdated: part.maxUpdated,
+    };
+  }
+}
+
 export function opencodeConversation(path: string, sessionId: string, page: OpencodePage = {}, rowSize?: OpencodeRowSize): OpencodeAnswer {
   if (!SESSION_ID.test(sessionId)) return { kind: "unavailable", reason: "no_session_id" };
   const key = opencodeReadKey(path, sessionId);
   const cacheKey = `${key}\0${page.before ?? ""}\0${page.since ?? ""}\0${page.from ?? ""}\0${pagePrompts(page)}`;
   try {
-    const answer = withStore(path, (db): OpencodeAnswer => {
-      // A broken or changing 1.x store leaves the terminal as the source of the conversation.
+    const answer = withStore(path, (db): OpencodeAnswer => db.transaction((): OpencodeAnswer => {
       if (storeFlavor(db) === "v1") {
         try { return conversation1(db, cacheKey, sessionId, page); }
         catch (error) {
@@ -494,12 +576,32 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       }
       const view = sessionView(db, sessionId);
       if (view === null) return { kind: "unavailable", reason: "session_not_found" };
+      const message = messageReader(db, sessionId);
+      const measure = rowSize ?? supportedRowSize(db);
+      const revision = sessionRevision(db, sessionId);
+      // When OpenCode's durable event_sequence is present, it advances on every part/message write,
+      // so the cache check avoids scanning session_part payloads (critical on SQLite without octet_length).
+      // Without event_sequence, fall back to overflow-safe part stats (count, max, mod-sum, length).
+      const partStats = message.split && revision === null ? db.query<{ count: number; maxUpdated: number | null; modUpdated: number | null; size: number }, [string]>(
+        `SELECT count(*) AS count, max(time_updated) AS maxUpdated, sum(time_updated % 1000000000) AS modUpdated, coalesce(sum(${measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : OPENCODE_ROW_SIZE.bytes}), 0) AS size FROM session_part WHERE session_id = ?`,
+      ).get(sessionId) : null;
+      const signature = `${view.signature}${revision === null ? "" : `:r${revision}`}${partStats === null ? "" : `:${partStats.count}:${partStats.maxUpdated}:${partStats.modUpdated}:${partStats.size}`}`;
       const cached = answers.get(cacheKey);
-      if (cached?.signature === view.signature) return cached.answer;
+      if (cached?.signature === signature) return cached.answer;
 
       const end = view.end;
-      const measure = rowSize ?? supportedRowSize(db);
-      const descending = (from: number, to: number) => db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].pageDescending).iterate(sessionId, from, to);
+      const descendedMeta = page.before === undefined ? new Map<string, RowMeta>() : null;
+      const descending = (from: number, to: number) => {
+        const rows = db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].pageDescending).iterate(sessionId, from, to);
+        const withStats = message.split ? withPartStats(db, sessionId, measure, rows) : rows;
+        if (descendedMeta === null) return withStats;
+        return (function* () {
+          for (const row of withStats) {
+            descendedMeta.set(row.id, row);
+            yield row;
+          }
+        })();
+      };
       let start: number;
       let to = end;
       if (page.before !== undefined) {
@@ -512,22 +614,44 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
         const held = page.from === undefined ? null : cursorOf(db, sessionId, view.historyId, page.from, end);
         if (page.from !== undefined && held === null) return { kind: "history_changed" };
         const newest = pageStart(descending(0, end), 0, false, OPENCODE_WINDOW_BYTES, pagePrompts(page));
-        // a chat that shows older pages keeps every turn after its held start while they are
-        // inside the newest page; once the page moved past it, it fetches the turns between
         start = held !== null && held >= newest ? held : newest;
       }
 
       const records: (OpencodeRecord | null)[] = [];
       if (page.before === undefined) {
-        // the newest page is read on every poll while the agent works: only rows that changed are parsed again
-        const known = newestRecords.get(key) ?? new Map<string, { updated: number; size: number; record: OpencodeRecord | null }>();
-        const kept = new Map<string, { updated: number; size: number; record: OpencodeRecord | null }>();
+        const known = newestRecords.get(key) ?? new Map<string, CachedRecord>();
+        const kept = new Map<string, CachedRecord>();
         const data = db.query<{ data: string }, [string, string]>("SELECT data FROM session_message WHERE id = ? AND session_id = ?");
-        for (const row of db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to)) {
+        const rawRows = [...db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to)];
+        const missingMeta = message.split ? rawRows.filter((row) => row.type === "assistant" && !descendedMeta!.has(row.id)) : [];
+        if (missingMeta.length > 0) {
+          for (const enriched of withPartStats(db, sessionId, measure, missingMeta)) descendedMeta!.set(enriched.id, enriched);
+        }
+        const pageRows = message.split ? rawRows.map((row) => descendedMeta!.get(row.id) ?? row) : rawRows;
+        let pageMaxPartUpdated: number | null = null;
+        if (message.split) {
+          for (const row of pageRows) {
+            if (row.partsMaxUpdated !== null && row.partsMaxUpdated !== undefined
+              && (pageMaxPartUpdated === null || row.partsMaxUpdated > pageMaxPartUpdated)) {
+              pageMaxPartUpdated = row.partsMaxUpdated;
+            }
+          }
+        }
+        const SMALL_SPLIT_REPARSE_BYTES = 256 * 1024;
+        for (const row of pageRows) {
           let entry = known.get(row.id);
-          if (entry?.updated !== row.updated || entry.size !== row.size) {
+          // Re-parse a cached split assistant message when its stats changed, it sits at the latest part tick,
+          // or event_sequence advanced and the row is small (catching same-ms equal-length rewrites without re-parsing multi-MiB blobs).
+          const atLatestPartTick = row.type === "assistant" && message.split
+            && pageMaxPartUpdated !== null && row.partsMaxUpdated === pageMaxPartUpdated;
+          const smallRevisionBump = row.type === "assistant" && message.split
+            && revision !== null && entry?.revision !== revision && row.size <= SMALL_SPLIT_REPARSE_BYTES;
+          if (entry?.updated !== row.updated || entry.size !== row.size || entry.partsUpdated !== row.partsUpdated || atLatestPartTick || smallRevisionBump) {
             const found = data.get(row.id, sessionId);
-            entry = { updated: row.updated, size: row.size, record: found === null ? null : opencodeRecord(row.id, row.type, parseData(found.data)) };
+            entry = {
+              updated: row.updated, size: row.size, partsUpdated: row.partsUpdated, revision,
+              record: found === null ? null : opencodeRecord(row.id, row.type, message.data(row.id, row.type, found.data), message.hasBlobRef(row.id)),
+            };
           }
           kept.set(row.id, entry);
           records.push(entry.record);
@@ -536,7 +660,7 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       } else {
         for (const row of db.query<{ id: string; type: string; data: string }, [string, number, number]>(
           "SELECT id, type, data FROM session_message WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq",
-        ).iterate(sessionId, start, to)) records.push(opencodeRecord(row.id, row.type, parseData(row.data)));
+        ).iterate(sessionId, start, to)) records.push(opencodeRecord(row.id, row.type, message.data(row.id, row.type, row.data), message.hasBlobRef(row.id)));
       }
       const result = {
         kind: "page" as const,
@@ -544,54 +668,47 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
         metadata: sessionMetadata(db, key, sessionId, to, measure),
         cursor: start > 0 ? `${view.historyId}:${start}` : null,
         history_id: view.historyId,
-        signature: view.signature,
+        signature,
       };
-      remember(answers, cacheKey, { signature: view.signature, answer: result }, 32);
+      remember(answers, cacheKey, { signature, answer: result }, 32);
       return result;
-    });
+    })());
     return answer ?? { kind: "unavailable", reason: "transcript_missing" };
   } catch (error) {
-    // a 1.x store, or one OpenCode has not finished creating: the terminal stands in for it
     if (unusable(error)) return { kind: "unavailable", reason: "transcript_missing" };
-    // a store held for a moment: the chat keeps the page it shows, or the terminal stands in
-    // until the next poll, rather than an error in the chat
     if (busy(error)) return answers.get(cacheKey)?.answer ?? { kind: "unavailable", reason: "store_busy" };
     throw error;
   }
 }
 
-/** A visible row of the session by id, or null. */
 function sessionRow(db: Database, sessionId: string, id: string): { type: string; data: Row } | null {
   const view = db.query<{ revert: string | null }, [string]>("SELECT revert FROM session_v2 WHERE id = ?").get(sessionId);
   if (view === null) return null;
   const row = db.query<{ seq: number; type: string; data: string }, [string, string]>("SELECT seq, type, data FROM session_message WHERE id = ? AND session_id = ?").get(id, sessionId);
   if (row === null) return null;
-  // a row an /undo hid is one the chat no longer shows
   let revert: unknown = null;
-  try { revert = view.revert === null ? null : JSON.parse(view.revert); } catch { /* nothing staged */ }
+  try { revert = view.revert === null ? null : JSON.parse(view.revert); } catch {}
   const boundary = record(revert).messageID;
   if (typeof boundary === "string") {
     const hidden = db.query<{ seq: number }, [string, string]>("SELECT seq FROM session_message WHERE session_id = ? AND id = ?").get(sessionId, boundary);
     if (hidden !== null && row.seq >= hidden.seq) return null;
   }
-  return { type: row.type, data: parseData(row.data) };
+  return { type: row.type, data: messageReader(db, sessionId).data(id, row.type, row.data) };
 }
 
-function readRow<T>(path: string, sessionId: string, id: string, read: (row: { type: string; data: Row }) => T | null): T | null {
+function readRow<T>(path: string, sessionId: string, id: string, read: (row: { type: string; data: Row }, db: Database) => T | null): T | null {
   if (!SESSION_ID.test(sessionId) || !MESSAGE_ID.test(id)) return null;
   try {
-    return withStore(path, (db) => {
+    return withStore(path, (db) => db.transaction(() => {
       const row = storeFlavor(db) === "v1" ? sessionRow1(db, sessionId, id) : sessionRow(db, sessionId, id);
-      return row === null ? null : read(row);
-    });
+      return row === null ? null : read(row, db);
+    })());
   } catch (error) {
-    // a store held for a moment has no answer now: the next request finds it, where a failure would stick
     if (unusable(error) || busy(error)) return null;
     throw error;
   }
 }
 
-/** The whole output of a tool call whose page output was cut (ref `<message id>:<place in its content>`). */
 export function opencodeToolOutput(path: string, sessionId: string, ref: string): string | null {
   const match = OPENCODE_TOOL_REF.exec(ref);
   if (match === null) return null;
@@ -602,17 +719,29 @@ export function opencodeToolOutput(path: string, sessionId: string, ref: string)
   });
 }
 
-/** An image a page named by its ref (`opencode:<message id>:<nth image>`), decoded. */
 export function opencodeImage(path: string, sessionId: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
   const match = OPENCODE_IMAGE_REF.exec(ref);
   if (match === null) return null;
-  return readRow(path, sessionId, match[1]!, (row) => {
-    const image = rowImages(row.type, row.data)[Number(match[2])];
-    return image === undefined ? null : { mediaType: image.media_type, bytes: new Uint8Array(Buffer.from(image.data, "base64")) };
+  const messageId = match[1]!;
+  return readRow(path, sessionId, messageId, (row, db) => {
+    const hasBlobs = storeHasTable(db, "blob") && storeHasTable(db, "blob_ref");
+    const hasBlobRef = hasBlobs
+      ? (hash: string) => db.query<{ ok: number }, [string, string, string]>(
+          "SELECT 1 AS ok FROM blob_ref WHERE session_id = ? AND message_id = ? AND hash = ?",
+        ).get(sessionId, messageId, hash) !== null
+      : undefined;
+    const image = rowImages(row.type, row.data, hasBlobRef)[Number(match[2])];
+    if (image === undefined) return null;
+    if ("data" in image) return { mediaType: image.media_type, bytes: new Uint8Array(Buffer.from(image.data, "base64")) };
+    const stored = db.query<{ mime: string | null; data: Uint8Array | null }, [string, string, string]>(
+      "SELECT b.mime, b.data FROM blob_ref r JOIN blob b ON b.hash = r.hash WHERE r.session_id = ? AND r.message_id = ? AND r.hash = ?",
+    ).get(sessionId, messageId, image.blobHash);
+    if (stored === null || !(stored.data instanceof Uint8Array) || stored.data.byteLength === 0) return null;
+    const mediaType = typeof stored.mime === "string" && IMAGE_TYPES.has(stored.mime) ? stored.mime : image.media_type;
+    return { mediaType, bytes: new Uint8Array(stored.data) };
   });
 }
 
-/** The OpenCode version that wrote this session (its `version` column, 2.x or 1.x store); null when unknown. */
 export function opencodeSessionVersion(path: string, sessionId: string): string | null {
   if (!SESSION_ID.test(sessionId)) return null;
   try {
@@ -637,14 +766,9 @@ export function opencodeTerminalTitle(title: string): string {
   return `OC | ${title.length > 40 ? `${title.slice(0, 37)}\u2026` : title}`;
 }
 
-/**
- * Every session in the store (2.x or 1.x) whose terminal title is this one: the session a terminal
- * shows only when there is exactly one, whichever sessions that terminal reported. Read without
- * waiting on the store's writer: it runs on every snapshot.
- */
 export function opencodeSessionsTitled(path: string | null, terminalTitle: string): string[] {
   if (path === null || !terminalTitle.startsWith("OC | ")) return [];
-  // the title as shown, or the start OpenCode cut it to: the rows are then compared as OpenCode shows them
+  // the title as shown, or the start OpenCode cut it to
   const start = terminalTitle.slice("OC | ".length).replace(/\u2026$/, "");
   if (start === "") return [];
   try {
@@ -667,9 +791,7 @@ export function opencodeSessionsTitled(path: string | null, terminalTitle: strin
  * Before the 2.x store (2.0.24), OpenCode kept the same conversation in three tables: `session`, and
  * one `message` and several `part` rows per step. 2.0 copies them into `session_v2`/`session_message`
  * when it migrates; a store with no `session_v2` is still 1.x, which the 2.x reader refused (its
- * `session_v2` queries throw `no such table` and the chat fell back to the terminal). This reader
- * reads the same turns from those tables, adapting each message to the row shape `opencodeRecord`
- * already understands so the folding, tool trimming and image refs are the 2.x ones.
+ * `session_v2` queries throw `no such table` and the chat fell back to the terminal).
  *
  * `message.data.role` is `user` or `assistant`; an assistant step keeps the model (`modelID`) and its
  * usage (`tokens`) on the message and its `text`/`reasoning`/`tool` blocks in `part` rows. There is no
@@ -679,19 +801,19 @@ export function opencodeSessionsTitled(path: string | null, terminalTitle: strin
  * ----------------------------------------------------------------------------------------------- */
 
 type StoreFlavor = "v2" | "v1" | "unknown";
-// The 1.x adapter eagerly joins messages and parts; leave larger stores to the terminal view.
 const MAX_V1_ROWS = 10_000;
 const MAX_V1_BYTES = 4 * OPENCODE_WINDOW_BYTES;
 
-/** 2.x (`session_v2`), 1.x (`session`/`message`/`part`), or a file this reader cannot page. */
+function storeHasTable(db: Database, name: string): boolean {
+  return db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
+}
+
 function storeFlavor(db: Database): StoreFlavor {
-  const table = (name: string) => db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
-  if (table("session_v2")) return "v2";
-  if (table("session") && table("message") && table("part")) return "v1";
+  if (storeHasTable(db, "session_v2")) return "v2";
+  if (storeHasTable(db, "session") && storeHasTable(db, "message") && storeHasTable(db, "part")) return "v1";
   return "unknown";
 }
 
-/** One 1.x message with its parts, in the order the page reads them. */
 interface Message1 {
   id: string;
   data: Row;
@@ -700,11 +822,8 @@ interface Message1 {
   size: number;
 }
 
-/** Every message of a 1.x session with its parts, ordered by `(time_created, id)`: one query per table. */
 function loadSession1(db: Database, sessionId: string): Message1[] {
   const parts = new Map<string, Row[]>();
-  // the stored bytes are what a page counts, as the 2.x reader counts `octet_length(data)`: parsing
-  // each part only to re-serialize it back to JSON for its length is the same number, for nothing
   const partBytes = new Map<string, number>();
   for (const row of db.query<{ message_id: string; data: string }, [string]>(
     "SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created, id",
@@ -725,7 +844,6 @@ function loadSession1(db: Database, sessionId: string): Message1[] {
   return messages;
 }
 
-/** A 1.x message's error (a name plus a `data.message`) as the `type`/`message` the 2.x reader shows. */
 function adaptMessageError1(value: unknown): Row | undefined {
   const error = record(value);
   if (Object.keys(error).length === 0) return undefined;
@@ -734,10 +852,8 @@ function adaptMessageError1(value: unknown): Row | undefined {
   return { type: /abort/i.test(name) ? "aborted" : name || "error", message: message ?? "" };
 }
 
-/** A 1.x tool error (a plain string) as the `{ message }` the 2.x writer carries. */
 const adaptToolError1 = (value: unknown): unknown => typeof value === "string" && value.length > 0 ? { message: value } : value;
 
-/** A 1.x message and its parts as the 2.x row shape `opencodeRecord` reads, or null for one it shows nothing of. */
 function adaptMessage1(message: Message1): { type: string; data: Row } | null {
   const role = message.data.role;
   if (role === "user") {
@@ -766,7 +882,6 @@ function adaptMessage1(message: Message1): { type: string; data: Row } | null {
   return { type: "assistant", data: { time: message.data.time, content, finish: message.data.finish, error: adaptMessageError1(message.data.error), tokens: message.data.tokens } };
 }
 
-/** The 1.x session's own view: what a `/undo` hides, and what any change to the store changes. */
 function sessionView1(db: Database, sessionId: string): (SessionView & { rows: number }) | null {
   const session = db.query<{ revert: string | null }, [string]>("SELECT revert FROM session WHERE id = ?").get(sessionId);
   if (session === null) return null;
@@ -775,7 +890,7 @@ function sessionView1(db: Database, sessionId: string): (SessionView & { rows: n
   ).get(sessionId, sessionId, sessionId, sessionId)!;
   let end = stats.count;
   let revert: unknown = null;
-  try { revert = session.revert === null ? null : JSON.parse(session.revert); } catch { /* not JSON: nothing staged */ }
+  try { revert = session.revert === null ? null : JSON.parse(session.revert); } catch {}
   const boundary = record(revert).messageID;
   if (typeof boundary === "string") {
     const row = db.query<{ time_created: number }, [string, string]>("SELECT time_created FROM message WHERE id = ? AND session_id = ?").get(boundary, sessionId);
@@ -789,7 +904,6 @@ function sessionView1(db: Database, sessionId: string): (SessionView & { rows: n
   return { end, historyId, signature: `${historyId}:${stats.count}:${stats.updated}:${stats.parts}:${stats.partUpdated}`, rows: stats.count + stats.parts };
 }
 
-/** The settings OpenCode's footer shows for a 1.x session: the latest step's model and usage at `end`. */
 function sessionMetadata1(messages: readonly Message1[], end: number): ConversationMetadata {
   let model: string | null = null;
   let usage: Row | null = null;
@@ -809,7 +923,6 @@ function sessionMetadata1(messages: readonly Message1[], end: number): Conversat
   return metadata;
 }
 
-/** One page of a 1.x session, keyed by the message's place in `(time_created, id)` order. */
 function conversation1(db: Database, cacheKey: string, sessionId: string, page: OpencodePage): OpencodeAnswer {
   const view = sessionView1(db, sessionId);
   if (view === null) return { kind: "unavailable", reason: "session_not_found" };
@@ -824,7 +937,6 @@ function conversation1(db: Database, cacheKey: string, sessionId: string, page: 
   if ((bytes.messages ?? 0) + (bytes.parts ?? 0) > MAX_V1_BYTES) return { kind: "unavailable", reason: "transcript_missing" };
 
   const messages = loadSession1(db, sessionId);
-  // a revert commit between the view and the load deletes a suffix: never page past what was read
   const end = Math.min(view.end, messages.length);
   const cursorOf = (cursor: string): number | null => {
     const separator = cursor.lastIndexOf(":");
@@ -874,14 +986,13 @@ function conversation1(db: Database, cacheKey: string, sessionId: string, page: 
   return result;
 }
 
-/** A visible 1.x message by id, as the 2.x `(type, data)` shape the tool-output and image readers use. */
 function sessionRow1(db: Database, sessionId: string, id: string): { type: string; data: Row } | null {
   const view = db.query<{ revert: string | null }, [string]>("SELECT revert FROM session WHERE id = ?").get(sessionId);
   if (view === null) return null;
   const row = db.query<{ time_created: number; data: string }, [string, string]>("SELECT time_created, data FROM message WHERE id = ? AND session_id = ?").get(id, sessionId);
   if (row === null) return null;
   let revert: unknown = null;
-  try { revert = view.revert === null ? null : JSON.parse(view.revert); } catch { /* nothing staged */ }
+  try { revert = view.revert === null ? null : JSON.parse(view.revert); } catch {}
   const boundary = record(revert).messageID;
   if (typeof boundary === "string") {
     const hidden = db.query<{ time_created: number }, [string, string]>("SELECT time_created FROM message WHERE id = ? AND session_id = ?").get(boundary, sessionId);

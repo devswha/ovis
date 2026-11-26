@@ -1,7 +1,3 @@
-/**
- * AST checks for agent command catalog boundaries.
- * Split strings and JSX text are not detected by the boundary literal scan.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +61,15 @@ function forbiddenDeclarations(source: string, fileName?: string): string[] {
   return violations;
 }
 
+/**
+ * The Codex approval adapter subscribes to its threads to receive their approvals (`thread/resume` with no overrides)
+ * and reads when a turn starts (`turn/started`): those two names only, there; it sends no turn and no command.
+ */
+const CODEX_APPROVALS = { file: "server/approvals/codex.ts", names: new Set(["thread/resume", "turn/started"]) };
+
+/** OpenCode's command route, only where commands sent as data call it (docs/agent-commands.md#commands-sent-as-data). */
+const OPENCODE_COMMAND = { file: "server/opencode-service.ts", text: "/api/session/${}/command" };
+
 function forbiddenBoundaryLiterals(source: string, fileName?: string): string[] {
   const violations: string[] = [];
   const visit = (node: ts.Node): void => {
@@ -73,7 +78,8 @@ function forbiddenBoundaryLiterals(source: string, fileName?: string): string[] 
       : ts.isTemplateExpression(node)
         ? node.head.text + node.templateSpans.map((span) => "${}" + span.literal.text).join("")
         : undefined;
-    if (text !== undefined) {
+    if (text !== undefined && !(fileName === CODEX_APPROVALS.file && CODEX_APPROVALS.names.has(text))
+      && !(fileName === OPENCODE_COMMAND.file && text === OPENCODE_COMMAND.text)) {
       if (
         text.includes("/tui/") ||
         ["service.ensure", "turn/start", "thread/resume", "skill.invoke"].some((method) => text.includes(method)) ||

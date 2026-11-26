@@ -18,9 +18,8 @@ const token = randomBytes(32).toString("hex");
 // that machine's files are not on this disk: nothing here reads or makes them for it
 const server = createServer({ port: 0, hostname: "127.0.0.1", token, machines: false, bridgeOnly: true, localFiles: false, stateDir });
 process.send?.({ type: "ready", port: server.port, token });
-// the server that started this one holds its stdin open: once that ends, so does this one
-for await (const _chunk of Bun.stdin.stream()) { /* nothing is read */ }
-server.stop();
-core?.stop();
+for await (const _chunk of Bun.stdin.stream()) {}
+await server.stop();
+await core?.stop({ drain: true });
 rmSync(socketDir, { recursive: true, force: true });
 process.exit(0);
