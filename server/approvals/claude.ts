@@ -10,6 +10,10 @@
  *   screen no longer shows is released (answered with no decision);
  * - a hook that ends with no decision leaves the terminal's dialog as it is, at once.
  * So every card still has its keys: the hook is only how a Yes or No goes when it holds the very request on screen.
+ * A question Claude asks (AskUserQuestion) comes through the same hook, also while its dialog is drawn, and is answered
+ * the same way: an allow with the request's input and the answer (`answers`, by the question's words), measured on
+ * 2.1.330 for a pick, several picks joined with ", " and words typed. Answered in the terminal first, the hook's
+ * later answer is ignored there too.
  */
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -30,7 +34,7 @@ export const CLAUDE_HOOK_MIN_VERSION = "2.1.286";
  * posts a Monitor command as a Bash call, whose allow it then ignores (its hooks reference, 2.1.314 on); matched by name
  * it comes as itself, and is left to the terminal (toCard).
  */
-const MATCHER = "^(?:Bash|Monitor|Edit|Write|WebFetch|mcp__.+)$";
+const MATCHER = "^(?:Bash|Monitor|Edit|Write|WebFetch|AskUserQuestion|mcp__.+)$";
 
 /**
  * The hooks that tell a command Claude ran (command), each matched to the case that is one: a SessionStart's matcher is its
@@ -175,13 +179,15 @@ export const claudeApprovals: ApprovalAdapter = {
 
   decision: permissionDecision,
 
-  toAnswer(decision) {
+  toAnswer(decision, answered) {
     if (decision === null) return "{}";
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PermissionRequest",
-        // No, as the terminal's No: Claude stops and waits for the user
-        decision: decision === "allow" ? { behavior: "allow" } : { behavior: "deny", message: "The user declined this command in Ovis.", interrupt: true },
+        // No, as the terminal's No: Claude stops and waits for the user. A question's answer replaces its input whole,
+        // so it goes with the questions it was asked
+        decision: decision === "deny" ? { behavior: "deny", message: "The user declined this command in Ovis.", interrupt: true }
+          : answered === undefined ? { behavior: "allow" } : { behavior: "allow", updatedInput: { ...answered.input, answers: answered.answers } },
       },
     });
   },
@@ -206,10 +212,24 @@ const marked = (mark: string, value: string): string[] => value === "" ? [] : va
  * The card a tool's request makes, or null for one left to the terminal: a Monitor command, a tool not named here, or a
  * request missing what its card shows. A card shows the whole of what is allowed: a shell command; the file's path and
  * the text written to it whole, or the lines an edit takes out and puts in; the address fetched and what is asked of the
- * page, as the dialog shows them; an MCP tool's name and each of its arguments, as the dialog shows them.
+ * page, as the dialog shows them; an MCP tool's name and each of its arguments, as the dialog shows them. A question:
+ * only one, its options' labels whole; a request of several is the terminal's, whose dialog takes them a tab each.
  */
 function requestOf(name: string, tool: Record<string, unknown>, cwd: string | null): ApprovalRequest | null {
   switch (name) {
+    case "AskUserQuestion": {
+      const questions = tool["questions"];
+      if (!Array.isArray(questions) || questions.length !== 1 || tool["answers"] !== undefined) return null;
+      const asked = questions[0] as { question?: unknown; options?: unknown; multiSelect?: unknown } | null;
+      const question = text(asked?.question);
+      const labels = Array.isArray(asked?.options) ? asked.options.map((option) => text((option as { label?: unknown } | null)?.label)) : [];
+      const options = labels.filter((label): label is string => label !== null);
+      if (question === null || options.length === 0 || options.length !== labels.length) return null;
+      return {
+        command: question, description: null, dialog: "question", input: tool,
+        question: { text: question, options, multiSelect: asked?.multiSelect === true },
+      };
+    }
     case "Bash": {
       const command = text(tool["command"]);
       return command === null ? null : { command, description: text(tool["description"]) };
