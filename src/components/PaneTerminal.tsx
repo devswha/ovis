@@ -2,7 +2,7 @@ import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, us
 import { fontSettled } from "../lib/fontFamily.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Pause, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import "./PaneTerminal.css";
 
@@ -27,6 +27,7 @@ import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { paneCommandsNow } from "../lib/paneCommandCache.ts";
 import { autoReturnArmed, paneLensFlags, screenReturnArmed, type PeekRequest, type TerminalPeek } from "../lib/terminalPeek.ts";
 import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState } from "../lib/inputRow.ts";
+import { frameRows } from "../lib/terminalScreen.ts";
 import { outcomeCommand } from "../lib/outcomeChip.ts";
 import { composerLift, greetingMemory, greetingFits, greetingFolder, roomOverComposer, showsGreeting } from "../lib/greeting.ts";
 import { answerHint } from "../lib/promptAnswer.ts";
@@ -48,7 +49,8 @@ import { RenderBoundary } from "./RenderBoundary.tsx";
 import { Composer } from "./Composer.tsx";
 import { ComposerNotices, type ComposerNoticeRow } from "./ComposerNotices.tsx";
 import { PendingMessages } from "./PendingMessages.tsx";
-import type { AgentStatus, ClientRole, ConversationTurn, PlanSummary, ServerMessage } from "../../shared/protocol.ts";
+import type { AcpHold, AgentStatus, ClientRole, ConversationTurn, PlanSummary, ServerMessage } from "../../shared/protocol.ts";
+import { holdAcpChild, releaseAcpChild } from "../lib/api.ts";
 import type { PaneControls, PaneView } from "../lib/actions.ts";
 import { usePaneLane } from "../lib/chatLane.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -102,6 +104,9 @@ export interface PaneTerminalProps {
   readsDrags?: boolean;
   agentStatus?: AgentStatus;
   agentSession?: string | null;
+  acpChild?: boolean;
+  /** a person stopped this ACP child (HerdrPane `acp_hold`) */
+  acpHold?: AcpHold;
   backgroundTasks?: number;
   plan?: PlanSummary | null;
   backgroundWait?: boolean;
@@ -162,6 +167,8 @@ export function PaneTerminal({
   title = null,
   agentStatus,
   agentSession = null,
+  acpChild = false,
+  acpHold,
   backgroundTasks = 0,
   plan = null,
   backgroundWait = false,
@@ -318,7 +325,8 @@ export function PaneTerminal({
     try { termRef.current?.finishComposition(); } finally { compositionCommitPendingRef.current = false; }
   }, []);
   const barKeyRef = useRef<{ key: string; chord: string | null } | null>(null);
-  const stopKeyRef = useRef(false);
+  // the mark (markTyped) of the Stop whose Escape xterm is emitting, null for any other input
+  const stopKeyRef = useRef<number | null>(null);
   const modifiersRef = useRef<StickyModifiers>(NO_STICKY_MODIFIERS);
   const lockedRef = useRef<StickyModifiers>(NO_STICKY_MODIFIERS);
   const [modifiers, setModifiers] = useState<StickyModifiers>(NO_STICKY_MODIFIERS);
@@ -455,12 +463,12 @@ export function PaneTerminal({
     const current = kindRef.current;
     if (term === null || !readsInputRow(current)) return null;
     if (!frameGateRef.current.current) return "unknown";
-    return inputRowState(current, readScreen(term.buffer.active, term.cols, term.rows));
+    return inputRowState(current, readScreen(frameRows(term), term.cols, term.rows));
   }, []);
   const inputAtRest = useCallback((): boolean => {
     const term = termRef.current;
     if (term === null || agentRef.current !== "claude") return false;
-    const lines = readScreenLines(term.buffer.active, term.rows);
+    const lines = readScreenLines(frameRows(term), term.rows);
     return lines !== null && claudeMainAtRest(inputRowNow(), lines);
   }, [inputRowNow]);
   // The row as the send's receipt came, before the peek's own resize: the watch starts from it, since
@@ -675,9 +683,15 @@ export function PaneTerminal({
     socketRef.current?.setMode(role);
   }, [role]);
 
-  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, consumeModifiers, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
-
-  const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
+  const { pressKey, toggleModifier, abortTurn: abortTyped, dropSecondEscape } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
+  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, consumeModifiers, onChatSuggestion, onImmediateSubmit: dropSecondEscape, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
+  // an ACP child's Stop is a person's hold (server/dispatch.ts): its turn is cancelled and the agent that called it gets no new turn
+  // a PC whose Ovis has no hold yet, or a child whose real TUI has the conversation, takes the Stop key instead
+  const [acpError, setAcpError] = useState<string | null>(null);
+  useEffect(() => { setAcpError(null); }, [paneId, acpHold?.child_id, acpHold?.generation]);
+  const abortTurn = acpChild && paneId !== null
+    ? () => { setAcpError(null); void holdAcpChild(paneId, machineId).catch(() => abortTyped()); }
+    : abortTyped;
 
   // what a paste into the line is for: this PC's pane on this connection, while it can type there.
   // Read at the tap and once the clipboard answers (TerminalInput.tsx): any difference drops the paste
@@ -835,6 +849,12 @@ export function PaneTerminal({
   if (paneId !== null) {
     const owner = paneStorageId(machineId, paneId);
     const takeOver = !observing && socketRef.current?.canTakeOver() === true;
+    // one notice per hold: a hold set again elsewhere draws a new button, so a press never hands back a hold it did not see
+    if (acpHold) noticeItems.push({
+      id: `${owner}:acp-hold:${acpHold.child_id}:${acpHold.generation}`, priority: "activity", revision: "", warning: acpError !== null, mark: <Pause />,
+      text: acpError ?? t("Stopped by you. The agent that called it cannot give it new work."),
+      actions: <button type="button" className="composer-notice-action" disabled={viewOnly} onClick={() => { setAcpError(null); void releaseAcpChild(paneId, acpHold, machineId).catch(() => setAcpError(t("Not handed back: Ovis could not reach this agent. Try again."))); }}>{t("Hand back")}</button>,
+    });
     if (held) noticeItems.push({
       id: `${owner}:held`, priority: "urgent", revision: takeOver ? "open-here" : "", warning: true, mark: <Unplug />,
       text: t("Another app has this pane open. It connects here as soon as that app lets go."),
@@ -880,7 +900,7 @@ export function PaneTerminal({
     if (autoTabNamesRef.current) learnFromSend(machineIdRef.current, pane, agentRef.current, text);
     showSentCommand(pane, text, known, seen);
   }, [showSentCommand]);
-  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand: showSentAndName, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
+  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, dropSecondEscape, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand: showSentAndName, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
 
   // Capture the owner's pane for the entire upload batch, even across a pane switch.
   const uploadImage = useCallback((file: Blob) => uploadPaneImage(paneId ?? "", file), [paneId]);

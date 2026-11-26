@@ -70,7 +70,7 @@ import { useForkComposer } from "../fork/chat/ComposerPill.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { useT } from "../lib/i18n.ts";
-import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
+import { failureReason, offersRetry, uploadFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
 
@@ -220,6 +220,7 @@ export function Composer({
   }, [autoFocus]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentsRef = useRef<Attachment[]>([]);
+  const attachmentPreviews = useRef(new Map<number, string>());
   const removedAttachments = useRef(new Set<number>());
   const fileRequest = useRef(0);
   const draftKey = composerDraftKey(paneStorageId(machineId, paneId));
@@ -332,7 +333,8 @@ export function Composer({
       for (const release of [...openClaims.current]) release();
       uploadQueue.current = [];
       waitingMentions.current = [];
-      for (const attachment of attachmentsRef.current) URL.revokeObjectURL(attachment.previewUrl);
+      for (const url of attachmentPreviews.current.values()) URL.revokeObjectURL(url);
+      attachmentPreviews.current.clear();
     };
   }, []);
 
@@ -377,22 +379,33 @@ export function Composer({
       status.removeAttribute("data-model");
       status.removeAttribute("data-hint-alone");
       status.removeAttribute("data-meta-empty");
+      surface?.removeAttribute("data-step-out");
       const clipped = (selector: string): boolean => {
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
-      const first = composerModelDraw({
-        modelClipped: clipped(".composer-model"),
-        effortClipped: clipped(".composer-reasoning"),
-      });
-      if (first !== "full") status.setAttribute("data-model", first);
-      const model = status.querySelector<HTMLElement>(".composer-model");
-      const draw = model === null ? first : composerLabelDraw(first, {
-        modelClipped: model.scrollWidth > model.clientWidth,
-        modelWidth: model.clientWidth,
-        modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
-      });
-      if (draw !== first) status.setAttribute("data-model", draw);
+      const drawModel = (): void => {
+        status.removeAttribute("data-model");
+        const first = composerModelDraw({
+          modelClipped: clipped(".composer-model"),
+          effortClipped: clipped(".composer-reasoning"),
+        });
+        if (first !== "full") status.setAttribute("data-model", first);
+        const model = status.querySelector<HTMLElement>(".composer-model");
+        const draw = model === null ? first : composerLabelDraw(first, {
+          modelClipped: model.scrollWidth > model.clientWidth,
+          modelWidth: model.clientWidth,
+          modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
+        });
+        if (draw !== first) status.setAttribute("data-model", draw);
+      };
+      drawModel();
+      // the plan mode icon is never cut: where the row still pushes it out, the plan chip's step steps out for it
+      const mode = status.querySelector<HTMLElement>(".composer-mode");
+      if (surface && mode !== null && mode.getBoundingClientRect().left < status.getBoundingClientRect().left - 0.5) {
+        surface.setAttribute("data-step-out", "");
+        drawModel();
+      }
       const hint = hintRef.current;
       if (!hint) return;
       const meta = status.querySelector<HTMLElement>(".composer-status-meta")?.getBoundingClientRect();
@@ -640,10 +653,20 @@ export function Composer({
       const attachment = uploadQueue.current.shift()!;
       if (removedAttachments.current.has(attachment.id)) continue;
       uploadsRunning.current += 1;
-      void onUploadImage(attachment.file)
+      void normalizeComposerImageFile(attachment.file)
+        .then((preview) => {
+          if (!mounted.current || removedAttachments.current.has(attachment.id)) return;
+          if (preview !== attachment.file && !attachmentPreviews.current.has(attachment.id)) {
+            const previewUrl = URL.createObjectURL(preview);
+            attachmentPreviews.current.set(attachment.id, previewUrl);
+            setAttachments((current) => current.map((item) => item.id === attachment.id ? { ...item, previewUrl } : item));
+          }
+          // If JPEG preparation fails, it must still have the original file and type.
+          return onUploadImage(preview.type === "image/jpeg" ? attachment.file : preview);
+        })
         .then(
           (path) => {
-            if (!mounted.current || removedAttachments.current.has(attachment.id)) return;
+            if (path === undefined || !mounted.current || removedAttachments.current.has(attachment.id)) return;
             waitingMentions.current.push({ id: attachment.id, path, name: attachment.file.name });
             placeWaitingMentions();
           },
@@ -656,7 +679,7 @@ export function Composer({
               setNote(attachment.leftOut ? `${error.message} ${attachment.leftOut}` : error.message);
               return;
             }
-            const failure = userFailure(error);
+            const failure = uploadFailure(error);
             setNote({ attachment, failure });
           },
         )
@@ -676,13 +699,13 @@ export function Composer({
         ? t("Only the first {count} of {total} files were taken.", { count: images.length, total: incoming.length })
         : null;
       const added = images.map<Attachment>((file) => {
-        const uploadFile = normalizeComposerImageFile(file);
+        const id = ++attachmentSequence;
+        const previewUrl = (PREVIEW_TYPES as readonly string[]).includes(file.type) ? URL.createObjectURL(file) : "";
+        if (previewUrl) attachmentPreviews.current.set(id, previewUrl);
         return {
-          id: ++attachmentSequence,
-          file: uploadFile,
-          previewUrl: (PREVIEW_TYPES as readonly string[]).includes(uploadFile.type)
-            ? URL.createObjectURL(uploadFile)
-            : "",
+          id,
+          file,
+          previewUrl,
           path: null,
           state: "uploading",
           leftOut,
@@ -706,7 +729,9 @@ export function Composer({
   const removeAttachment = useCallback((attachment: Attachment) => {
     removedAttachments.current.add(attachment.id);
     placedMentions.current.delete(attachment.id);
-    URL.revokeObjectURL(attachment.previewUrl);
+    const previewUrl = attachmentPreviews.current.get(attachment.id);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    attachmentPreviews.current.delete(attachment.id);
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
     setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
     if (attachment.path) {
@@ -756,7 +781,11 @@ export function Composer({
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); placedMentions.current.delete(attachment.id); }
+      for (const attachment of sentAttachments) {
+        URL.revokeObjectURL(attachment.previewUrl);
+        attachmentPreviews.current.delete(attachment.id);
+        placedMentions.current.delete(attachment.id);
+      }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
@@ -1067,8 +1096,14 @@ export function Composer({
     : hint === "no-room" ? t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(roomless?.missing ?? 0) })
     : hint === "near-limit" ? composerFull(text.length, MAX_COMPOSER_CHARS) ? t("{max}-character limit", { max: formatChars(MAX_COMPOSER_CHARS) }) : t("{count} characters left", { count: MAX_COMPOSER_CHARS - text.length })
     : hint === "uploading" ? t("Uploading file…") : offlineSentence;
+  const failed = note !== null && typeof note === "object" && "failure" in note ? note : null;
+  const failedReason = failed === null ? null : failureReason(failed.failure);
+  const shownDetail = failed === null ? null
+    : failed.failure.cause !== null || (failed.failure.detail !== null && failedReason !== failed.failure.detail)
+      ? failed.failure.detail
+      : null;
   const noteLine = note === null ? null : typeof note === "string" ? note : "failure" in note
-    ? [note.failure.cause === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: note.failure.cause }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
+    ? [failedReason === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: failedReason }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
     : note.note;
   const strip = mobile ? null : composerStrip({ cwd, branch, repo: worktreeRepo });
   const worktree = worktreeRepo !== null;
@@ -1093,7 +1128,7 @@ export function Composer({
     observer.observe(stripElement);
     return () => observer.disconnect();
   }, [strip?.branch, strip?.folder, strip?.path, worktree, facesLoaded, t]);
-  useLayoutEffect(fitStatus, [fitStatus, agent, modelId, effort,
+  useLayoutEffect(fitStatus, [fitStatus, agent, modelId, effort, metadata?.permission_mode,
     metadata?.context?.window, metadata?.models, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
     plan?.done, plan?.total, plan?.current, statusCompact, facesLoaded, t]);
   const menuId = `composer-menu-${paneId}`;
@@ -1148,10 +1183,10 @@ export function Composer({
           <TriangleAlert className="composer-note-icon" aria-hidden="true" />
           <div className="composer-note-text">
             {noteLine}
-            {typeof note === "object" && "failure" in note && (note.failure.advice !== null || note.failure.detail !== null) && <details className="composer-note-details">
+            {failed !== null && (failed.failure.advice !== null || shownDetail !== null) && <details className="composer-note-details">
               <summary>{t("Details")}</summary>
-              {note.failure.advice !== null && <p>{note.failure.advice}</p>}
-              {note.failure.detail !== null && <code>{note.failure.detail}</code>}
+              {failed.failure.advice !== null && <p>{failed.failure.advice}</p>}
+              {shownDetail !== null && <code>{shownDetail}</code>}
             </details>}
           </div>
           {/* the draft named above, never what has replaced it since: the server checks; a box it could

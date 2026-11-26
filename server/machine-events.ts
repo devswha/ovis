@@ -7,6 +7,7 @@ import type { OmarchyTheme } from "../shared/omarchy-theme.ts";
 import type { hiddenEvents } from "./hidden-events.ts";
 import type { MachineManager } from "./machines.ts";
 import { decidedRowTokens, reportedTokenValues, snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sidebar.ts";
+import { preferencesForClient } from "./preferences.ts";
 
 export interface MachineEventDocument {
   manager: Pick<MachineManager, "subscribe">;
@@ -62,7 +63,7 @@ export function subscribeMachineEvents({ manager, preferences, herdrSidebar, see
         ? { ...event, message: { ...event.message, snapshot: snapshotWithoutHiddenTokens(rows, event.message.snapshot) } }
         : event);
     }));
-    const sendPreferences = (shared: SharedPreferences) => tell({ type: "preferences", preferences: shared });
+    const sendPreferences = (shared: SharedPreferences) => tell({ type: "preferences", preferences: preferencesForClient(shared) });
     if (preferences) {
       stops.push(preferences.subscribe(sendPreferences));
       sendPreferences(preferences.get());

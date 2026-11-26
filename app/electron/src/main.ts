@@ -4,7 +4,7 @@ import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileS
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
+import { choosePort, coreEnv, coreSession, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
 import { appUpdateState, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
@@ -37,15 +37,13 @@ export interface UpdateLine {
 }
 
 const resources = app.isPackaged ? join(process.resourcesPath, "ovis") : process.env["OVIS_DESKTOP_STAGE"] || join(app.getAppPath(), "stage");
-if (app.isPackaged && process.platform === "darwin") {
-  const staging = readStagingProfile({ resources, env: process.env });
-  if (staging) {
-    Object.assign(process.env, staging.env);
-    if (!app.commandLine.hasSwitch("user-data-dir")) {
-      mkdirSync(staging.userData, { recursive: true, mode: 0o700 });
-      app.setPath("userData", staging.userData);
-      app.setPath("sessionData", staging.userData);
-    }
+const staging = app.isPackaged && process.platform === "darwin" ? readStagingProfile({ resources, env: process.env }) : null;
+if (staging) {
+  Object.assign(process.env, staging.env);
+  if (!app.commandLine.hasSwitch("user-data-dir")) {
+    mkdirSync(staging.userData, { recursive: true, mode: 0o700 });
+    app.setPath("userData", staging.userData);
+    app.setPath("sessionData", staging.userData);
   }
 }
 const programs = layout(resources);
@@ -118,6 +116,7 @@ function writeCommand(): void {
       desktopJson: savedPath,
       stateDir,
       configDir: join(app.getPath("userData"), "cli-settings"),
+      coreSession: coreSession(process.env),
       accountService: process.env["OVIS_ACCOUNT_SERVICE_URL"]?.trim() || null,
     });
   } catch (error) {
@@ -282,9 +281,10 @@ async function launch(): Promise<void> {
     if (quitting) return;
     try {
       // recorded as soon as it runs, so a crash of the app before it listens still leaves its pid behind
-      const running = await startServer(programs, serverEnv(process.env, { hc, stateDir, port }), log, 60_000, (child) => {
+      const running = await startServer(programs, { ...serverEnv(process.env, { hc, stateDir, port }), OVIS_DESKTOP_COMMAND_RECORD: savedPath }, log, 60_000, (child) => {
         spawning = child;
-        writeSaved(savedPath, { port, server: { pid: child.pid!, bun: programs.serverBinary, started: processStartSync(child.pid!) } });
+        if (child.pid === undefined) return;
+        writeSaved(savedPath, { port, server: { pid: child.pid, bun: programs.serverBinary, started: processStartSync(child.pid), ready: false } });
       });
       spawning = null;
       if (quitting) {
@@ -293,6 +293,10 @@ async function launch(): Promise<void> {
         return;
       }
       server = running;
+      const listeningRecord = readSaved(savedPath).server;
+      if (listeningRecord !== null && listeningRecord.pid === running.child.pid) {
+        writeSaved(savedPath, { port, server: { ...listeningRecord, ready: true } });
+      }
       browserPort = port;
       watchState();
       updateBrowser();
@@ -642,7 +646,8 @@ async function startUpdates(): Promise<void> {
     try { accessSync(folder, constants.W_OK | constants.X_OK); return true; } catch { return false; }
   };
   const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")),
-    channel: updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
+    // a staging (preview) build reads only the preview feed it was built with: the beta channel would swap in the public beta feed
+    channel: staging ? "stable" : updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
   if (!plan.enabled) {
     updateLog(`Updates are off: ${plan.reason}.`);
     return;

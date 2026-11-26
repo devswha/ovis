@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronDown, Cpu } from "lucide-react";
+import { ChevronDown, ClipboardList, Cpu } from "lucide-react";
 import type { AgentStatus, ConversationMetadata } from "../../../shared/protocol.ts";
 import { AgentMark } from "../../components/AgentMark.tsx";
 import { RowMenu } from "../../components/RowMenu.tsx";
@@ -78,6 +78,10 @@ export function useForkComposer({ metadata, agent, role, connected, sending, isW
           <span className="composer-reasoning-full visually-hidden">{t("Reasoning {effort}", { effort: effort ?? "—" })}</span>
           {effort && <><span className="composer-reasoning-dot" aria-hidden="true">·</span><span className="composer-reasoning-short" aria-hidden="true">{effort}</span></>}
         </span>
+      </span>}
+      {/* Claude Code's plan mode is the one mode the pill marks, as an icon; every other mode draws nothing */}
+      {metadata?.permission_mode === "plan" && <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
+        <ClipboardList aria-hidden="true" />
       </span>}
       {metadata?.context && <ContextRing context={metadata.context} focusable={focusable} />}
       {usage}

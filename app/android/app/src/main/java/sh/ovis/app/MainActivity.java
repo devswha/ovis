@@ -946,6 +946,7 @@ public class MainActivity extends BridgeActivity {
             answerTimer.post(this::watchOpening);
             if (pageShown) answerTimer.post(this::pollPage);
         }
+        PreviewUpdater.offer(this, korean());
     }
 
     @Override
