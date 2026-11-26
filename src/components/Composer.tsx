@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ClipboardList, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
@@ -72,7 +72,7 @@ import { BackgroundTasks } from "./BackgroundTasks.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { useT } from "../lib/i18n.ts";
-import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
+import { failureReason, offersRetry, uploadFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
 
@@ -149,7 +149,8 @@ function readSlashUsage(): Record<string, number> {
   }
 }
 
-function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
+/** `focusable`: on desktop a keyboard reaches the ring and its focus shows the number; a phone keeps it inert */
+function ContextRing({ context, focusable }: { context: NonNullable<ConversationMetadata["context"]>; focusable: boolean }) {
   const t = useT();
   const left = contextLeftPercent(context);
   if (left === null || context.window === null) return null;
@@ -157,7 +158,7 @@ function ContextRing({ context }: { context: NonNullable<ConversationMetadata["c
   const detail = t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) });
   const radius = 6;
   const circumference = 2 * Math.PI * radius;
-  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} title={`${label} · ${detail}`}>
+  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} tabIndex={focusable ? 0 : undefined} data-tooltip={`${label} · ${detail}`} title={`${label} · ${detail}`}>
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <circle className="composer-context-track" cx="8" cy="8" r={radius} />
       <circle className="composer-context-used" cx="8" cy="8" r={radius}
@@ -394,22 +395,33 @@ export function Composer({
       status.removeAttribute("data-model");
       status.removeAttribute("data-hint-alone");
       status.removeAttribute("data-meta-empty");
+      surface?.removeAttribute("data-step-out");
       const clipped = (selector: string): boolean => {
         const item = status.querySelector<HTMLElement>(selector);
         return item !== null && item.scrollWidth > item.clientWidth;
       };
-      const first = composerModelDraw({
-        modelClipped: clipped(".composer-model"),
-        effortClipped: clipped(".composer-reasoning"),
-      });
-      if (first !== "full") status.setAttribute("data-model", first);
-      const model = status.querySelector<HTMLElement>(".composer-model");
-      const draw = model === null ? first : composerLabelDraw(first, {
-        modelClipped: model.scrollWidth > model.clientWidth,
-        modelWidth: model.clientWidth,
-        modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
-      });
-      if (draw !== first) status.setAttribute("data-model", draw);
+      const drawModel = (): void => {
+        status.removeAttribute("data-model");
+        const first = composerModelDraw({
+          modelClipped: clipped(".composer-model"),
+          effortClipped: clipped(".composer-reasoning"),
+        });
+        if (first !== "full") status.setAttribute("data-model", first);
+        const model = status.querySelector<HTMLElement>(".composer-model");
+        const draw = model === null ? first : composerLabelDraw(first, {
+          modelClipped: model.scrollWidth > model.clientWidth,
+          modelWidth: model.clientWidth,
+          modelFloor: parseFloat(getComputedStyle(model).minWidth) || 0,
+        });
+        if (draw !== first) status.setAttribute("data-model", draw);
+      };
+      drawModel();
+      // the plan mode icon is never cut: where the row still pushes it out, the plan chip's step steps out for it
+      const mode = status.querySelector<HTMLElement>(".composer-mode");
+      if (surface && mode !== null && mode.getBoundingClientRect().left < status.getBoundingClientRect().left - 0.5) {
+        surface.setAttribute("data-step-out", "");
+        drawModel();
+      }
       const hint = hintRef.current;
       if (!hint) return;
       const meta = status.querySelector<HTMLElement>(".composer-status-meta")?.getBoundingClientRect();
@@ -468,7 +480,7 @@ export function Composer({
   const menuOpen = !menuDismissed && trigger !== null && choices.length > 0;
   const filesFailedShown = !menuDismissed && trigger?.kind === "file" && filesFailed && files.length === 0 && !menuOpen;
   const slashUnmatched = !menuDismissed && trigger?.kind === "slash" && trigger.query !== "" && choices.length === 0 && triggerCommands.length > 0
-    && !namesHiddenCommand(commands, trigger.query);
+    && !namesHiddenCommand(commands, trigger.query, trigger.prefix ?? "/");
   // clamped as the list is drawn, not by an effect after it: a Tab or Enter typed before that
   // effect's render found no row at the old index and did nothing
   const choiceIds = choices.map((choice) => typeof choice === "string" ? `file:${choice}` : `${choice.source}:${choice.name}`);
@@ -513,6 +525,17 @@ export function Composer({
   });
 
   const pasteCutNote = useRef<string | null>(null);
+
+  const syncTextarea = (element: HTMLTextAreaElement): void => {
+    const { value, selectionStart } = element;
+    // a textarea reports CRLF and CR as LF: a draft that holds them (a pasted clipboard) is not edited by that
+    if (viewOnly || value === composerDrafts.read(draftKey).text.replace(/\r\n?/g, "\n")) return;
+    barePick.current = null;
+    setText(value);
+    setCaret(selectionStart);
+    setMenuDismissed(false);
+    setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
+  };
 
   // the box clamps at its cap without a word: the cap is said once, as it is reached, through the
   // polite region (the status line shows it; a line that appears with its words is not announced)
@@ -662,7 +685,7 @@ export function Composer({
               setNote(attachment.leftOut ? `${error.message} ${attachment.leftOut}` : error.message);
               return;
             }
-            const failure = userFailure(error);
+            const failure = uploadFailure(error);
             setNote({ attachment, failure });
           },
         )
@@ -1070,8 +1093,14 @@ export function Composer({
     : hint === "no-room" ? t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(roomless?.missing ?? 0) })
     : hint === "near-limit" ? composerFull(text.length, MAX_COMPOSER_CHARS) ? t("{max}-character limit", { max: formatChars(MAX_COMPOSER_CHARS) }) : t("{count} characters left", { count: MAX_COMPOSER_CHARS - text.length })
     : hint === "uploading" ? t("Uploading file…") : offlineSentence;
+  const failed = note !== null && typeof note === "object" && "failure" in note ? note : null;
+  const failedReason = failed === null ? null : failureReason(failed.failure);
+  const shownDetail = failed === null ? null
+    : failed.failure.cause !== null || (failed.failure.detail !== null && failedReason !== failed.failure.detail)
+      ? failed.failure.detail
+      : null;
   const noteLine = note === null ? null : typeof note === "string" ? note : "failure" in note
-    ? [note.failure.cause === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: note.failure.cause }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
+    ? [failedReason === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: failedReason }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
     : note.note;
   const strip = mobile ? null : composerStrip({ cwd, branch, repo: worktreeRepo });
   const worktree = worktreeRepo !== null;
@@ -1096,7 +1125,7 @@ export function Composer({
     observer.observe(stripElement);
     return () => observer.disconnect();
   }, [strip?.branch, strip?.folder, strip?.path, worktree, facesLoaded, t]);
-  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort,
+  useLayoutEffect(fitStatus, [fitStatus, agent, metadata?.model, metadata?.reasoning_effort, metadata?.permission_mode,
     metadata?.context?.window, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
     plan?.done, plan?.total, plan?.current, statusCompact, facesLoaded, t]);
   const menuId = `composer-menu-${paneId}`;
@@ -1151,10 +1180,10 @@ export function Composer({
           <TriangleAlert className="composer-note-icon" aria-hidden="true" />
           <div className="composer-note-text">
             {noteLine}
-            {typeof note === "object" && "failure" in note && (note.failure.advice !== null || note.failure.detail !== null) && <details className="composer-note-details">
+            {failed !== null && (failed.failure.advice !== null || shownDetail !== null) && <details className="composer-note-details">
               <summary>{t("Details")}</summary>
-              {note.failure.advice !== null && <p>{note.failure.advice}</p>}
-              {note.failure.detail !== null && <code>{note.failure.detail}</code>}
+              {failed.failure.advice !== null && <p>{failed.failure.advice}</p>}
+              {shownDetail !== null && <code>{shownDetail}</code>}
             </details>}
           </div>
           {/* the draft named above, never what has replaced it since: the server checks; a box it could
@@ -1326,20 +1355,22 @@ export function Composer({
 
         <textarea
           ref={textareaRef}
-        onCompositionStart={() => { composingRef.current = true; }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-          const waiting = commitWait.current;
-          if (waiting !== null) {
-            if (waiting.timer !== null) clearTimeout(waiting.timer);
-            waiting.timer = null;
-            // WebKit updates the value with an input event after compositionend: send the committed word
-            setTimeout(sendCommitted);
-          }
-          // after the input that commits the candidate, which WebKit sends after compositionend, and
-          // in a frame, after the caret of dictation held through the composition has landed
-          setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
-        }}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            // Some commits change the DOM value without delivering an input event.
+            syncTextarea(event.currentTarget);
+            const waiting = commitWait.current;
+            if (waiting !== null) {
+              if (waiting.timer !== null) clearTimeout(waiting.timer);
+              waiting.timer = null;
+              // WebKit updates the value with an input event after compositionend: send the committed word
+              setTimeout(sendCommitted);
+            }
+            // after the input that commits the candidate, which WebKit sends after compositionend, and
+            // in a frame, after the caret of dictation held through the composition has landed
+            setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
+          }}
           className="composer-text"
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
@@ -1363,13 +1394,9 @@ export function Composer({
             setMenuDismissed(false);
           }}
           onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
-          onChange={(event) => {
-            barePick.current = null;
-            setText(event.target.value);
-            setCaret(event.target.selectionStart);
-            setMenuDismissed(false);
-            setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
-          }}
+          // React's onChange can omit an input whose value its tracker already saw.
+          onInput={(event) => syncTextarea(event.currentTarget)}
+          onChange={(event) => syncTextarea(event.currentTarget)}
         />
         <textarea
           ref={measurementRef}
@@ -1454,7 +1481,11 @@ export function Composer({
                   </>}
                 </span>
               </span>}
-              {metadata?.context && <ContextRing context={metadata.context} />}
+              {/* Claude Code's plan mode is the one mode the pill marks, as an icon; every other mode draws nothing */}
+              {metadata?.permission_mode === "plan" && <span className="composer-mode" role="img" aria-label={t("Plan mode")} title={t("Plan mode")}>
+                <ClipboardList aria-hidden="true" />
+              </span>}
+              {metadata?.context && <ContextRing context={metadata.context} focusable={!mobile} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
                 className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
                 title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}

@@ -2,7 +2,7 @@
  * Dispatcher policy for an account-joined row on this PC. Row Revoke uses the PC's admission order;
  * signed records, including a signed remove, are independently authorized by their handler.
  */
-import { DISPATCH_READS, LOCAL_DRIVE_POSTS, RELAY_CONTROLS } from "../dispatch-routes.ts";
+import { DISPATCH_READS, LOCAL_DRIVE_POSTS, MEMORY_POSTS, RELAY_CONTROLS, TAILSCALE_CONTROLS } from "../dispatch-routes.ts";
 
 export interface AccountCaller {
   readonly rowId: string;
@@ -68,6 +68,8 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/account/enroll": { action: "enroll" },
   "POST /api/account/relay-account": { action: "relay_account" },
   "POST /api/account/one-press": { action: "local_control" },
+  "POST /api/account/pc-proof": { action: "local_control" },
+  "POST /api/account/ssh-add": { action: "local_control" },
   "POST /api/alerts/webhook": { action: "webhook" },
   "PUT /api/alerts/webhook": { action: "webhook" },
   "DELETE /api/alerts/webhook": { action: "webhook" },
@@ -77,7 +79,19 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/push/status": { action: "push_subscribe" },
   "POST /api/push/test": { action: "push_subscribe" },
   "POST /api/account/records": { action: "records" },
+  // where the account's signed list stands, and its entries handed over: an entry proves itself, as a signed record does
+  "POST /api/account/list/head": { action: "records" },
+  "POST /api/account/list/page": { action: "records" },
+  // a device of the account names its list to this PC in its own session: the PC decides by what it holds itself
+  "POST /api/account/list/name": { action: "drive" },
+  // and a device that may add devices to that list asks this PC for its card, to sign the entry that gives it its keys
+  "POST /api/account/list/card": { action: "drive" },
   "POST /api/devices/pair": { action: "pair_start" },
+  // a live member may mark a join seen for every window of this PC, as it may drive it
+  "POST /api/devices/joins/seen": { action: "drive" },
+  // blocking a tailnet node and answering its card are this PC's own window's (server/tailnet-nodes.ts)
+  "POST /api/devices/tailnet-nodes/block": { action: "local_control" },
+  "POST /api/devices/tailnet-nodes/answer": { action: "local_control" },
   "POST /api/runtime": { action: "drive" },
   "POST /api/runtime/move": { action: "drive" },
   "DELETE /api/runtime/move": { action: "drive" },
@@ -107,10 +121,14 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/account/leave": { action: "leave_account" },
 };
 
-/** These exact mutations already refuse an account-joined principal in their handler. */
+/**
+ * These exact mutations already refuse an account-joined principal in their handler. /api/account/confirm-page and the
+ * Tailscale controls answer this PC's own window alone (dispatch.ts ownWindow), which a relayed principal never is.
+ */
 export function accountRouteGuard(method: string, pathname: string): boolean {
-  return method === "POST" && (pathname === "/api/account/introduce"
-    || Object.values(RELAY_CONTROLS).some(path => path === pathname));
+  return method === "POST" && (pathname === "/api/account/introduce" || pathname === "/api/account/confirm-page"
+    || Object.values(RELAY_CONTROLS).some(path => path === pathname)
+    || Object.values(TAILSCALE_CONTROLS).some(path => path === pathname));
 }
 
 /** Null means unregistered, never permission. GET needs the separate explicit read list. */
@@ -121,7 +139,7 @@ export function accountRouteAction(method: string, pathname: string): RowAction 
   if (row?.[1] !== undefined && method === "DELETE") return { action: "revoke", rowId: row[1] };
   const machine = /^\/api\/machines\/([^/]+)\//.exec(pathname);
   if (machine?.[1] !== undefined) return { action: "route", machine: machine[1] };
-  if (method === "POST" && LOCAL_DRIVE_POSTS.includes(pathname)) return { action: "drive" };
+  if (method === "POST" && (LOCAL_DRIVE_POSTS.includes(pathname) || MEMORY_POSTS.includes(pathname))) return { action: "drive" };
   return ROUTES[`${method} ${pathname}`] ?? null;
 }
 

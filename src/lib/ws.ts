@@ -4,12 +4,12 @@ import { ACCOUNT_OPENS_ALL_CAPABILITY, type NoticeAnswer, type NoticeSeen } from
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { promptSet } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
-import { abandonNativeReads, getTransport, type WebSocketLike } from "./transport.ts";
+import { abandonNativeReads, getTransport, type Transport, type WebSocketLike } from "./transport.ts";
 
 type Handler = (message: ServerMessage) => void;
 
 export type SubmitDelivery = "immediate" | "queue" | "hold";
-export type SubmitResult = { ok: true; pending?: PendingMessage; unconfirmed?: true; typedNow?: true; sendingAt?: string } | { ok: false; code: string; message: string; draft?: string; box?: string };
+export type SubmitResult = { ok: true; pending?: PendingMessage; unconfirmed?: true; replayed?: true; typedNow?: true; sendingAt?: string } | { ok: false; code: string; message: string; draft?: string; box?: string };
 
 const FEATURES_WAIT_MS = 2000;
 /**
@@ -190,6 +190,7 @@ export class HerdrSocket {
   private reconnectTimer: number | null = null;
   private connectTimer: number | null = null;
   private connectTimeouts = 0;
+  private routeWatch: { readonly transport: Transport; readonly stop: () => void } | null = null;
   private endedEarly = new WeakSet<WebSocketLike>();
   private disposed = false;
   private wakeListening = false;
@@ -290,10 +291,6 @@ export class HerdrSocket {
     }));
   }
 
-  get connectedSince(): number | null {
-    return this.openedAt;
-  }
-
   get lostSince(): number | null {
     return this.lostAt;
   }
@@ -349,7 +346,11 @@ export class HerdrSocket {
     // a backoff retry still waiting would only open a second attempt later, past whatever ends this one
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
-    const socket = getTransport().openSocket(this.url);
+    const transport = getTransport();
+    this.watchRoute(transport);
+    const target = new URL(this.url);
+    target.searchParams.set("receipt_resume_id", receiptResumeId());
+    const socket = transport.openSocket(target.href);
     const epoch = ++this.connectionEpoch;
     const started = Date.now();
     this.socket = socket;
@@ -502,7 +503,7 @@ export class HerdrSocket {
       if ((message.type === "input-ready" && message.ready === false) || message.type === "pty-exit" || (message.type === "error" && message.pane_id && ["attach_held", "input_not_ready"].includes(message.code))) this.inputReady.delete(message.pane_id!);
       if (readyPane !== null && (message.type === "input-ready" || wasReady !== this.inputReady.has(readyPane))) this.changeLease(readyPane);
       if (message.type === "submit-result" && this.matchesRequest(message.id, "submit", message.pane_id)) {
-        this.resolveRequest(message.id, message.ok ? { ok: true, ...(message.pending ? { pending: message.pending } : {}), ...(message.typed_now === true ? { typedNow: true as const } : {}), ...(typeof message.sending_at === "string" ? { sendingAt: message.sending_at } : {}) }
+        this.resolveRequest(message.id, message.ok ? { ok: true, ...(message.pending ? { pending: message.pending } : {}), ...(message.replayed === true ? { replayed: true as const } : {}), ...(message.typed_now === true ? { typedNow: true as const } : {}), ...(typeof message.sending_at === "string" ? { sendingAt: message.sending_at } : {}) }
           : { ok: false, code: message.code ?? "submit_failed", message: message.message ?? "the pane did not take the message", ...(message.draft ? { draft: message.draft } : {}),
             ...(!message.draft && typeof message.box === "string" ? { box: message.box } : {}) });
       }
@@ -821,6 +822,18 @@ export class HerdrSocket {
     this.connect();
   }
 
+  /** A relay carrier back up reopens this stream at once, rather than when its backoff runs out. */
+  private watchRoute(transport: Transport): void {
+    if (this.routeWatch?.transport === transport) return;
+    this.routeWatch?.stop();
+    this.routeWatch = transport.onRouteChange ? {
+      transport,
+      stop: transport.onRouteChange(() => {
+        if (transport.route !== undefined && !this.left && this.socket?.readyState !== SOCKET_OPEN) this.wake();
+      }),
+    } : null;
+  }
+
   private scheduleReconnect(): void {
     if (this.disposed || this.reconnectTimer !== null) return;
     const delay = backoffDelay(this.retries);
@@ -1090,6 +1103,12 @@ export class HerdrSocket {
    * reads OPEN) is found only by the liveness probe: keys typed before the probe starts go as usual, and keys typed
    * while it waits for its pong are held.
    */
+  /** whether this connection's link has been up since `typedAt` (markTyped) without a loss: a key captured then may go */
+  linkedSince(typedAt: number): boolean {
+    this.noteNetwork();
+    return this.linkUpAt !== null && typedAt > this.linkUpAt;
+  }
+
   private takesKey(paneId: string, typedAt?: number): boolean {
     this.noteNetwork();
     return this.linkUpAt !== null && (typedAt === undefined || typedAt > this.linkUpAt)
@@ -1190,7 +1209,7 @@ export class HerdrSocket {
    * `clearDraft`: an immediate send over the draft an input_draft refusal named (ClientMessage `clear_draft`)
    * `sendAnyway`: an immediate send after a refusal that showed the box (ClientMessage `send_anyway`)
    * `holdOnly`: a hold that must never go on its own (the composer's Alt+Enter): refused, not queued, where the bridge cannot hold */
-  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false): Promise<SubmitResult> | null {
+  submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     if (resendId !== undefined && sendAnyway) return Promise.resolve({ ok: false, code: "invalid_delivery", message: "Use a held-copy resend id only for an immediate chat message" });
@@ -1212,16 +1231,18 @@ export class HerdrSocket {
       if (!this.features.has("submit")) {
         if (clearDraft !== undefined || sendAnyway) return { ok: false, code: "unsupported", message: "Update this PC to clear a terminal draft before sending. Nothing was sent." };
         this.rawSend({ type: "input", pane_id: paneId, text: `${payload}\r` });
+        onSent?.();
         return { ok: true, unconfirmed: true };
       }
       const id = this.nextSubmit++;
       return this.submitRequest({ type: "submit", id, pane_id: paneId, text, payload, ...(typed ? { typed: true } : {}), ...(delivery !== "immediate" ? { delivery } : {}),
-        ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) });
+        ...(commandKey !== undefined ? { command_key: commandKey } : {}),
+        ...(clearDraft !== undefined ? { clear_draft: clearDraft } : {}), ...(sendAnyway ? { send_anyway: true as const } : {}), ...(resendId !== undefined ? { resend_id: resendId, resend_generation: generation ?? 0 } : {}), ...(agentOnly ? { agent_only: true as const } : {}) }, onSent);
     })();
   }
 
   /** Explicitly steer or discard one server-owned pending item. Never queued or replayed. */
-  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false): Promise<SubmitResult> | null {
+  pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false, onSent?: () => void): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
     return (async (): Promise<SubmitResult> => {
@@ -1230,7 +1251,7 @@ export class HerdrSocket {
       if (this.mode === "observe") return { ok: false, code: "read_only", message: "Observe connections cannot change pending messages." };
       if (!this.canQueueMessages()) return { ok: false, code: "pending_input_unsupported", message: "Update this PC to manage pending messages." };
       return this.submitRequest({ type: "pending-action", id: this.nextSubmit++, pane_id: paneId, pending_id: pendingId, action,
-        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) });
+        ...(generation !== undefined ? { resend_generation: generation } : {}), launch_ended: true, ...(withdrawalOnly ? { withdrawal_only: true as const } : {}) }, onSent);
     })();
   }
 
@@ -1264,7 +1285,7 @@ export class HerdrSocket {
   }
 
   /** Only an acknowledgement callback is retained, never a frame to resend. */
-  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>): Promise<SubmitResult> {
+  private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>, onSent?: () => void): Promise<SubmitResult> {
     const id = message.id;
     this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" || message.delivery === "hold" } : message.type === "pending-action" ? { pendingId: message.pending_id } : {}) });
     const result = new Promise<SubmitResult>((resolve) => {
@@ -1291,7 +1312,9 @@ export class HerdrSocket {
       this.submits.get(id)?.(NOT_TRANSMITTED);
       this.submits.delete(id);
       this.requests.delete(id);
+      return result;
     }
+    onSent?.();
     return result;
   }
 
@@ -1404,6 +1427,8 @@ export class HerdrSocket {
     this.trace.close();
     this.disposed = true;
     linkWatchers.delete(this);
+    this.routeWatch?.stop();
+    this.routeWatch = null;
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.clearConnectTimer();

@@ -31,7 +31,8 @@ const fixtures: Fixture[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
 
 function fixture(options: Parameters<typeof relayFixture>[1] = {}): Fixture {
-  const made = relayFixture(false, options);
+  // This suite covers the released signed-add/enrollment protocol, not whole-list Step 2.
+  const made = relayFixture(false, { accountOpensAll: false, ...options });
   fixtures.push(made);
   return made;
 }
@@ -939,7 +940,7 @@ async function mailboxService(f: Fixture) {
 
 async function accountPc() {
   let fetch = (_request: Request): Promise<Response> => Promise.reject(new Error("no account service yet"));
-  const made = await relayAccountFixture("drive", ACCOUNT, { accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
+  const made = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: false, accountService: { url: "https://account.test", fetch: (request) => fetch(request) } });
   fixtures.push(made.fixture);
   const { service, identity, leave } = await mailboxService(made.fixture);
   await made.fixture.app.context.services.accountMailbox.pull();
@@ -1116,6 +1117,30 @@ function introducedPc(name = "nuc") {
   const keys = generateKeyPair();
   return { server_id: deriveServerId(keys.publicKey), server_public_key: exportPublicKey(keys.publicKey), relay: "wss://relay.ovis.sh", name };
 }
+
+test("an introduction carries the place the member names for the device in the account's signed list, form checked, and the latest one stays", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const joining = await accountKey();
+  await post(link, "/api/account/records", { records: [await add(key, joining.spki)] });
+  const pcs = [introducedPc()];
+  const list = { id: "ab".repeat(32), seq: 4, hash: "cd".repeat(32) };
+  expect((await post(link, "/api/account/introduce", { key: joining.spki, pcs, list })).status).toBe(204);
+  const joined = await relayConnection(f);
+  await joined.auth({ keys: joining.keys, publicKey: joining.spki, id: accountDeviceId(SERVER_ID, joining.spki) });
+  expect(await (await joined.open("/api/account/introduction").response).json()).toEqual({ pcs, list });
+  // an introduction that names none keeps the one before; a later one replaces it
+  expect((await post(link, "/api/account/introduce", { key: joining.spki, pcs })).status).toBe(204);
+  expect(await (await joined.open("/api/account/introduction").response).json()).toEqual({ pcs, list });
+  const later = { ...list, seq: 9 };
+  expect((await post(link, "/api/account/introduce", { key: joining.spki, pcs, list: later })).status).toBe(204);
+  expect(await (await joined.open("/api/account/introduction").response).json()).toEqual({ pcs, list: later });
+  // out of form: nothing is kept of that call
+  for (const bad of [{ id: "AB".repeat(32), seq: 1, hash: list.hash }, { id: list.id, seq: -1, hash: list.hash }, { id: list.id, seq: 1 }, { ...list, extra: 1 }, "x"]) {
+    expect((await post(link, "/api/account/introduce", { key: joining.spki, pcs, list: bad })).body.error?.code).toBe("introduction_invalid");
+  }
+  expect(await (await joined.open("/api/account/introduction").response).json()).toEqual({ pcs, list: later });
+});
 
 test("a member introduces the account's PCs to a device it added, which reads them over its own session only", async () => {
   const f = fixture();
@@ -1360,7 +1385,9 @@ test("a driving device hears of a device an account remove took, and of one revo
   expect(removed).toContain(`"device_id":"${accountDeviceId(SERVER_ID, gone.spki)}","label":"Mac app"`);
   expect(removed).toContain(`"by":{"device_id":"${device.id}","label":"Relay test"}`);
   f.app.context.services.devices.revoke(revoked.id);
-  expect(await events.until(`"device_id":"${revoked.id}"`)).toContain('"by":"pc"');
+  // the stream opened on the join of that device too, which nobody has seen yet: the removal is the one by the PC
+  const text = await events.until('"by":"pc"');
+  expect(text.slice(text.lastIndexOf('"type":"device-removed"'))).toContain(`"device_id":"${revoked.id}"`);
   await events.close();
 });
 
@@ -1463,7 +1490,7 @@ test("a key paired again in one of two state dirs stays paired, without its tomb
   const store = f.app.context.services.devices;
   const later = Date.now() + 1_000;
   expect(store.pairRelay(store.startPairing(later).code, "Mac app", gone.spki, later)).not.toBeNull();
-  const other = createServer({ port: 0, hostname: "127.0.0.1", stateDir: sibling, siblingStateDir: f.stateDir, token: "t", tailscaleOwner: null, machines: false, sidecar: false });
+  const other = createServer({ port: 0, hostname: "127.0.0.1", stateDir: sibling, siblingStateDir: f.stateDir, token: "t", tailscaleOwner: null, machines: false, sidecar: false, accountOpensAll: false });
   try {
     // the merge brings the other dir's tombstone back, and the start-up repair drops it: the row is newer
     for (const devices of [other.context.services.devices, new DeviceStore(f.stateDir)]) {
@@ -1515,7 +1542,7 @@ test("a key revoked on this PC stays out when a sibling dir that missed the revo
     const registry = JSON.parse(readFileSync(join(sibling, "devices.json"), "utf8")) as { devices: { relay_public_key?: string; created_at: string }[] };
     for (const row of registry.devices) if (row.relay_public_key === gone.spki) row.created_at = new Date(Date.now() + 1_000).toISOString();
     writeFileSync(join(sibling, "devices.json"), JSON.stringify(registry), { mode: 0o600 });
-    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: f.stateDir, siblingStateDir: sibling, token: "t", tailscaleOwner: null, machines: false, sidecar: false });
+    const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir: f.stateDir, siblingStateDir: sibling, token: "t", tailscaleOwner: null, machines: false, sidecar: false, accountOpensAll: false });
     try {
       expect(app.context.services.devices.hasKey(gone.spki)).toBe(false);
     } finally { app.stop(); }
