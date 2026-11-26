@@ -1,5 +1,6 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal, flushSync } from "react-dom";
+import { legacyEditText } from "../../shared/edit-output.ts";
 import {
   ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, SquareTerminal, Target,
   type LucideProps,
@@ -30,6 +31,7 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
+import { plainText } from "../lib/plainText.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
@@ -255,20 +257,13 @@ function conversationState(conversation: ConversationResponse): ChatState {
 }
 
 
-function plainText(markdown: string): string {
-  return markdown
-    .replace(/```[^\n]*\n([\s\S]*?)```/g, "$1")
-    .replace(/\[([^\]]+)\]\((?:https?:\/\/|mailto:)[^)]+\)/gi, "$1")
-    .replace(/(?:\*\*|__|~~|`)(.*?)(?:\*\*|__|~~|`)/g, "$1")
-    .replace(/^#{1,3}\s+/gm, "")
-    .replace(/^>\s?/gm, "");
-}
-
-function CopyButton({ text, label, className = "icon-button chat-copy", children, onResult }: { text: string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
+function CopyButton({ text, getText, label, className = "icon-button chat-copy", children, onResult }: { text?: string; getText?: () => string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async (): Promise<void> => {
-    const ok = await copyText(text);
+    // Derive lazily when a getter is supplied (e.g. an answer's plain text): the conversion runs
+    // synchronously inside the click gesture, never while the row renders (TASK-002).
+    const ok = await copyText(getText !== undefined ? getText() : text!);
     setCopied(ok);
     onResult(ok);
     if (ok) window.setTimeout(() => setCopied(false), 1500);
@@ -358,6 +353,9 @@ function PatchView({ patch }: { patch: string }) {
 function ToolInputView({ part }: { part: ToolPartType }) {
   const open = useContext(OpenFileContext);
   const t = useT();
+  if (part.edits?.length) return <div className="chat-tool-io">{part.edits.map((edit, index) => <div key={index}>
+    <ToolFile path={edit.path} /><EditDiff before={edit.before} after={edit.after} />
+  </div>)}</div>;
   if (part.arguments_omitted) return <pre className="chat-tool-io">{t("Arguments omitted (too large)")}</pre>;
   const after = isTodoTool(part.name) ? parseTodoAnswer(part.output) ?? todoSnapshot(part) : null;
   if (after !== null && after.length > 0) return <TodoList items={after} />;
@@ -598,7 +596,12 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
   const { verb, narration } = useMemo(() => workRowLabel({ name: part.name, input: part.input }, summary), [part.name, part.input, summary]);
   const name = toolDisplayName(part.name);
   const renamed = narration || verb !== null || name !== part.name;
-  const output = !attempt && isTodoTool(part.name) && parseTodoAnswer(part.output) !== null ? "" : whole.text ?? part.output;
+  const legacy = useMemo(() => legacyEditText(part.edits), [part.edits]);
+  const raw = whole.text ?? part.output;
+  const clippedEdit = legacy && raw.endsWith("\n… trimmed") && legacy.startsWith(raw.slice(0, -"\n… trimmed".length));
+  const output = raw === legacy || clippedEdit || (!attempt && isTodoTool(part.name) && parseTodoAnswer(part.output) !== null) ? ""
+    : legacy && raw.startsWith(`${legacy}\n`) ? raw.slice(legacy.length + 1) : raw;
+  const canLoad = part.output_ref !== undefined && whole.text === null && (!clippedEdit || (part.output_size ?? 0) > legacy.length + 1);
   const stateWord = state === undefined || part.error ? null
     : state === "ok" ? t("succeeded") : state === "pending" ? t("pending") : state === "error" ? t("failed") : t("outcome not recorded");
   const images = useMemo(() => linePictures([part]), [part]);
@@ -617,9 +620,9 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
       {/* opened, the row shows its pictures larger in its detail */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
-    {open && <div className="work-row-detail">{(verb !== null || name !== part.name) && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
-      <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />
-      {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
+    {open && <div className="work-row-detail">{(verb !== null || name !== part.name) && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{(output.length > 0 || (clippedEdit && canLoad)) && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
+      {output.length > 0 && <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />}
+      {canLoad && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}
   </div>;
@@ -1077,6 +1080,8 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     </section>;
   }
   const notice = turn.parts.find((part): part is Extract<ConversationPart, { kind: "notice" }> => part.kind === "notice");
+  // a stop (Esc): a quiet line where the turn stopped, as Claude Code's own terminal draws it
+  if (notice?.source === "stopped") return <p className="chat-goal-wait chat-stopped"><span>{t("Stopped|chat")}{time !== null && <> · {time}</>}</span></p>;
   if (notice !== undefined) {
     return <ChatDetails memoryKey="notice" className="chat-compact chat-notice">
       <summary><span className="chat-notice-label">{noticeLabel(t, notice)}</span>{time !== null && <> · {time}</>}</summary>
@@ -1149,7 +1154,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
       <CopyButton className="chat-meta-btn" text={answerText} label={t("Copy as markdown")} onResult={copied}><span className="chat-meta-fmt">MD</span></CopyButton>
-      <CopyButton className="chat-meta-btn chat-meta-plain" text={plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
+      <CopyButton className="chat-meta-btn chat-meta-plain" getText={() => plainText(answerText)} label={t("Copy as plain text")} onResult={copied}><span className="chat-meta-fmt">TXT</span><span className="chat-meta-word">{t("Plain text")}</span></CopyButton>
       {time}
     </div>}
     {copyError}

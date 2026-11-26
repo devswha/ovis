@@ -14,6 +14,13 @@ import com.getcapacitor.annotation.PermissionCallback;
 @CapacitorPlugin(name = "HerdrShell", permissions = { @Permission(alias = "camera", strings = { Manifest.permission.CAMERA }) })
 public class HerdrShellPlugin extends Plugin {
     private final PCStore.Openings openings = new PCStore.Openings();
+
+    /** Capacitor loads its plugins before the WebView's first page: what that page must have from its start is added here. */
+    @Override
+    public void load() {
+        if (getActivity() instanceof MainActivity) ((MainActivity) getActivity()).beforeFirstPage(getBridge());
+    }
+
     @PluginMethod
     public void getState(PluginCall call) {
         JSObject state = new JSObject();
@@ -55,6 +62,17 @@ public class HerdrShellPlugin extends Plugin {
         } catch (Exception unanswered) {
             return null;
         }
+    }
+
+    /**
+     * The application id this build was made as. The client turns the waits of a move onto the account's signed list
+     * down only in the QA twin (sh.ovis.app.previewqa; src/lib/account/listMigrate.ts migrationScale), never elsewhere.
+     */
+    @PluginMethod
+    public void appId(PluginCall call) {
+        JSObject answer = new JSObject();
+        answer.put("id", getContext().getPackageName());
+        call.resolve(answer);
     }
 
     /**
@@ -266,6 +284,22 @@ public class HerdrShellPlugin extends Plugin {
             return;
         }
         requestPermissionForAlias("camera", call, "cameraAnswered");
+    }
+
+    /**
+     * The preview build's own update (PreviewUpdater) for Settings → About (src/lib/previewAppUpdate.ts): "state"
+     * answers at once, "check" once the check and any download are over, "install" hands the downloaded APK to the
+     * system installer. Its phase is "off" in every build but the preview.
+     */
+    @PluginMethod
+    public void previewUpdate(PluginCall call) {
+        String action = call.getString("action", "state");
+        if ("check".equals(action)) {
+            PreviewUpdater.check(getActivity(), call::resolve);
+            return;
+        }
+        if ("install".equals(action)) getActivity().runOnUiThread(() -> PreviewUpdater.install(getActivity()));
+        call.resolve(PreviewUpdater.state());
     }
 
     @PermissionCallback

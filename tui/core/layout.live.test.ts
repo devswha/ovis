@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from "bun:test";
+import { ovisServer } from "./ovis-server.ts";
 import { constants } from "node:os";
 import { coreFolder, IsolatedCore, type StopReport, stoppedCleanly } from "../../scripts/test-hc.ts";
 import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
@@ -50,7 +51,7 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's layout write
     const hc = link;
 
     const answers: LayoutAnswer[] = [];
-    const writes = new LayoutWrites({ hc, model: { firstTurn: (terminal) => terminal.turn ?? 0, host: null }, folder: core.root, answer: (answer) => answers.push(answer) });
+    const writes = new LayoutWrites({ hc, model: { firstTurn: (terminal) => terminal.turn ?? 0, host: null }, folder: core.root, answer: (answer) => answers.push(answer), server: ovisServer(null) });
     const run = async (action: RunEffect["action"], target: Target | null = null, more: Partial<RunEffect> = {}) => {
       await writes.run({ type: "run", action, target, index: null, name: null, ...more });
     };
@@ -103,7 +104,8 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's layout write
     ]);
     expect((await hc.call("doc.get", { name: LAYOUT_DOC })).value ?? null).toBeNull();
 
-    // a pane whose program ended by itself: closing it removes its record; a workspace holding one closes whole
+    // a pane whose program ended by itself is shown nowhere (herdr closes it, P5): the workspace's close ends the live pane
+    // the user saw, and the finished record stays with the core, as it does for the browser
     const endedIn = async (space: string, tab: string) => {
       const made = (await hc.call("terminal.run", { keep: true, argv: ["sh", "-c", "exit 0"], labels: { "herdr.space": space, "herdr.tab": tab } })).address;
       for (const end = Date.now() + WAIT_MS; (await hc.call("terminal.get", { terminal: made })).state === "live"; await new Promise((resolve) => setTimeout(resolve, 20))) {
@@ -115,9 +117,7 @@ describe.skipIf(!bin || process.platform === "win32")("the screen's layout write
     const holder = followed();
     const keptLabels = (await hc.call("terminal.get", { terminal: holder })).labels!;
     const gone = await endedIn(keptLabels["herdr.space"]!, keptLabels["herdr.tab"]!);
-    await run("close_pane", pane(gone), { seen: await seen(gone) });
-    const lastOne = await endedIn(keptLabels["herdr.space"]!, keptLabels["herdr.tab"]!);
-    await run("close_workspace", { kind: "workspace", id: keptLabels["herdr.space"]! }, { seen: await seen(holder, lastOne) });
-    expect([(await hc.call("terminal.list", { all: true })).terminals.map((terminal) => terminal.address), answers.filter((answer) => answer.type === "notice").length]).toEqual([[bystander], 2]);
+    await run("close_workspace", { kind: "workspace", id: keptLabels["herdr.space"]! }, { seen: await seen(holder) });
+    expect([(await hc.call("terminal.list", { all: true })).terminals.map((terminal) => terminal.address).sort(), answers.filter((answer) => answer.type === "notice").length]).toEqual([[bystander, gone].sort(), 2]);
   }, TEST_MS);
 });

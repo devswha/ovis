@@ -4,16 +4,28 @@ import { DISPLAY_QUERY, emptyProbe, PROBE_QUERY, ReplyFilter, withReply } from "
 
 /**
  * What `enter` turns on, in order, after raw mode: the alternate screen, the cursor hidden, focus
- * reports, bracketed paste, mouse 1002 with SGR 1006, and one kitty keyboard entry with flag 1.
+ * reports, bracketed paste, mouse 1002 and 1003 (any motion, as herdr asks: a pointer over a menu chooses its entry) with
+ * SGR 1006, and one kitty keyboard entry with flag 1.
  * LEAVE undoes exactly these in reverse; raw mode goes last.
  */
-const ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[>1u";
-export const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+const ENTER = "\x1b[?1049h\x1b[?25l\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[>1u";
+export const LEAVE = "\x1b[<u\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?1004l\x1b[?25h\x1b[?1049l";
+/** Colour-scheme notifications (2031), the one mode the screen turns on later, through `watchDisplay`. */
+const WATCH_DISPLAY = "\x1b[?2031h";
+const UNWATCH_DISPLAY = "\x1b[?2031l";
+/** What undoes every mode the screen can turn on: LEAVE's, and the colour-scheme watch before them. */
+export const LEAVE_ALL = `${UNWATCH_DISPLAY}${LEAVE}`;
+
+/** Which of the terminal's modes the screen holds: none, ENTER's, or ENTER's and the colour-scheme watch. */
+export type Held = "none" | "modes" | "modes+watch";
+
+/** The bytes that give back what is held, for the screen itself and for a process that does it once the screen died. */
+export const undoHeld = (held: Held): string => held === "none" ? "" : held === "modes" ? LEAVE : LEAVE_ALL;
 /**
  * Sent again after a resize and a focus-in, as some hosts drop them. The kitty flags are set on the
  * entry already pushed (`=1;1`), so the stack still holds one entry of ours.
  */
-const MODES_AGAIN = "\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[=1;1u";
+const MODES_AGAIN = "\x1b[?1004h\x1b[?2004h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[=1;1u";
 const FOCUS_IN = Buffer.from("\x1b[I");
 const SIGNAL_NUMBERS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as const;
 
@@ -24,6 +36,10 @@ export interface HostHooks {
   signal(name: HostSignal): void;
   exit(): void;
   resize(): void;
+  /** a stop from outside (SIGTSTP): the terminal is given back, then the process stops */
+  stop(): void;
+  /** the process goes on after a stop (SIGCONT) */
+  cont(): void;
 }
 
 /** What a host is made of: the real one wires the process (unix.ts), the headless one memory. */
@@ -45,6 +61,21 @@ export interface TerminalPort {
   /** installs the hooks; returns their removal */
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
+  /**
+   * Stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action), once
+   * `giveBack` has given the terminal back. A continue that comes from the moment it is called cancels the stop, so a
+   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called, it gives
+   * the terminal back and does not stop. Which of the two it is may be settled after it returns: once the process that
+   * started this one is seen stopped at the same signal, or once the continue is heard. Either way the continue is heard
+   * (`cont`).
+   */
+  suspend(giveBack: () => void): void;
+  /**
+   * Told which modes the screen holds: before it turns them on, and once it has undone them (at a stop from outside,
+   * just before it undoes them). Whoever started the screen reads it after the screen died without giving the terminal
+   * back (tui/host/hold.ts).
+   */
+  hold(held: Held): void;
 }
 
 /** EIO and EPIPE: the terminal is gone; EAGAIN reaches here only once the port gave up waiting for it. */
@@ -72,6 +103,12 @@ export function guardedHost(port: TerminalPort): Host {
   let ending = false;
   let entering = false;
   let deferred: HostSignal | null = null;
+  /**
+   * The terminal was given back at a stop from outside and is not taken again before the continue: nothing is written
+   * meanwhile, as the process may run on a while before it stops (or not stop at all, continued already). The continue
+   * enters again and asks for a repaint.
+   */
+  let suspended = false;
   let unhook: (() => void) | null = null;
 
   const filter = new ReplyFilter();
@@ -85,6 +122,9 @@ export function guardedHost(port: TerminalPort): Host {
 
   let drainState: { cancel: () => void; resolve: () => void } | null = null;
   let drainPromise: Promise<void> | null = null;
+
+  /** The port is told what is held now: called before a write that turns modes on, and after one that undoes them. */
+  const holding = () => port.hold(!modesOn ? "none" : watchingDisplay ? "modes+watch" : "modes");
 
   const reportGone = (why: "hangup" | "write-failed") => {
     if (gone) return [];
@@ -128,7 +168,7 @@ export function guardedHost(port: TerminalPort): Host {
   };
 
   const resized = () => {
-    if (state !== "entered" || ending) return;
+    if (state !== "entered" || ending || suspended) return;
     modesAgain();
     const size = port.size();
     for (const listener of resizes) listener(size);
@@ -191,9 +231,10 @@ export function guardedHost(port: TerminalPort): Host {
     // a write error that is not gone is thrown once the terminal is given back, never before
     let failed: { error: unknown } | null = null;
     if (modesOn) {
-      try { send(encoder.encode(watchingDisplay ? `\x1b[?2031l${LEAVE}` : LEAVE)); } catch (error) { failed = { error }; }
+      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch (error) { failed = { error }; }
     }
     modesOn = false;
+    holding();
     if (rawOn) {
       rawOn = false;
       try { port.setRaw(false); } catch { /* the terminal is gone: nothing left to restore */ }
@@ -201,6 +242,44 @@ export function guardedHost(port: TerminalPort): Host {
     // after a signal the hooks stay until the process ends, so a second signal finds the restore done
     if (!ending) { unhook?.(); unhook = null; }
     if (failed) throw failed.error;
+  };
+
+  /**
+   * A stop from outside (SIGTSTP, as a shell's job control sends): every mode undone as on leave, raw mode off, then the
+   * process stops, so whatever reads the terminal meanwhile gets no mouse reports; on SIGCONT the modes are entered again
+   * and the resize listeners told, so the screen is repainted whole.
+   */
+  const stopped = () => {
+    if (state !== "entered" || ending || suspended) return;
+    port.suspend(() => {
+      port.stopReading();
+      // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the
+      // terminal back, before this process may have stopped.
+      const held = modesOn;
+      modesOn = false;
+      holding();
+      if (held) {
+        try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+      }
+      if (rawOn) {
+        rawOn = false;
+        try { port.setRaw(false); } catch { /* the terminal is gone */ }
+      }
+      // a stop cancelled by a continue still hears that continue next, and enters again then
+      suspended = true;
+    });
+  };
+  const continued = () => {
+    if (!suspended || state !== "entered" || ending) return;
+    suspended = false;
+    port.setRaw(true);
+    rawOn = true;
+    modesOn = true;
+    holding();
+    send(encoder.encode(watchingDisplay ? `${ENTER}${WATCH_DISPLAY}` : ENTER));
+    port.startReading(take);
+    const size = port.size();
+    for (const listener of resizes) listener(size);
   };
 
   const onSignal = (name: HostSignal) => {
@@ -228,11 +307,12 @@ export function guardedHost(port: TerminalPort): Host {
       if (state === "left" || !port.isTerminal) return false;
       entering = true;
       try {
-        unhook = port.hook({ signal: onSignal, exit: leave, resize: resized });
+        unhook = port.hook({ signal: onSignal, exit: leave, resize: resized, stop: stopped, cont: continued });
         state = "entered";
         port.setRaw(true);
         rawOn = true;
         modesOn = true;
+        holding();
         send(encoder.encode(ENTER));
         port.startReading(take);
       } catch (error) {
@@ -255,7 +335,7 @@ export function guardedHost(port: TerminalPort): Host {
     onEnd(listener) { ends.add(listener); return () => { ends.delete(listener); }; },
 
     write(data) {
-      if (state !== "entered") return false;
+      if (state !== "entered" || suspended) return false;
       return send(typeof data === "string" ? encoder.encode(data) : data);
     },
 
@@ -281,11 +361,13 @@ export function guardedHost(port: TerminalPort): Host {
     watchDisplay() {
       if (state !== "entered" || watchingDisplay) return;
       watchingDisplay = true;
-      send(encoder.encode("\x1b[?2031h"));
+      holding();
+      // while suspended, the continue turns it on with the rest
+      if (!suspended) send(encoder.encode(WATCH_DISPLAY));
     },
 
     refreshDisplay() {
-      if (state === "entered") send(encoder.encode(DISPLAY_QUERY));
+      if (state === "entered" && !suspended) send(encoder.encode(DISPLAY_QUERY));
     },
 
     drain() {

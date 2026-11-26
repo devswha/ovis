@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { AgyUnavailable, agyCatalog, agyDatabasePath, parseAgyTranscript, withAgyHistory } from "./agy.ts";
+import { AGY_CATALOG_BYTES, AgyUnavailable, agyCatalog, agyDatabasePath, parseAgyTranscript, withAgyHistory } from "./agy.ts";
 
 /** Writes a WAL catalog from a process that then dies without closing it, as agy does when killed:
  * nothing checkpoints, and no handle stays open, so a test may delete side files on any platform. */
@@ -79,9 +79,9 @@ it("reads a checkpointed WAL catalog without recreating missing side files", () 
 });
 
 it.each([
-  ["database", 64 * 1024 * 1024 + 1, 0],
-  ["WAL", 8192, 64 * 1024 * 1024 + 1],
-  ["combined", 32 * 1024 * 1024, 32 * 1024 * 1024 + 1],
+  ["database", AGY_CATALOG_BYTES + 1, 0],
+  ["WAL", 8192, AGY_CATALOG_BYTES + 1],
+  ["combined", AGY_CATALOG_BYTES / 2, AGY_CATALOG_BYTES / 2 + 1],
 ] as const)("rejects an oversized %s before copying the catalog", (_name, dbBytes, walBytes) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-catalog-limit-")));
   try {
@@ -105,7 +105,12 @@ it.each([
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-it.each(["wal", "shm", null] as const)("reads a WAL catalog with %s missing without changing side files", async (missing) => {
+it.each([
+  ["the WAL missing", "wal", false],
+  ["the SHM missing", "shm", false],
+  ["both side files present", null, false],
+  ["a symlinked temp root (#2030)", null, true],
+] as const)("reads a WAL catalog with %s without changing side files", async (_case, missing, symlinkedTemp) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-wal-pair-")));
   try {
     const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
@@ -116,10 +121,16 @@ it.each(["wal", "shm", null] as const)("reads a WAL catalog with %s missing with
     const before = [existsSync(`${dbPath}-wal`), existsSync(`${dbPath}-shm`)];
     expect(before).toEqual([missing !== "wal", missing !== "shm"]);
 
+    const scratch = join(dir, "scratch");
+    const alias = join(dir, "tmp-link");
+    if (symlinkedTemp) {
+      mkdirSync(scratch);
+      fs.symlinkSync(scratch, alias, "junction");
+    }
     const reader = Bun.spawn([process.execPath, "-e", `
       import { agyCatalog } from ${JSON.stringify(new URL("./agy.ts", import.meta.url).href)};
       console.log(JSON.stringify([...agyCatalog(${JSON.stringify(transcript)})]));
-    `], { stdout: "pipe", stderr: "pipe" });
+    `], { env: symlinkedTemp ? { ...process.env, TMPDIR: alias, TEMP: alias, TMP: alias } : process.env, stdout: "pipe", stderr: "pipe" });
     const [exitCode, stdout, stderr] = await Promise.all([
       reader.exited, new Response(reader.stdout).text(), new Response(reader.stderr).text(),
     ]);
@@ -128,6 +139,22 @@ it.each(["wal", "shm", null] as const)("reads a WAL catalog with %s missing with
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
     expect(JSON.parse(stdout)).toEqual(missing === null ? [0, 1] : [0]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("reads a two-day session's catalog past 64 MiB", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-wal-days-")));
+  try {
+    const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
+    const dbPath = agyDatabasePath(transcript);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    // 68 MiB of steps, some still in the WAL: an agy chat went blank at about 81 MiB (48 MiB
+    // database, 33 MiB WAL). SQLite's autocheckpoint moves most of the WAL into the database.
+    const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, at) => `INSERT INTO steps VALUES (${from + at}, randomblob(1048576));`).join("");
+    await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 48)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(48, 68)}`);
+    expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(64 * 1024 * 1024);
+
+    expect(agyCatalog(transcript).size).toBe(68);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

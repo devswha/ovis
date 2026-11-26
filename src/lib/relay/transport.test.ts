@@ -24,7 +24,15 @@ afterEach(() => {
   setTransport(nativeTransport);
 });
 
-async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0 } = {}) {
+async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, features, featuresOf, listPlace, listKey = false }: {
+  relay?: string; unreachable?: number;
+  /** what the PC selected in its answer to HELLO, and the place in its account's list it handed a device it let in */
+  features?: readonly string[]; listPlace?: { readonly id: string; readonly seq: number; readonly hash: string };
+  /** what the PC selects for each carrier as it comes up, where that changes between carriers (in place of `features`) */
+  featuresOf?: () => readonly string[] | undefined;
+  /** the device signs in with the key its account's list holds for it */
+  listKey?: boolean;
+} = {}) {
   const app = relayFixture();
   cleanups.push(() => app.close());
   const device = await relayDevice(app);
@@ -43,6 +51,8 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
     server_public_key: "", relay };
   const transport = await openRelayTransport(offer, {
     clock,
+    // a session opened with the key the account's signed list holds for this device
+    ...(listKey ? { accountListKey: true } : {}),
     onFatal: (error) => fatal.push(error),
     onPcAway: () => { attempts.away++; },
     openChannel: async (channelOffer, config = {}) => {
@@ -73,7 +83,9 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
       carriers.push(carrier);
       return {
         get carrierOpen() { return carrier.open; },
-        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16), server: { version: "0.4.20", relayProtocol: 1 },
+        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16),
+        server: (() => { const selected = featuresOf?.() ?? features; return { version: "0.4.20", relayProtocol: 1, ...(selected === undefined ? {} : { features: selected }) }; })(),
+        ...(listPlace === undefined ? {} : { listPlace }),
         device: { server_id: offer.server_id, device_id: device.id, private_key: device.keys.privateKey,
           public_spki: device.publicKey, label: "Test", server_public_key: "", relay: offer.relay },
         close: () => connection.stop(),
@@ -119,6 +131,32 @@ async function saturated() {
   const responses = await Promise.all(Array.from({ length: 12 }, (_, i) => f.transport.fetch(`/api/held/${i}`)));
   return { ...f, requested, responses };
 }
+
+it("says whether the PC lets its account's devices in by the list, and the place it handed a device it let in", async () => {
+  const place = { id: "5c".repeat(32), seq: 2, hash: "ab".repeat(32) };
+  for (const [features, listPlace, follows] of [[["account", "account-list-1"], place, true], [["account"], undefined, false], [undefined, undefined, false]] as const) {
+    const { transport } = await fixture({}, { ...(features === undefined ? {} : { features }), ...(listPlace === undefined ? {} : { listPlace }) });
+    expect([transport.followsList, transport.listPlace]).toEqual([follows, listPlace]);
+  }
+});
+
+it("tells whoever listens for the route the features of the carrier that just came up, not those of the one before", async () => {
+  let selected: readonly string[] = ["account"];
+  const f = await fixture({}, { featuresOf: () => selected });
+  expect(f.transport.followsList).toBe(false);
+  const seen: boolean[] = [];
+  f.transport.onRouteChange(() => { if (f.transport.route !== undefined) seen.push(f.transport.followsList); });
+  // the PC pins its account's list between two carriers: the listener of the second one hears it
+  selected = ["account", "account-list-1"];
+  await f.drop();
+  await f.transport.connect();
+  expect(seen).toEqual([true]);
+  // and the other way round
+  selected = ["account"];
+  await f.drop();
+  await f.transport.connect();
+  expect(seen).toEqual([true, false]);
+});
 
 it("queues HTTP behind eight WS and twelve HTTP streams until a receive reservation is released", async () => {
   const f = await saturated();
@@ -624,6 +662,25 @@ it("stops reconnecting once the PC refuses the device for good, and tells the sh
   expect(f.attempts.count).toBe(2);
 });
 
+it("a session opened with the list key stops reconnecting when the PC refuses the account's way in, as one opened with the sign-in's key does (M60)", async () => {
+  for (const code of ["not_listed", "admission"]) {
+    const refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { listKey: true });
+    f.attempts.refusal = refusal;
+    await f.drop();
+    f.clock.advance(1000);
+    await expect(f.transport.connect()).rejects.toBe(refusal);
+    expect([f.fatal, f.clock.tasks.size]).toEqual([[refusal], 0]);
+    // a pairing's own session reads the same answer as a carrier that may come back, and tries again
+    const own = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+    own.attempts.refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    await own.drop();
+    own.clock.advance(1000);
+    await own.transport.connect().catch(() => undefined);
+    expect(own.fatal).toEqual([]);
+  }
+});
+
 it("tells a refusal that cannot change from a carrier that may come back", () => {
   for (const code of ["auth_revoked", "auth_failed", "unsupported_version", "unsupported_extension", "unsupported_transport"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(true);
@@ -1084,4 +1141,25 @@ it("falls back to the global relay when a regional one cannot be reached, and re
 it("never falls back from a relay that is not one of Ovis's regional relays", async () => {
   await expect(fixture({}, { relay: "wss://relay.example", unreachable: 1 })).rejects.toBeInstanceOf(RelayUnreachableError);
 });
+
+it("uploads a JSON string body larger than the 3 MiB nonterminal queue over the relay (#4476)", async () => {
+  const payload = JSON.stringify({ pane_id: "w1:p1", content_type: "image/jpeg", data_base64: "A".repeat(4 * 1024 * 1024) });
+  expect(Buffer.byteLength(payload)).toBeGreaterThan(3 * 1024 * 1024);
+  const f = await fixture({ dispatch: async (request) => {
+    const received = await request.text();
+    return Response.json({ length: received.length, matches: received === payload });
+  } });
+  const direct = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(direct.status).toBe(200);
+  expect(await direct.json()).toEqual({ length: payload.length, matches: true });
+
+  firefoxRequests();
+  const buffered = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(buffered.status).toBe(200);
+  expect(await buffered.json()).toEqual({ length: payload.length, matches: true });
+}, 30_000);
 

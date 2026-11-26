@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
+import { answerKeys, claudeBoxRows, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
 import { ANSI_RE, parsedByPublicPrompt } from "./dialogs/shared.ts";
+import { hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
 
 const EARLIER_BRIDGE_CARD_ID = "cb779b7d598a";
 
@@ -2630,6 +2631,24 @@ describe("Claude's suggested next prompt", () => {
     expect(viewportShowsLive(bottom, bottom, colors, live.replace("run the tests", "run the test"), live)).toBe(false);
   });
 
+  test("without scroll from herdr, Claude's box counts from its top rule down when the reads lay out older rows apart (#4321)", () => {
+    const box = screen("❯ \u001b[2mrun the tests\u001b[0m");
+    // the colored read and the text read put the rows above the box a row apart after a redraw, the same height
+    const colors = ["  - a caption row", "❯ an older prompt", box].join("\r\n");
+    const live = ["    a caption row:", "", box.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")].join("\r\n");
+    expect(claudeBoxRows(live)).not.toBeNull();
+    expect(viewportShowsLive(null, null, colors, live, live)).toBe(false);
+    expect(viewportShowsLive(null, null, colors, live, live, claudeBoxRows(live))).toBe(true);
+    // a different height is another view, and a different box is another box
+    expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live, claudeBoxRows(live))).toBe(false);
+    expect(viewportShowsLive(null, null, colors.replace("run the tests", "run the test"), live, live, claudeBoxRows(live))).toBe(false);
+    // the box's top rule is compared too: a named session's rule on one read only is another box
+    const rule = "\u2500".repeat(10);
+    const named = colors.replace(rule, "\u2500\u2500 main " + "\u2500".repeat(4));
+    expect(named).not.toBe(colors);
+    expect(viewportShowsLive(null, null, named, live, live, claudeBoxRows(live))).toBe(false);
+  });
+
   test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
     const live = screen("❯ \u001b[2mrun the tests\u001b[0m").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
     const colors = screen("❯ \u001b[2mrun the tests\u001b[0m");
@@ -4461,6 +4480,7 @@ describe("an answer and the menu it was made for", () => {
     piGone?: boolean;
     /** a Hermes pane's Hermes is suspended behind its shell (Ctrl+Z): herdr still names the pane hermes, its foreground is the shell */
     hermesStopped?: boolean;
+    hermesArgv?: readonly string[];
   }
 
   async function withPane(agent: string, status: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
@@ -4502,7 +4522,7 @@ describe("an answer and the menu it was made for", () => {
         if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo?.live ? [{ pid: pane.omo.pid, argv: ["omo"] }]
           : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
           : pane.agent === "pi" ? [pane.piGone ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4343, argv: ["node", "/usr/local/bin/pi"] }]
-          : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: ["/usr/local/bin/hermes"] }]
+          : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: pane.hermesArgv ?? ["/usr/local/bin/hermes"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
           : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
         if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
@@ -5023,23 +5043,37 @@ ${omoRule}
     });
   });
 
-  test.each(["editor stays open", "editor closes during the look"])("Antigravity submits a write-in only if the %s", async (state) => {
+  test.each([
+    ["editor stays open", "notes.txt", "notes.txt", true],
+    ["editor closes during the look", "notes.txt", "notes.txt", false],
+    ["editor redraws a read late", "notes.txt", "", true],
+    ["editor redraws a prefix first", "notes.txt", "not", true],
+    ["editor changes whitespace", "notes.txt", "notes .txt", false],
+    ["editor adds a nonbreaking space at a wrap", "notes.txt", "notes.\u00a0\ntxt", false],
+    ["editor adds plain spaces at a wrap", "notes.txt", "notes.  \ntxt", false],
+    ["editor wraps at a word", "new notes.txt", "new\nnotes.txt", true],
+    ["editor wraps inside a word", "notes.txt", "notes.\ntxt", true],
+  ] as const)("Antigravity write-in: %s", async (state, draft, drawn, submits) => {
     const initial = readFileSync(new URL("./fixtures/agy-1.5.6-ask.txt", import.meta.url), "utf8");
     const selected = initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  3. Write-in...", "> 3. Write-in...");
     const editor = (text: string) => selected.replace(/  ↑\/↓ Navigate[\s\S]*$/, `  Your answer:\n  > ${text}\n\nenter Submit · esc Back\n`);
     await withPane("agy", "blocked", initial, async (pane) => {
       const prompt = (await card())!;
+      const text = `text:${draft}`;
+      let reads = 0;
+      if (state.startsWith("editor redraws")) {
+        pane.onRead = () => { if (pane.sent.at(-1) === text && ++reads === 3) pane.screen = editor(draft); };
+      }
       pane.onSent = (sent) => {
         if (sent === "down") pane.screen = pane.sent.length === 1
           ? initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  2. bye.txt", "> 2. bye.txt") : selected;
         if (sent === "enter" && pane.sent.length === 3) pane.screen = editor("");
-        if (sent === "text:notes.txt") pane.screen = editor("notes.txt");
+        if (sent === text) pane.screen = editor(drawn);
       };
-      const closes = state === "editor closes during the look";
-      const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:notes.txt") pane.screen = "❯ unsent draft"; };
-      expect(await answer(prompt.id, { custom_text: "notes.txt" }, { beforeKey })).toEqual(closes
-        ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
-      expect(pane.sent).toEqual(["down", "down", "enter", "text:notes.txt", ...(closes ? [] : ["enter"])]);
+      const beforeKey = async () => { if (state === "editor closes during the look" && pane.sent.at(-1) === text) pane.screen = "❯ unsent draft"; };
+      expect(await answer(prompt.id, { custom_text: draft }, { beforeKey })).toEqual(submits
+        ? { status: 200, code: undefined } : { status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter", text, ...(submits ? ["enter"] : [])]);
     });
   });
 
@@ -7124,12 +7158,22 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  test.skipIf(process.platform === "win32")("serves the installer-launched Hermes approval through the prompt route (#4572)", async () => {
+    const screen = readFileSync(new URL("./fixtures/hermes-approval/once-120.txt", import.meta.url), "utf8");
+    await withPane("hermes", "blocked", screen, async (pane) => {
+      pane.hermesArgv = hermesLauncherArgv;
+      const prompt = await card();
+      expect(prompt?.kind).toBe("approval");
+      expect(labels(prompt)).toEqual(["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"]);
+    });
+  });
+
   test("takes only Hermes itself as the foreground that may take an approval's keys", () => {
     for (const argv of [["/usr/local/bin/hermes"], ["hermes"], ["/usr/bin/python3", "/home/u/.local/bin/hermes", "chat"], ["python3.14", "-u", "/opt/hermes/bin/hermes"],
       ["python3", "-X", "utf8", "/opt/hermes/bin/hermes"], ["python3", "-IsX", "utf8", "/opt/hermes/bin/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, true]);
     }
-    for (const argv of [["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
+    for (const argv of [[...hermesLauncherArgv, "--run-module", "http.server"], ["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
       // combined flags: /tmp/hermes is -X's value, and -c's code runs
       ["python3", "-uX", "/tmp/hermes", "-c", "print(1)"], ["python3", "-uc", "print(1)", "/tmp/hermes"], ["python3", "--check-hash-based-pycs", "always", "/tmp/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, false]);

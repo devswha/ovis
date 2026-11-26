@@ -1,6 +1,8 @@
 import type { WebSocketHandler } from "bun";
-import type { SessionSnapshot } from "../../shared/protocol.ts";
+import type { PaneContext, SessionSnapshot } from "../../shared/protocol.ts";
 import type { DeviceStore } from "../devices.ts";
+import type { AcpChildren } from "../acp/children.ts";
+import { acpPrompt } from "../approvals/acp.ts";
 import { ping } from "../herdr/client.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import type { PreferenceStore } from "../preferences.ts";
@@ -21,6 +23,7 @@ import { createTerminalRegistry } from "./terminals.ts";
 
 type CoreOptions = Parameters<typeof createTerminalRegistry>[0]["options"] & Parameters<typeof createSubmitText>[0]["options"]
   & Parameters<typeof createPendingDelivery>[0]["options"] & Parameters<typeof createStatusHub>[0]["options"] & {
+    acp?: AcpChildren | null;
     terminalAttach?: boolean | (() => Promise<boolean>);
     sidecar?: boolean | (() => boolean);
     attachRetryForMs?: number;
@@ -60,21 +63,27 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   const clients = new Set<Client>();
   const present = new Set<Client>();
   let stopped = false;
-  const { attachments, conversations, reconcileOutput, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames } = createTerminalRegistry({ options, clients, stopped: () => stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending: (owner, paneId) => holdPending(owner, paneId), holdPendingPane: (paneId, fault) => holdPendingPane(paneId, fault), attached: (client, paneId) => attached(client, paneId), transcriptChanged: (paneId) => reconcilePiDeliveries(paneId), inputReady: (paneId) => drainPending(paneId), end: (client, reason) => end(client, reason) });
+  const { attachments, conversations, notifyConversation, reconcileOutput, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames } = createTerminalRegistry({ options, clients, stopped: () => stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending: (owner, paneId) => holdPending(owner, paneId), holdPendingPane: (paneId, fault) => holdPendingPane(paneId, fault), attached: (client, paneId) => attached(client, paneId), transcriptChanged: async (paneId) => { await Promise.all([reconcilePiDeliveries(paneId), reconcileCodexDeliveries(paneId)]); }, inputReady: (paneId) => drainPending(paneId), end: (client, reason) => end(client, reason) });
 
-  const { serialize, settleAfterTyping, lastTyped, typedInto, inputFrames } = createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight, poke, terminalAttach, terminalAttachKnown: () => terminalAttachKnown, mayType: (client) => mayType(client), authorizeSocket: (client) => authorizeSocket(client) });
+  const { serialize, settleAfterTyping, lastTyped, typedInto, inputFrames } = createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, acp: options.acp, sight, poke, terminalAttach, terminalAttachKnown: () => terminalAttachKnown, mayType: (client) => mayType(client), authorizeSocket: (client) => authorizeSocket(client) });
 
   const submitText = createSubmitText({ options, lastTyped, attachments, terminalAttach, SUBMIT_DEADLINE_MS, TYPED_SETTLE_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS, SUBMIT_DELAY_MS });
 
-  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, askFirstMessage, attached, closeConnection, reconcilePiDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, typedInto, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => deliverySnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId, fresh) => queueHeld(paneId, fresh), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
+  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, askFirstMessage, attached, closeConnection, reconcilePiDeliveries, reconcileCodexDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, typedInto, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => deliverySnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId, fresh) => queueHeld(paneId, fresh), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
 
   const watchedOpenCode = new OpenCodePromptState();
   const watchedOmp: OmpLookups = new Map();
-  const promptWatch = createPromptWatch({ clients, read: (pane, panes) => shownPromptText(pane, panes, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir, openCodeState: watchedOpenCode, ompLookups: watchedOmp, answers: options.openCodeState }) });
+  const promptWatch = createPromptWatch({ clients, read: async (pane, panes) => {
+    const child = options.acp?.forPane(pane.pane_id);
+    return child ? acpPrompt(child)?.id ?? null : shownPromptText(pane, panes, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir, openCodeState: watchedOpenCode, ompLookups: watchedOmp, answers: options.openCodeState });
+  } });
 
+  const stopAcp = options.acp?.onStatus(child => {
+    if (child.client.status === "unknown") holdPendingPane(child.terminal, { code: "input_not_ready", message: "The ACP connection changed; review the pending message before sending" });
+  });
   const { mayType, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end } = createConnections({ clients, present, pending: { close: closeConnection }, devices, detachClaimed,
     dropClaims: (client) => { dropClaims(client); promptWatch.drop(client); } });
-  const { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, plans, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer } = createStatusHub({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin,
+  const { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, plans, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer, hookTurn, contextChanged } = createStatusHub({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin,
     // the messages first: the old ID's terminal closing holds what it still leases
     paneMoved: (from, to) => { movePendingPane(from, to); paneMoved(from, to); } });
   const socketHandlers = createSocket({
@@ -118,7 +127,12 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   let outputTimer: ReturnType<typeof setInterval> | undefined;
 
   return {
-    sidecar, serialize, settleAfterTyping, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage, askFirstMessage,
+    sidecar, serialize, settleAfterTyping, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, websocket, queueFirstMessage, askFirstMessage, hookTurn,
+    hookContextChanged(paneId: string, context: PaneContext | null): void {
+      contextChanged(paneId, context);
+      // A model's window or its live token count can change without a transcript append.
+      notifyConversation(paneId, context === null ? "context:unknown" : `context:${context.used}:${context.window}`);
+    },
     holdsPending: (paneId: string): boolean => pending.holds(paneId),
     inputEmpty: async (paneId: string, agent: string): Promise<boolean | null> => {
       if (agent !== "claude") return null;
@@ -133,8 +147,9 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
       }, 100);
       outputTimer.unref();
     },
-    stop(beforeTerminals: () => void): void {
+    stop(beforeTerminals: () => void): Promise<void> | undefined {
       stopped = true;
+      stopAcp?.();
       conversations.stop();
       promptWatch.stop();
       clearInterval(outputTimer);
@@ -146,10 +161,11 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
       opencodeAgents.stop();
       clearInterval(waitTimer);
       plans.stop();
-      machines?.stop();
+      const stoppingMachines = machines?.stop();
       beforeTerminals();
       for (const client of clients) killWatches(client);
       closeAttachments();
+      return stoppingMachines;
     },
   };
 }

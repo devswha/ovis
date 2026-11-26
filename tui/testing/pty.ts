@@ -91,6 +91,24 @@ export async function gridText(output: string, cols: number, rows: number): Prom
   }
 }
 
+/** Ask the emulated host for its cursor position after replaying the captured display bytes. */
+export async function hostCursorReport(output: string, cols: number, rows: number): Promise<string> {
+  const module = new GhosttyModule(new WebAssembly.Instance(new WebAssembly.Module(await Bun.file(WASM).arrayBuffer()), {}));
+  const encoder = new TextEncoder();
+  let reply = "";
+  const engine = new GhosttyEngine(module, cols, rows, {
+    widths: "core", images: false, events: { onReply: (bytes) => { reply = Buffer.from(bytes).toString("latin1"); } },
+  });
+  try {
+    engine.write(encoder.encode(output));
+    reply = "";
+    engine.write(encoder.encode("\x1b[6n"));
+    return reply;
+  } finally {
+    engine.dispose();
+  }
+}
+
 const live = new Set<() => Promise<void>>();
 
 /** Ends every run still going, through each one's PTY host: for afterAll and a test's signal handlers. */
@@ -183,7 +201,7 @@ export interface EntryEnd {
   stderr: string;
 }
 
-export type EntrySignal = "SIGTERM" | "SIGINT" | "SIGHUP";
+export type EntrySignal = "SIGTERM" | "SIGINT" | "SIGHUP" | "SIGTSTP" | "SIGCONT";
 
 export interface SupervisedRun extends PtyRun {
   /** the supervisor started the entry */
@@ -237,10 +255,13 @@ export function runSupervised(options: Omit<PtyOptions, "command"> & { entry: st
       else waiter?.reject(new Error("stty could not read the pty"));
     } else if (message.t === "ended") {
       reported = true;
-      settleEnded.resolve({
+      const end = {
         code: message.code!, signal: message.signal ?? null, before: parseStty(message.before ?? ""),
         after: message.after ? parseStty(message.after) : null, stderr: message.stderr ?? "",
-      });
+      };
+      // this report comes over the supervisor's socket and can overtake the entry's last output on the pty: the end is
+      // told once the pty has ended too, which is once its output was all read
+      void run.exited.then(() => settleEnded.resolve(end));
     }
   };
 

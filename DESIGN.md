@@ -2976,8 +2976,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Pane actions are not tab actions. Up to 768px, where a split tab shows one pane at a time, the
   tab's menu lists the tab's panes first, the open one marked current, over a hairline, each pane
   once (the pane's own actions, which carry the panes where the row counts as hidden, add no
-  second list). There a tap on the open split tab opens that menu, in the row and in the header
-  alike, and the open split tab is that pane: it wears the pane's agent mark (none for a shell) and
+  second list). A pane picked there while a pane's field held the typing (the keyboard up) takes
+  the typing, its field focused inside the tap, so the keyboard comes back on the pane now shown
+  (herdr's TUI sends the next key to the pane its focus moves to; a zoomed tab keeps the typing on
+  its zoomed pane, the one still in view).
+  There a tap on the open split tab opens that menu, in the row and in the header alike, and the
+  open split tab is that pane: it wears the pane's agent mark (none for a shell) and
   its name (the pane's agent or first-message name, else its title), unless someone named the tab,
   whose name stays, and its place among them (`1/2`, heard as "Pane 1 of 2") follows its name, in the
   row as in the header; in the row under the header that name is cut with an ellipsis at
@@ -3017,7 +3021,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   The snapshot's tab order is authoritative: a tab's stable `number` is not its place. A drop calls
   `tab.move` with an insertion boundary before removal, within that workspace and PC. The visible
   order changes with herdr's snapshot, keeping selection and keyboard focus; a refusal shows an
-  inline error. One request waits for acknowledgement before another move is accepted. Escape,
+  inline error. One request waits for acknowledgement before another move is accepted. Dragging a
+  one-pane tab out of the strip onto another workspace's sidebar row on the same PC outlines that
+  row (`--accent` on `--accent-tint`, hiding `SplitDropPreview` while aimed at a row) and moves the
+  tab there via `POST /api/tab/move-to-workspace`, matching the tab menu's **Move to workspace…**
+  guards (no highlight and no move for the tab's own workspace, a split tab, a watching device, a
+  PC whose layout Ovis does not keep, or another PC); it follows VS Code and Zed dragging an editor
+  tab across groups and Chrome/Firefox dragging a tab across windows (#4458). Escape,
   a tab-list change or leaving the workspace cancels an unsent drag. Touch keeps native sideways
   scrolling and uses Move tab left/right in the selected tab's menu; Alt+Shift+Left/Right provides
   the same adjacent moves only while a tab has keyboard focus.
@@ -3536,7 +3546,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - In More's header, one quiet mark says how this device reaches Ovis (`.conn-route`,
   `components/ConnectionRouteMark.tsx`, `lib/connectionRoute.ts`): a 14px glyph and one short
   `--text-dim` word, **relay** (the hosted shell, or a request Portal vouched for, whatever signed it in; once the
-  app's relay channel moves to a direct carrier, **direct** with the Wi-Fi glyph on the PC's private address, or
+  app's relay channel moves to a direct carrier, which it does only on a PC whose Direct connection is on,
+  **direct** with the Wi-Fi glyph on the PC's private address, or
   **Tailscale** "Directly over Tailscale, not through the relay" on its Tailscale one, never Wi-Fi for a phone on mobile data), **Tailscale** (a tailnet address, or a
   request the server saw come through serve; a MagicDNS name alone says "Via Tailscale, or Funnel
   from the internet", since the name serves both), **LAN** (a private address or a local-only name), **direct** (any other
@@ -3658,6 +3669,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   look and take a `--pointer-target` hit area through an invisible `::before` expander.
 - A message carries no rewind action: an agent's own `/rewind` (Claude Code, grok, Antigravity) is run in the pane's terminal, and
   Chat follows the native transcript's active branch once the agent records it; it never guesses a restore from a dialog's wording.
+- A stop in Claude Code (Esc) is one quiet line where the turn stopped, **Stopped** and its time
+  (`.chat-stopped`, drawn as a goal's wait is: `--text-dim` `--fs-sm` between hairlines), not a bubble.
+  Claude Code records a stop in the person's seat, `[Request interrupted by user for tool use]` after
+  the call it refused or `[Request interrupted by user]`; nobody typed it, and it starts no turn. It
+  follows Claude Code's own terminal, which draws a stop as a dim **Interrupted** line rather than as
+  the person's message; the word is the chat's own (**Stopped on an error**).
 - A terminal-only command sent from Chat is one quiet right-aligned row, not a bubble:
   `SquareTerminal`, the command in mono `--fs-sm`, **Ran in terminal** in `--text-dim`,
   and one **Open Terminal** text button, which opens a terminal peek over the chat (see the
@@ -4087,7 +4104,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the card's one red (`--status-blocked`, `--fs-sm`, semibold); the "input needed" badge is read
   by assistive tech and not drawn. The question is prose in `--text-strong`. Reference text (the
   command of an approval, a plan, a diff: the prompt's `body`) is the card's one mono box
-  (`--bg`, `--fs-xs`); a question in words is never set in mono.
+  (`--bg`, `--fs-xs`); a question in words is never set in mono. An approval's command wraps at
+  the box's edge and never scrolls sideways, so the end of what Yes runs is always in the box; it
+  follows Claude Code's own dialog, which wraps the command at the pane's edge.
 - Claude's words before its question (#2088): Claude Code 2.1.311 writes a turn's text to its
   session file only with the answer, so while a question waits the card shows the text the
   terminal draws right over the question (`screen_words`, read off the screen; the pane's wrapping
@@ -4690,11 +4709,29 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   text they sit in, so typing while files upload is not disturbed.
 - An upload that failed is one note on the box's top edge (`.composer-note`, `role="alert"`): what
   failed and the cause when it is known (`Couldn't attach · PC disk is full`, from the status or the
-  server's own words, `lib/userError.ts` `userFailure`); with no known cause the line is
-  `Couldn't attach` and Try again beside it uploads the file again (`offersRetry`: no cause, or the
-  PC was only slow). The advice and the server's words fold behind a dim Details toggle under the
-  line, never on it; the size limit's own sentence is the whole note. Removing the tile removes its
-  note.
+  server's own words, `lib/userError.ts` `userFailure`); with no known cause the line names the
+  first line of the error's own words instead, capped so a long diagnostic never pushes the
+  composer controls off screen (`IMG_4242.jpg could not be attached: Relay request failed`,
+  `failureReason`), or the HTTP status of an answer with no body words (`uploadFailure`), and Try
+  again beside it uploads the file again (`offersRetry`: no cause, or the PC was only slow). Unlike
+  the Claude and Codex apps, which show a generic attachment error without surfacing transport
+  details inline, Ovis places the cause or single-line error reason directly on the note so phone
+  users do not need to open a disclosure to see why a relay or bridge upload failed. The advice,
+  and the full server words when a cause already stands on the line or the diagnostic was shortened,
+  fold behind a dim Details toggle under the line, never on it; the size limit's own sentence is the
+  whole note. Removing the tile removes its note.
+- A JPEG or HEIC photo is drawn to a JPEG of at most 2048 pixels a side in the browser before it
+  uploads, about 1 MB, so it uploads fast on mobile data, at the cost of detail an agent's newest
+  models could read.
+  An iPhone's still HEIC or HEIF photo always is, since the agents read PNG, JPEG, GIF and WebP
+  only; a JPEG one always too, since the redraw drops its camera metadata (location, device,
+  date); an animated HEIC sequence and a PNG screenshot never. A JPEG the browser cannot redraw
+  keeps only JFIF, ICC and valid Exif orientation alongside the first image's pixel data, so a
+  portrait stored sideways still stands up. If the JPEG's markers cannot be parsed through the
+  end of the first image, or if a HEIC cannot be redrawn, it uploads as it is, metadata included.
+  A name can suggest an image type when the browser leaves it empty; its bytes must agree before
+  the composer treats it as an image
+  (`uploadableImage`, `lib/composerImageMime.ts`).
 - While a phone's keyboard is up, a tap on the transcript or a drag down it (`32px`) puts the
   keyboard away. Each only blurs the field, so the draft stays. The prompt card, which can stand
   where the transcript was on a short screen, does the same: a tap on its text (never on an
@@ -4754,7 +4791,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Voice input
 - A mic button sits beside the add button in the composer and beside Send in the terminal input line; it
   fills with `--accent` while recording. Dictated text is inserted at the caret, never sent.
-- `voiceInput`: `auto`, `on` or `off`; default `auto`. Auto puts the mic in the composer only, not on
+- `voiceInput`: `auto`, `on` or `off`; default `off`, as the composer's other extra buttons are
+  (few installs that saw the mic used it). A device that saved its settings before keeps what it
+  saved, Auto included: the record holds every row. Auto puts the mic in the composer only, not on
   a phone (the composer's `(max-width: 640px), (pointer: coarse)`), and leaves it out where dictation
   cannot work (no HTTPS, or no key and no browser recognition). On shows it in both inputs and on a
   phone, disabled with its reason where it cannot work.
@@ -4813,7 +4852,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Rows are grouped as herdr's Goto picker groups them: a `.menu-heading` per PC/workspace (PC
   name when multiple PCs are registered, workspace name, a linked worktree's branch in mono when
   the name does not say it, the row count), Recent (up to
-  three, an unsearched and unfiltered list only) before the workspaces, Actions last. The
+  eight recently visited panes, not counting the selected one, storing nine; an unsearched and
+  unfiltered list only, following VS Code's recently opened list) before the workspaces, Actions last. The
   workspaces stand in PC then roster order (a move in the sidebar moves the section); a search puts
   the best match's workspace first, and finds a tab by the name the strip shows it under ("Tab 2").
   A row's subtitle is "tab · folder" (the tab only in a workspace with several), "workspace · folder"
@@ -5079,6 +5119,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   because to the person they are one thing: something connected to this PC. Rows are as short as
   the page allows; what pairing means is one folded sentence, and what few people change is in
   More settings. Old links to the Phone, Remote PCs and Portal groups land on My devices.
+- While the relay is on, Devices and PCs has one **Direct connection** row in More settings, under Devices and access
+  (`RelayDirectRow` in `components/RelayPanel.tsx`; not in My devices, which lists what is connected),
+  its label the same whether on or off and its switch named the same, with one line under it: off, "Relay connections
+  stay on the relay."; on, "The Ovis app on a phone that reaches this PC on the same Wi-Fi or over Tailscale moves to a
+  direct connection: faster, and this PC listens for it on those addresses." (the app, since a browser always stays on
+  the relay). It is off by default: one switch for the home network and the Tailscale carrier, since both are a
+  listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
+  itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
+  language), whichever line it shows.
 - My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
@@ -5096,7 +5145,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
   the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
-  typed address close Settings and open the PC setup dialog with the address filled in. **Phones and
+  typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**
+  lists its login's PCs one row a machine, as Tailscale's own machine list does (the model: one row per
+  machine, by its machine name): the ssh config aliases the server resolved to one of them fold into
+  that row only when they reach it the same way (the same User, ssh's port), under Tailscale's machine
+  name when that PC is reached only one such way. Each row is two lines: the name with its control or
+  state (a long state line wraps on the right), then, dim and whole, what the row opens before the
+  press (the alias when the name is not it, the user and the MagicDNS name), broken after its dots
+  (`atDots`, as My PCs does) and never cut with an ellipsis. **Connect** opens the alias
+  named as the machine, else the first in config order. An alias on another port (an sshd in WSL or
+  a container), as another user, or whose User a Match may set is a row of its own, by its alias,
+  with its port in the dim text, and only the PC's own plain row takes that PC's Tailscale answer
+  (Added, In your account, the update line). Nothing merges by name: two hosts of one HostName stay
+  two (`lib/reachablePcs.ts`). Under the list, **A PC not in the list** takes user@host or another PC's
+  https address and connects it as the SSH tab's field does. **Phones and
   devices** stacks, under a hairline each, the Tailscale address and QR code, the six-digit pairing
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
   offers it. **Ovis relay** is the account's, and draws buttons, not sentences, by state: signed
@@ -5110,7 +5172,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   fresh sign-in of the same account presses again); a sign-in to the account
   this PC is already in closes the sheet and Settings onto the main screen, and opened by hand with
   this PC in the account and the relay online, the tab is the signed-in line and the phone's QR code,
-  no list of PCs (the sidebar has them). The
+  no list of the account's PCs (the sidebar has them). Where Add PC over SSH adds a PC to the account
+  (this PC's own window, signed in to the account this PC is in, as `sshAddOffered` says), the tab
+  puts its phone part first, laid out as the Tailscale tab's top (owner, 2026-11-23): the QR code that
+  opens this PC's page (below), and beside it Pair with a code's six digits, made only on a press
+  (**Get a pairing code**, then Refresh and Copy), then the signed-in line; no Pair with a code below
+  it. Nothing that admits a device by itself is made as the tab opens: a code drawn at once would let
+  in whoever saw the screen (on macOS and Windows a relay code pairs at once; only Linux has the
+  screen's key approval), and no code kind admits the account's devices at once and others only on a
+  press on a PC already in an account. The phone part is followed, behind a hairline (`.connect-reachable`), by
+  the PCs this PC can reach: one line of
+  what Add does, then the Tailscale tab's rows and the ssh config's other hosts in one list, two lines
+  each as there: the name, then dim its way and what it opens (**Tailscale · mymac · devswha@macbookpro.tail….ts.net**,
+  **SSH config · root@hosthatch**), then **Add**, which opens the PC setup dialog with that host filled in and **Add
+  it to my account** ticked, whose Connect runs the add over SSH (docs/account.md); or in words why
+  not: **In your account** in the done green (its relay ID, as that PC's Tailscale answer or this
+  app's PC at that address gives it, is one of the account's PCs), **Added** (this app has it), or
+  the older Ovis's update line. Last, **A PC not in the list** with a user@host field and **Add**,
+  which takes an SSH address only (another PC's https address gets one line saying so).
+  Signed out, on a PC in no account and on any other device (a phone, a PC through the relay) the tab
+  is as above, with no list. The
   relay's own switch is in More settings, and on this tab only while a PC in the account has its
   relay off. Under either, behind a hairline (none where nothing is
   drawn above it), one part (`.connect-account-qr`) that depends on the PC, not on the sign-in. On a PC in no account it is
@@ -5198,10 +5279,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Tailscale address, SSH, another address) is listed once, with each way's tag (Relay · Tailscale), when the page of
   each saved way told the app that PC's relay ID (never by name: a way with no ID stays a row of its own). That is for
   the eye alone: a row with a relay way is the relay's row (its name, or Unnamed PC, its word, In use now only when the
-  relay PC is) and always opens by the relay, whose key is checked and whose connection moves to a direct Tailscale or
-  home network carrier by itself; an address way never names it, states it or opens it, and its address is not shown.
-  A row of saved ways alone opens by the one whose page loaded last in the app, and shows that one's address on the wide
-  screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it, one button
+  relay PC is) and a tap on it always opens by the relay, whose key is checked and whose connection stays on the relay
+  unless that PC's Direct connection is on (off by default); an address way never names it or states it, and its
+  address is not shown on the row. A row of saved ways alone opens by the one whose page loaded last in the app, and
+  shows that one's address on the wide screen; while the app keeps one of its ways open, the row shows that one and
+  goes back to it. Since the relay no longer moves to a faster way by itself, a row of
+  several ways has **More ways** beside its link (a round outlined chevron in the column Forget takes, named "More ways
+  to open {name}", `aria-expanded`, closed at first, its glyph turned up when open; a row of one way has none): open, it
+  lists under the row, one to a line, each saved way the row's tap does not open as the failure's other-way button
+  draws it (`OtherWayButton`: its way tag, then Open and its host, whole, wrapping after a dot rather than cut), and a
+  line opens that way with the checks its own row would make (Tailscale off on the phone gives the Tailscale-off card;
+  the way the app keeps open goes back to it). Choosing one is always that explicit tap on a line that shows its host;
+  it never renames, re-states or redirects the relay row. Phone width and the wide screen alike. It follows the
+  Tailscale app, which lists every address that reaches a machine under that machine, each whole, rather than picking
+  one for the person; it differs in folding them under the row in place, so My PCs stays one screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it, one button
   naming that way's tag and the host it opens, whole (Tailscale · Open macbookpro.tail1e211e.ts.net:17317, wrapping
   rather than cut), so the person sees what will answer: on My PCs, and on a relay PC's own failure card (not for a key
   that is not the PC's). In Forget PCs a row of several lists its ways under it, one to a line, each with its
@@ -5504,8 +5595,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
-  replaces its hypothesis in place (`thi`, `this`, `this is a test`), so sending each one typed
-  every draft. A chord typed or tapped with the key bar's held modifier sends that preedit first,
+  replaces its hypothesis in place (`thi`, `this`, `this is a test`). On iOS, the first hypothesis
+  can be a plain insertion without a typing key. Later keyless edits over the whole hypothesis
+  or just its suffix revise the preedit; typing Space or inserting at the caret still commits it.
+  A chord typed or tapped with the key bar's held modifier sends that preedit first,
   as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
   provisional input stays marked text and only the inserted result reaches the shell. A pane
   switch drops a pending preedit. A view-only terminal starts no dictation preedit, and one still
