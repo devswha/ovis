@@ -14,7 +14,7 @@ import { ADDED_POLL_MS } from "./AccountSection.tsx";
 /**
  * The account joins waiting for this PC's own window (server/relay/routes.ts, /api/relay/joins), read every
  * ADDED_POLL_MS while `enabled` and visible. Also read when the page becomes visible, the local
- * socket opens, or `again` changes. A 403, 404 or 405 stops polling and event-driven reads.
+ * socket opens, or `again` changes. A current 404, 405 or 403 other than `locked` stops further reads.
  */
 export function useOwnJoins(enabled: boolean, again = 0, machineSessions?: MachineSessionRegistry): readonly OwnJoinRequest[] {
   const [joins, setJoins] = useState<readonly OwnJoinRequest[]>([]);
@@ -32,9 +32,13 @@ export function useOwnJoins(enabled: boolean, again = 0, machineSessions?: Machi
         applied = seq;
         setJoins(next);
       }, (error: unknown) => {
-        if (!live || seq < applied) return;
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) refused = true;
-        else console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
+        // An older refusal must not shut out a newer read that is still in flight.
+        if (!live || seq !== issued) return;
+        if (error instanceof ApiError) {
+          if (error.status === 403 && error.code === "locked") return;
+          if (error.status === 403 || error.status === 404 || error.status === 405) { refused = true; return; }
+        }
+        console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
       });
     };
     read();
