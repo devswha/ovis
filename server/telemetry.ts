@@ -659,6 +659,8 @@ export class Telemetry {
   }
 
   status(): TelemetryStatus {
+    // read before the refresh: the generation never names an off the state told with it did not see
+    const mark = offMark(this.offFile);
     this.refresh();
     return {
       enabled: this.saved.enabled,
@@ -666,7 +668,7 @@ export class Telemetry {
       notice_seen: this.saved.notice_seen_at !== null,
       next: this.pending(),
       active: this.activeMessage(this.saved.active.find((entry) => entry.day === utcDay(this.now()))),
-      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: pageGeneration(this.saved.forgotten, offMark(this.offFile)) } : {}),
+      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: pageGeneration(this.saved.forgotten, mark) } : {}),
     };
   }
 
