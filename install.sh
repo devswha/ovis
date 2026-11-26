@@ -424,7 +424,8 @@ code=$root
 case "${1:-}" in
   start | stop) ;;
   *)
-    code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
+    # --no-env-file: a .env in the folder it runs in is some project's, not Ovis's settings
+    code=$(bun --no-env-file -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
     [ -n "$code" ] || code=$root
     ;;
 esac
@@ -1029,7 +1030,7 @@ node_link() {
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
 # in the app's state dir and runs it from there (server/updater.ts, current.json).
 running_code() {
-  running_found=$(bun -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
+  running_found=$(bun --no-env-file -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
   printf '%s\n' "${running_found:-$1}"
 }
 
