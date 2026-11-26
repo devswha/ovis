@@ -1735,13 +1735,15 @@ describe("claudeRestoredPaste (#3563)", () => {
       ["a paste cache name that is no hash", [prompt("[Pasted text #1 +2 lines]", [{ id: 1, type: "text", contentHash: "../sessions/x" }])], "❯ [Pasted text #2 +2 lines]", SENT],
     ];
     for (const [name, lines, box, sent] of cases) {
-      expect({ name, restored: await claudeRestoredPaste(claude, box, sent, store(...lines)) }).toEqual({ name, restored: false });
+      const home = store(...lines);
+      expect({ name, restored: await claudeRestoredPaste(claude, box, sent, home) }).toEqual({ name, restored: false });
     }
   });
 
   it.skipIf(!NATIVE)("refuses a paste made after the chat's turn was answered, which takes the same next number", async () => {
     transcript = [human, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }, { type: "last-prompt", sessionId: SESSION }];
-    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, store(sentPrompt))).toBe(false);
+    const answered = store(sentPrompt);
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, answered)).toBe(false);
     // nor without the session's transcript
     const home = store(sentPrompt);
     rmSync(join(home, ".claude", "projects"), { recursive: true });
