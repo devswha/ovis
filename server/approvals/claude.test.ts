@@ -9,7 +9,7 @@ import { preloaded } from "./relay.ts";
 import { parsedByPublicPrompt } from "../dialogs/shared.ts";
 import { ROOT } from "../entries.ts";
 import { parseInteractivePrompt } from "../prompt.ts";
-import { readStatuslineContext } from "../statusline.ts";
+import { readStatusline, readStatuslineContext } from "../statusline.ts";
 import { installStatusline, removeStatusline } from "../statusline-install.ts";
 
 // the folder's and socket's modes and links are those of Linux and macOS; on Windows the hub is a named pipe
@@ -214,6 +214,14 @@ describe.skipIf(!posix)("the status line of a Claude Ovis starts", () => {
     const limited = JSON.stringify({ ...JSON.parse(PAYLOAD), rate_limits: { five_hour: { used_percentage: 12, resets_at: 2_000_000_000 } } });
     expect((await draw(statusLine()!, limited)).line).toBe("mine");
     expect(existsSync(join(home, ".herdr", "statusline-last.json"))).toBe(false);
+  });
+
+  it("keeps the limits while the Settings switch is on, as its wrapper would", async () => {
+    const { statusLine, draw, home, config } = claudeIn({ user: line("printf mine") });
+    installStatusline({ home, configDir: config });
+    const limited = JSON.stringify({ ...JSON.parse(PAYLOAD), rate_limits: { five_hour: { used_percentage: 12, resets_at: 2_000_000_000 } } });
+    expect((await draw(statusLine()!, limited)).line).toBe("mine");
+    expect(readStatusline(home)?.fiveHour?.usedPercent).toBe(12);
   });
 
   it("draws the line the Settings switch's wrapper wraps, which turning the switch off deletes", async () => {
