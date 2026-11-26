@@ -821,6 +821,21 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
 - `palette`: the legacy mirror of the drawn side's theme for older app versions; default `codex`.
   A record with no palette (saved before palettes) or a removed one (`report`, `lilac`, `forest`)
   loads as `amber`.
+- `markdownStyle`: `editorial`, `tinted`, `colorful`, or `plain`; default `editorial`, shared across
+  devices (`SHARED_SETTING_KEYS`) and stored in its own key (`ovis:markdown-style`, applied at cold
+  boot via `data-markdown-style` on `<html>`). Picked from a row of four miniature preview cards
+  under Settings → Appearance → Chat Markdown (following the Theme picker's card strip rather than a
+  binary toggle). Scoped to assistant chat turns only (`.chat-turn-agent .markdown`); user bubbles,
+  file previews, fenced code blocks, and clickable file/link chips (`.markdown-file`,
+  `.markdown-code-link`, `a > code`) keep their own affordances. `editorial` follows Claude and
+  Linear's restrained typography (neutral headings with a hairline rule under `h2`, single-accent
+  tints on bullets while ordered numbers keep the text color, one blockquote rail/wash however deep
+  the quote, and non-file inline code pills in `--text-strong`, never a mix of two text colors, so an
+  imported theme keeps it readable); `tinted` adds soft
+  two-tone theme heading and inline-code tints; `colorful` uses the active theme's `--syntax-*`
+  roles across headings, emphasis, and inline code (following the syntax-colored Markdown direction
+  proposed in #4262); `plain` keeps the original monochrome Markdown. Every preset's foreground and
+  surface mixes meet WCAG AA (4.5:1) across all built-in dark and light themes (`themes.contrast.test.ts`).
 - `density`: `comfortable` or `compact`; default `comfortable`.
 - `sidebarRows`: `one` or `two`; default `one`.
 - Terminal font size is independent: default `13px`, clamped to `10–22px`.
@@ -3181,6 +3196,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A right-click on a pane always opens its menu.
   Native app shortcuts default to Mod+Shift in the browser, so Ctrl+key continues to reach the PTY;
   a plain Ctrl/Alt chord is taken only after the user records it and confirms Save anyway.
+  Like Zed's scoped shortcut opt-out, **Off** disables only the selected action. Chat's **Hold
+  message in chat** and the **Dictate (hold)** key can be turned off independently. These two keep
+  their default chords when enabled; **Off** does not change a terminal's Alt+Enter or the mic button.
 
 ### Worktree dialog (`.worktree-modal`)
 - From a workspace row's menu, as herdr's prefix+shift+g: **New worktree** asks for the branch
@@ -3724,6 +3742,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   WKWebView do, and keep theirs: the sheet follows Android Chrome's link menu, cut to those three.
   Only the WebView's own long press (its `contextmenu`, not a mouse's) opens it, so a tap, a swipe
   and a press on other words keep their meaning.
+  In the iPhone and iPad Home Screen web app on iOS or iPadOS 17 and later, an HTTPS link to
+  another site opens in Safari, where the user is signed in, not in the app's own view.
+  `safariLinks.ts` uses Safari's undocumented `x-safari-https:` for `ExternalLink` taps and terminal links alike, a
+  sign-in page's link included; a sign-in its button opens through `reserveTab` stays in the app's
+  view, and both finish, since the app polls for the code. A plain http link and a link to the app's
+  own origin stay in the app; iOS 16, unknown versions, Safari tabs, native apps and other systems
+  are unchanged. A native coding-agent app can open a link in Apple's in-app Safari view
+  (`SFSafariViewController`); a Home Screen web app has no such view, so it hands the link to Safari
+  instead.
   Markdown files use the same renderer in the file viewer. **Open in a new tab** opens an
   app link to the resolved absolute file on its own PC, independent of the originating pane.
   **Open raw file** (Code glyph) opens the original bytes; Download still saves those bytes.
@@ -4153,6 +4180,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   then reads `Question 1 of 2`; the review after the last question keeps the chips, all checked.
 - Single options submit immediately; multi-select exposes checks plus Submit; supported custom input
   has its own labelled field. The prompt id names what the prompt says and which asking of it this is; an answer to another prompt, or to an earlier asking of the same one, is rejected with `prompt_changed`.
+- When Chat sees a terminal resize during a Claude Code approval, it keeps the card in place and
+  briefly disables its choices while reading the redrawn screen. This follows Claude Code's
+  terminal, where a resize leaves the approval open. The live answer check still binds the
+  selection to the command and permission scope on screen.
 - OpenCode's native multi-step form uses the same question card, not a new wizard. Back and
   answered-step chips save the current step's unsent text and checks before navigating. Returning
   restores them without submitting them to the agent. This keeps the existing T3 Code-inspired
