@@ -5586,8 +5586,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
-  replaces its hypothesis in place (`thi`, `this`, `this is a test`). A plain insertion over the
-  whole selected hypothesis also revises that preedit; inserting at the caret still commits it.
+  replaces its hypothesis in place (`thi`, `this`, `this is a test`). On iOS, the first hypothesis
+  can be a plain insertion without a typing key. Later keyless edits over the whole hypothesis
+  or just its suffix revise the preedit; typing Space or inserting at the caret still commits it.
   A chord typed or tapped with the key bar's held modifier sends that preedit first,
   as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
   provisional input stays marked text and only the inserted result reaches the shell. A pane

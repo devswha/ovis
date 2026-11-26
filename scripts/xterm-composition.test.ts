@@ -21,24 +21,35 @@ afterEach(() => { jest.useRealTimers(); });
 
 function editor(term?: any, Helper = CompositionHelper) {
   const sent: string[] = [];
-  const textarea = Object.assign(new EventTarget(), { value: "", selectionStart: 0, selectionEnd: 0 });
+  const textarea = Object.assign(new EventTarget(), {
+    value: "", selectionStart: 0, selectionEnd: 0, style: {},
+    focus() {},
+    select() { this.selectionStart = 0; this.selectionEnd = this.value.length; },
+  });
+  const element = Object.assign(new EventTarget(), { classList: { add() {}, remove() {} } });
   const view = { textContent: "", classList: { add() {}, remove() {} } };
   const helper = new Helper(textarea, view,
     { buffer: { isCursorInViewport: false } },
     { rawOptions: { screenReaderMode: false } },
     term?.coreService ?? { triggerDataEvent: (text: string) => sent.push(text) }, {});
   if (term) {
-    Object.assign(term, { textarea, _compositionHelper: helper, element: { classList: { add() {}, remove() {} } } });
+    Object.assign(term, {
+      textarea, element, _compositionHelper: helper,
+      screenElement: { getBoundingClientRect: () => ({ left: 0, top: 0 }) },
+      _selectionService: { selectionText: "screen-output", shouldColumnSelect: () => false },
+    });
     term.onData((text: string) => sent.push(text));
+    term._initGlobal();
+  } else {
+    textarea.addEventListener("compositionstart", () => helper.compositionstart());
+    textarea.addEventListener("compositionupdate", (event) => helper.compositionupdate(event));
+    textarea.addEventListener("compositionend", () => helper.compositionend());
+    textarea.addEventListener("keydown", (event) => helper.keydown(event));
+    textarea.addEventListener("beforeinput", (event) => helper.beforeinput(event));
+    textarea.addEventListener("input", (event) => helper.input(event, true));
   }
-  textarea.addEventListener("compositionstart", () => helper.compositionstart());
-  textarea.addEventListener("compositionupdate", (event) => helper.compositionupdate(event));
-  textarea.addEventListener("compositionend", () => helper.compositionend());
-  textarea.addEventListener("keydown", (event) => term ? term._keyDown(event) : helper.keydown(event));
-  textarea.addEventListener("beforeinput", (event) => helper.beforeinput(event, true));
-  textarea.addEventListener("input", (event) => term ? term._inputEvent(event) : helper.input(event, true));
-  const event = (type: string, fields: Record<string, unknown> = {}) =>
-    textarea.dispatchEvent(Object.assign(new Event(type, { bubbles: true, composed: true }), fields));
+  const event = (type: string, fields: Record<string, unknown> = {}, target: EventTarget = textarea) =>
+    target.dispatchEvent(Object.assign(new Event(type, { bubbles: true, composed: true }), fields));
   const value = (text: string) => {
     textarea.value = text;
     textarea.selectionStart = textarea.selectionEnd = text.length;
@@ -67,7 +78,7 @@ function editor(term?: any, Helper = CompositionHelper) {
     event("input", { inputType, data, isComposing: false });
     jest.runAllTimers();
   };
-  return { sent, textarea, compose, edit, event, value, helper };
+  return { sent, textarea, element, compose, edit, event, value, helper };
 }
 
 describe("xterm mobile composition input", () => {
@@ -237,6 +248,60 @@ describe("xterm dictation input on iPhone WebKit", async () => {
       expect(e.sent).toEqual(["please test this solution", "\r"]);
     });
   }
+
+  const insert = (e: ReturnType<typeof editor>, data: string, inputType = "insertText") => {
+    const fields = { inputType, data, isComposing: false };
+    e.event("beforeinput", fields);
+    const { value, selectionStart, selectionEnd } = e.textarea;
+    e.value(value.slice(0, selectionStart) + data + value.slice(selectionEnd));
+    e.event("input", fields);
+    jest.runOnlyPendingTimers();
+  };
+
+  for (const key of [undefined, { key: "Unidentified", keyCode: 229 }]) {
+    it(`keeps the first insertText dictation hypothesis provisional (${key ? "229" : "no keydown"})`, () => {
+      const e = editor(new SafariTerminal(), SafariHelper);
+      for (const data of ["p", "ple", "please"]) {
+        e.textarea.select();
+        if (key) e.event("keydown", key);
+        insert(e, data);
+        if (key) e.event("keyup", key);
+      }
+      e.event("keydown", { key: "Enter", keyCode: 13 });
+      expect(e.sent).toEqual(["please", "\r"]);
+    });
+  }
+
+  it("commits dictation before context-menu paste replaces the textarea with a grid selection", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "p", "insertReplacementText");
+    e.textarea.select();
+    insert(e, "please");
+    e.event("contextmenu", { clientX: 0, clientY: 0 }, e.element);
+    e.event("paste", { clipboardData: { getData: () => "PASTE" } });
+    expect(e.sent).toEqual(["please", "PASTE"]);
+  });
+
+  it("sends the iOS Chinese keyboard's Space immediately over a selected dictation hypothesis", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "hello", "insertReplacementText");
+    e.textarea.select();
+    e.event("keydown", { key: " ", code: "Space", keyCode: 229 });
+    insert(e, " ");
+    e.event("keyup", { key: " ", code: "Space", keyCode: 32 });
+    expect(e.sent).toEqual(["hello", " "]);
+  });
+
+  it("keeps a suffix-only dictation correction in the same provisional phrase", () => {
+    const e = editor(new SafariTerminal(), SafariHelper);
+    insert(e, "please text", "insertReplacementText");
+    e.textarea.select();
+    insert(e, "please text this");
+    e.textarea.selectionStart = "please ".length;
+    insert(e, "test this");
+    e.event("keydown", { key: "Enter", keyCode: 13 });
+    expect(e.sent).toEqual(["please test this", "\r"]);
+  });
 
   it("commits dictation before regular text inserted at the caret", () => {
     const e = editor(new SafariTerminal(), SafariHelper);
