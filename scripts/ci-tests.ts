@@ -24,9 +24,10 @@ if (suite === "integration" && process.env["HERDR_TEST_LIVE"] === "1") {
   throw new Error("CI integration tests must use an isolated herdr session");
 }
 // Both suites start terminals on the Rust PTY host. A checkout without one (a fresh clone or worktree) gets the release's
-// for its crate sources first; a run that still has none stops here, instead of failing those tests one by one.
+// for its crate sources first, unless OVIS_PTY_SIDECAR_BIN names the host to use; a run that still has none stops here,
+// instead of failing those tests one by one.
 if (process.platform !== "win32" && !probeRustHost(rustSidecarPath()).ok) {
-  console.log(`Ovis: ${(await install({ part: PTY_HOST })).message}`);
+  if (!process.env["OVIS_PTY_SIDECAR_BIN"]) console.log(`Ovis: ${(await install({ part: PTY_HOST })).message}`);
   const verdict = probeRustHost(rustSidecarPath());
   if (!verdict.ok) throw new Error(`The ${suite} tests need the Rust PTY host, and none runs here (${rustSidecarPath()}: ${verdict.reason}); to fix it, ${RUST_HOST_FIX}`);
 }
