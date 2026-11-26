@@ -55,11 +55,10 @@ export interface ApprovalRequest {
   input?: Readonly<Record<string, unknown>>;
 }
 
-/** One question a held request asks: its words, its options' labels in their order, and whether it takes several. */
+/** One question a held request asks, of one pick: its words, and its options' labels in their order. */
 export interface HeldQuestion {
   readonly text: string;
   readonly options: readonly string[];
-  readonly multiSelect: boolean;
 }
 
 /** What a question's card answered, keyed by the question's words, with the input its request was sent with. */
@@ -532,6 +531,15 @@ export class ApprovalHub {
   }
 
   /**
+   * Whether the request a card built on `id` showed is the one request the dialog leaves open: of two asked in the same
+   * words, the screen cannot tell which it shows, and what an option means may differ between them.
+   */
+  onlyOpen(paneId: string, dialog: ApprovalDialog, id: string): boolean {
+    const open = this.open(paneId, dialog);
+    return open.length === 1 && idOf(open[0]!) === id;
+  }
+
+  /**
    * Whether the dialog shows the subject of the request a card built on `id` showed, whole, and of no other held
    * request: only then is that dialog this request's, and the card's options other than a decision go to it as keys.
    * Runs of white space count as one in `shows`, so two requests that differ only in them are both shown. Nor may another
@@ -554,13 +562,13 @@ export class ApprovalHub {
   }
 
   /**
-   * Answers the question of the request a card built on `id` showed with `answer` (an option's label, several joined
-   * with ", ", or words typed), as the agent's own dialog would. False when that request is no longer bound to the
-   * card, or asks no question.
+   * Answers the question of the request a card built on `id` showed with `answer` (an option's label, or words typed),
+   * as the agent's own dialog would. False when that request is no longer bound to the card, is not the one request
+   * the dialog leaves open, or asks no question.
    */
   answerQuestion(paneId: string, dialog: ApprovalDialog, id: string, answer: string): boolean {
     const held = this.bound(paneId, dialog, id);
-    if (held?.question === undefined || held.input === undefined) return false;
+    if (held?.question === undefined || held.input === undefined || !this.onlyOpen(paneId, dialog, id)) return false;
     held.settle("allow", { input: held.input, answers: { [held.question.text]: answer } });
     return true;
   }

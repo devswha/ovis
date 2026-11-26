@@ -1518,8 +1518,11 @@ const approvalDialog = (prompt: InteractivePrompt | null): ApprovalDialog | null
 function withHeldPermission(paneId: string, prompt: InteractivePrompt | null, approvals: ApprovalHub | undefined): InteractivePrompt | null {
   const held = approvals?.shown(paneId, approvalDialog(prompt)) ?? null;
   if (held === null || prompt === null) return heldOnly(prompt) ? null : prompt;
-  // a question card keeps what the screen shows, and is bound only where it shows the held question's options whole
-  if (held.question !== undefined) return showsHeldQuestion(prompt, held.question) ? { ...prompt, id: `${prompt.id}.${held.id}` } : prompt;
+  // a question card keeps what the screen shows, and is bound only where it shows the held question's options whole and
+  // no other request asked the same words
+  if (held.question !== undefined) {
+    return showsHeldQuestion(prompt, held.question) && approvals!.onlyOpen(paneId, approvalDialog(prompt)!, held.id) ? { ...prompt, id: `${prompt.id}.${held.id}` } : prompt;
+  }
   return { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
 }
 

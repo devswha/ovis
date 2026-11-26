@@ -12,8 +12,7 @@
  * So every card still has its keys: the hook is only how a Yes or No goes when it holds the very request on screen.
  * A question Claude asks (AskUserQuestion) comes through the same hook, also while its dialog is drawn, and is answered
  * the same way: an allow with the request's input and the answer (`answers`, by the question's words), measured on
- * 2.1.330 for a pick, several picks joined with ", " and words typed. Answered in the terminal first, the hook's
- * later answer is ignored there too.
+ * 2.1.330 for a pick and for words typed. Answered in the terminal first, the hook's later answer is ignored there too.
  */
 import { homedir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -213,7 +212,9 @@ const marked = (mark: string, value: string): string[] => value === "" ? [] : va
  * request missing what its card shows. A card shows the whole of what is allowed: a shell command; the file's path and
  * the text written to it whole, or the lines an edit takes out and puts in; the address fetched and what is asked of the
  * page, as the dialog shows them; an MCP tool's name and each of its arguments, as the dialog shows them. A question:
- * only one, its options' labels whole; a request of several is the terminal's, whose dialog takes them a tab each.
+ * only one, of one pick, its options' labels whole. The terminal keeps the rest: several questions (a tab each), a
+ * multiple choice (whose picks one answer string cannot tell apart when a label holds ", "), and options with a
+ * preview (which the terminal's answer carries to Claude beside the label, `annotations`).
  */
 function requestOf(name: string, tool: Record<string, unknown>, cwd: string | null): ApprovalRequest | null {
   switch (name) {
@@ -222,13 +223,13 @@ function requestOf(name: string, tool: Record<string, unknown>, cwd: string | nu
       if (!Array.isArray(questions) || questions.length !== 1 || tool["answers"] !== undefined) return null;
       const asked = questions[0] as { question?: unknown; options?: unknown; multiSelect?: unknown } | null;
       const question = text(asked?.question);
-      const labels = Array.isArray(asked?.options) ? asked.options.map((option) => text((option as { label?: unknown } | null)?.label)) : [];
-      const options = labels.filter((label): label is string => label !== null);
-      if (question === null || options.length === 0 || options.length !== labels.length) return null;
-      return {
-        command: question, description: null, dialog: "question", input: tool,
-        question: { text: question, options, multiSelect: asked?.multiSelect === true },
-      };
+      const given = Array.isArray(asked?.options) ? asked.options as ({ label?: unknown; preview?: unknown } | null)[] : [];
+      const options = given.flatMap((option) => {
+        const label = text(option?.label);
+        return label === null || option?.preview !== undefined ? [] : [label];
+      });
+      if (question === null || asked?.multiSelect === true || options.length === 0 || options.length !== given.length) return null;
+      return { command: question, description: null, dialog: "question", input: tool, question: { text: question, options } };
     }
     case "Bash": {
       const command = text(tool["command"]);

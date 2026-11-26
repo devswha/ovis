@@ -789,7 +789,8 @@ describe("Claude's questions on a card from the hook's request", () => {
     // a Bash dialog shows no question, and a question dialog no command
     expect(hooks.shown("p1", on("Which color?"))).toBeNull();
     const card = hooks.shown("p1", dialog)!;
-    expect(card.question).toEqual({ text: "Which color?", options: ["Red", "Blue"], multiSelect: false });
+    expect(card.question).toEqual({ text: "Which color?", options: ["Red", "Blue"] });
+    expect(hooks.onlyOpen("p1", dialog, card.id)).toBe(true);
     // its options are no Yes or No
     expect(hooks.decision("p1", card.id, "Yes")).toBeNull();
     expect(hooks.answerQuestion("p1", { command: "Which size?", kind: "question" }, card.id, "Blue")).toBe(false);
@@ -811,31 +812,52 @@ describe("Claude's questions on a card from the hook's request", () => {
     expect(await answer()).toEqual({});
   });
 
-  it("leaves a request of several questions to the terminal at once", async () => {
+  // the adversarial review of this change: two requests asked in the same words, whose options mean different things
+  it("binds no card while two held requests ask the same question, and answers neither", async () => {
+    const { hooks, held } = hooksIn();
+    const hook = ourHook(launch(hooks, "p1", undefined)!);
+    const dialog: ApprovalDialog = { command: "Which color?", kind: "question" };
+    const relays = [];
+    for (let index = 0; index < 2; index++) {
+      const holding = held("p1");
+      relays.push(ask(hook, color()));
+      await holding;
+    }
+    const card = hooks.shown("p1", dialog)!;
+    expect(hooks.onlyOpen("p1", dialog, card.id)).toBe(false);
+    expect(hooks.answerQuestion("p1", dialog, card.id, "Blue")).toBe(false);
+    hooks.forget("p1");
+    for (const relay of relays) expect(await relay.answer()).toEqual({});
+  });
+
+  it("leaves to the terminal at once a request of several questions, a multiple choice, and options with a preview", async () => {
     const { hooks } = hooksIn();
     const hook = ourHook(launch(hooks, "p1", undefined)!);
     const several = requestOf("AskUserQuestion", 2);
-    expect((several["tool_input"] as { questions: unknown[] }).questions).toHaveLength(2);
-    expect(await ask(hook, several).answer()).toEqual({});
+    const questions = (several["tool_input"] as { questions: Record<string, unknown>[] }).questions;
+    expect(questions).toHaveLength(2);
+    const [fruits] = questions;
+    expect(fruits!["multiSelect"]).toBe(true);
+    const input = color()["tool_input"] as { questions: { options: Record<string, unknown>[] }[] };
+    const previewed = { ...color(), tool_input: { questions: [{ ...input.questions[0], options: input.questions[0]!.options.map((option) => ({ ...option, preview: "+--+" })) }] } };
+    for (const request of [several, { ...several, tool_input: { questions: [fruits] } }, previewed]) {
+      expect(await ask(hook, request).answer()).toEqual({});
+    }
     expect(hooks.held("p1")).toEqual([]);
   });
 
-  it("turns a pick, several picks and words typed into Claude's answer, and leaves any other answer to the keys", () => {
+  it("turns a pick and words typed into Claude's answer, and leaves any other answer to the keys", () => {
     const single = parseInteractivePrompt("claude", questionScreen("Which color?", ["Red", "Blue"]))!;
-    const several = { ...single, multi_select: true, options: [{ label: "Apple", description: null }, { label: "Pear", description: null }, { label: "Plum", description: null }] };
-    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Red", "Blue"], multiSelect: false })).toBe(true);
-    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Blue", "Red"], multiSelect: false })).toBe(false);
-    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Red", "Blue"], multiSelect: true })).toBe(false);
+    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Red", "Blue"] })).toBe(true);
+    expect(showsHeldQuestion(single, { text: "Which color?", options: ["Blue", "Red"] })).toBe(false);
+    expect(showsHeldQuestion({ ...single, multi_select: true }, { text: "Which color?", options: ["Red", "Blue"] })).toBe(false);
     expect(heldQuestionAnswer(single, { pane_id: "p", prompt_id: "x", option_index: 1 })).toBe("Blue");
     expect(heldQuestionAnswer(single, { pane_id: "p", prompt_id: "x", custom_text: "Ovis-free-text" })).toBe("Ovis-free-text");
-    // Claude Code 2.1.330 took this for the picks of a multiple choice
-    expect(heldQuestionAnswer(several, { pane_id: "p", prompt_id: "x", option_indices: [2, 1] })).toBe("Pear, Plum");
     for (const body of [
       { option_index: 2 }, { option_index: 0, custom_text: "also" }, { custom_text: "  " }, { step_back: true }, { option_indices: [0] },
     ]) expect(heldQuestionAnswer(single, { pane_id: "p", prompt_id: "x", ...body }), JSON.stringify(body)).toBeNull();
-    for (const body of [{ option_index: 0 }, { option_indices: [] }, { option_indices: [1, 1] }, { option_indices: [3] }, { custom_text: "Fig" }]) {
-      expect(heldQuestionAnswer(several, { pane_id: "p", prompt_id: "x", ...body }), JSON.stringify(body)).toBeNull();
-    }
+    // a card with no row for typed words takes none as data either
+    expect(heldQuestionAnswer({ ...single, custom_option_index: null }, { pane_id: "p", prompt_id: "x", custom_text: "Green" })).toBeNull();
   });
 
   it("binds no question of a dialog with a tab per question", () => {
