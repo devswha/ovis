@@ -89,19 +89,30 @@ describe("an OmO question that does not wait, answered on its control socket", (
     ]);
   });
 
-  test("leaves the answer to the keys where the socket holds another session, OmO refuses it, or the send was called off", async () => {
+  test("leaves the answer to the keys where the socket holds another session, OmO refused it unapplied, or the send was called off", async () => {
     // the fixture's one question takes several picks
     const body = { pane_id: "p", prompt_id: "c", option_indices: [0] };
     const other = omoSocket("/s/other.jsonl");
-    const refusing = omoSocket("/s/session.jsonl", { success: false, error: "unknown_request", disposition: "unknown" });
-    await Promise.all([other.listening, refusing.listening]);
+    const unapplied = omoSocket("/s/session.jsonl", { success: false, error: "invalid_response" });
+    const older = omoSocket("/s/session.jsonl", { success: false, error: "unsupported" });
+    const calledOff = omoSocket("/s/session.jsonl");
+    await Promise.all([other.listening, unapplied.listening, older.listening, calledOff.listening]);
     expect(await answerOmoPending(other.path, card("one"), body, () => true)).toBeNull();
     expect(other.frames.map((frame) => frame["type"])).toEqual(["get_state"]);
-    expect(await answerOmoPending(refusing.path, card("one"), body, () => true)).toBeNull();
-    const calledOff = omoSocket("/s/session.jsonl");
-    await calledOff.listening;
+    expect(await answerOmoPending(unapplied.path, card("one"), body, () => true)).toBeNull();
+    expect(await answerOmoPending(older.path, card("one"), body, () => true)).toBeNull();
     expect(await answerOmoPending(calledOff.path, card("one"), body, () => false)).toBeNull();
     expect(calledOff.frames.map((frame) => frame["type"])).toEqual(["get_state"]);
     expect(await answerOmoPending(null, card("one"), body, () => true)).toBeNull();
+  });
+
+  test("types no key where OmO waits on no such question, or answers in a way that may mean it applied the answer", async () => {
+    const body = { pane_id: "p", prompt_id: "c", option_indices: [0] };
+    // answered meanwhile, or by this very answer sent before an acknowledgment that was lost
+    const answered = omoSocket("/s/session.jsonl", { success: false, error: "unknown_request", disposition: "unknown" });
+    const unclear = omoSocket("/s/session.jsonl", { disposition: "applied" });
+    await Promise.all([answered.listening, unclear.listening]);
+    expect(await answerOmoPending(answered.path, card("one"), body, () => true)).toBe("gone");
+    expect(await answerOmoPending(unclear.path, card("one"), body, () => true)).toBe("gone");
   });
 });

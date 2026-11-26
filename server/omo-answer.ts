@@ -33,8 +33,16 @@ export function omoAnswerOf(labels: readonly string[], multiSelect: boolean, bod
 }
 
 /**
- * Answers `body` on `card` through `socket`: "sent" once OmO took it, "gone" where the answer may have reached OmO with
- * no word back (no key may answer it then), null where the answer is the terminal's to take as keys.
+ * What OmO refuses before it applies anything (senpi session-control-commands.js answerQuestion): the answer is then the
+ * terminal's to take. `unknown_request` is not one of them: OmO waits on no such question (answered meanwhile, also by
+ * this same answer sent before an acknowledgment that was lost), so no key may answer it either.
+ */
+const REFUSED_UNAPPLIED = new Set(["question_incomplete", "invalid_response", "invalid_secret_response", "invalid_answer_id", "unsupported"]);
+
+/**
+ * Answers `body` on `card` through `socket`: "sent" once OmO took it, "gone" where no key may answer it any more (OmO
+ * waits on no such question, or the answer may have reached OmO with no clear word back), null where the answer is the
+ * terminal's to take as keys.
  */
 export async function answerOmoPending(socket: string | null, card: ParsedPrompt, body: PromptAnswer, mayWrite: () => boolean): Promise<"sent" | "gone" | null> {
   const data = card.omoData;
@@ -51,5 +59,6 @@ export async function answerOmoPending(socket: string | null, card: ParsedPrompt
   const sent = await omoControlCall(socket, { type: "extension_ui_response", uiRequestId: request, answers: { [data.key]: answer } }, mayWrite);
   if (sent === "unsent") return null;
   if (sent === "unknown") return "gone";
-  return sent["success"] === true ? "sent" : null;
+  if (sent["success"] === true) return "sent";
+  return sent["success"] === false && REFUSED_UNAPPLIED.has(String(sent["error"])) ? null : "gone";
 }
