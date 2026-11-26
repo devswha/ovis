@@ -366,7 +366,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
   });
   const stopServed = onServedStatus((paneId) => {
-    if (servedStatus(paneId) === null) codexLive.delete(paneId);
+    if (servedStatus(paneId) === null) {
+      codexLive.delete(paneId);
+      codexDeferredRest.delete(paneId);
+    }
     plans.servedChanged(paneId);
   });
   const CODEX_LOOK_MS = 1000;
@@ -374,6 +377,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const codexFailed = new Set<string>();
   /** A live turn gates delivery; only an explicit herdr ready read releases the input after it ends. */
   const codexLive = new Map<string, TurnEvent>();
+  /** herdr can see the input box before turn/completed. Keep its last word, but only for the open turn. */
+  const codexDeferredRest = new Map<string, { status: AgentStatus; askedAt: number | undefined }>();
   const codexFailedWhileBusy = new Set<string>();
   const codexQueueHeld = (paneId: string): boolean => codexLive.get(paneId)?.turn === "began" || codexFailedWhileBusy.has(paneId);
   const codexLiveFailed = (paneId: string): boolean => {
@@ -390,7 +395,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const codexFailedAt = new Map<string, number>();
   const codexWorking = (paneId: string, began: boolean): void => {
     codexFailed.delete(paneId);
-    if (!began) { codexLive.delete(paneId); codexFailedWhileBusy.delete(paneId); }
+    if (!began) { codexLive.delete(paneId); codexDeferredRest.delete(paneId); codexFailedWhileBusy.delete(paneId); }
     codexFailedAt.delete(paneId);
     codexLooked.delete(paneId);
     codexRetryAt.delete(paneId);
@@ -854,7 +859,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function reportStatus(paneId: string, raw: AgentStatus, agent: string | null, askedAt?: number): void {
     // A read of the old busy title is not a new turn. A Codex started here names its next turn itself.
     if (agent === "codex") {
-      if (codexLive.get(paneId)?.turn === "began" && atRest(raw)) return;
+      if (codexLive.get(paneId)?.turn === "began" && atRest(raw)) {
+        codexDeferredRest.set(paneId, { status: raw, askedAt });
+        return;
+      }
+      codexDeferredRest.delete(paneId);
       if (raw === "working" && codexLiveFailed(paneId)) return;
       if (inputReady(raw)) codexFailedWhileBusy.delete(paneId);
     }
@@ -920,6 +929,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (agentNow.get(paneId) !== "codex" || omo.runs(paneId) || gjc.runs(paneId)) return;
       const previous = codexLive.get(paneId);
       if (turn === "began") {
+        codexDeferredRest.delete(paneId);
         codexLive.set(paneId, event);
         if (codexFailed.has(paneId)) reportStatus(paneId, "working", "codex");
         return;
@@ -929,7 +939,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       codexLive.set(paneId, event);
       codexFailedWhileBusy.add(paneId);
       codexFailedAt.set(paneId, codexReads);
+      const rest = codexDeferredRest.get(paneId);
+      codexDeferredRest.delete(paneId);
       if (event.failed) codexEnded(paneId, "failed", true);
+      if (rest !== undefined) reportStatus(paneId, rest.status, "codex", rest.askedAt);
       return;
     }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
@@ -966,6 +979,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     hookPrompts.delete(paneId);
     if (event.failed) {
       if (completions.current(paneId) === "blocked") return;
+      // Unknown and blocked titles do not prove Claude accepts input; the queue waits for idle or done.
       if (at >= 0 || !inputReady(heard.get(paneId) ?? "unknown")) stoppedOnHook.set(paneId, null);
       claudeFailedNow(paneId, prompt);
       return;
@@ -1233,6 +1247,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     },
     onPaneMoved: (from, to, status) => {
       options.paneVacated?.(from);
+      codexDeferredRest.delete(from);
       const renumber = finishes.moved(from, to);
       for (const state of [codexFailedAt, codexTurns, codexLooked, codexSessions, codexRetryAt] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
       if (codexFailed.delete(from)) codexFailed.add(to);

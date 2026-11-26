@@ -1530,10 +1530,40 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(writes).toEqual([]);
       expect(waiting()).toEqual(["queued"]);
       h.status.hookTurn(id, "codex", { turn: "ended", prompt: "u2" });
-      expect(writes).toEqual([]);
-      report("idle");
       await flush();
+      expect(h.last().status).toBe("done");
       expect(writes).toEqual(["paste \u001b[200~after both\u001b[201~", "keys Enter"]);
+    });
+
+    it.each([
+      { name: "idle first", restFirst: true },
+      { name: "completion first", restFirst: false },
+    ])("finishes and sends a queued Codex message only after both signals ($name)", async ({ restFirst }) => {
+      const { h, writes, submit, flush, waiting } = await delivering();
+      const id = h.pane.pane_id;
+      const report = (status: "working" | "idle") => {
+        h.herdrSays({ ...h.pane, agent: "codex", agent_status: status });
+        handlers.onStatus(id, status, "codex");
+      };
+      report("working");
+      h.status.hookTurn(id, "codex", { turn: "began", prompt: "u1" });
+      await submit(94, "after the turn");
+      expect(waiting()).toEqual(["queued"]);
+
+      const idle = () => report("idle");
+      const complete = () => h.status.hookTurn(id, "codex", { turn: "ended", prompt: "u1" });
+      const [first, second] = restFirst ? [idle, complete] : [complete, idle];
+      first();
+      await flush();
+      expect(h.last().status).toBe("working");
+      expect(writes).toEqual([]);
+      expect(waiting()).toEqual(["queued"]);
+      second();
+      await flush();
+      expect(h.last().status).toBe("done");
+      expect(h.alerts.filter((status) => status === "done")).toEqual(["done"]);
+      expect(writes).toEqual(["paste \u001b[200~after the turn\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
     });
 
     it("does not paste or Enter on a Codex failure while the startup title still says working", async () => {

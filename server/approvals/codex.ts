@@ -536,6 +536,7 @@ class Connection {
         const status = isObject(params["status"]) ? params["status"] : {};
         if (threadId !== null && threadId === this.thread) this.idle = status["type"] === "idle";
         if (threadId === null || status["type"] !== "active") break;
+        // Active carries no turn id, so a missed next turn/started leaves the failed turn in place.
         if (this.ownTurn(threadId) && this.turn !== "failed") this.turn = "running";
         void this.subscribe(threadId);
         break;
