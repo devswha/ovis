@@ -357,12 +357,7 @@ export function createServer(
   if (blocked !== null) console.error(blocked);
   const untouched = blocked !== null || restamp.problem !== undefined;
   // every tombstone of both folders is evidence before the merge below coalesces them one per key (T48, P13)
-  let tombstoneProblem: string | null = null;
-  let carried: ReturnType<typeof folderTombstones> = [];
-  if (opensAll && sibling && !untouched) {
-    try { carried = [...folderTombstones(stateDir), ...folderTombstones(sibling)]; }
-    catch (error) { tombstoneProblem = error instanceof Error ? error.message : String(error); }
-  }
+  const carried = opensAll && sibling && !untouched ? [...folderTombstones(stateDir), ...folderTombstones(sibling)] : [];
   // the account safety log is replayed before any listener: what it holds in force decides who may get in (P24, T41)
   // a sibling folder's log is merged into both before this one is read: nothing in force is lost, nothing ended comes back (T48)
   const logMerge = opensAll && sibling && !untouched ? mergeSafetyLogs(stateDir, sibling) : null;
@@ -389,7 +384,7 @@ export function createServer(
   // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
   // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
   const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
-  let accountBlocked: string | null = tombstoneProblem ?? accountMerge;
+  let accountBlocked: string | null = accountMerge;
   const removals = opensAll ? RemovalEvidence.open(stateDir, safetyLog) : null;
   if (sibling && !untouched && accountBlocked === null) {
     try {

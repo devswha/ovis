@@ -411,12 +411,8 @@ function withRecords(records: readonly unknown[] | undefined, more: readonly unk
 
 /** Every tombstone a folder holds, its pending file's included, as read before any merge coalesces them (T48). */
 export function folderTombstones(dir: string): AccountTombstone[] {
-  return ["account-tombstones.json", "account-tombstones.pending.json"].flatMap(file => {
-    const path = join(dir, file);
-    const read = readTombstones(path);
-    if (read === null) throw new Error(`Cannot read ${path}: account records are refused until it is restored or fixed.`);
-    return read;
-  });
+  // An unreadable file is refused where it is read for real: by mergeAccountTombstones or by its own folder's store.
+  return ["account-tombstones.json", "account-tombstones.pending.json"].flatMap((file) => readTombstones(join(dir, file)) ?? []);
 }
 
 /** The same file shape for startup recovery, without opening a DeviceStore. */
