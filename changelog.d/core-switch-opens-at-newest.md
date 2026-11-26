@@ -1,3 +1,3 @@
 ### Fixed
-- On herdr-core, a terminal opened or switched to shows its newest rows at once, instead of
-  scrolling down through its history while that history loads.
+- On herdr-core, opening or switching terminals groups the initial history into larger updates,
+  reducing visible scrolling to the newest rows.

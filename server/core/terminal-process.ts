@@ -168,6 +168,7 @@ interface AttachmentState {
 export interface PtyAttachment extends AttachmentState {
   readonly kind: "pty";
   process: PtySession | CoreAttachSession;
+  history?: AttachBatch;
   takeOver?: (client: Client) => void;
   resizes?: number;
   resizedTo?: string[];
@@ -334,6 +335,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       let holdTimer: ReturnType<typeof setTimeout> | undefined;
       const probes = onCore ? null : new AttachStartupProbes();
       const history = onCore ? new AttachBatch(forward) : null;
+      if (history) attachment.history = history;
       const outputTail = new AttachOutputTail();
       let tailTimer: ReturnType<typeof setTimeout> | undefined;
       let tailDeadline: number | null = null;
@@ -628,15 +630,6 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         ...(process.platform === "win32" ? {} : { leaveAt: ATTACH_LEAVE }),
         onData: (data) => {
           if (retired || attachments.get(paneId) !== attachment) return;
-          if (onCore) {
-            // hc has no herdr preamble, startup queries or exclusive-attach diagnostics.
-            if (!attachment.ready) {
-              held = null;
-              took();
-            }
-            history!.push(data);
-            return;
-          }
           // herdr's startup queries are the bridge's to answer: never readiness, broadcast or replay
           if (probes && !holding && held !== null) {
             const before = held;
@@ -674,8 +667,27 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         onExit: ended,
       };
       // on herdr-core the stream is a channel on the server's own hc connection: no `hc attach`, no PTY host
-      const session: PtySession | CoreAttachSession = onCore
-        ? new CoreAttachSession({ hc: coreConnection(), terminal: attachedTerminal, cols: options.cols, rows: options.rows, onData: options.onData, onExit: ended })
+      const session: PtySession | CoreAttachSession = history
+        ? new CoreAttachSession({
+          hc: coreConnection(), terminal: attachedTerminal, cols: options.cols, rows: options.rows, onExit: ended,
+          onData: (data, source) => {
+            if (attachments.get(paneId) !== attachment) return;
+            const fromCore = source === undefined;
+            const recovering = attachment.recovering;
+            if (!attachment.ready && !recovering) {
+              held = null;
+              took();
+            }
+            history.push(data, fromCore);
+            // A display query does not replace the old screen. Publish the actual replacement
+            // bytes before its ready transition, both to current viewers and to the replay tail.
+            if (recovering && fromCore) {
+              history.flush();
+              held = null;
+              took();
+            }
+          },
+        })
         : new PtySession(options);
       return session;
     };
