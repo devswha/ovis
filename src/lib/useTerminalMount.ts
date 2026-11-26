@@ -115,7 +115,6 @@ export interface TerminalMountDeps {
   osc52AllowedRef: RefObject<boolean>;
   codexDragRef: RefObject<boolean>;
   setTerminalHistory: (keeps: boolean) => void;
-  picturesChoiceRef: RefObject<boolean | null>;
   outputTargetRef: RefObject<string>;
   colors: TerminalColors;
   paneRef: RefObject<string | null>;
@@ -156,7 +155,7 @@ export interface TerminalMountDeps {
   setReleased: (next: boolean) => void;
   setSecret: Dispatch<SetStateAction<{ pane: string; prompt: string; unchecked: boolean } | null>>;
   setSelectionQuote: Dispatch<SetStateAction<{ pane: string; text: string; range: { start: number; end: number; } | null; } | null>>;
-  setTerminal: Dispatch<SetStateAction<Terminal | null>>;
+  setTerminal: Dispatch<SetStateAction<GhosttyTerminal | null>>;
   setUnsupported: Dispatch<SetStateAction<boolean>>;
   setWatching: (next: boolean) => void;
   setViewHeld: (held: boolean) => void;
@@ -172,7 +171,7 @@ export interface TerminalMountDeps {
   submitRetention: PaneSubmitRetention | null;
   t: Translate;
   tRef: RefObject<Translate>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   terminalFontSize: number;
   updateSettings: (patch: Partial<Settings>) => void;
   uploadFileRef: RefObject<(pane: string, image: Blob) => Promise<string>>;
@@ -184,7 +183,7 @@ export interface TerminalMountDeps {
 }
 
 export function useTerminalMount(deps: TerminalMountDeps): void {
-  const { setTerminalHistory, picturesChoiceRef, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, colors, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef } = deps;
+  const { setTerminalHistory, typeAheadRef, activeRef, agentRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, watchedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, consumeModifiers, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, reuseExternalLinkTabRef, osc52AllowedRef, codexDragRef, outputTargetRef, colors, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setViewHeld, setWatching, sharedGridRef, shortcutSettings, shownRef, coveredRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, updateSettings, uploadFileRef, attachFilesRef, watchingRef, wheelStateRef } = deps;
 
     // Where this terminal is: its pane, and whether it is active, presented, shown and not the chat view.
     // Counted on every commit that changes it: an explicit copy still waiting for herdr's text is
@@ -223,9 +222,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // xterm keeps no scrollback: the attach stream lives in the alternate screen and herdr
         // owns scrollback (wheel and touch go to it). With scrollback on, the fit addon reserves
         // a scrollbar column - 15px by fallback wherever scrollbars are overlays - and the last
-        // columns of the hero surface go dead. On herdr-core xterm keeps the history (syncHistory).
+        // columns of the hero surface go dead. On herdr-core the terminal keeps the history (syncHistory).
         scrollback: 0,
-        allowProposedApi: true,
         fontSize: terminalFontSize,
         fontFamily: measurableFontStack(openingFontStack(TERMINAL_FONT_STACK)),
         theme: { ...colors },
@@ -233,10 +231,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // 1:1 on a light palette): xterm moves a foreground under 4.5:1 toward black or white. Dim text
         // needs half that, and box, block and powerline glyphs keep their color.
         minimumContrastRatio: 4.5,
-        linkHandler: {
-          activate: openHyperlink,
-          allowNonHttpProtocols: true,
-        },
         // Option+drag selects on macOS, as Shift+drag does elsewhere; a plain drag is forced below
         macOptionClickForcesSelection: true,
       };
@@ -261,9 +255,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // libghostty's OSC 8 hyperlinks, first: where a hyperlink's label is an address too, its target is what opens, as with
       // xterm's own provider
       term.registerLinkProvider(hyperlinkProvider(() => viewRows(term), (uri) => isWebLink(uri) || fileUriPath(uri) !== null, openHyperlink));
-      // the same policy as the linkHandler above: an http(s) address or nothing (S10). The addon reads the rows a link is
-      // in through the terminal it is given: the rows drawn (viewRows), libghostty's while it holds the screen. It is not
-      // loaded through the terminal (that would read xterm's buffer), so it is disposed with it below
+      // Only HTTP(S) links may open in the browser or the preview panel.
       const webLinks = term.registerLinkProvider(webLinkProvider(() => viewRows(term), (event, uri) => { if (isWebLink(uri) && !shouldOpenInPanel(event, uri)) openExternal(uri, "link", reuseTab(event)); }));
       const bareLinks = bareNameLinks(isMacPlatform());
       const onLinkKey = (event: KeyboardEvent | MouseEvent): void => bareLinks.update(event);
@@ -942,7 +934,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // where each output frame goes into the terminal: the browser scripts' probe counts here, whichever engine parses it
       let writeFrame = (data: string | Uint8Array, callback: () => void): void => term.write(data, callback);
       const writeNextOutput = (): void => {
-        const next = outputFrames[0];
         const frame = outputFrames.shift();
         if (!frame || disposed) {
           writingOutput = false;

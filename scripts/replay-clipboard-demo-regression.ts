@@ -234,7 +234,7 @@ async function newContext(browser: Browser, url: string, options: { phone?: bool
   await context.addInitScript((value) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", value); }, settings({ theme: options.theme ?? "dark", language: options.language ?? "en", ...options.extra }));
   // these cases read xterm's own OSC parse state (oscStringState), so xterm parses the whole stream here: the path a
   // mirrored pane and every fallback still take. With libghostty parsing alone, xterm sees only OSC 52 and its
-  // clipboard guard is covered by src/lib/ghostty/controls.test.ts and overlay-fallback.test.ts
+  // clipboard guard is covered by src/lib/ghostty/hooks.test.ts at the parser boundary
   await context.addInitScript(() => localStorage.setItem("ovis:ghostty-only", "off"));
   return context;
 }

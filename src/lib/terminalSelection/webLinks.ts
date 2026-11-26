@@ -1,7 +1,7 @@
 /**
  * Copyright (c) 2019 The xterm.js authors. All rights reserved.
  * @license MIT
- * Adapted for Ovis from @xterm/addon-web-links 0.12.0 (WebLinkProvider, WebLinksAddon's URL pattern): the http(s)
+ * Adapted for Ovis from the xterm.js Web Links addon 0.12.0 (WebLinkProvider, WebLinksAddon's URL pattern): the http(s)
  * addresses in a row and the rows it wraps over become links, read from any ScreenRows.
  */
 import type { ScreenRows } from "../terminalScreen.ts";

@@ -1,8 +1,7 @@
 // allow: SIZE_OK - the terminal's facade keeps the write pipeline, the view and the events one object shares.
 /**
- * A terminal without xterm.js: libghostty parses and draws, our input layer (../terminalInput) takes keys, IME, paste,
- * focus and mouse reports, and our selection and links (../terminalSelection) take the pointer. It answers the part of
- * xterm.js's Terminal API the app calls, under the same names, so the mount (useTerminalMount.ts) drives either one.
+ * libghostty parses and draws, our input layer (../terminalInput) takes keys, IME, paste,
+ * focus and mouse reports, and our selection and links (../terminalSelection) take the pointer. The mount (useTerminalMount.ts) drives it.
  *
  * The view is one number, `fromBottom`: the rows it sits above the newest. 0 follows output, whatever resizes, reflows
  * or hidden repaints come; only the user's own scroll (wheel, swipe, page keys, a find) moves it off the bottom, and
@@ -22,14 +21,6 @@ import { itermPictureWriter } from "./itermPictureWriter.ts";
 import { cellDimensions, measureChar, proposeGrid, type CellDimensions } from "./cellMetrics.ts";
 import { createRowsRenderer, themeColors, type RendererTheme, type RowsRenderer } from "./renderer.ts";
 import { GhosttyVt, rgb } from "./vt.ts";
-
-/** "xterm": this browser makes its panes with xterm.js, as before; anything else (the default) makes them without it */
-export const TERMINAL_ENGINE_KEY = "ovis:terminal-engine";
-
-/** whether panes are made as GhosttyTerminal, without xterm.js; a browser that refuses storage keeps the default */
-export function ownTerminalEngine(): boolean {
-  try { return globalThis.localStorage?.getItem(TERMINAL_ENGINE_KEY) !== "xterm"; } catch { return true; }
-}
 
 export interface Disposable { dispose(): void }
 /** what the mount sizes the grid with: the grid the element's parent fits, and fitting it (xterm's fit addon's two calls) */
@@ -108,7 +99,6 @@ export class GhosttyTerminal {
   textarea: HTMLTextAreaElement | undefined;
   readonly options: GhosttyTerminalOptions;
   readonly parser = new ParserHooks();
-  readonly unicode = { activeVersion: "15-graphemes", register: (): void => {} };
   cols: number;
   rows: number;
   private pictureCaps: PictureLimits | null = null;
@@ -369,7 +359,7 @@ export class GhosttyTerminal {
       resize.disconnect();
     });
     ownView(this, () => this.fromBottom);
-    holdScreenRows(this as never, () => (this.vt ? this.buffer.active : null), true);
+    holdScreenRows(this, () => this.buffer.active);
     this.measure();
     void this.start();
   }
@@ -810,7 +800,6 @@ export class GhosttyTerminal {
       },
     };
   }
-  loadAddon(addon: { activate(terminal: GhosttyTerminal): void }): void { addon.activate(this); }
 
   hasSelection(): boolean { return this.selection?.hasSelection() ?? false; }
   getSelection(): string { return this.selection?.getSelection() ?? ""; }
@@ -828,7 +817,7 @@ export class GhosttyTerminal {
     this.writes.length = 0;
     if (this.draining !== null) clearTimeout(this.draining);
     for (const cleanup of this.cleanups.splice(0)) cleanup();
-    holdScreenRows(this as never, null);
+    holdScreenRows(this, null);
     ownView(this, null);
     this.selection?.dispose();
     this.linkifier?.dispose();
