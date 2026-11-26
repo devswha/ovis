@@ -4,7 +4,7 @@
  * browser's own, and opening a page writes nothing.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { mirrorPalette, SHARED_SETTING_KEYS, type PreferencesChange, type SharedPreferences, type SharedSettingKey } from "../../shared/preferences.ts";
+import { mirrorPalette, SHARED_SETTING_KEYS, type PreferencesChange, type PreferencesPut, type SharedPreferences, type SharedSettingKey } from "../../shared/preferences.ts";
 import { ApiError, fetchPreferences, PreferencesConflictError, savePreferences } from "./api.ts";
 import { rebasePreferenceList } from "./preferencesList.ts";
 import { DEFAULT_THEME } from "./themes.ts";
@@ -42,6 +42,12 @@ function carry(carried: Carried): void {
 }
 
 const pausedWait = (failures: number): number => Math.min(PAUSED_RETRY_MS * 2 ** Math.max(0, failures - PAUSE_AFTER), PAUSED_RETRY_MAX_MS);
+
+function withExpectedRevision(change: PreferencesChange, revision: number): PreferencesPut {
+  return change.pins !== undefined || change.muted_panes !== undefined || Object.values(change.settings).some(Array.isArray)
+    ? { ...change, expected_revision: revision }
+    : change;
+}
 
 type Shared = Partial<Record<SharedSettingKey, unknown>>;
 export interface Baseline {
@@ -373,7 +379,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     if (!enabled || !loaded || off.current || readOnly.current || paused || pending === null) return;
     // a reload or a closed tab ends the send wait below with the page (#2374), and a phone may kill a hidden
     // one: what is unsent goes now, in a request that outlives the page. While a change is on its way (its
-    // request may not outlive the page), what is unsent goes beside it, but cannot replace a newer list.
+    // request may not outlive the page), what is unsent goes beside it without a precondition:
+    // the first write can have advanced the revision while its answer is still on the way.
     let timer: number | undefined;
     const leaving = (event: Event): void => {
       if (event.type === "visibilitychange" && document.visibilityState !== "hidden") return;
@@ -385,9 +392,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         if (outlives.current === going) return;
         outlives.current = going;
         carry({ revision: revision.current, settings: unsent.settings });
-        // nothing retries a refused write once the page is gone: only a whole list waits for the revision it read
-        const lists = unsent.pins !== undefined || unsent.muted_panes !== undefined || Object.values(unsent.settings).some(Array.isArray);
-        savePreferences(lists ? { ...unsent, expected_revision: revision.current } : unsent, true).catch(() => undefined);
+        const body = inFlight.current === null ? withExpectedRevision(unsent, revision.current) : unsent;
+        savePreferences(body, true).catch(() => undefined);
         return;
       }
       window.clearTimeout(timer);
@@ -405,10 +411,11 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
       // what is unsent when it goes, not when this wait began: a document or an edit since then counts, drawn or not
       const body = preferencesChange(base.current, here());
       if (body === null) return;
+      const manual = userRetry.current;
       userRetry.current = false;
       inFlight.current = body;
       outlives.current = keepalive ? JSON.stringify(body) : null;
-      savePreferences({ ...body, expected_revision: revision.current }, keepalive).then((saved) => {
+      savePreferences(withExpectedRevision(body, revision.current), keepalive).then((saved) => {
         refused.current = null;
         // An older server silently drops new names. Acknowledge exactly what was sent, not
         // today's local value: an edit made while the request was in flight still goes next.
@@ -439,11 +446,15 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
           absorb(!restart && arrived !== null && arrived.revision > error.current.revision ? arrived : error.current, restart);
           if (rest()) return;
           if (++conflicts.current <= MAX_CONFLICT_RETRIES) {
+            userRetry.current ||= manual;
             setAttempt((count) => count + 1);
           } else {
+            userRetry.current = false;
             setSaveError(userErrorMessage(error));
             setRetrying(false);
             setPaused(true);
+            const pausedFailures = PAUSE_AFTER + conflicts.current - MAX_CONFLICT_RETRIES - 1;
+            pauseTimer.current = window.setTimeout(() => setPaused(false), pausedWait(pausedFailures));
           }
           return;
         }

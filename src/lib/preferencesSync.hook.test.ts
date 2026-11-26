@@ -268,7 +268,7 @@ describe("preferences sync real send path", () => {
     expect(client.saveError).toBeNull();
   });
 
-  it("pauses after repeated revision conflicts and keeps the edit available for Retry", async () => {
+  it.each(["manual", "automatic"] as const)("keeps the edit after repeated revision conflicts for %s retry", async (retry) => {
     store.set({ settings: {}, pins: ["local:w1:p1"] });
     const client = await open();
     beforeConditionalPut = () => { store.set({ settings: { showThinking: false } }); };
@@ -281,10 +281,47 @@ describe("preferences sync real send path", () => {
     expect(store.get().pins).toEqual(["local:w1:p1"]);
     expect(currentSidebarPins()).toEqual(["local:w1:p1", "local:w1:p2"]);
     beforeConditionalPut = () => undefined;
-    await act(async () => { client.retry(); });
+    if (retry === "manual") await act(async () => { client.retry(); });
+    else await act(async () => { jest.advanceTimersByTime(60_000); });
     await windows();
     expect(store.get().pins).toEqual(["local:w1:p1", "local:w1:p2"]);
     expect(client.paused).toBe(false);
+  });
+
+  it("sends an expected revision only for whole-list writes, including keepalive", async () => {
+    store.set({ settings: {}, pins: [] });
+    const client = await open();
+    await act(async () => { client.update({ language: "ko" }); });
+    await send();
+    await act(async () => { client.update({ language: "en" }); });
+    await act(async () => { leavePage("pagehide"); });
+    await act(async () => { client.update({ lockedAgents: ["local:w1:p1"] }); });
+    await send();
+    await act(async () => { setSidebarPins(["local:w1:p1"]); });
+    await act(async () => { leavePage("pagehide"); });
+
+    expect(keepalives).toEqual([false, true, false, true]);
+    expect(bodies.map((body) => body.expected_revision)).toEqual([undefined, undefined, 3, 4]);
+  });
+
+  it("finishes manual Retry through a revision conflict while the event stream is disconnected", async () => {
+    store.set({ settings: {}, pins: [] });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { setSidebarPins(["local:w1:p1"]); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    await act(async () => { client.disconnected(); });
+    clients.length = 0;
+    store.set({ settings: {}, pins: ["local:w1:p2"] });
+    beforeConditionalPut = () => undefined;
+    await act(async () => { client.retry(); });
+    await windows(3);
+
+    expect(bodies.map((body) => body.expected_revision)).toEqual([1, 1, 2]);
+    expect(store.get().pins).toEqual(["local:w1:p2", "local:w1:p1"]);
+    expect([client.retrying, client.saveError]).toEqual([false, null]);
   });
 
   it.each(["dark", "light"] as const)("takes a restarted legacy-only %s palette in a fresh client without corrective PUTs", async (theme) => {
@@ -376,18 +413,24 @@ describe("preferences sync real send path", () => {
     expect(bodies).toHaveLength(1);
   });
 
-  it("sends an edit made while a save is on its way when the page goes", async () => {
+  it("saves a list edit when the page goes while another save's answer is pending", async () => {
+    store.set({ settings: {}, pins: [] });
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
     const client = await open();
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
     await windows();
+    expect(store.get().revision).toBe(2);
+    beforeConditionalPut = () => undefined;
     await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
+    await act(async () => { setSidebarPins(["local:w1:p1"]); });
 
     await act(async () => { leavePage("pagehide"); });
 
     expect(keepalives).toEqual([false, true]);
+    expect(bodies[1]).not.toHaveProperty("expected_revision");
     expect(bodies[1]?.settings).toMatchObject({ showUsage: !DEFAULT_SETTINGS.showUsage, showThinking: !DEFAULT_SETTINGS.showThinking });
+    expect(store.get().pins).toEqual(["local:w1:p1"]);
     await act(async () => { gate.resolve(); });
     releaseAnswer = undefined;
   });
@@ -1735,7 +1778,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { jest.advanceTimersByTime(30_000); });
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     await send();
-    expect(bodies.at(-1)).toEqual({ expected_revision: 2, settings: { lightTheme: "catppuccin" } });
+    expect(bodies.at(-1)).toEqual({ settings: { lightTheme: "catppuccin" } });
     expect(store.get()).toMatchObject({ settings: { darkTheme: "gruvbox", lightTheme: "catppuccin" }, pins: ["pc:w2:p3", "pc:w2:p4"] });
     expect([client.saveError, client.paused]).toEqual([null, false]);
 
@@ -1756,7 +1799,7 @@ describe("preferences sync real send path", () => {
     clients.push(client);
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     await send();
-    expect(bodies.at(-1)).toEqual({ expected_revision: 2, settings: { lightTheme: "catppuccin" } });
+    expect(bodies.at(-1)).toEqual({ settings: { lightTheme: "catppuccin" } });
     expect(store.get()).toMatchObject({ settings: { darkTheme: "gruvbox", lightTheme: "catppuccin" }, pins: ["pc:w2:p3", "pc:w2:p4"] });
     expect(client.settings.darkTheme).toBe("gruvbox");
     expect([client.saveError, client.paused]).toEqual([null, false]);
@@ -1775,7 +1818,7 @@ describe("preferences sync real send path", () => {
     clients.push(client);
     await act(async () => { client.resubscribed(); client.receive(store.get()); });
     await send();
-    expect(bodies.at(-1)).toEqual({ expected_revision: 2, settings: { lightTheme: "catppuccin" } });
+    expect(bodies.at(-1)).toEqual({ settings: { lightTheme: "catppuccin" } });
     expect(store.get()).toMatchObject({ settings: { darkTheme: "gruvbox", lightTheme: "catppuccin" }, pins: ["pc:w2:p3", "pc:w2:p4"] });
     expect([client.saveError, client.paused]).toEqual([null, false]);
   });
