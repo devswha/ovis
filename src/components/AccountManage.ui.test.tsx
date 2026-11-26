@@ -149,7 +149,7 @@ describe("Manage account's devices and PCs", () => {
     try {
       const root = await mount();
       expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove", "Stranger · Not added: listed with a sign-in codeRemove"]);
-      await act(async () => { root.find((node) => node.props["data-unconfirmed-pc-row"] !== undefined).find((node) => node.type === "button").props.onClick(); });
+      await act(async () => { one(one(root, "[data-unconfirmed-pc-row]"), "button").click(); });
       expect(textOf(dialog(root))).toContain("Stranger was listed in your account with a sign-in code and never added.");
       await act(async () => { await press(root, "Remove"); });
       expect(calls).toEqual([`remove ${"c".repeat(32)} listing l1`]);
@@ -162,7 +162,7 @@ describe("Manage account's devices and PCs", () => {
       pcs: [{ endpoint: "c".repeat(64), server_id: "c".repeat(32), how: "added", allows: true, name: { label: "Stranger", os: null }, seq: 1, by: null, new_at: null }] } as unknown as AccountListView;
     waiting = [{ server_id: "c".repeat(32), label: "Stranger", public_key: null, relay: null, added_at: ago(60), last_seen_at: null, unconfirmed: true, listing_id: "l1" }] as Service.DirectoryPc[];
     const root = await mount();
-    await act(async () => { root.find((node) => node.props["data-unconfirmed-pc-row"] !== undefined).find((node) => node.type === "button").props.onClick(); });
+    await act(async () => { one(one(root, "[data-unconfirmed-pc-row]"), "button").click(); });
     setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
     try {
       await act(async () => { await press(root, "Remove"); });
