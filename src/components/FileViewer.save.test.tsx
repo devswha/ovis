@@ -4,9 +4,10 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { FileViewer } from "./FileViewer.tsx";
 import type { FileInfo } from "../../shared/files.ts";
+import { relayResourceUrl } from "../lib/relay/resources.ts";
 import { SAVE_MAX_BYTES, SAVE_PLUGIN } from "../lib/saveImage.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { nativeTransport, setTransport } from "../lib/transport.ts";
+import { nativeTransport, setTransport, type Transport } from "../lib/transport.ts";
 
 // Download in the file viewer inside the Android app, whose WebView drops a download link without a
 // word: the viewer reads the file through the transport and hands it to the app, which saves it to
@@ -66,17 +67,22 @@ async function settle(): Promise<void> {
 }
 
 /** Opens `info` on a PC whose file route answers TEXT; the file reads it asked for land in `reads`. */
-async function open(info: FileInfo): Promise<string[]> {
+async function open(
+  info: FileInfo,
+  transport: Partial<Pick<Transport, "kind" | "resourceUrl">> = {},
+  fileResponse: (init?: RequestInit) => Response = () => new Response(TEXT, { headers: { "content-type": "application/octet-stream" } }),
+): Promise<string[]> {
   const reads: string[] = [];
   setTransport({
     ...nativeTransport,
-    fetch: async (input) => {
+    fetch: async (input, init) => {
       const url = String(input);
       if (url.includes("/api/fs/stat")) return Response.json(info);
       reads.push(url);
-      return new Response(TEXT, { headers: { "content-type": "application/octet-stream" } });
+      return fileResponse(init);
     },
     resourceUrl: async (path) => path,
+    ...transport,
   });
   await act(async () => {
     renderer = create(createElement(SettingsProvider, { children: createElement(FileViewer, { path: info.path, paneId: null, onClose() {}, page: true }) }));
@@ -141,6 +147,29 @@ test("in a home-screen app, Download hands the file, read before the tap, to the
   await download();
   expect(reads.length).toBe(before);
   expect(await Promise.all(shared.map(async (file) => [file.name, file.type, await file.text()]))).toEqual([["notes.md", "text/markdown", TEXT]]);
+});
+
+test("a home-screen relay download does not read the same file as a download-link blob", async () => {
+  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true } });
+  const reads = await open(NOTES, { kind: "relay", resourceUrl(this: Transport, path, signal) {
+    return relayResourceUrl(this, "test-pc", path, signal);
+  } });
+  expect(reads.filter((path) => path.includes("download=1"))).toEqual([]);
+  expect(reads.filter((path) => path.startsWith("/api/fs/file"))).toHaveLength(2); // text preview and share
+});
+
+test("a home-screen share can recover from a failed prefetch without reopening the viewer", async () => {
+  const shared: File[] = [];
+  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
+  let offline = true;
+  await open(NOTES, {}, (init) =>
+    new Headers(init?.headers).get("range") === `bytes=0-${SAVE_MAX_BYTES}` && offline
+      ? new Response(null, { status: 503 })
+      : new Response(TEXT));
+  offline = false;
+  await download();
+  await download();
+  expect(await shared[0]?.text()).toBe(TEXT);
 });
 
 test("in the Android app, an empty file says it could not be saved, not that it is too large", async () => {

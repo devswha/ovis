@@ -92,6 +92,42 @@ describe("pcFile", () => {
     setTransport({ ...nativeTransport, fetch: async () => new Response("no", { status: 403 }) });
     await expect(pcFile("/api/fs/file?path=%2Fx", "x", "text/plain")).rejects.toThrow("HTTP 403");
   });
+
+  test.each([SAVE_MAX_BYTES, SAVE_MAX_BYTES + 1])("bounds a file response without Content-Length (%i bytes)", async (size) => {
+    let remaining = size;
+    let cancelled = false;
+    const chunk = new Uint8Array(64 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (remaining === 0) { controller.close(); return; }
+        const length = Math.min(chunk.byteLength, remaining);
+        remaining -= length;
+        controller.enqueue(chunk.subarray(0, length));
+      },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 });
+    setTransport({ ...nativeTransport, fetch: async () => new Response(body) });
+    const file = pcFile("/api/fs/file?path=%2Fx", "x", "");
+    if (size === SAVE_MAX_BYTES) {
+      expect((await file).size).toBe(size);
+    } else {
+      await expect(file).rejects.toMatchObject({ name: "FileSaveTooLargeError" });
+      expect(cancelled).toBe(true);
+    }
+  });
+
+  test("saves a complete range response and never saves a truncated range", async () => {
+    const src = "/api/fs/file?path=%2Fx";
+    let total = 3;
+    setTransport({ ...nativeTransport, fetch: async (_input, init) =>
+      new Headers(init?.headers).has("range")
+        ? new Response("abc", { status: 206, headers: { "content-range": `bytes 0-2/${total}` } })
+        : new Response("abc"),
+    });
+    expect(await (await pcFile(src, "x", "")).text()).toBe("abc");
+    total = 4;
+    await expect(pcFile(src, "x", "")).rejects.toThrow();
+  });
 });
 
 describe("saveInApp", () => {

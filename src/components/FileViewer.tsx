@@ -30,7 +30,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { MAX_INLINE_IMAGE_BYTES, markdownImagePreview } from "../lib/markdownImages.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useAppWindow } from "../lib/install.ts";
-import { fileSaveRoute, pcFile, SAVE_MAX_BYTES, saveInApp, shareFile } from "../lib/saveImage.ts";
+import { FileSaveTooLargeError, fileSaveRoute, pcFile, SAVE_MAX_BYTES, saveInApp, shareFile } from "../lib/saveImage.ts";
 import type { MarkdownBlock } from "../../shared/markdown.ts";
 import { knownPreview, parsePreviewOffThread } from "../lib/markdownPreview.ts";
 import { outlineOf } from "../lib/markdownOutline.ts";
@@ -142,6 +142,8 @@ function selectSource(element: HTMLElement): void {
   if (element instanceof HTMLTextAreaElement) { element.focus(); element.select(); }
   else selectContents(element);
 }
+
+const failedSave = (error: unknown) => error instanceof FileSaveTooLargeError ? "too-large" : "failed";
 
 export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActive = true, page = false, docked = false, panelStart, onKind, onTogglePresentation, editable = false }: FileViewerProps) {
   const t = useT();
@@ -323,20 +325,21 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const pageSrc = useResourceUrl(!relay && htmlPage && !source ? pageUrl : null);
   const image = useResourceUrlState(info?.kind === "image" && info.size <= MAX_INLINE_IMAGE_BYTES ? `${url}&revision=${encodeURIComponent(`${info.modified}:${info.size}`)}` : null);
   const imageSrc = image.url;
+  const [saveRoute] = useState(fileSaveRoute);
+  const savedHere = saveRoute !== "link";
   // The same inert media body can be saved through the download attribute. In blob mode this
   // avoids fetching and retaining a second complete video/PDF merely to draw its download link.
   const mediaDownload = relay && (info?.kind === "video" || info?.kind === "audio" || info?.kind === "pdf");
-  const download = useResourceUrlState(info === null || mediaDownload ? null : fileUrl(info.path, paneId, true));
+  const download = useResourceUrlState(savedHere || info === null || mediaDownload ? null : fileUrl(info.path, paneId, true));
   const downloadHref = mediaDownload ? resource.url : download.url;
   // Where a download link saves nothing (the Android app's WebView drops it) or would load the file
   // over the app (the iOS app, a home-screen app), Download is a button: the file is read through
   // the transport, then saved by the Android app to Downloads or handed to the share sheet, as the
   // image viewer's Download does (lib/saveImage.ts). Its bytes cross the app's bridge at once, so a
   // file past SAVE_MAX_BYTES is not offered there: the viewer says to download it on the PC.
-  const [saveRoute] = useState(fileSaveRoute);
-  const savedHere = saveRoute !== "link";
   const savePath = info?.path ?? null;
   const saveSrc = info === null ? null : fileUrl(info.path, paneId, false);
+  const saveName = info?.name ?? "file";
   const saveType = info?.mime.split(";")[0]?.trim() ?? "";
   const saveFits = info !== null && info.size > 0 && info.size <= SAVE_MAX_BYTES;
   // which file, in which version: a file read for the share sheet serves only the version it is of
@@ -346,17 +349,18 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   useEffect(() => setSaveNote(null), [savePath]);
   // the share sheet opens only within the tap, so there the file is read as soon as it is known,
   // and Download waits for it, as the image viewer's does
-  const [prepared, setPrepared] = useState<{ version: string; file: File | null } | null>(null);
+  const [prepared, setPrepared] = useState<{ version: string; result: File | "too-large" | "failed" } | null>(null);
+  const [prepareRetry, setPrepareRetry] = useState(0);
   const saving = useRef(false);
   useEffect(() => {
     if (saveRoute !== "share" || saveVersion === null || saveSrc === null || !saveFits) return;
     const abort = new AbortController();
-    pcFile(saveSrc, info?.name ?? "file", saveType, abort.signal).then(
-      (file) => setPrepared({ version: saveVersion, file }),
-      () => { if (!abort.signal.aborted) setPrepared({ version: saveVersion, file: null }); },
+    pcFile(saveSrc, saveName, saveType, abort.signal).then(
+      (file) => { if (!abort.signal.aborted) setPrepared({ version: saveVersion, result: file }); },
+      (error: unknown) => { if (!abort.signal.aborted) setPrepared({ version: saveVersion, result: failedSave(error) }); },
     );
     return () => abort.abort();
-  }, [saveRoute, saveVersion, saveSrc, saveFits]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [saveRoute, saveVersion, saveSrc, saveName, saveType, saveFits, prepareRetry]);
   const shareReady = prepared !== null && prepared.version === saveVersion ? prepared : null;
   // on the share route Download waits for the read; a file it never reads (too large, empty) says why at once
   const saveWaits = saveRoute === "share" && saveFits && shareReady === null;
@@ -368,14 +372,20 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     let file: Promise<File>;
     if (saveRoute === "share") {
       if (shareReady === null) return;
-      if (shareReady.file === null) { note("failed"); return; }
-      file = Promise.resolve(shareReady.file);
-    } else file = pcFile(saveSrc, info?.name ?? "file", saveType);
+      if (shareReady.result === "failed") {
+        note("failed");
+        setPrepared(null);
+        setPrepareRetry((attempt) => attempt + 1);
+        return;
+      }
+      if (shareReady.result === "too-large") { note("too-large"); return; }
+      file = Promise.resolve(shareReady.result);
+    } else file = pcFile(saveSrc, saveName, saveType);
     saving.current = true;
     note(null);
-    void file.then((read) => saveRoute === "app" ? saveInApp(read, "saveFile") : shareFile(read), () => "failed" as const).then((result) => {
+    void file.then((read) => saveRoute === "app" ? saveInApp(read, "saveFile") : shareFile(read), failedSave).then((result) => {
       saving.current = false;
-      if (result === "saved" || result === "failed") note(result);
+      if (result === "saved" || result === "failed" || result === "too-large") note(result);
     });
   };
   const shownSaveNote = saveNote !== null && saveNote.path === savePath ? saveNote.state : null;
@@ -480,7 +490,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       ? <p className="file-viewer-note" role="alert">{t("Too large to open on the phone - download on the PC")}</p>
       : <>
         <p className="file-viewer-note" role="alert">{fileFailureText(fileFailure(resourceError), t)}</p>
-        {fileFailure(resourceError) === "unreadable" && downloadHref !== null && <p className="file-viewer-note file-viewer-note-hint">{t("Download it or open the raw file.")}</p>}
+        {fileFailure(resourceError) === "unreadable" && (savedHere || downloadHref !== null) && <p className="file-viewer-note file-viewer-note-hint">{t("Download it or open the raw file.")}</p>}
       </>;
     switch (info.kind) {
       case "image":

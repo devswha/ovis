@@ -61,15 +61,45 @@ export function fileSaveRoute(): "link" | "share" | "app" | "update" {
   return downloadLeavesApp() ? "share" : "link";
 }
 
+export class FileSaveTooLargeError extends Error {
+  override name = "FileSaveTooLargeError";
+}
+
 /**
  * The file at the PC path `src` (a /api/fs/file address) as a file named `name` of type `type`,
  * read through the transport, as the page's CSP lets no fetch reach a relay PC's blob: URLs.
  */
 export async function pcFile(src: string, name: string, type: string, signal?: AbortSignal): Promise<File> {
-  const response = await getTransport().fetch(src, { signal });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const blob = await response.blob();
-  return new File([blob], name, { type: type || blob.type });
+  // Request at most the limit plus one byte, but also enforce the limit if the PC ignores Range.
+  const response = await getTransport().fetch(src, { signal, headers: { Range: `bytes=0-${SAVE_MAX_BYTES}` } });
+  const discard = () => { void response.body?.cancel().catch(() => {}); };
+  if (!response.ok) { discard(); throw new Error(`HTTP ${response.status}`); }
+  const total = response.status === 206 ? /^bytes 0-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "") : null;
+  if (Number(response.headers.get("content-length")) > SAVE_MAX_BYTES || Number(total?.[2]) > SAVE_MAX_BYTES) {
+    discard();
+    throw new FileSaveTooLargeError();
+  }
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let size = 0;
+  if (reader) {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > SAVE_MAX_BYTES) throw new FileSaveTooLargeError();
+        chunks.push(value.slice());
+      }
+    } finally {
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+  if (response.status === 206 && (Number(total?.[1]) + 1 !== size || Number(total?.[2]) !== size)) {
+    throw new Error("Incomplete file response");
+  }
+  return new File(chunks, name, { type: type || response.headers.get("content-type")?.split(";")[0]?.trim() });
 }
 
 export type ShareOutcome = "shared" | "cancelled" | "failed";
