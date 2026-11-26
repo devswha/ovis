@@ -17,6 +17,10 @@ inputs:
     description: "'true' checks that a self-hosted Linux runner's image has its pinned Rust toolchain; GitHub's images have Rust already."
     required: false
     default: 'false'
+  pty-host:
+    description: "'true' builds the Rust PTY host from this checkout's crates/pty-sidecar (Linux and macOS), where the server finds it, so the job's terminal attaches run on it; it implies rust."
+    required: false
+    default: 'false'
   cache:
     description: "'save' restores and saves the Bun dependency cache; 'restore' only restores it, for a job that runs unpinned third-party code and must not write a cache other workflows trust; 'none' restores and saves no Actions cache, Bun's executable included, for every job of a run in which a publishing or signing job takes an artifact (pages.yml, the Release and the other publishing workflows, ci.yml when called with hosted_only) and for a job that publishes, signs or holds a secret itself: any job of a main run can write a cache under any key that later runs restore (scripts/privileged-jobs-workflow.test.ts)."
     required: false
@@ -44,7 +48,7 @@ runs:
         EXPECTED_BUN_VERSION: ${{ inputs.bun-version }}
         NEED_NODE: ${{ inputs.node }}
         NEED_HERDR: ${{ inputs.herdr }}
-        NEED_RUST: ${{ inputs.rust }}
+        NEED_RUST: ${{ inputs.rust == 'true' || inputs.pty-host == 'true' }}
       run: bash scripts/ci-preinstalled-tools.sh
     # The runner host's copy of the default branch's packages (scripts/self-hosted-runner/run.sh),
     # read-only to jobs: bun install downloads only what this checkout's lockfile adds.
@@ -90,6 +94,14 @@ runs:
         key: bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-${{ hashFiles('bun.lock') }}
         restore-keys: |
           bun-workspace-v2-${{ runner.environment }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.bun-version }}-
+    # the server's default host when bin/ has no installed release binary (server/pty/host.ts): built from these
+    # very sources, it needs no release for them, and installs no ACP keeper beside it
+    - name: Build the Rust PTY host
+      if: inputs.pty-host == 'true' && runner.os != 'Windows'
+      shell: bash
+      run: |
+        cargo build --release --locked --manifest-path crates/pty-sidecar/Cargo.toml
+        crates/pty-sidecar/target/release/ovis-pty-sidecar 1 1 true
     - name: Install checksum-pinned herdr 0.9.3
       if: inputs.herdr == 'true' && runner.environment != 'self-hosted'
       shell: bash
