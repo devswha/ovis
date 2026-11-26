@@ -1,5 +1,5 @@
 import { spawnErrorReason } from "../native-binary.ts";
-import { rustSidecar } from "./host.ts";
+import { RUST_HOST_FIX, rustSidecar } from "./host.ts";
 
 /** How long a command asked to leave by itself (`leave`) has for it: what the host gives one to end after a hangup (KILL_AFTER). */
 export const LEAVE_WITHIN_MS = 2000;
@@ -53,7 +53,7 @@ export class PtySession {
     try {
       this.proc = Bun.spawn([host, String(options.cols), String(options.rows), options.command, ...options.args], { stdin: "pipe", stdout: "pipe", stderr: "inherit", env });
     } catch (error) {
-      throw new Error(`no PTY host: ${host} could not be started (${spawnErrorReason(error)})`);
+      throw new Error(`no PTY host: ${host} could not be started (${spawnErrorReason(error)}); to fix it, ${RUST_HOST_FIX}`);
     }
 
     // Process exit can precede the final stdout read. Deliver every byte before

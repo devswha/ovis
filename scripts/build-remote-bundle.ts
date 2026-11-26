@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
-import { architectures } from "./pty-sidecar.ts";
+import { architectures, runsHere } from "./pty-sidecar.ts";
 import { binaryName, stageServerArtifact } from "./server-artifact.ts";
 import type { ServerPlatform } from "./server-manifest.ts";
 
@@ -96,8 +96,11 @@ try {
     chmodSync(join(stage, "bin/herdr"), 0o755);
     if (mac) for (const file of ["bin/herdr", binaryName(serverPlatform)]) verifyMachO(join(stage, file));
     writeFileSync(join(stage, "bundle.json"), JSON.stringify({ ...bundle, herdr: "0.9.3", pty_sidecar: true, native_smoke_tested: platform === hostPlatform }));
-    // the host opens a pty and runs a command on it, as every attach will
-    if (platform === hostPlatform) command([join(stage, "bin/ovis-pty-sidecar"), "1", "1", "true"], stage);
+    // the host says it is the host, opens a pty and runs a command on it, as every attach will
+    if (platform === hostPlatform) {
+      if (!runsHere(join(stage, "bin/ovis-pty-sidecar"))) throw new Error(`${ptySidecar} does not answer as the Rust PTY host`);
+      command([join(stage, "bin/ovis-pty-sidecar"), "1", "1", "/bin/sh", "-c", ":"], stage);
+    }
     else console.log(`${platform}: verified binary architecture and checksums; PTY execution is checked on the destination before activation`);
   }
   await archive();

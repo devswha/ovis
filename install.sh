@@ -74,6 +74,9 @@ REPO="devswha/ovis"
 PLUGIN="devswha.ovis"
 LEGACY_PLUGIN="devswha.herdr-web-ui"
 BIN_DIR="$HOME/.local/bin"
+# where an earlier install put Ovis's own Node: still on PATH here, for a signature check that has no openssl 3
+NODE_DIR="$HOME/.local/share/ovis/node"
+LEGACY_NODE_DIR="$HOME/.local/share/herdr-web-ui/node"
 APP_DIR="$HOME/.local/share/ovis/app"
 SERVICE="ovis"
 AGENT_LABEL="sh.ovis.server"
@@ -1850,7 +1853,7 @@ install_plugin() {
   # download failed. Without it, herdr's terminals are mirrored.
   code=$(running_code "$root")
   install_native_helpers "$code"
-  rust_host_runs "$code/bin/ovis-pty-sidecar" || say "the Rust PTY host does not run on this PC ($code/bin/ovis-pty-sidecar: missing, or in a folder that cannot run programs), so herdr's terminals are mirrored: run this again later, or build one with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml in $code"
+  rust_host_runs "$code/bin/ovis-pty-sidecar" || rust_host_runs "$code/crates/pty-sidecar/target/release/ovis-pty-sidecar" || say "the Rust PTY host does not run on this PC ($code/bin/ovis-pty-sidecar: missing, or in a folder that cannot run programs), so herdr's terminals are mirrored: run this again later, or build one with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml in $code"
 
   # the action only queues the start (its output goes to herdr's plugin log), and a herdr started here starts the app
   # itself once it is up (the plugin's startup hook): either way, wait for it here
@@ -2177,7 +2180,7 @@ main() {
   lingering=""
   herdr_unit_gone=""
   herdr_doomed=0
-  PATH="$BIN_DIR:$HOME/.bun/bin:$PATH"
+  PATH="$BIN_DIR:$HOME/.bun/bin:$NODE_DIR/bin:$LEGACY_NODE_DIR/bin:$PATH"
   export PATH
 
   pick_install
