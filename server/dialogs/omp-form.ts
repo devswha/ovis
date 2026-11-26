@@ -91,6 +91,10 @@ function formBox(screen: string): FormBox | null {
   return { rows: raw.map((row) => (scrolled ? row.slice(0, -1) : row).trimEnd()), total: total === undefined ? null : Number(total), scrolled };
 }
 
+export function ompFormOnScreen(screen: string): boolean {
+  return formBox(screen) !== null;
+}
+
 function blocksOf(rows: string[]): Block[] {
   const blocks: Block[] = [];
   let start = -1;
@@ -174,7 +178,10 @@ function choiceField(rows: readonly string[], at: number, block: Block, context:
   for (const option of options) option.label = option.label.replace(NOTE_MARK_RE, "");
   // the rows above the first option are its caption, or the wrapped end of an option past the top edge
   const top = scrolled && block.start === 0 && rows.slice(0, first).every((row) => CONTINUATION_RE.test(row));
-  const bottom = scrolled && last === rows.length - 1 && !OTHER_RE.test(options.at(-1)!.label);
+  const bottomEdge = scrolled && last === rows.length - 1;
+  // Space toggles the checks already set by omp. Hidden options can carry ticks we cannot read.
+  if (multi && (top || bottomEdge)) return null;
+  const bottom = bottomEdge && !OTHER_RE.test(options.at(-1)!.label);
   const otherRow = (options.length > 2 || top) && !bottom ? OTHER_RE.exec(options.at(-1)!.label) : null;
   const choices = otherRow ? options.slice(0, -1) : options;
   const other = otherRow ? {
@@ -231,8 +238,7 @@ function choiceCard(group: OmpFormChoices, body: string | null, cut: boolean): F
 /**
  * Match the displayed group to its `ask` call's HTML: the one group whose labels hold the shown ones in a row,
  * starting at its first option unless the top is cut and ending at its last unless the bottom is. The card keeps its id
- * and its words around the options. A checkbox group stays cut: its hidden options' ticks are not on screen, and Space
- * toggles them.
+ * and its words around the options. A checkbox group whose ticks might be offscreen has no card to bind.
  */
 export function bindFormChoiceGroup(parsed: ParsedPrompt, html: string): ParsedPrompt | null {
   const window: OmpFormChoiceWindow | undefined = parsed.ompFormChoices;
@@ -273,7 +279,7 @@ export function bindFormChoiceGroup(parsed: ParsedPrompt, html: string): ParsedP
     checked: group.multi ? shownChecks : labels.map((_, index) => shownChecks[index - offset] ?? false),
     cursor: group.multi ? shown.cursor : group.other && shown.cursor === shown.labels.length ? labels.length : offset + shown.cursor,
     other: group.other ? shown.other ?? { label: "", text: "", ticked: false } : null,
-  }, null, group.multi && (top || bottom));
+  }, null, false);
   const whole = finishPrompt("omp", field.draft, { ...field.internal, responder: "omp-form" });
   const kept = Object.entries(parsed.own_text ?? {}).filter(([key]) => key !== "question" && key !== "labels");
   const ownText = { ...Object.fromEntries(kept), ...whole.own_text };

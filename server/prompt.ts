@@ -15,7 +15,7 @@ import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompFormPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
-import { ompFormTextareaFocus } from "./dialogs/omp-form.ts";
+import { ompFormOnScreen, ompFormTextareaFocus } from "./dialogs/omp-form.ts";
 import { gjcCallStillOpen, gjcCallStillOpenInFile, withGjcFallback } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
@@ -791,6 +791,7 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // ending the screen is no dialog: herdr says blocked a moment before Claude draws its panel,
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
+    || (agent === "omp" && ompFormOnScreen(screen))
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
   const fallback = parseFallbackPrompt(agent, screen);
   if (agent === "gjc" && parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {

@@ -311,9 +311,13 @@ describe("a prompt watch's read of a blocked pane", () => {
   });
 });
 
-async function card(): Promise<InteractivePrompt> {
+async function currentCard(): Promise<InteractivePrompt | null> {
   const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
-  const prompt = ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
+  return ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
+}
+
+async function card(): Promise<InteractivePrompt> {
+  const prompt = await currentCard();
   expect(prompt).not.toBeNull();
   return prompt!;
 }
@@ -336,6 +340,7 @@ function follows(pane: Pane, draw: (at: number) => string, count: number, next: 
 
 const ompForm = (name: string): string => readFileSync(new URL(`./fixtures/omp-form-19.1.0-${name}.txt`, import.meta.url), "utf8");
 const ompNotesHtml = "<form><label>Notes<textarea name=\"notes\"></textarea></label></form>";
+const ompTargetsHtml = `<form><fieldset><legend>Q2 · Targets</legend>${["Desktop", "Phone", "Tablet"].map((name) => `<label><input type="checkbox" name="target">${name}</label>`).join("")}</fieldset></form>`;
 function ompNotesDraft(screen: string, lines: readonly string[]): string {
   let row = 0;
   return screen.replace(/│   │ {3}/gu, (prefix) => {
@@ -408,7 +413,6 @@ test.each([
 
 test.each([{ extra: false }, { extra: true }])("omp form: confirms only the requested checkboxes (extra tick=$extra)", async ({ extra }) => {
   const screen = ompForm("checkbox-100");
-  const html = `<form><fieldset><legend>Q2 · Targets</legend>${["Desktop", "Phone", "Tablet"].map((name) => `<label><input type="checkbox" name="target">${name}</label>`).join("")}</fieldset></form>`;
   await withPane("omp", screen, async pane => {
     const prompt = await card();
     pane.onSent = (key) => {
@@ -424,7 +428,30 @@ test.each([{ extra: false }, { extra: true }])("omp form: confirms only the requ
       status: extra ? 409 : 200,
       sent: ["space", "down", "space", ...(extra ? [] : ["enter"])],
     });
-  }, QUESTIONS, html);
+  }, QUESTIONS, ompTargetsHtml);
+});
+
+test.each([{ edge: "top" }, { edge: "bottom" }])("omp form: leaves checkboxes to the terminal when options are offscreen ($edge)", async ({ edge }) => {
+  const screen = ompForm("checkbox-100");
+  const rows = screen.split("\n");
+  const top = rows.findIndex((row) => row.startsWith("╭─ Ask"));
+  const desktop = rows.findIndex((row) => row.includes("❯ ☑ Desktop"));
+  const bottom = rows.findIndex((row) => row.startsWith("╰─"));
+  // The checked Desktop can be above the viewport, or later choices can be below it.
+  const visible = edge === "top" ? rows.slice(desktop + 1, bottom) : rows.slice(top + 1, desktop + 1);
+  const clipped = [
+    ...rows.slice(0, top + 1),
+    ...visible.map((row) => row.replace("  ☐ Phone", "❯ ☐ Phone").replace(/  │$/u, "│ │")),
+    ...rows.slice(bottom),
+  ].join("\n");
+  await withPane("omp", screen, async pane => {
+    const full = await card();
+    expect(full.multi_select).toBe(true);
+    pane.screen = clipped;
+    expect(await currentCard()).toBeNull();
+    expect((await move(full.id, { option_indices: [1] })).status).toBe(409);
+    expect(pane.sent).toEqual([]);
+  }, QUESTIONS, ompTargetsHtml);
 });
 
 describe("the answer route moves between questions, one key at a time, each seen", () => {
