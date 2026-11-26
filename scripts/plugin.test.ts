@@ -893,6 +893,23 @@ describe("ovis join, as the command runs it", () => {
   });
 });
 
+it.skipIf(process.platform === "win32")("logout finds the account on a healthy token-protected server", async () => {
+  const token = "logout-fixture-token";
+  const server = serveOffRealPorts({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/health") return Response.json({ ...APP_HEALTH, auth: { required: true, authenticated: false, reason: "token_required" } });
+    if (path === "/api/account/status") {
+      if (request.headers.get("authorization") !== `Bearer ${token}`) return new Response(null, { status: 401 });
+      return Response.json({ account: null, members: 0 });
+    }
+    return new Response(null, { status: 404 });
+  } });
+  try {
+    const result = await run("logout", { HOST: "127.0.0.1", PORT: String(server.port), HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: token });
+    expect(result.exitCode, result.out + result.err).toBe(0);
+  } finally { await server.stop(true); }
+});
+
 describe("the devices status lists apart", () => {
   const GROUPS = { unlinked: [{ id: "6a1f0c9e2b7d4a10", label: "Old phone" }], own_word: [{ id: "0d4c1b7a9e2f3c58", label: "Tab\u001b]0;let\u0007let" }, { id: "1e5d2c8b0a3f4d69", label: "Laptop" }] };
   /** An Ovis on a port of its own whose health answer is `answer` for each request, by the request's authorization. */

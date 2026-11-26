@@ -1375,9 +1375,9 @@ const listSummaryOf = (value: unknown): ListSummary | null => {
  * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
  * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
  */
-async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
+async function accountTold(headers?: HeadersInit): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
   try {
-    const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
+    const response = await serverFetch("/api/account/status", { ...(headers === undefined ? {} : { headers, redirect: "error" }), signal: AbortSignal.timeout(1500) });
     if (!response.ok) {
       const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
       return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
@@ -1391,8 +1391,8 @@ async function accountTold(): Promise<{ readonly account: string | null; readonl
 }
 
 /** This PC's account as its owner is told it; null where that does not answer, or the PC cannot read its account state. */
-async function accountOf() {
-  const told = await accountTold();
+async function accountOf(headers?: HeadersInit) {
+  const told = await accountTold(headers);
   return told !== null && "problem" in told ? null : told;
 }
 
@@ -1485,7 +1485,13 @@ async function recover(args: readonly string[]): Promise<number> {
 /** `ovis logout` (scripts/plugin-recover.ts runLogout): Revoke all over the same recovery socket, after a typed yes. */
 async function logout(): Promise<number> {
   const { runLogout } = await import("./plugin-recover.ts");
-  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => (await health()) ? await accountOf() : null, leave: leaveListing }));
+  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => {
+    const health = await appHealth();
+    if (health === null) return null;
+    // The health answer already says the app is running; only this explicit owner's account request needs its token.
+    const token = env["OVIS_TOKEN"];
+    return await accountOf(health.tokenRequired && token ? { authorization: `Bearer ${token}` } : undefined);
+  }, leave: leaveListing }));
 }
 
 /**
