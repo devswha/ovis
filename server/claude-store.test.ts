@@ -1744,6 +1744,11 @@ describe("claudeRestoredPaste (#3563)", () => {
     transcript = [human, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }, { type: "last-prompt", sessionId: SESSION }];
     const answered = store(sentPrompt);
     expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, answered)).toBe(false);
+    // nor while a record after the prompt is still being written: it may be the reply
+    transcript = [human];
+    const writing = store(sentPrompt);
+    appendFileSync(join(writing, ".claude", "projects", "-p", `${SESSION}.jsonl`), '{"type":"assistant","message":{"role":"assi');
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, writing)).toBe(false);
     // nor without the session's transcript
     const home = store(sentPrompt);
     rmSync(join(home, ".claude", "projects"), { recursive: true });

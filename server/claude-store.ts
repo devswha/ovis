@@ -1290,7 +1290,8 @@ export async function claudeRestoredPaste(
     const records = (await readClaudeFileTail(transcript, TRANSCRIPT_TAIL_BYTES)).split("\n");
     for (let index = records.length - 1; index > 0; index--) {
       let entry: unknown;
-      try { entry = JSON.parse(records[index]!); } catch { continue; }
+      // a record being written may be the reply: only a blank line is passed over
+      try { entry = JSON.parse(records[index]!); } catch { if (records[index]!.trim() === "") continue; return false; }
       if (entry === null || typeof entry !== "object" || !("type" in entry)) continue;
       if (entry.type === "assistant") return false;
       if (entry.type === "user" && "origin" in entry && entry.origin !== null && typeof entry.origin === "object" && "kind" in entry.origin && entry.origin.kind === "human") return true;
