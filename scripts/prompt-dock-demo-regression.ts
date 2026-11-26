@@ -358,7 +358,7 @@ try {
       }
       console.log("PASS the approval card sits outside the transcript, directly over the input card on its column, at 1440 and 390, dark and light");
 
-      for (const [firstFrame, optionIndex] of [["old", 0], ["blank", 1], ["fallback", 1]] as const) {
+      for (const [firstFrame, optionIndex, fixed] of [["old", 0, false], ["blank", 1, false], ["fallback", 1, false], ["old", 0, true]] as const) {
         const approval = {
           id: "claude-wide", agent: "claude", kind: "approval", title: "Bash command", question: "Do you want to proceed?",
           body: "touch probe.txt", multi_select: false, custom_option_index: null,
@@ -369,7 +369,7 @@ try {
           const card = page.locator(".prompt-card");
           const option = card.locator(".prompt-card-option").nth(optionIndex);
           assert.ok(await option.isEnabled());
-          await page.evaluate(([pane, narrow, firstFrame]) => {
+          await page.evaluate(([pane, narrow, firstFrame, fixed]) => {
             const mock = window as unknown as {
               formPrompt: unknown; formSocket: WebSocket; formReflowGate?: Promise<void>; finishReflow?: () => void; formReflowFirst?: unknown;
             };
@@ -382,12 +382,11 @@ try {
             mock.formReflowGate = new Promise((resolve) => { mock.finishReflow = resolve; });
             mock.formPrompt = narrow;
             mock.formSocket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
-              type: "pane-geometry", pane_id: pane, cols: 40, rows: 44,
+              type: "pane-geometry", pane_id: pane, cols: 40, rows: 44, ...(fixed ? { fixed: true } : {}),
             }) }));
-          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }, firstFrame] as const);
+          }, [panes.web, { ...approval, id: "claude-narrow", options: [approval.options[0], { label: "Yes, and always allow access to /projects/ demo from this project", description: null }, approval.options[2]] }, firstFrame, fixed] as const);
           await page.waitForFunction(() => (window as unknown as { formReflowReadStarted?: boolean }).formReflowReadStarted === true);
-          await card.locator('.prompt-card-option:disabled').nth(optionIndex).waitFor();
-          assert.ok(await option.isDisabled());
+          assert.ok(await option.isDisabled(), `${fixed ? "mirrored" : "attached"} resize disables the approval until its redraw is read`);
           assert.deepEqual(await answersOf(page), []);
           await page.evaluate(() => {
             const mock = window as unknown as { finishReflow: () => void; formReflowGate?: Promise<void>; formReflowReadStarted?: boolean };

@@ -615,9 +615,11 @@ export function PaneTerminal({
   onConnectionChangeRef.current = onConnectionChange;
   onServerMessageRef.current = (message) => {
     onServerMessage?.(message);
-    if (message.type !== "pane-geometry" || message.fixed || message.pane_id !== paneId || !chatView
+    if (message.type !== "pane-geometry" || message.pane_id !== paneId || !chatView
       || chatPrompt?.pane !== paneId || chatPrompt.value.agent !== "claude" || chatPrompt.value.kind !== "approval") return;
     const grid = sharedGridRef.current;
+    // A mirror announces its fixed grid on attach, then sends the same frame type on a resize.
+    if (message.fixed && grid === null) return;
     if (grid?.cols === message.cols && grid.rows === message.rows) return;
     const promptId = chatPrompt.value.id;
     setApprovalReflow((current) => ({ pane: message.pane_id, revision: current.revision + 1, pending: true, promptId }));
