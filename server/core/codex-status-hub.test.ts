@@ -29,7 +29,10 @@ function codexHub(text: string) {
   const failures: string[] = [];
   spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
   const looked = async () => {
-    await reads.promise;
+    // fail before the test's own timeout, so its finally still restores the spies
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("no rollout read finished")), 1_500); });
+    try { await Promise.race([reads.promise, late]); } finally { clearTimeout(timer); }
     reads = Promise.withResolvers<void>();
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
