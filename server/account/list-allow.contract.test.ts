@@ -1139,6 +1139,22 @@ describe("a join into the list a member allows from afar, on a pinned PC", () =>
     expect(await waiting).toMatchObject({ allowed: { id: made.account.id } });
   });
 
+  test("a member-approved join reads its entry after the PC's exhausted list budget resets", async () => {
+    const made = await allowingPc();
+    const phone = await listMember();
+    const device = { key: phone.key, enc: phone.enc, card: await claimKey(made.pc.account, ACCOUNT, made.account.id, phone), label: "Phone" };
+    await made.account.addDevice(phone);
+    let retryAt: number | null = null;
+    made.hook.on = async (request, forward) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/log") return await forward();
+      retryAt ??= performance.now() + 2_000;
+      if (performance.now() >= retryAt) return await forward();
+      return Response.json({ error: { code: "rate_limited" } }, { status: 429, headers: { "retry-after": "2" } });
+    };
+
+    expect(await made.list.allowDevice(device, false)).toMatchObject({ allowed: { id: made.account.id } });
+  });
+
   test("a join nobody signs for ends as not in the list once that wait is over, and not before", async () => {
     const made = await allowingPc();
     const phone = await listMember();

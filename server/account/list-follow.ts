@@ -124,7 +124,9 @@ const LIST_ALLOW_RETRY_MAX_MS = 10_000;
  * The longest one try waits for a PC that spent its list calls (429 `rate_limited`): the service counts them by the
  * minute, so the next minute takes the entry. Under LIST_ALLOW_MS.
  */
-const LIST_ALLOW_LIMITED_MAX_MS = 60_000;
+const LIST_RATE_LIMIT_MAX_MS = 60_000;
+/** Leave the session time to answer after a last read delayed by the per-PC budget. */
+const LIST_MEMBER_LIMITED_MS = LIST_ALLOW_MS - 5_000;
 /** How long after a round of naming the account service could not answer the next one may start (nameDevices). */
 const NAMES_RETRY_MS = 60_000;
 /** The name of a device the list lets in, while this PC holds no key to the list's names. */
@@ -447,6 +449,7 @@ export class ListFollow implements ListAuthority {
   /** When the last read of the log began, in seconds; also one that failed. */
   private askedAt: number | null = null;
   private reading: Promise<void> | null = null;
+  private logRetryAt = 0;
   /** The next second at which a device the list lets in stops being let in, or null. */
   private untilAt: number | null = null;
   /** The rows do not hold yet what the list says: the commit is tried again. */
@@ -1733,14 +1736,18 @@ export class ListFollow implements ListAuthority {
   /**
    * A member allowed the device and signs its entry itself, once the new device confirmed its digits: the PC signs
    * nothing, and waits for that entry to reach its copy (the member hands the page over, or the account service shows
-   * it), LIST_MEMBER_WAIT_MS at most. What this PC itself holds against the key is asked at each look.
+   * it). A rate-limited log read can wait past LIST_MEMBER_WAIT_MS, within the session's setup time. What this PC
+   * itself holds against the key is asked at each look.
    */
   private async awaitMember(device: AllowedDevice, no: (refused: AllowRefusal, detail?: string | null) => AllowOutcome): Promise<AllowOutcome> {
     const scope = this.bound();
     if (scope === null || !this.isPinned) return no("not_pinned");
     await this.ready;
-    const deadline = performance.now() + (this.deps.memberWaitMs ?? LIST_MEMBER_WAIT_MS);
+    const began = performance.now();
+    const deadline = began + (this.deps.memberWaitMs ?? LIST_MEMBER_WAIT_MS);
+    const limitedDeadline = began + LIST_MEMBER_LIMITED_MS;
     let askedAt = Number.NEGATIVE_INFINITY;
+    let retryUntil = deadline;
     let lastLook = false;
     for (;;) {
       if (!this.live(scope) || !this.isPinned || this.problem !== null) return no("unavailable");
@@ -1748,8 +1755,11 @@ export class ListFollow implements ListAuthority {
       const copy = this.copy;
       const place = copy === null || copy.state === null ? null : placeOf(copy, device);
       if (place !== null) return { allowed: place };
-      const left = deadline - performance.now();
+      const now = performance.now();
+      if (this.logRetryAt > now) retryUntil = Math.max(retryUntil, Math.min(this.logRetryAt + LIST_MEMBER_READ_MS, limitedDeadline));
+      const left = retryUntil - now;
       if (left <= 0) {
+        if (this.logRetryAt > now) return no("service_away");
         // the time is over: the account service is asked once more before the device is told it is not in the list
         if (lastLook) return no("not_in_list");
         lastLook = true;
@@ -1759,7 +1769,7 @@ export class ListFollow implements ListAuthority {
         await this.readNow();
         continue;
       }
-      if (performance.now() - askedAt >= LIST_MEMBER_READ_MS) { askedAt = performance.now(); void this.readNow(); }
+      if (now >= this.logRetryAt && (askedAt < this.logRetryAt || now - askedAt >= LIST_MEMBER_READ_MS)) { askedAt = now; void this.readNow(); }
       await new Promise((resolve) => setTimeout(resolve, Math.min(left, LIST_MEMBER_LOOK_MS)));
     }
   }
@@ -1883,7 +1893,7 @@ export class ListFollow implements ListAuthority {
           if (error.status === 429 && error.code === "rate_limited") {
             last = "service_away";
             limited = true;
-            wait = error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_ALLOW_LIMITED_MAX_MS);
+            wait = logRateLimitDelay(error);
             continue;
           }
           // the service's own word that it did not place the entry: nothing is kept of it
@@ -2323,6 +2333,7 @@ export class ListFollow implements ListAuthority {
     this.snapshotNames = null;
     this.pinDue = false;
     this.lastVerdict = this.error = null;
+    this.logRetryAt = 0;
     this.keysState = null;
     // the keys go with the relay identity, not with the binding: a PC that joins an account by its list has read them
     // before the binding stood, and may sign for the list with them from its first moment
@@ -2485,6 +2496,7 @@ export class ListFollow implements ListAuthority {
       while (read !== null && this.live(scope)) {
         const asked: FollowRead = read;
         const answer = await this.deps.call("/v2/pc/list/log", { list: asked.list, ...(asked.after === null ? {} : { after: asked.after }) });
+        if (this.live(scope)) this.logRetryAt = 0;
         // Each page reaches the copy the PC decides on, and what follows from it (a removal closes its sessions), before
         // the next request goes out: a service that answers the next one slowly holds nothing back that it already showed
         read = await this.apply(async () => {
@@ -2505,6 +2517,9 @@ export class ListFollow implements ListAuthority {
       }
     } catch (error) {
       // a service that is away, or that serves this PC no list, is no word on the list: the copy stays as it is
+      if (this.live(scope) && error instanceof AccountServiceRefusal && error.status === 429 && error.code === "rate_limited") {
+        this.logRetryAt = performance.now() + logRateLimitDelay(error);
+      }
       this.error = this.words(error);
       return;
     }
@@ -2963,6 +2978,10 @@ function handedFrom(state: ListState, key: string): string[] {
 /** The keys a `carried` entry named that are in by themselves: they never handed their place on. */
 function carriedAlone(state: ListState): string[] {
   return Object.entries(state.devices).flatMap(([key, device]) => (device.carried && standsFor(state, key) === key ? [key] : []));
+}
+
+function logRateLimitDelay(error: AccountServiceRefusal): number {
+  return error.retryAfter === null ? LIST_ALLOW_RETRY_MS : Math.min(Math.max(error.retryAfter * 1000, LIST_ALLOW_RETRY_MS), LIST_RATE_LIMIT_MAX_MS);
 }
 
 function changed(before: FollowerCopy, after: FollowerCopy): boolean {
