@@ -302,14 +302,19 @@ export class AcpChildren {
 
   /** This server's children under `parentPane`, including live terminals not yet able to take a hold. */
   async childrenOf(parentPane: string): Promise<{ ready: AcpChild[]; opening: string[] }> {
+    // A child can open and receive its first task while we wait for the core's list.
+    const openingAtStart = new Map(this.opening);
     const under = (await this.terminals()).filter(terminal => terminal.state === "live" && terminal.parent === parentPane);
     const ready: AcpChild[] = [], opening: string[] = [];
     for (const terminal of under) {
       const id = terminal.labels[LABEL];
       if (id === undefined) continue;
+      if (openingAtStart.get(id) === parentPane) {
+        opening.push(terminal.address);
+        continue;
+      }
       const child = this.children.get(id);
       if (child?.terminal === terminal.address) ready.push(child);
-      else if (this.opening.get(id) === parentPane) opening.push(terminal.address);
     }
     return { ready, opening };
   }

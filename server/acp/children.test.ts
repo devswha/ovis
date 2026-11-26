@@ -111,6 +111,41 @@ describe.skipIf(!keeperBuilt)("AcpChildren with a fake core running the real kee
     expect(child.client.status).toBe("idle");
   });
 
+  it("reports a child as opening if it becomes ready while Stop waits for terminal.list", async () => {
+    setUp();
+    const terminalRan = Promise.withResolvers<void>();
+    const finishRun = Promise.withResolvers<void>();
+    const terminalsListed = Promise.withResolvers<void>();
+    const finishList = Promise.withResolvers<void>();
+    children = new AcpChildren(dir, { keeperBin: () => KEEPER_BUILD, hc: { call: async (method, params) => {
+      const reply = await hc.call(method, params);
+      if (method === "terminal.run") {
+        terminalRan.resolve();
+        await finishRun.promise;
+      }
+      if (method === "terminal.list") {
+        terminalsListed.resolve();
+        await finishList.promise;
+      }
+      return reply;
+    } } });
+    const starting = children.start({ harness: "fake", argv: [FAKE_AGENT], cwd: dir, parentPane: "t42" });
+    const stopping = terminalRan.promise.then(() => children.childrenOf("t42"));
+    try {
+      await Promise.race([terminalsListed.promise, stopping, starting]);
+      finishRun.resolve();
+      const child = await starting;
+      finishList.resolve();
+      const { ready, opening } = await stopping;
+      expect({ ready: ready.map(({ terminal }) => terminal), opening }).toEqual({ ready: [], opening: [child.terminal] });
+    } finally {
+      terminalRan.resolve();
+      finishRun.resolve();
+      finishList.resolve();
+      await Promise.allSettled([starting, stopping]);
+    }
+  });
+
   it("fails to start an agent whose exit the replay already showed after its session, and leaves nothing behind", async () => {
     setUp();
     // in a terminal, as hc runs it, the keeper outlives its agent (until Ctrl+Q)
