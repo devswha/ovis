@@ -296,13 +296,11 @@ jobs:
         env:
           OVIS_REQUIRE_ACP_KEEPER: '1'
         run: bun test ./server/acp ./server/agent-tools/turns.test.ts ./server/agent-tools/child.contract.test.ts ./server/agent-tools/pane.test.ts ./server/agent-tools/stop.contract.test.ts ./server/approvals/acp.test.ts ./server/core/acp-composer.test.ts
-      - name: PtySession on both hosts
+      - name: PtySession on the Rust PTY host
         if: needs.changes.outputs.draft != 'true'
         run: bun test ./server/pty/host.test.ts
-      - name: The Node host's own checks, on the Rust host
+      - name: The session's own checks, on the Rust PTY host
         if: needs.changes.outputs.draft != 'true'
-        env:
-          OVIS_PTY_SIDECAR: rust
         run: bun test ./server/pty/session.test.ts
   herdr-core-live:
     # hc is pinned by version and sha256 from herdr-core's
@@ -330,7 +328,9 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        if: needs.changes.outputs.draft != 'true'
         with:
+          pty-host: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'restore' }}
       - name: Skip heavy tests on draft PRs
         if: needs.changes.outputs.draft == 'true'
@@ -411,6 +411,7 @@ jobs:
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
+          pty-host: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
       # The base: for a pull request
@@ -479,6 +480,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
@@ -530,6 +532,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
@@ -601,6 +604,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
