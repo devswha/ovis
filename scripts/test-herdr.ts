@@ -12,7 +12,7 @@
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { herdrRpc, ping, sessionSnapshot, workspaceCreate } from "../server/herdr/client.ts";
+import { HerdrError, herdrRpc, ping, sessionSnapshot, workspaceCreate } from "../server/herdr/client.ts";
 import { testShellEnv } from "./test-shell.ts";
 
 // macOS's temp dir is behind a symlink (/var -> /private/var): herdr reports a pane's cwd
@@ -60,7 +60,12 @@ function herdrBinary(): string | null {
 
 /** Whether the herdr at `socket` has plugins of its config folder: ours has none, a server another checkout started may. */
 async function runsPlugins(socket: string): Promise<boolean> {
-  try { return (await herdrRpc<{ plugins: unknown[] }>("plugin.list", {}, socket)).plugins.length > 0; } catch { return false; }
+  try {
+    return (await herdrRpc<{ plugins: unknown[] }>("plugin.list", {}, socket)).plugins.length > 0;
+  } catch (error) {
+    // herdr's own refusal (one with no plugin.list) says it runs none; no answer says nothing, so it may
+    return !(error instanceof HerdrError && error.fromReply);
+  }
 }
 
 async function answers(socket: string): Promise<boolean> {
