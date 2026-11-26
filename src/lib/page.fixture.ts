@@ -4,7 +4,7 @@
  * timers and fetch spies work as before. happy-dom's windows share their classes' prototypes, so what a
  * test stubs on `page.window.HTMLElement.prototype` and the like is put back when the page closes.
  */
-import { Window } from "happy-dom";
+import { BrowserErrorCaptureEnum, Window } from "happy-dom";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
@@ -43,10 +43,7 @@ export interface Page {
   one<E extends Element = HTMLElement>(selector: string): E;
   /** Types `value` into a text field the way a user does: React's onChange sees it. */
   type(field: HTMLInputElement | HTMLTextAreaElement, value: string): Promise<void>;
-  /**
-   * Unmounts the root and puts back the globals the page replaced, then throws the first error the page
-   * reported: happy-dom catches an error thrown in a listener and only reports it as the window's `error` event.
-   */
+  /** Unmounts the root and puts back the globals the page replaced, even when unmounting throws. */
   close(): Promise<void>;
 }
 
@@ -63,10 +60,10 @@ export function reactProps(element: Element): Record<string, unknown> {
 
 export function openPage(url = "http://localhost/"): Page {
   const saved = new Map(GLOBALS.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const window = new Window({ url });
+  // by default happy-dom catches an error thrown in a listener and only reports it as the window's error event:
+  // here it fails the dispatch, so the test that caused it fails
+  const window = new Window({ url, settings: { errorCapture: BrowserErrorCaptureEnum.disabled } });
   const classes = snapshotClasses(window);
-  const reported: unknown[] = [];
-  window.addEventListener("error", (event) => { reported.push((event as unknown as ErrorEvent).error); });
   const values: Record<(typeof GLOBALS)[number], unknown> = {
     window,
     document: window.document,
@@ -114,7 +111,6 @@ export function openPage(url = "http://localhost/"): Page {
           }
         }
       }
-      if (reported.length) throw reported[0];
     },
   };
 }
