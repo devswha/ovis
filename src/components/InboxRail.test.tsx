@@ -1,15 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { usageCounters } from "../lib/usageCounters.ts";
-import type { InboxRailProps } from "./InboxRail.tsx";
-
-const rowMenu = await import("./RowMenu.tsx");
-function RowMenu(_props: Parameters<typeof rowMenu.RowMenu>[0]) { return <span data-row-menu="" />; }
-await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
-const { InboxRail } = await import("./InboxRail.tsx");
+import { InboxRail, type InboxRailProps } from "./InboxRail.tsx";
 
 describe("InboxRail", () => {
   let page: Page;
@@ -74,8 +69,10 @@ describe("InboxRail", () => {
     const main = button(root, "main");
     expect([...named(main), glyph(main), main.getAttribute("aria-haspopup"), main.getAttribute("aria-expanded")]).toEqual(["Back to main view", "Back to main view", "lucide-monitor", null, null]);
     expect(buttons(root).findIndex((node) => node === main)).toBe(buttons(root).length - 2);
-    expect([...root.querySelectorAll("[data-row-menu]")]).toEqual([]);
+    const menus = () => page.window.document.body.querySelectorAll(".row-sheet, .row-menu");
+    expect(menus()).toHaveLength(0);
     await press(main);
+    expect(menus()).toHaveLength(0);
     expect(pressed).toEqual(["exit"]);
   });
 

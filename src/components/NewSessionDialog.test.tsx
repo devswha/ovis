@@ -132,13 +132,20 @@ describe("NewSessionDialog", () => {
     const bodies: unknown[] = [];
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).includes("workspace/create")) { bodies.push(JSON.parse(String(init?.body))); return new Response(JSON.stringify({ workspace_id: "w9", pane_id: "w9:p1", agent_started: true }), { headers: { "content-type": "application/json" } }); }
-      return new Response(JSON.stringify({ agents: [{ kind: "claude", label: "Claude Code" }] }), { headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ agents: [{ kind: "claude", label: "Claude Code" }, { kind: "codex", label: "Codex" }] }), { headers: { "content-type": "application/json" } });
     }, { preconnect: globalThis.fetch.preconnect }));
     const view = createElement(SettingsProvider, { children: createElement(NewSessionDialog, { open: true, defaultCwd: "/home/u", prefill: { cwd: null, name: null, agent: "claude" }, onClose: () => undefined, onCreated: () => undefined }) });
     try {
       await page.render(view);
+      const effort = () => page.one<HTMLSelectElement>("#new-session-effort");
       expect(field("new-session-model").value).toBe("");
-      expect(field("new-session-effort").value).toBe("");
+      expect(effort().value).toBe("");
+      await pick("Codex");
+      await select(effort(), "ultra");
+      expect(effort().value).toBe("ultra");
+      await pick("Claude Code");
+      expect(effort().value).toBe("");
+      expect(page.one<HTMLButtonElement>('button[type="submit"]').disabled).toBe(false);
       await submit();
       expect((bodies[0] as { agent: unknown }).agent).toEqual({ kind: "claude" });
     } finally {
@@ -155,6 +162,7 @@ describe("NewSessionDialog", () => {
       const effort = () => page.one<HTMLSelectElement>("#new-session-effort");
       await pick("Codex");
       expect(effort().value).toBe("");
+      expect(page.one<HTMLButtonElement>('button[type="submit"]').disabled).toBe(false);
       await pick("Claude Code");
       expect(effort().value).toBe("high");
       await select(effort(), "max");

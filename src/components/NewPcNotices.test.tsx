@@ -256,7 +256,10 @@ it("C3 (first PC): a PC added under the first-PC exemption before this device jo
   expect(statuses(await mount())).toHaveLength(0);
   // a lapsed PC this device was told about (or that needed two-step) is not shown again
   listed = [{ server_id: PC, label: "Desk", added_at: admittedAt, last_seen_at: null, new_until: null, admitted_at: admittedAt, admitted_before_you: false }];
-  localStorage.setItem = () => {};
+  localStorage.clear();
+  Object.defineProperty(localStorage, "setItem", { configurable: true, value: () => {} });
+  localStorage.setItem("storage-test", "1");
+  expect(localStorage.getItem("storage-test")).toBeNull();
   expect(statuses(await mount())).toHaveLength(0);
 });
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { openPage, type Page } from "../lib/page.fixture.ts";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import type { InteractivePrompt, PromptAnswer } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
@@ -74,10 +74,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       await page.render(null);
       settingsSpy.mockRestore();
       answerSpy.mockRestore();
-
-
-
-
     }
   });
 
@@ -129,10 +125,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       await page.render(null);
       settingsSpy.mockRestore();
       answerSpy.mockRestore();
-
-
-
-
     }
   });
 });
@@ -158,10 +150,6 @@ async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: Pr
     await page.render(null);
     settingsSpy.mockRestore();
     answerSpy.mockRestore();
-
-
-
-
   }
 }
 
@@ -238,6 +226,13 @@ describe("a device that may only watch sees the card's answers as unavailable an
       // Even dispatching a click event on the disabled buttons sends nothing.
       for (const button of answers) await act(async () => {
         button.dispatchEvent(new page.window.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as MouseEvent);
+      });
+      expect(sent).toEqual([]);
+      // React drops those clicks before the handler runs; exercise its guard separately.
+      for (const button of answers) await act(async () => {
+        const { onClick } = reactProps(button);
+        if (typeof onClick !== "function") throw new TypeError("Missing answer handler");
+        onClick({ nativeEvent: new page.window.MouseEvent("click"), currentTarget: button });
       });
       expect(sent).toEqual([]);
     }, { watching: true });
