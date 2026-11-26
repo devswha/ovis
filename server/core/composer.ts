@@ -21,6 +21,7 @@ import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, skillsNotAttached } from "../opencode-native.ts";
 import { herdrSkillAttachIo, type SkillAttachIo, typeWithSkills } from "../opencode-skill-attach.ts";
 import { userHome } from "../user-home.ts";
+import { claudeForegroundWaiting } from "../claude-store.ts";
 import { type GrokBeforeSend, grokEcho, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { drawsColour, inputRowState, POWERLINE_WORKING_RULE, readsTypedDraft, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 
@@ -304,11 +305,17 @@ async function freeAgentPicker(paneId: string, agent: string): Promise<string> {
 
 /**
  * herdr reports Claude Code idle with its rewind dialog up, which shows no input box: on a Summarize row the message
- * and its Enter would go to the add-context field and summarize the conversation.
+ * and its Enter would go to the add-context field and summarize the conversation. Any other dialog Claude draws in the
+ * box's place (`/model`'s list, `/add-dir`'s confirmation, an approval or a question no reader made out) is told by
+ * Claude's own PID record, which says what it waits on: nothing is typed into it either.
  */
 export async function claudeBoxReads(paneId: string): Promise<[string, string | null]> {
   const before = (await paneRead({ paneId, source: "detection", format: "text" })).text;
   if (claudeRewindOpen(before)) throw new HerdrError("rewind_dialog_open", CLAUDE_REWIND_OPEN_MESSAGE);
+  if (claudeInputBoxContent(before) === null) {
+    const waiting = await claudeForegroundWaiting((await paneProcessInfo(paneId))?.foreground_processes ?? []);
+    if (waiting !== null) throw new HerdrError("agent_blocked", `Claude Code is waiting in the terminal (${waiting}); answer or close it there, then send`);
+  }
   if (!claudeInputDraft(before, null)) return [before, null];
   const scrollBefore = await paneScrollInfo(paneId);
   // a viewport scrolled into the history (any client's scroll is every client's) shows no live box:
