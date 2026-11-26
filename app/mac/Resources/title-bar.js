@@ -19,11 +19,13 @@ function ovisTitleBar(document, height, inset, post) {
   // the bars an installed desktop app drags its window by (styles.css, InboxMode.css)
   const BARS = ["app-header", "inbox-top", "thread-top"];
   const CONTROLS = "button, a, input, select, textarea, label, summary, [contenteditable], [role=button], [role=link], [role=tab], [role=group], [role=menu], [role=menuitem], [role=dialog], [role=listbox], [role=option]";
-  // walked up to a bar, or to the page: a control or an open menu on the way keeps the press the
-  // page's; a container focused only by script (tabindex -1, as .app is) does not
+  // walked up to a bar, or to the page: a control, an open modal scrim or an open menu on the way
+  // keeps the press the page's; a container focused only by script (tabindex -1, as .app is) and the
+  // header's pane title text (role=group for accessibility) do not
   const bare = (event) => {
     for (let node = event.target; node && typeof node.matches === "function"; node = node.parentElement) {
-      if (node.matches(CONTROLS) || node.tabIndex >= 0) return false;
+      if (node.classList.contains("modal-scrim")) return false;
+      if ((node.matches(CONTROLS) && !node.classList.contains("context-title-text")) || node.tabIndex >= 0) return false;
       if (BARS.some((name) => node.classList.contains(name))) return true;
     }
     return event.clientY < height;

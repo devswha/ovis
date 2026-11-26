@@ -49,6 +49,7 @@ final class OvisWebView: WKWebView {
     var drawsTitleBar = false
     /// The page's part of the folded bar, while its window has the bar folded.
     private var titleBarScript: String?
+    private var titleBarHeight: CGFloat = 0
     private var windowWatch: [NSObjectProtocol] = []
     /// The press under way, and whether the page found it on its header's bare surface.
     private var press: NSEvent?
@@ -60,6 +61,7 @@ final class OvisWebView: WKWebView {
             windowWatch = []
             TitleBar.unfold(window, for: self)
             titleBarScript = nil
+            titleBarHeight = 0
         }
         super.viewWillMove(toWindow: newWindow)
     }
@@ -67,21 +69,42 @@ final class OvisWebView: WKWebView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
-        guard drawsTitleBar, let window, titleBarScript == nil, let script = TitleBar.fold(window, for: self) else { return }
-        titleBarScript = script
+        guard drawsTitleBar, let window, titleBarScript == nil, let folded = TitleBar.fold(window, for: self) else { return }
+        titleBarScript = folded.script
+        titleBarHeight = folded.height
         let center = NotificationCenter.default
         windowWatch = [
-            center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { if window.occlusionState.contains(.visible) { TitleBar.refresh(window) } }
+            center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak window] _ in
+                MainActor.assumeIsolated {
+                    guard let window, window.occlusionState.contains(.visible) else { return }
+                    TitleBar.refresh(window)
+                }
             },
-            center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { window.toolbar = nil }
+            center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { [weak window] _ in
+                MainActor.assumeIsolated { window?.toolbar = nil }
             },
-            center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { TitleBar.addToolbar(window) }
+            center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { [weak window] _ in
+                MainActor.assumeIsolated {
+                    guard let window else { return }
+                    TitleBar.addToolbar(window)
+                    TitleBar.refresh(window)
+                }
             },
         ]
         showHeaderInTitleBar()
+    }
+
+    /// Lets a drag on the folded header move a background window on the first press, without waking
+    /// clicks in the chat or terminal below the bar.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        if drawsTitleBar, let event, let window {
+            var at = convert(event.locationInWindow, from: nil)
+            if !isFlipped { at.y = bounds.height - at.y }
+            if TitleBar.inBarBand(y: at.y, height: titleBarHeight, fullScreen: window.styleMask.contains(.fullScreen)) {
+                return true
+            }
+        }
+        return super.acceptsFirstMouse(for: event)
     }
 
     /// Hands the page in the window its part of the folded bar: once the bar is folded, and as each page commits.
@@ -109,6 +132,7 @@ final class OvisWebView: WKWebView {
     override func mouseDragged(with event: NSEvent) {
         guard dragArmed, let press, let window else { return super.mouseDragged(with: event) }
         dragArmed = false
+        self.press = nil
         window.performDrag(with: press)
         // the drag took the mouse-up, which the page still waits for to end its press
         if let up = NSEvent.mouseEvent(with: .leftMouseUp, location: window.mouseLocationOutsideOfEventStream, modifierFlags: [],

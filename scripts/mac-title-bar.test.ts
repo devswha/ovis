@@ -47,10 +47,11 @@ function page() {
   const document = new FakeDocument();
   const app = new FakeElement("div", { class: "app", tabindex: "-1" });
   const header = new FakeElement("header", { class: "app-header is-zoned" }, app);
-  const title = new FakeElement("span", { class: "context-title-text" }, new FakeElement("div", { class: "context" }, header));
+  const title = new FakeElement("span", { class: "context-title-text", role: "group" }, new FakeElement("div", { class: "context" }, header));
   const button = new FakeElement("svg", {}, new FakeElement("button", { class: "icon-button" }, header));
   const menu = new FakeElement("div", { class: "row-menu-header", role: "presentation" }, new FakeElement("div", { role: "menu" }, header));
   const switcher = new FakeElement("div", { class: "segmented", role: "group" }, header);
+  const scrim = new FakeElement("div", { class: "modal-scrim" });
   const pane = new FakeElement("div", { class: "terminal-host" }, app);
   const row = new FakeElement("span", {}, new FakeElement("div", { class: "agent-row", tabindex: "0" }, header));
   const inboxTop = new FakeElement("div", { class: "inbox-top" }, app);
@@ -60,7 +61,7 @@ function page() {
   const screen = new FakeElement("main", { class: "access-gate-screen" });
   const asked: Ask[] = [];
   titleBar(document, 40, 72, (ask) => asked.push(ask));
-  return { document, header, title, button, menu, switcher, pane, row, inboxTop, search, threadTop, rail, screen, asked };
+  return { document, header, title, button, menu, switcher, scrim, pane, row, inboxTop, search, threadTop, rail, screen, asked };
 }
 
 const drag = (x = 300, y = 200): Ask => ({ ask: "drag", x, y });
@@ -94,9 +95,9 @@ describe("Mac app title bar", () => {
     expect(asked).toEqual([drag(300, 39), drag(300, 10)]);
   });
 
-  test("leaves a press on a control, a focusable row, in an open menu, on a group of buttons or off the bars to the page", () => {
-    const { document, button, row, menu, switcher, pane, asked } = page();
-    for (const target of [button, row, menu, switcher]) document.fire("mousedown", target, { clientY: 20 });
+  test("leaves a press on a control, a focusable row, a modal scrim, in an open menu, on a group of buttons or off the bars to the page", () => {
+    const { document, button, row, scrim, menu, switcher, pane, asked } = page();
+    for (const target of [button, row, scrim, menu, switcher]) document.fire("mousedown", target, { clientY: 20 });
     document.fire("mousedown", pane);
     expect(asked).toEqual([]);
   });

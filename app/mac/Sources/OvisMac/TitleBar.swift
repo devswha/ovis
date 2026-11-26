@@ -14,9 +14,14 @@ enum TitleBar {
     /// before the last one leaves it, and only the one that folded the bar gives it back.
     private static let folders = NSMapTable<NSWindow, NSView>.weakToWeakObjects()
 
-    /// Folds the window's bar away for `page` and returns the page's script for it; nil leaves the bar as
-    /// it was (a build without the script, or a bar AppKit did not lay out as expected).
-    static func fold(_ window: NSWindow, for page: NSView) -> String? {
+    struct Folded {
+        let script: String
+        let height: CGFloat
+    }
+
+    /// Folds the window's bar away for `page` and returns the page's script and bar height; nil leaves
+    /// the bar as it was (a build without the script, or a bar AppKit did not lay out as expected).
+    static func fold(_ window: NSWindow, for page: NSView) -> Folded? {
         guard let source else { return nil }
         folders.setObject(page, forKey: window)
         window.styleMask.insert(.fullSizeContentView)
@@ -33,7 +38,12 @@ enum TitleBar {
         // without until the window leaves it (the window's exit handler adds it back)
         if window.styleMask.contains(.fullScreen) { window.toolbar = nil }
         let post = "(ask) => window.webkit?.messageHandlers?.ovisTitleBar?.postMessage(ask)"
-        return "(() => {\n\(source)\novisTitleBar(document, \(height), \(inset), \(post));\n})();"
+        return Folded(script: "(() => {\n\(source)\novisTitleBar(document, \(height), \(inset), \(post));\n})();", height: height)
+    }
+
+    /// Whether a press at `y` points from the view's top lies inside the folded title-bar band.
+    nonisolated static func inBarBand(y: CGFloat, height: CGFloat, fullScreen: Bool) -> Bool {
+        !fullScreen && height > 0 && y >= 0 && y <= height
     }
 
     /// Has AppKit look again for the views under the bar that take its clicks. It looks as the bar turns
