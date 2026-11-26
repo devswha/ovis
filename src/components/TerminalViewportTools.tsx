@@ -273,10 +273,10 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       outputAt = now;
       schedule(scrollPollDelay(true, 0, scrollRef.current, following()));
     });
-    // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
+    // libghostty's scrollback is 0 on a herdr server, so its view sits above the screen only on a herdr-core one
     const readLocal = () => {
-      // xterm's own view: the overlay follows it (overlay.ts), and moves libghostty's view only when it next draws.
-      // When libghostty parses alone, xterm keeps no rows and libghostty's view is the one
+      // the view is libghostty's (terminal.ts): the rows it sits above the bottom, or its buffer's own position when
+      // no view is registered
       const rowsAbove = ghosttyRowsAbove(terminal);
       setLocalBack(rowsAbove === null ? terminal.buffer.active.viewportY < terminal.buffer.active.baseY : rowsAbove > 0);
     };

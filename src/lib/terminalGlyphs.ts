@@ -1,5 +1,5 @@
 /**
- * xterm's DOM renderer sizes every cell from the Latin font and gives each glyph the
+ * The renderer sizes every cell from the Latin font and gives each glyph the
  * difference to its cells as letter-spacing, which lands after the glyph: a narrower glyph
  * sits at the left edge of its cells. With a 1em CJK fallback beside a 0.54em Latin cell
  * (Linux) that leftover is a pixel. Apple's Menlo cell is 0.6em, though, and no font on
@@ -14,7 +14,7 @@
  * - the glyph is centered in its cells: padding moves the text right by half the spacing
  *   left over, a negative margin takes it back after the span so the next span keeps its
  *   column, and a clip trims the trailing half so an underline stays on its own cells.
- *   All of that goes on a span inside xterm's, which keeps the cells' background and block
+ *   All of that goes on a span inside the run's own, which keeps the cells' background and block
  *   cursor: a stretched or clipped box ends inside a device pixel, and a background painted
  *   there left a line of the pane between it and the next cell's (a light seam after every
  *   Korean word in a dark block).
@@ -28,9 +28,8 @@
  * - iOS draws a symbol that is text by default, such as ⏺ (the bullet before every Claude
  *   Code message), as a color emoji two cells wide in its one cell, so a symbol that
  *   overflows its cell is asked for its text form (U+FE0E).
- * Copy reads xterm's buffer, not the DOM, and still returns what the pane wrote.
+ * Copy reads libghostty's rows, not the DOM, and still returns what the pane wrote.
  */
-
 
 /** Spacing up to this is rounding between the font and the cell grid, not a misfit glyph. */
 const MIN_SPACING_PX = 1;
@@ -45,10 +44,7 @@ const MAX_SCALE = 1.2;
  * 90-110% is common); a glyph that needs more is enlarged for the rest.
  */
 const MAX_STRETCH = 1.1;
-export const VIEW_FIT_CACHE_MAX = 4096;
-
-/** how many copies of a glyph xterm's WidthCache measures at once (WidthCacheSettings.REPEAT) */
-
+const VIEW_FIT_CACHE_MAX = 4096;
 
 const DECOMPOSED = /[\p{M}\u1160-\u11ff]/u;
 const TEXT_DEFAULT_PICTOGRAPH = /(?!\p{Emoji_Presentation})\p{Extended_Pictographic}/gu;

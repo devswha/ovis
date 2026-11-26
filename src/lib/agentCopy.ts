@@ -11,14 +11,15 @@
  * it stand in that text with a space between them (or none, for a word split at the edge, or
  * Chinese and Japanese text), never with a line break.
  */
+import { displayWidth } from "../../shared/secret-prompt.ts";
 import { textCells } from "./ghostty/vt.ts";
 
 const MARKER = /^(?:[⏺●•◦▪*+-]|[⎿└]|\d{1,3}[.)])\s+/u;
 const BOX = /[\u2500-\u257f|]/u;
 const CONTEXT_WORDS = 3;
 
-// Before the terminal has loaded WASM, count code points rather than UTF-16 units.
-const cells = (text: string): number => textCells(text) ?? [...text].length;
+// Before the terminal has loaded WASM, measure as the server reads a prompt line (shared/secret-prompt.ts).
+const cells = (text: string): number => textCells(text) ?? displayWidth(text);
 
 const leading = (text: string): number => text.length - text.trimStart().length;
 
