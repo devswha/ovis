@@ -75,7 +75,7 @@ describe.skipIf(!posix)("pi's approval hook", () => {
     for (const version of ["1.3.9", "2.0.0", null]) expect(hub.launchArgs("pi", "p1", ["--x"], version), String(version)).toEqual(["--x"]);
   });
 
-  it("tells the pane its exact context at startup, after a turn, and as unknown after compaction", async () => {
+  it("tells the pane its exact context at startup, after a turn, a model switch and a branch move, and as unknown after compaction", async () => {
     let told = Promise.withResolvers<{ paneId: string; context: PaneContext | null }>();
     const { hub } = hubIn((paneId, context) => told.resolve({ paneId, context }));
     // ContextUsage of pi 1.4.0's ExtensionContext.getContextUsage(): tokens and percent are null after compaction
@@ -87,6 +87,8 @@ describe.skipIf(!posix)("pi's approval hook", () => {
     for (const [type, next, context] of [
       ["agent_end", { tokens: 15_123, contextWindow: 1_000_000, percent: 1.5123 }, { used: 15_123, window: 1_000_000 }],
       ["model_select", { tokens: 15_123, contextWindow: 200_000, percent: 7.5615 }, { used: 15_123, window: 200_000 }],
+      // /tree moved to a shorter branch: nothing else is told until the next run
+      ["session_tree", { tokens: 9_000, contextWindow: 200_000, percent: 4.5 }, { used: 9_000, window: 200_000 }],
       ["session_compact", { tokens: null, contextWindow: 200_000, percent: null }, null],
     ] as const) {
       told = Promise.withResolvers();

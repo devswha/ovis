@@ -10,7 +10,7 @@
  * `{ block, reason }`, `ctx.ui.select` with a signal, `ctx.signal`, `ctx.mode`).
  *
  * The extension also tells the pane's context as pi itself counts it (`ctx.getContextUsage()`), at startup, after a run,
- * a model switch and a compaction: the session file records what a request filled but not the window, which a reader
+ * a model switch, a move in its tree (/tree) and a compaction: the session file records what a request filled but not the window, which a reader
  * of pi's catalogs on disk (pi-models.ts) cannot know for a model pi has built in.
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
@@ -20,7 +20,7 @@ export const PI_HOOK_MIN_VERSION = "1.4.0";
 
 const GLUE = `
 export default function ovisApprovals(pi) {
-  for (const event of ["session_start", "agent_end", "model_select", "session_compact"]) pi.on(event, tellContext);
+  for (const event of ["session_start", "agent_end", "model_select", "session_compact", "session_tree"]) pi.on(event, tellContext);
   pi.on("tool_call", async (event, ctx) => {
     const command = event?.input?.command;
     if (event?.toolName !== "bash" || typeof command !== "string" || ctx?.mode !== "tui") return undefined;
