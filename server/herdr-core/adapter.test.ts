@@ -219,6 +219,14 @@ describe("herdr-core adapter", () => {
     ]);
   });
 
+  it("refuses legacy prompts before writing to a terminal owned by an ACP keeper", async () => {
+    const { socket, cores } = await setup([terminal("t1", {
+      labels: { "ovis.acp": "child" }, status: { app: "codex", state: "idle" },
+    })], { "terminal.send": () => ({ turn: 1 }) });
+    await expect(agentPrompt("t1", "do not silently drop this", socket)).rejects.toMatchObject({ code: "acp_prompt_required" });
+    expect(cores.flatMap(core => core.calls).some(call => call.method === "terminal.send")).toBeFalse();
+  });
+
   it("tells agy's plan review at rest in its status events as in the snapshot, done on the turn that counts it with nothing new to draw, and its question blocked", async () => {
     let channel = 0;
     const working = { app: "antigravity", state: "working" };
@@ -844,6 +852,60 @@ it("asks for a fresh snapshot when a report's kind, message or progress changes,
     expect(written).toHaveLength(1);
   });
 
+  it("drains accepted OpenCode label writes on orderly shutdown, accepting no more writes", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      if (written.length === 1) {
+        started.resolve();
+        await first.promise;
+      }
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    labels.label("t1", "", ["ses_first"]);
+    await started.promise;
+    labels.label("t1", "", ["ses_first", "ses_second"]);
+    const stopping = labels.stop({ drain: true });
+    labels.label("t2", "", ["ses_third"]);
+    first.resolve();
+    await stopping;
+    expect(written).toEqual(["ses_first", "ses_first ses_second"]);
+  });
+
+  it("stops draining after its deadline without sending the next queued OpenCode label", async () => {
+    const written: string[] = [];
+    const started = Promise.withResolvers<void>();
+    const first = Promise.withResolvers<void>();
+    const call = async (_method: string, { labels }: { labels: Record<string, string> }) => {
+      written.push(labels["ovis.opencode"] ?? "");
+      started.resolve();
+      await first.promise;
+    };
+    const labels = sessionLabeler({ call: call as HcConnection["call"] });
+    jest.useFakeTimers();
+    try {
+      labels.label("t1", "", ["ses_first"]);
+      await started.promise;
+      labels.label("t1", "", ["ses_first", "ses_second"]);
+      let stopped = false;
+      void Promise.resolve(labels.stop({ drain: true })).then(() => { stopped = true; });
+      jest.advanceTimersByTime(499);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      jest.advanceTimersByTime(1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(true);
+      first.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(written).toEqual(["ses_first"]);
+    } finally {
+      first.resolve();
+      jest.useRealTimers();
+    }
+  });
+
   it("remembers an OpenCode session a status event named, for a turn that ended before any snapshot", async () => {
     let channel = 0;
     const t1 = terminal("t1", { title: "OC | short", status: { app: "opencode", state: "idle" } });
@@ -1061,6 +1123,27 @@ describe("herdr-core adapter, new and closed terminals", () => {
     });
     return ready;
   }
+
+  it("refuses to delete B when the question named A at the same workspace address", async () => {
+    const { dir, repo, git } = repository();
+    const a = join(dir, "a"), b = join(dir, "b");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "a", a).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "b", b).exitCode).toBe(0);
+    const { socket } = await labeling([terminal("t1", { cwd: b, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    await expect(herdrRpc("worktree.remove", { workspace_id: "S", expected_core: "c1", expected_checkout: a }, socket))
+      .rejects.toMatchObject({ code: "worktree_target_changed" });
+    expect([existsSync(a), existsSync(b)]).toEqual([true, true]);
+  });
+
+  it("does not create a branch on another core with the same workspace address", async () => {
+    const { dir, repo, git } = repository();
+    const checkout = join(dir, "misdirected");
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    await expect(herdrRpc("worktree.create", { workspace_id: "S", branch: "misdirected", path: checkout, expected_core: "other-core" }, socket))
+      .rejects.toMatchObject({ code: "worktree_other_core", message: "The Ovis server serves another core" });
+    expect(existsSync(checkout)).toBeFalse();
+    expect(git("-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/misdirected").exitCode).toBe(1);
+  });
 
   it("makes, lists, opens and removes a worktree with git on a core Ovis lays out, grouped under the repository's workspace", async () => {
     const { dir, repo } = repository();
@@ -1542,6 +1625,17 @@ describe("herdr-core adapter, agents", () => {
     expect(core.typed.map((write) => write.text).join("")).toBe("\u0015'claude' '--model' 'it'\\''s big'\r");
     const methods = core.calls.map((call) => call.method);
     expect(methods.lastIndexOf("terminal.get")).toBeGreaterThan(methods.indexOf("terminal.attach"));
+  });
+
+  it("types a launcher Ovis wrote in place of the agent's command, and answers once the agent it starts is in front", async () => {
+    const shell = { pid: 10, name: "bash" };
+    const record = terminal("t1", { cols: 90, rows: 20, pid: 10, argv: ["/bin/bash"], foreground: shell });
+    const { socket, cores } = await posix([record], {
+      "terminal.get": () => ({ ...record, foreground: cores[0]!.typed.length > 0 ? { pid: 12, name: "codex" } : shell }),
+    });
+    await agentStart({ name: "codex-1", kind: "codex", paneId: "t1", args: ["--model", "m"], program: "/tmp/ovis-codex-x/launch" }, socket);
+    expect(cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'/tmp/ovis-codex-x/launch'\r");
+    await expect(agentStart({ name: "codex-1", kind: "codex", paneId: "t1", program: "launch" }, socket)).rejects.toMatchObject({ code: "invalid_params" });
   });
 
   it("counts an agent run through its interpreter as started, and a shell's command-not-found handler as a failed start", async () => {

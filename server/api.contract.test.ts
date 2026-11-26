@@ -8,13 +8,14 @@ import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
-import { ACCOUNT, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
+import { pressInto, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { createServer } from "./index.ts";
 import { AgentDetector, catalogLocator } from "./agent-catalog-detect.ts";
 import * as appModule from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, SecuritySummary, PushKey, RemoteAccess, SessionSnapshot, TabMoved, TabMovedToWorkspace, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
+import { HARNESS_TOOL_DEFAULT } from "../shared/harness-tool.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
 import { noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
@@ -28,6 +29,7 @@ import { HerdrSocket } from "../src/lib/ws.ts";
 import { HerdrError, herdrRpc, paneRead, paneSplit, ping, sessionSnapshot, subscribeEvents, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { descriptorPath, type BridgeDescriptor } from "./bridge.ts";
+import { ownProcesses } from "../scripts/own-processes.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -3686,8 +3688,7 @@ describe("WebSocket client leaving mid-attach", () => {
   }
 
   function attachProcessCount(terminalId: string): number {
-    const found = Bun.spawnSync(["pgrep", "-f", `terminal attach ${terminalId}`]);
-    return found.stdout.toString().split("\n").filter(Boolean).length;
+    return ownProcesses(new RegExp(`terminal attach ${terminalId}`)).length;
   }
 
   async function waitForAttachGone(terminalId: string, ms: number): Promise<void> {
@@ -4306,7 +4307,7 @@ describe("pairing and identity", () => {
       const phone = await pair("Phone");
       const tablet = await pair("Tablet");
       if (bound) {
-        server.context.services.devices.bindByService(ACCOUNT);
+        await pressInto(service, server.context.services);
         expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
       }
       const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
@@ -4997,10 +4998,12 @@ describe("GET /api/sessions/history", () => {
           if (phase === "server creation") throw failure;
           const app = createApp(...args);
           stop = app.stop;
+          const appStop = app.stop;
           const stopping = spyOn(app, "stop").mockImplementation(() => {
-            stop!();
+            const drained = appStop();
             stopped = true;
             if (phase === "server stop") throw failure;
+            return drained;
           });
           restores.push(() => stopping.mockRestore());
           return app;
@@ -5520,7 +5523,7 @@ setInterval(() => {}, 1 << 30);
 // The shared preferences (shared/preferences.ts) over HTTP and the event stream: the muted panes
 // are always in the document, the first mute is a change of the empty list, a watching device
 // reads and cannot write, and two tabs' changes land as two revisions with both kept.
-const namedPreferences = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+const namedPreferences = (doc: SharedPreferences) => ({ ...doc, settings: { ...doc.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 
 describe("shared preferences API", () => {
   const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
@@ -5563,9 +5566,9 @@ describe("shared preferences API", () => {
     const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${base}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: typeof body === "string" ? body : JSON.stringify(body) });
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const first = await put({ settings: {}, muted_panes: ["w1:p1"] });
       expect(first.status).toBe(200);
       expect(await first.json()).toEqual(namedPreferences({ revision: 1, settings: {}, muted_panes: ["w1:p1"] }));
@@ -5597,10 +5600,11 @@ describe("shared preferences API", () => {
     const headers = { ...guard, authorization: "Bearer test-preferences" };
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ ...stored, muted_panes: [] });
+      const advertised = { ...stored, settings: { ...stored.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] };
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual(advertised);
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual(stored);
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual(advertised);
       const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
       expect(await first.json()).toEqual(namedPreferences({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }));
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });

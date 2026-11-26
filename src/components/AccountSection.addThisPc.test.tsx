@@ -7,8 +7,9 @@ import { pairingPc } from "../../server/account/pairing.test-helpers.ts";
 import { handleRelayRequest } from "../../server/relay/routes.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
+import type { ListAddState } from "../../shared/machines.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
-import { CLOSE_ANSWER_MS } from "../lib/account/addThisPc.ts";
+import { CLOSE_ANSWER_MS, listNumberHeld, NAMING_MS } from "../lib/account/addThisPc.ts";
 import { AccountServiceError, SignedOutError, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -47,12 +48,15 @@ describe("AddThisPc", () => {
     gate: "open" | "closed"; via: "open" | "loopback" | "device"; paired: boolean; cookieSticks: boolean; healthDown: boolean;
     role: "drive" | "watch";
     healthId?: string | null;
+    /** in its account, following its list with no key of its own in it (it came in as the account moved) */
+    needsKeys?: boolean;
   };
   let signedIn: string | null;
   /** which sign-in of that account is stored: a sign-in again, or another one, stores the next */
   let signInNo: number;
   /** whether the account service admits this PC in one press (a fresh two-step sign-in), and what the PC answers the press with */
-  let onePress: { admits: boolean; pcStatus: number; opensAll: boolean };
+  /** `refusal`: the code the account service refuses a press with while `admits` is false */
+  let onePress: { admits: boolean; pcStatus: number; opensAll: boolean; refusal: string };
   let admitted: string[];
   let asked: { path: string; localOnly: boolean }[];
   let directory: string[];
@@ -60,17 +64,33 @@ describe("AddThisPc", () => {
   let tab: Map<string, string>;
   let restore: (() => void)[];
   let puts: string[];
+  /** what the account service answers a PUT with instead of listing the PC; null: it lists it */
+  let putRefusal: AccountServiceError | null;
+  /** the PCs the account lists, as GET /v1/pcs answers; null: none (the default, which no wait reads as a decline) */
+  let listedNow: string[] | null;
   let relayRequest: ((path: string, init?: RequestInit) => Promise<Response>) | null;
+  /**
+   * this PC's add by the account's signed list (/api/account/list/add…): null answers 404, as a PC that follows no list;
+   * `start`: what a POST answers (a state, or a refusal), after `started` ran; `now`: what a read answers; `calls`: what
+   * was asked of it, in order, with the account this PC was named (POST /api/account/relay-account) at that moment
+   */
+  let byList: {
+    start: ListAddState | { status: number; code: string }; started?: () => void | Promise<void>; now: ListAddState | null;
+    calls: { what: string; body: Record<string, unknown> | null; named: string | null }[];
+  } | null;
+  let namedAs: string | null;
+  /** this PC never answers a naming of its account (POST /api/account/relay-account) */
+  let hangNaming: boolean;
   const loopbackFetch = globalThis.fetch;
   let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null; press: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
   const service = (bound?: string, boundSignIn?: string): AccountService => {
     const mine = (): void => { if (bound !== undefined && (signedIn !== bound || (boundSignIn !== undefined && boundSignIn !== `r-${signInNo}`))) throw new SignedOutError(); };
     return {
-      listPcs: async () => { mine(); await held.listPcs; return []; },
-      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
+      listPcs: async () => { mine(); await held.listPcs; return (listedNow ?? []).map((id) => ({ server_id: id, label: "desk", added_at: new Date(at).toISOString(), last_seen_at: null, public_key: null, relay: null, new_until: null, admitted_at: null, admitted_before_you: false })); },
+      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; if (putRefusal !== null) throw putRefusal; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
-      admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, "two_step_required", "Set up two-step sign-in first"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
+      admitPc: async () => { mine(); admitted.push(signedIn ?? ""); if (!onePress.admits) throw new AccountServiceError(403, onePress.refusal, "The sign-in was refused"); return { account: signedIn, new_until: new Date(at + 86_400_000).toISOString() }; },
       session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn, refresh_token: `r-${signInNo}` }; },
       forSignIn: (session: { account: string; refresh_token?: string }) => service(session.account, session.refresh_token),
     } as unknown as AccountService;
@@ -86,12 +106,17 @@ describe("AddThisPc", () => {
     pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false, role: "drive" };
     signedIn = ACCOUNT;
     signInNo = 0;
-    onePress = { admits: false, pcStatus: 200, opensAll: true };
+    onePress = { admits: false, pcStatus: 200, opensAll: true, refusal: "session_not_fresh" };
     admitted = [];
     asked = [];
     directory = [];
     puts = [];
+    putRefusal = null;
+    listedNow = null;
     relayRequest = null;
+    byList = null;
+    namedAs = null;
+    hangNaming = false;
     held = { listPcs: null, putPc: null, session: null, link: null, start: null, close: null, press: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
@@ -124,7 +149,8 @@ describe("AddThisPc", () => {
       if (path === "/api/relay/link/close") await held.close;
       if (relayRequest !== null && (path === "/api/relay/link" || path === "/api/relay/link/close")) return relayRequest(path, init);
       if (path === "/api/account/status" && pc.statusDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
-      if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling });
+      if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling,
+        ...(pc.needsKeys === true ? { list: { pinned_list: "f".repeat(64), standing: "in", reason: "no key of its own", needs_keys: true } } : {}) });
       if (path === "/api/relay/start" && pc.start === "broken") return Response.json({ error: { code: "internal", message: "broken" } }, { status: 500 });
       if (path === "/api/relay/start" && pc.start === "off") return Response.json({ phase: "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: null, error: null });
       if (path === "/api/relay/start") {
@@ -132,6 +158,25 @@ describe("AddThisPc", () => {
         return Response.json({ phase: pc.relay === "on" ? "connecting" : "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: pc.blocked, error: null }, { status: pc.blocked === null ? 200 : 409 });
       }
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null;
+      if (path === "/api/account/relay-account") namedAs = typeof body?.account === "string" ? body.account : null;
+      if (path === "/api/account/relay-account" && hangNaming) return new Promise<Response>(() => {});
+      if (byList !== null && path.startsWith("/api/account/list/add")) {
+        byList.calls.push({ what: `${init?.method ?? "GET"} ${path}${url.search}`, body, named: namedAs });
+        if (path === "/api/account/list/add/cancel") return Response.json(byList.now = { state: "ended", run: String(body?.run), account: ACCOUNT, why: "cancelled" });
+        if (path === "/api/account/list/add/confirm") {
+          const shown = byList.now;
+          if (shown?.state !== "number" || shown.digits !== body?.digits || shown.run !== body?.run) return Response.json({ error: { code: "wrong_number", message: "not that number" } }, { status: 409 });
+          return Response.json(byList.now = { state: "confirmed", run: shown.run, account: shown.account, list: shown.list, until: shown.until });
+        }
+        if (init?.method !== "POST") return Response.json(byList.now ?? { state: "none" });
+        await byList.started?.();
+        const start = byList.start;
+        if ("code" in start) return Response.json({ error: { code: start.code, message: "refused" } }, { status: start.status });
+        // a start that answers no_list leaves the PC holding no run: a read by the run asked before answers `replaced`
+        byList.now = "run" in start ? start : { state: "replaced" };
+        return Response.json(start);
+      }
       if (path === "/api/account/relay-account" && onePress.admits) return new Response(null, { status: 204 });
       if (path === "/api/account/one-press") {
         await held.press;
@@ -396,6 +441,41 @@ describe("AddThisPc", () => {
       expect(buttons(renderer)).toEqual(["Stop waiting"]);
     });
 
+    test("a listing refused for an old sign-in with no key offers Sign in again here, then lists and adds with the fresh one", async () => {
+      putRefusal = new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first");
+      let renderer!: ReactTestRenderer;
+      act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere: () => null, opensAll: () => onePress.opensAll, signInAgain }) })); });
+      renderers.push(renderer);
+      await settle();
+      await press(renderer, "Add this PC to my account");
+      expect(words(renderer)).toContain("Sign in again to add it: your sign-in is more than ten minutes old.");
+      expect(words(renderer)).not.toContain("This PC could not be listed in your account. Try again.");
+      expect(buttons(renderer)).toEqual(["Sign in again"]);
+      expect(admitted).toEqual([]);
+      // the fresh sign-in lists the PC, and its one press adds it
+      putRefusal = null;
+      await press(renderer, "Sign in again");
+      expect(calls.map((call) => call.account)).toEqual([ACCOUNT]);
+      expect(installs).toBe(1);
+      expect(puts).toEqual([`${ACCOUNT}/${SERVER}`, `${ACCOUNT}/${SERVER}`]);
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(words(renderer)).toContain("Added");
+    });
+
+    test("a Sign in again for a refused listing that does not finish says so and offers it again", async () => {
+      putRefusal = new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first");
+      comes = "fail";
+      let renderer!: ReactTestRenderer;
+      act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere: () => null, opensAll: () => onePress.opensAll, signInAgain }) })); });
+      renderers.push(renderer);
+      await settle();
+      await press(renderer, "Add this PC to my account");
+      await press(renderer, "Sign in again");
+      expect(words(renderer)).toContain("The sign-in did not finish. Try again.");
+      expect(buttons(renderer)).toEqual(["Sign in again"]);
+      expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    });
+
     test("a one press refused for the sign-in itself offers to sign in again, beside Stop waiting", async () => {
       const renderer = await waitingWithOffer();
       expect(words(renderer)).toContain(WAIT);
@@ -414,12 +494,32 @@ describe("AddThisPc", () => {
       expect(tab.has(MARKER)).toBe(false);
     });
 
-    test("a fresh sign-in that is still not two-step goes back to the plain wait, with no second offer", async () => {
+    const NO_TWO_STEP = "This sign-in has no two-step sign-in.";
+    const OTHER_WAYS = "Add this PC from another device of your account and approve the number it shows here, or scan this PC's QR code with your phone.";
+    const TURN_ON = "To add it in one press, turn on two-step sign-in with your sign-in provider and sign in again.";
+
+    test("a sign-in without two-step is told so and what works, and is offered no sign-in again", async () => {
+      onePress.refusal = "two_step_required";
+      const renderer = await waitingWithOffer();
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(words(renderer)).toContain(WAIT);
+      expect(words(renderer)).toContain(`${NO_TWO_STEP} ${OTHER_WAYS} ${TURN_ON}`);
+      expect(words(renderer)).not.toContain(OFFER);
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      expect(calls).toEqual([]);
+    });
+
+    test.each([
+      ["still refused as not fresh", "session_not_fresh", `This PC was not added in one press. ${OTHER_WAYS}`],
+      ["found to have no two-step", "two_step_required", `${NO_TWO_STEP} ${OTHER_WAYS} ${TURN_ON}`],
+    ] as const)("a fresh sign-in that is %s goes back to the wait with no second offer, and says why", async (_case, refusal, said) => {
       comes = "plain";
       const renderer = await waitingWithOffer();
+      onePress.refusal = refusal;
       await press(renderer, "Sign in again");
       expect(admitted).toEqual([ACCOUNT, ACCOUNT]);
       expect(words(renderer)).toContain(WAIT);
+      expect(words(renderer)).toContain(said);
       expect(words(renderer)).not.toContain(OFFER);
       expect(buttons(renderer)).toEqual(["Stop waiting"]);
     });
@@ -500,10 +600,13 @@ describe("AddThisPc", () => {
     expect(links()).toBe(5);
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     expect(directory).toEqual(["putPc"]);
-    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers)
-    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/relay-account"]));
+    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers;
+    // the one listing asked the PC for its own proof, then, named the account once more, whether it adds itself by the account's list)
+    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/pc-proof", "/api/account/relay-account", "/api/account/list/add"]));
+    expect(asked.filter((request) => request.path === "/api/account/pc-proof").length).toBe(1);
     expect(asked.filter((request) => request.path === "/api/health").length).toBe(5);
-    expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
+    expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(2);
+    expect(asked.filter((request) => request.path === "/api/account/list/add").length).toBe(1);
   });
 
   test("goes on reopening after a refused attempt, as while Ovis restarts", async () => {
@@ -960,6 +1063,24 @@ describe("AddThisPc", () => {
     expect(links()).toBe(opened);
   });
 
+  test("a request another device of the account denied ends the wait: not added, not listed again, and asked anew only by a press", async () => {
+    listedNow = [SERVER];
+    const renderer = await mount(ACCOUNT);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    await advance(REOPEN_MS);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    // Deny on the phone removed the listing
+    listedNow = [];
+    await advance(REOPEN_MS);
+    expect(words(renderer)).toContain("Another device of your account declined adding this PC.");
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+    await advance(RELIST_MS);
+    expect(directory).toEqual(["putPc"]);
+    await press(renderer, "Add this PC to my account");
+    expect(directory).toEqual(["putPc", "putPc"]);
+  });
+
   test("a sign-in that was already there lists nothing by itself: the offer and its button", async () => {
     const renderer = await mount();
     expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
@@ -1238,6 +1359,26 @@ describe("AddThisPc", () => {
     await press(renderer, "Add this PC to my account");
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+  });
+
+  test("a PC that left the account (ovis logout) and gave no proof of its own here says to sign in on the PC", async () => {
+    putRefusal = new AccountServiceError(409, "pc_left", "This PC left the account; sign in on the PC to add it again");
+    const renderer = await mount(ACCOUNT);
+    await settle();
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(words(renderer)).toContain("Sign in on this PC to add it again");
+    expect(words(renderer)).not.toContain("This PC could not be listed in your account. Try again.");
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a listing the account service refuses for an old sign-in with no key to prove says to sign in again, not to try again", async () => {
+    putRefusal = new AccountServiceError(403, "session_not_fresh", "Sign in again on this device first");
+    const renderer = await mount(ACCOUNT);
+    await settle();
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(words(renderer)).toContain("Sign in again to add it: your sign-in is more than ten minutes old.");
+    expect(words(renderer)).not.toContain("This PC could not be listed in your account. Try again.");
+    expect(tab.has(MARKER)).toBe(false);
   });
 
   test("a PC that stops answering while the sign-in lists it gives the button back", async () => {
@@ -1900,5 +2041,376 @@ describe("AddThisPc", () => {
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     await advance(REOPEN_MS);
     expect(links()).toBe(2);
+  });
+
+  describe("an account that keeps a signed list: the PC starts its add by the list first, as `ovis add` does", () => {
+    const RUN = "0123456789abcdef";
+    const NEXT = "fedcba9876543210";
+    const LIST = "f".repeat(64);
+    const WAIT = "On another device of your account, choose Add on desk.";
+    const running = (run = RUN): ListAddState => ({ state: "waiting", run, account: ACCOUNT, list: LIST, until: new Date(at + 10 * 60_000).toISOString() });
+    const starts = (): number => byList!.calls.filter(({ what }) => what === "POST /api/account/list/add").length;
+    const cancels = (): { what: string; body: Record<string, unknown> | null; named: string | null }[] => byList!.calls.filter(({ what }) => what === "POST /api/account/list/add/cancel");
+    beforeEach(() => { byList = { start: running(), now: null, calls: [] }; });
+
+    test("the press starts the PC's add under the account named to it just before, and nothing is pressed once", async () => {
+      // a one press the account service would admit: on an account with a list it is never asked
+      onePress.admits = true;
+      const renderer = await waitingFrom();
+      expect(byList!.calls[0]).toEqual({ what: "POST /api/account/list/add", body: { account: ACCOUNT }, named: ACCOUNT });
+      expect(admitted).toEqual([]);
+      expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+      expect(words(renderer)).toContain(WAIT);
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      expect(directory).toEqual(["putPc"]);
+      expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at, run: RUN });
+    });
+
+    test("a sign-in that just finished here starts the same add, and presses nothing once", async () => {
+      onePress.admits = true;
+      const renderer = await mount(ACCOUNT);
+      expect(starts()).toBe(1);
+      expect(admitted).toEqual([]);
+      expect(words(renderer)).toContain(WAIT);
+    });
+
+    test("Stop waiting gives the PC's add up by its run", async () => {
+      const renderer = await waitingFrom();
+      await press(renderer, "Stop waiting");
+      expect(cancels()).toEqual([{ what: "POST /api/account/list/add/cancel", body: { run: RUN }, named: ACCOUNT }]);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
+    test("a tab reloaded while it waited gives up the run it kept on Stop waiting", async () => {
+      tab.set(MARKER, kept(60_000, 60_000, { run: RUN }));
+      const renderer = await mount();
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      expect(starts()).toBe(0);
+      await press(renderer, "Stop waiting");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }]);
+    });
+
+    test("no_list: the one press is taken as today, after the PC said the account keeps no list", async () => {
+      byList!.start = { state: "no_list", account: ACCOUNT };
+      onePress.admits = true;
+      const renderer = await waitingFrom();
+      expect(words(renderer)).toContain("Added");
+      expect(admitted).toEqual([ACCOUNT]);
+      const paths = asked.map((request) => request.path);
+      expect(paths.indexOf("/api/account/one-press")).toBeGreaterThan(paths.indexOf("/api/account/list/add"));
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
+    test("no_list with the one press refused: today's digit wait, kept as before with no run", async () => {
+      byList!.start = { state: "no_list", account: ACCOUNT };
+      const renderer = await waitingFrom();
+      expect(words(renderer)).toContain(WAIT);
+      expect(admitted).toEqual([ACCOUNT]);
+      expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at });
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(1);
+      expect(byList!.calls.map(({ what }) => what)).toEqual(["POST /api/account/list/add"]);
+    });
+
+    test("503 account_unavailable: says the account service could not be reached and offers the button again, never one press", async () => {
+      byList!.start = { status: 503, code: "account_unavailable" };
+      onePress.admits = true;
+      const renderer = await waitingFrom();
+      expect(words(renderer)).toContain("The account service could not be reached, so this PC was not added. Try again.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(admitted).toEqual([]);
+      expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+      expect(tab.has(MARKER)).toBe(false);
+      byList!.start = running();
+      await press(renderer, "Add this PC to my account");
+      expect(starts()).toBe(2);
+      expect(words(renderer)).toContain(WAIT);
+    });
+
+    test("409 account_mismatch says so in its own words, and nothing is pressed once", async () => {
+      byList!.start = { status: 409, code: "account_mismatch" };
+      onePress.admits = true;
+      const renderer = await waitingFrom();
+      expect(words(renderer)).toContain("This PC was set up for another account. Sign in to that one, or add this PC again.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(admitted).toEqual([]);
+    });
+
+    test("409 list_removed says the PC comes back only as a new PC", async () => {
+      byList!.start = { status: 409, code: "list_removed" };
+      const renderer = await waitingFrom();
+      expect(words(renderer)).toContain("This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
+    test("409 in_account from a PC that joined the account meanwhile says Added", async () => {
+      byList!.start = { status: 409, code: "in_account" };
+      byList!.started = () => { pc.account = ACCOUNT; };
+      const renderer = await waitingFrom();
+      expect(words(renderer)).toContain("Added");
+      expect(buttons(renderer)).toEqual([]);
+    });
+
+    describe("a PC in its account that the account's move left with no key of its own in the list", () => {
+      const KEYS = "This PC is in your account, but holds no key of its own in your account's list yet: it came in as your account moved, so it cannot let a new device in.";
+      const KEYS_WAIT = "On another device of your account, open Manage account → PCs and choose Add for this PC, then compare the number it shows with the one here.";
+      beforeEach(() => { pc.account = ACCOUNT; pc.needsKeys = true; });
+
+      test("offers the add for its keys in words of its own, and the press starts the add by the list with nothing listed and no window opened", async () => {
+        const renderer = await mount();
+        expect(words(renderer)).toContain(KEYS);
+        expect(words(renderer)).not.toContain("Added");
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+        await press(renderer, "Add this PC to my account's list");
+        expect(byList!.calls[0]).toEqual({ what: "POST /api/account/list/add", body: { account: ACCOUNT }, named: ACCOUNT });
+        expect(words(renderer)).toContain(KEYS_WAIT);
+        expect(buttons(renderer)).toEqual(["Stop waiting"]);
+        // the device whose number was confirmed signs its keys: the PC holds them, and the window says Added
+        byList!.now = { state: "added", run: RUN, account: ACCOUNT, list: LIST };
+        pc.needsKeys = false;
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).toContain("Added");
+        // nothing of the old way: no listing in the directory, no pairing window, no one press
+        expect([directory, links(), admitted]).toEqual([[], 0, []]);
+        expect(asked.map((request) => request.path)).not.toContain("/api/account/one-press");
+      });
+
+      test("a wait for this PC's add that finds it in the account with no key of its own in the list offers its keys, never Added", async () => {
+        pc.account = null;
+        pc.needsKeys = false;
+        const renderer = await waitingFrom();
+        expect(words(renderer)).toContain("On another device of your account, choose Add on desk.");
+        // the PC came into the account by a move of its list meanwhile, with no key of its own there
+        pc.account = ACCOUNT;
+        pc.needsKeys = true;
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).not.toContain("Added");
+        expect(words(renderer)).toContain(KEYS);
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+      });
+
+      test("a second press while the first start of its add is on its way starts nothing and gives up nothing", async () => {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        byList!.started = () => held;
+        const renderer = await mount();
+        await press(renderer, "Add this PC to my account's list");
+        await press(renderer, "Add this PC to my account's list");
+        release();
+        await settle();
+        expect(starts()).toBe(1);
+        expect(cancels()).toEqual([]);
+        expect(words(renderer)).toContain(KEYS_WAIT);
+        expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      });
+
+      test("never says Added while this PC still says it needs keys, whatever its add answered: the offer stays", async () => {
+        const renderer = await mount();
+        await press(renderer, "Add this PC to my account's list");
+        byList!.now = { state: "added", run: RUN, account: ACCOUNT, list: LIST };
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).not.toContain("Added");
+        expect(words(renderer)).toContain(KEYS);
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+      });
+
+      test("Stop waiting gives that add up by its run and offers it again; an add the PC ends says why", async () => {
+        const renderer = await mount();
+        await press(renderer, "Add this PC to my account's list");
+        await press(renderer, "Stop waiting");
+        expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }]);
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+        byList!.now = null;
+        await press(renderer, "Add this PC to my account's list");
+        byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "cancelled" };
+        await advance(ADDED_POLL_MS);
+        expect(words(renderer)).toContain("The numbers were not the same, so nothing was added.");
+        expect(buttons(renderer)).toEqual(["Add this PC to my account's list"]);
+        expect(links()).toBe(0);
+      });
+
+      test("a PC that holds its keys says Added, and one signed in to another account is offered nothing", async () => {
+        pc.needsKeys = false;
+        expect(words(await mount())).toContain("Added");
+        pc.needsKeys = true;
+        signedIn = "acct_other";
+        const other = await mount();
+        expect(buttons(other)).toEqual([]);
+        expect(words(other)).not.toContain(KEYS);
+      });
+    });
+
+    test("an add the PC ends (the numbers were not the same) ends the wait and says why", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "cancelled" };
+      await advance(ADDED_POLL_MS);
+      expect(byList!.calls.map(({ what }) => what)).toContain(`GET /api/account/list/add?run=${RUN}`);
+      expect(words(renderer)).toContain("The numbers were not the same, so nothing was added. If the device that adds this PC showed another number, something stood between the two: try once more, and if they differ again, do not add it.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
+    test("three numbers none confirmed end the wait with the card's own sentence", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "attempts" };
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).toContain("Too many tries for this PC. Start again on the PC in a few minutes.");
+    });
+
+    test("an add whose ten minutes ran out is started again while the wait runs, and Stop waiting gives up the new one", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = running(NEXT);
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(2);
+      expect(words(renderer)).toContain(WAIT);
+      expect(JSON.parse(tab.get(MARKER)!).run).toBe(NEXT);
+      await press(renderer, "Stop waiting");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: NEXT }]);
+    });
+
+    test("an add started again after Stop waiting gave the wait up is given up too", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = running(NEXT);
+      let release!: () => void;
+      byList!.started = () => new Promise<void>((done) => { release = done; });
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(2);
+      await press(renderer, "Stop waiting");
+      release();
+      await settle();
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }, { run: NEXT }]);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    });
+
+    test("Stop waiting gives up the run the tab keeps for the wait, which another copy may have started again", async () => {
+      const renderer = await waitingFrom();
+      tab.set(MARKER, JSON.stringify({ ...JSON.parse(tab.get(MARKER)!), run: NEXT }));
+      await press(renderer, "Stop waiting");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: NEXT }]);
+    });
+
+    test("a PC that never answers the naming of its account holds the add for NAMING_MS at most", async () => {
+      hangNaming = true;
+      const renderer = await waitingFrom();
+      expect(starts()).toBe(0);
+      await advance(NAMING_MS);
+      expect(starts()).toBe(1);
+      expect(words(renderer)).toContain(WAIT);
+    });
+
+    test("an add whose ten minutes ran out is not started again once the address answers for another PC: the wait ends", async () => {
+      const renderer = await waitingFrom();
+      pc.healthId = OTHER_SERVER;
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = running(NEXT);
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(1);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+    });
+
+    test("the old way stays shut while the add by the list runs: the window the listing opened is closed, and the wait opens none", async () => {
+      await waitingFrom();
+      const closes = (): number => asked.filter(({ path }) => path === "/api/relay/link/close").length;
+      const paths = (): string[] => asked.map(({ path }) => path);
+      // the listing asked for the window (the PC's relay key comes with it), and the press closed it once the PC said its add runs
+      expect(links()).toBe(1);
+      expect(closes()).toBe(1);
+      expect(paths().lastIndexOf("/api/relay/link/close")).toBeGreaterThan(paths().indexOf("/api/account/list/add"));
+      // no reopening every 30 seconds while it waits
+      await advance(3 * REOPEN_MS);
+      expect(links()).toBe(1);
+      // the relist keeps the listing in the account, and closes at once the window it had to open for it
+      await advance(RELIST_MS - 3 * REOPEN_MS);
+      expect(directory).toEqual(["putPc", "putPc"]);
+      expect(links()).toBe(2);
+      expect(closes()).toBe(2);
+    });
+
+    test("a wait begun by the list never opens the old window again where a restart of its add answers no_list: it asks the list again", async () => {
+      await waitingFrom();
+      expect(links()).toBe(1);
+      // the run's ten minutes are over; the PC is asked to start it again, and answers no_list (its account service did not
+      // name the list at that moment), which is no word that the account keeps none
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = { state: "no_list", account: ACCOUNT };
+      await advance(ADDED_POLL_MS);
+      expect(starts()).toBe(2);
+      for (let round = 0; round < 3; round++) await advance(REOPEN_MS);
+      // no window again, and the add by the list asked for again, a round apart
+      expect(links()).toBe(1);
+      expect(starts()).toBe(5);
+      expect(asked.map(({ path }) => path)).not.toContain("/api/account/one-press");
+      // once the PC names the list again, the wait follows the new run
+      byList!.start = running(NEXT);
+      await advance(REOPEN_MS);
+      expect(JSON.parse(tab.get(MARKER)!).run).toBe(NEXT);
+      expect(links()).toBe(1);
+    });
+
+    test("a wait begun by the list whose add could not be started again ends at its thirty minutes saying so, with no window left open", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "ended", run: RUN, account: ACCOUNT, why: "timeout" };
+      byList!.start = { state: "no_list", account: ACCOUNT };
+      await advance(ADDED_POLL_MS);
+      await advance(WAITING_MS);
+      expect(words(renderer)).toContain("This PC could not be added by your account's list in time. Try again.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+      // the relists that kept the listing opened a window each and closed it at once
+      expect(asked.filter(({ path }) => path === "/api/relay/link/close").length).toBe(links());
+    });
+
+    test("the wait shows the PC's number where the person pressed Add this PC, and The numbers match confirms it for its run", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "number", run: RUN, account: ACCOUNT, list: LIST, digits: "482913", until: new Date(at + 120_000).toISOString() };
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).toContain("This PC is being added to your account. Does the device adding it show 482 913?");
+      expect(buttons(renderer)).toEqual(["The numbers match", "Cancel", "Stop waiting"]);
+      // the window's own prompt leaves this number to the wait while the wait shows it: one place takes the yes
+      expect(listNumberHeld(RUN)).toBe(true);
+      await press(renderer, "The numbers match");
+      expect(byList!.calls.filter(({ what }) => what === "POST /api/account/list/add/confirm").map(({ body }) => body)).toEqual([{ run: RUN, digits: "482913" }]);
+      // confirmed: the number goes, and the wait goes on until the device's entry adds the PC
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).not.toContain("482 913");
+      expect(buttons(renderer)).toEqual(["Stop waiting"]);
+      expect(listNumberHeld(RUN)).toBe(false);
+    });
+
+    test("Cancel beside the PC's number says the numbers were not the same, and the wait ends", async () => {
+      const renderer = await waitingFrom();
+      byList!.now = { state: "number", run: RUN, account: ACCOUNT, list: LIST, digits: "482913", until: new Date(at + 120_000).toISOString() };
+      await advance(ADDED_POLL_MS);
+      await press(renderer, "Cancel");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: RUN }]);
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).toContain("The numbers were not the same, so nothing was added.");
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    });
+
+    test("a relist keeps the run the tab holds for the wait (another copy started it again), and Stop waiting gives that run up", async () => {
+      const renderer = await waitingFrom();
+      // another copy of the screen started the add again: the tab holds its new run for the same wait
+      tab.set(MARKER, JSON.stringify({ ...JSON.parse(tab.get(MARKER)!), run: NEXT }));
+      await advance(RELIST_MS);
+      expect(directory).toEqual(["putPc", "putPc"]);
+      expect(JSON.parse(tab.get(MARKER)!).run).toBe(NEXT);
+      await press(renderer, "Stop waiting");
+      expect(cancels().map(({ body }) => body)).toEqual([{ run: NEXT }]);
+    });
+
+    test("the PC joins by its list: the wait says Added", async () => {
+      const renderer = await waitingFrom();
+      pc.account = ACCOUNT;
+      byList!.now = { state: "added", run: RUN, account: ACCOUNT, list: LIST };
+      await advance(ADDED_POLL_MS);
+      expect(words(renderer)).toContain("Added");
+      expect(tab.has(MARKER)).toBe(false);
+    });
   });
 });

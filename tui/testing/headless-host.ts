@@ -19,6 +19,7 @@ export interface HeadlessOptions {
 export class HeadlessHost implements Host {
   private readonly host: Host;
   private readonly entries: string[] = [];
+  private readonly held: string[] = [];
   private readonly chunks: Uint8Array[] = [];
   private readonly waiting: Uint8Array[] = [];
   private readonly timerList: { at: number; fire: () => void }[] = [];
@@ -31,6 +32,8 @@ export class HeadlessHost implements Host {
   private interrupt: (() => void) | null = null;
   /** the code the host ended the process with, or the one a signal with no hook would have */
   exitCode: number | null = null;
+  /** how many times the host stopped the process (a SIGTSTP) */
+  suspends = 0;
 
   constructor(options: HeadlessOptions = {}) {
     this.current = { cols: options.cols ?? 80, rows: options.rows ?? 24 };
@@ -62,6 +65,8 @@ export class HeadlessHost implements Host {
       now: () => this.now,
       hook: (hooks) => { this.hooks = hooks; return () => { this.hooks = null; }; },
       exit: (code) => { this.exitCode ??= code; },
+      suspend: (giveBack) => { giveBack(); this.suspends += 1; },
+      hold: (held) => { this.held.push(`${held} after ${this.entries.at(-1) ?? "nothing"}`); },
     });
   }
 
@@ -74,14 +79,16 @@ export class HeadlessHost implements Host {
   onEnd(listener: (end: HostEnd) => void | Promise<void>): () => void { return this.host.onEnd(listener); }
   write(data: Uint8Array | string): boolean { return this.host.write(data); }
   probe(): Promise<ProbeResult> { return this.host.probe(); }
-  drain(): Promise<Uint8Array> { return this.host.drain(); }
+  watchDisplay(): void { this.host.watchDisplay(); }
+  refreshDisplay(): void { this.host.refreshDisplay(); }
+  drain(): Promise<void> { return this.host.drain(); }
 
   /** Bytes typed into the host: they arrive now, as one read. */
   feed(data: string | Uint8Array): void {
     this.sink?.(typeof data === "string" ? new TextEncoder().encode(data) : data);
   }
 
-  /** Bytes already read but not yet delivered: only a drain takes them. */
+  /** Bytes already read but not yet delivered: a drain reads them. */
   queue(data: string | Uint8Array): void {
     this.waiting.push(typeof data === "string" ? new TextEncoder().encode(data) : data);
   }
@@ -100,6 +107,10 @@ export class HeadlessHost implements Host {
   hangUp(): void {
     this.signal("SIGHUP");
   }
+
+  /** A stop from outside (SIGTSTP), and the continue after it (SIGCONT). */
+  stop(): void { this.hooks?.stop(); }
+  cont(): void { this.hooks?.cont(); }
 
   /** The process exits (process.exit, or an error nobody caught). */
   processExit(): void {
@@ -138,6 +149,8 @@ export class HeadlessHost implements Host {
   writeAttempts(): number { return this.attempts; }
   /** raw-mode changes and writes, in order */
   log(): string[] { return [...this.entries]; }
+  /** what the host said it holds, in order, each with the log entry it came after */
+  holds(): string[] { return [...this.held]; }
   output(): string { return new TextDecoder().decode(Buffer.concat(this.chunks)); }
   bytes(): Uint8Array { return Buffer.concat(this.chunks); }
 }

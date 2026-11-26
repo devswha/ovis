@@ -242,11 +242,14 @@ describe("herdr socket", () => {
     "server/herdr-core/socket-transport.ts": "herdr-core's socket, not herdr's: a line that never starts a core, for a client that must not",
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
+    "server/line-call.ts": "one request to a private tool broker's socket, never herdr's",
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
+    "server/approvals/relay.ts": "an agent's approval hook reaching the approval hub's own socket or pipe, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
-    "server/browser-mcp.ts": "the desktop app's built-in browser socket (app/electron/src/browserBroker.ts), not herdr's: one call per connection",
+    "server/omo-control.ts": "OmO's own terminal-control socket, the one the pane's OmO process listens on, not herdr's: one request per connection",
+    "server/acp/client.ts": "an ACP keeper's own socket in this server's state folder (crates/acp-keeper), not herdr's: one connection the keeper streams its log on",
   };
 
   it("opens herdr's socket only in server/herdr/client.ts", () => {
@@ -377,7 +380,8 @@ describe("server entries", () => {
   };
 
   it("starts the server's own entries only through entryCommand", () => {
-    const starts = matches([...serverCode(), "scripts/plugin.ts"].filter((file) => file !== "server/entries.ts"), START_BY_PATH);
+    // a *.test-helpers.ts is test support, as a test is: it runs from a checkout, never in the compiled binary
+    const starts = matches([...serverCode(), "scripts/plugin.ts", "scripts/plugin-tui.ts"].filter((file) => file !== "server/entries.ts" && !file.endsWith(".test-helpers.ts")), START_BY_PATH);
     fail(starts.filter((start) => !(start.file in ALLOWED)).map((start) => start.at),
       "Start the server's own code with entryCommand(name) from server/entries.ts (add the entry to ENTRIES), never with process.execPath and a .ts path: the compiled binary has no such file.");
     const users = new Set(starts.map((start) => start.file));

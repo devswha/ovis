@@ -17,8 +17,9 @@
  * and has none (before 102), the ones this module keeps in each entry's state (`places`).
  */
 import { useEffect, useRef } from "react";
-import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
+import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep, silentSheetLandings } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";
+import { shellMode } from "./shellMode.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
 const KEY = SHEET_HISTORY_KEY;
@@ -100,6 +101,16 @@ function where(): { key: string; index: number } | null {
   const entry = navigation()?.currentEntry;
   return entry ? { key: entry.key, index: entry.index } : null;
 }
+function settleUnheardBack(): void {
+  if (stepping === null || stepOnto === null) return;
+  const at = where();
+  if (at?.key !== stepOnto) return;
+  stepping = null;
+  stepOnto = null;
+  here = at;
+  seen = sheetOf(window.history.state);
+  for (const listener of silentSheetLandings) listener();
+}
 let ahead: string | null = null;
 let climbing: { key: string; owner: string; state: unknown; href: string } | null = null;
 let took = false;
@@ -128,11 +139,9 @@ let stepping: Set<string> | null = null;
 /**
  * Where the browser tells its entries (the Navigation API), the key of the one the step on its way lands on: the entry
  * under the one it leaves, named as the step is asked, as the browser names it then. A sheet that makes its entry
- * meanwhile changes neither. Its landing is the popstate onto that entry (`landing`); any other is not the step's.
+ * meanwhile changes neither.
  */
 let stepOnto: string | null = null;
-let landing: Event | null = null;
-let landedOn: (event: Event) => boolean = () => false;
 let steppedOff = false;
 /**
  * A step the browser drops lands nowhere: the wait ends by itself (LANDING_MS), so the next Back is
@@ -178,14 +187,29 @@ function tellTraversalOver(): void {
   for (const listener of [...traversalOver]) listener();
 }
 
-/** The key of the entry the step on its way lands on; null with no step on its way, or where the browser tells no entries. */
-export function sheetBackOnto(): string | null {
-  return stepping === null ? null : stepOnto;
+/** The page a sheet's item leaves for (leavePageFromSheet), loaded once no step of a closing sheet is to come or on its way. */
+let departure: string | null = null;
+
+function depart(): void {
+  if (departure === null || stepping !== null || leaving.size > 0) return;
+  const url = departure;
+  departure = null;
+  if (owned(window.history.state)) window.location.replace(url);
+  else window.location.assign(url);
 }
 
-/** Whether a popstate is the step on its way landing on the entry it was asked for, and no traversal of anyone else's. */
-export function sheetBackLanded(event: Event): boolean {
-  return landedOn(event);
+/**
+ * Leaves this page for `url` from an item of a sheet that closes as it runs (RowMenu closes the sheet first): the new page
+ * starts loading once the sheet's step off its entry has landed, from the entry under the sheet, so Back from it lands
+ * on the page the sheet was over. Started at once, the load loses to that step whenever the new page answers later than
+ * the step lands, as over a phone's network: Chromium cancels the load, and Android's WebView lands the step after the
+ * new page, which brings this one back. With no sheet's entry here, nor a step on its way, it loads at once. Where the
+ * entry is still a sheet's that stays up under the closed one (a terminal peek), the new page takes that entry: pushed
+ * over it, Back would land on a copy of this page with nothing up, and one more Back on this page again.
+ */
+export function leavePageFromSheet(url: string): void {
+  departure = url;
+  if (!owned(window.history.state)) depart();
 }
 
 function stepBack(): void {
@@ -194,6 +218,10 @@ function stepBack(): void {
   stepOnto = api && at ? api.entries().find((entry) => entry.index === at.index - 1)?.key ?? null : null;
   stepping = new Set();
   window.history.back();
+  if (stepOnto !== null) {
+    const step = stepping;
+    setTimeout(() => { if (stepping === step) settleUnheardBack(); }, LANDING_MS);
+  }
 }
 
 function sheetOf(state: unknown): string | null {
@@ -218,6 +246,20 @@ function owned(state: unknown): boolean {
   return id !== null && (open.has(id) || leaving.has(id));
 }
 
+function sheetAddress(href: string): string {
+  const url = new URL(href, "https://ovis.invalid");
+  // Folding the sidebar changes its presentation, not the place covered by the sheet.
+  url.searchParams.delete("sidebar");
+  if (shellMode() === "relay" && !url.hash.startsWith("#offer=")) {
+    const fields = new URLSearchParams(url.hash.slice(1));
+    if (fields.has("sidebar")) {
+      fields.delete("sidebar");
+      url.hash = fields.toString();
+    }
+  }
+  return url.href;
+}
+
 export function enterSheet(onBack: () => boolean | void, reuse: string | null, stays = false, returns = false): string {
   // StrictMode's second mount, or a sheet reopened before its entry went: the same entry, or the same way onto one
   const timer = reuse === null ? undefined : leaving.get(reuse);
@@ -229,6 +271,8 @@ export function enterSheet(onBack: () => boolean | void, reuse: string | null, s
     return reuse;
   }
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  // An automatic sheet can open after the silent landing, before another tap.
+  settleUnheardBack();
   open.set(id, onBack);
   if (stays) staying.add(id);
   stepping?.add(id);
@@ -304,8 +348,10 @@ export function leaveSheet(id: string): void {
     heirs.delete(id);
     const key = entryKeys.get(id);
     entryKeys.delete(id);
-    if (sheetOf(window.history.state) !== id) return;
-    if (window.location.href !== address) { window.history.replaceState(ordinary(window.history.state, true), ""); seen = null; }
+    if (sheetOf(window.history.state) !== id) { depart(); return; }
+    if (window.location.href !== address && (address === undefined || sheetAddress(window.location.href) !== sheetAddress(address))) {
+      window.history.replaceState(ordinary(window.history.state, true), ""); seen = null;
+    }
     else if (heir !== undefined && open.has(heir) && covered.delete(heir)) {
       window.history.replaceState({ ...(window.history.state as Record<string, unknown>), [KEY]: heir }, "");
       addresses.set(heir, window.location.href);
@@ -317,6 +363,7 @@ export function leaveSheet(id: string): void {
       // its entry: the step leaves this entry too, and a second one would land under the entry it names
       stepBack();
     }
+    depart();
   }, 0));
 }
 
@@ -359,6 +406,7 @@ if (typeof window !== "undefined") {
   // a tap the browser counts as one (a scroll, or Escape, is none)
   const onTap = (): void => {
     if (navigator.userActivation?.isActive !== true) return;
+    settleUnheardBack();
     tapped = true;
     if (asked === null) makeWaiting();
   };
@@ -393,7 +441,6 @@ if (typeof window !== "undefined") {
     holding = false;
     const was = here;
     here = where();
-    landing = stepping !== null && stepOnto !== null && here?.key === stepOnto ? event : null;
     settle(here);
     ahead = null;
     took = climbing !== null && here?.key === climbing.key;
@@ -513,8 +560,8 @@ if (typeof window !== "undefined") {
     else if (!own && step === null && was !== null && here !== null && here.index === was.index - 1) ahead = was.key;
   };
   window.addEventListener("popstate", hear);
+  window.addEventListener("popstate", depart);
   sheetStep.holds = (event) => { hear(event as PopStateEvent); return holding; };
-  landedOn = (event) => { hear(event as PopStateEvent); return event === landing; };
   if (sheetOf(window.history.state) !== null) window.history.replaceState(ordinary(window.history.state, true), "");
 }
 

@@ -42,7 +42,7 @@
 
 import { createServer, type Socket } from "node:net";
 import { AUTOMATIC_INPUT_FEATURE, encodeFrame, type Frame, FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_FACTS, FRAME_FOCUS, FRAME_RESIZE, type HcTransport, makeFrameReader } from "./connection.ts";
-import type { AttachResult, CoreInfo, DocGetParams, DocSetParams, EventsSubscribeParams, HcMethod, HcMethods, MachineView, Terminal, TerminalAttachParams, TerminalLabelParams, TerminalListParams, TerminalRunParams } from "./hc-api.generated.ts";
+import type { AttachResult, CoreInfo, DocGetParams, DocSetParams, EventsSubscribeParams, ExecResult, HcMethod, HcMethods, MachineExecParams, MachineView, Status, Terminal, TerminalAttachParams, TerminalLabelParams, TerminalListParams, TerminalRunParams } from "./hc-api.generated.ts";
 
 /** where a terminal nobody views runs */
 export const HEADLESS = { cols: 200, rows: 120 } as const;
@@ -55,7 +55,7 @@ export const FEATURES_0_1_18: readonly string[] = [...FEATURES_0_1_17, AUTOMATIC
 /** the frames a viewer sends as its user's (or its terminal's) input: what "nothing was sent" counts */
 export const INPUT_KINDS: readonly number[] = [FRAME_DATA, FRAME_RESIZE, FRAME_FOCUS, FRAME_FACTS, FRAME_AUTOMATIC_INPUT];
 
-const ANSWERED = ["hello", "terminal.list", "terminal.get", "terminal.run", "terminal.kill", "terminal.rm", "terminal.label", "terminal.attach", "doc.get", "doc.set", "events.subscribe", "machine.list"] as const satisfies readonly HcMethod[];
+const ANSWERED = ["hello", "terminal.list", "terminal.get", "terminal.run", "terminal.kill", "terminal.rm", "terminal.label", "terminal.attach", "doc.get", "doc.set", "events.subscribe", "machine.list", "machine.exec"] as const satisfies readonly HcMethod[];
 type Answered = Exclude<(typeof ANSWERED)[number], "hello">;
 /** what the fake answers a method with: hc's result type, except that a 0.1.17-like core leaves `automatic_input` out of the attach reply, as 0.1.17 does */
 type Reply<M extends HcMethod> = M extends "terminal.attach" ? Omit<AttachResult, "automatic_input"> & { automatic_input?: boolean } : HcMethods[M]["result"];
@@ -71,6 +71,8 @@ export interface FakeCoreOptions {
   methods?: readonly string[];
   core?: CoreInfo;
   machines?: MachineView[];
+  /** Opt-in process execution, owned by the test. */
+  readonly exec?: (params: MachineExecParams) => ExecResult;
   /**
    * Asked once for each `size` event and line that hears it (default: never): true holds the event back on that line until the
    * event loop turns or the line sends a frame. An attach the line asks meanwhile gets its reply and first bytes ahead of the held
@@ -277,6 +279,7 @@ export class FakeHcCore {
   readonly docs = new Map<string, { value: unknown; version: number }>();
   /** called for every program the fake starts (`terminal.run`, a restart): the test scripts it here */
   onStart: ((program: FakeProgram) => void) | null = null;
+  private readonly exec?: (params: MachineExecParams) => ExecResult;
   private readonly version: string;
   private readonly features: readonly string[];
   private readonly methods: readonly string[];
@@ -291,11 +294,13 @@ export class FakeHcCore {
   private clock = 0;
   private seq = 0;
   private conflicts = 0;
+  private readonly refusedFolders = new Set<string>();
 
   constructor(options: FakeCoreOptions = {}) {
     this.version = options.version ?? "0.1.18";
     this.features = options.features ?? FEATURES_0_1_18;
-    this.methods = options.methods ?? [...ANSWERED];
+    this.exec = options.exec;
+    this.methods = options.methods ?? ANSWERED.filter(method => method !== "machine.exec" || this.exec !== undefined);
     this.info = options.core ?? { id: "fake0000", name: "fake" };
     this.machines = options.machines ?? [];
     this.late = options.late ?? null;
@@ -432,6 +437,11 @@ export class FakeHcCore {
     this.conflicts = count;
   }
 
+  /** `terminal.run` in `folder` fails as hc's does for a folder it cannot start a program in (removed, mode 000): `spawn_failed`. */
+  refuseFolder(folder: string): void {
+    this.refusedFolders.add(folder);
+  }
+
   /** A kept terminal's program died by a signal: its streams close, and it waits for `restartTerminal`. */
   lose(terminal: string, signal = 9): void {
     const held = this.held(terminal);
@@ -468,7 +478,30 @@ export class FakeHcCore {
     this.notify((filter) => this.hears(filter, terminal), { jsonrpc: "2.0", method: "event", params }, type === "size");
   }
 
-  /** How many `size` events are held back on their way (`late`): none once the event loop has turned. */
+  /**
+   * A status written by a pane is also present in the next snapshot. A report that leaves `working` ends a turn, as hc
+   * 0.1.17 and 0.1.18 count them: the record's turn rises and a `turn` event with the new state follows the `status`.
+   */
+  reportStatus(terminal: string, status: Status): void {
+    const { terminal: record } = this.held(terminal);
+    const ends = record.status?.state === "working" && status.state !== "working";
+    record.status = structuredClone(status);
+    this.emit("status", terminal, { status: record.status });
+    if (!ends) return;
+    record.turn = (record.turn ?? 0) + 1;
+    this.emit("turn", terminal, { state: status.state, turn: record.turn });
+  }
+
+  /** While set, every event and heartbeat waits on its line, in order, until `releaseEvents`: a core that answers before it tells. */
+  holdingEvents = false;
+
+  /** What `holdingEvents` held goes out, in order, and events flow again. */
+  releaseEvents(): void {
+    this.holdingEvents = false;
+    for (const line of this.lines.values()) this.release(line);
+  }
+
+  /** How many events are held back on their way (`late` sizes, none once the event loop has turned; `holdingEvents`). */
   heldEvents(): number {
     return [...this.lines.values()].reduce((sum, line) => sum + line.held.length, 0);
   }
@@ -626,6 +659,10 @@ export class FakeHcCore {
     };
     // one handler per method, each checked against hc's result type for that method
     const handlers: { [M in Answered]: () => Answer<M> } = {
+      "machine.exec": () => {
+        if (this.exec === undefined) throw new CallError(-32601, "unknown_method", 'unknown method "machine.exec"', "see `hc schema`");
+        return { result: this.exec(params) };
+      },
       "terminal.list": () => {
         const { all, labels } = params as TerminalListParams;
         const matching = [...this.terminals.values()].map((held) => held.terminal).filter((record) => matches(record, labels));
@@ -671,6 +708,9 @@ export class FakeHcCore {
   }
 
   private run(params: TerminalRunParams): Terminal {
+    if (typeof params.cwd === "string" && this.refusedFolders.has(params.cwd)) {
+      throw new CallError(-32000, "spawn_failed", `cannot start a program in "${params.cwd}"`, "check that the folder exists and can be entered");
+    }
     if (params.on && !this.machines.some((machine) => machine.name === params.on)) {
       throw new CallError(-32000, "machine_unknown", `unknown machine "${params.on}"`, this.machines.length === 0 ? "no machines yet: hc machine add <ssh-target>" : "see `hc machine list`");
     }
@@ -680,7 +720,7 @@ export class FakeHcCore {
     const terminal: Terminal = {
       address, argv: params.argv ?? (params.line ? ["sh", "-c", params.line] : ["sh"]), cols: size.cols, created_ms: Date.now(), cwd: params.cwd ?? "/",
       die_with_parent: false, exit_code: null, finished_ms: null, identity: "ghostty", keep: params.keep ?? false, labels: { ...params.labels }, name: params.name ?? null,
-      notify: !params.no_notify, parent: null, pid: this.pid(), reason: null, reported: false, rm: params.rm ?? false, rows: size.rows, screen: "exact", signal: null,
+      notify: !params.no_notify, parent: params.parent ?? null, pid: this.pid(), reason: null, reported: false, rm: params.rm ?? false, rows: size.rows, screen: "exact", signal: null,
       state: "live", status: null, status_ms: null, template: null, title: "", turn: 0,
     };
     const held: Held = { terminal, program: this.startProgram(terminal), viewers: [], paint: { body: "", mark: "l", after: "", split: false }, lost: false };
@@ -834,8 +874,8 @@ export class FakeHcCore {
       if (!heard(stream.filter!)) continue;
       stream.carried = true;
       const { line } = stream;
-      if (size && (line.held.length > 0 || this.late?.() === true)) {
-        if (line.held.length === 0) setImmediate(() => this.release(line));
+      if (this.holdingEvents || (size && (line.held.length > 0 || this.late?.() === true))) {
+        if (!this.holdingEvents && line.held.length === 0) setImmediate(() => this.release(line));
         line.held.push({ stream, bytes: lineOf(message) });
         continue;
       }
@@ -846,6 +886,7 @@ export class FakeHcCore {
 
   /** What was held back for `line` (`late`) goes out, in order. */
   private release(line: Line): void {
+    if (this.holdingEvents) return;
     for (const { stream, bytes } of line.held.splice(0)) if (line.channels.get(stream.id) === stream) stream.push(bytes);
   }
 

@@ -4,8 +4,8 @@ import { createUnixHost } from "./unix.ts";
 // The real host's wiring over stand-ins for stdin, stdout and the process: never this test's own
 // terminal. tui/host/restore.contract.test.ts runs the same host on a real pseudo-terminal.
 const ESC = "\x1b";
-const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[>1u`;
-const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
+const ENTER = `${ESC}[?1049h${ESC}[?25l${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[>1u`;
+const LEAVE = `${ESC}[<u${ESC}[?1006l${ESC}[?1003l${ESC}[?1002l${ESC}[?2004l${ESC}[?1004l${ESC}[?25h${ESC}[?1049l`;
 
 type Listener = (...args: unknown[]) => void;
 
@@ -17,7 +17,7 @@ class Emitter {
   count(event: string) { return this.listeners.get(event)?.size ?? 0; }
 }
 
-function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Record<string, string> } = {}) {
+function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Record<string, string>; parentStopping?: boolean } = {}) {
   const log: string[] = [];
   const waiting: Buffer[] = [];
   const stdin = Object.assign(new Emitter(), {
@@ -28,7 +28,7 @@ function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Reco
     unref: () => { log.push("unref"); },
   });
   const stdout = Object.assign(new Emitter(), { isTTY: options.stdoutTTY ?? true, fd: 1, columns: 120, rows: 40 });
-  const proc = Object.assign(new Emitter(), { exit: (code: number) => { log.push(`exit ${code}`); } });
+  const proc = Object.assign(new Emitter(), { exit: (code: number) => { log.push(`exit ${code}`); }, pid: 4242, ppid: 4241, kill: (pid: number, signal: string) => { log.push(`kill ${pid} ${signal}`); } });
   const failures: string[] = [];
   const refuse = { always: false, pauses: 0 };
   const writeSync = (fd: number, buffer: Uint8Array, offset: number, length: number) => {
@@ -38,12 +38,52 @@ function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Reco
     log.push(`write ${fd} ${new TextDecoder().decode(buffer.subarray(offset, offset + part))}`);
     return part;
   };
-  const host = createUnixHost({ stdin, stdout, process: proc, env: options.env ?? {}, writeSync, pause: () => { refuse.pauses++; } });
+  // the stop as the system's would do it, logged: asked whether the job runs again already, then given back and stopped
+  const stop = (continuedAlready: () => boolean, giveBack: () => void) => {
+    giveBack();
+    log.push(continuedAlready() ? "not stopped" : "stopped");
+  };
+  const stopping = (pid: number) => { log.push(`stopping ${pid}?`); return options.parentStopping ?? true; };
+  const host = createUnixHost({ stdin, stdout, process: proc, env: options.env ?? {}, writeSync, pause: () => { refuse.pauses++; }, stop, stopping });
   const written = () => log.filter((entry) => entry.startsWith("write ")).map((entry) => entry.slice(8)).join("");
   return { host, log, waiting, stdin, stdout, proc, failures, refuse, written };
 }
 
 describe("the unix host", () => {
+  it("SIGTSTP gives the terminal back (every mode off, raw off) before the process stops itself; SIGCONT enters again and asks for a repaint", () => {
+    const { host, log, proc, written } = standIns();
+    const sizes: unknown[] = [];
+    host.onResize((size: unknown) => sizes.push(size));
+    host.enter();
+    const entered = written();
+    proc.emit("SIGTSTP");
+    const atStop = log.slice();
+    expect(written().slice(entered.length)).toBe(LEAVE);
+    expect(atStop.at(-1)).toBe("stopped");
+    expect(atStop).not.toContain("stopping 4241?");
+    expect(atStop.filter((entry: string) => entry.startsWith("raw")).at(-1)).toBe("raw off");
+    proc.emit("SIGCONT");
+    expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
+    expect(log.filter((entry: string) => entry.startsWith("raw")).at(-1)).toBe("raw on");
+    expect(sizes).toEqual([{ cols: 120, rows: 40 }]);
+  });
+
+  it.each([
+    ["stopped with it: it stops", true, ["stopping 4241?", "stopped"]],
+    ["running again: the shell continued the job before this stop was heard, and it does not stop", false, ["stopping 4241?", "not stopped"]],
+  ] as const)("started by a launcher, gives the terminal back at SIGTSTP, then asks whether the launcher, the job's first process, stopped at the same signal: %s", (_, parentStopping, asked) => {
+    const { host, log, proc, stdin, written } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping });
+    host.enter();
+    const entered = written();
+    const from = log.length;
+    proc.emit("SIGTSTP");
+    expect(log.slice(from).filter((entry) => entry.startsWith("stopping") || entry.includes("stopped"))).toEqual([...asked]);
+    expect(written().slice(entered.length)).toBe(LEAVE);
+    proc.emit("SIGCONT");
+    expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
+    expect(stdin.count("readable")).toBe(1);
+  });
+
   it("enters nothing when stdin or stdout is not a terminal", () => {
     for (const ttys of [{ stdinTTY: false }, { stdoutTTY: false }]) {
       const { host, log, proc, stdin, stdout } = standIns(ttys);
@@ -136,7 +176,7 @@ describe("the unix host", () => {
     Object.assign(stdout, { columns: 100, rows: 30 });
     stdout.emit("resize");
     expect(sizes).toEqual([{ cols: 100, rows: 30 }]);
-    expect(written()).toBe(`${ENTER}${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1006h${ESC}[=1;1u`);
+    expect(written()).toBe(`${ENTER}${ESC}[?1004h${ESC}[?2004h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[=1;1u`);
   });
 
   it("takes the colour depth from COLORTERM", () => {
