@@ -517,7 +517,7 @@ class Connection {
         const status = isObject(params["status"]) ? params["status"] : {};
         if (threadId !== null && threadId === this.thread) this.idle = status["type"] === "idle";
         if (threadId === null || status["type"] !== "active") break;
-        if (this.ownTurn(threadId) && this.turn !== "running") this.turn = "running";
+        if (this.ownTurn(threadId) && this.turn !== "failed") this.turn = "running";
         void this.subscribe(threadId);
         break;
       }
@@ -527,9 +527,12 @@ class Connection {
         if (threadId !== null && typeof turn["rootTurnId"] === "string" && turn["rootTurnId"] !== turn["id"]) this.subagents.add(threadId);
         if (threadId === null || this.subagents.has(threadId)) break;
         this.own(threadId, true);
+        const id = typeof turn["id"] === "string" ? turn["id"] : null;
+        if (id !== null && id === this.turnId) break;
         this.turn = "running";
         this.idle = false;
-        this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
+        this.turnId = id;
+        this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "began", prompt: id });
         if (this.rerouted !== null && this.rerouted.turnId !== this.turnId) { this.rerouted = null; changed(this.paneId); }
         break;
       }
@@ -552,10 +555,30 @@ class Connection {
         this.rerouted = { turnId: params["turnId"], model: params["toModel"] };
         changed(this.paneId);
         break;
+      case "error": {
+        // 0.171.0's ErrorNotification includes retryable notices. A terminal one (including usageLimitExceeded)
+        // can precede turn/completed and is the same turn's failure, not another alert.
+        const error = params["error"];
+        if (threadId !== null && threadId === this.thread && this.ownTurn(threadId) && this.turn === "running"
+          && params["willRetry"] === false && typeof params["turnId"] === "string"
+          && (this.turnId === null || params["turnId"] === this.turnId) && isObject(error) && typeof error["message"] === "string") {
+          this.turnId = params["turnId"];
+          this.turn = "failed";
+          this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "ended", prompt: this.turnId, failed: true });
+        }
+        break;
+      }
       case "turn/completed": {
         const turn = isObject(params["turn"]) ? params["turn"] : {};
-        if (this.ownTurn(threadId)) this.turn = turn["status"] === "failed" ? "failed" : "answered";
-        if (threadId !== null && threadId === this.thread) this.idle = true;
+        const id = typeof turn["id"] === "string" ? turn["id"] : null;
+        if (!this.ownTurn(threadId) || (this.turnId !== null && id !== this.turnId)) break;
+        if (threadId === this.thread) this.idle = true;
+        if (this.turn === "failed") break;
+        this.turn = turn["status"] === "failed" ? "failed" : "answered";
+        if (this.turn === "failed" && threadId === this.thread && id !== null) {
+          this.turnId = id;
+          this.hub.tellTurn(this.paneId, SOURCE.kind, { turn: "ended", prompt: id, failed: true });
+        }
         break;
       }
       case "item/started": {

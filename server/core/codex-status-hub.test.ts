@@ -41,6 +41,29 @@ function codexHub(text: string) {
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
+  it("reports a served failure before herdr rests, but releases queued input only at rest", async () => {
+    const h = codexHub(failed);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      const event = { turn: "ended", prompt: "u1", failed: true } as const;
+      h.status.hookTurn("w1:p1", "codex", event);
+      expect(h.last().status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+      expect(h.pending.current("w1:p1")).toBe("working");
+      expect(h.status.queueHeld("w1:p1", true)).toBe(true);
+      h.herdrSays(pane("done"));
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("idle");
+      expect(h.status.queueHeld("w1:p1", true)).toBe(false);
+      await h.looked();
+      handlers.onStatus("w1:p1", "done", "codex");
+      h.status.hookTurn("w1:p1", "codex", event);
+      expect(h.pending.current("w1:p1")).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { h.restore(); }
+  });
+
   it("takes the turn's end its own app server told, and reads no rollout for it", async () => {
     // the rollout says answered: only the server's word can make this turn a failure
     const h = codexHub(answered);
