@@ -21,6 +21,11 @@ describe("server proof bytes", () => {
     expect(answerServerChallenge(CHALLENGE, PC_SECRET, ROUTE)).toBe(JSON.stringify({ type: "server_proof", answer: ANSWER }));
   });
 
+  test("a relay key with its top bit set is read as tweetnacl read it, with the bit masked", () => {
+    const highBit = CHALLENGE.replace(RELAY_PUBLIC, RELAY_PUBLIC.slice(0, 62) + "cf");
+    expect(answerServerChallenge(highBit, PC_SECRET, ROUTE)).toBe(JSON.stringify({ type: "server_proof", answer: ANSWER }));
+  });
+
   test("the relay's challenge is answered only by the key it was made for", () => {
     const { expected, frame } = serverChallenge(PC_PUBLIC, ROUTE);
     expect(verifyServerProof(answerServerChallenge(frame, PC_SECRET, ROUTE), expected)).toBe(true);
