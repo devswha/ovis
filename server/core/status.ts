@@ -102,6 +102,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     seenMoved?: (from: string, to: string, renumber: (id: number) => number) => void;
     /** a pane that ended, closed or moved to another ID: what was kept under its ID is no longer that pane's */
     paneVacated?: (paneId: string) => void;
+    /** context the agent's launch extension last reported, for this pane's agent kind */
+    hookContextOf?: (paneId: string, kind: string | null | undefined) => PaneContext | null | undefined;
     /** runs each tick of the card reads (CARD_READ_MS) and returns how to stop them; tests tick by hand */
     cardTimer?: (tick: () => Promise<void>) => () => void;
   };
@@ -544,7 +546,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         const background = backgroundOf(pane.pane_id);
         const waiting = waits.waiting(pane.pane_id);
         const plan = plans.summaryOf(pane.pane_id);
-        const context = plans.contextOf(pane.pane_id);
+        const context = options.hookContextOf?.(pane.pane_id, pane.agent) ?? plans.contextOf(pane.pane_id);
         return background > 0 || waiting || plan !== null || context !== null ? { ...pane, ...(background > 0 ? { background_tasks: background } : {}), ...(waiting ? { background_wait: true as const } : {}), ...(plan !== null ? { plan } : {}), ...(context !== null ? { context } : {}) } : pane;
       }),
     }, completions);
@@ -1179,5 +1181,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn };
+  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn, contextChanged };
 }

@@ -28,6 +28,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
+import type { PaneContext } from "../../shared/protocol.ts";
 import { settingsFile } from "../claude-settings-file.ts";
 import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
 import { isNonce, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
@@ -105,6 +106,8 @@ export interface ApprovalAdapter {
   mode?(event: unknown): ToldMode | null;
   /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
   command?(event: unknown): CommandEvent | null;
+  /** A sample from the running session: null for no measurement, undefined for other events. */
+  context?(event: unknown): PaneContext | null | undefined;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
   decision(label: string): ApprovalDecision | null;
   /** What the hook prints for a decision, or for none (null), after which the agent's own dialog stands. */
@@ -205,6 +208,7 @@ export class ApprovalHub {
   private readonly pending = new Map<string, Pending[]>();
   /** each pane's agent's permission mode, as its hook last told */
   private readonly modes = new Map<string, ToldMode>();
+  private readonly contexts = new Map<string, { readonly kind: string; readonly context: PaneContext | null }>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
   readonly address: string;
@@ -215,6 +219,8 @@ export class ApprovalHub {
     onTurn?: (paneId: string, kind: string, turn: TurnEvent) => void;
     /** the agent started in `paneId` ran a command, as its hook told */
     onCommand?: (paneId: string, kind: string, command: CommandEvent) => void;
+    /** the live context of an agent started in `paneId` changed, including when its reading became unavailable */
+    onContext?: (paneId: string, context: PaneContext | null) => void;
     /** what the hook runs, before its own arguments */
     relay?: readonly string[];
   } = {}) {
@@ -230,6 +236,12 @@ export class ApprovalHub {
   /** The permission mode the hook of the agent started in `paneId` last told, and in which of its sessions, or null. */
   toldMode(paneId: string): ToldMode | null {
     return this.modes.get(paneId) ?? null;
+  }
+
+  /** No report (undefined) differs from a running extension that reported unknown context (null). */
+  contextOf(paneId: string, kind: string | null | undefined): PaneContext | null | undefined {
+    const report = this.contexts.get(paneId);
+    return report !== undefined && report.kind === kind ? report.context : undefined;
   }
 
   /** Whether an agent of this kind asks its approvals through the hub. */
@@ -348,10 +360,19 @@ export class ApprovalHub {
     // told, not asked: the hook prints nothing, so the agent goes on as it would without it
     const turn = launch.adapter.turn?.(parsed) ?? null;
     const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
-    if (turn !== null || command !== null) {
+    const context = launch.adapter.context?.(parsed);
+    if (context !== undefined || turn !== null || command !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
+      if (context !== undefined) {
+        const { paneId, adapter: { kind } } = launch;
+        const before = this.contextOf(paneId, kind);
+        if (before === undefined || before?.used !== context?.used || before?.window !== context?.window) {
+          this.contexts.set(paneId, { kind, context });
+          this.options.onContext?.(paneId, context);
+        }
+      }
       if (turn !== null) this.options.onTurn?.(launch.paneId, launch.adapter.kind, turn);
-      else this.options.onCommand?.(launch.paneId, launch.adapter.kind, command!);
+      else if (command !== null) this.options.onCommand?.(launch.paneId, launch.adapter.kind, command);
       return;
     }
     const card = launch.adapter.toCard(parsed);
@@ -483,8 +504,10 @@ export class ApprovalHub {
 
   /** A launch no request is taken for any more, and its key file, so its hook finds no key and gives no decision. */
   private dropLaunch(digest: string): void {
+    const launch = this.launches.get(digest);
     this.launches.delete(digest);
     this.dropKey(digest);
+    if (launch !== undefined && this.contexts.delete(launch.paneId)) this.options.onContext?.(launch.paneId, null);
   }
 
   private dropKey(digest: string): void {
@@ -493,6 +516,7 @@ export class ApprovalHub {
 
   stop(): void {
     this.stopped = true;
+    this.contexts.clear();
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes
     for (const list of [...this.pending.values()]) for (const entry of [...list]) entry.settle(null);
     if (this.listener === null) return;
