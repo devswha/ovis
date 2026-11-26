@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useSettings } from "./settings.ts";
-import { bindingChord, formatExactChord, isMacPlatform, parseExactChord, type ExactChord, type ShortcutOverrides } from "./shortcutBindings.ts";
+import { bindingChord, FIXED_SHORTCUT_IDS, formatExactChord, isMacPlatform, parseExactChord, type ExactChord, type ShortcutOverrides } from "./shortcutBindings.ts";
 import { physicalKey } from "./keys.ts";
 
 import type { AppActions } from "./actions.ts";
@@ -40,8 +40,8 @@ export const SHORTCUTS = [
 
 export type ShortcutId = (typeof SHORTCUTS)[number]["id"];
 
-export function listedOnly(id: ShortcutId): boolean {
-  return id === "voice" || id === "hold-message";
+export function fixedShortcut(id: ShortcutId): boolean {
+  return FIXED_SHORTCUT_IDS.includes(id);
 }
 
 export interface ShortcutEventLike {
@@ -72,13 +72,15 @@ const KEY_TO_ID: Readonly<Record<string, ShortcutId>> = {
 };
 
 export function shortcutKeys(id: ShortcutId, overrides: ShortcutOverrides): string[] {
+  if (fixedShortcut(id)) return [];
   if (Object.hasOwn(overrides, id)) return overrides[id] ? [overrides[id]!] : [];
   return Object.entries(KEY_TO_ID).filter(([, action]) => action === id).map(([key]) => key);
 }
 
 export function shortcutDisplayKeys(id: ShortcutId, overrides: ShortcutOverrides): string[] {
   const shortcut = SHORTCUTS.find((candidate) => candidate.id === id)!;
-  if (listedOnly(id) || !Object.hasOwn(overrides, id)) {
+  if (overrides[id] === null) return [];
+  if (fixedShortcut(id) || !Object.hasOwn(overrides, id)) {
     // An existing custom binding can already own the newly introduced Quote default.
     return id === "quote-chat" && shortcutConflict(id, shortcutKeys(id, {}), overrides) ? [] : [...shortcut.keys];
   }
@@ -145,7 +147,7 @@ export function matchShortcut(event: ShortcutEventLike, platformIsMac: boolean, 
   if (event.ctrlKey || event.altKey || event.metaKey) {
     const pressed = formatExactChord(exactChordFromEvent(event));
     for (const shortcut of SHORTCUTS) {
-      if (listedOnly(shortcut.id)) continue;
+      if (fixedShortcut(shortcut.id)) continue;
       const value = Object.hasOwn(overrides, shortcut.id) ? overrides[shortcut.id] : null;
       const chord = value ? parseExactChord(value) : null;
       if (chord && formatExactChord(chord) === pressed) return shortcut.id;
@@ -155,7 +157,7 @@ export function matchShortcut(event: ShortcutEventLike, platformIsMac: boolean, 
   if (!hasMod || !event.shiftKey || event.altKey) return null;
   const key = shortcutEventKey(event);
   for (const shortcut of SHORTCUTS) {
-    if (listedOnly(shortcut.id)) continue;
+    if (fixedShortcut(shortcut.id)) continue;
     if (Object.hasOwn(overrides, shortcut.id) && overrides[shortcut.id] === key) return shortcut.id;
   }
   const id = KEY_TO_ID[key];
