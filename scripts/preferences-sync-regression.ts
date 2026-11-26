@@ -206,17 +206,21 @@ try {
       await route.continue();
     });
     await a.page.goto(`${origin}/?settings=appearance`);
-    const changed = chooseMode(a, "Dark");
+    const stale = a.page.waitForResponse(isPut);
+    const rebased = a.page.waitForResponse((response) => isPut(response) && response.ok());
+    await a.page.getByRole("group", { name: "Theme", exact: true }).getByRole("button", { name: "Dark", exact: true }).click();
+    await a.page.clock.runFor(600);
     await reached(onWay.promise, "the held PUT", async () => `${a.puts.length} PUTs sent`);
     const aPalette = settingsHold(a.page, { lightTheme: "catppuccin", theme: "dark" });
     const bDark = settingsHold(b.page, { theme: "dark", lightTheme: "catppuccin" });
     await write({ palette: "catppuccin" });
     release.resolve();
-    await changed;
+    assert.equal((await stale).status(), 409);
+    await advanceUntil([a.page], rebased);
     await Promise.all([aPalette, bDark]);
     console.log("QA concurrent changes settled");
     await windows([a, b]);
-    assert.equal(a.puts.length, 2);
+    assert.equal(a.puts.length, 3);
     assert.equal((await held()).settings.lightTheme, "catppuccin");
     await a.page.unrouteAll({ behavior: "wait" });
 
