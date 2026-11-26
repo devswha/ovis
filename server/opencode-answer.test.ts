@@ -541,6 +541,16 @@ describe("OpenCode answer ordering", () => {
     });
   });
 
+  it("keeps the fallback card when a form closes on a read whose permission list failed", async () => {
+    await fixture(async (f) => {
+      f.forms = [questions[0]![0]];
+      expect((await f.read()).fallback).toBeUndefined();
+      f.forms = [];
+      f.permissionListing = async () => new Response(null, { status: 503 });
+      expect((await f.read())?.fallback).toBe(true);
+    });
+  });
+
   it("keeps another session's fallback card when a watch still reading the pane's earlier session sees that session's form go", async () => {
     await fixture(async (f) => {
       const watch = new OpenCodePromptState();

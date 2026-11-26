@@ -1069,9 +1069,10 @@ async function readKnownPrompt(
     const form = state.listed;
     // a request or form answered or cancelled elsewhere (its own terminal, an interrupt): OpenCode's dialog closes a
     // moment before herdr stops reporting blocked, so no fallback card stands in for it meanwhile while this session
-    // has nothing else pending
+    // has nothing else pending, as this read's lists, both read, say
     const closed = openCodeClosed.get(paneId);
-    if (!form && !state.permissions?.length && closed?.sessionID === sessionID && Date.now() - closed.at < FORM_SETTLE_MS) {
+    const listsRead = forms !== null && (permissions !== null || !openCodePermissionsRead(service!.version));
+    if (!form && listsRead && !state.permissions?.length && closed?.sessionID === sessionID && Date.now() - closed.at < FORM_SETTLE_MS) {
       return { prompt: null, suppressFallback: true };
     }
     if (!form || form.fields.length === 0) break native;
