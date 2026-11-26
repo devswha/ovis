@@ -623,10 +623,12 @@ describe("upload body chunk size", () => {
     const reader = remote.body.getReader();
     const first = await reader.read();
     expect(first.done).toBe(false);
+    await p.flush();
+    expect(local.getBufferedAmount()).toBeGreaterThan(0);
     remote.stopRequest();
     remote.headers(413);
     remote.end();
-    await sending;
+    expect(await sending).toBeUndefined();
     expect((await response).bytes).toBe(0);
     await p.flush();
     expect(local.response?.status).toBe(413);
@@ -635,6 +637,30 @@ describe("upload body chunk size", () => {
     expect(p.client.stats.streams).toBe(0);
     expect(p.server.stats.streams).toBe(0);
   });
+});
+
+it("keeps uploading a single-chunk body after early 204 headers (#4476)", async () => {
+  const p = pair({ trace: false });
+  const local = p.client.openHttp({ method: "POST", target: "/api/pane/image", headers: [["content-type", "application/json"]], body: "stream" });
+  const generated = source(4 * WS_CONTINUATION_CAPACITY, 4 * WS_CONTINUATION_CAPACITY);
+  const sending = outcome(local.sendBody(generated.body));
+  await p.flush();
+  const remote = required(p.http[0]);
+  remote.accept();
+  const reader = remote.body.getReader();
+  const first = await reader.read();
+  expect(first.done).toBe(false);
+  remote.headers(204);
+  let bytes = first.value?.length ?? 0;
+  for (let next = await reader.read(); !next.done; next = await reader.read()) bytes += next.value.length;
+  expect(bytes).toBe(4 * WS_CONTINUATION_CAPACITY);
+  remote.end();
+  expect(await sending).toBeUndefined();
+  await p.flush();
+  expect(local.response?.status).toBe(204);
+  expect(p.errors).toEqual([]);
+  expect(p.client.stats.streams).toBe(0);
+  expect(p.server.stats.streams).toBe(0);
 });
 
 describe("WebSockets", () => {
