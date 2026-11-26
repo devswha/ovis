@@ -140,7 +140,7 @@ function gitInstallPath(): string | null {
  */
 const UNKNOWN_HOST = /No \S+ host key is known for /;
 const CONFIG_FORWARD = /^(localforward|remoteforward|dynamicforward) /m;
-/** bytes askSocket keeps of an answer and of ssh's own words: a recovery socket's answers are a few hundred */
+/** bytes askSocket reads of an answer before refusing it: a recovery socket's answers are a few hundred */
 const SOCKET_ANSWER_MAX = 65_536;
 export const SOCKET_SSH_TOO_OLD = "Adding a PC to your account over SSH from Windows needs OpenSSH 9.4 or newer on this PC. Update Git for Windows (or OpenSSH), then try again.";
 
