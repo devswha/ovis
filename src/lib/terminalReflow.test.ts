@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { selectionText, wrappedRange } from "./ghostty/selection.ts";
 import { testTerminal } from "./ghostty/testTerminal.test-support.ts";
 
 // Ovis keeps scrollback 0, so a narrower pane reflows wrapped rows with no history to push them into.
@@ -23,14 +24,18 @@ describe("Ghostty reflow with no scrollback", () => {
 });
 
 // A herdr-core pane keeps its history (scrollback > 0), so the buffer is taller than the screen.
-describe("Ghostty erase above (ESC[1J) from a row's last column", () => {
-  it("clears the screen through the cursor without erasing the following row or history", async () => {
+describe("Ghostty erase above (ED 1 and DECSED 1)", () => {
+  it("unwraps the following row when ED clears the cursor's row", async () => {
     const term = await testTerminal({ cols: 5, rows: 3, scrollback: 100 });
     try {
       term.write("p\r\nq\r\nr\r\ns\r\nabcdefgh\x1b[2;5H\x1b[1J");
       const buffer = term.buffer.active;
-      expect(buffer.getLine(buffer.baseY + 2)?.translateToString(true)).toBe("fgh");
-      expect(buffer.getLine(buffer.baseY + 1)?.translateToString(true)).toBe("");
+      const erased = buffer.baseY + 1;
+      const following = erased + 1;
+      expect(buffer.getLine(following)?.translateToString(true)).toBe("fgh");
+      expect(wrappedRange(buffer, following)).toEqual({ first: following, last: following });
+      expect(selectionText(buffer, [0, erased], [term.cols, following], false, "\n")).toBe("\nfgh");
+      expect(buffer.getLine(erased)?.translateToString(true)).toBe("");
       expect(buffer.getLine(0)?.translateToString(true)).toBe("p");
     } finally {
       term.dispose();
@@ -50,14 +55,40 @@ describe("Ghostty erase above (ESC[1J) from a row's last column", () => {
     }
   });
 
-  it("clears the cursor's unprotected row while leaving the following text intact", async () => {
+  it("unwraps the following row when DECSED clears the cursor's unprotected row", async () => {
     const term = await testTerminal({ cols: 5, rows: 3, scrollback: 100 });
     try {
       term.write("p\r\nq\r\nr\r\ns\r\nabcdefgh\x1b[2;5H\x1b[?1J");
       const buffer = term.buffer.active;
       expect(buffer.getLine(buffer.baseY + 2)?.translateToString(true)).toBe("fgh");
+      expect(buffer.getLine(buffer.baseY + 2)?.isWrapped).toBe(false);
       expect(buffer.getLine(buffer.baseY + 1)?.translateToString(true)).toBe("");
       expect(buffer.getLine(0)?.translateToString(true)).toBe("p");
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it("unwraps the following row when erasing a wide character through the final column", async () => {
+    const term = await testTerminal({ cols: 5, rows: 2 });
+    try {
+      term.write("abc界def\x1b[1;4H\x1b[1J");
+      const buffer = term.buffer.active;
+      expect(buffer.getLine(buffer.baseY)?.translateToString(true)).toBe("");
+      expect(buffer.getLine(buffer.baseY + 1)?.translateToString(true)).toBe("def");
+      expect(buffer.getLine(buffer.baseY + 1)?.isWrapped).toBe(false);
+    } finally {
+      term.dispose();
+    }
+  });
+
+  it("keeps the following row wrapped when ED leaves text to the right of the cursor", async () => {
+    const term = await testTerminal({ cols: 5, rows: 2 });
+    try {
+      term.write("abcdefgh\x1b[1;4H\x1b[1J");
+      const buffer = term.buffer.active;
+      expect(buffer.getLine(buffer.baseY)?.translateToString(true)).toBe("    e");
+      expect(buffer.getLine(buffer.baseY + 1)?.isWrapped).toBe(true);
     } finally {
       term.dispose();
     }
