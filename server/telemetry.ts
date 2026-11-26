@@ -14,7 +14,7 @@
  * Only the real entrypoint (index.ts) makes one of these, so tests and a remote PC's bridge
  * send nothing.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { ACTIVE_LATE_DAYS, countBucket, COUNTS_LATE_DAYS, emptyUsage, harnessOf, sameUsage, TELEMETRY_ANSWER_WAYS, telemetryAgentVersion, TELEMETRY_VERSIONS_MAX, type TelemetryAgentDay, type TelemetryAnswerWay, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_SHOWN, telemetryCountsChange, telemetryHarnesses, telemetrySettings, telemetrySurface, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryBucket, type TelemetryChange, type TelemetryCounter, type TelemetryCounts, type TelemetryCountsChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetryRuntime, type TelemetrySettings, type TelemetryShown, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount, type TelemetryWidthCounts } from "../shared/telemetry.ts";
@@ -31,8 +31,6 @@ const FILE = "telemetry.json";
 const OFF_FILE = "telemetry-off";
 /** A mark written for an off an older build kept in FILE alone: no off happened then, so an on asked before it still goes. */
 const MIGRATED_MARK = "migrated:";
-/** joins an off's mark written again after its write to the mark that off counted: the same off, not counted twice */
-const SAME_OFF = "~";
 const LOCK_FILE = "telemetry.lock";
 /** how long a server waits for another's lock before it skips its write (an off is not skipped: it is marked before this wait, and goes without the lock after it) */
 const LOCK_WAIT_MS = 200;
@@ -277,12 +275,6 @@ interface Saved {
    * send after it. The browser hears it as TelemetryStatus.counts_generation and names it in each batch
    */
   forgotten: number;
-  /**
-   * the off mark `forgotten` already counts. An off writes its mark before telemetry.json, and a server can go between the
-   * two: a mark that differs from this one is an off no write has counted yet, so every reader counts it once (see
-   * `counted`). A file without it (an older build's) is taken to count the mark there when it is read
-   */
-  forgotten_mark: string | null;
   /** the visit days in `active` were recorded only after the current notice. A file without it (an older build's) may
    * hold a day recorded before the notice, so its days not yet delivered are dropped when read */
   visits_after_notice: true;
@@ -394,15 +386,26 @@ function offMark(offFile: string): string | null | undefined {
   } catch { return undefined; }
 }
 
+/** the bits of a page's counting generation below the counter: they name the off mark */
+const MARK_BITS = 24;
+
 /**
- * An off whose mark the counter does not count yet (its server went before it wrote telemetry.json, or wrote it before the
- * mark landed), counted now: what was kept before it is dropped and the counter goes up once, so no page that heard the
- * counter before that off names it after. The same for every reader, as it depends only on the file and the mark; a mark that
- * cannot be read is not counted here, as it already reads off.
+ * The counting generation a page hears (TelemetryStatus.counts_generation) and names with its settings and batches: the
+ * counter of offs, and below it a hash of the off mark. Every off writes a new mark, and a mark never comes back once
+ * replaced, so a generation heard before an off is not the one after it, even when the off's server went before it raised
+ * the counter (#4213). It still grows with every off that does raise it, which a page's counts rely on.
  */
-function counted(saved: Saved, mark: string | null | undefined): Saved {
-  if (typeof mark !== "string" || mark === saved.forgotten_mark || (saved.forgotten_mark !== null && mark.startsWith(`${saved.forgotten_mark}${SAME_OFF}`))) return saved;
-  return { ...saved, enabled: false, settings: null, active: [], counts: [], replaced_forgotten: true, forgotten: saved.forgotten + 1, forgotten_mark: mark };
+function pageGeneration(forgotten: number, mark: string | null | undefined): number {
+  const tag = typeof mark === "string" ? createHash("sha256").update(mark).digest().readUIntBE(0, MARK_BITS / 8) : 0;
+  return Math.min(forgotten, Math.floor(Number.MAX_SAFE_INTEGER / 2 ** MARK_BITS)) * 2 ** MARK_BITS + tag;
+}
+
+/** Whether FILE itself says on, whatever the mark says; false when it cannot be read. */
+function fileSaysOn(file: string): boolean {
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+    return isJsonObject(value) && value["enabled"] !== false;
+  } catch { return false; }
 }
 
 function keptDiffers(file: string, saved: Saved): boolean {
@@ -414,12 +417,6 @@ function keptDiffers(file: string, saved: Saved): boolean {
 }
 
 function readSaved(file: string, offFile: string): Saved | null {
-  const state = readState(file, offFile);
-  return state && counted(state.saved, state.mark);
-}
-
-/** FILE as written, before an off marked since is counted, and the mark it was read with */
-function readState(file: string, offFile: string): { saved: Saved; mark: string | null | undefined } | null {
   try {
     const value: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!isJsonObject(value) || typeof value["install_id"] !== "string" || value["install_id"] === "") return null;
@@ -438,10 +435,8 @@ function readState(file: string, offFile: string): { saved: Saved; mark: string 
     const active = seenVersion < VISITS_NOTICE_VERSION ? [] : value["visits_after_notice"] === true ? readActive(value["active"]) : readActive(value["active"]).flatMap((entry) => entry.sent === null ? [] : [{ ...entry, harnesses: [...entry.sent], usage: entry.sent_usage ?? emptyUsage(), sent_usage: entry.sent_usage ?? emptyUsage(), wire_usage: entry.sent_usage ?? emptyUsage() }]);
     // a file that is off keeps nothing to send: an older build, or a write that failed, may have left rows in it
     const enabledMark = typeof value["enabled_mark"] === "string" ? value["enabled_mark"] : null;
-    // an older build's file names none: its own offs bumped the counter, so the mark there now is taken as counted
-    const forgottenMark = !("forgotten_mark" in value) ? (typeof mark === "string" ? mark : null) : typeof value["forgotten_mark"] === "string" ? value["forgotten_mark"] : null;
-    const on = value["enabled"] !== false && mark === enabledMark && mark === forgottenMark;
-    return { mark, saved: {
+    const on = value["enabled"] !== false && mark === enabledMark;
+    return {
       install_id: value["install_id"],
       enabled: on,
       enabled_mark: enabledMark,
@@ -450,7 +445,6 @@ function readState(file: string, offFile: string): { saved: Saved; mark: string 
       reported_version: typeof value["reported_version"] === "string" ? value["reported_version"] : null,
       replaced_forgotten: value["replaced_forgotten"] === true,
       forgotten: typeof value["forgotten"] === "number" && Number.isSafeInteger(value["forgotten"]) && value["forgotten"] >= 0 ? value["forgotten"] : 0,
-      forgotten_mark: forgottenMark,
       visits_after_notice: true,
       // an older build kept a snapshot told before its notice too: one from a file without the mark waits for a page to tell it again
       settings: on && seenVersion >= SETTINGS_NOTICE_VERSION && value["visits_after_notice"] === true ? telemetrySettings(value["settings"]) : null,
@@ -458,7 +452,7 @@ function readState(file: string, offFile: string): { saved: Saved; mark: string 
       usage_after_notice: true,
       // counted only once the current notice was shown: a file whose notice is older keeps none
       counts: noticeSeenAt === null || !on ? [] : readCountDays(value["counts"]),
-    } };
+    };
   } catch { return null; }
 }
 
@@ -513,8 +507,7 @@ export class Telemetry {
     const saved = readSaved(this.file, this.offFile);
     // a state made fresh names no version an update replaced: the updater's record of it is from before this file (one a
     // purge removed, or one that never was)
-    const mark = offMark(this.offFile);
-    this.saved = saved ?? { install_id: randomUUID(), enabled: mark === null, enabled_mark: null, forgotten_mark: typeof mark === "string" ? mark : null, notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, replaced_forgotten: true, forgotten: 0, visits_after_notice: true, settings: null, active: [], usage_after_notice: true, counts: [] };
+    this.saved = saved ?? { install_id: randomUUID(), enabled: offMark(this.offFile) === null, enabled_mark: null, notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, replaced_forgotten: true, forgotten: 0, visits_after_notice: true, settings: null, active: [], usage_after_notice: true, counts: [] };
     // what was read and not kept (an older build's rows, an off file's) is written away once, so it does not stay on disk
     if (saved) {
       this.locked(() => {
@@ -555,28 +548,17 @@ export class Telemetry {
 
   private now(): number { return this.options.now?.() ?? Date.now(); }
 
-  /**
-   * another server on the same state directory may have changed the switch: its file wins. False when it could not be read,
-   * or when it holds an off marked and not written yet: a page may have heard the counter between two such offs
-   */
-  private refresh(): boolean {
-    const latest = readState(this.file, this.offFile);
-    if (latest) {
-      this.saved = counted(latest.saved, latest.mark);
-      return this.saved === latest.saved;
-    }
+  /** another server on the same state directory may have changed the switch: its file wins */
+  private refresh(): void {
+    const latest = readSaved(this.file, this.offFile);
+    if (latest) this.saved = latest;
     // the file could not be read: what is known of it stays, but an off, or no way to tell, wins
-    const mark = offMark(this.offFile);
-    this.saved = counted(this.saved, mark);
-    if (mark !== this.saved.enabled_mark) this.saved.enabled = false;
-    return false;
+    else if (offMark(this.offFile) !== this.saved.enabled_mark) this.saved.enabled = false;
   }
 
-  /** `counted`: the mark an off that is written already counted, for its mark again after the write (a new value, so an on
-   * that took the first one is off again, which no reader counts as another off) */
-  private markOff(counted?: string | null): void {
+  private markOff(): void {
     mkdirSync(this.options.stateDir, { recursive: true, mode: 0o700 });
-    const mark = counted ? `${counted}${SAME_OFF}${randomUUID()}` : randomUUID();
+    const mark = randomUUID();
     const temp = `${this.offFile}.${mark}.tmp`;
     writeFileSync(temp, mark, { mode: 0o600 });
     try { renameSync(temp, this.offFile); } catch (error) {
@@ -592,7 +574,6 @@ export class Telemetry {
     const onDisk = readSaved(this.file, this.offFile);
     if (onDisk && onDisk.forgotten > this.saved.forgotten) {
       this.saved.forgotten = onDisk.forgotten;
-      this.saved.forgotten_mark = onDisk.forgotten_mark;
       this.saved.active = [];
       this.saved.counts = [];
       this.saved.settings = null;
@@ -685,7 +666,7 @@ export class Telemetry {
       notice_seen: this.saved.notice_seen_at !== null,
       next: this.pending(),
       active: this.activeMessage(this.saved.active.find((entry) => entry.day === utcDay(this.now()))),
-      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: this.saved.forgotten } : {}),
+      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: pageGeneration(this.saved.forgotten, offMark(this.offFile)) } : {}),
     };
   }
 
@@ -705,24 +686,24 @@ export class Telemetry {
     const apply = () => this.locked((): "applied" | "superseded" => {
       let markAtStart = offMark(this.offFile);
       if (clean.enabled === true && markAtStart !== markAsked && !(markAsked === null && markAtStart?.startsWith(MIGRATED_MARK))) return "superseded";
-      // off is marked before FILE is written, whatever another server wrote to FILE since the mark before the lock (an on
-      // that took that mark): the read counts it, dropping what was not sent
-      if (clean.enabled === false) this.markOff();
-      const settled = this.refresh();
+      this.refresh();
       // the read just now marked an older build's off: that mark is the one this change found
       if (markAtStart === null) {
         const migrated = offMark(this.offFile);
         if (migrated?.startsWith(MIGRATED_MARK)) markAtStart = migrated;
       }
-      // the counter as the request found it: settings told with the generation the page heard last are from now
-      const heard = this.saved.forgotten;
-      // nothing kept before an off is sent after it: an on after an off drops every visit day and count day not yet delivered
-      if (clean.enabled === true && !this.saved.enabled) this.forgetUnsent();
+      // the generation as the request found it: settings told with the one the page heard last are from now
+      const heard = pageGeneration(this.saved.forgotten, markAtStart);
+      // an off another server marked and has not written yet: no page heard it, so settings told now may be from before it
+      const offUnwritten = !this.saved.enabled && fileSaysOn(this.file);
+      // off is marked before FILE is written, whatever another server writes to FILE meanwhile
+      if (clean.enabled === false) this.markOff();
+      // nothing kept before an off is sent after it: the off, and an on after an off (one another server marked), drop every
+      // visit day and count day not yet delivered
+      if (clean.enabled === false || (clean.enabled === true && !this.saved.enabled)) this.forgetUnsent();
       if (clean.enabled === true) {
         if (markAtStart === undefined) return "superseded";
-        // the off this mark stands for is counted: the read just did, or the drop above when the read made the mark
         this.saved.enabled_mark = markAtStart;
-        this.saved.forgotten_mark = markAtStart;
       }
       if (clean.enabled !== undefined) this.saved.enabled = clean.enabled;
       // on again with nothing owed: the version running now is what a later update replaces, known at the on
@@ -731,24 +712,22 @@ export class Telemetry {
       // kept for the next install/update event, only once the notice that names it was seen (the page sends it with its
       // acknowledgement) and while the counts are on; telling it sends nothing by itself
       // a request that names no generation, or one from before an off the page had not heard, keeps none: they may be from
-      // before it (a request delayed while another page turned the counts off and on); nor one while the file cannot be read
-      // or another server's off is marked and not written, as which offs the page heard is not known then
-      if (clean.settings !== undefined && clean.generation === heard && settled && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
+      // before it (a request delayed while another page turned the counts off and on)
+      if (clean.settings !== undefined && clean.generation === heard && !offUnwritten && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
       if (clean.enabled !== false && offMark(this.offFile) !== markAtStart) return "superseded";
       if (!this.persist()) throw new FileBusyError(CHANGE_BUSY);
       // and again after: an on from another server between the two writes cannot leave this off without its mark
-      if (clean.enabled === false) this.markOff(this.saved.forgotten_mark);
+      if (clean.enabled === false) this.markOff();
       return "applied";
     }, (): "applied" | "superseded" | "busy" => {
       // another server holds the lock: an off still goes, with its mark and without what was not sent; anything else waits
       if (clean.enabled !== false) return "busy";
-      // the read counts the fresh mark, dropping what was not sent
       this.markOff();
       this.refresh();
+      this.forgetUnsent();
       this.saved.enabled = false;
-      let written = false;
-      try { written = this.persist(); } catch (error) { console.error(`telemetry: ${this.file} could not be written (${message(error)})`); }
-      this.markOff(written ? this.saved.forgotten_mark : null);
+      try { this.persist(); } catch (error) { console.error(`telemetry: ${this.file} could not be written (${message(error)})`); }
+      this.markOff();
       return "applied";
     });
     let applied = apply();
@@ -892,7 +871,7 @@ export class Telemetry {
   tallyCounts(change: TelemetryCountsChange): false | undefined { return this.locked(() => {
       if (!this.countsOn() || !this.countingUsage()) return;
       // counted under another generation (before an off, in a tab that did not hear it), or by a page that names none
-      if (change.generation !== this.saved.forgotten) return;
+      if (change.generation !== pageGeneration(this.saved.forgotten, offMark(this.offFile))) return;
       const today = utcDay(this.now());
       const yesterday = utcDay(this.now() - 86_400_000);
       const day = change.day ?? today;

@@ -1312,7 +1312,7 @@ describe("another server on the same state directory", () => {
     expect(savedFile(stateDir).settings).toBeNull();
   });
 
-  test("a write made while another server's off is marked but not written keeps that off's counter", async () => {
+  test("a write made while another server's off is marked but not written keeps no settings from before it", async () => {
     const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
     const observer = setup({ stateDir, grace: 60_000 });
     const snapshot = settingsSnapshot({ theme: "light" });
@@ -1329,7 +1329,7 @@ describe("another server on the same state directory", () => {
     expect(sent.map((event) => event.settings)).toEqual([null]);
   });
 
-  test("a server started while another server's off is marked but not written keeps that off's counter", async () => {
+  test("a server started while another server's off is marked but not written keeps no settings from before it", async () => {
     const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
     const snapshot = settingsSnapshot({ theme: "light" });
     telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings: snapshot, generation: 0 });
@@ -1367,18 +1367,67 @@ describe("another server on the same state directory", () => {
     expect(sent.map((event) => event.settings)).toEqual([null]);
   });
 
-  test("an off's own mark after its write is not counted again: the counter a page heard from it still keeps its settings", async () => {
+  test("a write while a second off is marked and not written does not make the generation heard between the two good again", async () => {
+    const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
+    const observer = setup({ stateDir, grace: 60_000 });
+    seen(telemetry);
+    writeFileSync(join(stateDir, "telemetry-off"), "the first off never written");
+    const generation = telemetry.status().counts_generation;
+    writeFileSync(join(stateDir, "telemetry-off"), "the second off never written");
+    observer.telemetry.change({ settings: settingsSnapshot(), generation: observer.telemetry.status().counts_generation });
+    telemetry.change({ enabled: true, settings: settingsSnapshot({ theme: "light" }), generation });
+    clock.now += 60_000;
+    await telemetry.report();
+    observer.telemetry.stop();
+    expect(sent.map((event) => event.settings)).toEqual([null]);
+  });
+
+  test("an off's last mark that lands after another off's first one does not bring back the generation heard before it", async () => {
+    const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
+    seen(telemetry);
+    const off = join(stateDir, "telemetry-off");
+    const generation = telemetry.change({ enabled: false }).counts_generation;
+    const heardMark = readFileSync(off, "utf8");
+    // another server's off marks and goes; then this off's mark, written again after its write, lands late
+    writeFileSync(off, "another off never written");
+    writeFileSync(off, `${heardMark}~late`);
+    telemetry.change({ enabled: true, settings: settingsSnapshot({ theme: "light" }), generation });
+    clock.now += 60_000;
+    await telemetry.report();
+    expect(sent.map((event) => event.settings)).toEqual([null]);
+  });
+
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a server that cannot read telemetry.json does not make a generation from before an unwritten off good again", async () => {
+    const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
+    const observer = setup({ stateDir, grace: 60_000 });
+    seen(telemetry);
+    observer.telemetry.status();
+    const generation = setup({ stateDir }).telemetry.change({ enabled: false }).counts_generation;
+    writeFileSync(join(stateDir, "telemetry-off"), "an off never written");
+    chmodSync(join(stateDir, "telemetry.json"), 0o000);
+    observer.telemetry.change({ settings: settingsSnapshot(), generation });
+    chmodSync(join(stateDir, "telemetry.json"), 0o600);
+    telemetry.change({ enabled: true, settings: settingsSnapshot({ theme: "light" }), generation });
+    clock.now += 60_000;
+    await telemetry.report();
+    observer.telemetry.stop();
+    expect(sent.map((event) => event.settings)).toEqual([null]);
+  });
+
+  test("a page that heard an off turns the counts on with its settings, and the generation it hears grows with each off", async () => {
     const { telemetry, sent, clock } = setup({ grace: 60_000 });
     seen(telemetry);
-    const generation = telemetry.change({ enabled: false }).counts_generation;
+    const before = telemetry.status().counts_generation!;
+    const generation = telemetry.change({ enabled: false }).counts_generation!;
     const snapshot = settingsSnapshot({ theme: "light" });
-    expect(telemetry.change({ enabled: true, settings: snapshot, generation }).counts_generation).toBe((generation ?? 0) + 1);
+    expect(generation).toBeGreaterThan(before);
+    expect(telemetry.change({ enabled: true, settings: snapshot, generation }).counts_generation).toBeGreaterThan(generation);
     clock.now += 60_000;
     await telemetry.report();
     expect(sent.map((event) => event.settings)).toEqual([snapshot]);
   });
 
-  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a write while telemetry.json cannot be read keeps the counter of an off another server marked and never wrote", async () => {
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("a write while telemetry.json cannot be read keeps no settings from before an off another server marked and never wrote", async () => {
     const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
     const observer = setup({ stateDir, grace: 60_000 });
     const snapshot = settingsSnapshot({ theme: "light" });
@@ -1394,7 +1443,7 @@ describe("another server on the same state directory", () => {
     expect(sent.map((event) => event.settings)).toEqual([null]);
   });
 
-  test("a write that lands after another server's lockless off cannot take that off's counter back", async () => {
+  test("a write that lands after another server's lockless off cannot make a generation from before it good again", async () => {
     const { telemetry, sent, clock, stateDir } = setup({ grace: 60_000 });
     const other = setup({ stateDir });
     seen(telemetry);
@@ -1873,7 +1922,7 @@ describe("/api/telemetry", () => {
     await telemetry.report();
     expect(sent).toEqual([]);
 
-    const enabled = await handleTelemetryRequest(post({ enabled: true, settings, generation: 1 }), telemetry);
+    const enabled = await handleTelemetryRequest(post({ enabled: true, settings, generation: telemetry.status().counts_generation }), telemetry);
     expect(await enabled.json()).toMatchObject({ enabled: true, next: { settings } });
     expect(JSON.stringify(telemetry.status())).not.toContain("private font name");
     expect(JSON.stringify(telemetry.status())).not.toContain("private reply");
@@ -2057,12 +2106,12 @@ describe("telemetry counts", () => {
     seen(telemetry);
     expect(telemetry.status().counts_generation).toBe(0);
     telemetry.change({ enabled: false });
-    telemetry.change({ enabled: true });
-    expect(telemetry.status().counts_generation).toBe(2);
+    const generation = telemetry.change({ enabled: true }).counts_generation!;
+    expect(generation).toBeGreaterThan(0);
     telemetry.change({ counts: { width: "wide", add: { chat_send: 5 }, shown: [], generation: 0 } });
     telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [] } });
     expect(telemetry.status().counts?.wide).toBeNull();
-    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 2 } });
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation } });
     expect(telemetry.status().counts?.wide).toEqual({ counts: { chat_send: 1 }, shown: [] });
   });
   test("POST counts is refused with 400 while this build counts nothing, as before counts existed", async () => {
