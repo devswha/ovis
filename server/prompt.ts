@@ -763,7 +763,9 @@ export async function readPrompt(paneId: string, codexHome?: string, openCodeSta
       // A poll overtaking an answer to the exact same occurrence must not refuse that answer.
       obsolete = shown === null || asking === undefined || asking.n !== occurrence
         || asking.content !== shown.id || (answerTurns.get(paneId) ?? 0) !== turns;
-    } else if (!obsolete) {
+    } else if (!obsolete && !answersUnderWay.has(paneId) && (answerTurns.get(paneId) ?? 0) === turns) {
+      // Like asked(), only publish reads outside an answer. A poll of an intermediate tab
+      // must not supersede the answer's own read verifying that tab.
       appliedClaudeReads.set(paneId, claudeRead);
     }
     if (obsolete) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };

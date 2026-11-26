@@ -6722,6 +6722,32 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(under).toEqual(["device", "symptoms"]);
       expect((await card())!.title).toBe("Review your answers");
     });
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const review = (await card())!;
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        if (pane.sent.length === 1) {
+          show(pane, "symptoms");
+          pane.holdRead = held.promise;
+          pane.onReadHeld = started.resolve;
+        } else {
+          show(pane, "device");
+        }
+      };
+      const navigating = answer(review.id, { step_index: 0 });
+      try {
+        await started.promise;
+        expect(await card()).toMatchObject({ question: "Which problems do you see?" });
+      } finally {
+        held.resolve();
+      }
+      expect(await navigating).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "left"]);
+      expect(await card()).toMatchObject({ question: "Which device do you use?" });
+    });
     // a poll while a step is on its way reads the tab it moves to: that card's id still answers once
     // the step is done, so the next tap on a step is not refused (#2503 review by @jpcarranza94)
     await withPane("claude", "blocked", "", async (pane) => {
