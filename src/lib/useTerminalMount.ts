@@ -2383,8 +2383,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         invalidateArrowModes();
         endRecovery();
         // Reset in stream order: synchronous reset would let old queued writes draw afterward.
-        // A frame the old stream left open is not the new one's
+        // A frame the old stream left open is not the new one's, nor is a whole frame it ended on (screenTaken)
         frameGateRef.current.reset();
+        wholeFrameOf = null;
         const drewView = viewBuffer !== null && viewBuffer.length > 1;
         const viewReset = viewDropped || viewBuffer !== null;
         if (drewView && viewBuffer !== null) {
