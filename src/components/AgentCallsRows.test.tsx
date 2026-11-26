@@ -67,8 +67,8 @@ describe("Settings > Agents > Let agents call other agents", () => {
     await act(async () => { openCode.props.onClick(); });
     await act(async () => { toggle().props.onClick(); });
     expect(saved).toEqual([
-      { level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "agy", "gjc"] },
-      { level: "view", depth: 1, harnesses: ["claude", "codex", "copilot", "agy", "gjc"] },
+      { level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "agy", "gjc", "gemini", "kiro"] },
+      { level: "view", depth: 1, harnesses: ["claude", "codex", "copilot", "agy", "gjc", "gemini", "kiro"] },
     ]);
     expect(chips()).toHaveLength(0);
   });
@@ -85,7 +85,7 @@ describe("Settings > Agents > Let agents call other agents", () => {
     expect(gjc.props["aria-pressed"]).toBe(true);
     await act(async () => { gjc.props.onClick(); });
     expect(chips().map((chip) => [chip.children.join(""), chip.props["aria-pressed"]])).toEqual([["GJC", false]]);
-    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy"] }]);
+    expect(saved).toEqual([{ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy", "gemini", "kiro"] }]);
   });
 
   it("offers Codex and Copilot but not installed agents without an ACP launch", () => {
