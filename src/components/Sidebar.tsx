@@ -4,7 +4,7 @@ import { Bot, ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, GitBranch
 
 import "./Sidebar.css";
 
-import type { AgentStatus, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrWorkspaceWorktree, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
 import { renamesWorkspace } from "../lib/layoutTargets.ts";
@@ -510,7 +510,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     ] : [];
     const closes = [workspace.workspace_id, ...sameRepo.map((candidate) => candidate.workspace_id)];
     const scope = (group: boolean): CloseScope | undefined => closeScope(snapshot, workspace.workspace_id, group) ?? undefined;
-    const confirmedCheckout = workspace.worktree ? { expected_checkout: workspace.worktree.checkout_path } : {};
+    // a snapshot's row, which a herdr-core server draws with its checkout's git identity
+    const drawnCheckout: HerdrWorkspaceWorktree | null | undefined = workspace.worktree;
+    const confirmedCheckout = drawnCheckout
+      ? { expected_checkout: drawnCheckout.checkout_path, ...(drawnCheckout.git_id ? { expected_git_id: drawnCheckout.git_id } : {}) } : {};
     const deleteItems: RowMenuItem[] = linked && worktreesOffered && !holdsLock([workspace.workspace_id]) ? [{
       id: "delete-worktree", label: t("Delete worktree checkout…"), icon: Trash2, danger: true,
       run: () => setConfirm({

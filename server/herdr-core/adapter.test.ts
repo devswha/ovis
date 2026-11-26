@@ -1244,7 +1244,9 @@ describe("herdr-core adapter, new and closed terminals", () => {
     for (const core of [await labeling(start()), await living(start())]) {
       const shown = await sessionSnapshot(core.socket);
       const factsOf = (address: string) => shown.workspaces.find((workspace) => workspace.workspace_id === shown.panes.find((pane) => pane.pane_id === address)?.workspace_id)?.worktree ?? null;
-      expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([head, { ...head, checkout_path: linked, is_linked_worktree: true }, null]);
+      // each row carries the identity of the checkout's git folder it was drawn with (#4211)
+      const drawn = { ...head, git_id: expect.any(String) };
+      expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([drawn, { ...drawn, checkout_path: linked, is_linked_worktree: true }, null]);
       expect(core.runs).toEqual([]);
     }
     // what the sidebar draws is what its actions do, as on herdr: the repository's workspace closes over the
@@ -1413,16 +1415,25 @@ describe("herdr-core adapter, new and closed terminals", () => {
     setSystemTime(new Date(Date.now() + 60_000));
     cleanups.push(() => setSystemTime());
     const release = gitHeld(dir);
-    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.checkout_path])).toEqual([["S", a]]);
-    // the user opens Delete; meanwhile the checkout is removed and another added at its path
+    const asked = (await sessionSnapshot(socket)).workspaces[0]!;
+    expect([asked.workspace_id, asked.worktree?.checkout_path, typeof asked.worktree?.git_id]).toEqual(["S", a, "string"]);
+    // the user opens Delete over that row; meanwhile the checkout is removed and another added at its path
     expect(git("-C", repo, "worktree", "remove", a).exitCode).toBe(0);
     expect(git("-C", repo, "worktree", "add", "-q", "-b", "replacement", a).exitCode).toBe(0);
     release();
     // git answers again, and the next snapshot draws the row from that answer
     await answered.promise;
-    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => workspace.worktree?.checkout_path)).toEqual([a]);
-    await expect(worktreeRemove("S", true, socket, { expected_checkout: a })).rejects.toMatchObject({ code: "worktree_not_found" });
+    const redrawn = (await sessionSnapshot(socket)).workspaces[0]!.worktree;
+    expect([redrawn?.checkout_path, redrawn?.git_id === asked.worktree?.git_id]).toEqual([a, false]);
+    // the delete confirmed over the first row is refused, here and on a server started since
+    const confirmed = { expected_checkout: a, expected_git_id: asked.worktree!.git_id! };
+    await expect(worktreeRemove("S", true, socket, confirmed)).rejects.toMatchObject({ code: "worktree_target_changed" });
+    const restarted = await labeling(terminals);
+    await expect(worktreeRemove("S", true, restarted.socket, confirmed)).rejects.toMatchObject({ code: "worktree_target_changed" });
     expect(existsSync(join(a, "README.md"))).toBeTrue();
+    // one confirmed over the row as drawn now deletes the checkout that row shows
+    expect(await worktreeRemove("S", true, socket, { expected_checkout: a, expected_git_id: redrawn!.git_id! })).toMatchObject({ type: "worktree_removed", path: a });
+    expect(existsSync(a)).toBeFalse();
   }, 15_000);
 
   it("deletes no checkout added again at the path after git was asked again (#3890)", async () => {

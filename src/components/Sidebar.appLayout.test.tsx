@@ -138,7 +138,7 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
   });
 
   it("deletes the checkout the confirmation named, even when a later snapshot draws the workspace on another (#4211)", async () => {
-    const at = (path: string) => ({ is_linked_worktree: true, repo_key: "r", repo_name: "r", repo_root: "/repo", checkout_path: path }) as WorkspaceInfo["worktree"];
+    const at = (path: string, git_id: string) => ({ is_linked_worktree: true, repo_key: "r", repo_name: "r", repo_root: "/repo", checkout_path: path, git_id }) as WorkspaceInfo["worktree"];
     const view = (shown: SessionSnapshot) => createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter: inactiveSidebarFilter(), reportBranches: () => {} } },
       createElement(AppLayoutContext.Provider, { value: OVIS_CORE }, createElement(ReorderContext.Provider, { value: new ReorderCoordinator() },
         createElement(Sidebar, { snapshot: shown, online: false, selectedPaneId: "root:p", actions })))));
@@ -151,15 +151,15 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
       return Response.json({ ok: true });
     }, { preconnect: globalThis.fetch.preconnect }));
     try {
-      await draw(roster([workspace("root", worktree(false)), workspace("child", at("/checkouts/a"))]), OVIS_CORE);
+      await draw(roster([workspace("root", worktree(false)), workspace("child", at("/checkouts/a", "1:2:3"))]), OVIS_CORE);
       await menuOf("child");
       await act(async () => (renderer!.root.findByType(RowMenu).props.items as { id: string; run: () => void }[]).find((item) => item.id === "delete-worktree")!.run());
-      await act(async () => renderer!.update(view(roster([workspace("root", worktree(false)), workspace("child", at("/checkouts/b"))]))));
+      await act(async () => renderer!.update(view(roster([workspace("root", worktree(false)), workspace("child", at("/checkouts/b", "1:2:4"))]))));
       const dialog = () => renderer!.root.findAll((node) => node.props.confirmLabel !== undefined && typeof node.props.onConfirm === "function")[0]!;
       await act(async () => { await expect(dialog().props.onConfirm()).rejects.toMatchObject({ code: "dirty_worktree_requires_force" }); });
       // git refused a dirty checkout: Delete anyway names the same folder
       await act(async () => { await expect(dialog().props.escalation.run()).rejects.toMatchObject({ code: "dirty_worktree_requires_force" }); });
-      expect(removes).toEqual([{ workspace_id: "child", expected_checkout: "/checkouts/a" }, { workspace_id: "child", force: true, expected_checkout: "/checkouts/a" }]);
+      expect(removes).toEqual([{ workspace_id: "child", expected_checkout: "/checkouts/a", expected_git_id: "1:2:3" }, { workspace_id: "child", force: true, expected_checkout: "/checkouts/a", expected_git_id: "1:2:3" }]);
     } finally {
       fetch.mockRestore();
     }

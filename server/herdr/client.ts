@@ -616,11 +616,12 @@ const WORKTREE_GIT_TIMEOUT_MS = 60_000;
 
 /**
  * `git worktree remove` of the workspace's checkout; herdr closes the workspace with it and keeps the branch.
- * The confirmed checkout alone goes with worktree.remove (herdr-core refuses another, herdr ignores it); the
- * full identity asks worktree.remove_checked, which a herdr without it refuses instead of deleting unchecked.
+ * A browser's confirmed checkout goes with worktree.remove (herdr-core refuses another, herdr ignores it); the
+ * screen's, with its core and repository, asks worktree.remove_checked, which a herdr without it refuses
+ * instead of deleting unchecked.
  */
-export async function worktreeRemove(workspaceId: string, force: boolean, socketPath?: string, expected?: { expected_checkout: string } | (WorktreeExpectation & { expected_checkout: string; expected_git_id: string })): Promise<{ type: "worktree_removed"; workspace_id: string; path: string; forced: boolean }> {
-  const method = expected && "expected_git_id" in expected ? "worktree.remove_checked" : "worktree.remove";
+export async function worktreeRemove(workspaceId: string, force: boolean, socketPath?: string, expected?: { expected_checkout?: string; expected_git_id?: string } | (WorktreeExpectation & { expected_checkout: string; expected_git_id: string })): Promise<{ type: "worktree_removed"; workspace_id: string; path: string; forced: boolean }> {
+  const method = expected && "expected_core" in expected ? "worktree.remove_checked" : "worktree.remove";
   return queueHerdrFocus(socketPath, (socket) => herdrRpc(method, { workspace_id: workspaceId, force, ...expected }, socket, WORKTREE_GIT_TIMEOUT_MS));
 }
 

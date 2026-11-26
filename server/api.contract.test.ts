@@ -2254,7 +2254,7 @@ describe("workspace and discovery endpoints", () => {
     const post = (body: unknown) => fetch(`${base()}/api/worktree/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     try {
       expect((await post({ workspace_id: "w1", expected_checkout: "/confirmed" })).status).toBe(200);
-      expect((await post({ workspace_id: "w1", force: true, expected_checkout: "/confirmed" })).status).toBe(200);
+      expect((await post({ workspace_id: "w1", force: true, expected_checkout: "/confirmed", expected_git_id: "1:2:3" })).status).toBe(200);
       // an older client confirms no path: its delete goes as before
       expect((await post({ workspace_id: "w1" })).status).toBe(200);
       for (const wrong of ["relative/path", "", 7]) {
@@ -2262,7 +2262,12 @@ describe("workspace and discovery endpoints", () => {
         expect(refused.status).toBe(400);
         expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_checkout");
       }
-      expect(asked).toEqual([["w1", false, undefined, { expected_checkout: "/confirmed" }], ["w1", true, undefined, { expected_checkout: "/confirmed" }], ["w1", false, undefined, undefined]]);
+      for (const wrong of ["", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: "/confirmed", expected_git_id: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_git_id");
+      }
+      expect(asked).toEqual([["w1", false, undefined, { expected_checkout: "/confirmed" }], ["w1", true, undefined, { expected_checkout: "/confirmed", expected_git_id: "1:2:3" }], ["w1", false, undefined, undefined]]);
     } finally {
       removing.mockRestore();
     }
