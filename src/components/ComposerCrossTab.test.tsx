@@ -115,13 +115,9 @@ it("does not send a draft another tab sent while it held the pane's send lock", 
 it("leaves Alt+Enter alone when the hold shortcut is off", async () => {
   shortcutOverrides = { "hold-message": null };
   const { sent } = await tabWith("Keep this in the composer");
-  const preventDefault = mock(() => {});
-  await act(async () => {
-    renderer?.root.findByProps({ className: "composer-text" }).props.onKeyDown({
-      key: "Enter", altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, nativeEvent: {}, preventDefault,
-    });
-  });
-  expect(preventDefault).not.toHaveBeenCalled();
+  const keydown = new page.window.KeyboardEvent("keydown", { key: "Enter", altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, bubbles: true, cancelable: true });
+  await act(async () => { page.one('[class="composer-text"]').dispatchEvent(keydown as unknown as Event); });
+  expect(keydown.defaultPrevented).toBe(false);
   expect(sent).toEqual([]);
 });
 
