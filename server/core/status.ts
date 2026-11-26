@@ -1031,8 +1031,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       }
       for (const pane of alerted) {
         const before = alertRoster.get(pane.terminal_id);
+        // The roster gives us the terminal's identity; push checks the latest question at its source,
+        // including one heard while this roster was in flight.
         if (pane.agent_status === "blocked" && before && roster.get(pane.terminal_id) === pane.pane_id
-          && !present.has(before) && !newer.has(before) && !newer.has(pane.pane_id)) push.moved(before, pane.pane_id, "blocked");
+          && !present.has(before)) push.movedQuestion(before, pane.pane_id, newer.has(pane.pane_id));
       }
       alertRoster = roster;
       push.seed(alerted);
