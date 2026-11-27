@@ -46,6 +46,8 @@ const CONNECT_MS = 30_000;
 const COMMAND_MS = 5_000;
 /** How often a socket that is there but not yet up is looked at again. */
 const SOCKET_LOOK_MS = 50;
+/** How many ended turns of a pane's own thread are remembered, for a turn/start answered after its turn was over. */
+const COMPLETED_KEPT = 32;
 const SOCKET_NAME = "codex.sock";
 const LAUNCH_PREFIX = "ovis-codex-";
 /** A path a `unix://` address and a `ws+unix://` URL both take as it is, and under the shortest limit on one. */
@@ -347,8 +349,8 @@ class Connection {
   /** The turn the pane's own thread runs or ran last. */
   private turnId: string | null = null;
   private toldFailedTurn: string | null = null;
-  /** The last turn of the pane's own thread the server said completed. */
-  private lastCompleted: string | null = null;
+  /** The turns of the pane's own thread the server said completed, oldest first (at most COMPLETED_KEPT). */
+  private readonly completed: string[] = [];
   private resumedActive = false;
   private context: PaneContext | null = null;
   private rerouted: { turnId: string; model: string } | null = null;
@@ -461,7 +463,9 @@ class Connection {
     const own = (): boolean => !this.closed && this.sure && this.thread === threadId;
     const ready = (): boolean => own() && this.runs === false && this.waitsOnNone() && this.held.size === 0;
     const taken = (): ServedTurn | "unsent" => (own() ? this.running() : null) ?? "unsent";
-    if (!ready()) return taken();
+    // which threads are loaded comes first: after a /resume or /new the TUI may show another, and a turn this one
+    // runs is then no turn of the pane's to wait behind
+    if (!own()) return "unsent";
     const loaded = await this.within("thread/loaded/list", {});
     const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
     const alone = result?.["nextCursor"] === null && Array.isArray(result["data"]) && result["data"].includes(threadId)
@@ -474,9 +478,11 @@ class Connection {
     if (reply === "unknown") return "unknown";
     const turn = isObject(reply["result"]) ? reply["result"]["turn"] : null;
     if (!isObject(turn) || typeof turn["id"] !== "string") return "unknown";
-    // the pane came to run another thread while Codex answered: this one's turns are no longer told as the pane's
-    if (this.thread !== threadId) return { turn: "started", over: Promise.resolve(false) };
-    if (this.lastCompleted === turn["id"]) return { turn: "started", over: Promise.resolve(true) };
+    // the connection ended, or the pane came to run another thread, while Codex answered: no end is told here any more
+    if (this.closed || this.thread !== threadId) return { turn: "started", over: Promise.resolve(false) };
+    // its end was told before its answer came, or another turn of the thread has started since the request went (the
+    // thread ran none then): a thread's turns come one after another, so this one is over
+    if (this.completed.includes(turn["id"]) || (this.runningTurn !== null && this.runningTurn !== turn["id"])) return { turn: "started", over: Promise.resolve(true) };
     // the turn runs from now on, though its turn/started may come later: a second send waits for it
     this.runs = true;
     this.runningTurn = turn["id"];
@@ -767,6 +773,9 @@ class Connection {
         this.runs = true;
         this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
         this.runningTurn = this.turnId;
+        // a thread's turns come one after another: one that starts is the end of every other one waited for, also
+        // where that one's own turn/completed never came
+        if (this.runningTurn !== null) this.tellTurnEnds(true, (wanted) => wanted !== this.runningTurn);
         // A new turn drops the previous failure from display and dedupe, even without a new herdr title.
         if (this.turnId === null || (this.turnId !== before && this.turnId !== this.toldFailedTurn)) {
           this.toldFailedTurn = null;
@@ -817,10 +826,15 @@ class Connection {
           if (threadId === this.thread && this.turn === "failed" && id !== null && (this.turnId === null || this.turnId === id)) this.tellFailure(id);
         }
         if (threadId !== null && threadId === this.thread) {
-          this.lastCompleted = id;
-          // a turn's end told late, behind the answer that named the next one, is not the end of that next one
+          // the end of a turn before the one the server named last is not the end of that one
           if (id === null || this.runningTurn === null || this.runningTurn === id) this.threadRuns(false);
-          this.tellTurnEnds(true, (wanted) => id === null || wanted === id);
+          // one that names no turn is no named turn's end: which turn ended can no longer be told
+          if (id === null) this.tellTurnEnds(false);
+          else {
+            this.completed.push(id);
+            this.completed.splice(0, this.completed.length - COMPLETED_KEPT);
+            this.tellTurnEnds(true, (wanted) => wanted === id);
+          }
         }
         break;
       }

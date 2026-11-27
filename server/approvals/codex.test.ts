@@ -911,6 +911,54 @@ describe("Ovis on the pane's Codex server", () => {
       expect(typeof turn === "string" ? null : await turn.over).toBe(true);
     });
 
+    const begins = (turn: string) => ({ method: "turn/started", params: { threadId: THREAD, turn: { id: turn, rootTurnId: turn } } });
+
+    it("takes no turn/completed that names no turn for the end of the turn it waits for: that end can no longer be told", async () => {
+      const codex = await atRest();
+      const turn = await taken(codex);
+      codex.send({ method: "turn/completed", params: { threadId: THREAD, turn: { status: "completed", error: null } } });
+      expect(await soFar(codex, turn.over)).toBe(false);
+    });
+
+    it("takes a turn as over when its answer comes after its end and a later turn's", async () => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      for (const message of [ends(TURN_ID), begins("u9"), ends("u9")]) codex.send(message);
+      codex.send({ id: start["id"], result: TURN.response });
+      const turn = await sent;
+      if (typeof turn === "string") throw new Error(`turn/start was not taken: ${turn}`);
+      expect(await soFar(codex, turn.over)).toBe(true);
+    });
+
+    it("takes a turn as over once a later turn of the thread starts, its own end never told", async () => {
+      const codex = await atRest();
+      const turn = await taken(codex);
+      codex.send(begins("u9"));
+      expect(await soFar(codex, turn.over)).toBe(true);
+    });
+
+    it("waits for the end of a turn the TUI started first, which Codex steered with the message and answered with", async () => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      codex.send(begins("uB"));
+      codex.send({ id: start["id"], result: { turn: { id: "uB", rootTurnId: "uB", status: "inProgress" } } });
+      const turn = await sent;
+      if (typeof turn === "string") throw new Error(`turn/start was not taken: ${turn}`);
+      expect(turn.turn).toBe("started");
+      expect(await soFar(codex, turn.over)).toBe("pending");
+      codex.send(ends("uB"));
+      expect(await turn.over).toBe(true);
+    });
+
+    it("names no running turn of a thread the TUI may have left for another one it loaded", async () => {
+      const codex = await atRest([THREAD, "other"]);
+      codex.send(begins("u1"));
+      await read(codex);
+      expect(await send()).toBe("unsent");
+    });
+
     it.each(["the connection ends", "the pane runs another thread"])("can no longer tell a turn's end once %s", async (scenario) => {
       const codex = await atRest();
       const turn = await taken(codex);
@@ -920,7 +968,7 @@ describe("Ovis on the pane's Codex server", () => {
     });
 
     it("sends nothing into a turn the TUI started, and tells that turn's end, a subagent's turn under it aside", async () => {
-      const { codex } = launched();
+      const { codex } = launched("0.171.0", [MAIN]);
       await codex.next((message) => message["method"] === "thread/loaded/list");
       const completed = (own: boolean, from: number) => STATUS.findIndex((message, at) => at >= from && message["method"] === "turn/completed" && ((message["params"] as Message)["threadId"] === MAIN) === own);
       const subagentEnds = completed(false, STATUS.findIndex((message) => message["method"] === "turn/started"));
@@ -940,7 +988,7 @@ describe("Ovis on the pane's Codex server", () => {
     });
 
     it("tells the end of a turn it was not told the start of by the thread reading idle", async () => {
-      const { codex } = launched();
+      const { codex } = launched("0.171.0", [THREAD]);
       // as for a thread's first turn: Ovis is subscribed once it runs, after its turn/started went out
       await running(codex, THREAD);
       await read(codex);
