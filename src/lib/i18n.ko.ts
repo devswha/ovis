@@ -33,6 +33,8 @@ import { MEMORY_KO } from "./i18n/memory.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "{agent} needs input in {workspace}": "{workspace}에서 {agent}의 요청에 응답이 필요합니다",
+  "{agent} finished in {workspace}": "{workspace}에서 {agent}의 작업이 끝났습니다",
   "Waiting to be added": "추가 대기 중",
   "Type the number": "숫자 입력",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "키가 터미널에 닿지 않았을 수 있습니다: 확인되기 전에 연결이 끊겼습니다.",

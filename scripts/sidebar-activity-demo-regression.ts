@@ -7,7 +7,7 @@ import { appContext } from "./app-context.ts";
 import { withDemoBrowser } from "./demo-browser.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 import type { Machine } from "../shared/machines.ts";
-import type { AgentStatus, ConversationResponse, ServerMessage } from "../shared/protocol.ts";
+import type { AgentStatus, ConversationResponse, ConversationTurn, ServerMessage } from "../shared/protocol.ts";
 import { openLens } from "./header-lens.ts";
 
 declare global {
@@ -284,6 +284,79 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
   writeFileSync(join(app, "sidebar-fixture.js"), `(${installSidebarFixture.toString()})();`);
   url = baseUrl;
   const finishCase = process.env["SIDEBAR_FINISH_CASE"];
+  if (!finishCase || finishCase === "announcements") {
+    await withPage(browser, { alertsOn: false }, async (page) => {
+      await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 99), panes.api);
+      await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}`);
+      const log = page.getByRole("log");
+      await log.waitFor();
+      const badge = agent(page, API).locator(".sidebar-status");
+      assert.deepEqual([await log.getAttribute("aria-live"), await badge.getAttribute("role")], ["off", "img"],
+        "the virtual transcript and the accessible badge are not live regions");
+
+      const chat = page.locator('.chat-announcement[aria-live="polite"]');
+      const background = page.locator('.agent-announcement[aria-live="polite"]');
+      assert.deepEqual([await chat.textContent(), await background.textContent()], ["", ""], "opening chat does not announce history");
+      const changes = await page.evaluateHandle(() => {
+        const lines: string[] = [];
+        const observer = new MutationObserver((mutations) => {
+          for (const { addedNodes } of mutations) {
+            for (const node of addedNodes) if (node.textContent) lines.push(node.textContent);
+          }
+        });
+        for (const selector of [".chat-announcement", ".agent-announcement"]) {
+          const node = document.querySelector(selector);
+          if (node) observer.observe(node, { childList: true });
+        }
+        return lines;
+      });
+      const reply = (minute: number, text: string): ConversationTurn => ({
+        role: "assistant", ts: `2026-10-19T00:0${minute}:00Z`, parts: [{ kind: "text", text, phase: "final_answer" }],
+      });
+      const update = (turns: ConversationTurn[], activity: "working" | "idle", signature: string) => page.evaluate(({ id, turns, activity, signature }) => {
+        window.sidebarFixture.conversation(id, { source: "omp-transcript", history_id: "announce", activity, turns });
+        window.sidebarFixture.frame({ type: "conversation-changed", pane_id: id, signature });
+      }, { id: panes.omp, turns, activity, signature });
+      const old = reply(0, "Old answer");
+      const next = reply(1, "New answer");
+      await update([old], "idle", "old");
+      await log.getByText("Old answer", { exact: true }).waitFor();
+      await update([old, next], "working", "new-streaming-answer");
+      await log.getByText("New answer", { exact: true }).waitFor();
+      assert.equal(await chat.textContent(), "", "partial work is not announced");
+      await update([old, next], "idle", "new-complete-answer");
+      await chat.getByText("New answer", { exact: true }).waitFor({ state: "attached" });
+      await page.evaluate(async ({ open, other }) => {
+        await window.sidebarFixture.finish(open, "done", 100);
+        await window.sidebarFixture.finish(other, "done", 100);
+        await window.sidebarFixture.finish(other, "done", 100);
+      }, { open: panes.omp, other: panes.api });
+      await background.getByText("Claude finished in checkout-api", { exact: true }).waitFor({ state: "attached" });
+      await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.api);
+      await waitStatus(page, API, "working");
+      await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 100), panes.api);
+      await waitStatus(page, API, "done");
+      await page.evaluate((id) => window.sidebarFixture.finish(id, "blocked", 100), panes.api);
+      await background.getByText("Claude needs input in checkout-api", { exact: true }).waitFor({ state: "attached" });
+      const recovered = reply(2, "Reply after a failed read");
+      await page.evaluate((id) => window.sidebarFixture.block(id, "failed"), panes.omp);
+      await update([old, next, recovered], "idle", "failed");
+      await log.locator(".chat-failure").waitFor();
+      await page.evaluate(() => window.sidebarFixture.unblock());
+      await update([old, next, recovered], "idle", "recovered");
+      await chat.getByText("Reply after a failed read", { exact: true }).waitFor({ state: "attached" });
+      assert.deepEqual(await changes.jsonValue(), ["New answer", "Claude finished in checkout-api", "Claude needs input in checkout-api", "Reply after a failed read"]);
+
+      await agent(page, API).locator(".agent-select").click();
+      await log.locator(".chat-turn").first().waitFor();
+      const away = reply(3, "Reply finished while away");
+      await update([old, next, recovered, away], "idle", "away");
+      await agent(page, INFRA).locator(".agent-select").click();
+      await log.getByText("Reply finished while away", { exact: true }).waitFor();
+      assert.equal(await chat.textContent(), "", "reopening a cached room does not announce replies from while it was away");
+    });
+    console.log("PASS quiet chat history, completed replies and named background state announcements");
+  }
   if (!finishCase || finishCase === "previous-answer") {
     for (const source of ["claude-transcript", "codex-transcript", "pi-transcript", "omp-transcript", "omo-transcript", "gjc-transcript", "opencode-transcript", "grok-transcript", "devin-transcript", "hermes-transcript", "agy-transcript"] as const) {
       await withPage(browser, {}, async (page) => {

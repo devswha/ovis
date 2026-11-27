@@ -37,6 +37,8 @@ import { MEMORY_ZH } from "./i18n/memory.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "{agent} needs input in {workspace}": "{workspace} 中的 {agent} 正在等待输入",
+  "{agent} finished in {workspace}": "{workspace} 中的 {agent} 已完成工作",
   "Waiting to be added": "等待添加",
   "Type the number": "输入数字",
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "按键可能未送达终端：确认之前连接已断开。",
