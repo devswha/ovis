@@ -99,7 +99,6 @@ import { useAccountDeviceNotices } from "./components/AccountDeviceNotices.tsx";
 import { PendingKeys } from "./components/PendingKeys.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
 import { useOwnWindowPrompts } from "./lib/useOwnWindowPrompts.ts";
-import { resumePcMove } from "./lib/account/movePc.ts";
 import { pcHeld } from "./lib/relay/newPcHere.ts";
 import { OwnJoinCard } from "./components/OwnJoins.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
@@ -281,14 +280,6 @@ export function App() {
   const pendingAccess = locked === true ? false : auth === null ? undefined : auth.authenticated && auth.role === "drive" && auth.via !== "open";
   const { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice, pendingKeys, setPendingKeys, clearPendingKeys } = usePairedNotices(pendingAccess, auth?.role === "watch");
   const ownWindow = ownWindowHere(health?.auth);
-  useEffect(() => {
-    if (!ownWindow || locked !== false) return;
-    const resume = new AbortController();
-    void resumePcMove(resume.signal).catch((error: unknown) => {
-      if (!resume.signal.aborted) console.warn("Ovis: the pending PC move could not resume", error instanceof Error ? error.name : error);
-    });
-    return () => resume.abort();
-  }, [ownWindow, locked]);
   const { prompts, joins: ownJoins, reread: rereadOwnJoins } = useOwnWindowPrompts(relayPairings, pendingKeys, { ownWindow, unlocked: locked === false, machineSessions });
   const updates = useUpdates(locked === false);
   const desktopUpdate = useDesktopUpdate();
