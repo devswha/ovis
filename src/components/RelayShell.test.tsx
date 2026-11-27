@@ -713,7 +713,7 @@ describe("the hosted front page", () => {
           PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", ...(canCancel ? ["cancelOpen"] : [])].map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string) => {
             called.push(`${plugin}.${method}`);
-            if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
+            if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" } };
             if (method === "open") return await opened.promise;
             return {};
           },
@@ -723,13 +723,13 @@ describe("the hosted front page", () => {
           await act(async () => { one('button[class="relay-add-saved-pc"]', all<HTMLButtonElement>('button[class="relay-add-saved-pc"]').filter(shown)).click(); });
           const status = () => all("[data-opening]").filter(shown);
           if (canCancel) {
-            expect(status().map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+            expect(status().map(textOf)).toEqual(["Opening desk.tail1a2b3c.ts.net…Cancel"]);
             await act(async () => { element("button", status()[0]!).click(); });
             expect(status()).toHaveLength(0);
             expect(called).toContain("HerdrShell.cancelOpen");
           } else {
             // iOS has no way to stop an open: the status says what it opens, with nothing to press
-            expect(status().map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…"]);
+            expect(status().map(textOf)).toEqual(["Opening desk.tail1a2b3c.ts.net…"]);
             await act(async () => { opened.resolve({}); await opened.promise; });
             expect(status()).toHaveLength(0);
             expect(called).not.toContain("HerdrShell.cancelOpen");
@@ -751,7 +751,7 @@ describe("the hosted front page", () => {
         PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "cancelOpen"].map((name) => ({ name })) }],
         nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
           called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-          if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
+          if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net", "http://192.168.0.5:7317"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" } };
           if (method === "tailscale") return await tailscale.promise;
           if (method === "open") return await new Promise(() => {});
           return {};
@@ -764,7 +764,7 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await act(async () => { row("tailscale").click(); });
         // the tap says so at once, while the app is asked whether Tailscale is on
-        expect(status()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+        expect(status()).toEqual(["Opening desk.tail1a2b3c.ts.net…Cancel"]);
         expect(opens()).toEqual([]);
         await act(async () => { row("address").click(); });
         expect(opens()).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
@@ -799,7 +799,7 @@ describe("the hosted front page", () => {
           PluginHeaders: [{ name: "HerdrShell", methods: methods.map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
             called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-            if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: {} };
+            if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net"], names: {} };
             if (method === "tailscale") return mode === "silent" ? await new Promise(() => {}) : {};
             return {};
           },
@@ -818,7 +818,7 @@ describe("the hosted front page", () => {
           if (mode === "no-open") {
             expect(all('[role="alert"]').filter(shown).map(textOf)).toContain("This app cannot open a PC by its address. Update the Ovis app.");
             expect(called.some((call) => call.startsWith("HerdrShell.open "))).toBe(false);
-          } else expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+          } else expect(called).toContain("HerdrShell.open https://desk.tail1a2b3c.ts.net/");
           await browser.render(null);
         } finally {
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -846,7 +846,7 @@ describe("the hosted front page", () => {
         await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', element('li[data-pc-way="address"]')).click(); });
         await act(async () => { tab("tailscale").click(); });
         const form = element<HTMLFormElement>("form", element('[data-tab-panel="tailscale"]'));
-        await submit(form, "other.tail1e211e.ts.net");
+        await submit(form, "other.tail1a2b3c.ts.net");
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
         const status = () => all("[data-opening]").map(textOf);
         expect(status()).toEqual(["Opening 192.168.0.5:7317…Cancel", "Opening 192.168.0.5:7317…Cancel"]);
@@ -866,7 +866,7 @@ describe("the hosted front page", () => {
         isNativePlatform: () => true, getPlatform: () => "android",
         PluginHeaders: [{ name: "HerdrShell", methods: ["open", "cancelOpen"].map((name) => ({ name })) }, { name: "CapacitorBarcodeScanner", methods: [{ name: "scanBarcode" }] }],
         nativePromise: async (_plugin: string, method: string) => {
-          if (method === "scanBarcode") return { ScanResult: "https://desk.tail1e211e.ts.net" };
+          if (method === "scanBarcode") return { ScanResult: "https://desk.tail1a2b3c.ts.net" };
           if (method === "open") return await new Promise(() => {});
           return {};
         },
@@ -877,7 +877,7 @@ describe("the hosted front page", () => {
           await mount(screen);
           await act(async () => { action("approval-wait-qr").click(); });
           await act(async () => { await Promise.resolve(); });
-          expect(all("[data-opening]").map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+          expect(all("[data-opening]").map(textOf)).toEqual(["Opening desk.tail1a2b3c.ts.net…Cancel"]);
           await browser.render(null);
         }
       } finally {
@@ -892,7 +892,7 @@ describe("the hosted front page", () => {
         isNativePlatform: () => true, getPlatform: () => "android",
         PluginHeaders: [{ name: "HerdrShell", methods: [{ name: "getState" }, { name: "open" }] }],
         nativePromise: async (_plugin: string, method: string) => {
-          if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: {}, kind: "ssh-port", failure: "127.0.0.1:41234" };
+          if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net"], names: {}, kind: "ssh-port", failure: "127.0.0.1:41234" };
           if (method === "open") throw Object.assign(new Error("unknown-host"), { code: "unknown-host" });
           return {};
         },
@@ -902,7 +902,7 @@ describe("the hosted front page", () => {
         const alerts = () => all('[role="alert"]').map(textOf);
         expect(alerts().join(" ")).toContain("Another app on this phone took the address the SSH PC opens on (127.0.0.1:41234)");
         await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]').click(); });
-        expect(alerts()).toContain("desk.tail1e211e.ts.net was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC. This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.");
+        expect(alerts()).toContain("desk.tail1a2b3c.ts.net was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC. This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.");
         expect(alerts()).not.toContain("unknown-host");
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -918,7 +918,7 @@ describe("the hosted front page", () => {
       const alerts = () => all('[role="alert"]').filter(shown).map(textOf);
       const unreached = "The account service could not be reached. The PCs this device is paired with still work.";
       const offlinePage = (extra: Partial<RelayShellProps> = {}): RelayShellProps => ({
-        ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", pcs: [], error: unreached, known: [{ server_id: ids.mac, name: "hasang-uui-MacBookPro" }] } }), scoped: false, onSignIn: none, ...extra,
+        ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", pcs: [], error: unreached, known: [{ server_id: ids.mac, name: "example-MacBookPro" }] } }), scoped: false, onSignIn: none, ...extra,
       });
 
       it("says in one line that the phone is offline, with Try again, never that the account service is down, and lists every PC it knows", async () => {
@@ -930,7 +930,7 @@ describe("the hosted front page", () => {
           PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale"].map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
             called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-            if (method === "getState") return { saved: ["https://macbookpro.tail1e211e.ts.net:17317"], names: {} };
+            if (method === "getState") return { saved: ["https://macbookpro.tail1a2b3c.ts.net:17317"], names: {} };
             if (method === "tailscale") return { on: true };
             if (method === "open") return await opened.promise;
             return {};
@@ -945,7 +945,7 @@ describe("the hosted front page", () => {
           // the account's PC it listed last stays, by its page, and the PC the app saved by its Tailscale address
           const relay = element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]'));
           expect(relay.getAttribute("href")).toBe(`/s/${ids.mac}/`);
-          expect(textOf(relay)).toBe("hasang-uui-MacBookPro" + "Relay");
+          expect(textOf(relay)).toBe("example-MacBookPro" + "Relay");
           // a tap says the phone is offline: no name that was not found, no Tailscale that may be off
           let held = 0;
           await act(async () => { if (clickLink(relay)) held++; });
@@ -969,7 +969,7 @@ describe("the hosted front page", () => {
           // an open the network dropped under says the phone went offline, not why the PC did not answer
           await act(async () => { tailscale().click(); });
           await act(async () => { await Promise.resolve(); });
-          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual(["HerdrShell.open https://macbookpro.tail1e211e.ts.net:17317/"]);
+          expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual(["HerdrShell.open https://macbookpro.tail1a2b3c.ts.net:17317/"]);
           (navigator as { onLine?: boolean }).onLine = false;
           await act(async () => { opened.reject(Object.assign(new Error("unknown-host"), { code: "unknown-host" })); await opened.promise.catch(() => undefined); });
           expect(alerts()).toContain("Connect this phone to the internet to open the PC.");
@@ -990,7 +990,7 @@ describe("the hosted front page", () => {
           PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale"].map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
             called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-            if (method === "getState") return { saved: ["https://macbookpro.tail1e211e.ts.net:17317"], names: {} };
+            if (method === "getState") return { saved: ["https://macbookpro.tail1a2b3c.ts.net:17317"], names: {} };
             if (method === "tailscale") return await tailscale.promise;
             if (method === "open") return await new Promise(() => {});
             return {};
@@ -1085,7 +1085,7 @@ describe("the hosted front page", () => {
     });
 
     it("goes back to the PC the phone app still has open while the person chooses another, marking it In use now, whatever way it connects", async () => {
-      for (const [current, mark, canGoBack] of [["https://desk.tail1e211e.ts.net", "DeskTailscale", true], [`https://app.ovis.sh/s/${ids.home}/`, "Home serverRelay", true], ["https://desk.tail1e211e.ts.net", "DeskTailscale", false]] as const) {
+      for (const [current, mark, canGoBack] of [["https://desk.tail1a2b3c.ts.net", "DeskTailscale", true], [`https://app.ovis.sh/s/${ids.home}/`, "Home serverRelay", true], ["https://desk.tail1a2b3c.ts.net", "DeskTailscale", false]] as const) {
         const called: string[] = [];
         const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
         Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
@@ -1093,12 +1093,12 @@ describe("the hosted front page", () => {
           PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", ...(canGoBack ? ["backToCurrent"] : [])].map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string) => {
             called.push(`${plugin}.${method}`);
-            return method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" }, choosing: true, current } : {};
+            return method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" }, choosing: true, current } : {};
           },
         } });
         try {
           await mount(signedIn(four()));
-          expect(rowTexts().map(([, text]) => text.replace(/Forget$/, ""))).toContain(`${mark}In use now`.replace("DeskTailscale", "DeskTailscaledesk.tail1e211e.ts.net"));
+          expect(rowTexts().map(([, text]) => text.replace(/Forget$/, ""))).toContain(`${mark}In use now`.replace("DeskTailscale", "DeskTailscaledesk.tail1a2b3c.ts.net"));
           const backs = all<HTMLButtonElement>("button[aria-label]").filter((node) => node.getAttribute("aria-label")?.startsWith("Back to "));
           expect(backs.length).toBe(canGoBack ? 1 : 0);
           if (canGoBack) {
@@ -1143,7 +1143,7 @@ describe("the hosted front page", () => {
         }
         expect(view()).toBe("add-pc");
         expect(buttons("Continue with GitHub")).toHaveLength(1);
-        await act(async () => { answer.resolve({ saved: ["https://desk.tail1e211e.ts.net"], names: {} }); await answer.promise; });
+        await act(async () => { answer.resolve({ saved: ["https://desk.tail1a2b3c.ts.net"], names: {} }); await answer.promise; });
         expect(view()).toBe("my-pcs");
         expect(rowTexts().map(([way]) => way)).toEqual(["tailscale"]);
       } finally {
@@ -1157,7 +1157,7 @@ describe("the hosted front page", () => {
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
         isNativePlatform: () => true, getPlatform: () => "android",
         PluginHeaders: [{ name: "HerdrShell", methods: [{ name: "getState" }, { name: "open" }] }],
-        nativePromise: async (_plugin: string, method: string) => method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: {} } : {},
+        nativePromise: async (_plugin: string, method: string) => method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net"], names: {} } : {},
       } });
       try {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), onSignIn: none });
@@ -1228,7 +1228,7 @@ describe("the hosted front page", () => {
           PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"].map((name) => ({ name })) }],
           nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
             called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-            if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
+            if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" } };
             if (method === "tailscale") return { on };
             return {};
           },
@@ -1239,7 +1239,7 @@ describe("the hosted front page", () => {
           const card = () => all("[data-tailscale-off]");
           if (on) {
             expect(card()).toHaveLength(0);
-            expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
+            expect(called).toContain("HerdrShell.open https://desk.tail1a2b3c.ts.net/");
           } else {
             expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
             expect(called.some((call) => call.startsWith("HerdrShell.open "))).toBe(false);
@@ -1389,14 +1389,14 @@ describe("the hosted front page", () => {
       await withApp(async () => {
         const tailscale = Promise.withResolvers<{ on?: boolean }>();
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "cancelOpen"] }], (method) =>
-          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: {} } : method === "tailscale" ? tailscale.promise : method === "open" ? new Promise(() => {}) : {});
+          method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net"], names: {} } : method === "tailscale" ? tailscale.promise : method === "open" ? new Promise(() => {}) : {});
         await mount(signedIn(four()));
         await act(async () => { savedRow("tailscale").click(); });
         await openAdd();
-        expect(statusShown()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+        expect(statusShown()).toEqual(["Opening desk.tail1a2b3c.ts.net…Cancel"]);
         await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
-        expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
-        expect(statusShown()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+        expect(called).toContain("HerdrShell.open https://desk.tail1a2b3c.ts.net/");
+        expect(statusShown()).toEqual(["Opening desk.tail1a2b3c.ts.net…Cancel"]);
       });
     });
 
@@ -1407,7 +1407,7 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await act(async () => { action("scan-qr").click(); });
         await act(async () => { tab("ssh").click(); });
-        await act(async () => { scanned.resolve({ ScanResult: "https://desk.tail1e211e.ts.net" }); await scanned.promise; });
+        await act(async () => { scanned.resolve({ ScanResult: "https://desk.tail1a2b3c.ts.net" }); await scanned.promise; });
         expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toEqual([]);
         expect(statusShown()).toEqual([]);
       });
@@ -1420,11 +1420,11 @@ describe("the hosted front page", () => {
         await mount(signedIn(four()));
         await act(async () => { tab("tailscale").click(); });
         const form = element<HTMLFormElement>("form", element('[data-tab-panel="tailscale"]'));
-        await submit(form, "other.tail1e211e.ts.net");
+        await submit(form, "other.tail1a2b3c.ts.net");
         await act(async () => { tab("ssh").click(); });
         expect(called).not.toContain("HerdrShell.cancelOpen");
         // still in view, beside the list and on the tab now chosen
-        expect(statusShown()).toEqual(["Opening other.tail1e211e.ts.net…Cancel", "Opening other.tail1e211e.ts.net…Cancel"]);
+        expect(statusShown()).toEqual(["Opening other.tail1a2b3c.ts.net…Cancel", "Opening other.tail1a2b3c.ts.net…Cancel"]);
       });
     });
 
@@ -1564,7 +1564,7 @@ describe("the hosted front page", () => {
         PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "open", "forget"].map((name) => ({ name })) }],
         nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
           called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-          if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317", "http://127.0.0.1:41234"], names: { "https://desk.tail1e211e.ts.net": "Desk", "http://127.0.0.1:41234": "lab-linux" } };
+          if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net", "http://192.168.0.5:7317", "http://127.0.0.1:41234"], names: { "https://desk.tail1a2b3c.ts.net": "Desk", "http://127.0.0.1:41234": "lab-linux" } };
           return {};
         },
       } });
@@ -1572,18 +1572,18 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "MacBook", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         expect(view()).toBe("my-pcs");
         // the relay's PC first, then the app's: Tailscale, then the others in the order the app saved them
-        expect(rowTexts()).toEqual([["relay", "MacBookRelay"], ["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["address", "192.168.0.5:7317Address"], ["ssh", "lab-linuxSSH127.0.0.1:41234"]]);
+        expect(rowTexts()).toEqual([["relay", "MacBookRelay"], ["tailscale", "DeskTailscaledesk.tail1a2b3c.ts.net"], ["address", "192.168.0.5:7317Address"], ["ssh", "lab-linuxSSH127.0.0.1:41234"]]);
         expect(element<HTMLAnchorElement>('a[class="relay-add-saved-pc"]').getAttribute("href")).toBe(`/s/${ids.mac}/`);
         const rows = () => all("li[data-pc-way]").filter((node) => node.getAttribute("data-pc-way") !== "relay");
-        for (const [index, opens] of ["https://desk.tail1e211e.ts.net/", "http://192.168.0.5:7317/", "http://127.0.0.1:41234/"].entries()) {
+        for (const [index, opens] of ["https://desk.tail1a2b3c.ts.net/", "http://192.168.0.5:7317/", "http://127.0.0.1:41234/"].entries()) {
           await act(async () => { element("button.relay-add-saved-pc", rows()[index]!).click(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open")).at(-1)).toBe(`HerdrShell.open ${opens}`);
         }
         await act(async () => { action("account-menu").click(); });
         await act(async () => { element<HTMLButtonElement>('button[data-item="forget-pcs"]').click(); });
-        const deskRow = element('li[data-tailnet-pc="https://desk.tail1e211e.ts.net"]');
+        const deskRow = element('li[data-tailnet-pc="https://desk.tail1a2b3c.ts.net"]');
         await act(async () => { element('button[data-action="forget-pc"]', deskRow).click(); });
-        expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
+        expect(called).toContain("HerdrShell.forget https://desk.tail1a2b3c.ts.net");
         expect(called.filter((call) => call === "HerdrShell.getState")).toHaveLength(2);
         await act(async () => { action("forget-done").click(); });
         await openAdd();
@@ -1608,7 +1608,7 @@ describe("the hosted front page", () => {
         PluginHeaders: [{ name: "HerdrShell", methods: ["getState", "tailscale", "openTailscale", "open"].map((name) => ({ name })) }, { name: "CapacitorBarcodeScanner" }],
         nativePromise: async (plugin: string, method: string, options: Record<string, unknown> = {}) => {
           called.push(`${plugin}.${method}${typeof options.url === "string" ? ` ${options.url}` : ""}`);
-          if (method === "getState") return { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317", "http://100.101.1.2:7317"], names: { "https://desk.tail1e211e.ts.net": "Desk" } };
+          if (method === "getState") return { saved: ["https://desk.tail1a2b3c.ts.net", "http://192.168.0.5:7317", "http://100.101.1.2:7317"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" } };
           if (method === "tailscale") return { on: tailscaleOn };
           if (method === "scanBarcode") return { ScanResult: `https://app.ovis.sh/s/${ids.mini}/#offer=abc` };
           return {};
@@ -1617,7 +1617,7 @@ describe("the hosted front page", () => {
       try {
         const page = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
         await mount(page);
-        expect(rowTexts().map(([way, text]) => [way, text.replace(/Forget$/, "")])).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["tailscale", "100.101.1.2:7317Tailscale"], ["address", "192.168.0.5:7317Address"]]);
+        expect(rowTexts().map(([way, text]) => [way, text.replace(/Forget$/, "")])).toEqual([["tailscale", "DeskTailscaledesk.tail1a2b3c.ts.net"], ["tailscale", "100.101.1.2:7317Tailscale"], ["address", "192.168.0.5:7317Address"]]);
         await openAdd();
         // the code line too, beside the QR way: the PC offers both
         expect(all<HTMLButtonElement>('button[data-action="add-code"]')).toHaveLength(1);
@@ -1781,7 +1781,7 @@ describe("the hosted front page", () => {
     it("carries no Forget on a row; the menu's Forget PCs, signed out too, puts Forget in place of each forgettable row's chevron, opens no row, and Done ends it", async () => {
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
-          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317", "http://127.0.0.1:41234"], names: { "https://desk.tail1e211e.ts.net": "Desk", "http://127.0.0.1:41234": "lab-linux" } } : {});
+          method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net", "http://192.168.0.5:7317", "http://127.0.0.1:41234"], names: { "https://desk.tail1a2b3c.ts.net": "Desk", "http://127.0.0.1:41234": "lab-linux" } } : {});
         const forgot: string[] = [];
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "MacBook", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         // nothing to forget by mistake on a row, whose name has the row to itself
@@ -1796,7 +1796,7 @@ describe("the hosted front page", () => {
         await act(async () => { forgets()[0]!.click(); });
         await act(async () => { forgets()[1]!.click(); });
         expect(forgot).toEqual([ids.mac]);
-        expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
+        expect(called).toContain("HerdrShell.forget https://desk.tail1a2b3c.ts.net");
         await act(async () => { action("forget-done").click(); });
         expect(forgets()).toHaveLength(0);
         expect(openers()).toHaveLength(4);
@@ -1807,7 +1807,7 @@ describe("the hosted front page", () => {
     it("asks once more, in the row, before it forgets the PC in use, and offers no Forget PCs with nothing to forget", async () => {
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "backToCurrent"] }], (method) =>
-          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317"], names: { "https://desk.tail1e211e.ts.net": "Desk" }, choosing: true, current: "http://192.168.0.5:7317" } : {});
+          method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net", "http://192.168.0.5:7317"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" }, choosing: true, current: "http://192.168.0.5:7317" } : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await forgetPcs();
         const inUse = () => forgets().find((node) => node.getAttribute("aria-label") === "Forget 192.168.0.5:7317")!;
@@ -1833,8 +1833,8 @@ describe("the hosted front page", () => {
     it("says, in Forget PCs, in Forget's place, why a row has none: an account PC, an SSH PC", async () => {
       await withApp(async () => {
         app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
-          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://127.0.0.1:41234"], names: { "http://127.0.0.1:41234": "lab-linux" } } : {});
-        const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
+          method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net", "http://127.0.0.1:41234"], names: { "http://127.0.0.1:41234": "lab-linux" } } : {});
+        const mac = pc(ids.mac, "example-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
         await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: [mac] } }), scoped: false, onSignIn: none });
         const reasons = () => all("[data-kept]").filter(shown).map((node) => [node.getAttribute("data-kept"), textOf(node)]);
         expect(reasons()).toEqual([]);
@@ -1847,13 +1847,13 @@ describe("the hosted front page", () => {
     });
 
     it("claims no account PC is on while the account cannot be read", async () => {
-      const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
+      const mac = pc(ids.mac, "example-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
       const page = (error: string | null) => ({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error, pcs: [mac] } }), scoped: false, onSignIn: none });
       await mount(page(null));
-      expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelayOn"]]);
+      expect(rowTexts()).toEqual([["relay", "example-MacBookProRelayOn"]]);
       await browser.render(null);
       await mount(page("The account service could not be reached. The PCs this device is paired with still work."));
-      expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay"]]);
+      expect(rowTexts()).toEqual([["relay", "example-MacBookProRelay"]]);
     });
 
     const lines = () => all("[data-way-line]").filter(shown).map((line) => {
@@ -1862,16 +1862,16 @@ describe("the hosted front page", () => {
       const end = after === null ? "" : textOf(after);
       return [line.getAttribute("data-way-line"), textOf(line), end];
     });
-    const tail = "https://macbookpro.tail1e211e.ts.net:17317", scope = `https://app.ovis.sh/s/${ids.mac}/`, desk = "https://desk.tail1e211e.ts.net", sshMac = "http://127.0.0.1:47317";
+    const tail = "https://macbookpro.tail1a2b3c.ts.net:17317", scope = `https://app.ovis.sh/s/${ids.mac}/`, desk = "https://desk.tail1a2b3c.ts.net", sshMac = "http://127.0.0.1:47317";
 
     it("lists a PC saved by the relay and by its Tailscale address as one row, both ways tagged, always opened by the relay whatever loaded last", async () => {
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
-          method === "getState" ? { saved: [tail, scope, desk], names: { [desk]: "hasang-uui-MacBookPro" }, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
-        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+          method === "getState" ? { saved: [tail, scope, desk], names: { [desk]: "example-MacBookPro" }, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "example-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         // the Mac once, by the relay's name, with no address (it opens by the relay); a PC saved with no ID stays its own
         // row, whatever its name
-        expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale"], ["tailscale", "hasang-uui-MacBookProTailscaledesk.tail1e211e.ts.net"]]);
+        expect(rowTexts()).toEqual([["relay", "example-MacBookProRelay · Tailscale"], ["tailscale", "example-MacBookProTailscaledesk.tail1a2b3c.ts.net"]]);
         // its Tailscale page loaded last in the app, and still the row is the relay's page
         expect(openers()[0]!.localName).toBe("a");
         expect(openers()[0]!.getAttribute("href")).toBe(`/s/${ids.mac}/`);
@@ -1897,10 +1897,10 @@ describe("the hosted front page", () => {
         let called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
         const forgot: string[] = [];
-        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "example-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         await forgetPcs();
-        expect(lines()).toEqual([["relay", "Relay", "Forget"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
-        expect(forgets().map((node) => node.getAttribute("aria-label"))).toEqual(["Forget hasang-uui-MacBookPro · Relay", "Forget hasang-uui-MacBookPro · Tailscale"]);
+        expect(lines()).toEqual([["relay", "Relay", "Forget"], ["tailscale", "Tailscalemacbookpro.tail1a2b3c.ts.net:17317", "Forget"]]);
+        expect(forgets().map((node) => node.getAttribute("aria-label"))).toEqual(["Forget example-MacBookPro · Relay", "Forget example-MacBookPro · Tailscale"]);
         await act(async () => { forgets()[1]!.click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
         expect(forgot).toEqual([]);
@@ -1911,7 +1911,7 @@ describe("the hosted front page", () => {
         // relay pairing + SSH: the SSH way goes from the app's own screen, with its keys
         called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
           method === "getState" ? { saved: [sshMac], names: {}, ids: { [sshMac]: ids.mac } } : {});
-        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "example-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         await forgetPcs();
         expect(lines()).toEqual([["relay", "Relay", "Forget"], ["ssh", "SSH127.0.0.1:47317", "SSH PC"]]);
         await browser.render(null);
@@ -1919,10 +1919,10 @@ describe("the hosted front page", () => {
         // an account PC + Tailscale address: the account's way says so, the address is forgotten on its own
         called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
-        const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
+        const mac = pc(ids.mac, "example-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
         await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: [mac] } }), scoped: false, onSignIn: none });
         await forgetPcs();
-        expect(lines()).toEqual([["relay", "Relay", "Account PC"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
+        expect(lines()).toEqual([["relay", "Relay", "Account PC"], ["tailscale", "Tailscalemacbookpro.tail1a2b3c.ts.net:17317", "Forget"]]);
         await act(async () => { forgets()[0]!.click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
       });
@@ -1935,7 +1935,7 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: [tail, lan], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await forgetPcs();
-        expect(lines()).toEqual([["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"], ["address", "Address192.168.0.5:7317", "Forget"]]);
+        expect(lines()).toEqual([["tailscale", "Tailscalemacbookpro.tail1a2b3c.ts.net:17317", "Forget"], ["address", "Address192.168.0.5:7317", "Forget"]]);
         await act(async () => { forgets()[1]!.click(); });
         // no question for one way of a PC not in use, and only that way goes
         expect(all("[data-forget-ask]").filter(shown)).toHaveLength(0);
@@ -1948,7 +1948,7 @@ describe("the hosted front page", () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "backToCurrent"] }], (method) =>
           method === "getState" ? { saved: [tail, scope], names: {}, ids: { [tail]: ids.mac }, choosing: true, current: scope } : {});
         const forgot: string[] = [];
-        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "example-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         await forgetPcs();
         const ask = () => all("[data-forget-ask]").filter(shown);
         await act(async () => { forgets()[0]!.click(); });
@@ -1967,7 +1967,7 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: [tail, lan], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } }
             : method === "open" && options.url === `${tail}/` ? Promise.reject(Object.assign(new Error("unknown-host"), { code: "unknown-host" })) : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317"]]);
+        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1a2b3c.ts.net:17317"]]);
         await act(async () => { openers()[0]!.click(); });
         await act(async () => { await Promise.resolve(); });
         const offer = () => all<HTMLButtonElement>('button[data-action="open-other-way"]').filter(shown);
@@ -1980,15 +1980,15 @@ describe("the hosted front page", () => {
         // the relay PC's own page, whose open over the relay failed: the Tailscale address the app saved it by
         const again = app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "open" ? new Promise(() => {}) : {});
-        await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
+        await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "example-MacBookPro", detail: null, server_id: ids.mac }) });
         await act(async () => { await Promise.resolve(); });
-        expect(offer().map((node) => [node.getAttribute("aria-label"), textOf(node)])).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
+        expect(offer().map((node) => [node.getAttribute("aria-label"), textOf(node)])).toEqual([["Open macbookpro.tail1a2b3c.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1a2b3c.ts.net:17317"]]);
         await act(async () => { offer()[0]!.click(); });
         expect(again.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
         await browser.render(null);
         // a key that is not the PC's offers no other way
         app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) => method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
-        await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
+        await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "example-MacBookPro", detail: null, server_id: ids.mac }) });
         expect(offer()).toHaveLength(0);
       });
     });
@@ -2003,7 +2003,7 @@ describe("the hosted front page", () => {
         // the relay PC's own page, whose open over the relay failed, offers the Tailscale address the app saved it by
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: false } : method === "open" ? new Promise(() => {}) : {});
-        await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
+        await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "example-MacBookPro", detail: null, server_id: ids.mac }) });
         await settle();
         expect(card()).toHaveLength(0);
         await act(async () => { offer()[0]!.click(); });
@@ -2022,7 +2022,7 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await act(async () => { openers()[0]!.click(); });
         await settle();
-        expect(offer().map((node) => node.getAttribute("aria-label"))).toEqual(["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)"]);
+        expect(offer().map((node) => node.getAttribute("aria-label"))).toEqual(["Open macbookpro.tail1a2b3c.ts.net:17317 (Tailscale)"]);
         await act(async () => { offer()[0]!.click(); });
         await settle();
         expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
@@ -2041,11 +2041,11 @@ describe("the hosted front page", () => {
           const lan = "http://192.168.0.5:7317";
           const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
             method === "getState" ? { saved: [tail, lan, desk], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
-          await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP), device(ids.desk, "Desk PC", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+          await mount({ ...props({ kind: "list", devices: [device(ids.mac, "example-MacBookPro", AP), device(ids.desk, "Desk PC", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
           const rows = rowTexts();
-          expect(rows).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale · Address"], ["relay", "Desk PCRelay"], ["tailscale", "deskTailscaledesk.tail1e211e.ts.net"]]);
+          expect(rows).toEqual([["relay", "example-MacBookProRelay · Tailscale · Address"], ["relay", "Desk PCRelay"], ["tailscale", "deskTailscaledesk.tail1a2b3c.ts.net"]]);
           // one disclosure, on the row of several ways alone, closed, named for its PC
-          expect(moreWays().map((node) => [node.getAttribute("aria-label"), node.getAttribute("aria-expanded")])).toEqual([["More ways to open hasang-uui-MacBookPro", "false"]]);
+          expect(moreWays().map((node) => [node.getAttribute("aria-label"), node.getAttribute("aria-expanded")])).toEqual([["More ways to open example-MacBookPro", "false"]]);
           expect(wayLines()).toEqual([]);
           // what it controls is there while closed too, hidden
           const controlled = () => all("[id]").filter((node) => node.id === moreWays()[0]!.getAttribute("aria-controls")).map((node) => node.hidden);
@@ -2058,7 +2058,7 @@ describe("the hosted front page", () => {
           expect(controlled()).toEqual([false]);
           // each other way, one to a line: its tag and the host it opens, whole, in its accessible name too
           expect(wayLines()).toEqual([
-            ["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"],
+            ["Open macbookpro.tail1a2b3c.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1a2b3c.ts.net:17317"],
             ["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"],
           ]);
           // opening the list opens nothing; the relay row keeps its name, its way tags and where it leads
@@ -2082,7 +2082,7 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await act(async () => { moreWays()[0]!.click(); });
-        expect(wayLines()).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
+        expect(wayLines()).toEqual([["Open macbookpro.tail1a2b3c.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1a2b3c.ts.net:17317"]]);
         await act(async () => { wayButtons()[0]!.click(); });
         for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
@@ -2096,7 +2096,7 @@ describe("the hosted front page", () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "backToCurrent"] }], (method) =>
           method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac }, choosing: true, current: tail } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317In use now"]]);
+        expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1a2b3c.ts.net:17317In use now"]]);
         await act(async () => { moreWays()[0]!.click(); });
         expect(wayLines()).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
         await act(async () => { openers()[0]!.click(); });
@@ -2109,7 +2109,7 @@ describe("the hosted front page", () => {
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "openTailscale"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: false } : method === "open" ? new Promise(() => {}) : {});
-        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
+        await mount({ ...props({ kind: "list", devices: [device(ids.mac, "example-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         const card = () => all("[data-tailscale-off]").filter(shown);
         await act(async () => { moreWays()[0]!.click(); });
         await act(async () => { wayButtons()[0]!.click(); });
@@ -2140,7 +2140,7 @@ describe("the hosted front page", () => {
       (window.location as { hash?: string }).hash = "";
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "backToCurrent"] }], (method) =>
-          method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" }, choosing: true, current: "https://desk.tail1e211e.ts.net" } : {});
+          method === "getState" ? { saved: ["https://desk.tail1a2b3c.ts.net"], names: { "https://desk.tail1a2b3c.ts.net": "Desk" }, choosing: true, current: "https://desk.tail1a2b3c.ts.net" } : {});
         await mount(signedIn(four()));
         await act(async () => { inUse().click(); });
         expect(called).toContain("HerdrShell.backToCurrent");

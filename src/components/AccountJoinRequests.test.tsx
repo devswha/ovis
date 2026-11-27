@@ -105,10 +105,10 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     const postOf = (key: Uint8Array) => ({ list: "f".repeat(64), endpoint: Buffer.from(key).toString("hex"), server_id: deriveServerId(key), key: "member-key", enc: "enc-key", card: "card", for: { kind: "add" as const } });
 
     it("Allow on a PC that posted its keys for the list asks for the number, and never opens the PC's own page", async () => {
-      await listedByItsOwner(mac, "hasang-MacBookPro");
+      await listedByItsOwner(mac, "example-MacBookPro");
       lists = { account: ACCOUNT, list, posts: [postOf(mac)] };
       await mount();
-      expect(text()).toContain("\"hasang-MacBookPro\" asks to join your account");
+      expect(text()).toContain("\"example-MacBookPro\" asks to join your account");
       await press("Allow");
       expect(opened).toEqual([]);
       const dialog = [...page.window.document.body.querySelectorAll('[data-testid="add-pc-number"]')];
@@ -118,7 +118,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     });
 
     it("drops the number dialog an Allow opened once another account is signed in to here", async () => {
-      await listedByItsOwner(mac, "hasang-MacBookPro");
+      await listedByItsOwner(mac, "example-MacBookPro");
       lists = { account: ACCOUNT, list, posts: [postOf(mac)] };
       await mount();
       await press("Allow");
@@ -135,23 +135,23 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     });
 
     it("shows no card for a PC that posted nothing for the list: no way into the directory's admission alone", async () => {
-      await listedByItsOwner(mac, "hasang-MacBookPro");
+      await listedByItsOwner(mac, "example-MacBookPro");
       lists = { account: ACCOUNT, list, posts: [] };
       await mount();
-      expect(text()).not.toContain("hasang-MacBookPro");
+      expect(text()).not.toContain("example-MacBookPro");
       expect(buttons()).toEqual([]);
     });
   });
 
   it("is shown by the name it gave itself, quoted, with Allow and Decline", async () => {
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     await mount();
-    expect(text()).toContain("\"hasang-MacBookPro\" asks to join your account");
+    expect(text()).toContain("\"example-MacBookPro\" asks to join your account");
     expect(buttons()).toEqual(["Allow", "Decline"]);
   });
 
   it("opens that PC's own page on Allow, where its join takes the number the PC's screen shows", async () => {
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     await mount();
     await press("Allow");
     expect(opened).toEqual([MAC]);
@@ -160,7 +160,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
   });
 
   it("denies that request on Decline: removed from the account for every device, the PC not added, and a new request shows again", async () => {
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     await mount();
     await press("Decline");
     expect(fake.requests).toContain(`DELETE /v1/pcs/${MAC}`);
@@ -168,7 +168,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     expect(opened).toEqual([]);
     expect(buttons()).toEqual([]);
     // the PC asks again: a new listing from its own Settings
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     await mount();
     expect(buttons()).toEqual(["Allow", "Decline"]);
   });
@@ -177,7 +177,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     now -= 11 * MINUTE;
     await signIn();
     now += 11 * MINUTE;
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     await mount();
     await press("Decline");
     expect(text()).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
@@ -189,7 +189,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
     now -= 11 * MINUTE;
     await signIn();
     now += 11 * MINUTE;
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     keepShellAccount({ signOut() {}, signOutEverywhere: async () => null, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null,
       freshSignIn: async () => { await signIn(); return (await store.get("session")) ?? null; } });
     try {
@@ -206,7 +206,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
 
   it("account#67: Decline names the listing it showed; one let in meanwhile is not removed, and the card shows the account as it is now", async () => {
     fake.completions = true;
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     const shown = fake.pcs(ACCOUNT).find((pc) => pc.server_id === MAC)!.listing_id!;
     const declines: string[] = [];
     // another device lets the PC in after this card's own re-read, just before its removal reaches the service
@@ -230,7 +230,7 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
   });
 
   it("asks nothing for a PC paired here, one whose request is over ten minutes old, or one that already joined", async () => {
-    await listedByItsOwner(mac, "hasang-MacBookPro");
+    await listedByItsOwner(mac, "example-MacBookPro");
     now += 11 * MINUTE;
     await signIn();
     await mount();

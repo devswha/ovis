@@ -267,7 +267,7 @@ describe("the hosted shell's front page", () => {
 
   it("keeps the account's PCs it listed last for a page loaded with no internet, and forgets them once signed out", async () => {
     const pair = generateKeyPair();
-    const mac = { server_id: deriveServerId(pair.publicKey), label: "hasang-uui-MacBookPro", added_at: new Date(Date.now() - 86_400_000).toISOString(), last_seen_at: new Date(Date.now() - 20 * 3_600_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
+    const mac = { server_id: deriveServerId(pair.publicKey), label: "example-MacBookPro", added_at: new Date(Date.now() - 86_400_000).toISOString(), last_seen_at: new Date(Date.now() - 20 * 3_600_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP };
     let online = true;
     const accountFetch = async (input: RequestInfo | URL): Promise<Response> => {
       if (new URL(String(input)).pathname !== "/v1/pcs") return new Response(null, { status: 404 });
@@ -279,7 +279,7 @@ describe("the hosted shell's front page", () => {
     await accountStore.set("session", session);
     await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
     await until(() => rendered.length > 0 && account().pcs !== null, "the first read drawn");
-    expect(account().pcs!.map((pc) => pc.name)).toEqual(["hasang-uui-MacBookPro"]);
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["example-MacBookPro"]);
 
     // the app opened again with no internet: a new page, whose read gets no answer at all
     online = false;
@@ -287,7 +287,7 @@ describe("the hosted shell's front page", () => {
     await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
     await until(() => rendered.length > 0 && account().error !== null, "the failed read drawn");
     expect(account().pcs).toEqual([]);
-    expect(account().known).toEqual([{ server_id: mac.server_id, name: "hasang-uui-MacBookPro" }]);
+    expect(account().known).toEqual([{ server_id: mac.server_id, name: "example-MacBookPro" }]);
     // another tab's read found none to keep since: this page's next failed read lists none either, not the earlier ones
     keepKnownPcs("acct-test", []);
     const drawn = rendered.length;

@@ -57,7 +57,7 @@ final class ShellTests: XCTestCase {
         XCTAssertEqual(Home.shellForm("https://app.ovis.sh", hosted: hosted, shell: shell), "capacitor://app.ovis.sh")
         XCTAssertEqual(Home.shellForm("https://app.ovis.sh/s/\(id)/", hosted: hosted, shell: shell), "capacitor://app.ovis.sh/s/\(id)/")
         // already there, a PC's own address, another origin, nothing readable: as they are
-        for other in ["capacitor://app.ovis.sh/s/\(id)/", "https://desk.tail1e211e.ts.net/?pair=CODE", "http://127.0.0.1:47320/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/",
+        for other in ["capacitor://app.ovis.sh/s/\(id)/", "https://desk.tail1a2b3c.ts.net/?pair=CODE", "http://127.0.0.1:47320/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/",
                       "https://app.ovis.sh.evil.example/", "https://demo/", "capacitor://localhost/index.html", "not an address", ""] {
             XCTAssertEqual(Home.shellForm(other, hosted: hosted, shell: shell), other, other)
         }
@@ -70,7 +70,7 @@ final class ShellTests: XCTestCase {
     func testTheAppsOwnPagesReadASavedKeyOnTheHostedOrigin() {
         XCTAssertEqual(Home.hostedForm("capacitor://app.ovis.sh/s/\(id)/", hosted: hosted, shell: shell), "https://app.ovis.sh/s/\(id)/")
         XCTAssertEqual(Home.hostedForm("capacitor://app.ovis.sh", hosted: hosted, shell: shell), "https://app.ovis.sh")
-        for other in ["https://desk.tail1e211e.ts.net", "http://127.0.0.1:47320", "capacitor://localhost/index.html", "https://app.ovis.sh/s/\(id)/"] {
+        for other in ["https://desk.tail1a2b3c.ts.net", "http://127.0.0.1:47320", "capacitor://localhost/index.html", "https://app.ovis.sh/s/\(id)/"] {
             XCTAssertEqual(Home.hostedForm(other, hosted: hosted, shell: shell), other, other)
         }
         // each undoes the other for a key of the shell
@@ -88,7 +88,7 @@ final class ShellTests: XCTestCase {
         XCTAssertEqual(go("https://app.ovis.sh/s/\(id)?x=1"), "capacitor://app.ovis.sh/s/\(id)/?x=1")
         // what is already where it belongs goes on as it is
         for page in ["capacitor://app.ovis.sh/", "capacitor://app.ovis.sh/#pcs", "capacitor://app.ovis.sh/s/\(id)/", "capacitor://app.ovis.sh/s/\(id)/~render",
-                     "capacitor://app.ovis.sh/assets/index-abc.js", "capacitor://localhost/error.html", "https://desk.tail1e211e.ts.net/", "https://example.com/s/\(id)", "about:blank"] {
+                     "capacitor://app.ovis.sh/assets/index-abc.js", "capacitor://localhost/error.html", "https://desk.tail1a2b3c.ts.net/", "https://example.com/s/\(id)", "about:blank"] {
             XCTAssertNil(go(page), page)
         }
         // a hosted build has nothing to move
@@ -120,7 +120,7 @@ final class ShellTests: XCTestCase {
 
     func testOnlyWhatWasTiedToTheHostedOriginIsSetAside() {
         let relay = "https://app.ovis.sh/s/\(id)/", other = "https://app.ovis.sh/s/fedcba9876543210fedcba9876543210/"
-        let tailscale = "https://desk.tail1e211e.ts.net", lan = "http://192.168.0.12:8765", ssh = "http://127.0.0.1:47320"
+        let tailscale = "https://desk.tail1a2b3c.ts.net", lan = "http://192.168.0.12:8765", ssh = "http://127.0.0.1:47320"
         let kept = Home.withoutHosted(saved: [relay, tailscale, "https://app.ovis.sh", ssh, other, lan],
                                       names: [relay: "Desk", tailscale: "desk", "https://app.ovis.sh": "Ovis", ssh: "box"],
                                       ids: [tailscale: id, relay: id], current: "https://app.ovis.sh", last: relay, hosted: hosted)

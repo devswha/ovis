@@ -163,7 +163,7 @@ describe("the SSH tab's one field", () => {
   it("takes user@host, with a port or ssh://, as SSH", () => {
     expect(sshOrAddress(" me@my-server.example.com ")).toEqual({ ssh: { user: "me", host: "my-server.example.com", port: 22 } });
     expect(sshOrAddress("pi@192.168.0.20:2222")).toEqual({ ssh: { user: "pi", host: "192.168.0.20", port: 2222 } });
-    expect(sshOrAddress("ssh://dev@nas.tail1e211e.ts.net/")).toEqual({ ssh: { user: "dev", host: "nas.tail1e211e.ts.net", port: 22 } });
+    expect(sshOrAddress("ssh://dev@nas.tail1a2b3c.ts.net/")).toEqual({ ssh: { user: "dev", host: "nas.tail1a2b3c.ts.net", port: 22 } });
     expect(sshOrAddress("me@[fd7a:115c:a1e0::1]:22")).toEqual({ ssh: { user: "me", host: "fd7a:115c:a1e0::1", port: 22 } });
   });
 
@@ -176,7 +176,7 @@ describe("the SSH tab's one field", () => {
 
 describe("each connect tab's saved PCs", () => {
   const relayPc = `https://app.ovis.sh/s/${SERVER_ID}/`;
-  const saved = ["http://100.101.12.7:7317", "https://nas.tail1e211e.ts.net", "http://192.168.0.10:7317", relayPc, "https://app.ovis.sh", "http://127.0.0.1:41234", "not an address"];
+  const saved = ["http://100.101.12.7:7317", "https://nas.tail1a2b3c.ts.net", "http://192.168.0.10:7317", relayPc, "https://app.ovis.sh", "http://127.0.0.1:41234", "not an address"];
   const names = { "http://100.101.12.7:7317": "home-server", "http://192.168.0.10:7317": "desk", [relayPc]: "Studio PC" };
   const ssh = { "http://127.0.0.1:41234": { label: "pi@nas" } };
 
@@ -186,7 +186,7 @@ describe("each connect tab's saved PCs", () => {
 
   it("names a PC by its saved name, else what its address says: a relay PC by its id, never the app's host", () => {
     expect(savedPcLabel(relayPc, {}, {})).toBe("0123456789ab");
-    expect(savedPcLabel("https://nas.tail1e211e.ts.net", {}, {})).toBe("nas");
+    expect(savedPcLabel("https://nas.tail1a2b3c.ts.net", {}, {})).toBe("nas");
     // a Tailscale IP is no name to shorten: its first word would be "100" for every PC
     expect(savedPcLabel("http://100.101.12.7:7317", {}, {})).toBe("100.101.12.7:7317");
     expect(savedPcLabel("http://192.168.0.10:7317", {}, {})).toBe("192.168.0.10:7317");
@@ -197,7 +197,7 @@ describe("each connect tab's saved PCs", () => {
   it("lists the PCs opened at a Tailscale address on the Tailscale tab, by their saved name or their host's first word", () => {
     expect(tabPcs(saved, "tailscale", names, ssh)).toEqual([
       { origin: "http://100.101.12.7:7317", label: "home-server", way: "tailscale" },
-      { origin: "https://nas.tail1e211e.ts.net", label: "nas", way: "tailscale" },
+      { origin: "https://nas.tail1a2b3c.ts.net", label: "nas", way: "tailscale" },
     ]);
   });
 
@@ -345,11 +345,11 @@ describe("why an address did not open", () => {
 });
 
 describe("the PCs an SSH PC knows", () => {
-  const from = { origin: "http://127.0.0.1:47320", user: "me", host: "desk.tail1e211e.ts.net", port: 22 };
+  const from = { origin: "http://127.0.0.1:47320", user: "me", host: "desk.tail1a2b3c.ts.net", port: 22 };
   const known = {
     candidates: { pcs: [
-      { name: "desk", destination: "desk.tail1e211e.ts.net", detail: "desk.tail1e211e.ts.net", source: "tailscale" },
-      { name: "nas", destination: "nas.tail1e211e.ts.net", detail: "nas.tail1e211e.ts.net", source: "tailscale" },
+      { name: "desk", destination: "desk.tail1a2b3c.ts.net", detail: "desk.tail1a2b3c.ts.net", source: "tailscale" },
+      { name: "nas", destination: "nas.tail1a2b3c.ts.net", detail: "nas.tail1a2b3c.ts.net", source: "tailscale" },
       { name: "lab", destination: "lab", detail: "root@lab.example", source: "ssh_config" },
       { name: "bare", destination: "bare", detail: "bare.example", source: "ssh_config" },
       { name: "alias", destination: "alias", detail: null, source: "ssh_config" },
@@ -364,7 +364,7 @@ describe("the PCs an SSH PC knows", () => {
 
   it("offers each as a login the phone can reach: a Tailscale PC as the same user, an ssh config host by its user@hostname, a PC it added by its target", () => {
     expect(knownLogins(known, from)).toEqual([
-      { user: "me", host: "nas.tail1e211e.ts.net", port: 22, name: "nas", source: "tailscale" },
+      { user: "me", host: "nas.tail1a2b3c.ts.net", port: 22, name: "nas", source: "tailscale" },
       { user: "root", host: "lab.example", port: 22, name: "lab", source: "ssh_config" },
       { user: "can", host: "10.0.0.7", port: 2222, name: "vps", source: "pc" },
     ]);

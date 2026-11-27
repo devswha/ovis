@@ -1634,10 +1634,10 @@ const ompLines = [
     { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ss -tlnp", i: "Checking ports" }, intent: "Checking ports" },
   ] } }),
   JSON.stringify({ type: "message", timestamp: "2026-09-20T08:39:03.000Z", message: { role: "toolResult", toolCallId: "call_1", toolName: "bash", isError: false, content: [
-    { type: "text", text: "LISTEN 0 512 100.123.228.51:7317" },
+    { type: "text", text: "LISTEN 0 512 100.120.30.40:7317" },
   ] } }),
   JSON.stringify({ type: "message", timestamp: "2026-09-20T08:39:05.000Z", message: { role: "assistant", content: [
-    { type: "text", text: "http://100.123.228.51:7317" },
+    { type: "text", text: "http://100.120.30.40:7317" },
   ] } }),
   JSON.stringify({ type: "message", timestamp: "2026-09-20T08:40:00.000Z", message: { role: "user", content: [
     { type: "image", blob: "..." },
@@ -1652,8 +1652,8 @@ describe("parseOmpTranscript", () => {
       { role: "assistant", ts: "2026-09-20T08:39:02.000Z", end_ts: "2026-09-20T08:39:05.000Z", parts: [
         { kind: "thinking", text: "internal reasoning stays private" },
         { kind: "thinking", text: "alternate thinking field" },
-        { kind: "tool", name: "bash", summary: "Checking ports", input: expect.stringContaining("ss -tlnp"), output: "LISTEN 0 512 100.123.228.51:7317" },
-        { kind: "text", text: "http://100.123.228.51:7317" },
+        { kind: "tool", name: "bash", summary: "Checking ports", input: expect.stringContaining("ss -tlnp"), output: "LISTEN 0 512 100.120.30.40:7317" },
+        { kind: "text", text: "http://100.120.30.40:7317" },
       ] },
     ]);
   });

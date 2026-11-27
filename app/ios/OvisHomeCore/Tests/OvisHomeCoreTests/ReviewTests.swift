@@ -101,7 +101,7 @@ final class ReviewTests: XCTestCase {
         XCTAssertTrue(Home.renderHostAddress(URL(string: "capacitor://app.ovis.sh/s/\(id)/~render"), shell: shell))
         XCTAssertTrue(Home.renderHostAddress(URL(string: "capacitor://app.ovis.sh/s/\(id)/~render?x=1#y"), shell: shell))
         for page in ["capacitor://app.ovis.sh/s/\(id)/", "capacitor://app.ovis.sh/", "capacitor://app.ovis.sh/s/\(id)/~render/", "capacitor://localhost/s/\(id)/~render",
-                     "capacitor://APP.ovis.sh/s/\(id)/~render", "https://desk.tail1e211e.ts.net/s/\(id)/~render"] {
+                     "capacitor://APP.ovis.sh/s/\(id)/~render", "https://desk.tail1a2b3c.ts.net/s/\(id)/~render"] {
             XCTAssertFalse(Home.renderHostAddress(URL(string: page), shell: shell), page)
         }
         // a build that loads the shell from the network leaves its render host to that host
@@ -119,7 +119,7 @@ final class ReviewTests: XCTestCase {
             XCTAssertNil(origin(text, true), text)
         }
         // another host is a PC at its own address, as it always was
-        for (text, key) in [("https://desk.tail1e211e.ts.net/", "https://desk.tail1e211e.ts.net"), ("http://192.168.0.12:8765/x", "http://192.168.0.12:8765"),
+        for (text, key) in [("https://desk.tail1a2b3c.ts.net/", "https://desk.tail1a2b3c.ts.net"), ("http://192.168.0.12:8765/x", "http://192.168.0.12:8765"),
                             ("http://127.0.0.1:47320/", "http://127.0.0.1:47320"), ("https://app.ovis.sh.evil.example/", "https://app.ovis.sh.evil.example"),
                             ("https://notapp.ovis.sh/", "https://notapp.ovis.sh"), ("http://[fd7a:115c:a1e0::1]:8080/", "http://[fd7a:115c:a1e0::1]:8080")] {
             XCTAssertFalse(Home.hostedHost(URL(string: text), hosted: hosted), text)
@@ -142,9 +142,9 @@ final class ReviewTests: XCTestCase {
     }
 
     func testEveryWebEntryAtTheHostedHostIsSetAsideNotOnlyItsExactOrigin() {
-        let kept = Home.withoutHosted(saved: ["http://app.ovis.sh", "https://app.ovis.sh:8443", "https://app.ovis.sh/s/\(id)/", "https://desk.tail1e211e.ts.net"],
+        let kept = Home.withoutHosted(saved: ["http://app.ovis.sh", "https://app.ovis.sh:8443", "https://app.ovis.sh/s/\(id)/", "https://desk.tail1a2b3c.ts.net"],
                                       names: [:], ids: [:], current: "https://app.ovis.sh.", last: nil, hosted: hosted)
-        XCTAssertEqual(kept.saved, ["https://desk.tail1e211e.ts.net"])
+        XCTAssertEqual(kept.saved, ["https://desk.tail1a2b3c.ts.net"])
         XCTAssertEqual(kept.dead, ["http://app.ovis.sh", "https://app.ovis.sh:8443", "https://app.ovis.sh/s/\(id)/", "https://app.ovis.sh."])
         XCTAssertNil(kept.current)
     }
@@ -168,7 +168,7 @@ final class ReviewTests: XCTestCase {
     // MARK: one build installed over the other kind
 
     func testABuildThatLoadsTheShellFromTheNetworkListsNothingOnTheAppsScheme() {
-        let relay = "capacitor://app.ovis.sh/s/\(id)/", tailscale = "https://desk.tail1e211e.ts.net"
+        let relay = "capacitor://app.ovis.sh/s/\(id)/", tailscale = "https://desk.tail1a2b3c.ts.net"
         let kept = Home.withoutInApp(saved: [relay, tailscale, "capacitor://app.ovis.sh"], names: [relay: "Desk", tailscale: "desk"], ids: [relay: id], current: "capacitor://app.ovis.sh", last: tailscale)
         XCTAssertEqual(kept.saved, [tailscale])
         XCTAssertEqual(kept.names, [tailscale: "desk"])
@@ -180,7 +180,7 @@ final class ReviewTests: XCTestCase {
     }
 
     func testWhatTheOtherKindOfBuildSetAsideComesBackWhereItOpensAgain() {
-        let relay = "https://app.ovis.sh/s/\(id)/", tailscale = "https://desk.tail1e211e.ts.net"
+        let relay = "https://app.ovis.sh/s/\(id)/", tailscale = "https://desk.tail1a2b3c.ts.net"
         let back = Home.restored(saved: [tailscale], names: [tailscale: "desk"], ids: [:], aside: ["https://app.ovis.sh", relay, tailscale],
                                  asideNames: [relay: "Desk", tailscale: "an older name", "https://gone.example": "never set aside"], asideIds: [relay: id])
         XCTAssertEqual(back.saved, [tailscale, "https://app.ovis.sh", relay])

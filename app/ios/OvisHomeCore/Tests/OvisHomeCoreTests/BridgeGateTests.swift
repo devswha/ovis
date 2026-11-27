@@ -9,7 +9,7 @@ final class BridgeGateTests: XCTestCase {
     private let ownPage: Frame = (true, "capacitor", "localhost", 0)
     private let hostedShell: Frame = (true, "https", "app.ovis.sh", 0)
     private let inAppShell: Frame = (true, "capacitor", "app.ovis.sh", 0)
-    private let pcPage: Frame = (true, "https", "desk.tail1e211e.ts.net", 0)
+    private let pcPage: Frame = (true, "https", "desk.tail1a2b3c.ts.net", 0)
 
     private func decide(_ frame: Frame, _ plugin: String, _ method: String?, type: String? = "message", callback: Bool = true, shell: URL?) -> BridgeGate.Decision {
         BridgeGate.decide(mainFrame: frame.main, scheme: frame.scheme, host: frame.host, port: frame.port, plugins: [plugin], type: type, method: method, callback: callback, shell: shell)
@@ -18,7 +18,7 @@ final class BridgeGateTests: XCTestCase {
     func testNoFrameInsideAPageReachesAnyPluginInEitherBuild() {
         for shell in [hosted, inApp] {
             for frame: Frame in [(false, "https", "app.ovis.sh", 0), (false, "capacitor", "app.ovis.sh", 0), (false, "capacitor", "localhost", 0),
-                                 (false, "http", "localhost", 5173), (false, "https", "desk.tail1e211e.ts.net", 0), (false, "", "", 0)] {
+                                 (false, "http", "localhost", 5173), (false, "https", "desk.tail1a2b3c.ts.net", 0), (false, "", "", 0)] {
                 for (plugin, method) in [("HerdrShell", "open"), ("HerdrShell", "forget"), ("HerdrShell", "disconnect"), ("HerdrShell", "openSshSetup"), ("HerdrShell", "getState"),
                                          ("OvisPush", "subscribe"), ("OvisAuth", "authenticate"), ("OvisSsh", "add"), ("OvisSsh", "list"), ("OvisDirect", "open"),
                                          ("CapacitorBarcodeScanner", "scanBarcode"), ("SystemBars", "setStyle")] {
@@ -64,8 +64,8 @@ final class BridgeGateTests: XCTestCase {
         XCTAssertEqual(decide(inAppShell, "OvisSsh", "remove", shell: inApp), .drop)
         XCTAssertEqual(decide(inAppShell, "OvisSsh", "add", shell: hosted), .drop)
         // a message that names the plugin by either of the two names Capacitor reads
-        XCTAssertEqual(BridgeGate.decide(mainFrame: true, scheme: "https", host: "desk.tail1e211e.ts.net", port: 0, plugins: ["HerdrShell", "OvisSsh"], type: "message", method: "list", callback: true, shell: hosted), .drop)
-        XCTAssertEqual(BridgeGate.decide(mainFrame: true, scheme: "https", host: "desk.tail1e211e.ts.net", port: 0, plugins: ["OvisDirect", "HerdrShell"], type: "message", method: "open", callback: true, shell: hosted), .drop)
+        XCTAssertEqual(BridgeGate.decide(mainFrame: true, scheme: "https", host: "desk.tail1a2b3c.ts.net", port: 0, plugins: ["HerdrShell", "OvisSsh"], type: "message", method: "list", callback: true, shell: hosted), .drop)
+        XCTAssertEqual(BridgeGate.decide(mainFrame: true, scheme: "https", host: "desk.tail1a2b3c.ts.net", port: 0, plugins: ["OvisDirect", "HerdrShell"], type: "message", method: "open", callback: true, shell: hosted), .drop)
     }
 
     func testEveryOtherPluginAnswersAnyMainFrameAndTheCallsThatDecideByTheirPageKeepTheirSender() {
@@ -84,13 +84,13 @@ final class BridgeGateTests: XCTestCase {
 
     func testAFramesOriginIsKeptAsTheAddressThePageGatesRead() {
         XCTAssertEqual(BridgeGate.sender(scheme: "capacitor", host: "localhost", port: 0)?.absoluteString, "capacitor://localhost")
-        XCTAssertEqual(BridgeGate.sender(scheme: "https", host: "desk.tail1e211e.ts.net", port: 8443)?.absoluteString, "https://desk.tail1e211e.ts.net:8443")
+        XCTAssertEqual(BridgeGate.sender(scheme: "https", host: "desk.tail1a2b3c.ts.net", port: 8443)?.absoluteString, "https://desk.tail1a2b3c.ts.net:8443")
         XCTAssertEqual(BridgeGate.sender(scheme: "http", host: "fd7a:115c:a1e0::1", port: 8080)?.absoluteString, "http://[fd7a:115c:a1e0::1]:8080")
         XCTAssertNil(BridgeGate.sender(scheme: "", host: "", port: 0))
         // the gates read it as they read a page's address
         XCTAssertTrue(Home.bundledPage(BridgeGate.sender(scheme: "capacitor", host: "localhost", port: 0)))
         XCTAssertFalse(Home.bundledPage(BridgeGate.sender(scheme: "capacitor", host: "app.ovis.sh", port: 0)))
         XCTAssertTrue(Home.ownPage(BridgeGate.sender(scheme: "capacitor", host: "app.ovis.sh", port: 0), appOrigin: inApp))
-        XCTAssertEqual(Home.identifiedKey(BridgeGate.sender(scheme: "https", host: "desk.tail1e211e.ts.net", port: 0), current: "https://desk.tail1e211e.ts.net", appOrigin: inApp), "https://desk.tail1e211e.ts.net")
+        XCTAssertEqual(Home.identifiedKey(BridgeGate.sender(scheme: "https", host: "desk.tail1a2b3c.ts.net", port: 0), current: "https://desk.tail1a2b3c.ts.net", appOrigin: inApp), "https://desk.tail1a2b3c.ts.net")
     }
 }

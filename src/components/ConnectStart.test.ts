@@ -76,8 +76,8 @@ describe("the relay PCs of My PCs", () => {
 
 describe("the phone app's PCs on My PCs", () => {
   it("sorts what the app saved by the way it connects, the app's own pages and an unreadable entry on neither", () => {
-    const saved = ["https://desk.tail1e211e.ts.net", "http://100.101.1.2:7317", "http://192.168.0.5:7317", "http://127.0.0.1:41234", `https://app.ovis.sh/s/${id("a")}/`, "not an address"];
-    const rows = phoneSavedPcs(saved, { "https://desk.tail1e211e.ts.net": "Desk" }, "https://app.ovis.sh");
+    const saved = ["https://desk.tail1a2b3c.ts.net", "http://100.101.1.2:7317", "http://192.168.0.5:7317", "http://127.0.0.1:41234", `https://app.ovis.sh/s/${id("a")}/`, "not an address"];
+    const rows = phoneSavedPcs(saved, { "https://desk.tail1a2b3c.ts.net": "Desk" }, "https://app.ovis.sh");
     expect(rows.map((row) => [row.name, row.way])).toEqual([["Desk", "tailscale"], ["100.101.1.2:7317", "tailscale"], ["192.168.0.5:7317", "address"], ["127.0.0.1:41234", "ssh"]]);
   });
 
@@ -87,7 +87,7 @@ describe("the phone app's PCs on My PCs", () => {
   });
 
   it("knows a saved PC's relay ID only where its own page said one the app kept for it", () => {
-    const saved = ["https://mac.tail1e211e.ts.net:17317", "http://192.168.0.5:7317", "http://127.0.0.1:47317"];
+    const saved = ["https://mac.tail1a2b3c.ts.net:17317", "http://192.168.0.5:7317", "http://127.0.0.1:47317"];
     const rows = phoneSavedPcs(saved, {}, "https://app.ovis.sh", { [saved[0]!]: id("a"), [saved[1]!]: "not-an-id", "https://other.example": id("b") });
     expect(rows.map((row) => row.serverId)).toEqual([id("a"), undefined, undefined]);
   });
@@ -96,18 +96,18 @@ describe("the phone app's PCs on My PCs", () => {
 describe("one PC, one row", () => {
   const relay = (letter: string, name: string) => ({ server_id: id(letter), name, saved: false });
   const saved = (origin: string, way: "tailscale" | "ssh" | "address", serverId?: string) => ({ origin, host: new URL(origin).host, name: new URL(origin).hostname.split(".")[0]!, way, ...(serverId ? { serverId } : {}) });
-  const tailscale = saved("https://macbookpro.tail1e211e.ts.net:17317", "tailscale", id("a"));
+  const tailscale = saved("https://macbookpro.tail1a2b3c.ts.net:17317", "tailscale", id("a"));
 
   it("puts a way the app saved with the relay row of the ID its own page said, and the ways of one ID together", () => {
     const ssh = saved("http://127.0.0.1:47317", "ssh", id("c")), lan = saved("http://192.168.0.5:7317", "address", id("c"));
-    const groups = onePcRows([relay("a", "hasang-uui-MacBookPro"), relay("b", "nuc")], [tailscale, ssh, lan]);
-    expect(groups.map((group) => [group.relay?.name ?? null, group.phones.map((pc) => pc.way)])).toEqual([["hasang-uui-MacBookPro", ["tailscale"]], ["nuc", []], [null, ["ssh", "address"]]]);
+    const groups = onePcRows([relay("a", "example-MacBookPro"), relay("b", "nuc")], [tailscale, ssh, lan]);
+    expect(groups.map((group) => [group.relay?.name ?? null, group.phones.map((pc) => pc.way)])).toEqual([["example-MacBookPro", ["tailscale"]], ["nuc", []], [null, ["ssh", "address"]]]);
   });
 
   it("never by name: a way with no ID, or another ID, stays a row of its own", () => {
-    const same = { ...saved("https://hasang-uui-macbookpro.tail1e211e.ts.net", "tailscale"), name: "hasang-uui-MacBookPro" };
-    const other = saved("https://desk.tail1e211e.ts.net", "tailscale", id("d"));
-    const groups = onePcRows([relay("a", "hasang-uui-MacBookPro")], [same, other]);
+    const same = { ...saved("https://example-macbookpro.tail1a2b3c.ts.net", "tailscale"), name: "example-MacBookPro" };
+    const other = saved("https://desk.tail1a2b3c.ts.net", "tailscale", id("d"));
+    const groups = onePcRows([relay("a", "example-MacBookPro")], [same, other]);
     expect(groups.map((group) => [group.relay?.server_id ?? null, group.phones.map((pc) => pc.origin)])).toEqual([[id("a"), []], [null, [same.origin]], [null, [other.origin]]]);
   });
 
@@ -152,10 +152,10 @@ describe("the phone app's own word on what is open", () => {
   const app = "https://app.ovis.sh";
   it("names the PC still open while the person chooses another, a relay PC by its page and any other by its address", () => {
     expect(phoneShellState({ saved: [], choosing: true, current: `${app}/s/${id("a")}/` }, app).current).toEqual({ serverId: id("a") });
-    expect(phoneShellState({ saved: [], choosing: true, current: "https://desk.tail1e211e.ts.net" }, app).current).toEqual({ origin: "https://desk.tail1e211e.ts.net", scope: null });
+    expect(phoneShellState({ saved: [], choosing: true, current: "https://desk.tail1a2b3c.ts.net" }, app).current).toEqual({ origin: "https://desk.tail1a2b3c.ts.net", scope: null });
     // a relay PC of another origin (a self-hosted relay) by its scope there, so another scope on it is not the one open
     expect(phoneShellState({ saved: [], choosing: true, current: `https://relay.example/s/${id("b")}/` }, app).current).toEqual({ origin: "https://relay.example", scope: id("b") });
-    expect(phoneShellState({ saved: [], choosing: false, current: "https://desk.tail1e211e.ts.net" }, app).current).toBeNull();
+    expect(phoneShellState({ saved: [], choosing: false, current: "https://desk.tail1a2b3c.ts.net" }, app).current).toBeNull();
     expect(phoneShellState({ saved: [], choosing: true, current: "" }, app).current).toBeNull();
     expect(phoneShellState({ saved: [], choosing: true, current: `${app}/` }, app).current).toBeNull();
   });

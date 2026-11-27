@@ -10,7 +10,7 @@ import { ConnectionRouteMark } from "./ConnectionRouteMark.tsx";
 let page: Page;
 
 beforeEach(() => {
-  page = openPage("https://pc.tail1e211e.ts.net/");
+  page = openPage("https://pc.tail1a2b3c.ts.net/");
   Object.defineProperty(page.window.navigator, "platform", { configurable: true, value: "Linux" });
 });
 

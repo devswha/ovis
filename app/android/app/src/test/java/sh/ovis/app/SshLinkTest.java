@@ -29,7 +29,7 @@ public class SshLinkTest {
         // HerdrShell openSshSetup's target, as the hosted app's SSH tab and the app's own page write it (sshOrAddress)
         org.junit.Assert.assertArrayEquals(new String[] { "me", "studio.lan", "22" }, SshPcs.login(" me@studio.lan "));
         org.junit.Assert.assertArrayEquals(new String[] { "pi", "192.168.0.20", "2222" }, SshPcs.login("pi@192.168.0.20:2222"));
-        org.junit.Assert.assertArrayEquals(new String[] { "dev", "nas.tail1e211e.ts.net", "22" }, SshPcs.login("ssh://dev@nas.tail1e211e.ts.net/"));
+        org.junit.Assert.assertArrayEquals(new String[] { "dev", "nas.tail1a2b3c.ts.net", "22" }, SshPcs.login("ssh://dev@nas.tail1a2b3c.ts.net/"));
         org.junit.Assert.assertArrayEquals(new String[] { "me", "fd7a:115c:a1e0::1", "22" }, SshPcs.login("me@[fd7a:115c:a1e0::1]:22"));
         // anything else leaves the screen's fields empty
         for (String text : new String[] { "", "studio.lan", "https://me@studio.lan", "me@host:70000", "me@host/path", "a b@host" }) assertNull(text, SshPcs.login(text));
@@ -53,7 +53,7 @@ public class SshLinkTest {
     public void onlyTheAppsOwnPagesAndTheHostedAppOpenTheSshSetup() {
         assertTrue(SshPcs.setupOpener(null, true, STORE));
         assertTrue(SshPcs.setupOpener("https://app.ovis.sh/#pcs", false, STORE));
-        for (String page : new String[] { "https://app.ovis.sh.evil.example/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/", "http://127.0.0.2:47317/", "https://desk.tail1e211e.ts.net/" }) {
+        for (String page : new String[] { "https://app.ovis.sh.evil.example/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/", "http://127.0.0.2:47317/", "https://desk.tail1a2b3c.ts.net/" }) {
             assertFalse(page, SshPcs.setupOpener(page, false, STORE));
         }
         assertFalse(SshPcs.setupOpener(null, false, STORE));
@@ -78,8 +78,8 @@ public class SshLinkTest {
         assertEquals("https://login.tailscale.com/a/abc123", SshLink.checkLink("visit: https://login.tailscale.com/a/abc123."));
         assertNull(SshLink.checkLink("visit: https://login.tailscale.com.evil.example/a/abc"));
         assertNull(SshLink.checkLink("Welcome to the box"));
-        assertTrue(SshPcs.tailnet("100.106.153.26"));
-        assertTrue(SshPcs.tailnet("box.tail1e211e.ts.net"));
+        assertTrue(SshPcs.tailnet("100.104.10.20"));
+        assertTrue(SshPcs.tailnet("box.tail1a2b3c.ts.net"));
         assertFalse(SshPcs.tailnet("192.168.0.2"));
     }
 

@@ -118,17 +118,17 @@ it("adds the Tailscale PCs no config host already names, and names the Tailscale
 });
 
 it("takes a config host's HostName over its alias: a stale alias naming one Tailscale PC while it reaches another claims the one it reaches", async () => {
-  const dir = sshDir({ config: "Host home-server\n  HostName 100.123.228.51\n" });
+  const dir = sshDir({ config: "Host home-server\n  HostName 100.120.30.40\n" });
   const tailnet = JSON.stringify({
     BackendState: "Running",
     Self: { DNSName: "home-window.tail.ts.net.", UserID: 1 },
     Peer: {
-      a: { DNSName: "home-server.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.106.153.26", "fd7a:115c:a1e0::bc30:991b"] },
-      b: { DNSName: "old-desktop.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.123.228.51"] },
+      a: { DNSName: "home-server.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.104.10.20", "fd7a:115c:a1e0::bc30:991b"] },
+      b: { DNSName: "old-desktop.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.120.30.40"] },
     },
   });
   expect(await sshCandidates({ sshDir: dir, readStatus: async () => tailnet })).toEqual([
-    { name: "home-server", destination: "home-server", detail: "100.123.228.51", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" },
+    { name: "home-server", destination: "home-server", detail: "100.120.30.40", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" },
     { name: "home-server", destination: "home-server.tail.ts.net", detail: "home-server.tail.ts.net", source: "tailscale", tailnet: "home-server.tail.ts.net" },
   ]);
 });

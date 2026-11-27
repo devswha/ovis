@@ -135,7 +135,7 @@ final class SshPcsTests: XCTestCase {
         let read = { (text: String?) in SshPcs.login(text).map { "\($0.user) \($0.host) \($0.port)" } }
         XCTAssertEqual(read(" me@studio.lan "), "me studio.lan 22")
         XCTAssertEqual(read("pi@192.168.0.20:2222"), "pi 192.168.0.20 2222")
-        XCTAssertEqual(read("ssh://dev@nas.tail1e211e.ts.net/"), "dev nas.tail1e211e.ts.net 22")
+        XCTAssertEqual(read("ssh://dev@nas.tail1a2b3c.ts.net/"), "dev nas.tail1a2b3c.ts.net 22")
         XCTAssertEqual(read("me@[fd7a:115c:a1e0::1]:22"), "me fd7a:115c:a1e0::1 22")
         // anything else leaves the screen's fields empty
         for text in ["", "studio.lan", "https://me@studio.lan", "me@host:70000", "me@host/path", "a b@host"] { XCTAssertNil(read(text), text) }
@@ -160,7 +160,7 @@ final class SshPcsTests: XCTestCase {
         XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: store))
         XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://app.ovis.sh/#pcs"), appOrigin: store))
         XCTAssertTrue(SshPcs.setupOpener(URL(string: "https://APP.ovis.sh:443/"), appOrigin: store))
-        for page in ["https://app.ovis.sh.evil.example/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/", "http://127.0.0.1:47320/", "https://desk.tail1e211e.ts.net/", "capacitor://other/"] {
+        for page in ["https://app.ovis.sh.evil.example/", "http://app.ovis.sh/", "https://app.ovis.sh:8443/", "http://127.0.0.1:47320/", "https://desk.tail1a2b3c.ts.net/", "capacitor://other/"] {
             XCTAssertFalse(SshPcs.setupOpener(URL(string: page), appOrigin: store), page)
         }
         XCTAssertFalse(SshPcs.setupOpener(nil, appOrigin: store))
@@ -192,7 +192,7 @@ final class SshPcsTests: XCTestCase {
         }
         XCTAssertTrue(SshPcs.setupOpener(URL(string: "capacitor://localhost/index.html"), appOrigin: shell))
         // the hosted app from the network is no page of such a build, nor is another host on the app's scheme
-        for page in ["https://app.ovis.sh/#pcs", "capacitor://other.example/", "capacitor://app.ovis.sh.evil.example/", "capacitor://app.ovis.sh:8443/", "https://desk.tail1e211e.ts.net/"] {
+        for page in ["https://app.ovis.sh/#pcs", "capacitor://other.example/", "capacitor://app.ovis.sh.evil.example/", "capacitor://app.ovis.sh:8443/", "https://desk.tail1a2b3c.ts.net/"] {
             XCTAssertFalse(SshPcs.setupOpener(URL(string: page), appOrigin: shell), page)
         }
         // a hosted build never takes the scheme's other hosts for its shell

@@ -17,9 +17,9 @@ describe("telling the phone app which PC this page is", () => {
 
   it("gives its relay ID and its name, the name without .local", () => {
     const told = app(["identify"]);
-    tellAppWhichPc({ serverId: "a".repeat(32), name: "hasang-uui-MacBookPro.local" });
+    tellAppWhichPc({ serverId: "a".repeat(32), name: "example-MacBookPro.local" });
     tellAppWhichPc({ name: "nas" });
-    expect(told).toEqual([["HerdrShell", "identify", { server_id: "a".repeat(32), name: "hasang-uui-MacBookPro" }], ["HerdrShell", "identify", { name: "nas" }]]);
+    expect(told).toEqual([["HerdrShell", "identify", { server_id: "a".repeat(32), name: "example-MacBookPro" }], ["HerdrShell", "identify", { name: "nas" }]]);
   });
 
   it("says a health read that names no relay ID as an empty one, so the app drops the one it kept", () => {

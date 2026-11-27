@@ -446,9 +446,9 @@ public class HomeTest {
 
     @Test
     public void aPageSpeaksOnlyForTheSavedPcItIs() {
-        String mac = "https://macbookpro.tail1e211e.ts.net:17317";
+        String mac = "https://macbookpro.tail1a2b3c.ts.net:17317";
         assertEquals(mac, Home.identifiedKey(mac + "/?pane=w1%3Ap1", mac, APP));
-        assertEquals(mac, Home.identifiedKey("https://MACBOOKPRO.tail1e211e.ts.net:17317/", mac, APP));
+        assertEquals(mac, Home.identifiedKey("https://MACBOOKPRO.tail1a2b3c.ts.net:17317/", mac, APP));
         assertEquals("http://127.0.0.2:47317", Home.identifiedKey("http://127.0.0.2:47317/", "http://127.0.0.2:47317", APP));
         // a scheme's own port written out or not is one origin; another port is another
         assertEquals("https://pc.example:443", Home.identifiedKey("https://pc.example/", "https://pc.example:443", APP));
@@ -457,7 +457,7 @@ public class HomeTest {
         assertEquals(null, Home.identifiedKey("https://pc.example:8443/", "https://pc.example", APP));
         // a page that went to another origin, another PC's, or none shown
         assertEquals(null, Home.identifiedKey("https://evil.example/", mac, APP));
-        assertEquals(null, Home.identifiedKey("https://desk.tail1e211e.ts.net/", mac, APP));
+        assertEquals(null, Home.identifiedKey("https://desk.tail1a2b3c.ts.net/", mac, APP));
         assertEquals(null, Home.identifiedKey(mac + "/", null, APP));
         assertEquals(null, Home.identifiedKey(null, mac, APP));
         // the hosted app and a relay PC's scope there: their path names them already
@@ -468,13 +468,13 @@ public class HomeTest {
     @Test
     public void whatAPageSaysOfItselfIsKeptForItsOwnPcAlone() throws Exception {
         org.json.JSONObject ids = new org.json.JSONObject(), names = new org.json.JSONObject();
-        String mac = "https://macbookpro.tail1e211e.ts.net:17317", nas = "http://192.168.0.5:7317";
+        String mac = "https://macbookpro.tail1a2b3c.ts.net:17317", nas = "http://192.168.0.5:7317";
         names.put(nas, "home-nas");
-        Home.identified(ids, names, mac, ID, "hasang-uui-MacBookPro");
+        Home.identified(ids, names, mac, ID, "example-MacBookPro");
         Home.identified(ids, names, nas, "not-an-id", "nas-7");
         assertEquals(ID, ids.getString(mac));
         assertFalse(ids.has(nas));
-        assertEquals("hasang-uui-MacBookPro", names.getString(mac));
+        assertEquals("example-MacBookPro", names.getString(mac));
         // a name the person or an open gave stays
         assertEquals("home-nas", names.getString(nas));
         assertEquals(null, Home.relayId("0123456789ABCDEF0123456789ABCDEF"));
@@ -482,7 +482,7 @@ public class HomeTest {
         // its health read names no relay ID now: the one kept goes, so the address no longer joins that PC's row
         Home.identified(ids, names, mac, "", null);
         assertFalse(ids.has(mac));
-        assertEquals("hasang-uui-MacBookPro", names.getString(mac));
+        assertEquals("example-MacBookPro", names.getString(mac));
     }
 
     @Test
@@ -504,12 +504,12 @@ public class HomeTest {
         assertTrue(Home.ownPage(null, true, APP));
         assertTrue(Home.ownPage(APP + "/#pcs", false, APP));
         assertTrue(Home.ownPage(APP + "/s/" + ID + "/#add", false, APP));
-        assertFalse(Home.ownPage("https://macbookpro.tail1e211e.ts.net:17317/", false, APP));
+        assertFalse(Home.ownPage("https://macbookpro.tail1a2b3c.ts.net:17317/", false, APP));
         assertFalse(Home.ownPage(null, false, APP));
         org.json.JSONObject ids = new org.json.JSONObject();
         assertEquals(ids, Home.shownIds(APP + "/#pcs", false, APP, ids));
         assertEquals(ids, Home.shownIds(null, true, APP, ids));
-        assertEquals(null, Home.shownIds("https://macbookpro.tail1e211e.ts.net:17317/", false, APP, ids));
+        assertEquals(null, Home.shownIds("https://macbookpro.tail1a2b3c.ts.net:17317/", false, APP, ids));
     }
 
     @Test

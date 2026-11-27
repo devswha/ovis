@@ -38,7 +38,7 @@ final class BundledShellGateTests: XCTestCase {
         XCTAssertTrue(Home.ownPage(URL(string: "capacitor://localhost/index.html"), appOrigin: shell))
         XCTAssertTrue(Home.ownPage(URL(string: "capacitor://app.ovis.sh/#pcs"), appOrigin: shell))
         XCTAssertTrue(Home.ownPage(URL(string: "capacitor://app.ovis.sh/s/\(id)/"), appOrigin: shell))
-        XCTAssertFalse(Home.ownPage(URL(string: "https://desk.tail1e211e.ts.net/"), appOrigin: shell))
+        XCTAssertFalse(Home.ownPage(URL(string: "https://desk.tail1a2b3c.ts.net/"), appOrigin: shell))
         // the scheme alone makes no page the app's: only its two hosts
         XCTAssertFalse(Home.ownPage(URL(string: "capacitor://other.example/"), appOrigin: shell))
         XCTAssertFalse(Home.ownPage(URL(string: "capacitor://app.ovis.sh/#pcs"), appOrigin: hosted))
@@ -49,7 +49,7 @@ final class BundledShellGateTests: XCTestCase {
     func testNeitherTheShellNorARelayPcsScopeThereSaysWhichSavedPcItIs() {
         XCTAssertNil(Home.identifiedKey(URL(string: "capacitor://app.ovis.sh/s/\(id)/"), current: "capacitor://app.ovis.sh", appOrigin: shell))
         XCTAssertNil(Home.identifiedKey(URL(string: "capacitor://app.ovis.sh/s/\(id)/"), current: "capacitor://app.ovis.sh/s/\(id)/", appOrigin: shell))
-        XCTAssertNil(Home.identifiedKey(URL(string: "capacitor://app.ovis.sh/"), current: "https://desk.tail1e211e.ts.net", appOrigin: shell))
-        XCTAssertEqual(Home.identifiedKey(URL(string: "https://desk.tail1e211e.ts.net/"), current: "https://desk.tail1e211e.ts.net", appOrigin: shell), "https://desk.tail1e211e.ts.net")
+        XCTAssertNil(Home.identifiedKey(URL(string: "capacitor://app.ovis.sh/"), current: "https://desk.tail1a2b3c.ts.net", appOrigin: shell))
+        XCTAssertEqual(Home.identifiedKey(URL(string: "https://desk.tail1a2b3c.ts.net/"), current: "https://desk.tail1a2b3c.ts.net", appOrigin: shell), "https://desk.tail1a2b3c.ts.net")
     }
 }

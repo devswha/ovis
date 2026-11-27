@@ -30,8 +30,8 @@ const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 if (evidence) mkdirSync(evidence, { recursive: true });
 
 const MAC = "b".repeat(32);
-const desk = "https://desk.tail1e211e.ts.net";
-const tail = "https://macbookpro.tail1e211e.ts.net:17317";
+const desk = "https://desk.tail1a2b3c.ts.net";
+const tail = "https://macbookpro.tail1a2b3c.ts.net:17317";
 const lan = "http://192.168.0.5:7317";
 
 interface App { readonly saved: readonly string[]; readonly names?: Readonly<Record<string, string>>; readonly ids: Readonly<Record<string, string>> }
@@ -113,7 +113,7 @@ try {
     const lines = mac.locator('[data-action="open-other-way"]');
     await lines.first().waitFor();
     assert.deepEqual(await lines.evaluateAll((buttons) => buttons.map((button) => [button.getAttribute("aria-label"), (button.textContent ?? "").replace(/\s+/g, " ").trim()])),
-      [["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]], `${tag}: one line per other way, its tag and whole host`);
+      [["Open macbookpro.tail1a2b3c.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1a2b3c.ts.net:17317"]], `${tag}: one line per other way, its tag and whole host`);
     assert.equal(await lines.first().locator(".relay-add-other-way-host").evaluate((host) => host.scrollWidth <= host.clientWidth + 1 && getComputedStyle(host).textOverflow !== "ellipsis"), true, `${tag}: the host is never cut`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);
     assert.deepEqual(await widths(page, "desk"), before, `${tag}: a row of one way keeps its width with More ways open`);

@@ -898,16 +898,16 @@ describe("Connect a phone on a phone", () => {
 
   it("lists an ssh config host written as a tailnet IP by its Tailscale name and MagicDNS name, and adds it under that name at that IP", async () => {
     tailnetOutdated = false;
-    extraCandidates = [{ name: "100.123.228.51", destination: "100.123.228.51", detail: "devswha@100.123.228.51", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" }];
+    extraCandidates = [{ name: "100.120.30.40", destination: "100.120.30.40", detail: "devswha@100.120.30.40", source: "ssh_config", tailnet: "old-desktop.tail.ts.net" }];
     const added: (AddPcPreset | undefined)[] = [];
     await mount(<Tailscale machines={[]} onAddPc={(preset) => { added.push(preset); }} />);
     await flushReads();
     const row = all('[class="connect-found-row"]').find((node) => text(node).includes("old-desktop"))!;
     expect(text(one('[class="connect-found-name"]', row))).toBe("old-desktop");
     // what Connect opens, the IP alias, before the press
-    expect(text(one('[class="connect-found-detail"]', row))).toBe("100.123.228.51 · old-desktop.tail.ts.net");
+    expect(text(one('[class="connect-found-detail"]', row))).toBe("100.120.30.40 · old-desktop.tail.ts.net");
     await act(async () => { one<HTMLButtonElement>('[aria-label="Connect old-desktop"]').click(); });
-    expect(added).toEqual([{ destination: "100.123.228.51", name: "old-desktop" }]);
+    expect(added).toEqual([{ destination: "100.120.30.40", name: "old-desktop" }]);
   });
 
   it("Connect opens SSH without requesting a relay add even when the Tailscale peer is online", async () => {

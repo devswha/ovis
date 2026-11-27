@@ -1468,7 +1468,7 @@ describe("the hosted shell's front page", () => {
       expect("Capacitor" in globalThis).toBe(false);
       const went: string[] = [];
       const pair = generateKeyPair();
-      const mac = { server_id: deriveServerId(pair.publicKey), label: "hasang-uui-MacBookPro.local", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP,
+      const mac = { server_id: deriveServerId(pair.publicKey), label: "example-MacBookPro.local", added_at: new Date(Date.now() - 3_600_000).toISOString(), last_seen_at: new Date(Date.now() - 60_000).toISOString(), public_key: Buffer.from(pair.publicKey).toString("hex"), relay: AP,
         new_until: new Date(Date.now() + 3_600_000).toISOString(), admitted_at: new Date(Date.now() - 3_600_000).toISOString() };
       await returned(deviceStore([]), went, [mac]);
       await until(() => went.length > 0, "the Mac's own page");

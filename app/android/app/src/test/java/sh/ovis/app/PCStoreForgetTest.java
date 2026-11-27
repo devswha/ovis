@@ -46,11 +46,11 @@ public class PCStoreForgetTest {
 
     @Test
     public void forgettingASavedPcDropsTheRelayIdItsPageSaid() throws Exception {
-        String mac = "https://macbookpro.tail1e211e.ts.net:17317", nas = "http://192.168.0.5:7317", id = "0123456789abcdef0123456789abcdef";
+        String mac = "https://macbookpro.tail1a2b3c.ts.net:17317", nas = "http://192.168.0.5:7317", id = "0123456789abcdef0123456789abcdef";
         Prefs prefs = new Prefs();
         prefs.edit()
             .putString("saved", "[\"" + mac + "\",\"" + nas + "\"]")
-            .putString("names", new JSONObject().put(mac, "hasang-uui-MacBookPro").put(nas, "nas").toString())
+            .putString("names", new JSONObject().put(mac, "example-MacBookPro").put(nas, "nas").toString())
             .putString("ids", new JSONObject().put(mac, id).put(nas, id).toString())
             .putString("current", mac)
             .putString("last", mac)

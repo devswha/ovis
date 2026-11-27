@@ -5364,7 +5364,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it never renames, re-states or redirects the relay row. Phone width and the wide screen alike. It follows the
   Tailscale app, which lists every address that reaches a machine under that machine, each whole, rather than picking
   one for the person; it differs in folding them under the row in place, so My PCs stays one screen. When a row's open fails or is refused and the PC has another saved way, the failure offers it, one button
-  naming that way's tag and the host it opens, whole (Tailscale · Open macbookpro.tail1e211e.ts.net:17317, wrapping
+  naming that way's tag and the host it opens, whole (Tailscale · Open macbookpro.tail1a2b3c.ts.net:17317, wrapping
   rather than cut), so the person sees what will answer: on My PCs, and on a relay PC's own failure card (not for a key
   that is not the PC's). In Forget PCs a row of several lists its ways under it, one to a line, each with its
   own Forget (the relay's on the PC in use asks once more) or Account PC or SSH PC; a row of one way stays as it was. A

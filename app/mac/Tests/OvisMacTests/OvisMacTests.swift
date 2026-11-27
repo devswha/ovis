@@ -15,10 +15,10 @@ final class InstallerSourceTests: XCTestCase {
 
 final class StatusAddressTests: XCTestCase {
     func testDrawsTheQRCodeOnlyForTailscalesHTTPSName() {
-        XCTAssertEqual(Status.phoneAddress("https://mac.tail1e211e.ts.net")?.absoluteString, "https://mac.tail1e211e.ts.net")
-        XCTAssertEqual(Status.phoneAddress("https://mac.tail1e211e.ts.net:8443/")?.port, 8443)
-        for refused in ["http://mac.tail1e211e.ts.net", "https://example.com", "https://mac.ts.net.example.com", "https://.ts.net",
-                        "https://me@mac.tail1e211e.ts.net", "https://mac.tail1e211e.ts.net/elsewhere", "https://mac.tail1e211e.ts.net/?next=x",
+        XCTAssertEqual(Status.phoneAddress("https://mac.tail1a2b3c.ts.net")?.absoluteString, "https://mac.tail1a2b3c.ts.net")
+        XCTAssertEqual(Status.phoneAddress("https://mac.tail1a2b3c.ts.net:8443/")?.port, 8443)
+        for refused in ["http://mac.tail1a2b3c.ts.net", "https://example.com", "https://mac.ts.net.example.com", "https://.ts.net",
+                        "https://me@mac.tail1a2b3c.ts.net", "https://mac.tail1a2b3c.ts.net/elsewhere", "https://mac.tail1a2b3c.ts.net/?next=x",
                         "javascript:alert(1)", "https://100.64.0.1"] {
             XCTAssertNil(Status.phoneAddress(refused), refused)
         }
@@ -153,10 +153,10 @@ final class ServedPortsTests: XCTestCase {
     func testFindsTheHTTPSPortsThatServeTheAppsPort() {
         let json = """
         {"TCP": {"443": {"HTTPS": true}, "8443": {"HTTPS": true}, "10000": {"HTTPS": true}, "8080": {"HTTP": true}},
-         "Web": {"mac.tail1e211e.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}},
-                 "mac.tail1e211e.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:7317"}}},
-                 "mac.tail1e211e.ts.net:10000": {"Handlers": {"/": {"Proxy": "http://localhost:7317/"}}},
-                 "mac.tail1e211e.ts.net:8080": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:7317"}}}}}
+         "Web": {"mac.tail1a2b3c.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}},
+                 "mac.tail1a2b3c.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:7317"}}},
+                 "mac.tail1a2b3c.ts.net:10000": {"Handlers": {"/": {"Proxy": "http://localhost:7317/"}}},
+                 "mac.tail1a2b3c.ts.net:8080": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:7317"}}}}}
         """
         XCTAssertEqual(Model.servedHTTPSPorts(Data(json.utf8), appPort: 7317), [8443, 10000])
         XCTAssertEqual(Model.servedHTTPSPorts(Data("{}".utf8), appPort: 7317), [])
