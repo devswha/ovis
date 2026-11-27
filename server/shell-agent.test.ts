@@ -1,5 +1,5 @@
 import { afterEach, expect, it, jest, mock, spyOn } from "bun:test";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -256,6 +256,66 @@ it("runs the interactive shell once until asked to read it again, with the marke
   expect(runs()).toHaveLength(3);
   await locate.refresh?.();
   expect(runs()).toHaveLength(4);
+});
+
+it("finds agents after a shell profile edit without rerunning an unchanged profile (#3731)", async () => {
+  const f = rcFixture('echo x >> "$HOME/rc-runs"; . "$HOME/.zshrc"');
+  const rc = join(f.home, ".zshrc");
+  const bin = join(f.root, "new-agent-bin");
+  mkdirSync(bin);
+  const claude = join(bin, "claude");
+  const omo = join(bin, "omo");
+  for (const agent of [claude, omo]) writeFileSync(agent, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(rc, "");
+  utimesSync(rc, 1, 1);
+  const runs = () => readFileSync(join(f.home, "rc-runs"), "utf8").trim().split("\n").length;
+  let clock = 0;
+  const probe = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 0 });
+  const options = { probe, servicePath: f.servicePath, now: () => clock };
+  const locate = catalogLocator(options);
+  const locator = new ShellAgentLocator({ ...options, platform: "linux" });
+  const agents = (checkProfile = true) => Promise.all([locate("claude", checkProfile), locator.executable("omo", checkProfile)]);
+  expect(await agents()).toEqual([null, null]);
+
+  writeFileSync(rc, `export PATH="${bin}:$PATH"\n`);
+  utimesSync(rc, 2, 2);
+  clock += 6_000;
+  expect(await agents()).toEqual([claude, omo]);
+  expect(runs()).toBe(2);
+
+  clock += 61_000;
+  expect(await agents()).toEqual([claude, omo]);
+  expect(runs()).toBe(2);
+
+  writeFileSync(rc, "");
+  utimesSync(rc, 3, 3);
+  clock += 61_000;
+  expect(await agents(false)).toEqual([claude, omo]);
+  expect(runs()).toBe(2);
+  expect(await agents()).toEqual([null, null]);
+  expect(runs()).toBe(3);
+});
+
+it("reads an edit that arrives while the interactive shell is still running (#3731)", async () => {
+  const f = rcFixture('. "$HOME/.zshrc"');
+  const rc = join(f.home, ".zshrc");
+  const started = join(f.home, "started");
+  const release = join(f.home, "release");
+  const running = fifo(started);
+  expect(Bun.spawnSync(["mkfifo", release]).exitCode).toBe(0);
+  writeFileSync(rc, 'export PATH="/old:$PATH"; echo ready > "$HOME/started"; read -r _ < "$HOME/release"\n');
+  utimesSync(rc, 1, 1);
+  const probe = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 0, timeoutMs: 5_000 });
+  const first = once(probe);
+  await running;
+  writeFileSync(rc, 'export PATH="/new:$PATH"\n');
+  utimesSync(rc, 2, 2);
+  const second = once(probe);
+  await probe.profileRevision?.();
+  const writer = Bun.spawn(["/bin/sh", "-c", 'echo go > "$1"', "sh", release], { timeout: 3_000 });
+  expect(await writer.exited).toBe(0);
+  expect((await first).path?.split(":")).toContain("/old");
+  expect((await second).path?.split(":")).toContain("/new");
 });
 
 it("an interactive shell that outruns its time leaves the login PATH, is not run again for the next lookups, and says why, once", async () => {

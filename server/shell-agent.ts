@@ -11,8 +11,9 @@
  */
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
@@ -94,7 +95,8 @@ export function parseLoginEnv(output: string): Record<string, string> | null {
 export type LoginPathResult = { path: string } | { path: null; reason: string };
 
 export interface LoginPathProbe {
-  (signal: AbortSignal): Promise<LoginPathResult>;
+  (signal: AbortSignal, profileRevision?: number | null): Promise<LoginPathResult>;
+  profileRevision?: () => Promise<number>;
   reread?: () => void;
   problem?: () => string | null;
 }
@@ -124,19 +126,51 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
  * folders), then the plain login shell's folders it does not name.
  */
 export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
-  const env = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
+  const env: Record<string, string | undefined> = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
   const interactive = loginPathProbe({ ...options, env, interactive: true });
   const login = loginPathProbe({ ...options, env });
   const gapMs = options.rereadGapMs ?? REREAD_GAP_MS;
+  const home = userHome(env);
+  const zshHome = env["ZDOTDIR"] || home;
+  const profiles = [
+    ...(isAbsolute(zshHome) ? [join(zshHome, ".zshrc"), join(zshHome, ".zprofile")] : []),
+    ...(isAbsolute(home) ? [join(home, ".bashrc"), join(home, ".bash_profile"), join(home, ".profile")] : []),
+  ];
+  const mtimes = new Map<string, number | null>();
+  let revision = 0;
+  let checking: Promise<number> | null = null;
+  const profileRevision = (): Promise<number> => {
+    if (checking !== null) return checking;
+    const { promise, resolve } = Promise.withResolvers<number>();
+    // A slow home mount must not hold up PATH lookup or queue up more stat calls.
+    const timer = setTimeout(() => resolve(revision), options.timeoutMs ?? 2_000);
+    checking = promise;
+    void Promise.all(profiles.map(async (file) => {
+      let mtime: number | null;
+      try { mtime = (await stat(file)).mtimeMs; }
+      catch (error) {
+        if ((error instanceof Error && "code" in error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) mtime = null;
+        else return; // an I/O failure is not evidence the file disappeared
+      }
+      const previous = mtimes.get(file);
+      if (previous !== undefined && previous !== mtime) revision++;
+      mtimes.set(file, mtime);
+    })).then(() => {
+      clearTimeout(timer);
+      checking = null;
+      resolve(revision);
+    });
+    return promise;
+  };
   let kept: LoginPathResult | null = null;
   let reading: Promise<LoginPathResult> | null = null;
   let queued: Promise<LoginPathResult> | null = null;
   let stale = false;
   let startedAt = -Infinity;
+  let readRevision = -1;
   let logged: string | null = null;
-  const rc = (signal: AbortSignal): Promise<LoginPathResult> => {
-    if (stale) {
-      stale = false;
+  const rc = (signal: AbortSignal, wanted: number | null, reread: boolean): Promise<LoginPathResult> => {
+    if (reread || (wanted !== null && readRevision !== -1 && wanted > readRevision)) {
       if (queued !== null) return queued;
       const run: Promise<LoginPathResult> = (reading ?? Promise.resolve()).then(async () => {
         const wait = startedAt + gapMs - Date.now();
@@ -151,9 +185,16 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     if (queued !== null) return queued;
     if (reading !== null) return reading;
     if (kept !== null) return Promise.resolve(kept);
+    if (wanted === null) {
+      // Passive lookups may populate a cold cache, but never rerun a profile on an edit.
+      reading = profileRevision().then(() => start(signal));
+      return reading;
+    }
     return start(signal);
   };
   const start = (signal: AbortSignal): Promise<LoginPathResult> => {
+    // Compare with the revision at start, not at finish: the shell may already have read an edited file.
+    readRevision = revision;
     startedAt = Date.now();
     const run = interactive(signal).then((result) => {
       if (signal.aborted) { stale = true; return result; }
@@ -166,14 +207,18 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     reading = run;
     return run;
   };
-  const probe = async (signal: AbortSignal): Promise<LoginPathResult> => {
-    const [shown, plain] = await Promise.all([rc(signal), login(signal)]);
+  const probe = async (signal: AbortSignal, wanted?: number | null): Promise<LoginPathResult> => {
+    const reread = wanted !== null && stale;
+    if (reread) stale = false;
+    const interactivePath = wanted === undefined ? profileRevision().then((value) => rc(signal, value, reread)) : rc(signal, wanted, reread);
+    const [shown, plain] = await Promise.all([interactivePath, login(signal)]);
     if (shown.path === null && plain.path === null) return { path: null, reason: `${plain.reason}; interactive: ${shown.reason}` };
     const named = new Set<string>();
     const path = [shown.path, plain.path].flatMap((part) => part?.split(":") ?? []).filter((dir) => !named.has(dir) && named.add(dir)).join(":");
     return { path };
   };
   return Object.assign(probe, {
+    profileRevision,
     reread: () => { stale = true; },
     problem: () => kept !== null && kept.path === null ? kept.reason : null,
   });
@@ -264,6 +309,8 @@ export class ShellAgentLocator {
   #found = new Map<string, string>();
   #loginPath: string | null = null;
   #checkedAt: number | null = null;
+  #checkedRevision = -1;
+  #lookupId = 0;
   #running: Promise<void> | null = null;
   #queued: Promise<void> | null = null;
   #failure: string | null = null;
@@ -286,20 +333,24 @@ export class ShellAgentLocator {
     this.#now = options.now ?? Date.now;
   }
 
-  #fresh(probe: LoginPathProbe): Promise<void> {
+  async #fresh(probe: LoginPathProbe, checkProfile: boolean): Promise<void> {
+    const wanted = checkProfile && probe.profileRevision !== undefined ? await probe.profileRevision() : null;
     if (this.#stopped) return Promise.resolve();
-    if (this.#running !== null) return this.#running;
-    if (this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return Promise.resolve();
-    const run: Promise<void> = this.#lookup(probe).finally(() => { if (this.#running === run) this.#running = null; });
+    const changed = wanted !== null && wanted > this.#checkedRevision;
+    if (!changed && this.#running !== null) return this.#running;
+    if (!changed && this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return;
+    const run: Promise<void> = this.#lookup(probe, wanted).finally(() => { if (this.#running === run) this.#running = null; });
     this.#running = run;
     return run;
   }
 
-  async #lookup(probe: LoginPathProbe): Promise<void> {
+  async #lookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
+    const id = ++this.#lookupId;
+    if (wanted !== null) this.#checkedRevision = Math.max(this.#checkedRevision, wanted);
     const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
     const found = new Map<string, string>();
-    const result = missing.length === 0 ? null : await probe(this.#abort.signal).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
-    if (this.#stopped) return;
+    const result = missing.length === 0 ? null : await probe(this.#abort.signal, wanted).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
+    if (this.#stopped || id !== this.#lookupId) return;
     // only absolute entries: a relative one (`./node_modules/.bin`, common in .zshrc) would make
     // whatever is in this server's working folder an agent
     const loginPath = result?.path ? result.path.split(":").filter((entry) => isAbsolute(entry)).join(":") || null : null;
@@ -318,11 +369,11 @@ export class ShellAgentLocator {
     this.#failure = failure;
   }
 
-  async executable(kind: string): Promise<string | null> {
+  async executable(kind: string, checkProfile = true): Promise<string | null> {
     if (!isShellAgentKind(kind)) return null;
     const own = shellAgentExecutable(kind, this.#platform, this.#servicePath());
     if (own !== null || this.#probe === null) return own;
-    await this.#fresh(this.#probe);
+    await this.#fresh(this.#probe, checkProfile);
     const found = this.#found.get(kind);
     if (found !== undefined) return isExecutableFile(found) ? found : null;
     const late = this.#loginPath === null ? null : Bun.which(kind, { PATH: this.#loginPath });
@@ -336,7 +387,11 @@ export class ShellAgentLocator {
     if (interactive) this.#probe.reread?.();
     if (this.#queued !== null) return this.#queued;
     const probe = this.#probe;
-    const run: Promise<void> = (this.#running ?? Promise.resolve()).then(() => { if (this.#queued === run) this.#queued = null; return this.#lookup(probe); }).finally(() => { if (this.#running === run) this.#running = null; });
+    const run: Promise<void> = (this.#running ?? Promise.resolve()).then(async () => {
+      if (this.#queued === run) this.#queued = null;
+      const wanted = probe.profileRevision === undefined ? null : await probe.profileRevision();
+      return this.#lookup(probe, wanted);
+    }).finally(() => { if (this.#running === run) this.#running = null; });
     this.#queued = run;
     this.#running = run;
     return run;

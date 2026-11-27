@@ -144,7 +144,7 @@ export interface RequestServices {
   readonly portalGuards: () => { tokenSet: boolean; serveOnly: boolean };
   readonly shellAgents: ShellAgentLocator;
   readonly agentDetector: AgentDetector;
-  readonly agentOffered: (kind: string) => Promise<boolean>;
+  readonly agentOffered: (kind: string, checkProfile?: boolean) => Promise<boolean>;
   readonly agentInstaller: AgentInstaller;
   readonly openCodeState: OpenCodePromptState;
   readonly approvals: ApprovalHub;
@@ -1025,12 +1025,15 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     }
   }
 
-  const agentsResponse = await handleAgentsRequest(request, pathname, shellAgents, agentOffered);
+  // A PC proxy sends its full bridge token for watchers too. It can forward an explicit Check again
+  // for drivers, but ordinary bridge reads must not refresh the interactive shell on profile edits.
+  const checkAgentProfile = !readOnly && !bridgeAuthorized && !options.bridgeOnly;
+  const agentsResponse = await handleAgentsRequest(request, pathname, shellAgents, (kind) => agentOffered(kind, checkAgentProfile));
   if (agentsResponse) return agentsResponse;
 
   const installResponse = await agentInstaller.handle(request, pathname);
   if (installResponse) return installResponse;
-  const catalogResponse = await handleAgentCatalogRequest(request, pathname, agentDetector, undefined, readOnly);
+  const catalogResponse = await handleAgentCatalogRequest(request, pathname, agentDetector, undefined, readOnly, checkAgentProfile);
   if (catalogResponse) return catalogResponse;
 
   const integrationsResponse = await handleIntegrationsRequest(request, pathname);

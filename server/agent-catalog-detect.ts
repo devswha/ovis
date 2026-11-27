@@ -15,7 +15,7 @@ export const TIMEOUT_KEPT_MS = 60_000;
  * `searchPath`, when the locator has one: the PATH it looks on, the login shell's included once read,
  * which its version flag is run with too (a script's interpreter, nvm's node, may be on that PATH only).
  */
-export type Locate = ((binary: string) => Promise<string | null>) & { searchPath?: () => string; refresh?: (interactive?: boolean) => Promise<void>; problem?: () => string | null };
+export type Locate = ((binary: string, checkProfile?: boolean) => Promise<string | null>) & { searchPath?: () => string; refresh?: (interactive?: boolean) => Promise<void>; problem?: () => string | null };
 
 export const LOGIN_PATH_KEPT_MS = 60_000;
 
@@ -39,12 +39,16 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
   const signal = options.signal ?? new AbortController().signal;
   let kept: { path: string | null; at: number } | null = null;
   let reading: Promise<string | null> | null = null;
-  const loginPath = (probe: LoginPathProbe): Promise<string | null> => {
-    if (reading !== null) return reading;
-    if (kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return Promise.resolve(kept.path);
-    const run: Promise<string | null> = probe(signal)
+  let checkedRevision = -1;
+  const loginPath = async (probe: LoginPathProbe, checkProfile: boolean): Promise<string | null> => {
+    const wanted = checkProfile && probe.profileRevision !== undefined ? await probe.profileRevision() : null;
+    const changed = wanted !== null && wanted > checkedRevision;
+    if (!changed && reading !== null) return reading;
+    if (!changed && kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return kept.path;
+    if (wanted !== null) checkedRevision = Math.max(checkedRevision, wanted);
+    const run: Promise<string | null> = probe(signal, wanted)
       .then((result) => result.path, () => null)
-      .then((path) => { kept = { path, at: now() }; return path; })
+      .then((path) => { if (reading === run) kept = { path, at: now() }; return path; })
       .finally(() => { if (reading === run) reading = null; });
     reading = run;
     return run;
@@ -57,10 +61,10 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     const found = Bun.which(binary, { PATH: absolute });
     return found !== null && isAbsolute(found) && isExecutableFile(found) ? found : null;
   };
-  const locate = async (binary: string): Promise<string | null> => {
+  const locate = async (binary: string, checkProfile = true): Promise<string | null> => {
     const own = find(binary, servicePath());
     if (own !== null || options.probe === null) return own;
-    const path = await loginPath(options.probe);
+    const path = await loginPath(options.probe, checkProfile);
     return path === null ? null : find(binary, path);
   };
   let queued: Promise<string | null> | null = null;
@@ -70,8 +74,13 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     if (queued !== null) return queued.then(() => undefined);
     const probe = options.probe;
     const run: Promise<string | null> = (reading ?? Promise.resolve(null))
-      .then(() => { if (queued === run) queued = null; return probe(signal).then((result) => result.path, () => null); })
-      .then((path) => { kept = { path, at: now() }; return path; })
+      .then(async () => {
+        if (queued === run) queued = null;
+        const wanted = probe.profileRevision === undefined ? undefined : await probe.profileRevision();
+        if (wanted !== undefined) checkedRevision = Math.max(checkedRevision, wanted);
+        return probe(signal, wanted).then((result) => result.path, () => null);
+      })
+      .then((path) => { if (reading === run) kept = { path, at: now() }; return path; })
       .finally(() => { if (reading === run) reading = null; });
     queued = run;
     reading = run;
@@ -266,8 +275,8 @@ export class AgentDetector {
     return read;
   }
 
-  onPath(binary: string): Promise<string | null> {
-    return this.#locate(binary);
+  onPath(binary: string, checkProfile = true): Promise<string | null> {
+    return this.#locate(binary, checkProfile);
   }
 
   inInstallFolder(binary: string, dirs: readonly string[], platform: CatalogPlatform): string | null {
@@ -282,23 +291,23 @@ export class AgentDetector {
     return this.#locate.problem?.() ?? null;
   }
 
-  async executable(binary: string, dirs: readonly string[], platform: CatalogPlatform | null): Promise<string | null> {
-    return (await this.#locate(binary)) ?? (platform === null ? null : this.#inInstallDirs(binary, dirs, platform));
+  async executable(binary: string, dirs: readonly string[], platform: CatalogPlatform | null, checkProfile = true): Promise<string | null> {
+    return (await this.#locate(binary, checkProfile)) ?? (platform === null ? null : this.#inInstallDirs(binary, dirs, platform));
   }
 
   /**
    * Where another program has the binary's name (detect.unreliable_on), nothing is looked up or run;
    * while a program it needs (detect.needs) is missing, it is not installed and nothing is run either.
    */
-  async state(entry: AgentCatalogEntry, platform: CatalogPlatform | null): Promise<AgentInstallState> {
+  async state(entry: AgentCatalogEntry, platform: CatalogPlatform | null, checkProfile = true): Promise<AgentInstallState> {
     const missing: AgentInstallState = { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
     if (platform !== null && entry.detect.unreliable_on?.[platform] !== undefined) {
       return { installed: null, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
     }
     const dirs = platform === null ? [] : entry.detect.install_dirs?.[platform] ?? [];
-    for (const needed of entry.detect.needs ?? []) if ((await this.executable(needed, dirs, platform)) === null) return missing;
+    for (const needed of entry.detect.needs ?? []) if ((await this.executable(needed, dirs, platform, checkProfile)) === null) return missing;
     for (const binary of entry.detect.binaries) {
-      const onPath = await this.#locate(binary);
+      const onPath = await this.#locate(binary, checkProfile);
       const executable = onPath ?? (platform === null ? null : this.#inInstallDirs(binary, entry.detect.install_dirs?.[platform] ?? [], platform));
       if (executable === null) continue;
       const fingerprint = fingerprintOf(executable);
