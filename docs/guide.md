@@ -748,6 +748,17 @@ A plain HTTP LAN address also works in the browser, but it can't install the app
 
 The running server sends the alerts. Keep it running, and keep `OVIS_STATE_DIR` across restarts, since it holds the push key and device subscriptions.
 
+### After merging accounts
+
+A PC moved during the merge keeps its paired devices. They can still open
+the PC with their existing pairing, but membership in the old account no
+longer grants permission to approve devices. Cancelling the merge does not
+undo a PC move that already finished at the account service.
+
+If `ovis status` says this PC's account was merged, run `ovis add` on that
+PC and sign in to the account you now use. You do not need to revoke or pair
+your devices again.
+
 ## Remote PCs over SSH
 
 A workspace row's **⋯** menu offers **New worktree** and **Open worktree…**, as herdr's own worktree keys do: the first checks a branch out as a git worktree under herdr's worktree folder and opens it as a workspace next to the repository's, the second lists the repository's other checkouts and opens one. New worktree opens with a branch (`worktree/brave-valley-07f8` style) and a name already filled in, as herdr's own form does; type over either. **Agent** picks what starts in the new checkout, as New workspace does: the agent you last started, or Shell for none. In the By workspace view a worktree workspace sits under its repository's row. Its menu ends in **Delete worktree checkout…**, which deletes the folder and closes the workspace but keeps the branch; a checkout with unsaved changes is refused first, in git's words, with **Delete anyway** as the second step. Closing the repository's workspace closes its open worktree workspaces with it and leaves their checkouts on disk.

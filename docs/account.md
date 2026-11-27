@@ -1523,6 +1523,28 @@ derives the `server_id` from it again before using it. Its `relay` is only a rou
 is what authenticates the PC.
 
 
+### Moving a PC during an account merge
+
+`POST /api/account/move` takes `{ merge_id, from, into, invite }` and requires
+`X-Herdr-Machine: 1` and the same origin. Use the PC's own window or a driving
+relay session of its current account that has been admitted on this PC for at
+least one hour. A watch session or an old pairing cannot order a move.
+Accounts that follow a signed list are not supported.
+
+The PC proves its identity to the service in a challenge scoped to the merge.
+It keeps a private recovery record until it knows which account lists it.
+An answer of `200 { state: "moved", account }` means it switched; `202
+{ state: "pending" }` with `Retry-After: 5` means it will retry on its own,
+also after restarting. The same order can be repeated. Cancelling a merge
+does not move a PC back if the service already transferred it.
+
+`GET /api/account/status` shows `account_move` and the IDs in `before_merge`.
+Paired devices stay paired when a PC moves, but devices from the old account
+no longer act as members. A device may still send a signed remove for its
+own old key and account. A PC left behind reports `account_merged: true`
+without learning the destination. Its owner can run `ovis add` on that PC
+to add it again without removing the devices paired with it.
+
 ## On the PC
 
 - Membership lives on the rows of `devices.json` (`account`, `added_by`); the PC's account is the
