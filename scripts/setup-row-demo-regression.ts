@@ -1,38 +1,29 @@
 /** With UI_EVIDENCE_DIR, each state is captured under setup-row/. */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Page } from "playwright-core";
+import { withDemoBrowser } from "./demo-browser.ts";
 
-const app = mkdtempSync(join(tmpdir(), "ovis-setup-row-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] ? join(process.env["UI_EVIDENCE_DIR"], "setup-row") : null;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const DIALOG = "Set up Ovis";
 const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime ?? Infinity)).map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (path.startsWith("/icons/")) { const icon = Bun.file(join(app, path)); return (await icon.exists()) ? new Response(icon) : new Response("not found", { status: 404 }); }
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  const root = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+const serve = (app: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+  const path = new URL(request.url).pathname;
+  if (path.startsWith("/icons/")) { const icon = Bun.file(join(app, path)); return (await icon.exists()) ? new Response(icon) : new Response("not found", { status: 404 }); }
+  if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
+  let file: string;
+  try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
+  catch { return new Response("bad path", { status: 400 }); }
+  if (!file || file.endsWith("/")) file += "index.html";
+  if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
+  const body = Bun.file(join(app, file));
+  return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
+} });
+
+await withDemoBrowser({ tempPrefix: "ovis-setup-row-", serve }, async ({ newContext, baseUrl: root }) => {
   const sizes = [
     { width: 1920, height: 1080 },
     { width: 1280, height: 720 },
@@ -44,9 +35,9 @@ try {
       const at = `${size.width}x${size.height}-${theme}`;
       const phone = "phone" in size;
       const drawer = "drawer" in size;
-      const context = await browser.newContext(phone
-        ? { viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme }
-        : { viewport: { width: size.width, height: size.height }, locale: "en-US", colorScheme: theme });
+      const context = await newContext(phone
+        ? { viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: theme }
+        : { viewport: { width: size.width, height: size.height }, colorScheme: theme });
       await context.addInitScript(([value]) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value, palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
         if (sessionStorage.getItem("seeded") === null) {
@@ -100,13 +91,27 @@ try {
         await row.waitFor();
         assert.equal((await row.innerText()).trim(), "Setup: 2 left", `the row counts what is left ${at}`);
         await shot("3-setup-row");
+        // the row is a checklist of the parts, each left one opening its own setting: never the whole guide again
         await row.click();
-        const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
-        await dialog.getByRole("heading", { name: "Stay in touch", exact: true }).waitFor();
+        const checklist = page.getByRole("menu", { name: "Setup: 2 left", exact: true });
+        await checklist.waitFor();
+        assert.deepEqual(await checklist.locator("[data-item]").evaluateAll((items) => items.map((item) => [item.getAttribute("data-item"), item.getAttribute("aria-checked"), item.getAttribute("aria-disabled")])),
+          [["workspace", "true", "true"], ["theme", "true", "true"], ["phone", "false", null], ["alerts", "false", null]], `the checklist ticks the done parts and leaves them inert ${at}`);
         await settled(page);
-        await shot("4-reopened-at-phone");
+        await shot("4-checklist");
+        assert.equal(await page.getByRole("dialog", { name: DIALOG, exact: true }).count(), 0, `the checklist opens no guide ${at}`);
+        await checklist.getByRole("menuitemcheckbox", { name: "Connect your phone", exact: true }).click();
+        const connect = page.getByRole("dialog", { name: "Add a connection", exact: true });
+        await connect.waitFor();
+        assert.equal(await page.getByRole("dialog", { name: DIALOG, exact: true }).count(), 0, `Connect your phone opens Add a connection, not the guide ${at}`);
+        const relayTab = connect.locator('.connect-tabs [data-tab="relay"]');
+        if (await relayTab.count() > 0) assert.equal(await relayTab.getAttribute("aria-pressed"), "true", `Add a connection opens on Ovis relay ${at}`);
+        await settled(page);
+        await shot("5-connect-your-phone");
         await page.keyboard.press("Escape");
-        await dialog.waitFor({ state: "detached" });
+        await connect.waitFor({ state: "detached" });
+        await page.keyboard.press("Escape");
+        await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor({ state: "detached" });
         await page.getByRole("button", { name: "Hide setup reminder", exact: true }).click();
         await row.waitFor({ state: "detached" });
         await page.reload();
@@ -126,15 +131,11 @@ try {
             await listed.close();
           }
         }
-        console.log(`PASS the hints show one at a time by their anchors and close for good, and Setup: N left counts what is left and reopens the guide there (${at})`);
+        console.log(`PASS the hints show one at a time by their anchors and close for good, and Setup: N left counts what is left and opens a checklist whose Connect your phone opens Add a connection (${at})`);
         assert.deepEqual(errors, [], `no page errors ${at}`);
       } finally {
         await context.close();
       }
     }
   }
-} finally {
-  await browser?.close();
-  await server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

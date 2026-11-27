@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { fontSettled } from "./fontFamily.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { usePaneAttach, type PaneAttachDeps } from "./usePaneAttach.ts";
 import { useTerminalRefits, type TerminalRefitsDeps } from "./useTerminalRefits.ts";
 import { HerdrSocket } from "./ws.ts";
@@ -26,21 +26,28 @@ const AFTER = "w1:p2";
 const COLORS = {} as TerminalRefitsDeps["colors"];
 
 describe("usePaneAttach with the inbox mode's list over the pane", () => {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let savedSocket: PropertyDescriptor | undefined;
+  let page: Page;
   let client: HerdrSocket;
   let socket: FakeSocket;
-  const termRef: RefObject<Terminal | null> = { current: null };
+  const termRef: RefObject<GhosttyTerminal | null> = { current: null };
   const paneRef: RefObject<string | null> = { current: BEFORE };
   const coveredRef: RefObject<boolean> = { current: false };
+  const releasedRef: RefObject<boolean> = { current: false };
+  const cachedRef: RefObject<boolean> = { current: false };
+  let presentations = 0;
+  const presentationRef: RefObject<() => void> = { current: () => { presentations += 1; } };
 
   beforeEach(() => {
-    for (const key of ["IS_REACT_ACT_ENVIRONMENT", "WebSocket", "window", "document"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    releasedRef.current = false;
+    cachedRef.current = false;
+    presentations = 0;
+    page = openPage();
+    savedSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
     Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: FakeSocket });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
     // the page in use: an attach sizes the pty unless it says keep_size
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", hasFocus: () => true, addEventListener() {}, removeEventListener() {} } });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+    Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
     termRef.current = null;
     client = new HerdrSocket("ws://test/ws");
     client.connect();
@@ -50,47 +57,41 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     client.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    saved.clear();
+    await page.close();
+    if (savedSocket) Object.defineProperty(globalThis, "WebSocket", savedSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
   });
 
   const ref = <T,>(current: T): RefObject<T> => ({ current });
   const nothing = (): void => {};
   const settled = fontSettled();
   settled.settle();
-  function Probe({ paneId, covered }: { paneId: string; covered: boolean }) {
+  function Probe({ paneId, covered, mirrored = false, presented = false, cached = false }: { paneId: string; covered: boolean; mirrored?: boolean | null; presented?: boolean; cached?: boolean }) {
     paneRef.current = paneId;
     coveredRef.current = covered;
     const shared = { activeRef: ref(false), autoSelected: false, coarseRef: ref(false), findOpenRef: ref(false), fitRef: ref(null), fittedRef: ref(nothing), fixedGridRef: ref(false), followCursorRef: ref(nothing), keyboardHoldsRef: ref(() => false), observeRef: ref(false), sharedGridRef: ref(null), socketRef: ref(client), termRef, chatViewRef: ref(false), fontSettledRef: ref(settled) };
     useTerminalRefits({
-      ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false, narrowFont: false, narrowFontFitted: ref(false),
+      ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false,
       colors: COLORS, paneRef, peekRef: ref(null), shown: true, sizesPty: () => !coveredRef.current, terminalFontFamily: "", terminalFontSize: 13,
     });
     const attach: PaneAttachDeps = {
-      ...shared, cached: false, watched: false, coveredRef, deferAttachRef: ref(() => false), draftPaneRef: ref(null), frameGateRef: ref({ reset: nothing }),
-      hyperlinksRef: ref({ reset: nothing }), hostRef: ref(null), machineId: "local", mirrored: false, modifyOtherKeysRef: ref(0), paneId, pending: [], presented: false,
-      presentationRef: ref(nothing), releaseRef: ref(nothing), releasedRef: ref(false), retireOutputRef: ref(nothing), secretRef: ref(null), setDraft: nothing,
+      ...shared, cached, watched: false, coveredRef, deferAttachRef: ref(() => false), draftPaneRef: ref(null), frameGateRef: ref({ reset: nothing }),
+      hyperlinksRef: ref({ reset: nothing }), hostRef: ref(null), machineId: "local", mirrored, modifyOtherKeysRef: ref(0), paneId, pending: [], presented,
+      presentationRef, releaseRef: ref(nothing), releasedRef, retireOutputRef: ref(nothing), secretRef: ref(null), setDraft: nothing,
       setComposing: nothing, setEnded: nothing, setHeld: nothing, setInputError: nothing, setInputReady: nothing, setOutputError: nothing, setOutputReady: nothing,
       setReleased: nothing, setSecret: nothing, setUnsupported: nothing, setWatching: nothing, stalledRef: ref(false), terminalId: null, cancelLeaveRef: ref(nothing),
-      cachedRef: ref(false), watchingRef: ref(false), followRef: ref(false), leaveRef: ref(nothing), shownRef: ref(true), typeAheadRef: ref(nothing),
+      cachedRef, watchingRef: ref(false), followRef: ref(false), leaveRef: ref(nothing), shownRef: ref(true), typeAheadRef: ref(nothing),
     };
     usePaneAttach(attach);
     return null;
   }
-  const draw = async (props: { paneId: string; covered: boolean }): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, props));
-      else renderer = create(createElement(Probe, props));
-    });
+  const draw = async (props: { paneId: string; covered: boolean; mirrored?: boolean | null; presented?: boolean; cached?: boolean }): Promise<void> => {
+    await page.render(createElement(Probe, props));
   };
   const sizing = (from: number) => socket.sent.slice(from).filter((frame) => ["attach", "resize", "release-size"].includes(frame.type));
-  const layOut = (): void => { termRef.current = { cols: 100, rows: 30, options: {}, reset: nothing } as unknown as Terminal; };
+  const layOut = (): void => { termRef.current = { cols: 100, rows: 30, options: {}, reset: nothing } as unknown as GhosttyTerminal; };
 
   it("attaches a pane that comes to the slot under the list keeping the pty's size, and asks for its grid once as it is shown", async () => {
     await draw({ paneId: BEFORE, covered: false });
@@ -98,7 +99,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     await draw({ paneId: BEFORE, covered: true });
     const from = socket.sent.length;
     await draw({ paneId: AFTER, covered: true });
-    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true }]);
+    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true, windows_fit: true }]);
     const shown = socket.sent.length;
     await draw({ paneId: AFTER, covered: false });
     expect(sizing(shown)).toEqual([{ type: "resize", pane_id: AFTER, cols: 100, rows: 30 }]);
@@ -109,6 +110,41 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     layOut();
     const from = socket.sent.length;
     await draw({ paneId: AFTER, covered: false });
-    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String) }]);
+    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), windows_fit: true }]);
+  });
+
+  describe("how the pane is presented", () => {
+    const shown = { paneId: BEFORE, covered: false, presented: true };
+
+    it("is not decided again for a pane in use that only learns whether herdr can attach", async () => {
+      await draw({ ...shown, mirrored: null });
+      expect(presentations).toBe(1);
+      await draw({ ...shown, mirrored: false });
+      await draw({ ...shown, mirrored: true });
+      expect(presentations).toBe(1);
+    });
+
+    it("is decided again when a pane that let go of its size, or a cached one, learns it", async () => {
+      await draw({ ...shown, mirrored: null });
+      releasedRef.current = true;
+      await draw({ ...shown, mirrored: false });
+      expect(presentations).toBe(2);
+      releasedRef.current = false;
+      cachedRef.current = true;
+      await draw({ ...shown, mirrored: true });
+      expect(presentations).toBe(3);
+    });
+
+    it("is decided once when the pane is presented, put in the cache or taken out, with or without that answer in the same render", async () => {
+      await draw({ paneId: BEFORE, covered: false, presented: false, mirrored: null });
+      await draw({ ...shown, mirrored: false });
+      expect(presentations).toBe(2);
+      await draw({ ...shown, mirrored: false, cached: true });
+      expect(presentations).toBe(3);
+      await draw({ ...shown, mirrored: null, cached: false });
+      expect(presentations).toBe(4);
+      await draw({ ...shown, mirrored: null, cached: false });
+      expect(presentations).toBe(4);
+    });
   });
 });

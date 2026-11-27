@@ -21,6 +21,7 @@ import { checkTerminalInput } from "./terminal-input-regression.ts";
 import { checkSafariIme } from "./terminal-safari-ime-regression.ts";
 import { checkIpadIme } from "./terminal-ipad-ime-regression.ts";
 import { checkLinuxIme } from "./terminal-linux-ime-regression.ts";
+import { checkTextareaDrafts } from "./textarea-draft-regression.ts";
 import { checkHeldDraftPaneSwitch } from "./terminal-draft-regression.ts";
 import { checkCommandBackspace } from "./terminal-command-backspace-regression.ts";
 import { checkCtrlEnter } from "./terminal-ctrl-enter-regression.ts";
@@ -29,6 +30,7 @@ import { checkFolderFilter, checkNewFolder } from "./folder-filter-regression.ts
 import { checkPaletteKeys } from "./palette-keys-regression.ts";
 import { checkFollowHerdrFocus } from "./follow-focus-regression.ts";
 import { checkRelayPanel } from "./relay-panel-regression.ts";
+import { checkConnectDialogScroll } from "./connect-dialog-scroll-regression.ts";
 import { systemUsageContext, UsageService } from "../server/usage.ts";
 import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 import { assertCspClean, watchCsp } from "./csp-violations.ts";
@@ -139,8 +141,8 @@ try {
   if (part === "main") {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     await context.addInitScript((ids) => {
-      // The pending-input cases exercise automatic queue delivery, which is opt-in.
-      if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", autoSendQueued: true }));
+      // The pending-input cases exercise automatic queue delivery, and the dictation cases the mic, both opt-in.
+      if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", autoSendQueued: true, voiceInput: "auto" }));
       for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
     }, panes);
     await context.addInitScript(rewriteMachinesFrames);
@@ -214,7 +216,7 @@ try {
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await composer.waitFor();
     await page.locator(".composer .voice-mic").waitFor();
-    console.log("PASS a desktop's chat offers the mic before Settings is asked");
+    console.log("PASS a desktop's chat on Auto offers the mic before Settings is asked");
     assert.equal(await workspaceHeader(workspaces[0]!).locator(".workspace-name").textContent(), "ovis-test-browser-a",
       "Spaces names the workspace rather than its current pane");
     assert.equal(await workspaceGroup(workspaces[0]!).locator(".pane-select").count(), 1, "a workspace has one representative selector");
@@ -768,9 +770,9 @@ try {
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Add a connection", exact: true }).click();
     const connectSheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
     await connectSheet.locator('.connect-tabs [data-tab="ssh"]').click();
-    const sshAdd = connectSheet.locator(".connect-ssh-form").getByRole("button", { name: "Add", exact: true });
-    assert.equal(await sshAdd.isDisabled(), true, "Add waits for an SSH address");
-    await connectSheet.getByLabel("Or type an SSH address", { exact: true }).fill("qa@pc.invalid");
+    const sshAdd = connectSheet.locator(".connect-ssh-form").getByRole("button", { name: "Connect", exact: true });
+    assert.equal(await sshAdd.isDisabled(), true, "Connect waits for an address");
+    await connectSheet.getByLabel("Add another PC from this one", { exact: true }).fill("qa@pc.invalid");
     await sshAdd.click();
     await page.getByRole("dialog", { name: "Add PC", exact: true }).waitFor();
     assert.equal(await page.getByRole("dialog", { name: "Add PC", exact: true }).getByLabel("SSH alias or user@address", { exact: true }).inputValue(), "qa@pc.invalid", "Add PC opens with the typed address");
@@ -1064,6 +1066,9 @@ try {
       }
       return { x: Math.round(card.x), width: Math.round(card.width), pane: Math.round(pane.width) };
     };
+    // Pane A has no conversation to show: its first answer takes the empty list's .chat-transcript out of the page and
+    // puts the notice's own in. A box read between the two is null, the removed element's (#4026).
+    await page.locator(".chat-unavailable-reason").waitFor();
     const floor = await laneColumn();
     assert.ok(floor.pane < 1148, "71% of this pane is under the lane's floor");
     assert.equal(floor.width, 820);
@@ -1232,6 +1237,8 @@ try {
     assert.equal(await composer.inputValue(), "draft for B");
     console.log("PASS upload batch cannot cross panes");
 
+    // Each path goes where the pick was made (here the start of an empty box) as its upload finishes,
+    // in the order the files were picked, and what the user types there meanwhile goes after it.
     await page.unroute("**/api/pane/image");
     const held = new Map<string, () => void>();
     await page.route("**/api/pane/image", async (route) => {
@@ -1376,9 +1383,13 @@ try {
     await pickFiles("eleventh.txt");
     await until(() => held.has("eleventh.txt"), "eleventh upload in flight");
     await finish("eleventh.txt");
-    await until(async () => /^@\S*eleventh-\S* hello$/.test(await composer.inputValue()), "the path went to the start");
+    await until(async () => /^h @\S*eleventh-\S* ello$/.test(await composer.inputValue()), "the path went to the selection's start, where the pick was made");
     const selection = await composer.evaluate((element: HTMLTextAreaElement) => ({ text: element.value.slice(element.selectionStart, element.selectionEnd), direction: element.selectionDirection }));
     assert.deepEqual(selection, { text: "ell", direction: "backward" }, "the selection keeps its text and direction");
+    // done with these files: Remove takes each one and its path out (clearing the box would only
+    // detach them from the message, #3216)
+    const tileRemove = page.locator(".composer-attachment button");
+    while (await tileRemove.count() > 0) await tileRemove.first().click();
     await composer.fill("");
     console.log("PASS paths wait for a /command, typed or dictated, or an IME composition to finish, and selections keep their direction");
 
@@ -1401,12 +1412,17 @@ try {
     const short = Number(/· (\d+) over/.exec(await statusHint.textContent() ?? "")![1]);
     assert.equal(await sendButton.isDisabled(), true, "Send waits for the path");
     assert.equal(await composer.inputValue(), "x".repeat(MAX_COMPOSER_CHARS - 5), "no part of the path went in");
-    await composer.fill("x".repeat(MAX_COMPOSER_CHARS - 200));
-    await until(async () => /^@\S*fourteenth-\S* x+$/.test(await composer.inputValue()), "the path goes in once there is room");
-    assert.equal(short, /^@\S+ /.exec(await composer.inputValue())![0].length - 5, "the count was what the path needed");
+    // shortened from its start: the place picked at the end stays at the end
+    await composer.focus();
+    await composer.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 195));
+    await page.keyboard.press("Backspace");
+    await until(async () => /^x+ @\S*fourteenth-\S* $/.test(await composer.inputValue()), "the path goes in at the end, where it was picked, once there is room");
+    assert.equal(short, / @\S+ $/.exec(await composer.inputValue())![0].length - 5, "the count was what the path needed");
     assert.equal(await roomless.count(), 0, "the chip is attached again");
-    const mentionLength = /^@\S+ /.exec(await composer.inputValue())![0].length - "fourteenth.txt".length;
+    const mentionLength = / @\S+ $/.exec(await composer.inputValue())![0].length - "fourteenth.txt".length;
     const long = `fifteenth${"y".repeat(60)}.txt`;
+    // done with it: Remove takes it and its path out, so the draft below holds no file whose path it erased (#3216)
+    await page.getByRole("button", { name: "Remove fourteenth.txt", exact: true }).click();
     await composer.fill("x".repeat(MAX_COMPOSER_CHARS - mentionLength - "sixteenth.txt".length - 20));
     await pickFiles(long, "sixteenth.txt");
     await until(() => held.has(long) && held.has("sixteenth.txt"), "fifteenth and sixteenth uploads in flight");
@@ -1417,10 +1433,35 @@ try {
     assert.equal(await sendButton.isDisabled(), true, "the short path waits behind the long one");
     assert.doesNotMatch(await composer.inputValue(), /sixteenth/u);
     await page.getByRole("button", { name: `Remove ${long}`, exact: true }).click();
-    await until(async () => /^@\S*sixteenth-\S* x+$/.test(await composer.inputValue()), "the short path goes in once the long one is removed");
+    await until(async () => /^x+ @\S*sixteenth-\S* $/.test(await composer.inputValue()), "the short path goes in once the long one is removed");
     await until(async () => !(await sendButton.isDisabled()), "Send is back once every path is in");
     await composer.fill("");
     console.log("PASS a path that does not fit waits whole and says how much to cut, and the count shows only near the limit");
+
+    // A placed path the user erased: its file is detached with it, nothing new is shown (no status
+    // line), Send is not held, and an undo brings path and tile back (#3216).
+    // It starts with no file in the box: the one above was left with its path cleared
+    while (await tileRemove.count() > 0) await tileRemove.first().click();
+    held.clear();
+    await composer.fill("look at this");
+    await composer.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(8, 8));
+    await pickFiles("erased.txt");
+    await until(() => held.has("erased.txt"), "erased upload in flight");
+    await finish("erased.txt");
+    await until(async () => /^look at @\S*erased-\S* this$/.test(await composer.inputValue()), "the path went where it was picked");
+    await composer.focus();
+    await composer.evaluate((element: HTMLTextAreaElement) => { const at = element.value.indexOf(".txt"); element.setSelectionRange(at, at + 1); });
+    await page.keyboard.press("Backspace");
+    await until(async () => await page.locator(".composer-attachment").count() === 0, "the file went with its path");
+    assert.equal(await statusHint.count(), 0, "no status line for it");
+    assert.equal(await sendButton.isDisabled(), false, "Send is not held");
+    await page.keyboard.press("ControlOrMeta+z");
+    await page.locator(".composer-attachment.is-ready").waitFor();
+    assert.match(await composer.inputValue(), /^look at @\S*erased-\S* this$/u, "the undo brought the path back whole");
+    assert.equal(await statusHint.count(), 0, "and the status line is clear again");
+    await page.getByRole("button", { name: "Remove erased.txt", exact: true }).click();
+    await composer.fill("");
+    console.log("PASS a placed path the user erased: its file goes with it, nothing new is shown, Send is not held, and an undo brings both back");
     await page.unroute("**/api/pane/image");
     // watched, not routed: a routed request makes a round trip to this script, and 99 of them follow
     const limitedUploads: string[] = [];
@@ -1494,7 +1535,10 @@ try {
     await dialog.getByLabel("Optional workspace label", { exact: true }).fill("ovis-test-browser-created");
     await dialog.getByRole("button", { name: "Start", exact: true }).click();
     await until(() => createRequests === 1, "creation started");
-    assert.equal(createCwd, join(root, "a", "made-here"), "Start uses the folder Browse is showing");
+    const madeHere = join(root, "a", "made-here");
+    // a fixture root under the home folder (TMPDIR=$HOME/...) is sent home-relative, as Browse shows it
+    const madeHereFromHome = madeHere.startsWith(`${homedir()}/`) ? `~${madeHere.slice(homedir().length)}` : madeHere;
+    assert.ok(createCwd === madeHere || createCwd === madeHereFromHome, `Start uses the folder Browse is showing: ${createCwd}`);
     await page.keyboard.press("Escape");
     assert.equal(await dialog.isVisible(), true, "in-flight creation cannot be dismissed");
     assert.equal(await dialog.getByRole("button", { name: "Close dialog" }).isDisabled(), true);
@@ -2394,6 +2438,7 @@ try {
   }
 
   if (part === "ime") {
+    await checkTextareaDrafts(browser, origin, paneA, paneB);
     await checkSafariIme(browser, origin, paneA, paneB);
     await checkIpadIme(browser, origin, paneA, paneB);
     await checkLinuxIme(browser, origin, paneA);
@@ -2461,6 +2506,7 @@ try {
     console.log("PASS Settings sign out: cancel preserves access, failure permits retry, token and paired-device sign out return to the access gate");
 
     await checkRelayPanel(browser);
+    await checkConnectDialogScroll(browser);
   }
 } catch (error) {
   for (const evidence of evidenceSessions) {

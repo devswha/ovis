@@ -5,11 +5,13 @@ import { join } from "node:path";
 import type { HerdrRuntimeFacts, RuntimeName } from "../shared/machines.ts";
 import type { PaneInfo, PaneProcessInfo, SessionSnapshot } from "../shared/herdr-api.generated.ts";
 import type { MovePlan, MovePlanResponse, MoveStatus, MoveStopAllOffer } from "../shared/runtime-move.ts";
-import { agentLaunch } from "./agent-launch.ts";
+import { agentLaunch, withBrowserTool } from "./agent-launch.ts";
+import { OVIS_AGENT_LAUNCH_LABEL } from "./agent-tools/launch.ts";
 import { freeAgentName } from "./agent-name.ts";
 import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendKeys, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
-import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
+import { HcConnection } from "./herdr-core/connection.ts";
+import { spawnHcConnect } from "./herdr-core/hc-connect.ts";
 import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./herdr-core/terminal-env.ts";
 import { findHc } from "./herdr-core/discovery.ts";
 import { hcEnv } from "./herdr-core/runtime.ts";
@@ -159,10 +161,12 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
     renamePane: (paneId, name) => paneRename(paneId, name, socket),
     start: async (paneId, argv) => {
       // a shell started a moment ago may not be up yet (`agent_pane_busy`), as agent-launch.ts waits for it
+      if (process.platform === "linux") await hc.call("terminal.label", { terminal: paneId, labels: { [OVIS_AGENT_LAUNCH_LABEL]: "1" } });
       for (const deadline = Date.now() + 10_000; ;) {
         const names = (await sessionSnapshot(socket)).agents.map((agent) => agent.name);
         try {
-          await agentStart({ name: freeAgentName(argv[0]!, names), kind: argv[0]!, paneId, args: argv.slice(1), timeoutMs: 60_000 }, socket);
+          const args = withBrowserTool(argv[0]!, argv.slice(1), process.platform);
+          await agentStart({ name: freeAgentName(argv[0]!, names), kind: argv[0]!, paneId, args: args ?? [], timeoutMs: 60_000 }, socket);
           return;
         } catch (error) {
           if (!(error instanceof HerdrError && error.code === "agent_pane_busy" && Date.now() < deadline)) throw error;

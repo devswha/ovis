@@ -4,11 +4,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp, buildDevelopmentDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, themeSide } from "./settings-page.ts";
 import { SETTINGS, closeSettings, dialogOf, historyHolds, openPalette, openSettings } from "./settings-pages-harness.ts";
 import { DEFAULT_SETTINGS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN } from "../src/lib/settings.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // All files and HTTP traffic stay in these disposable, loopback-only apps; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
@@ -41,7 +43,7 @@ interface HeldVoice { voiceAsked: () => number; releaseVoice: () => void; groupO
  * followed into view when the held answer comes.
  */
 async function heldGroupLanding(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 390, height: 480 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 390, height: 480 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -87,7 +89,7 @@ async function heldGroupLanding(browser: import("playwright-core").Browser, url:
 }
 
 async function focusAndLandings(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -152,7 +154,7 @@ async function focusAndLandings(browser: import("playwright-core").Browser, url:
 
 async function dialogSearch(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [1440, 390] as const) {
-    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    const context = await appContext(browser, width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
       const page = await context.newPage();
@@ -295,7 +297,7 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
 
 async function foldedGroups(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [1440, 390] as const) {
-    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    const context = await appContext(browser, width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, sidebarPeek: true }));
       const page = await context.newPage();
@@ -345,7 +347,7 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
 
 async function runtimeInUse(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [390, 1280]) {
-    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
       const page = await context.newPage();
@@ -375,7 +377,7 @@ async function runtimeInUse(browser: import("playwright-core").Browser, url: str
 }
 
 async function installedNotes(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     await context.addInitScript((revision) => {
@@ -410,7 +412,7 @@ async function installedNotes(browser: import("playwright-core").Browser, url: s
 }
 
 async function alertChipsReset(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en" });
   try {
     await context.addInitScript((settings) => {
       localStorage.setItem("ovis:settings", settings);
@@ -442,7 +444,7 @@ async function alertChipsReset(browser: import("playwright-core").Browser, url: 
 async function accountPcList(browser: import("playwright-core").Browser, url: string): Promise<void> {
   const service = "https://account.ovis.sh";
   for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) {
-    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
     const removed: string[] = [];
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme }));
@@ -495,13 +497,10 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       assert.equal(await page.locator("[data-section='account'] .relay-shell-pcs").count(), 0, "the Account group does not list the PCs a second time");
       // no row claims to open its PC: this page cannot tell whether the browser is paired with it at app.ovis.sh.
       assert.equal(await list.getByRole("link", { name: "Open in browser" }).count(), 0, `no account PC row has an Open of its own (${width}px, ${theme})`);
-      const open = list.locator(".account-pcs-open");
-      assert.deepEqual(await open.getByRole("link").evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute("href"), link.getAttribute("target")])),
-        [["Open app.ovis.sh", "https://app.ovis.sh/", "_blank"]], `one link under the account's PCs goes to the hosted app (${width}px, ${theme})`);
-      assert.equal(await open.locator(".settings-description").textContent(), "To open a PC of your account in a browser, sign in to this account at app.ovis.sh.");
-      // Remove only on the PC the account has not heard from for two days: one in use would be listed again
-      assert.deepEqual(await accountRows.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))), ["Remove office-mac from the list"], `only the PC not heard from is offered for removal (${width}px, ${theme})`);
-      const fit = await list.locator(".devices-row").filter({ hasText: /home-server|office-mac|app\.ovis\.sh/ }).evaluateAll((rows) => rows.map((row) => {
+      assert.equal(await list.getByRole("link").count(), 0, `no sentence or link to the hosted app under the account's PCs (${width}px, ${theme})`);
+      // the rows only list: an offline PC is removed in Manage account, behind a confirm (below)
+      assert.equal(await accountRows.getByRole("button").count(), 0, `no account PC row has a button of its own (${width}px, ${theme})`);
+      const fit = await list.locator(".devices-row").filter({ hasText: /home-server|office-mac/ }).evaluateAll((rows) => rows.map((row) => {
         const box = row.getBoundingClientRect();
         const inside = [...row.querySelectorAll(".devices-name, .devices-actions > *, .settings-description, .btn")].every((part) => {
           const one = part.getBoundingClientRect();
@@ -509,35 +508,43 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
         });
         return { inside, overflow: row.scrollWidth - row.clientWidth, inView: box.right <= document.documentElement.clientWidth + 0.5 };
       }));
-      assert.deepEqual(fit, Array.from({ length: 3 }, () => ({ inside: true, overflow: 0, inView: true })), `the account's PC rows and the line under them fit the list (${width}px, ${theme})`);
+      assert.deepEqual(fit, Array.from({ length: 2 }, () => ({ inside: true, overflow: 0, inView: true })), `the account's PC rows fit the list (${width}px, ${theme})`);
       const accountTop = (await page.locator("[data-section='account']").boundingBox())!.y;
       assert.ok(accountTop < (await page.locator("[data-section='devices']").boundingBox())!.y, `the Account group sits above the device list (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) {
         await list.scrollIntoViewIfNeeded();
         await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pcs-${width}-${theme}.png`), animations: "disabled" });
       }
-      await accountRows.getByRole("button", { name: "Remove office-mac from the list", exact: true }).click();
-      const confirm = page.getByRole("alertdialog", { name: "Remove office-mac from the list?" });
-      await confirm.getByText("It revokes nothing: devices paired with office-mac keep their access", { exact: false }).waitFor();
-      await confirm.getByText("If office-mac is used again, it comes back on the list when a device of your account opens it.", { exact: false }).waitFor();
+      // Manage account offers Remove only on the PC the account has not heard from: one in use would list itself again
+      await page.locator("[data-section='account'] [data-action='manage-account']").click();
+      const sheetPcs = page.locator("[data-testid='manage-account'] [data-testid='account-pcs']");
+      await sheetPcs.locator("li").filter({ hasText: "home-server" }).waitFor();
+      assert.deepEqual(await sheetPcs.locator("[data-action='remove-pc']").evaluateAll((buttons) => buttons.map((button) => button.closest("li")?.getAttribute("data-pc-id"))), ["b".repeat(32)], `Manage account offers Remove only on the PC not heard from (${width}px, ${theme})`);
+      const removeOffice = sheetPcs.locator("li").filter({ hasText: "office-mac" }).getByRole("button", { name: "Remove", exact: true });
+      await removeOffice.click();
+      const confirm = page.getByRole("alertdialog", { name: "Remove office-mac from your account?" });
+      await confirm.getByText("Once office-mac is online again it leaves your account too", { exact: false }).waitFor();
+      const asked = await confirm.innerText();
+      assert.ok(asked.includes("add it on office-mac"), `the removal's confirm says where the PC is added again (${width}px, ${theme})`);
+      assert.ok(!asked.includes("revokes nothing"), `the removal's confirm no longer says it revokes nothing on the PC (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pc-remove-${width}-${theme}.png`), animations: "disabled" });
       await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
       await confirm.waitFor({ state: "detached" });
       assert.deepEqual(removed, [], `a cancelled removal removes nothing (${width}px, ${theme})`);
-      await accountRows.getByRole("button", { name: "Remove office-mac from the list", exact: true }).click();
-      await confirm.getByRole("button", { name: "Remove from list", exact: true }).click();
+      await removeOffice.click();
+      await confirm.getByRole("button", { name: "Remove", exact: true }).click();
       await confirm.waitFor({ state: "detached" });
+      await sheetPcs.locator("li").filter({ hasText: "office-mac" }).waitFor({ state: "detached" });
+      await sheetPcs.locator("li").filter({ hasText: "home-server" }).waitFor();
       await list.locator(".devices-row").filter({ hasText: "office-mac" }).waitFor({ state: "detached" });
-      await list.locator(".devices-row").filter({ hasText: "home-server" }).waitFor();
       assert.deepEqual(removed, ["b".repeat(32)], `the removal is the directory's, once (${width}px, ${theme})`);
-      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-section")), "devices", `the focus goes to the list's group once the removed row is gone (${width}px, ${theme})`);
-      assert.equal(await list.getByRole("button", { name: /from the list$/ }).count(), 0, `the PC in use has no Remove (${width}px, ${theme})`);
+      assert.equal(await sheetPcs.locator("[data-action='remove-pc']").count(), 0, `the PC in use has no Remove (${width}px, ${theme})`);
       assert.deepEqual(errors, []);
     } finally {
       await context.close();
     }
   }
-  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark: one link to the hosted app, Remove only on a PC not heard from, behind a confirm");
+  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark: no button on a row; Manage account removes only a PC not heard from, behind a confirm");
 }
 
 /**
@@ -552,7 +559,7 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
     for (const offered of [["github", "google"], ["github"]] as const) {
       for (const signedIn of [false, true]) {
         if (signedIn && offered.length === 1) continue;
-        const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+        const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
         try {
           await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme: "light" }));
           await context.route((address) => address.href.startsWith(url) && (address.pathname.endsWith("/") || address.pathname.endsWith("/index.html")), async (route) => {
@@ -592,15 +599,21 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
           }
           await openSettings(page);
           await openSettingsPage(page, "Devices and PCs");
-          const account = page.locator("[data-section='account']");
-          assert.equal(await account.evaluate((group) => group.closest("details") === null), true, "the Account group is not folded away");
-          await openSettingsFolds(page);
+          let account = page.locator("[data-section='account']");
           const shot = async (name: string) => {
             if (!process.env.UI_EVIDENCE_DIR) return;
             await account.scrollIntoViewIfNeeded();
             await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
           };
           if (!signedIn) {
+            // signed out, the page draws no account card: Add a connection's relay tab is where this page signs in
+            const add = page.locator("[data-section='devices']").getByRole("button", { name: "Add a connection", exact: true });
+            await add.waitFor();
+            assert.equal(await account.count(), 0, `signed out, Devices and PCs has no account card (${width}px)`);
+            await add.click();
+            const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
+            await sheet.locator('.connect-tabs [data-tab="relay"]').click();
+            account = sheet.getByTestId("connect-signin");
             const buttons = account.locator(".account-provider");
             if (offered.length === 2) {
               await buttons.nth(1).waitFor();
@@ -608,16 +621,41 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
               assert.equal(await account.locator("[data-provider='google'] svg path").count(), 4, "Google's G keeps its four colours");
               await shot("account-google-signin");
             } else {
-              await account.locator("[data-offer='service'] .account-provider").first().waitFor();
+              await account.locator(".account-provider").first().waitFor();
               assert.deepEqual(await buttons.allTextContents(), ["Continue with GitHub"], `no Google button while the service offers none (${width}px)`);
             }
           } else {
-            const methods = account.locator(".account-method");
+            assert.equal(await account.evaluate((group) => group.closest("details") === null), true, "the Account group is not folded away");
+            // the account is one line: who is signed in, Manage account and Sign out; the rest waits in Manage account's sheet
+            const head = account.locator(".account-head");
+            await head.getByText("Signed in with Google", { exact: true }).waitFor();
+            assert.deepEqual(await head.getByRole("button").allInnerTexts(), ["Manage account", "Sign out"], `the account's line holds Manage account and Sign out (${width}px)`);
+            assert.equal(await account.locator(".account-method").count(), 0, `the ways to sign in are not on the page (${width}px)`);
+            assert.equal(await account.getByText("Delete account", { exact: true }).count(), 0, `Delete account is not on the page (${width}px)`);
+            assert.ok(!(await account.innerText()).includes("acct_"), `the line names no account id (${width}px)`);
+            await shot("account-google-line");
+            await head.getByRole("button", { name: "Manage account", exact: true }).click();
+            const sheet = page.getByTestId("manage-account");
+            const methods = sheet.locator(".account-method");
             await methods.nth(1).waitFor();
-            assert.equal(await account.getByText("Signed in with Google").count(), 1, "the account row names Google");
             assert.deepEqual(await methods.evaluateAll((rows) => rows.map((row) => [row.getAttribute("data-provider"), row.querySelector("button") !== null])), [["github", true], ["google", false]],
               "every way to sign in can be removed but the one this page signed in with");
-            await shot("account-google-methods");
+            const deleteAt = sheet.locator(".account-delete");
+            assert.equal(await deleteAt.locator("summary").textContent(), "Delete account", `Delete account sits at the foot of Manage account (${width}px)`);
+            assert.ok(await deleteAt.evaluate((node) => [...node.closest("[data-testid='manage-account']")!.querySelectorAll(".account-methods")].every((part) => part.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)),
+              `Delete account comes after the ways to sign in (${width}px)`);
+            if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-google-methods-${width}.png`), animations: "disabled" });
+            await page.keyboard.press("Escape");
+            await sheet.waitFor({ state: "detached" });
+            if (width === 1280) {
+              // a search finds settings rows only: the account's own rows answer it
+              const search = dialogOf(page).getByRole("searchbox", { name: "Search settings", exact: true });
+              const found = (label: string) => page.getByRole("region", { name: "Search results", exact: true }).locator("[data-section='account'] .settings-row .settings-label", { hasText: label });
+              await search.fill("Delete account");
+              await found("Delete account").waitFor();
+              await search.fill("Sign out");
+              await found("Signed in with Google").waitFor();
+            }
           }
           assert.deepEqual(errors, []);
         } finally {
@@ -630,7 +668,7 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
 }
 
 async function rowResets(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -640,7 +678,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     const reset = (row: string) => page.getByRole("button", { name: `Restore defaults: ${row}`, exact: true });
     await page.goto(`${url}?settings=appearance`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     const mode = page.getByRole("group", { name: "Theme", exact: true });
     await mode.getByRole("button", { name: "Light", exact: true }).click();
     await page.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
@@ -667,7 +705,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     await custom.waitFor({ state: "detached" });
     assert.equal(await uiFont.inputValue(), "default", "the select shows Default once the font is put back");
     await page.goto(`${url}?settings=appearance`);
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     assert.equal(await page.getByLabel("Interface font", { exact: true }).inputValue(), "default", "the font put back stays put back after a reload");
 
     const dark = themeSide(page, "dark");
@@ -706,10 +744,10 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
   const appearance = async (page: Page, query = ""): Promise<void> => {
     await page.goto(`${url}?settings=appearance${query}`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
   };
 
-  const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const desktop = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await desktop.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
     const page = await desktop.newPage();
@@ -981,7 +1019,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     await desktop.close();
   }
 
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
+  const phone = await appContext(browser, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
   try {
     await phone.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
     const page = await phone.newPage();
@@ -1037,7 +1075,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
 }
 
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify({ ...SETTINGS, voiceInput: "on", voiceEngine: "auto" }));
     const page = await context.newPage();
@@ -1099,6 +1137,7 @@ try {
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   const devUrl = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/dev/`;
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       await dialogSearch(browser, url);

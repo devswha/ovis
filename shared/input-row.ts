@@ -198,10 +198,17 @@ const piStockInputRow: InputRowRecognizer = (screen, typed) => {
 
 /** pi-powerline-footer's editor border: a rule indented one column, `↑` or `↓` at its start where the editor scrolls. */
 const POWERLINE_RULE = /^ [↑↓─]─{9,}$/;
+/**
+ * its upper border while pi works: the turn's spinner and label in it (`── ⠸ Working ───`), as pi 1.5.2 draws it
+ * (CustomEditor.renderTopBorder): the label cut to leave one dash at least, ` ↑ 2 more ` in the dashes where the editor
+ * scrolls. The send's two reads (server/core/composer.ts showsLive) take this row alone as the same whichever frame
+ * its spinner shows.
+ */
+export const POWERLINE_WORKING_RULE = /^ ── [^─]+ ─+(?: ↑ \d+ more ─+)?$/;
 
 /**
  * pi with the pi-powerline-footer extension (0.22.0): its status bar sits above the editor, whose two borders
- * are the screen's last rows. Its first row starts ` > ` (` $ ` in bash mode), the others `   `; nothing in it but
+ * are the screen's last rows; while pi works the upper one carries its spinner. Its first row starts ` > ` (` $ ` in bash mode), the others `   `; nothing in it but
  * the prompt is an empty box. Under the lower border only the extension's last-prompt row (` ↳ `, drawn once a
  * prompt was sent) is taken; anything else there (an autocomplete list, another widget) fails safe.
  * The editor has no placeholder; its cursor draws the character under it inverse, which is still typed text.
@@ -212,7 +219,7 @@ const piPowerlineInputRow: InputRowRecognizer = (screen, typed) => {
   const last = rows.at(-1);
   const lower = last !== undefined && /^ ↳ /.test(text(last)) ? rows.at(-2) : last;
   if (lower === undefined || !POWERLINE_RULE.test(text(lower))) return "gone";
-  const upper = rows.filter((index) => index < lower && POWERLINE_RULE.test(text(index))).at(-1);
+  const upper = rows.filter((index) => index < lower && (POWERLINE_RULE.test(text(index)) || POWERLINE_WORKING_RULE.test(text(index)))).at(-1);
   if (upper === undefined || lower - upper < 2) return "gone";
   const inner = Array.from({ length: lower - upper - 1 }, (_, offset) => upper + 1 + offset);
   if (!/^ [>$](?: |$)/.test(text(inner[0]!)) || inner.slice(1).some((index) => !/^ {3}|^$/.test(text(index)))) return "gone";
@@ -454,16 +461,15 @@ const geminiInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^\
  * agent and model, the ones above it the editor (its command list too, drawn there once `/` is typed).
  */
 const kiloInputRow: InputRowRecognizer = (screen, typed) => {
-  const rows = filled(screen);
   const text = (index: number): string => screen.rows[index]!.text;
-  let end = rows.length - 1;
-  while (end >= 0 && !/^\s*╹▀+$/.test(text(rows[end]!))) end--;
+  let end = screen.rows.length - 1;
+  while (end >= 0 && !/^\s*╹▀+$/.test(text(end))) end--;
   if (end < 2) return "gone";
   let start = end;
-  while (start > 0 && /^\s*┃/.test(text(rows[start - 1]!))) start--;
-  const editor = rows.slice(start, end - 1);
+  while (start > 0 && /^\s*┃/.test(text(start - 1))) start--;
+  const editor = screen.rows.slice(start, end - 1);
   if (editor.length === 0) return "gone";
-  const cells = editor.flatMap((index) => cellsFrom(screen.rows[index]!, text(index).indexOf("┃") + 1));
+  const cells = editor.flatMap((row) => cellsFrom(row, row.text.indexOf("┃") + 1));
   if (cells.every(blank)) return "ready";
   typed?.push(...cells);
   return "draft";
@@ -523,9 +529,10 @@ export function readsTypedDraft(agent: string | null | undefined): boolean {
  * Whether `agent`'s input box on this screen holds text a person typed, which a pasted chat message would
  * join and its Enter send along. Only positive evidence counts: the recognizer found the box, answered
  * "draft" and reported its cells (InputRowRecognizer `typed`), and one of them is drawn as typed text is,
- * in the terminal's own colour or one TYPED_COLOURS lists for that agent, neither dim nor italic nor
- * inverse. A placeholder or a suggestion (dim, grey, italic), a drawn cursor, a box not found, a screen a
- * recognizer cannot read, and an agent without one all answer false: a send there goes as it always did,
+ * in the terminal's own colour or one TYPED_COLOURS lists for that agent, neither dim nor italic.
+ * Letta can draw a lone real character in inverse under its cursor. A placeholder or a suggestion (dim,
+ * grey, italic), a drawn cursor, a box not found, a screen a recognizer cannot read, and an agent without
+ * one all answer false: a send there goes as it always did,
  * never refused for good on a misreading.
  */
 export function typedDraft(agent: string | null | undefined, screen: ScreenSnapshot): boolean {
@@ -533,8 +540,10 @@ export function typedDraft(agent: string | null | undefined, screen: ScreenSnaps
   const typed: ScreenCell[] = [];
   if (DRAFT_RECOGNIZERS[agent!]!(screen, typed) !== "draft") return false;
   const colours = TYPED_COLOURS[agent!] ?? [];
-  // a character that draws nothing (a zero-width space an agent pads its box with) is no evidence either
-  return typed.some((cell) => /[^\p{Z}\p{C}]/u.test(cell.char) && !cell.dim && !cell.italic && !cell.inverse
+  const visible = typed.filter((cell) => /[^\p{Z}\p{C}]|\p{Co}/u.test(cell.char));
+  // Letta also inverts the first letter of its grey placeholder, which has more visible cells.
+  const loneLettaCell = agent === "letta" && visible.length === 1;
+  return visible.some((cell) => !cell.dim && !cell.italic && (!cell.inverse || loneLettaCell)
     && (cell.fgDefault || (cell.fg !== undefined && colours.includes(cell.fg))));
 }
 

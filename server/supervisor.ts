@@ -1,4 +1,5 @@
 import "./adopt-legacy-env.ts";
+import { dropDesktopOwnerFd } from "./account/local-confirm.ts";
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
@@ -39,7 +40,7 @@ function installMissingRustHost(directory: string, signal: AbortSignal): Promise
   }
   return runCommand(directory, [process.execPath, "scripts/pty-sidecar.ts", "install"], signal, 120_000).then(
     (output) => console.log(output),
-    (error: unknown) => console.error("Rust PTY host install failed; terminals use the Node PTY sidecar", error),
+    (error: unknown) => console.error("Rust PTY host install failed; herdr's terminals are mirrored until it is installed", error),
   );
 }
 
@@ -52,6 +53,8 @@ async function boundedStop(try_: Promise<void>, directory: string): Promise<void
 }
 
 export async function runSupervisor(root = ROOT) {
+  // the desktop app's confirm channel is the server's alone: never passed on, never held by a child of this one
+  dropDesktopOwnerFd(process.argv);
   root = resolve(root);
   const port = Number(process.env["PORT"] || DEFAULT_PORT);
   const host = process.env["HOST"] ?? "127.0.0.1";

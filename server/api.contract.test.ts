@@ -7,12 +7,15 @@ import { createHash } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
+import { FakeAccountService } from "../shared/account-service-fake.ts";
+import { pressInto, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { createServer } from "./index.ts";
 import { AgentDetector, catalogLocator } from "./agent-catalog-detect.ts";
 import * as appModule from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, SecuritySummary, PushKey, RemoteAccess, SessionSnapshot, TabMoved, TabMovedToWorkspace, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
+import { HARNESS_TOOL_DEFAULT } from "../shared/harness-tool.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
 import { noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
@@ -26,6 +29,7 @@ import { HerdrSocket } from "../src/lib/ws.ts";
 import { HerdrError, herdrRpc, paneRead, paneSplit, ping, sessionSnapshot, subscribeEvents, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { descriptorPath, type BridgeDescriptor } from "./bridge.ts";
+import { ownProcesses } from "../scripts/own-processes.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -2241,6 +2245,34 @@ describe("workspace and discovery endpoints", () => {
     }
   }, 30_000);
 
+  it("hands the checkout the browser confirmed to the delete, so a core refuses one its workspace no longer names (#4211)", async () => {
+    const asked: unknown[][] = [];
+    const removing = spyOn(herdrClient, "worktreeRemove").mockImplementation(async (...args) => {
+      asked.push(args);
+      return { type: "worktree_removed", workspace_id: args[0], path: "/confirmed", forced: args[1] };
+    });
+    const post = (body: unknown) => fetch(`${base()}/api/worktree/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    try {
+      expect((await post({ workspace_id: "w1", expected_checkout: "/confirmed" })).status).toBe(200);
+      expect((await post({ workspace_id: "w1", force: true, expected_checkout: "/confirmed", expected_git_id: "1:2:3" })).status).toBe(200);
+      // an older client confirms no path: its delete goes as before
+      expect((await post({ workspace_id: "w1" })).status).toBe(200);
+      for (const wrong of ["relative/path", "", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_checkout");
+      }
+      for (const wrong of ["", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: "/confirmed", expected_git_id: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_git_id");
+      }
+      expect(asked).toEqual([["w1", false, undefined, { expected_checkout: "/confirmed" }], ["w1", true, undefined, { expected_checkout: "/confirmed", expected_git_id: "1:2:3" }], ["w1", false, undefined, undefined]]);
+    } finally {
+      removing.mockRestore();
+    }
+  });
+
   it("starts a worktree asked from a workspace on a linked checkout at the repository's own workspace", async () => {
     const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-linked-"));
     const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
@@ -3684,8 +3716,7 @@ describe("WebSocket client leaving mid-attach", () => {
   }
 
   function attachProcessCount(terminalId: string): number {
-    const found = Bun.spawnSync(["pgrep", "-f", `terminal attach ${terminalId}`]);
-    return found.stdout.toString().split("\n").filter(Boolean).length;
+    return ownProcesses(new RegExp(`terminal attach ${terminalId}`)).length;
   }
 
   async function waitForAttachGone(terminalId: string, ms: number): Promise<void> {
@@ -4282,35 +4313,58 @@ describe("pairing and identity", () => {
     expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
   });
 
-  it("revokes every device in one answer that clears the caller's own cookie, and takes revoke-all for no device id", async () => {
-    const pair = async (label: string) => {
-      const { code } = (await (await fetch(`${base()}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
-      const paired = await fetch(`${base()}/api/devices/pair`, { method: "POST", headers: { ...guard, ...proxied() }, body: JSON.stringify({ code, label }) });
-      expect(paired.status).toBe(204);
-      return paired.headers.get("set-cookie")!.split(";")[0]!;
-    };
-    const phone = await pair("Phone");
-    const tablet = await pair("Tablet");
-    expect(await auth({ ...proxied(), cookie: tablet })).toMatchObject({ authenticated: true, via: "device" });
-    const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
-    expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);
-    expect((await fetch(`${base()}/api/devices/revoke-all`, { method: "POST" })).status).toBe(403); // the mutation guard
-    // from a paired device: everything paired goes, that device's own pairing included, and its cookie with the answer
-    const revoked = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: { ...guard, ...proxied(), cookie: tablet } });
-    expect(revoked.status).toBe(200);
-    expect(revoked.headers.get("content-type")).toContain("application/json");
-    expect(revoked.headers.get("cache-control")).toBe("no-store");
-    expect(await revoked.json()).toEqual({ revoked: 2 });
-    expect(revoked.headers.getSetCookie()).toEqual([DEVICE_COOKIE_CLEARED, CLEAR_LEGACY_DEVICE_COOKIE]);
-    for (const cookie of [phone, tablet]) expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: false, reason: "pairing_required" });
-    expect(((await (await fetch(`${base()}/api/devices`)).json()) as { devices: unknown[] }).devices).toEqual([]);
-    // the gate stays shut to strangers; this PC and the PC's Tailscale login are in as before
-    expect(await auth(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
-    expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
-    expect(await auth(proxied(OWNER))).toMatchObject({ authenticated: true, via: "tailscale" });
-    const again = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: guard });
-    expect([again.status, await again.json()]).toEqual([200, { revoked: 0 }]);
-    expect(JSON.parse(readFileSync(join(openState, "devices.json"), "utf8"))).toEqual({ gate_closed_at: expect.any(String), devices: [] });
+  it.each([[false, false], [true, false], [true, true]] as const)("revokes every device with the correct owner boundary and cookie cleanup (Step 2: %s, bound: %s)", async (accountOpensAll, bound) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "herdr-revoke-all-mode-"));
+    const service = new FakeAccountService();
+    service.opensAll = true;
+    if (bound) await registerSnapshotPc(service, { stateDir });
+    const server = createServer({ port: 0, stateDir, tailscaleOwner: OWNER, accountOpensAll,
+      accountService: { url: "https://account.test", fetch: service.fetch } });
+    const base = () => `http://127.0.0.1:${server.port}`;
+    const auth = async (headers: Record<string, string> = {}) =>
+      ((await (await fetch(`${base()}/api/health?scope=bridge`, { headers })).json()) as { auth: HealthAuth }).auth;
+    try {
+      const pair = async (label: string) => {
+        const { code } = (await (await fetch(`${base()}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
+        const paired = await fetch(`${base()}/api/devices/pair`, { method: "POST", headers: { ...guard, ...proxied() }, body: JSON.stringify({ code, label }) });
+        expect(paired.status).toBe(204);
+        const cookie = paired.headers.get("set-cookie")!.split(";")[0]!;
+        expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: true, via: "device" });
+        return cookie;
+      };
+      const phone = await pair("Phone");
+      const tablet = await pair("Tablet");
+      if (bound) {
+        await pressInto(service, server.context.services);
+        expect(await server.context.services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+      }
+      const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
+      expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);
+      expect((await fetch(`${base()}/api/devices/revoke-all`, { method: "POST" })).status).toBe(403);
+      const deviceReply = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: { ...guard, ...proxied(), cookie: tablet } });
+      if (bound) {
+        expect(deviceReply.status).toBe(403);
+        expect(((await deviceReply.json()) as ApiError).error.code).toBe("local_required");
+        expect(await auth({ ...proxied(), cookie: tablet })).toMatchObject({ authenticated: true, via: "device" });
+      }
+      const revoked = bound
+        ? await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: guard })
+        : deviceReply;
+      expect(revoked.status).toBe(200);
+      expect(revoked.headers.get("content-type")).toContain("application/json");
+      expect(revoked.headers.get("cache-control")).toBe("no-store");
+      expect(await revoked.json()).toEqual({ revoked: 2 });
+      expect(revoked.headers.getSetCookie()).toEqual([DEVICE_COOKIE_CLEARED, CLEAR_LEGACY_DEVICE_COOKIE]);
+      for (const cookie of [phone, tablet]) expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: false, reason: "pairing_required" });
+      expect(((await (await fetch(`${base()}/api/devices`)).json()) as { devices: unknown[] }).devices).toEqual([]);
+      // The gate stays shut to strangers; the PC and its Tailscale owner remain signed in.
+      expect(await auth(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
+      expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
+      expect(await auth(proxied(OWNER))).toMatchObject({ authenticated: true, via: "tailscale" });
+      const again = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: guard });
+      expect([again.status, await again.json()]).toEqual([200, { revoked: 0 }]);
+      expect(JSON.parse(readFileSync(join(stateDir, "devices.json"), "utf8"))).toEqual({ gate_closed_at: expect.any(String), devices: [] });
+    } finally { server.stop(); rmSync(stateDir, { recursive: true, force: true }); }
   });
 
   it("the plugin script prints a code a headless PC's owner can hand to a phone", async () => {
@@ -4349,17 +4403,20 @@ describe("pairing and identity", () => {
     } finally { rmSync(configDir, { recursive: true, force: true }); }
   });
 
-  it("a configured token gates this PC and its Tailscale login, and a paired device gets past it", async () => {
+  it.each([true, false])("Step 2=%s: token gates this PC and its Tailscale login; paired devices pass", async accountOpensAll => {
     const state = mkdtempSync(join(tmpdir(), "herdr-pairing-token-"));
-    const secured = createServer({ port: 0, stateDir: state, token: "t0k3n", tailscaleOwner: OWNER });
+    const secured = createServer({ port: 0, stateDir: state, token: "t0k3n", tailscaleOwner: OWNER, accountOpensAll });
     const at = (headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${secured.port}/api/health?scope=bridge`, { headers }).then((r) => r.json() as Promise<{ auth: HealthAuth }>).then((b) => b.auth);
     try {
       expect(await at()).toMatchObject({ authenticated: false, reason: "token_required" });
       expect(await at({ authorization: "Bearer wrong" })).toEqual({ required: true, authenticated: false, reason: "token_required" });
       expect(await at({ authorization: "Bearer t0k3n" })).toMatchObject({ authenticated: true, via: "token", bearer: true });
       // a token held in the sign-in cookie is one signing out can clear
-      expect(await at({ cookie: "ovis_token=t0k3n" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
-      expect(await at({ cookie: "ovis_token=t0k3n", authorization: "Bearer wrong" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
+      const ownerAuth: HealthAuth = {
+        required: false, authenticated: true, via: "token", role: "drive",
+      };
+      expect(await at({ cookie: "ovis_token=t0k3n" })).toEqual(ownerAuth);
+      expect(await at({ cookie: "ovis_token=t0k3n", authorization: "Bearer wrong" })).toEqual(ownerAuth);
       // another proxy on this PC can pass a visitor's copy of the login header on: the token is asked for anyway
       expect(await at(proxied(OWNER))).toMatchObject({ authenticated: false, reason: "token_required" });
       expect(await at(proxied("someone@example.com"))).toMatchObject({ authenticated: false, reason: "token_required" });
@@ -4969,10 +5026,12 @@ describe("GET /api/sessions/history", () => {
           if (phase === "server creation") throw failure;
           const app = createApp(...args);
           stop = app.stop;
+          const appStop = app.stop;
           const stopping = spyOn(app, "stop").mockImplementation(() => {
-            stop!();
+            const drained = appStop();
             stopped = true;
             if (phase === "server stop") throw failure;
+            return drained;
           });
           restores.push(() => stopping.mockRestore());
           return app;
@@ -5269,7 +5328,7 @@ describe("POST /api/sessions/resume", () => {
 
   beforeAll(async () => {
     if (!NATIVE) return;
-    config = mkdtempSync("/tmp/hwr-");
+    config = mkdtempSync(join(tmpdir(), "hwr-"));
     root = mkdtempSync(join(tmpdir(), "ovis-claude-resume-"));
     home = join(root, "home");
     alternate = join(root, "alternate-store");
@@ -5427,10 +5486,25 @@ setInterval(() => {}, 1 << 30);
     expect(JSON.stringify(refusals)).not.toMatch(/alternate|prompt|missing-store/);
   }, 90_000);
 
+  it.skipIf(!NATIVE)("refuses wrapped Resume with a valid store key without creating a tab", async () => {
+    const store = join(root, "wrapped-store");
+    writeSession(store, ID, "wrapped store prompt");
+    const plain = await sourcePane(store, undefined, "env HERDR_AGENT=claude claude");
+    const [, original] = await list(plain.pane);
+    const key = original.sessions.find((row) => row.id === ID)!.resume!.source!.store_key;
+    const wrapped = await sourcePane(store, undefined,
+      `env HERDR_AGENT=claude bash -c 'exec -a claude "$@"' bash node ${JSON.stringify(join(root, "claude.cjs"))}`);
+    const tabs = await tabsOf(workspaceId);
+    const [status, answer] = await resume({ workspace_id: workspaceId, pane_id: wrapped.pane, agent: "claude", session_id: ID, store_key: key });
+    expect([status, answer.error?.code, await tabsOf(workspaceId)]).toEqual([409, "launch_wrapped", tabs]);
+    const [listed, history] = await list(wrapped.pane);
+    expect([listed, history.sessions.find((row) => row.id === ID)?.resume]).toEqual([200, null]);
+  }, 30_000);
+
   it.skipIf(!NATIVE)("a source shell without the override is no proof: herdr exporting one withholds Resume before any tab", async () => {
     const implicitKey = (await list((await sourcePane(null)).pane))[1].sessions[0]!.resume!.source!.store_key;
     const exportedSession = "resume-exported";
-    const exportedConfig = mkdtempSync("/tmp/hwr-");
+    const exportedConfig = mkdtempSync(join(tmpdir(), "hwr-"));
     const exportedSocket = join(exportedConfig, "herdr", "sessions", exportedSession, "herdr.sock");
     const exportedRpc = <T,>(method: string, params: Record<string, unknown>) => herdrRpc<T>(method, params, exportedSocket);
     const defaultBefore = readFileSync(transcript(join(home, ".claude"), ID), "utf8");
@@ -5492,7 +5566,7 @@ setInterval(() => {}, 1 << 30);
 // The shared preferences (shared/preferences.ts) over HTTP and the event stream: the muted panes
 // are always in the document, the first mute is a change of the empty list, a watching device
 // reads and cannot write, and two tabs' changes land as two revisions with both kept.
-const namedPreferences = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+const namedPreferences = (doc: SharedPreferences) => ({ ...doc, settings: { ...doc.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 
 describe("shared preferences API", () => {
   const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
@@ -5535,9 +5609,9 @@ describe("shared preferences API", () => {
     const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${base}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: typeof body === "string" ? body : JSON.stringify(body) });
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const first = await put({ settings: {}, muted_panes: ["w1:p1"] });
       expect(first.status).toBe(200);
       expect(await first.json()).toEqual(namedPreferences({ revision: 1, settings: {}, muted_panes: ["w1:p1"] }));
@@ -5569,10 +5643,11 @@ describe("shared preferences API", () => {
     const headers = { ...guard, authorization: "Bearer test-preferences" };
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ ...stored, muted_panes: [] });
+      const advertised = { ...stored, settings: { ...stored.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] };
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual(advertised);
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual(stored);
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual(advertised);
       const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
       expect(await first.json()).toEqual(namedPreferences({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }));
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });

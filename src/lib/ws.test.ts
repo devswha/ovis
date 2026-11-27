@@ -1,9 +1,16 @@
 import { afterAll, afterEach, beforeAll, expect, it, jest } from "bun:test";
-import { backoffDelay, HerdrSocket } from "./ws.ts";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { backoffDelay, HerdrSocket, markTyped } from "./ws.ts";
+import { sendInOrder } from "./sendInOrder.ts";
 import { nativeTransport, setTransport, type WebSocketLike } from "./transport.ts";
 import type { ClientConnectionTrace, PendingMessage } from "../../shared/protocol.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import { RECONNECT_GRACE_MS } from "./reconnectGrace.ts";
+import { pendingMessages } from "./pendingMessages.ts";
+import { useComposerSends } from "./useComposerSends.ts";
+import { useTypedKeys, type TypedKeysDeps } from "./useTypedKeys.ts";
+import { DOUBLE_ESCAPE_GAP_MS } from "./hermesStop.ts";
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -390,6 +397,72 @@ it("steers or discards an opaque pending ID once and waits for its action acknow
   client.close();
 });
 
+it.each(["queued", "held", "unsupported", "sent"] as const)("keeps Stop's second Escape out of the next turn (%s)", async (mode) => {
+  jest.useFakeTimers();
+  const pane = `stop-send-now-${mode}`;
+  const pending: PendingMessage = { id: "follow-up", request_id: 1, text: "next turn", state: mode === "held" ? "held" : "queued", created_at: "2026-11-05T00:00:00Z" };
+  const client = new HerdrSocket("ws://test/ws");
+  const socketRef = { current: client }, paneRef = { current: pane }, sent: string[] = [];
+  const termRef = { current: { input: (data: string) => { sent.push(data); }, rows: 0 } };
+  let actions: ReturnType<typeof useComposerSends> | undefined;
+  let stop: (() => void) | undefined;
+  function Composer() {
+    const { abortTurn, dropSecondEscape } = useTypedKeys({
+      agent: "devin", agentStatus: "working", paneId: pane, socketRef, termRef, stopKeyRef: { current: null },
+    } as TypedKeysDeps);
+    stop = abortTurn;
+    actions = useComposerSends({
+      agent: "devin", agentStatus: "working", paneId: pane, paneRef, socketRef, queueOwner: pane, machineId: "local",
+      pendingScopeRef: { current: "scope" }, draftHeldForRef: { current: null }, stillOpenRef: { current: null },
+      heldRef: { current: false }, secretRef: { current: null }, observeRef: { current: false }, answering: null, pendingAnswer: null,
+      stillOpenNotedRef: { current: false }, chatNavigation: { current: 0 }, sessionRef: { current: null },
+      answerPending: false, ended: false, heldByOpenQueue: false, queueStore: null, submitRetention: null,
+      answerPanePrompt: async () => {}, setChatLocalSend: () => {}, setPendingAnswer: () => {}, setPromptRefresh: () => {},
+      showSentCommand: () => {}, stillOpenNote: () => "",
+      knownOutcomes: () => [], inputRowNow: () => "ready", settings: { autoSendQueued: mode !== "held" },
+      submitComposerMessage: () => {
+        pendingMessages.accept(pane, pending, "scope");
+        return Promise.resolve({ ok: true, pending } as const);
+      },
+      t: (key: string) => key, dropSecondEscape,
+    });
+    return null;
+  }
+  try {
+    client.connect();
+    const socket = FakeSocket.last;
+    socket.open();
+    socket.receive(snapshot(mode === "unsupported" ? ["submit"] : ["submit", "pending-input"]));
+    renderToStaticMarkup(createElement(Composer));
+    stop?.();
+    expect(sent).toEqual(["\u001b"]);
+    expect(await actions?.composerSend(pending.text, undefined, false, false, false, mode === "held")).toBe(true);
+    if (mode === "sent") {
+      const frame = Promise.withResolvers<number>();
+      socket.addEventListener("sent", (message) => {
+        if (message.type !== "pending-action" || message.action !== "steer") return;
+        sent.push(pending.text, "\r");
+        frame.resolve(message.id);
+      });
+      const dispatch = actions?.actOnPending(pending.id, "steer");
+      const id = await frame.promise;
+      jest.advanceTimersByTime(DOUBLE_ESCAPE_GAP_MS);
+      socket.receive({ type: "pending-result", id, pane_id: pane, pending_id: pending.id, ok: true });
+      await dispatch;
+      expect(sent).toEqual(["\u001b", pending.text, "\r"]);
+    } else {
+      if (mode === "unsupported") await actions?.actOnPending(pending.id, "steer");
+      jest.advanceTimersByTime(DOUBLE_ESCAPE_GAP_MS);
+      expect(socket.sent.filter((message) => message.type === "pending-action")).toEqual([]);
+      expect(sent).toEqual(["\u001b", "\u001b"]);
+    }
+  } finally {
+    client.close();
+    pendingMessages.publish(pane, [], [{ id: pending.id, outcome: "discarded" }], "scope");
+    jest.useRealTimers();
+  }
+});
+
 it("requires acknowledgement kind and target to match, so pending results cannot confirm an immediate submit or secret", async () => {
   const client = new HerdrSocket("ws://test/ws");
   client.connect();
@@ -484,7 +557,9 @@ it("never replays a queued submit after disconnecting, including before its capa
     socket.open();
     client.attach("w1:p1", 80, 24);
     if (known) socket.receive(snapshot(["submit", "pending-input"]));
-    const result = client.submit("w1:p1", "do not replay", "do not replay", false, "queue");
+    const key = crypto.randomUUID();
+    const press = () => client.submit("w1:p1", "do not replay", "do not replay", false, "queue", undefined, false, undefined, undefined, false, false, key);
+    const result = press();
     for (let turn = 0; turn < 10 && known && submissions(socket).length === 0; turn++) await Promise.resolve();
     socket.disconnect();
     expect(await result).toMatchObject({ ok: false, code: known ? "disconnected" : "not_transmitted" });
@@ -497,6 +572,16 @@ it("never replays a queued submit after disconnecting, including before its capa
     await Promise.resolve();
     expect(reconnect.sent.map((frame) => frame.type)).toEqual(["role", "attach"]);
     expect(submissions(socket).length).toBe(known ? 1 : 0);
+    if (known) {
+      const first = submissions(socket)[0]!;
+      expect(reconnect.sent.find((frame) => frame.type === "attach")).toMatchObject({ receipt_resume_id: new URL(socket.url).searchParams.get("receipt_resume_id") });
+      expect(first.command_key).toBe(key);
+      const next = reconnect.nextSubmission(), retry = press(), frame = await next;
+      expect(frame).toMatchObject({ command_key: key });
+      expect(frame.id).not.toBe(first.id);
+      reconnect.receive({ type: "submit-result", id: frame.id, pane_id: "w1:p1", ok: true, replayed: true });
+      expect(await retry).toEqual({ ok: true, replayed: true });
+    }
     client.close();
   }
 });
@@ -808,6 +893,91 @@ it("attaches a grid the chat lens covers without resizing the shared pty, on a r
   socket.open();
   expect(lastAttach()).toEqual({ type: "attach", pane_id: "w1:p1", cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true });
   client.close();
+});
+
+it("offers the current local grid immediately before explicit Windows fit takeover", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    socket.receive(snapshot(["input-ready", "take-over"]));
+    client.attach(pane, 76, 24, false, true);
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true });
+    socket.receive({ type: "error", pane_id: pane, code: "attach_held", message: "held" });
+    const before = socket.sent.length;
+    expect(client.takeOver(pane, { cols: 44, rows: 15 })).toBe(true);
+    expect(socket.sent.slice(before)).toEqual([
+      { type: "resize", pane_id: pane, cols: 44, rows: 15 },
+      { type: "take-over", pane_id: pane },
+    ]);
+  } finally { client.close(); }
+});
+
+it("reattaches a newly shown pane at its own size before the server offers Windows fit", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    client.attach(pane, 120, 40, true, true);
+    client.resize(pane, 44, 15);
+    const before = socket.sent.length;
+    socket.open();
+    expect(socket.sent.slice(before).filter(frame => frame.type === "attach" || frame.type === "resize")).toEqual([
+      { type: "attach", pane_id: pane, cols: 44, rows: 15, flow_control: "ack", receipt_resume_id: expect.any(String), windows_fit: true },
+    ]);
+    const beforeOffer = socket.sent.length;
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true });
+    expect(socket.sent).toHaveLength(beforeOffer);
+  } finally { client.close(); }
+});
+
+it("requests a fresh native fit after release, never by an observer or a replayed takeover", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    client.attach(pane, 40, 15, true, true);
+    client.resize(pane, 51, 18);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "resize", cols: 51, rows: 18 });
+    const fixed = { type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true };
+    const beforeOffer = socket.sent.length;
+    socket.receive(fixed);
+    socket.receive(fixed);
+    expect(socket.sent.slice(beforeOffer)).toEqual([
+      expect.objectContaining({ type: "attach", pane_id: pane, cols: 51, rows: 18, windows_fit: true }),
+    ]);
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 51, rows: 18, fixed: false, windows_fit: true });
+    socket.receive({ type: "role-ack", mode: "observe" });
+    const count = socket.sent.length;
+    client.resize(pane, 70, 24);
+    expect(socket.sent).toHaveLength(count);
+    socket.open();
+    expect(socket.sent.at(-1)).toMatchObject({ type: "attach", keep_size: true, windows_fit: true });
+    expect(socket.sent.some(frame => frame.type === "take-over")).toBe(false);
+  } finally { client.close(); }
+});
+
+it("does not reclaim native fit on a late offer after the terminal releases its grid again", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    const pane = "w1:p1";
+    client.attach(pane, 40, 15, true, true);
+    client.resize(pane, 51, 18);
+    client.releaseSize(pane);
+    const count = socket.sent.length;
+    socket.receive({ type: "pane-geometry", pane_id: pane, cols: 120, rows: 40, fixed: true, windows_fit: true });
+    expect(socket.sent).toHaveLength(count);
+    expect(client.canRequestWindowsFit(pane)).toBe(true);
+  } finally { client.close(); }
 });
 
 it("releases the shared grid once when the chat lens covers a terminal this tab sized, never replayed", () => {
@@ -1774,6 +1944,412 @@ it("keeps typing out of the socket while a probe waits, and takes it again only 
     expect(socket.readyState).toBe(FakeSocket.OPEN);
   } finally {
     client.close();
+    jest.useRealTimers();
+  }
+});
+
+/** The browser's network state as navigator.onLine reads it, until restored. */
+function networkSwitch(): { set: (online: boolean) => void; restore: () => void } {
+  let online = true;
+  Object.defineProperty(navigator, "onLine", { configurable: true, get: () => online });
+  return { set: (next) => { online = next; }, restore: () => { Reflect.deleteProperty(navigator, "onLine"); } };
+}
+
+it("keeps what is typed while the network is gone out of the socket, which would deliver it after the reconnect", async () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    expect(client.sendInput("w1:p1", "once")).toBe(true);
+    socket.receive({ type: "pong", id: 1 });
+    // the socket still reads OPEN, and what it takes now waits in the browser until the network is back;
+    // read at once, not on the offline event, which may run after the next keys
+    network.set(false);
+    expect(client.canInput("w1:p1")).toBe(false);
+    expect(client.sendInput("w1:p1", "draft")).toBe(false);
+    expect(client.sendKeys("w1:p1", ["Enter"])).toBe(false);
+    // a chat message the person sent is theirs to send: it waits for the connection, it is not dropped
+    const sent = client.submit("w1:p1", "message", "message");
+    expect(sent).not.toBeNull();
+    await settle();
+    // the network back: the frames the socket held arrive, the probe's ping among them, and only its pong reopens input
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    expect(client.canInput("w1:p1")).toBe(false);
+    for (const { id } of pings(socket).slice(1)) socket.receive({ type: "pong", id });
+    await settle();
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "once" }, expect.objectContaining({ type: "submit", text: "message" })]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("takes no typing while the network is gone over a remote connection until it answers a ping sent since, never on a bridge without ping; a server on this device does", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  const legacy = liveClient(["submit"]);
+  const local = new HerdrSocket("ws://127.0.0.1:4500/ws");
+  try {
+    network.set(false);
+    expect(client.canInput("w1:p1")).toBe(false);
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    const held = markTyped();
+    expect(client.sendInput("w1:p1", "held", false, false, false, held)).toBe(false);
+    // its pong crossed the network after the browser said it was gone: what is typed from then on goes, never what
+    // was typed before
+    socket.receive({ type: "pong", id: 1 });
+    expect(client.sendInput("w1:p1", "held", false, false, false, held)).toBe(false);
+    expect(client.sendInput("w1:p1", "ls")).toBe(true);
+    // a bridge without "ping" is not asked, and not trusted while the browser reports no network
+    expect(legacy.client.sendInput("w1:p1", "ls")).toBe(false);
+    local.attach("w1:p1", 100, 30);
+    local.connect();
+    const near = FakeSocket.last;
+    near.open();
+    near.receive(snapshot(["input-ready", "submit", "ping"]));
+    near.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(local.sendInput("w1:p1", "ls")).toBe(true);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }]);
+    expect(submissions(legacy.socket)).toEqual([]);
+    expect(submissions(near)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }]);
+    // the same loopback address for another PC, or reached through the relay, crosses the network
+    const away = new HerdrSocket("ws://127.0.0.1:4500/ws?machine_id=pc2");
+    setTransport({ ...nativeTransport, kind: "relay", openSocket: (url) => new FakeSocket(url) as unknown as WebSocketLike });
+    const relayed = new HerdrSocket("ws://127.0.0.1:4500/ws");
+    try {
+      for (const far of [away, relayed]) {
+        far.attach("w1:p1", 100, 30);
+        far.connect();
+        FakeSocket.last.open();
+        FakeSocket.last.receive(snapshot(["input-ready", "submit", "ping"]));
+        FakeSocket.last.receive({ type: "input-ready", pane_id: "w1:p1" });
+        expect(far.sendInput("w1:p1", "ls")).toBe(false);
+      }
+    } finally {
+      away.close();
+      relayed.close();
+      setTransport(nativeTransport);
+    }
+  } finally {
+    client.close();
+    legacy.client.close();
+    local.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("reopens input after the network is back only on the pong of a ping sent once it went, not of a probe begun before", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    // a probe in flight while still online (a wake, the idle check, the network's last flap)
+    client.wake();
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    network.set(false);
+    expect(client.canInput("w1:p1")).toBe(false);
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    // the earlier ping's pong, answered before the path died, proves nothing about the path now
+    socket.receive({ type: "pong", id: 1 });
+    expect(client.canInput("w1:p1")).toBe(false);
+    expect(client.sendInput("w1:p1", "rm -rf build")).toBe(false);
+    socket.receive({ type: "pong", id: 2 });
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(submissions(socket)).toEqual([]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("lets a probe answer only for the outage it was sent in, when the network goes again before its pong", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    network.set(false);
+    globalThis.dispatchEvent(new Event("offline"));
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    // the network goes again before the first probe's pong: that ping was sent in the earlier outage
+    network.set(false);
+    globalThis.dispatchEvent(new Event("offline"));
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    socket.receive({ type: "pong", id: 1 });
+    expect(client.canInput("w1:p1")).toBe(false);
+    expect(client.sendInput("w1:p1", "ls", false, false, false, markTyped())).toBe(false);
+    // only the pong of the ping sent after the latest loss restores the link
+    socket.receive({ type: "pong", id: 2 });
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(submissions(socket)).toEqual([]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("holds a key the socket took just before the network went, and sends it on no new connection by itself", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  // what the pane's terminal takes back for review when the connection ends (useTerminalMount's onDisconnect)
+  const held: string[][] = [];
+  client.onDisconnect(() => { held.push(client.takeUnconfirmedInput("w1:p1")); });
+  try {
+    // handed to the socket in the moment the network goes: it cannot be taken back, and nothing confirms it
+    expect(client.sendInput("w1:p1", "rm -rf bui")).toBe(true);
+    network.set(false);
+    expect(client.sendInput("w1:p1", "ld")).toBe(false);
+    // no pong through a dead path: the probe gives up and drops the socket
+    jest.advanceTimersByTime(10_000);
+    expect(socket.readyState).toBe(3);
+    // the key the socket took comes back for review, once; the one typed offline was never in it
+    expect(held).toEqual([["rm -rf bui"]]);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    const next = FakeSocket.last;
+    expect(next).not.toBe(socket);
+    next.open();
+    next.receive(snapshot(["input-ready", "submit", "ping"]));
+    next.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "rm -rf bui" }]);
+    expect(submissions(next)).toEqual([]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+/** The network goes and comes back under an open socket that recovers: its probe's pong proves the path again. */
+function outage(client: HerdrSocket, socket: FakeSocket, network: ReturnType<typeof networkSwitch>, during: () => void = () => {}): void {
+  network.set(false);
+  globalThis.dispatchEvent(new Event("offline"));
+  during();
+  network.set(true);
+  globalThis.dispatchEvent(new Event("online"));
+  for (const { id } of pings(socket)) socket.receive({ type: "pong", id });
+  expect(client.canInput("w1:p1")).toBe(true);
+}
+
+it("sends keys typed while connected at once, in order, each once, a probe answered meanwhile too", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    expect(client.sendInput("w1:p1", "a", false, false, false, markTyped())).toBe(true);
+    expect(client.sendKeys("w1:p1", ["Left"], markTyped())).toBe(true);
+    // queued for an attach (an idle pane taken back) while a routine probe asks: the link was never lost
+    const queued = markTyped();
+    client.wake();
+    for (const { id } of pings(socket)) socket.receive({ type: "pong", id });
+    expect(client.sendInput("w1:p1", "b", false, false, false, queued)).toBe(true);
+    expect(client.sendInput("w1:p1", "c")).toBe(true);
+    expect(submissions(socket)).toEqual([
+      { type: "input", pane_id: "w1:p1", text: "a" },
+      { type: "keys", pane_id: "w1:p1", keys: ["Left"] },
+      { type: "input", pane_id: "w1:p1", text: "b" },
+      { type: "input", pane_id: "w1:p1", text: "c" },
+    ]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("holds keys an idle pane queued for its attach while the network was gone, after the same socket recovers", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    // useTerminalMount's resume queue: captured, then sent once the attach takes input
+    const before = markTyped();
+    let typed = 0;
+    let enter = 0;
+    outage(client, socket, network, () => { typed = markTyped(); enter = markTyped(); });
+    expect(client.sendInput("w1:p1", "echo demo", false, false, false, typed)).toBe(false);
+    expect(client.sendKeys("w1:p1", ["Enter"], enter)).toBe(false);
+    expect(client.sendInput("w1:p1", "ls", false, false, false, before)).toBe(false);
+    expect(submissions(socket)).toEqual([]);
+    expect(client.sendInput("w1:p1", "pwd", false, false, false, markTyped())).toBe(true);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("takes typing once a pong answers while the browser says offline all along, as a Galaxy Z Flip6's WebView did on Wi-Fi", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  network.set(false);
+  const { client, socket } = liveClient(["submit", "ping", "input-ready"]);
+  try {
+    socket.receive({ type: "input-ready", pane_id: "w1:p1" });
+    // the flag alone holds the keys and probes the connection
+    expect(client.canInput("w1:p1")).toBe(false);
+    for (const { id } of pings(socket)) socket.receive({ type: "pong", id });
+    // the pong to a ping sent while the flag said offline proves the link: keys go, and stay going
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(client.sendInput("w1:p1", "ls")).toBe(true);
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }]);
+    // an offline event is a loss again: held until another pong
+    globalThis.dispatchEvent(new Event("offline"));
+    expect(client.canInput("w1:p1")).toBe(false);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("holds typing on a socket that replaced a dropped one while the network is gone, until it answers once the network is back", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    network.set(false);
+    expect(client.canInput("w1:p1")).toBe(false);
+    // no pong through the dead path: the probe drops the socket, and a replacement opens on what is left of the network
+    jest.advanceTimersByTime(6_000);
+    const next = FakeSocket.last;
+    expect(next).not.toBe(socket);
+    next.open();
+    next.receive(snapshot(["input-ready", "submit", "ping"]));
+    next.receive({ type: "input-ready", pane_id: "w1:p1" });
+    const offline = markTyped();
+    expect(client.sendKeys("w1:p1", ["Enter"])).toBe(false);
+    expect(client.canInput("w1:p1")).toBe(false);
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    expect(client.canInput("w1:p1")).toBe(false);
+    for (const { id } of pings(next)) next.receive({ type: "pong", id });
+    expect(client.canInput("w1:p1")).toBe(true);
+    expect(client.sendInput("w1:p1", "echo demo", false, false, false, offline)).toBe(false);
+    expect(submissions(next)).toEqual([]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("holds keys caught for a new terminal when the network went and came back before its tab took them", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    // typeAhead's catch is marked as New terminal is chosen; its keys go to the new tab once it attaches
+    const caught = markTyped();
+    outage(client, socket, network);
+    expect(client.sendInput("w1:p1", "echo demo", false, false, false, caught)).toBe(false);
+    expect(client.sendInput("w1:p1", "\r", false, false, false, caught)).toBe(false);
+    expect(submissions(socket)).toEqual([]);
+    // a catch begun with the link up takes its keys at once
+    expect(client.sendInput("w1:p1", "echo demo", false, false, false, markTyped())).toBe(true);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("sends a key typed before a silent stall can be known, and holds keys from before the probe found it (a known limit)", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  try {
+    // the path stalls: the browser still reports a network and the socket reads OPEN, so nothing says it is down yet
+    expect(client.sendInput("w1:p1", "silent-path-key", false, false, false, markTyped())).toBe(true);
+    // 20 s of silence: the idle check pings, and typing waits for its answer
+    jest.advanceTimersByTime(20_000);
+    expect(client.state).toBe("probing");
+    expect(client.canInput("w1:p1")).toBe(false);
+    const waiting = markTyped();
+    // two unanswered pings: the connection is dropped, and a new one attaches
+    jest.advanceTimersByTime(6_000);
+    const next = FakeSocket.last;
+    expect(next).not.toBe(socket);
+    next.open();
+    next.receive(snapshot(["input-ready", "submit", "ping"]));
+    next.receive({ type: "input-ready", pane_id: "w1:p1" });
+    expect(client.sendInput("w1:p1", "typed-while-probing", false, false, false, waiting)).toBe(false);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "silent-path-key" }]);
+    expect(submissions(next)).toEqual([]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("holds an Enter queued behind a key held for review, though the link was back when it was pressed", () => {
+  jest.useFakeTimers();
+  const network = networkSwitch();
+  const { client, socket } = liveClient(["submit", "ping"]);
+  const held: string[] = [];
+  // useTerminalMount's sendTyped: sends, or holds what the pane cannot take and says so
+  const send = (key: { input: string; typedAt: number }): boolean => {
+    if (client.sendInput("w1:p1", key.input, false, false, false, key.typedAt)) return true;
+    held.push(key.input);
+    return false;
+  };
+  const hold = (key: { input: string }): void => { held.push(key.input); };
+  try {
+    // an idle pane's resume queue: typed offline, then Enter after the recovery pong, before the attach took input
+    const queue: { input: string; typedAt: number }[] = [];
+    outage(client, socket, network, () => queue.push({ input: "held-prefix", typedAt: markTyped() }));
+    queue.push({ input: "\r", typedAt: markTyped() });
+    sendInOrder(queue, false, send, hold);
+    expect(submissions(socket)).toEqual([]);
+    expect(held).toEqual(["held-prefix", "\r"]);
+    // with nothing held, a queue goes at once, in order
+    sendInOrder([{ input: "ls", typedAt: markTyped() }, { input: "\r", typedAt: markTyped() }], false, send, hold);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "ls" }, { type: "input", pane_id: "w1:p1", text: "\r" }]);
+  } finally {
+    client.close();
+    network.restore();
+    jest.useRealTimers();
+  }
+});
+
+it("takes typing again on a bridge without ping when a page hidden as the network came back is shown", () => {
+  jest.useFakeTimers();
+  const listeners = new Map<string, () => void>();
+  const page = { visibilityState: "visible", addEventListener: (type: string, listener: () => void) => { listeners.set(type, listener); }, removeEventListener: () => {} };
+  const globalDocument = globalThis as unknown as { document?: unknown };
+  const previous = globalDocument.document;
+  globalDocument.document = page;
+  const network = networkSwitch();
+  const { client } = liveClient(["submit"]);
+  try {
+    network.set(false);
+    expect(client.canInput("w1:p1")).toBe(false);
+    page.visibilityState = "hidden";
+    listeners.get("visibilitychange")!();
+    network.set(true);
+    globalThis.dispatchEvent(new Event("online"));
+    page.visibilityState = "visible";
+    listeners.get("visibilitychange")!();
+    expect(client.canInput("w1:p1")).toBe(true);
+  } finally {
+    client.close();
+    network.restore();
+    globalDocument.document = previous;
     jest.useRealTimers();
   }
 });
@@ -2914,14 +3490,18 @@ it("refuses an agent-only message on a bridge without agent-only, and names it w
     socket.open();
     socket.receive(snapshot(features));
     try {
+      const dispatched: number[] = [];
+      const onSent = () => { dispatched.push(submissions(socket).length); };
       if (!features.includes("agent-only")) {
-        expect(await client.submit("w1:p1", "> q\nc", "> q\rc", false, "immediate", undefined, false, undefined, undefined, true))
+        expect(await client.submit("w1:p1", "> q\nc", "> q\rc", false, "immediate", undefined, false, undefined, undefined, true, false, undefined, onSent))
           .toMatchObject({ ok: false, code: "agent_only_unsupported" });
         expect(submissions(socket)).toEqual([]);
+        expect(dispatched).toEqual([]);
       } else {
         const next = socket.nextSubmission();
-        void client.submit("w1:p1", "> q\nc", "> q\rc", false, "immediate", undefined, false, undefined, undefined, true);
+        void client.submit("w1:p1", "> q\nc", "> q\rc", false, "immediate", undefined, false, undefined, undefined, true, false, undefined, onSent);
         expect(await next).toMatchObject({ type: "submit", agent_only: true });
+        expect(dispatched).toEqual([1]);
       }
     } finally {
       client.close();
@@ -2943,6 +3523,40 @@ it("runs on a transport's socket where the page has no global WebSocket", () => 
   } finally {
     client.close();
     globals.WebSocket = FakeSocket;
+    setTransport(nativeTransport);
+  }
+});
+
+it("reopens the app stream as soon as the relay carrier is back, not when its backoff runs out", () => {
+  const routeListeners = new Set<() => void>();
+  const relay = {
+    ...nativeTransport, kind: "relay" as const, route: undefined as "relay" | "direct" | undefined,
+    openSocket: (url: string) => new FakeSocket(url) as unknown as WebSocketLike,
+    onRouteChange: (listener: () => void) => { routeListeners.add(listener); return () => { routeListeners.delete(listener); }; },
+  };
+  const routeChanged = (route: "relay" | "direct" | undefined): void => { relay.route = route; for (const listener of [...routeListeners]) listener(); };
+  setTransport(relay);
+  const client = new HerdrSocket("ws://test/ws");
+  try {
+    relay.route = "relay";
+    client.connect();
+    const first = FakeSocket.last;
+    first.open();
+    // the carrier drops: the stream closes and waits out its backoff
+    routeChanged(undefined);
+    first.disconnect();
+    expect(FakeSocket.last).toBe(first);
+    routeChanged("relay");
+    const second = FakeSocket.last;
+    expect(second).not.toBe(first);
+    second.open();
+    // a carrier switch with the stream already open opens nothing more
+    routeChanged("direct");
+    expect(FakeSocket.last).toBe(second);
+    client.close();
+    expect(routeListeners.size).toBe(0);
+  } finally {
+    client.close();
     setTransport(nativeTransport);
   }
 });
@@ -2975,5 +3589,47 @@ it("backoffDelay keeps main's steps up to 2s whatever the draw, and jitters from
     }
   } finally {
     random.mockRestore();
+  }
+});
+
+it("G5: offers the account to open every PC only on a PC that lists account-opens-all/1, from its snapshot or a trusted frame", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    socket.receive({ type: "features", features: ["submit", "account-opens-all/1"], connection: "c1" });
+    expect(client.accountOpensAll()).toBe(false);
+    socket.receive(snapshot(["submit"]));
+    expect(client.accountOpensAll()).toBe(false);
+    socket.receive(snapshot(["submit", "account-opens-all/1"]));
+    expect(client.accountOpensAll()).toBe(true);
+    socket.disconnect();
+    expect(client.accountOpensAll()).toBe(false);
+  } finally {
+    client.close();
+  }
+});
+
+it("T57: a PC's notice replay reaches listeners, and seen or answer frames go only to a PC that lists account-opens-all/1", () => {
+  const client = new HerdrSocket("ws://test/ws");
+  const heard: string[] = [];
+  client.on((message) => { if (message.type === "device-notice-replay" || message.type === "device-notice") heard.push(message.type); });
+  client.connect();
+  const socket = FakeSocket.last;
+  socket.open();
+  try {
+    socket.receive(snapshot(["submit"]));
+    expect(client.sendNotice({ type: "notice-seen", seq: 4 })).toBe(false);
+    socket.receive(snapshot(["submit", "account-opens-all/1"]));
+    socket.receive({ type: "device-notice-replay", replay: { notices: [], cut: 0 } });
+    expect(heard).toEqual(["device-notice-replay"]);
+    expect(client.sendNotice({ type: "notice-seen", seq: 4 })).toBe(true);
+    expect(client.sendNotice({ type: "notice-answer", id: "c".repeat(32), answer: "its_me" })).toBe(true);
+    expect(socket.sent.filter((frame) => frame.type.startsWith("notice-"))).toEqual([
+      { type: "notice-seen", seq: 4 }, { type: "notice-answer", id: "c".repeat(32), answer: "its_me" },
+    ]);
+  } finally {
+    client.close();
   }
 });

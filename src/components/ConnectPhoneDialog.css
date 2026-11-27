@@ -17,8 +17,24 @@
   overflow-y: auto;
 }
 
-.connect-phone-gate {
-  margin: 0;
+/* the body scrolls; it never squeezes a part to fit the window */
+.connect-phone-body > * {
+  flex-shrink: 0;
+}
+
+/* the tab bar stays put between the header and the body that scrolls */
+.connect-tabs-bar {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  padding: var(--space-4) var(--space-5) 0;
+}
+
+/* bound by the window itself (the Mac app's too), not by a percentage of the scrim */
+@media (min-width: 641px) {
+  .modal.connect-phone-dialog {
+    max-height: min(calc(100dvh - 2 * var(--space-4)), var(--dialog-max-h));
+  }
 }
 
 .connect-phone-reset {
@@ -64,13 +80,6 @@
   font-weight: var(--fw-semibold);
 }
 
-.connect-link {
-  align-self: flex-start;
-  padding-inline: 0;
-  color: var(--accent);
-}
-
-.connect-signin-nudge,
 .connect-relay-switch {
   display: flex;
   align-items: center;
@@ -78,16 +87,22 @@
   gap: var(--space-3);
 }
 
-.connect-signin-nudge {
-  padding: var(--space-2) var(--space-3);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  color: var(--text);
-}
-
+/* the three ways to connect, each tab with its own phone QR code (PhoneScan) */
 .connect-tabs {
   align-self: stretch;
+  min-width: 0;
+}
+
+.connect-picks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connect-picks-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .connect-tabs > button {
@@ -110,6 +125,35 @@
   display: none;
 }
 
+/* under a way's own part, what a phone scans to connect that way: one line, then its QR code and code */
+.connect-phone-scan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* first in its tab (Tailscale), the phone part sits above the tab's own part: its line goes below it */
+.connect-tab > .connect-phone-scan:first-child {
+  padding-top: 0;
+  padding-bottom: var(--space-3);
+  border-top: 0;
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.connect-phone-scan-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.connect-phone-scan-title svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+  flex: none;
+}
+
 .connect-section {
   display: flex;
   flex-direction: column;
@@ -121,10 +165,61 @@
   border-top: var(--hairline) solid var(--border);
 }
 
+/* Add by address under the SSH field: a text link, its form behind it */
+.connect-address-link {
+  align-self: flex-start;
+  min-height: var(--touch-target);
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .connect-address-link:hover {
+    color: var(--text-strong);
+  }
+}
+
+/* Portal at the foot of the SSH tab: one row, its controls behind Settings */
+.connect-portal {
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.connect-portal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.connect-portal-state {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .connect-found {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/* the relay tab's other PCs, under its phone part: a hairline, the line of what Add does, the rows, the typed PC */
+.connect-reachable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
 }
 
 .connect-found-list {
@@ -161,6 +256,11 @@
   margin-inline-start: auto;
 }
 
+/* a pill inside the name (This PC among the account's PCs) keeps a gap from it */
+.connect-found-name > .connect-found-source {
+  margin-inline-start: var(--space-2);
+}
+
 .connect-found-source {
   flex: none;
   padding: 0 var(--space-2);
@@ -177,6 +277,21 @@
   gap: var(--space-1);
   color: var(--status-done);
   font-size: var(--fs-sm);
+}
+
+.connect-qr-link {
+  align-self: flex-start;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.connect-qr-link:hover:not(:disabled) {
+  text-decoration: underline;
 }
 
 .connect-found-added svg {
@@ -222,7 +337,17 @@
   border-top: var(--hairline) solid var(--border);
 }
 
+.connect-account-qr:empty {
+  display: none;
+}
+
 .connect-account-qr[data-first] {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* the part's own hairline already sits above a phone part that opens it: one line, not two */
+.connect-account-qr > .connect-phone-scan:first-child {
   padding-top: 0;
   border-top: 0;
 }
@@ -265,7 +390,61 @@
     flex-basis: 100%;
   }
 
-  .connect-found-source {
+  .connect-found-source,
+  .connect-found-row > :last-child:not(.connect-found-detail) {
     margin-inline-start: auto;
   }
+}
+
+/*
+ * A PC this PC can reach (the Tailscale tab, the relay tab's list): its name and its control or state on the first line,
+ * then what Add or Connect opens, whole, on a dim second line that breaks after its dots (atDots), never cut. A long
+ * state line wraps on the right of the first line rather than squeezing the second.
+ */
+.connect-reach-list > .connect-found-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name action" "detail detail";
+  align-items: center;
+  row-gap: var(--space-1);
+  padding-block: var(--space-2);
+}
+
+.connect-reach-list > .connect-found-row > .connect-found-name {
+  grid-area: name;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.connect-reach-list > .connect-found-row > .connect-found-detail {
+  grid-area: detail;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.connect-reach-list > .connect-found-row > :last-child:not(.connect-found-detail) {
+  grid-area: action;
+  justify-self: end;
+  margin-inline-start: 0;
+}
+
+.connect-reach-list > .connect-found-row > .settings-hint {
+  max-width: 16em;
+  text-align: end;
+}
+
+.connect-command {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.connect-command code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
 }
