@@ -112,14 +112,22 @@ describe("alert webhook presets", () => {
     hook.save({ preset: "json", url: destination.url("/json"), link: false }, base);
     hook.send(alert);
     await hook.settled();
+    hook.save({ preset: "slack", url: destination.url("/slack"), link: false }, base);
+    hook.send(alert);
+    await hook.settled();
+    hook.save({ preset: "discord", url: destination.url("/discord"), link: false }, base);
+    hook.send(alert);
+    await hook.settled();
 
-    const [telegram, again, ntfy, json] = destination.received;
+    const [telegram, again, ntfy, json, slack, discord] = destination.received;
     expect(JSON.parse(telegram!.body)).toEqual({ chat_id: "-1001", text: "Work PC · codex: waiting for your input", disable_web_page_preview: true });
     expect(JSON.parse(again!.body).text).toBe("Work PC · codex: waiting for your input");
     expect(ntfy!.headers.get("click")).toBeNull();
     expect(JSON.parse(json!.body).url).toBeUndefined();
+    expect(JSON.parse(slack!.body).text).toBe("Work PC · codex: waiting for your input");
+    expect(JSON.parse(discord!.body).content).toBe("Work PC · codex: waiting for your input");
     expect(webhook().view().link).toBe(false);
-    expect(hook.save({ preset: "json", link: true }, base).link).toBe(true);
+    expect(hook.save({ preset: "discord", link: true }, base).link).toBe(true);
   });
 
   it("keeps the secret owner-only on disk and answers it only masked", () => {
@@ -280,6 +288,8 @@ describe("/api/alerts/webhook", () => {
     expect(saved.status).toBe(200);
     expect(await saved.text()).not.toContain("secret-path");
     expect((await call("POST", "/api/alerts/webhook/test"))!.status).toBe(204);
+    expect(await (await call("PUT", undefined, { preset: "json", link: false }))!.json()).toMatchObject({ link: false });
+    expect(await (await call("GET"))!.json()).toMatchObject({ link: false });
     expect((await call("PUT", undefined, { preset: "slack", url: "nope" }))!.status).toBe(400);
     expect((await call("DELETE"))!.status).toBe(204);
     expect((await call("POST", "/api/alerts/webhook/test"))!.status).toBe(404);

@@ -27,8 +27,8 @@ beforeEach(() => {
     if ((init?.method ?? "GET") === "GET") return Response.json(held);
     puts.push(JSON.parse(String(init?.body)));
     if (refuse) return Response.json({ error: { code: "webhook_failed", message: "the destination answered 500" } }, { status: 500 });
-    const body = JSON.parse(String(init?.body)) as Pick<AlertWebhookView, "alerts" | "link">;
-    held = { ...held, alerts: body.alerts, link: body.link };
+    const { alerts = held.alerts, link = held.link } = JSON.parse(String(init?.body)) as Partial<AlertWebhookView>;
+    held = { ...held, alerts, link };
     return Response.json(held);
   };
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -58,7 +58,7 @@ describe("a saved destination's alert switch", () => {
     expect(view.switchOf("Needs input").getAttribute("aria-checked")).toBe("false");
     await act(async () => { view.switchOf("Needs input").click(); });
     await settle();
-    expect(puts).toEqual([{ preset: "ntfy", alerts: { input: true, done: "long" }, link: true }]);
+    expect(puts).toEqual([{ preset: "ntfy", alerts: { input: true, done: "long" } }]);
     expect(view.switchOf("Needs input").getAttribute("aria-checked")).toBe("true");
     expect(view.text()).toContain("Saved on this PC");
   });
@@ -67,11 +67,21 @@ describe("a saved destination's alert switch", () => {
     held = { ...held, reachable_link: false };
     const view = await open();
     expect(view.text()).toContain("Messages have no link a phone can open yet.");
+    // an address typed but not saved stays out of a switch's save
+    page.one<HTMLInputElement>('input[aria-label="Webhook URL"]').value = "https://ntfy.sh/draft";
     await act(async () => { view.switchOf("Link to the pane").click(); });
     await settle();
-    expect(puts).toEqual([{ preset: "ntfy", alerts: { input: false, done: "long" }, link: false }]);
+    expect(puts).toEqual([{ preset: "ntfy", link: false }]);
     expect(view.switchOf("Link to the pane").getAttribute("aria-checked")).toBe("false");
     expect(view.text()).not.toContain("Messages have no link a phone can open yet.");
+  });
+
+  it("offers no link switch to a PC that does not know it", async () => {
+    const { link: _link, ...older } = held;
+    held = older as AlertWebhookView;
+    const view = await open();
+    expect(page.container.querySelectorAll('button[role="switch"][aria-label="Link to the pane"]')).toHaveLength(0);
+    expect(view.switchOf("Needs input").getAttribute("aria-checked")).toBe("false");
   });
 
   it("goes back to the value the server holds when it refuses the save, and says why (G-010)", async () => {
@@ -81,6 +91,10 @@ describe("a saved destination's alert switch", () => {
     await settle();
     expect(puts).toHaveLength(1);
     expect(view.switchOf("Needs input").getAttribute("aria-checked")).toBe("false");
+    await act(async () => { view.switchOf("Link to the pane").click(); });
+    await settle();
+    expect(puts).toHaveLength(2);
+    expect(view.switchOf("Link to the pane").getAttribute("aria-checked")).toBe("true");
     expect(view.text()).toContain("the destination answered 500");
     expect(view.text()).not.toContain("Saved on this PC");
     expect(page.container.innerHTML).toContain('role="alert"');
