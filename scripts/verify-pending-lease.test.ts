@@ -58,7 +58,7 @@ describe("verify-pending-lease enforcement", () => {
     // turn/start no longer asking its guard right before the request
     const codex = read("server/approvals/codex.ts");
     const startTurn = codex.slice(codex.indexOf("  async startTurn("));
-    const unasked = codex.replace(startTurn, startTurn.replace("if (!alone || !ready() || !mayWrite()) return \"unsent\";", "if (!alone || !ready()) return \"unsent\";"));
+    const unasked = codex.replace(startTurn, startTurn.replace("    if (!mayWrite()) return \"unsent\";\n", ""));
     expect(unasked).not.toBe(codex);
     expect(extractCodexWriteSlice(unasked)).not.toBe(extractCodexWriteSlice(codex));
 

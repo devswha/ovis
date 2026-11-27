@@ -760,13 +760,14 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           }
         }
         // a Codex on the server Ovis started for it takes plain text as a turn of its thread, at rest: nothing joins what
-        // is typed in its own box, and none of its own screens takes it
+        // is typed in its own box, and none of its own screens takes it. Into a turn that thread runs, a message sent at
+        // once is typed as before: it is the user's own send
         if (pane && agent === "codex" && !command && clearDraft === undefined && !sendAnyway && codexTakesAsData(text, sent)) {
           const viaData = await sendCodexTextAsData(pane, text, () => {
             try { inTime(); } catch (error) { refused = error; return false; }
             return mayType();
           });
-          if (viaData) {
+          if (viaData?.turn === "started") {
             noteSubmitted(paneId, text, recorded(command), viaData.at);
             return;
           }

@@ -3,7 +3,7 @@
   "server/pending-input.ts#lease": "d3e00bdf211dfe4391a240117ad3034da5d69943e274cdc57f27dd353ae79d12",
   "server/core/connections.ts#lease": "a352f7f0ecf69cebe9dea1adb40a2b3efd7853ffa3964a3eba205809996c6279",
   "server/herdr/client.ts#writeRequest": "6fdb19a253be86e2b49e6df975a65320579362ff5a62d0c931fca1328f4bf69a",
-  "server/approvals/codex.ts#write": "485520a3f0eac17cab7039f49b17581a0179f72f758d560cf54674026b25c6ca",
+  "server/approvals/codex.ts#write": "cb8530afcb681136bc5fb597b86cae03bc6e2412c7a1e38305045e789f551d30",
   "server/core/composer.ts#lease": "9f1e8a8f440d1547eb27791cf4601880ecff35acfb18a3fd73611acf8579239d",
   "server/opencode-skill-attach.ts#lease": "5a2381d280c3d6679d51a0fc91dec54730e28c106625632825dc439be42b26f0",
   "server/core/input.ts#serialize": "5a19063395476d450f7b0db6b26979c7bf50fa1be2a3b733d1f54dcf5d345504",

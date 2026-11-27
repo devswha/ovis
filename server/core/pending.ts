@@ -846,7 +846,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           if (wrote && nativeItem && anchor !== null && anchor.session === threadId) codexTyped.add(paneId, text, anchor, at, { identity: context.identity, item: nativeItem }, clientId);
           throw error;
         });
-        if (viaData) {
+        if (viaData?.turn === "started") {
           noteSubmitted(paneId, text, undefined, viaData.at);
           return { ok: true };
         }
