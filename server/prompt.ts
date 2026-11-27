@@ -14,11 +14,13 @@ import { HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSen
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
-import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
+import { ompCallPrompt, ompFormPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
+import { ompFormOnScreen, ompFormTextareaFocus } from "./dialogs/omp-form.ts";
 import { gjcCallStillOpen, gjcCallStillOpenInFile, withGjcFallback } from "./gjc-ask.ts";
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
+import { heldQuestionAnswer, showsHeldQuestion } from "./claude-question.ts";
 import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
@@ -49,6 +51,8 @@ import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
+import { answerOmoPending } from "./omo-answer.ts";
+import { omoPaneSocket } from "./command-data-send.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
 import { OpenCodePromptState } from "./opencode-prompt.ts";
 export { removedInvisible } from "./dialogs/claude.ts";
@@ -685,6 +689,8 @@ function contentId(prompt: InteractivePrompt | null): string | undefined {
 
 const formsAnswered = new Map<string, number>();
 const FORM_SETTLE_MS = 3_000;
+/** each pane's OpenCode session whose permission request or form a read last saw go, and when */
+const openCodeClosed = new Map<string, { sessionID: string; at: number }>();
 
 const defaultOpenCodeState = new OpenCodePromptState();
 
@@ -812,6 +818,7 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
   // ending the screen is no dialog: herdr says blocked a moment before Claude draws its panel,
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
+    || (agent === "omp" && ompFormOnScreen(screen))
     || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
   const fallback = parseFallbackPrompt(agent, screen);
   if (agent === "gjc" && parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") {
@@ -968,9 +975,9 @@ export type OmpLookups = Map<string, { path: string; open: OmoAsks; failures: nu
 const ompLookups: OmpLookups = new Map();
 const OMP_LOOKUP_FAILURES = 3;
 
-async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean, lookups: OmpLookups): Promise<{ prompt: InteractivePrompt; unverified?: true; rebind: (prompt: InteractivePrompt) => InteractivePrompt }> {
+async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean, lookups: OmpLookups): Promise<{ prompt: InteractivePrompt | null; unverified?: true; rebind: (prompt: InteractivePrompt) => InteractivePrompt | null }> {
   const parsed = parsedByPublicPrompt.get(prompt);
-  if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && !parsed?.nativeSteps) return { prompt, rebind: (card) => card };
+  if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && parsed?.responder !== "omp-form" && !parsed?.nativeSteps) return { prompt, rebind: (card) => card };
   let path = "";
   let open: OmoAsks = [];
   let unverified: true | undefined;
@@ -993,6 +1000,10 @@ async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractiveP
       unverified = true;
     }
   }
+  if (parsed?.responder === "omp-form") {
+    const form = ompFormPrompt(prompt, open, path);
+    return { prompt: form.prompt, unverified: unverified ?? form.unverified, rebind: (card) => ompFormPrompt(card, open, path).prompt };
+  }
   const called = ompCallPrompt(prompt, open, path);
   const bound = ompStepPrompt(called.prompt, open, path);
   const rebind = (card: InteractivePrompt): InteractivePrompt => ompStepPrompt(ompCallPrompt(card, open, path).prompt, open, path);
@@ -1013,7 +1024,7 @@ async function readKnownPrompt(
    * for a key's verifying read: once every other look of this read is done, the screen is read again as it was
    * read before and parsed with what this read found; a card the screen no longer draws so authorizes no key
    */
-  settle: boolean | "editor" = false,
+  settle: boolean | "editor" | "omp-form-draft" = false,
   ompBindings = ompLookups,
 ): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true;
   settled?: InteractivePrompt }> {
@@ -1038,11 +1049,12 @@ async function readKnownPrompt(
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
       state.applied = issued;
-      // a request answered elsewhere (its own terminal): OpenCode's dialog closes a moment before herdr stops reporting
-      // blocked, the same settling an answer from a card waits out, so no fallback card stands in for it meanwhile
-      if (permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id))) {
-        formsAnswered.set(paneId, Date.now());
-        if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+      const permissionGone = permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id));
+      const heldForm = state.listed;
+      const formGone = forms !== null && heldForm !== null && !forms.some((listed) => listed.id === heldForm.id);
+      if (permissionGone || formGone) {
+        openCodeClosed.set(paneId, { sessionID, at: Date.now() });
+        if (openCodeClosed.size > 64) openCodeClosed.delete(openCodeClosed.keys().next().value!);
       }
       state.permissions = permissions;
       state.available = forms !== null;
@@ -1064,6 +1076,14 @@ async function readKnownPrompt(
       return { prompt: publicPrompt(card) };
     }
     const form = state.listed;
+    // a request or form answered or cancelled elsewhere (its own terminal, an interrupt): OpenCode's dialog closes a
+    // moment before herdr stops reporting blocked, so no fallback card stands in for it meanwhile while this session
+    // has nothing else pending, as this read's lists, both read, say
+    const closed = openCodeClosed.get(paneId);
+    const listsRead = forms !== null && (permissions !== null || !openCodePermissionsRead(service!.version));
+    if (!form && listsRead && !state.permissions?.length && closed?.sessionID === sessionID && Date.now() - closed.at < FORM_SETTLE_MS) {
+      return { prompt: null, suppressFallback: true };
+    }
     if (!form || form.fields.length === 0) break native;
 
     const identity = JSON.stringify({
@@ -1261,22 +1281,28 @@ async function readKnownPrompt(
       return again ? publicPrompt(again) : null;
     }
     const parsed = parseInteractivePrompt(agent, drawn, omoAsks[0] ?? null, omoTrusted, omoAsks, held, pane.agent_status === "working");
+    if (parsed === null && agent === "omp" && settle === "omp-form-draft") {
+      const textarea = ompFormTextareaFocus(drawn);
+      return textarea ? publicPrompt(textarea) : null;
+    }
     // a dialog the screen cannot show whole is a card of its own only while the hub holds its request; else it is left
     // to the fallback card, as an agent Ovis did not start
     return heldOnly(parsed) && !approvalHeld(paneId) ? null : parsed;
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
   if ((agent === "letta" || agent === "agy") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
-  let rebind = (card: InteractivePrompt): InteractivePrompt => card;
+  let rebind = (card: InteractivePrompt): InteractivePrompt | null => card;
   if (prompt && agent === "omp") {
     const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown === true, ompBindings);
+    if (!read.prompt) return { prompt: null, screen, suppressFallback: true, inputUnverified: true };
     prompt = read.prompt;
     rebind = read.rebind;
     if (read.unverified) inputUnverified = true;
   }
   // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
   if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
-    return { prompt: null, screen, suppressFallback: true };
+    // The screen can still show the old form, including a pasted multiline textarea.
+    return { prompt: null, screen, suppressFallback: true, inputUnverified: true };
   }
   // Hermes's approval answers by keys that grant or refuse: offered only while Hermes holds the input.
   // Looked at before the read that settles a key, never after it: a look between that read's check and
@@ -1518,6 +1544,11 @@ const approvalDialog = (prompt: InteractivePrompt | null): ApprovalDialog | null
 function withHeldPermission(paneId: string, prompt: InteractivePrompt | null, approvals: ApprovalHub | undefined): InteractivePrompt | null {
   const held = approvals?.shown(paneId, approvalDialog(prompt)) ?? null;
   if (held === null || prompt === null) return heldOnly(prompt) ? null : prompt;
+  // a question card keeps what the screen shows, and is bound only where it shows the held question's options whole and
+  // no other request asked the same words
+  if (held.question !== undefined) {
+    return showsHeldQuestion(prompt, held.question) && approvals!.onlyOpen(paneId, approvalDialog(prompt)!, held.id) ? { ...prompt, id: `${prompt.id}.${held.id}` } : prompt;
+  }
   return { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
 }
 
@@ -1582,7 +1613,7 @@ const WAITING_RESPONDERS: ReadonlySet<string> = new Set([
   "claude-approval", "claude-confirm", "claude-plan", "claude-question", "claude-submit", "cmd-question",
   "codex-approval", "codex-question", "codex-async-question", "codex-queued-question", "codex-menu",
   "agy-question", "hermes-approval", "hermes-question", "hermes-input", "omo-question", "omo-review", "omo-pending",
-  "omp-approval", "omp-question", "omp-submit", "opencode-v1-question", "opencode-question", "opencode-permission",
+  "omp-approval", "omp-form", "omp-question", "omp-submit", "opencode-v1-question", "opencode-question", "opencode-permission",
 ]);
 
 /** What the waiting a card stands for is about, in the words an agent's own report uses (`kind`); null: it does not say. */
@@ -1754,7 +1785,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (keyAgent === "codex" && parsedPrompt !== undefined && questionClosed(paneId, parsedPrompt)) throw new KeyRefused();
       };
       const verifyThenSend = async <T>(look: AbortSignal, guardUntil: number | null, readUntil: number,
-        same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly: boolean | "editor" = false): Promise<T> => {
+        same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T,
+        screenOnly: boolean | "editor" | "omp-form-draft" = false): Promise<T> => {
         const guarding = guardKey(body.pane_id, agent, look);
         guarding.catch(() => undefined);
         const guarded = guardUntil === null ? await guarding.then(() => true)
@@ -1769,7 +1801,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, openCodeState,
           AbortSignal.timeout(Math.max(1, readUntil - Date.now())),
           agent === "gjc" ? parsedPrompt?.gjcCall !== undefined : true,
-          screenOnly === "editor" ? "editor" : !screenOnly);
+          typeof screenOnly === "string" ? screenOnly : !screenOnly);
         reading.catch(() => undefined);
         const read = await Promise.race([reading, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
         const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
@@ -1801,6 +1833,19 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
       // where the card has no supported move (OpenCode would take it as an answer).
+      // a Claude question card bound to the one question its hook holds, still showing it whole: the answer goes back as
+      // that request's input, with no key (claude-question.ts). Any other answer is the dialog's, as keys
+      const heldQuestion = heldId === null || parsedPrompt?.responder !== "claude-question" ? undefined
+        : options.approvals!.held(body.pane_id).find((held) => held.id === heldId)?.question;
+      const questionAnswer = heldQuestion !== undefined && showsHeldQuestion(prompt, heldQuestion) ? heldQuestionAnswer(prompt, body) : null;
+      if (questionAnswer !== null) {
+        if (request.signal.aborted || !options.approvals!.answerQuestion(body.pane_id, approvalDialog(prompt)!, heldId!, questionAnswer)) return promptChanged();
+        delivered = true;
+        way = "native";
+        askingEnded(body.pane_id);
+        form.still = sameContent(contentId(prompt));
+        return jsonResponse({ ok: true });
+      }
       if (body.step_next === true && ((!parsedPrompt?.nativeSteps && !parsedPrompt?.piAskForm && !parsedPrompt?.piAskUser)
         || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined)) {
         return badRequest("invalid_answer", "Next goes to another question and answers none.");
@@ -2162,6 +2207,22 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
         throw error;
       }
+      // an OmO question asked alone that does not wait: its answer, one the keys would take, goes as data on the pane's
+      // own OmO control socket; one that may already have gone that way takes no key
+      if (parsedPrompt?.omoData !== undefined) {
+        const omoData = await answerOmoPending(await omoPaneSocket(pane), parsedPrompt, body, () => !deadline.aborted, deadlineAt);
+        if (omoData === "gone") return promptChanged();
+        if (omoData === "sent") {
+          delivered = true;
+          way = "native";
+          // as the keys' answer marks it, so the widget closing is not read as an unknown screen meanwhile
+          formsAnswered.set(body.pane_id, Date.now());
+          if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+          askingEnded(body.pane_id);
+          form.still = sameContent(contentId(prompt));
+          return jsonResponse({ ok: true });
+        }
+      }
       // The asking this answer is for, held to its last key: once anything says it ended (the
       // agent back at work), no key of this answer goes out any more, whatever the screen shows.
       const asking = askings.get(body.pane_id)!;
@@ -2237,6 +2298,18 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const sideways = reader?.list === "slider";
         let seen: ParsedPrompt | null = null;
         const looked = (shown: ParsedPrompt | null): void => { seen = shown; lastSeen = shown?.id; };
+        const sameBoundRadio = (shown: ParsedPrompt): boolean => moved && parsed.ompFormRadioGroup !== undefined
+          && shown.ompFormRadioGroup === parsed.ompFormRadioGroup && shown.ompCall === parsed.ompCall
+          && JSON.stringify(shown.menuLabels) === JSON.stringify(parsed.menuLabels);
+        const sameOmpFormField = (field: ParsedPrompt | null): boolean => {
+          if (field?.responder !== "omp-form" || field.selectedIndex !== cursor) return false;
+          return sameBoundRadio(field) || (field.question === parsed.question && field.nativeSteps?.index === parsed.nativeSteps?.index
+            && field.ompCall === parsed.ompCall
+            && JSON.stringify(field.menuLabels) === JSON.stringify(parsed.menuLabels));
+        };
+        const ompChecks = responder === "omp-form" && parsed.multi_select
+          ? new Set(body.option_indices ?? parsed.checkedOptionIndices) : null;
+        let ompDraft: string | undefined;
         const aimed = (shown: ParsedPrompt | null, screen: string): boolean => {
           if (interaction) return shown?.responder === responder && interaction.matches(screen);
           if ((responder === "pi-question" || responder === "pi-confirm") && cursor !== 0) {
@@ -2244,7 +2317,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             return dialog?.id === parsed.id && dialog.selectedIndex === cursor && promptTailIsActive(dialog, screen);
           }
           if (responder === "dsh-question" && cursor === parsed.customMenuIndex) return dshFreeTextRow(screen, parsed, "") === "typed";
-          if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
+          if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id || sameBoundRadio(shown))) return false;
           return shown.selectedIndex === cursor && ticked(shown)
             && (responder !== "pi-questionnaire-question" || shown.piQuestionnaireInput === undefined);
         };
@@ -2284,6 +2357,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               && (parsed.gjcCall === undefined || shown?.gjcCall === parsed.gjcCall)
               && (!onCursor || card.selectedIndex === cursor);
           }
+          if (shown !== null && sameBoundRadio(shown)) return !onCursor || shown.selectedIndex === cursor;
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
           return shown.question === parsed.question && shown.ompCall === parsed.ompCall
             && shown.nativeSteps?.index === parsed.nativeSteps?.index
@@ -2339,7 +2413,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const gjcEditorPaste = committed && !customTyped && responder === "fallback-gjc-menu" && step.text !== undefined && parsed.gjcCall !== undefined;
           const codexNotesPaste = committed && responder === "codex-question" && step.text !== undefined;
           const typedEditor = customTyped && step.keys?.length === 1 && (step.keys[0] === KEY.enter || claudeDown) ? editorAnswer : undefined;
-          if (!committed || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste || codexNotesPaste) {
+          const ompEnter = responder === "omp-form" && step.keys?.[0] === KEY.enter;
+          if (!committed || responder === "omp-form" || togglesInPlace() || lettaTyping || typedEditor || gjcEditorPaste || codexNotesPaste) {
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
               (shown, screen, settled) => {
@@ -2361,9 +2436,21 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
                   if (responder === "opencode-v1-question") return openCodeV1CustomEditorMatches(screen, typedEditor);
                   return shown?.agent === parsed.agent && shown.customEditorMatches?.(typedEditor, claudeDown ? "editor" : "submit") === true;
                 }
+                // The open call only identifies the form: Tab or Esc in the terminal can hand focus elsewhere mid-answer.
+                if (responder === "omp-form" && (committed || ompEnter && ompChecks !== null)) {
+                  if (!sameOmpFormField(shown) || !settled || !sameOmpFormField(settled)) return false;
+                  if (!ompEnter) return true;
+                  if (customTyped && (settled.default_custom_text ?? "") !== ompDraft) return false;
+                  if (ompChecks === null) return true;
+                  if (settled.checkedOptionIndices.length !== ompChecks.size
+                    || !settled.checkedOptionIndices.every((index) => ompChecks.has(index))) return false;
+                  const other = settled.customMenuIndex === null ? null : settled.ompFormChoices?.shown.other;
+                  return other ? other.ticked === customTyped && other.text === (ompDraft ?? "") : !customTyped;
+                }
                 return lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch) : sameQuestion(shown, screen, onCursor, settled);
               }, () => ({ written: write() }),
-              typedEditor || gjcEditorPaste || codexNotesPaste ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
+              ompEnter && customTyped ? "omp-form-draft" : typedEditor || gjcEditorPaste || codexNotesPaste ? "editor"
+                : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
             const guarding = guardKey(body.pane_id, agent, look);
@@ -2493,6 +2580,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             // From here the typed editor is verified after the next key's look, in the same turn as its write.
             if (key.text !== undefined) {
               customTyped = true;
+              if (responder === "omp-form") ompDraft = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(key.text)?.[1];
               lettaSearch += key.text;
             }
             for (const pressed of key.keys ?? []) if (pressed === KEY.backspace) lettaSearch = lettaSearch.slice(0, -1);
