@@ -16,6 +16,7 @@ import { nameListToPc } from "../account/listNamed.ts";
 import { holdsList } from "../account/listWrite.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT, myPcs } from "../account/myPcs.ts";
 import { signInKey } from "../account/signInKey.ts";
+import { cleanMergedPc, settleMergeKeys } from "../account/mergeCleanup.ts";
 import { AccountService, AccountServiceError, AccountServiceUnreachableError, accountProvidersOf, indexedAccountService, offeredProviders, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -273,6 +274,7 @@ export function createAccountController(mount: RelayShellMount, view: {
           if (!live()) return;
         }
         const listed = await account.forSignIn(session).listPcs();
+        void settleMergeKeys({ store: accountStore, service: account, devices: store, session }).catch(() => undefined);
         const kept = await accountStore.get("signin_key");
         const openKey = kept === undefined || kept.account !== session.account || kept.sign_in_id !== session.sign_in_id ? null
           : kept.no !== null ? kept
@@ -369,17 +371,22 @@ export function createAccountController(mount: RelayShellMount, view: {
    * follows one and the PC follows none. Nothing waits for it, and it fails quietly.
    */
   const sessionOpened = async (opened: RelayTransport, serverPublicKey: string): Promise<void> => {
-    if (lists === null) return;
-    const session = await account.session().catch(() => undefined);
+    if (accountService === null) return;
+    const session = await (lists === null ? accountStore.get("session") : account.session()).catch(() => undefined);
     if (session === undefined) return;
+    const endpoint = Array.from(importPublicKey(serverPublicKey), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const fetch = (path: string, init?: RequestInit): Promise<Response> => opened.fetch(path, init);
+    const id = opened.deviceId, key = opened.deviceKey;
+    if (id != null && key !== undefined) {
+      await cleanMergedPc({ store: accountStore, service: account, devices: store, session }, { endpoint, id, key, fetch }).catch(() => undefined);
+    }
+    if (lists === null) return;
     const kept = await accountStore.get("signin_key").catch(() => undefined);
     const signIn = kept !== undefined && kept.account === session.account && kept.sign_in_id === session.sign_in_id ? kept.key.public_spki : null;
-    const endpoint = Array.from(importPublicKey(serverPublicKey), (byte) => byte.toString(16).padStart(2, "0")).join("");
     // only a PC of the account: one its directory lists, or one this device's own record knows it by (ownEvidence)
     const listed = shownFor?.account === session.account && directory.some((pc) => pc.public_key === endpoint);
     const known = pcsToAsk({ account: session.account, record: readSeenPcs(session.account), answers: pageAnswers, now: Math.floor(Date.now() / 1000), scale: pageScale(), again: true });
     if (!listed && !known.includes(endpoint)) return;
-    const fetch = (path: string, init?: RequestInit): Promise<Response> => opened.fetch(path, init);
     await onPcSession({
       list: lists, answers: pageAnswers, account: session.account, fetch, endpoint,
       pinned: opened.server?.features?.includes(ACCOUNT_LIST_FEATURE) === true, session: opened.deviceKey ?? null, signIn,

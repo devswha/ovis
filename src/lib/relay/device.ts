@@ -20,7 +20,7 @@ export interface ShellDeviceStore extends RelayDeviceStore {
    * Forgets a PC only while its saved record is still the row `deviceId`, read and deleted in one write transaction:
    * a Forget or a newer pairing made since (another tab) stands. True when it forgot it.
    */
-  removeRow(serverId: string, deviceId: string): Promise<boolean>;
+  removeRow(serverId: string, deviceId: string, key?: string): Promise<boolean>;
 }
 
 export function enrollmentOf(device: RelayDevice, account?: string): EnrollmentState | undefined {
@@ -73,7 +73,7 @@ export const indexedDeviceStore: ShellDeviceStore = {
       });
     } finally { db.close(); }
   },
-  async removeRow(serverId, deviceId) {
+  async removeRow(serverId, deviceId, key) {
     const db = await openDatabase();
     try {
       return await new Promise<boolean>((resolve, reject) => {
@@ -82,7 +82,7 @@ export const indexedDeviceStore: ShellDeviceStore = {
         let removed = false;
         const request: IDBRequest<RelayDevice | undefined> = devices.get(serverId);
         request.onsuccess = () => {
-          if (request.result?.device_id !== deviceId) return;
+          if (request.result?.device_id !== deviceId || (key !== undefined && request.result.public_spki !== key)) return;
           devices.delete(serverId);
           tx.objectStore("pending-push").delete(serverId);
           removed = true;

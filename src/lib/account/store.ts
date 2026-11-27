@@ -10,6 +10,7 @@ import type { UnsentBlocks } from "./unsentBlocks.ts";
 import type { AddRecord, RemoveRecord } from "../../../shared/account-records.ts";
 import type { MemberEncryptionKey } from "../../../shared/account-list-seal.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
+import type { MergeKeys } from "./mergeKeys.ts";
 
 export interface AccountKey {
   readonly private_key: CryptoKey;
@@ -64,6 +65,8 @@ export interface PendingPairing {
 
 interface Records {
   key: AccountKey;
+  /** Account keys parked when a different account signs in, until its old rows can be cleaned. */
+  merge_keys: Readonly<Record<string, MergeKeys>>;
   /**
    * The key this device opens its lists' epoch keys with (account/listKeys.ts): made on first need and kept as the
    * CryptoKey it is, which cannot be exported. Beside `key`, so that it is forgotten with it: a device with a new
@@ -128,7 +131,7 @@ export interface QueuedAdd {
   readonly to: readonly string[];
 }
 type Name = keyof Records;
-type Many<N extends Exclude<Name, "key">> = { [K in N]?: Records[K] };
+type Many<N extends Name> = { [K in N]?: Records[K] };
 
 /** Each read and write is one transaction; `key` is made at most once, between tabs too. */
 export interface AccountStore {
@@ -137,7 +140,7 @@ export interface AccountStore {
   set<N extends Exclude<Name, "key">>(name: N, value: Records[N] | undefined): Promise<void>;
   /** Reads and writes `name` in one transaction; `change` runs synchronously inside it. */
   update<N extends Exclude<Name, "key">>(name: N, change: (current: Records[N] | undefined) => Records[N] | undefined): Promise<void>;
-  updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
+  updateMany<N extends Name>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
   /**
    * Forgets the key, the sign-in and every record but `leaving` and `own_blocks`, in one transaction: a new key is made
    * on next use, which no PC knows. A sign-in `keep` accepts stays with its generation. With `only`,
@@ -183,7 +186,7 @@ export function memoryAccountStore(): AccountStore {
     async clear(keep, options) {
       const session = records.get("session") as AccountSession | undefined;
       if (options?.only !== undefined && !options.only(session, records.get("key") as AccountKey | undefined)) return;
-      const kept = (["leaving", "own_blocks", ...options?.spare ?? []] as const).map((name) => [name, records.get(name)] as const);
+      const kept = (["leaving", "own_blocks", "merge_keys", ...options?.spare ?? []] as const).map((name) => [name, records.get(name)] as const);
       const generation = records.get("generation");
       const unsent = keptUnsent(records.get("unsent_blocks") as Records["unsent_blocks"] | undefined, options?.unsent);
       records.clear();
@@ -311,7 +314,7 @@ export const indexedAccountStore: AccountStore = {
   },
   clear(keep, options) {
     return sessionWritten(transact("readwrite", (store) => {
-      const kept = (["leaving", "own_blocks", ...options?.spare ?? []] as const).map((name) => [name, store.get(name)] as const);
+      const kept = (["leaving", "own_blocks", "merge_keys", ...options?.spare ?? []] as const).map((name) => [name, store.get(name)] as const);
       const unsent: IDBRequest<Records["unsent_blocks"] | undefined> = store.get("unsent_blocks");
       const key: IDBRequest<AccountKey | undefined> = store.get("key");
       const generation: IDBRequest<string | undefined> = store.get("generation");

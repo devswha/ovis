@@ -101,6 +101,21 @@ export function readSeenPcs(account: string, storage: Storage | null = storageHe
   return { ...empty, pcs, ...(isSeconds(kept.tried) ? { tried: kept.tried } : {}) };
 }
 
+/** Merge PC memories, without carrying over the old account's list attempt. */
+export function foldSeenPcs(old: SeenPcs, into: string): Promise<void> {
+  return change(into, storageHere(), (record) => {
+    const pcs = { ...record.pcs };
+    for (const [endpoint, row] of Object.entries(old.pcs)) {
+      const current = pcs[endpoint];
+      if (current === undefined) { pcs[endpoint] = row; continue; }
+      const how = current.how === "none" ? row.how : current.how;
+      if (row.since === undefined || row.last === undefined) pcs[endpoint] = { ...current, how };
+      else pcs[endpoint] = { how, since: Math.min(row.since, current.since ?? row.since), last: Math.max(row.last, current.last ?? row.last) };
+    }
+    return { ...record, pcs: pruned(pcs) };
+  });
+}
+
 /** One change of an account's record, alone among this origin's pages where the browser has Web Locks: read, change, write. */
 async function change(account: string, storage: Storage | null, edit: (record: SeenPcs) => SeenPcs): Promise<void> {
   if (storage === null) return;

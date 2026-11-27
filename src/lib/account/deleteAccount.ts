@@ -60,7 +60,8 @@ export function holdingSessionStore(store: AccountStore): AccountStore {
     set: (name, value) => name === "session" ? Promise.resolve() : store.set(name, value),
     updateMany: (names, change) => store.updateMany(names, (current) => {
       const next = change(current);
-      return { ...next, session: "session" in current ? current.session : undefined };
+      // Installing a session can swap its key in the same transaction. A held sign-in installs neither.
+      return names.some((name) => name === "session") ? current : next;
     }),
   };
 }

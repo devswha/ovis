@@ -16,6 +16,7 @@ import { attemptOf, claimsOf, genesisBody, hintOf, nowOf, pageOf, postsOf, wraps
 import type { PcProofFields } from "./pcProof.ts";
 import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
+import { mergeKeySlot, parkMergeKeys } from "./mergeKeys.ts";
 
 /**
  * The account service this page signs in with, from `<meta name="ovis-account-service">`: an https
@@ -421,9 +422,13 @@ export class AccountService {
   static async storeSignIn(store: AccountStore, session: AccountSession, wanted: (current: AccountSession | undefined) => boolean = () => true): Promise<boolean> {
     if (session.sign_in_generation === undefined) return false;
     let kept = false;
-    await store.updateMany(["session", "generation"], (current) => {
+    await store.updateMany(["session", "generation", "key", "enc_key", "signin_key", "merge_keys"], (current) => {
       kept = current.generation === session.sign_in_generation && wanted(current.session);
-      return kept ? { ...current, session } : current;
+      if (!kept) return current;
+      const from = current.session;
+      if (from === undefined || mergeKeySlot(from) === mergeKeySlot(session)) return { ...current, session };
+      const { [mergeKeySlot(session)]: returning, ...parked } = parkMergeKeys(current, from, false) ?? {};
+      return { ...current, session, key: returning?.key, enc_key: returning?.encryption, signin_key: undefined, merge_keys: parked };
     });
     return kept;
   }
@@ -509,6 +514,37 @@ export class AccountService {
    */
   forSignIn(session: AccountSession): AccountService {
     return new AccountService({ ...this.options, signIn: session });
+  }
+
+  /** Checks a parked account with its own tokens, never refreshing or replacing the active sign-in. */
+  async checkMergeKeys(slot: string): Promise<void> {
+    await this.lock(async () => {
+      const probe = (await this.options.store.get("merge_keys"))?.[slot]?.probe;
+      if (probe === undefined) return;
+      const response = await this.fetch(new URL("/v1/pcs", probe.service), {
+        headers: { authorization: `Bearer ${probe.access_token}` }, signal: AbortSignal.timeout(8_000),
+      });
+      if (response.status !== 401) return;
+      let merged = (await failure(response)).code === "account_merged";
+      let renewed: AccountSession | undefined;
+      if (!merged) {
+        try {
+          renewed = await requestToken(probe.service, { grant_type: "refresh_token", refresh_token: probe.refresh_token }, {
+            fetch: (input, init) => this.fetch(input, { ...init, signal: AbortSignal.timeout(8_000) }), now: this.now,
+          });
+        } catch (error) {
+          if (!(error instanceof AccountServiceError)) throw error;
+          merged = error.status === 401 && error.code === "account_merged";
+        }
+      }
+      if (!merged && renewed?.account !== probe.account) return;
+      await this.options.store.update("merge_keys", (current) => {
+        const row = current?.[slot];
+        if (row === undefined || row.probe?.refresh_token !== probe.refresh_token) return current;
+        const { probe: _old, ...rest } = row;
+        return { ...current, [slot]: { ...rest, ...(merged ? { merged: true } : { probe: renewed }) } };
+      });
+    });
   }
 
   async listPcs(signal?: AbortSignal, again?: SendAgain): Promise<DirectoryPc[]> {
@@ -1136,10 +1172,12 @@ export class AccountService {
   }
 
   /** Forgets the refused token only while it and its generation are still current. */
-  private async signedOut(started: SignInSnapshot, from: AccountSession): Promise<never> {
-    await this.options.store.updateMany(["session", "generation"], (current) =>
-      current.generation === started.generation && current.session?.refresh_token === from.refresh_token
-        ? { generation: crypto.randomUUID() } : current);
+  private async signedOut(started: SignInSnapshot, from: AccountSession, merged = false): Promise<never> {
+    await this.options.store.updateMany(["session", "generation", "key", "enc_key", "signin_key", "merge_keys"], (current) => {
+      if (current.generation !== started.generation || current.session?.refresh_token !== from.refresh_token) return current;
+      const ended = { ...current, session: undefined, generation: crypto.randomUUID() };
+      return merged ? { ...ended, key: undefined, enc_key: undefined, signin_key: undefined, merge_keys: parkMergeKeys(current, from, true) } : ended;
+    });
     throw new SignedOutError();
   }
 
@@ -1149,7 +1187,9 @@ export class AccountService {
     try {
       next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now });
     } catch (error) {
-      if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(started, from);
+      if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) {
+        return this.signedOut(started, from, error.status === 401 && error.code === "account_merged");
+      }
       await this.current(started);
       throw error instanceof AccountServiceError ? new AccountRefreshError(error) : error;
     }
@@ -1235,11 +1275,12 @@ export class AccountService {
       if (method === "DELETE" && path === "/v1/account" && response.status === 204) return null;
       const safetyReceipt = path === "/v1/safety-records" && [200, 400, 403, 409].includes(response.status);
       if (!safetyReceipt) await this.current(started);
+      const unauthorized = response.status === 401 ? await failure(response) : null;
+      if (unauthorized?.code === "account_merged") return this.signedOut(started, live, true);
       if (response.status === 401 && !refreshed) {
         if (sent >= sends) {
-          const refusal = await failure(response);
           await this.current(started);
-          throw refusal;
+          throw unauthorized;
         }
         refreshed = true;
         stale = live.access_token;
@@ -1248,7 +1289,7 @@ export class AccountService {
       // a strict call (`only`) refused again with tokens a refresh just gave: that request's refusal, not a revoked sign-in
       if (response.status === 401 && only === undefined) return this.signedOut(started, live);
       if (!response.ok) {
-        const refusal = await failure(response);
+        const refusal = unauthorized ?? await failure(response);
         if (!safetyReceipt) await this.current(started);
         if (again !== undefined && refusal.status === 429 && sent < sends && await again.wait(refusal, sent)) continue;
         if (!safetyReceipt) await this.current(started);
