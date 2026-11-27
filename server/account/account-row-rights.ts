@@ -16,7 +16,7 @@ export type RowAction =
   | { readonly action: "revoke" | "label"; readonly rowId: string }
   | { readonly action: "block" | "lift"; readonly targetNewer: boolean }
   | { readonly action: "route"; readonly machine: string }
-  | { readonly action: "drive" | "records" | "read" | "local_control" | "add" | "revoke_all" | "link" | "pair_start" | "pair_cancel" | "enroll" | "approve" | "relay_account" | "lock" | "unlock" | "leave_account" | "forget" | "confirm" | "push_subscribe" | "webhook" };
+  | { readonly action: "drive" | "records" | "read" | "local_control" | "add" | "revoke_all" | "link" | "pair_start" | "pair_cancel" | "enroll" | "approve" | "relay_account" | "lock" | "unlock" | "leave_account" | "forget" | "confirm" | "push_subscribe" | "webhook" | "move_account" };
 
 export type RowRefusal = "not_yours" | "local_required" | "local_only" | "older_device" | "member_required" | "link_not_owner" | "join_hold";
 
@@ -28,6 +28,7 @@ const refuse = (refused: RowRefusal): RowVerdict => ({ refused });
 export function accountRowMay(caller: AccountCaller, request: RowAction): RowVerdict {
   switch (request.action) {
     case "read":
+    case "move_account":
     case "drive": return caller.state === "live" ? OK : refuse("join_hold");
     // Each signed record is independently authorized at its production owner.
     case "records": return OK;
@@ -68,6 +69,7 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/account/enroll": { action: "enroll" },
   "POST /api/account/relay-account": { action: "relay_account" },
   "POST /api/account/one-press": { action: "local_control" },
+  "POST /api/account/move": { action: "move_account" },
   "POST /api/account/pc-proof": { action: "local_control" },
   "POST /api/account/ssh-add": { action: "local_control" },
   "POST /api/alerts/webhook": { action: "webhook" },

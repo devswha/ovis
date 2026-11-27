@@ -60,6 +60,7 @@ import type { lockRoutes } from "./account/lock-routes.ts";
 import { lockBoundary, untilLockFrom, type LockSignal } from "./lock-boundary.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
+import type { AccountMove } from "./account/account-move.ts";
 import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
@@ -116,6 +117,7 @@ export interface RequestServices {
   /** the joins no window of this PC has seen yet (server/join-notices.ts) */
   readonly joins: JoinNotices;
   readonly accountMailbox: AccountMailbox;
+  readonly accountMove: AccountMove | null;
   readonly accountIntroductions: AccountIntroductions;
   readonly accountHolds: AccountHolds;
   /** the account safety log; null while OVIS_ACCOUNT_OPENS_ALL is off */
@@ -361,6 +363,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const localDenial = ownWindow && !funnel && devices.localRemovalRetry()
     && ((request.method === "POST" && pathname === "/api/devices/revoke-all")
       || (request.method === "DELETE" && /^\/api\/devices\/[0-9a-f]{16}$/.test(pathname)));
+  const movingAccount = pathname === "/api/account/move" && request.method === "POST";
+  if (movingAccount && access.level === "full" && devices.opensAll() && !devices.failsClosed && safety?.state().locked) {
+    setRequestRoute("account-move-locked");
+    return jsonResponse({ error: { code: "locked", message: "Unlock this PC on its own screen first" } }, 409);
+  }
   // strict is every source the store fails closed on (the log, the admission order, removal evidence, the journal: S19)
   if (safety !== null && safety !== undefined && !askingTheScreen) {
     access = lockBoundary(access, { locked: safety.state().locked, strict: devices.failsClosed && !localDenial }, {
@@ -454,6 +461,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // themselves, so a device that only watches may carry them too (server/account/routes.ts)
   // only on a PC that follows a list a person named: one that follows none answers every caller as before
   const listGossip = request.method === "POST" && (pathname === "/api/account/list/head" || pathname === "/api/account/list/page") && (ctx.services.accountList?.peerHead() ?? null) !== null;
+  if (movingAccount && access.level === "full" && (access.via === "open" || access.via === "portal")) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Manage the account from this PC itself, or from a paired device." } }, 403);
+  }
   if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink && !listGossip)) {
     setRequestRoute("watch-refusal");
     // A device the account's list holds only to watch, asking for the joins that wait at this pinned PC or deciding one:
@@ -505,6 +516,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if ((pathname === "/api/account/one-press" || pathname === "/api/account/pc-proof") && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
+  }
+  if (movingAccount && devices.opensAll() && !ownWindow && ctx.peer.kind !== "relay") {
+    setRequestRoute("account-move-member-refusal");
+    return jsonResponse({ error: { code: "not_member", message: "Only a device of this PC's account or its own window can move it" } }, 403);
   }
   // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
   // this PC names the list it pins, by its id, by the number it compares with the phone that adds it, or by the line of an invite
@@ -836,10 +851,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const herdr_runtime = owner || bridgeAuthorized ? options.runtimeService?.facts() : undefined;
     // the devices the owner is shown apart (`ovis status`): outside the account, and members on their own word
     const account_devices = owner ? devices.accountGroups() : undefined;
+    const accountMerged = owner && ctx.services.accountMailbox.accountMerged() ? { account_merged: true } : {};
     if (options.profile === "machine") {
       const health = await machineHealth(options.machineEngine ?? "herdr", await options.machineRefusal?.());
       return jsonResponse({ ok: true, auth, version, runtime: "herdr", ...relay, ...health,
-        ...(health.herdr ? { herdr: attachableIdentity(health.herdr, sidecar) } : {}), ...(account_devices ? { account_devices } : {}),
+        ...(health.herdr ? { herdr: attachableIdentity(health.herdr, sidecar) } : {}), ...(account_devices ? { account_devices } : {}), ...accountMerged,
         ...(security ? { security } : {}), web_ui: { boot_id: bootId, ...(serverId ? { server_id: serverId } : {}) },
       }, 200, { "cache-control": "no-store" });
     }
@@ -853,7 +869,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
       // this server's own version (package.json, embedded in the compiled binary), told with the other facts to a client that got in
-      return jsonResponse({ ok: true, herdr, auth, ...(access.level === "full" ? { version } : {}), ...relay, ...exposure, ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}), ...(account_devices ? { account_devices } : {}),
+      return jsonResponse({ ok: true, herdr, auth, ...(access.level === "full" ? { version } : {}), ...relay, ...exposure, ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}), ...(account_devices ? { account_devices } : {}), ...accountMerged,
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null, ...(serverId ? { server_id: serverId } : {}) } }, 200, securityHeaders);
     } catch (error) {
       const failed = errorResponse(error);

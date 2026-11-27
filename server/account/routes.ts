@@ -182,6 +182,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       account: devices.account(), ...(named === null ? {} : { account_provider: named }), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
       // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)
       ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
+      ...(context.services.accountMove === null ? {} : { account_move: context.services.accountMove.status() }),
+      ...(mailbox.accountMerged() ? { account_merged: true } : {}),
       ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
       enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
       // a yes or no only, never the account asked for: the account is named here once this PC is in it
@@ -226,6 +228,30 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
   if (!sameOrigin(request) || request.headers.get("x-herdr-machine") !== "1") return fail("invalid_origin", "Manage the account from this app", 403);
+  if (pathname === "/api/account/move") {
+    setRequestRoute(pathname);
+    const move = context.services.accountMove;
+    if (!devices.opensAll() || move === null) return fail("not_found", "Unknown account action", 404);
+    const answer = (outcome: Awaited<ReturnType<typeof move.order>>) => {
+      if ("refused" in outcome) {
+        const response = fail(outcome.refused.code, outcome.refused.message, outcome.refused.status);
+        if (outcome.refused.retryAfter !== undefined) response.headers.set("retry-after", String(outcome.refused.retryAfter));
+        return response;
+      }
+      const response = reply(outcome, outcome.state === "moved" ? 200 : 202);
+      if (outcome.state === "pending") response.headers.set("retry-after", "5");
+      return response;
+    };
+    if (peer.kind === "relay") {
+      const refused = move.caller(peer.device.id, peer.key);
+      if (refused !== null) return answer(refused);
+    }
+    context.timeout(request, 30);
+    const requestBody = await readJsonObject(request);
+    if (requestBody instanceof Response) return fail("invalid_move", "Send the merge id, both accounts and a join line for the destination", 400);
+    const { merge_id, from, into, invite } = requestBody;
+    return answer(await move.order({ merge_id, from, into, invite, ...(peer.kind === "relay" ? { by: peer.device.id, callerKey: peer.key } : { by: "pc" }) }));
+  }
   const body = await readJsonObject(request);
   if (body instanceof Response) return body;
   const serverId = peer.kind === "relay" ? peer.serverId : context.services.relay.currentIdentity()?.server_id ?? null;

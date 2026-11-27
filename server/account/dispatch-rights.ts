@@ -30,14 +30,19 @@ const REFUSAL_MESSAGES: Readonly<Record<string, string>> = {
 };
 
 export function accountDispatchRefusal(request: Request, ctx: ServerContext): Response | null {
-  if (ctx.peer.kind !== "relay" || !ctx.services.devices.isAccountRow(ctx.peer.device.id)) return null;
+  if (ctx.peer.kind !== "relay") return null;
   const { device, key } = ctx.peer;
+  const { devices } = ctx.services;
+  const carried = devices.wasListedBeforeMerge(device.id, key);
+  if (!carried && !devices.isAccountRow(device.id)) return null;
   const rows = ctx.services.accountRows;
   const access = rows?.access(device.id);
   const row = rows?.row(device.id);
   const fail = (code: string) => jsonResponse({ error: { code, message: REFUSAL_MESSAGES[code] ?? "An account-joined device cannot do this from afar" } }, 403);
-  if (access === undefined || row === null || row === undefined || row.key !== key) return fail("not_listed");
-  if ("refused" in access) return fail(access.refused);
+  if (!carried) {
+    if (access === undefined || row === null || row === undefined || row.key !== key) return fail("not_listed");
+    if ("refused" in access) return fail(access.refused);
+  }
 
   const localPath = localAccountPath(request);
   if (localPath === null) return fail("local_only");
@@ -52,7 +57,7 @@ export function accountDispatchRefusal(request: Request, ctx: ServerContext): Re
   const action = accountRouteAction(request.method, localPath)
     ?? (accountReadAllowed(request.method, localPath) ? { action: "read" as const } : null);
   if (action === null) return fail("account_route_denied");
-  const verdict = accountRowMay({ rowId: row.id, key: row.key, state: row.state,
-    mayRevoke: target => ctx.services.devices.remoteRevoke(row.id, target) === "allowed" }, action);
+  const verdict = accountRowMay({ rowId: device.id, key, state: carried ? "live" : row?.state ?? "expired",
+    mayRevoke: target => carried ? target === device.id : devices.remoteRevoke(device.id, target) === "allowed" }, action);
   return "refused" in verdict ? fail(verdict.refused) : null;
 }

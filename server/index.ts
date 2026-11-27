@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
-import { DeviceStore, folderTombstones, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
+import { DeviceStore, folderTombstones, markBeforeMerge, mergeAccountTombstones, readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { syncDirectory } from "./private-state.ts";
 import { PreferenceStore } from "./preferences.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
@@ -88,6 +88,7 @@ import { AccountCatchUp } from "./account/account-catch-up.ts";
 import { RemovalEvidence } from "./account/removal-evidence.ts";
 import { DeviceJournal } from "./account/device-journal.ts";
 import { mergeAccountState } from "./account/account-merge.ts";
+import { AccountMove } from "./account/account-move.ts";
 import { AccountHolds } from "./account/holds.ts";
 import { AccountIntroductions } from "./account/introductions.ts";
 import { RecoveryReleases } from "./account/recovery.ts";
@@ -382,7 +383,11 @@ export function createServer(
   // Before the first migration, the legacy rows themselves establish the PC's account. A recorded clear is never fresh.
   const bindingRule = pcAccount && pcAccount.strict === null && (!pcAccount.migrating || pcAccount.clears().length > 0)
     ? { boundAccount: pcAccount.account() } : {};
-  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { ...bindingRule, holdImports: closure, dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device) } : {}) : null;
+  const moved = (pcAccount?.clears() ?? []).flatMap(({ merged }) =>
+    merged && merged.from !== bindingRule.boundAccount ? [{ account: merged.from, merge: merged.merge, at: new Date().toISOString() }] : []);
+  const merge = sibling && !untouched ? mergeSiblingState(stateDir, sibling, undefined, opensAll ? { ...bindingRule, holdImports: closure,
+    dropConflictingKeys: true, sharedLegacyIdentity, onDropped: (device) => conflicts.push(device),
+    ...(moved.length ? { moved: (row: StoredDevice) => moved.reduce(markBeforeMerge, row) } : {}) } : {}) : null;
   // With no merge this start (a sibling now of another identity, or none given), only credentials an earlier merge
   // witnessed stay Step 1 credentials; a merge that ran decides alone, so its deletions still veto.
   const siblingLegacyCredential = merge ? merge.legacyCredential : opensAll && !untouched ? recordedLegacyCredential(stateDir) : undefined;
@@ -523,6 +528,9 @@ export function createServer(
     devices, identity: () => ovisRelay.currentIdentity(), ...(accountList ? { list: accountList } : {}),
     service: (() => { try { return accountServiceUrl(options.accountService?.url); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } })(), ...(options.accountService?.fetch ? { fetch: options.accountService.fetch } : {}),
   });
+  const accountMove = pcAccount === null ? null : AccountMove.open({ stateDir, sibling: sibling ?? null, devices, relay: ovisRelay,
+    mailbox: accountMailbox, holds: accountHolds, safety: safetyLog });
+  devices.attachAccountMove(accountMove);
   // a row dropped because its copies held different keys is gone from both folders; the journal says so (T27, T48)
   if (merge?.devicesBlocked === null) for (const device of conflicts) devices.journalEvent({ kind: "drop", how: "merge_conflict", key: device.relay_public_key ?? null, no: null, row: device.id, label: device.label, by: null, account: device.account ?? null });
   // Device migration creates the journal's companions. Recover interrupted notices before their whole records fold.
@@ -822,6 +830,7 @@ export function createServer(
     for (const entry of pendingRedemptions?.list() ?? []) pendingRedemptions?.decline(entry.id);
     syncConfirmListener();
   });
+  const stopRelayAccountWatch = pcAccount?.onBindingChange(() => ovisRelay.accountChanged());
   // `ovis recover` (server/account/recovery.ts): this PC's user, at its terminal or over SSH, on a socket no route reaches.
   // Each release and undo is journalled per row before it takes effect; whether the log can be read is asked live
   const recoveryReleases = opensAll && journal ? new RecoveryReleases({
@@ -892,6 +901,7 @@ export function createServer(
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
     options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, joins, accountMailbox, accountList, accountWitness, pinWatch, listAdd, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, safetyLog, catchUp, accountRows, preferences, herdrSidebar, identityOf, serveOnly, tailnetNodes, whoisNode: (address: string) => tailnet.node(address), portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, approvals, acp, cliProxyRoutes, usageLogin, usage, usageAccounts, systemSampler, fontsDir: join(stateDir, "fonts"), voice, memory, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup, recoveryReleases, lockSignal,
+    accountMove,
     get localConfirms() { return devices.screenApprovalActive() ? localConfirms : undefined; },
     get pendingRedemptions() { return devices.screenApprovalActive() ? pendingRedemptions : undefined; },
     get keyProofPairings() { return devices.screenApprovalActive() ? keyProofPairings : undefined; },
@@ -909,6 +919,7 @@ export function createServer(
     accountList?.start();
     accountWitness?.start();
   }
+  accountMove?.resume();
   accountMailbox.start();
 
   // one listener per address on one port, all or none: a half-bound set would answer where nobody asked it to
@@ -1002,6 +1013,7 @@ export function createServer(
     },
     stop() {
       services.runtimeMove?.stop();
+      accountMove?.stop();
       accountMailbox.stop();
       accountList?.stop();
       listAdd?.stop();
@@ -1034,6 +1046,7 @@ export function createServer(
       ipv6?.stop(true);
       ownerListener?.stop(true);
       stopBindingWatch?.();
+      stopRelayAccountWatch?.();
       stopPinWatch?.();
       if (pinTimer !== null) clearInterval(pinTimer);
       confirmListener?.stop();
