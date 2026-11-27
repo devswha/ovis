@@ -44,7 +44,7 @@ installs TLC and Java itself when `mise` is on the PATH. On this PC give it a `T
 `~/.cache/ovis-tmp/`, as AGENTS.md says of `/tmp`.
 
 A run that is back where it should be says that the five rules above and `NoDeadlock` hold, over
-1,182,451 states, in about 80 seconds. The model has more states than `/statechart` draws, so a
+1,608,175 states, in about 30 seconds on 8 workers. The model has more states than `/statechart` draws, so a
 passing run has no chart. A rule that breaks comes with its shortest path, in plain words, and a
 chart of that path.
 
@@ -186,6 +186,6 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 | `DrainPick`, `DrainSkips`, `DrainClaim`, `DrainClaimNoLease`, `Typist`, `NextUp`, `CanClaim` | `pending.ts` `drainPending`, `typists`, `dispatchPending`; `pending-input.ts` `next`, `claim` |
 | `RefusedForNow`, `RefusedForGood`, `RefusedHoldPane`, `LeaseFailed`, `FailedAfterPaste` | `pending.ts` `pendingContext`, `dispatchPendingText` (including `refusedFirstWrite`, Codex `unannounced` own-screen `holdPane`, and Codex app-server `"changed"` `holdPane`) and its `catch` |
 | `Paste`, `SubmitAsData`, `Enter`, `LaterKey` | `dispatchPendingText`: `paneSendText` and `paneSendKeys` with the guard `allowed`, ACP `child.client.submit`, Codex `steerTarget.send` `writing` and `sendCodexTextAsData` `mayWrite` (turn/start for a Codex at rest) after `authorizePending`; the guarded writes of `server/core/composer.ts` `freeClaudeBox` and `server/opencode-skill-attach.ts` `typeWithSkills`; `server/herdr/client.ts` `herdrRpc` `writeRequest` |
-| `Settle`, `Unattended`, `LeaseFailRetries`, `Sent` | `pending.ts` `dispatchPending`, `FIRST_MESSAGE_RETRY_CODES`; `pending-input.ts` `settle` |
+| `Settle`, `Unattended`, `LeaseFailRetries`, `Sent`, `SentUnconfirmed` | `pending.ts` `dispatchPending`, `FIRST_MESSAGE_RETRY_CODES`, `keepTurnGate` (a Codex Send now on the terminal that `interruptCodexSteering` calls `"unconfirmed"`); `pending-input.ts` `settle` (with `"preserve-turn"`: the state `review`, `reviewOnly`, which `blocksQueue` lets the queue pass) |
 | the lane (`lane`, `req`) | `server/core/input.ts` `serialize` |
 | who calls what | `server/core/server-core.ts`, where `createTerminalRegistry`, `createPendingDelivery` and `createConnections` are given each other's functions |

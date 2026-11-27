@@ -98,10 +98,11 @@ LeaseFailRetries(c, l) ==
 
 \* pending-input.ts next(pane), without the agent's status and the turn gate (see SKILL.md)
 Queued == SelectSeq(order, LAMBDA m : st[m] = "queued")
+\* "review": uncertain, kept for review alone (pending-input.ts reviewOnly): it does not stop the queue (blocksQueue)
 NextUp == IF (\E m \in Msgs : fl[m] \/ st[m] = "uncertain") \/ Queued = <<>> THEN "none" ELSE Head(Queued)
 \* pending-input.ts claim(item, automatic)
 CanClaim(m, automatic) ==
-  /\ st[m] \notin Gone /\ ~fl[m] /\ st[m] # "uncertain"
+  /\ st[m] \notin Gone /\ ~fl[m] /\ st[m] \notin {"uncertain", "review"}
   /\ ~\E o \in Msgs : fl[o]
   /\ IF automatic THEN NextUp = m ELSE st[m] \in {"queued", "held"}
 \* pending-input.ts hold(owner, pane) on the messages in `ms`
@@ -402,7 +403,7 @@ Settle(outcome) ==
                  /\ (BreakRequeueLostLease \/ ~(m = "Q" /\ st[m] = "uncertain"))
       new == IF lane.direct
                THEN (IF outcome = "sent" THEN "sent" ELSE IF outcome = "uncertain" THEN "lost" ELSE "none")
-               ELSE (IF outcome \in {"sent", "uncertain"} THEN outcome ELSE IF again THEN "queued" ELSE "held")
+               ELSE (IF outcome \in {"sent", "uncertain", "review"} THEN outcome ELSE IF again THEN "queued" ELSE "held")
       s1 == [st EXCEPT ![m] = new]
   IN /\ st' = IF outcome = "uncertain" /\ ~lane.direct THEN Hold(s1, Msgs \ {m}) ELSE s1
      /\ fl' = [fl EXCEPT ![m] = FALSE]
@@ -491,6 +492,13 @@ Sent ==
   /\ lane.m # "none" /\ lane.pc = "entered"
   /\ Settle("sent") /\ Quiet
 
+\* a Codex Send now on the terminal whose Enter went, with nothing that proves Codex took this message (codex-steering.ts
+\* "unconfirmed", pending.ts keepTurnGate): settle(…, "preserve-turn") keeps it uncertain for review alone, and holds
+\* nothing else
+SentUnconfirmed ==
+  /\ lane.m # "none" /\ lane.pc = "entered" /\ ~lane.auto /\ ~lane.direct
+  /\ Settle("review") /\ Quiet
+
 \* every connection has closed and nothing runs: the end
 Over ==
   /\ \A c \in Clients : conn[c] = "closed"
@@ -505,7 +513,7 @@ Next ==
   \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptHeld \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
   \/ DrainPick \/ DrainSkips \/ DrainClaim \/ DrainClaimNoLease
   \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ RefusedHoldPane \/ LeaseFailed
-  \/ Paste \/ SubmitAsData \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent
+  \/ Paste \/ SubmitAsData \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent \/ SentUnconfirmed
   \/ Over
 
 Spec == Init /\ [][Next]_vars

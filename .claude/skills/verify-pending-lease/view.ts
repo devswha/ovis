@@ -5,7 +5,7 @@ const pageName = (c: string): string => `page ${c.toUpperCase()}`;
 const names = (set: string[]): string => (set.length ? set.map(pageName).join(" and ") : "nobody");
 const ROW: Record<string, string> = {
   asked: "asked for, not listed yet", queued: "waits for the agent's turn", held: "held for Send now", sending: "being sent",
-  uncertain: "may have been typed", sent: "sent", lost: "may have been typed",
+  uncertain: "may have been typed", review: "may have been typed, kept for review", sent: "sent", lost: "may have been typed",
 };
 
 export const title = "A pending message and the pages attached to its pane";
@@ -68,6 +68,7 @@ export function step(action: string, from: Vars, to: Vars): string | null {
     case "Enter": return `Enter is pressed for ${what}`;
     case "LaterKey": return `a follow-up key is pressed for ${what}`;
     case "Sent": return `${what} is sent`;
+    case "SentUnconfirmed": return `${what} is not confirmed: kept for review`;
     default: return null;
   }
 }
