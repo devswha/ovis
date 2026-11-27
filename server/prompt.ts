@@ -25,6 +25,7 @@ import { claudePlanFile } from "./claude-plan.ts";
 import { heldQuestionAnswer, showsHeldQuestion } from "./claude-question.ts";
 import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
+import { answerCmdCard, cmdCard, cmdPending } from "./approvals/cmd-card.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
@@ -466,11 +467,11 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
 }
 
 /** What the chat sent a pane that Claude Code may be holding, for the readers that ask whether it waits. */
-let approvalHeld: (paneId: string) => boolean = () => false;
+let approvalHub: ApprovalHub | null = null;
 
 /** Whether the approval hub holds a request of a pane, for a dialog that is a card only then (ParsedPrompt.approvalHeldOnly). */
 export function readHeldApprovals(hub: ApprovalHub | null): void {
-  approvalHeld = hub === null ? () => false : (paneId) => hub.held(paneId).length > 0;
+  approvalHub = hub;
 }
 
 export function heldCandidate(paneId: string): string | null {
@@ -1041,6 +1042,7 @@ async function readKnownPrompt(
   ompBindings = ompLookups,
 ): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true;
   settled?: InteractivePrompt }> {
+  if (agent === "cmd" && cmdPending(approvalHub, paneId)) return { prompt: null, suppressFallback: true };
   // no native card (no session herdr reports, no verified v2 service, no pending permission or form): OpenCode
   // v1's own question prompt is read off the screen below (dialogs/opencode.ts, #1386), and the fallback card stands
   // for what no reader knows
@@ -1301,7 +1303,7 @@ async function readKnownPrompt(
     }
     // a dialog the screen cannot show whole is a card of its own only while the hub holds its request; else it is left
     // to the fallback card, as an agent Ovis did not start
-    return heldOnly(parsed) && !approvalHeld(paneId) ? null : parsed;
+    return heldOnly(parsed) && !approvalHub?.held(paneId).length ? null : parsed;
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
   if ((agent === "letta" || agent === "agy" || agent === "kiro") && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith(`${agent}-`)) prompt = null;
@@ -1623,6 +1625,8 @@ export async function currentPrompt(paneId: string, options: { codexHome?: strin
  * an answer stands on.
  */
 export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState; ompLookups: OmpLookups; answers?: OpenCodePromptState }): Promise<string | null | undefined> {
+  const cmd = cmdPending(approvalHub, pane.pane_id);
+  if (cmd) return cmd.id;
   const agent = labelledAgent(pane.agent) ?? "";
   if (agent === "pi") return undefined;
   const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups);
@@ -1659,6 +1663,8 @@ export function waitingKindOf(prompt: InteractivePrompt): "permission" | "questi
  * ends no asking.
  */
 export async function waitingCard(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState; ompLookups: OmpLookups }): Promise<{ kind: "permission" | "question" | null; id: string } | null | undefined> {
+  const cmd = cmdPending(approvalHub, pane.pane_id);
+  if (cmd) return { kind: cmd.question ? "question" : "permission", id: cmd.id };
   const agent = pane.agent;
   if (!agent || agent === "pi") return undefined;
   const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups).catch(() => undefined);
@@ -1711,6 +1717,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (!paneId) return badRequest("missing_pane_id", "pane_id is required.");
       const acpChild = options.acp?.forPane(paneId);
       if (acpChild) return jsonResponse({ prompt: acpPrompt(acpChild), suggestion: null, restored: null } satisfies PanePromptResponse);
+      const cmd = cmdPending(options.approvals, paneId);
+      if (cmd) return jsonResponse({ prompt: cmdCard(cmd), suggestion: null, restored: null } satisfies PanePromptResponse);
       const readSendId = chatSent.get(paneId)?.commands.at(-1)?.id;
       const read = await readPrompt(paneId, options.codexHome, options.openCodeStateDir, options.openCodeState, request.signal);
       if (read.stale) return promptChanged();
@@ -1761,6 +1769,11 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     if (typeof body.pane_id !== "string" || !body.pane_id.trim()) return badRequest("missing_pane_id", "pane_id is required.");
     if (typeof body.prompt_id !== "string" || !body.prompt_id) return badRequest("invalid_answer", "prompt_id is required.");
     answerEnded = options.onAnswering?.(body.pane_id);
+    if (body.prompt_id.startsWith("cmd.") || cmdPending(options.approvals, body.pane_id)) {
+      const result = request.signal.aborted ? "changed" : answerCmdCard(options.approvals, body);
+      endAnswer(result === "answered" ? "native" : null);
+      return result === "changed" ? promptChanged() : result === "invalid" ? badRequest("invalid_answer", "Choose an answer from the card.") : jsonResponse({ ok: true });
+    }
     const acpChild = options.acp?.forPane(body.pane_id);
     if (acpChild) {
       const answered = await answerAcpPrompt(acpChild, body);

@@ -290,7 +290,8 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         installed here, at which version, read from its version flag's stdout when the flag exits
  *         0 (5 s limit, longer where the entry sets detect.version_timeout_ms; kept until the
  *         executable file changes; a flag that fails, version_error "failed", or hangs, "timeout", is
- *         asked again after a minute, and such an agent does not run: agentRuns). Read only,
+ *         asked again after a minute, and such an agent does not run: agentRuns). Installed
+ *         Antigravity may report state.auth_mode "gemini-api-key" from its settings. Read only,
  *         no-store; a watch device may read it. `providers` (below) controls `sign_in.provider`,
  *         which is null for providers the client does not know. A remote PC
  *         from before the endpoint answers 404 through /api/machines/<id>/agent-catalog)
@@ -1212,6 +1213,8 @@ export interface InteractivePromptAnswer {
 }
 
 export interface InteractivePromptOption {
+  /** Release a blocking hook instead of selecting an answer (also on a multiple-choice card). */
+  action?: "terminal";
   label: string;
   description: string | null;
   /** true when the agent explicitly marked this option as its recommended pick. */
@@ -1309,7 +1312,7 @@ export type ClientMessage =
    * `detached: true` (feature "conversation-watch-detached"): an interest that needs no attachment, for a client that
    * shows the chat and no terminal. It survives attaching and detaching the pane and ends with a `detached: true`
    * disable or the connection; at most 32 per connection (`too_many_conversation_watches`). */
-  | { type: "conversation-watch"; pane_id: string; enabled: boolean; detached?: boolean }
+  | { type: "conversation-watch"; pane_id: string; enabled: boolean; detached?: boolean; visible_cards?: true }
   /** feature "prompt-watch": a `prompt-changed` whenever the prompt on the pane's screen opens, closes or becomes
    * another one, without attaching the pane. Ends with a disable, the connection, or an error `prompt_watch_ended`
    * (the pane closed, or its screen could not be read 10 times in a row); at most 32 per connection

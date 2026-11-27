@@ -29,6 +29,7 @@ export const RELEASES: Readonly<Record<string, string>> = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
   copilot: "@github/copilot",
+  cmd: "command-code",
   omo: "omo-ai",
   omp: "@oh-my-pi/pi-coding-agent",
   pi: "@earendil-works/pi-coding-agent",

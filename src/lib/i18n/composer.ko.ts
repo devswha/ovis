@@ -245,6 +245,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "The conversation is over its {context} context: omp compacts it first": "대화가 {context} 컨텍스트를 넘었습니다. omp가 먼저 압축합니다",
   "Question {n}": "질문 {n}",
   "Allow once": "한 번 허용",
+  "Answer in terminal": "터미널에서 답하기",
   "Always allow": "항상 허용",
   "Run a shell command": "셸 명령 실행",
   "Edit {file}": "{file} 수정",

@@ -245,6 +245,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "The conversation is over its {context} context: omp compacts it first": "对话已超出 {context} 上下文：omp 会先压缩它",
   "Question {n}": "问题 {n}",
   "Allow once": "允许一次",
+  "Answer in terminal": "在终端中回答",
   "Always allow": "始终允许",
   "Run a shell command": "运行 shell 命令",
   "Edit {file}": "编辑 {file}",
