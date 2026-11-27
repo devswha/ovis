@@ -255,7 +255,7 @@ process.stdin.on("data", chunk => {
         view.setDefaultTimeout(10_000);
         await view.addInitScript((mode) => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: mode }));
-          if (mode === "direct") localStorage.setItem("ovis:terminal-secret-field", "true");
+          if (mode === "direct") localStorage.setItem("ovis:terminal-password-field", "true");
         }, mode);
         await view.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
         await view.locator(".pane-terminal .xterm-screen").waitFor();
