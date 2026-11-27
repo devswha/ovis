@@ -3,7 +3,7 @@ import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
 import type { PaneView } from "./actions.ts";
 import { fileFromLink, isNavigation, linkSearch, NAV_KEY, readLink, resolveLink, slugOf, type AppLink, type LinkNote } from "./deepLink.ts";
-import { withoutFile } from "./historyKeys.ts";
+import { silentSheetLandings, withoutFile } from "./historyKeys.ts";
 import { INBOX_FROM_KEY, type useInbox } from "./useInbox.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 import type { SelectionMark } from "./selectionMark.ts";
@@ -303,6 +303,9 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       ownEntry.current = entryNow();
       release();
     });
-    return () => { window.removeEventListener("popstate", decidePop); leaveTraversal(); leaveEntries(); };
+    // a closed sheet's own Back that landed with no popstate
+    const landedUnheard = (): void => { sheetLanded(); release(); };
+    silentSheetLandings.add(landedUnheard);
+    return () => { window.removeEventListener("popstate", decidePop); leaveTraversal(); leaveEntries(); silentSheetLandings.delete(landedUnheard); };
   }, []);
 }

@@ -137,9 +137,9 @@ function cover(state: unknown): void {
 let pushing = false;
 let stepping: Set<string> | null = null;
 /**
- * Where the browser tells its entries (the Navigation API), the key of the one the step on its way lands on: the entry
- * under the one it leaves, named as the step is asked, as the browser names it then. A sheet that makes its entry
- * meanwhile changes neither.
+ * Where the entries have keys (the Navigation API's, or the ones this module keeps), the key of the one the step on its
+ * way lands on: the entry under the one it leaves, named as the step is asked, as it is named then. A sheet that makes
+ * its entry meanwhile changes neither.
  */
 let stepOnto: string | null = null;
 let steppedOff = false;
@@ -225,7 +225,7 @@ export function leavePageFromSheet(url: string): void {
 }
 
 function stepBack(): void {
-  const api = (window as unknown as { navigation?: NavigationApi }).navigation;
+  const api = navigation();
   const at = api?.currentEntry;
   stepOnto = api && at ? api.entries().find((entry) => entry.index === at.index - 1)?.key ?? null : null;
   stepping = new Set();
