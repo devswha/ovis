@@ -42,7 +42,6 @@ const NEWER = [
   "Enter same passphrase again:",
   "Enter old passphrase:",
   "Enter new passphrase (empty for no passphrase):",
-  // the letters around a path's slash are no yes/no choice, nor are two of its folders
   "Enter passphrase for key '/home/andy/notes/id_ed25519':",
   "Enter passphrase for /home/andy/notes/id_ed25519:",
   "Enter passphrase for /home/y/n/id_ed25519:",
@@ -54,36 +53,28 @@ const NEWER = [
 
 it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen and an IPv6 host's password", () => {
   for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `)).toBe(prompt);
-  // wrapped at the right edge, inside the remote's name
   expect(secretPrompt("$ git push\nPassword for 'https:\n//alice@github.com':", 20)).toBe("Password for 'https://alice@github.com':");
-  // a row that begins `y/n` is the rest of a name, read with the row above it
   expect(secretPrompt("Enter passphrase for /home/alice/keys/compan\ny/n-prod:", 44)).toBe("Enter passphrase for /home/alice/keys/company/n-prod:");
-  // a line separator in a key's name, which the earlier patterns take too
   expect(secretPrompt("Enter passphrase for key '/keys/a\u2028b':")).toBe("Enter passphrase for key '/keys/a\u2028b':");
   for (const screen of [
-    // git's other question is no secret
     "Username for 'https://github.com':",
     "Password for 'https://alice@github.com': ok",
     "Password for 'https://alice@github.com' and 'b':",
     "Enter passphrase for /home/alice/.ssh/id:work: ok",
     "Bad passphrase, try again:",
     "see alice@fe80::1's password:",
-    // a yes/no choice, however it is written
     "Enter passphrase for key [y/n]:",
     "Password for alice (y/N):",
     "Password for alice y / n:",
     "Password for alice, y/n:",
-    // after a dash or a comma, with no space
     "Password for alice -y/n:",
     "Enter passphrase for key,y/n:",
-    // with a third option too, in brackets or bare, and in quotes
     "Password for alice (y/n/q):",
     "Enter passphrase for key [Y/n/skip]:",
     "Password for alice y/n/a:",
     "Enter passphrase for key y/n/q:",
     "Password for alice 'y/n':",
     'Password for alice "y/n":',
-    // ssh-keygen's asks, not anything that mentions a passphrase
     "Enter the passphrase again:",
   ]) {
     expect(secretPrompt(screen)).toBeNull();
@@ -116,7 +107,6 @@ it("reads the password asks of an interactive ssh sign-in, doas, sudo in any lan
     "Enter pass phrase for server.key:",
   ]) {
     expect(secretPrompt(`$ make deploy\n${prompt} `)).toBe(prompt);
-    // read by no server released before this set: neither one from before secret-prompts-2 nor one that lists it
     expect([secretPrompt(prompt, Infinity, 1), secretPrompt(prompt, Infinity, 2), promptSet(prompt)]).toEqual([null, null, 3]);
   }
   for (const screen of [
@@ -124,7 +114,6 @@ it("reads the password asks of an interactive ssh sign-in, doas, sudo in any lan
     "[sudo: input needed] Username:",
     "(alice@host) Verification code:",
     "(alice@host) Password: ok",
-    // prose that mentions one
     "Enter the password:",
     "The new password:",
     "A passphrase:",
@@ -135,7 +124,6 @@ it("reads the password asks of an interactive ssh sign-in, doas, sudo in any lan
 });
 
 it("counts a prompt only while the cursor is on its line", () => {
-  // lines as the page reads them, each with its first screen row: a wrapped row belongs to the line above it
   const lines = ["$ git push", "Password for 'https://alice@github.com':", "", ""];
   const starts = [10, 11, 12, 13];
   expect(promptHasCursor(lines, starts, 11, 41, 80)).toBe(true);
@@ -145,8 +133,6 @@ it("counts a prompt only while the cursor is on its line", () => {
   // The same prompt in 40 columns, which its colon fills: the space after it wraps, and the cursor is on the next
   // row past that space. herdr draws each row at its own place, so the page has two lines here, the second blank
   expect(promptHasCursor(lines, starts, 12, 1, 40)).toBe(true);
-  // not after the answer (the program's line break leaves the cursor at the row's start, or two rows down), nor
-  // below a prompt that did not reach the right edge
   expect(promptHasCursor(lines, starts, 12, 0, 40)).toBe(false);
   expect(promptHasCursor(lines, starts, 13, 1, 40)).toBe(false);
   expect(promptHasCursor(lines, starts, 12, 1, 42)).toBe(false);
@@ -157,34 +143,26 @@ it("counts a prompt only while the cursor is on its line", () => {
   expect(promptHasCursor(padded(80, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 41, 80)).toBe(false);
   expect(promptHasCursor(padded(80, "$ sudo ls", "Password: ", ""), [0, 1, 2], 2, 10, 80)).toBe(false);
   expect(promptHasCursor(padded(80, "$ sudo ls", "Password: ", ""), [0, 1, 2], 1, 10, 80)).toBe(true);
-  // and one that fills its row still asks from the row below: its colon in the last column, or in the one before it
-  // with the space after it in the last
   expect(promptHasCursor(padded(40, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 40)).toBe(true);
   expect(promptHasCursor(padded(41, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 41)).toBe(true);
   expect(promptHasCursor(padded(42, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 42)).toBe(false);
   // a line that xterm wrapped over two rows itself holds its space: the row below it is past the answer's line feed
   expect(promptHasCursor(["$ git push", "Password for 'https://alice@github.com': ", ""], [0, 1, 3], 3, 11, 30)).toBe(false);
   expect(promptHasCursor(["$ git push", "Password for 'https://alice@github.com': ", ""], [0, 1, 3], 2, 11, 30)).toBe(true);
-  // two full rows of it in 20 columns, and a row of text below is no blank row
   expect(promptHasCursor(["Password for 'https:", "//alice@github.com':", ""], [0, 1, 2], 2, 1, 20)).toBe(true);
   expect(promptHasCursor(["Password for 'https://alice@github.com':", "x"], [0, 1], 1, 1, 40)).toBe(true);
   expect(promptHasCursor(["Password for 'https://alice@github.com':", "x", ""], [0, 1, 2], 2, 1, 40)).toBe(false);
-  // a prompt wrapped over three rows, the last holding only its final space: the cursor is on any of them
   const wrapped = ["$ ssh-add", "Enter passphrase for /home/alice/.ssh/id_ed25519: ", ""];
   for (const row of [21, 22, 23]) expect(promptHasCursor(wrapped, [20, 21, 24], row, 1, 17)).toBe(true);
   expect(promptHasCursor(wrapped, [20, 21, 24], 24, 0, 17)).toBe(false);
-  // the prompt on the screen's last row, and a screen with no text
   expect(promptHasCursor(["Password:"], [0], 0, 9, 80)).toBe(true);
   expect(promptHasCursor(["", ""], [0, 1], 0, 0, 80)).toBe(false);
   expect(promptHasCursor([], [], 0, 0, 80)).toBe(false);
 });
 
 it("reads the prompts of a server that lists secret-prompts-2 as that server does", () => {
-  // what #3566 added: read by such a server and by this one, not by one from before it
   for (const prompt of NEWER) expect([secretPrompt(prompt, Infinity, 2), secretPrompt(prompt), secretPrompt(prompt, Infinity, 1), promptSet(prompt)]).toEqual([prompt, prompt, null, 2]);
-  // its yes/no test, where the two differ: a bare three-way choice was a prompt to it
   expect([secretPrompt("Password for alice y/n/a:", Infinity, 2), secretPrompt("Password for alice y/n/a:")]).toEqual(["Password for alice y/n/a:", null]);
-  // and every server reads these
   for (const prompt of ["Password:", "[sudo] password for alice:", "alice@server's password:", "Enter passphrase for key '/tmp/key':"]) {
     expect([secretPrompt(prompt, Infinity, 2), promptSet(prompt)]).toEqual([prompt, 1]);
   }
@@ -215,16 +193,13 @@ it("joins only right-edge continuations of a narrow prompt", () => {
   expect(secretPrompt("Enter passphrase for key '/tmp/my private key for testing\n':\n", 57)).toBe("Enter passphrase for key '/tmp/my private key for testing':");
   expect(secretPrompt("Enter passphrase for key\n'/tmp/key':", "Enter passphrase for key ".length)).toBe("Enter passphrase for key '/tmp/key':");
   expect(secretPrompt("Enter passphrase for key\n '/tmp/key':", "Enter passphrase for key".length)).toBe("Enter passphrase for key '/tmp/key':");
-  // #3175: a joined row that starts with a space keeps it
   expect(secretPrompt("Enter passph\nrase for key\n '/tmp/a-ver\ny-long-priva\nte-key':", 12)).toBe("Enter passphrase for key '/tmp/a-very-long-private-key':");
   expect(secretPrompt("$ ssh-add\nEnter pass\nphrase for\n key '/tmp\n/key':", 10)).toBe("Enter passphrase for key '/tmp/key':");
-  // rows are full by display width: a wide character takes two columns
   expect(secretPrompt("$ ssh-add\nEnter passphrase for key '/home/u/프로젝트/비밀키/아주긴디렉터리이름입니다/한국\n어경로/id_ed25519':", 80))
     .toBe("Enter passphrase for key '/home/u/프로젝트/비밀키/아주긴디렉터리이름입니다/한국 어경로/id_ed25519':");
   expect(secretPrompt("$ ssh-add\nEnter passphrase for\n key '密钥密钥密钥密\n钥':", 20)).toBe("Enter passphrase for key '密钥密钥密钥密钥':");
   // a wide character that did not fit leaves the last cell empty, read as a space as xterm does
   expect(secretPrompt("Enter passphrase for key '/tmp/\n키':", 32)).toBe("Enter passphrase for key '/tmp/ 키':");
-  // an emoji takes two columns, a joined emoji sequence too
   expect(secretPrompt("Enter passphrase for key '🫠🫠x\nfoo':", 31)).toBe("Enter passphrase for key '🫠🫠xfoo':");
   expect(secretPrompt("Enter passphrase for key '👨‍👩‍👧x\nfoo':", 29)).toBe("Enter passphrase for key '👨‍👩‍👧xfoo':");
   expect(secretPrompt("Enter passphrase for key '/home/u/프로젝트\n':", 80)).toBeNull();

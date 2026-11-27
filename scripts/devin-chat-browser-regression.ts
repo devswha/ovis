@@ -1,4 +1,3 @@
-/** Synthetic Devin SQLite -> real parser -> conversation HTTP -> real ChatView (not live pane discovery). */
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { devinConversation, forgetDevinState } from "../server/devin.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "ovis-devin-chat-browser-"));
 const dbPath = join(root, "sessions.db");
@@ -55,6 +55,7 @@ try {
     return new Response("Not found", { status: 404 });
   } });
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, headless: true });
     try {
       for (const width of [1440, 393]) {

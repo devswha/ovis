@@ -1,6 +1,6 @@
 /**
  * Korean for the keys only the chat files use:
- * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
+ * components/ChatView.tsx, components/ChatWork.tsx, components/ChatTurn.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
  * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
@@ -9,6 +9,8 @@
  */
 export const CHAT_KO: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 채팅을 사용할 수 없습니다. 터미널을 열어 작업 상태와 도구 호출을 확인하세요.",
+  "Not in the conversation. If the agent showed an error, it is in the terminal.": "대화에 기록되지 않았습니다. 에이전트가 오류를 보였다면 터미널에 있습니다.",
+  "Not in the conversation. If {agent} showed an error, it is in the terminal.": "대화에 기록되지 않았습니다. {agent}이(가) 오류를 보였다면 터미널에 있습니다.",
   "{agent} has not recorded a conversation Ovis can find for this pane yet. Before the first message this is normal; if it stays, use the terminal.": "{agent}이(가) 이 창에서 Ovis가 찾을 수 있는 대화를 아직 기록하지 않았습니다. 첫 메시지 전에는 정상입니다. 계속 이렇다면 터미널을 쓰세요.",
   "Ovis can't read {agent} conversations yet. Use the terminal to work with it.": "Ovis는 아직 {agent} 대화를 읽지 못합니다. 터미널에서 작업하세요.",
   "Ovis couldn't find or read the file {agent} keeps this conversation in. Use the terminal.": "Ovis가 {agent}이(가) 이 대화를 담아 두는 파일을 찾거나 읽지 못했습니다. 터미널을 쓰세요.",
@@ -88,7 +90,6 @@ export const CHAT_KO: Record<string, string> = {
   "The list is empty.": "목록이 비어 있습니다.",
   "Every update, in order": "모든 업데이트(순서대로)",
   "Loading conversation…": "대화를 불러오는 중…",
-  "Waiting for the PC…": "PC 응답 기다리는 중…",
   "The PC isn't responding": "PC가 응답하지 않습니다",
   "Couldn't load the conversation": "대화를 불러오지 못했습니다",
   "Couldn't load the terminal output": "터미널 출력을 불러오지 못했습니다",
@@ -115,6 +116,7 @@ export const CHAT_KO: Record<string, string> = {
   "Ran in terminal": "터미널에서 실행함",
   "Open Terminal": "터미널 열기",
   "Background result delivered": "백그라운드 결과 도착",
+  "Stopped|chat": "중지됨",
   "Background task ended": "백그라운드 작업 끝남",
   "Goal continues": "목표 계속 진행",
   "background work": "백그라운드 작업",
@@ -240,7 +242,6 @@ export const CHAT_KO: Record<string, string> = {
   "{n} of {count}": "{count}개 중 {n}번째",
   "Couldn't copy the image. Download it instead.": "이미지를 복사하지 못했습니다. 대신 내려받으세요.",
   "Couldn't save the image.": "이미지를 저장하지 못했습니다.",
-  "Saved to Downloads.": "다운로드 폴더에 저장했습니다.",
   "Conversation turns": "대화 턴",
   "Go to turn {n}": "{n}번째 턴으로 이동",
   "Show full message": "전체 메시지 보기",

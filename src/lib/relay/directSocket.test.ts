@@ -1,18 +1,17 @@
 import { describe, expect, it } from "bun:test";
 
-import { directSocketFactory, directTailnetSupport, EARLY_SEND_BYTES, EARLY_SEND_MESSAGES, isDirectSocketUrl, type DirectBridge, type DirectEvent, type DirectFrame } from "./directSocket.ts";
+import { APP_ORIGIN, directPageAllowed, directSocketFactory, directTailnetSupport, EARLY_SEND_BYTES, EARLY_SEND_MESSAGES, isDirectSocketUrl, type DirectBridge, type DirectEvent, type DirectFrame } from "./directSocket.ts";
 
 const CARRIER = "ws://192.168.0.10:7319/v1/ws?v=1";
 
-/** The plugin as the page sees it: every call recorded, opens answered by the test, events sent by it. */
 function fakePlugin() {
   const calls: { method: string; id?: string; frame?: DirectFrame; code?: number; reason?: string; messages?: number; url?: string }[] = [];
-  const opens: { url: string; answer: (id: string) => void; refuse: () => void }[] = [];
+  const opens: { url: string; answer: (id: string) => void; refuse: () => void; full: () => void }[] = [];
   let handler: ((event: DirectEvent) => void) | undefined;
   const bridge: DirectBridge = {
     open: (url) => new Promise((resolve, reject) => {
       calls.push({ method: "open", url });
-      opens.push({ url, answer: resolve, refuse: () => reject(new Error("refused")) });
+      opens.push({ url, answer: resolve, refuse: () => reject(new Error("refused")), full: () => reject(Object.assign(new Error("Two direct sockets are open already"), { code: "too_many" })) });
     }),
     send: async (id, frame) => { calls.push({ method: "send", id, frame }); },
     close: async (id, code, reason) => { calls.push({ method: "close", id, ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) }); },
@@ -22,8 +21,22 @@ function fakePlugin() {
   return { bridge, calls, opens, emit: (event: DirectEvent) => handler!(event) };
 }
 
-/** Lets the promise callbacks and queued microtasks of the step before run. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+describe("directPageAllowed", () => {
+  const ios = { platform: "ios" as const, appVersion: "1.1.0", build: 12 };
+  it("asks the plugin from the hosted shell's origin, as before", () => {
+    expect(directPageAllowed(APP_ORIGIN, null)).toBe(true);
+    expect(directPageAllowed("https://app-ap.ovis.sh", null)).toBe(false);
+    expect(directPageAllowed("capacitor://app.ovis.sh", null)).toBe(false);
+    expect(directPageAllowed("http://192.168.0.10:7317", null)).toBe(false);
+  });
+
+  it("asks it from the app's own copy whatever origin its platform gives it", () => {
+    expect(directPageAllowed("capacitor://app.ovis.sh", ios)).toBe(true);
+    expect(directPageAllowed(APP_ORIGIN, ios)).toBe(true);
+  });
+});
 
 describe("isDirectSocketUrl", () => {
   it("takes only a private or Tailscale IPv4 carrier's /v1/ws?v=1", () => {
@@ -51,17 +64,14 @@ describe("isDirectSocketUrl", () => {
 
 describe("directTailnetSupport", () => {
   it("says yes only once the plugin answered tailnet, and never waits for an answer", async () => {
-    // Given plugins that answer yes, answer no, have no `features` (reject), or never answer
     const answer = Promise.withResolvers<unknown>();
     const yes = directTailnetSupport(() => answer.promise);
     const no = directTailnetSupport(async () => ({}));
     const missing = directTailnetSupport(async () => { throw new Error("not implemented"); });
     const silent = directTailnetSupport(() => new Promise<never>(() => {}));
-    // When nothing has answered yet, then after the answers
     expect(yes()).toBe(false);
     answer.resolve({ tailnet: true });
     await settle();
-    // Then only the plugin that said tailnet counts
     expect([yes(), no(), missing(), silent()]).toEqual([true, false, false, false]);
   });
 });
@@ -81,7 +91,6 @@ describe("directSocketFactory", () => {
     const received: unknown[] = [];
     socket.onmessage = (event) => received.push(event.data);
     expect(socket.readyState).toBe(0);
-    // sent before the plugin named the socket: they wait, then go in order
     socket.send("hello");
     plugin.opens[0]!.answer("s1");
     await settle();
@@ -99,7 +108,6 @@ describe("directSocketFactory", () => {
     expect(received[0]).toBe("{\"type\":\"assigned\"}");
     expect(received[1]).toBeInstanceOf(ArrayBuffer);
     expect([...new Uint8Array(received[1] as ArrayBuffer)]).toEqual([0, 1, 254, 255]);
-    // the two messages of one turn are taken off the plugin's queue in one call
     expect(plugin.calls.filter((call) => call.method === "ack")).toEqual([{ method: "ack", id: "s1", messages: 2 }]);
   });
 
@@ -142,6 +150,46 @@ describe("directSocketFactory", () => {
     expect(refused.readyState).toBe(3);
   });
 
+  it("asks again for a socket the plugin refused as full once it reports a close, unless the asker would not wait (#3243)", async () => {
+    // Given two sockets open, one of them closing (the plugin keeps its place until it reports the close)
+    const plugin = fakePlugin();
+    const open = directSocketFactory(plugin.bridge);
+    const closing = open(CARRIER);
+    open(CARRIER);
+    plugin.opens[0]!.answer("s1");
+    plugin.opens[1]!.answer("s2");
+    await settle();
+    closing.close();
+    // When a later race asks for one, another asker gives up while refused, and a sweep that would not wait asks too
+    const events: string[] = [];
+    const next = open(CARRIER);
+    next.onclose = (event) => events.push(`next:close:${event.code}`);
+    const givenUp = open(CARRIER);
+    givenUp.onclose = (event) => events.push(`given-up:close:${event.code}`);
+    const sweep = open(CARRIER, false);
+    sweep.onclose = (event) => events.push(`sweep:close:${event.code}`);
+    for (const refused of plugin.opens.slice(2)) refused.full();
+    await settle();
+    givenUp.close();
+    await settle();
+    // Then the race's socket still connects, the others end as sockets that never connected
+    expect(next.readyState).toBe(0);
+    expect(events).toEqual(["sweep:close:1006", "given-up:close:1006"]);
+    // and once the plugin reports the close, only the race's is asked for again
+    plugin.emit({ type: "close", id: "s1", code: 1000, reason: "" });
+    expect(plugin.opens.slice(5).length).toBe(1);
+    plugin.opens[5]!.answer("s3");
+    await settle();
+    expect(next.readyState).toBe(1);
+    // a close reported while a refused ask was on its way gets it asked again at once
+    const late = open(CARRIER);
+    plugin.emit({ type: "close", id: "s2", code: 1000, reason: "" });
+    plugin.opens[6]!.full();
+    await settle();
+    expect(plugin.opens.length).toBe(8);
+    expect(late.readyState).toBe(0);
+  });
+
   it("closes through the plugin, once it named the socket", async () => {
     const plugin = fakePlugin();
     const socket = directSocketFactory(plugin.bridge)(CARRIER);
@@ -161,13 +209,10 @@ describe("directSocketFactory", () => {
     const socket = directSocketFactory(plugin.bridge)(CARRIER);
     const closed: number[] = [];
     socket.onclose = (event) => closed.push(event.code);
-    // Given a socket the plugin has not named yet, sent more than the cap.
     for (const data of sends()) socket.send(data);
     await settle();
-    // Then the page hears it closed, and nothing it sent goes out.
     expect(closed).toEqual([1009]);
     expect(socket.readyState).toBe(3);
-    // When the plugin names it, it is closed there too.
     plugin.opens[0]!.answer("s1");
     await settle();
     expect(plugin.calls.filter((call) => call.method !== "open")).toEqual([{ method: "close", id: "s1", code: 1009, reason: "send queue full" }]);

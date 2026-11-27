@@ -1,0 +1,135 @@
+/* the connect screens' parts (RelayAddPc.tsx, ConnectStart.tsx): a round Back, one card per way, the same height each, a PC's row */
+.relay-shell-screen.relay-add-screen {
+  place-items: start center;
+}
+
+.relay-add-back {
+  display: grid;
+  place-items: center;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  padding: 0;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.relay-add-back > svg { width: var(--space-4); height: var(--space-4); }
+
+.relay-add-way {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-height: calc(var(--touch-target) * 1.75);
+  padding: var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-cta);
+  background: var(--bg-panel);
+  color: var(--text-strong);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.relay-add-way:disabled { cursor: default; opacity: 0.55; }
+
+.relay-add-way-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: calc(var(--space-6) + var(--space-4));
+  height: calc(var(--space-6) + var(--space-4));
+  border-radius: var(--radius-cta);
+  background: var(--bg);
+}
+
+.relay-add-way-icon > svg { width: var(--space-5); height: var(--space-5); }
+
+.relay-add-way-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.relay-add-way-title { font-weight: var(--fw-semibold); }
+
+.relay-add-way-sub {
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+}
+
+.relay-add-way-chevron {
+  flex: none;
+  width: var(--space-4);
+  height: var(--space-4);
+  color: var(--text-dim);
+}
+
+.relay-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.relay-add-saved-pc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--touch-target);
+  color: var(--text-strong);
+  text-decoration: none;
+}
+
+.relay-add-saved-name { flex: 1; min-width: 0; text-align: start; overflow-wrap: anywhere; }
+
+.relay-add-saved-note { margin-inline: var(--space-2); color: var(--text-dim); font-size: var(--fs-sm); white-space: nowrap; }
+
+/* the phone app opening a PC: a small spinner, what it opens, and Cancel at the end */
+.relay-add-opening {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.relay-add-opening > .boot-spinner {
+  flex: none;
+  width: var(--space-4);
+  height: var(--space-4);
+  border-width: var(--hairline);
+}
+
+.relay-add-opening-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* an open that failed or was refused offers the same PC by another way it is saved by: one button, under what it says */
+.relay-add-other-way {
+  display: flex;
+  margin: 0 0 var(--space-4);
+}
+
+/* the way's tag, then the host it opens, whole: a long host goes onto a second line, breaking after a dot first */
+.btn.relay-add-other-way-button {
+  gap: var(--space-2);
+  max-width: 100%;
+  height: auto;
+  min-height: var(--touch-target);
+  padding-block: var(--space-2);
+  white-space: normal;
+  text-align: start;
+}
+
+.relay-add-other-way-host {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

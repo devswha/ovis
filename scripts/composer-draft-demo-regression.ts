@@ -10,9 +10,6 @@ import { MAX_COMPOSER_CHARS } from "../src/lib/compose.ts";
 import { MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { openLens } from "./header-lens.ts";
 
-// The draft in the message box, on the demo app as scripts/composer-fit-harness.ts patches it: an
-// upload that fails, the agent's suggestion and skill completion, and the box's size, wrapping and
-// scrolling as the draft, the font size and the zoom change.
 const app = mkdtempSync(join(tmpdir(), "herdr-composer-fit-demo-"));
 try {
   const { server, withCard } = await composerFitDemo(app);
@@ -71,50 +68,43 @@ try {
       });
       console.log("PASS phone and desktop upload failure has one named alert, retry survives edits, success is announced, and file-list failures use a persistent alert");
 
-      // by default a tap on the grey words only focuses the box: typing there writes the user's own reply
-      await withCard(browser, 390, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes" }, async (page) => {
+      for (const suggestionChip of [false, true]) await withCard(browser, 390, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes", suggestionChip }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder === "Review the changes");
-        assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
+        assert.equal(await page.locator(".composer-suggestion").count(), suggestionChip ? 1 : 0);
         assert.equal(await box.evaluate((node) => getComputedStyle(node, "::placeholder").color === "rgba(0, 0, 0, 0)"), false, "the placeholder itself shows the suggestion");
+        await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
+        // the box takes the focus when it mounts: it starts unfocused here, so only the tap can focus it
+        await box.evaluate((node) => node.blur());
+        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-text") ?? false), false, "the box starts unfocused");
         const bounds = await box.boundingBox();
         assert.ok(bounds);
-        await box.tap({ position: { x: 40, y: Math.min(bounds.height / 2, 20) } });
-        assert.equal(await box.inputValue(), "", "a tap on the suggestion does not take it unless Settings asks");
+        // a real touch sequence on the grey words, not a synthetic click
+        const x = bounds.x + 40, y = bounds.y + Math.min(bounds.height / 2, 20);
+        assert.equal(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.classList.contains("composer-text"), [x, y]), true, "the grey words are the message box itself");
+        const session = await page.context().newCDPSession(page);
+        await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+        await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await session.detach();
+        await page.waitForFunction(() => document.activeElement?.classList.contains("composer-text"));
+        assert.equal(await box.inputValue(), "", `a tap on the suggestion does not take it (chip ${suggestionChip ? "on" : "off"})`);
         await page.keyboard.type("My own reply");
         assert.equal(await box.inputValue(), "My own reply");
+        assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0);
       });
-      console.log("PASS by default a tap on the grey suggestion focuses the box without taking it");
+      console.log("PASS a tap on the grey suggestion focuses the box without taking it, with the Suggestion chip off and on");
 
       for (const width of [390, 1440]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", pending: false, freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder === "Review the changes");
         await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
-        const suggestion = page.locator(".composer-inline-suggestion > span");
         if (width === 390) {
-          // Padding is still the textarea, not an acceptance button.
-          await box.tap({ position: { x: 4, y: 4 } });
-          assert.equal(await box.inputValue(), "");
-          await page.keyboard.type("My own reply");
-          assert.equal(await box.inputValue(), "My own reply");
-          assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
-          await box.fill("");
-          const bounds = await suggestion.boundingBox();
-          assert.ok(bounds);
-          const session = await page.context().newCDPSession(page);
-          const x = bounds.x + 8, y = bounds.y + bounds.height / 2;
-          await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
-          await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - 60 }] });
-          await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-          await session.detach();
-          assert.equal(await box.inputValue(), "", "a swipe across the suggestion does not accept it");
           await box.dispatchEvent("compositionstart", { data: "" });
-          await suggestion.tap();
+          await page.locator(".composer-suggestion").tap();
           assert.equal(await box.inputValue(), "", "an active composition blocks suggestion acceptance");
           await box.dispatchEvent("compositionend", { data: "" });
-          await suggestion.tap();
+          await page.locator(".composer-suggestion").tap();
         } else {
-          assert.equal(await suggestion.isVisible(), false);
           await box.click();
           await box.press("Shift+Tab");
           assert.equal(await box.inputValue(), "");
@@ -125,56 +115,19 @@ try {
         assert.equal(await box.evaluate((node: HTMLTextAreaElement) => document.activeElement === node && node.selectionStart === node.value.length && node.selectionEnd === node.value.length), true);
         await page.keyboard.type(" please");
         assert.equal(await box.inputValue(), "Review the changes please");
-        assert.equal(await page.locator(".composer-inline-suggestion").count(), 0);
+        assert.equal(await page.locator(".composer-suggestion").count(), 0);
         await box.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(0, 0));
         await page.keyboard.type("Now ");
         assert.equal(await box.inputValue(), "Now Review the changes please");
         assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0, "accepting and editing never sends a message");
       });
-      console.log("PASS touch suggestion acceptance and desktop Tab preserve focus, caret and editing without sending");
-
-      // the grey words sit in the textarea's row: an attachment strip above keeps its own taps
-      await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
-        const box = page.getByRole("textbox", { name: "Message", exact: true });
-        await page.locator('.composer-controls-left input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("x") });
-        const attachment = page.locator(".composer-attachment").first();
-        await attachment.waitFor();
-        const words = await page.locator(".composer-inline-suggestion > span").boundingBox();
-        const input = await box.boundingBox();
-        const strip = await attachment.boundingBox();
-        assert.ok(words && input && strip);
-        assert.ok(words.y >= input.y && words.y + words.height <= input.y + input.height, "the words are drawn inside the message box");
-        assert.ok(words.y >= strip.y + strip.height, "the words do not cover the attachment strip");
-        assert.equal(await page.evaluate(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest(".composer-inline-suggestion")), [strip.x + strip.width / 2, strip.y + strip.height / 2]), false, "a tap on the attachment reaches the attachment");
-      });
-      console.log("PASS the inline suggestion stays in the message row below an attachment");
-
-      for (const key of ["Enter", " "]) await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
-        const box = page.getByRole("textbox", { name: "Message", exact: true });
-        const suggestion = page.getByRole("button", { name: "Use the suggestion", exact: true });
-        await suggestion.waitFor();
-        await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
-        await suggestion.focus();
-        await suggestion.press(key);
-        assert.equal(await box.inputValue(), "Review the changes");
-        assert.equal(await box.evaluate((node: HTMLTextAreaElement) => document.activeElement === node && node.selectionStart === node.value.length && node.selectionEnd === node.value.length), true);
-        assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0);
-      });
-      console.log("PASS Enter and Space activate the focused inline suggestion without sending");
-
-      await withCard(browser, 390, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "Review the changes", suggestionChip: true }, async (page) => {
-        await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
-        await page.locator(".composer-suggestion").tap();
-        assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "Review the changes");
-        assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0, "the suggestion chip never submits");
-      });
-      console.log("PASS the optional suggestion chip accepts a draft without sending");
+      console.log("PASS the touch suggestion chip and desktop Tab preserve focus, caret and editing without sending");
 
       for (const width of [390, 1440]) for (const length of [MAX_COMPOSER_CHARS, MAX_COMPOSER_CHARS + 1]) await withCard(browser, width, { model: "gpt-5.6", status: "idle", freezeConversation: true, suggestion: "x".repeat(length), suggestionChip: true }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await page.waitForFunction((length) => document.querySelector<HTMLTextAreaElement>(".composer-text")?.placeholder.length === length, length);
         await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
-        if (width === 390) await page.locator(".composer-inline-suggestion > span").tap({ position: { x: 4, y: 4 } });
+        if (width === 390) await page.locator(".composer-suggestion").tap();
         else { await box.focus(); await box.press("Tab"); }
         if (length > MAX_COMPOSER_CHARS) {
           assert.equal(await box.inputValue(), "", "an oversized suggestion leaves the draft unchanged");
@@ -184,7 +137,7 @@ try {
         }
         assert.equal(await page.evaluate(() => (window as unknown as { fitSubmitCount: number }).fitSubmitCount), 0);
       });
-      console.log("PASS touch and Tab accept the exact limit and reject oversized suggestions with an alert and no submit");
+      console.log("PASS the chip and Tab accept the exact limit and reject oversized suggestions with an alert and no submit");
 
       for (const agent of ["claude", "codex", "pi"] as const) for (const width of [320, 1280]) await withCard(browser, width, { agent, model: "gpt-5.6", status: "idle" }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
@@ -215,7 +168,6 @@ try {
             mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
             await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `slash-${agent}-${width}.png`), fullPage: true });
           }
-          // A committing IME Enter belongs to the input method, even while a skill is offered.
           await box.evaluate((node) => node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true })));
           assert.equal(await box.inputValue(), "run tests then /del afterwards");
           await box.press("Tab");
@@ -245,7 +197,6 @@ try {
         await box.fill("see @src");
         await page.getByRole("listbox", { name: "Files", exact: true }).waitFor();
         await box.fill("look at /tmp");
-        // the send key: a phone's Return breaks the line by default, its hardware Mod+Enter sends
         await box.press(width <= 480 ? "ControlOrMeta+Enter" : "Enter");
         // the send is claimed in the pane's cross-tab lock (#2369), a moment after the key: the box empties then
         await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>("textarea.composer-text")?.value === "");
@@ -273,7 +224,6 @@ try {
 
       for (const width of [390, 1440]) await withCard(browser, width, { status: "idle", pending: false, model: "gpt-5.6", freezeConversation: true }, async (page) => {
         await page.emulateMedia({ reducedMotion: "reduce" });
-        // A compact viewport supplies scrollable history without changing disclosure state.
         await page.setViewportSize({ width, height: 600 });
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         const draft = "An unsent draft.";
@@ -429,7 +379,6 @@ try {
             const height = document.querySelector(".composer-text")!.clientHeight;
             return growing ? height > initialHeight : height === initialHeight;
           }, { initialHeight, growing: text !== draft });
-          // Let layout observers finish, without waiting for the paragraph to be repaired.
           await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
           const after = await paragraph(reading.text);
           assert.ok(Math.abs(after.offset - reading.offset) <= 1 && after.gap > 48, `editing keeps the reader on the same paragraph: ${JSON.stringify({ reading, after })}`);
@@ -448,8 +397,6 @@ try {
           await box.fill(value);
           await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
           const size = await box.evaluate((box: HTMLTextAreaElement) => {
-            // Let the browser size a copy of the visible field's own wrapping rules,
-            // independently of the measurement field's styles, without moving the transcript.
             const probe = box.cloneNode() as HTMLTextAreaElement;
             probe.removeAttribute("aria-label");
             probe.setAttribute("aria-hidden", "true");
@@ -468,9 +415,6 @@ try {
       });
       console.log("PASS Korean, Japanese and Chinese drafts and wrapped placeholders fit their native text height on phone and desktop");
 
-      // Korean typed in the box keeps each word whole, as the rest of the app and the box's own placeholder do (#3374):
-      // a word that fits a line alone moves to the next line whole instead of being split after a short first word, so
-      // "가 <word> 나" takes three lines, not two, and the box grows to all three.
       for (const width of [390, 1440]) await withCard(browser, width, { language: "ko", status: "idle", pending: false, model: "gpt-5.6", freezeConversation: true }, async (page) => {
         const box = page.locator(".composer-text");
         const word = await box.evaluate(async (node: HTMLTextAreaElement) => {
@@ -480,7 +424,6 @@ try {
           const probe = document.body.appendChild(document.createElement("span"));
           Object.assign(probe.style, { position: "absolute", visibility: "hidden", whiteSpace: "pre", font: style.font, letterSpacing: style.letterSpacing });
           const line = node.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
-          // the longest word that still fits one line of the box
           let longest = "";
           try {
             for (let index = 0; ; index += 1) {
@@ -503,8 +446,6 @@ try {
       });
       console.log("PASS Korean typed in the message box keeps its words whole on phone and desktop");
 
-      // Changing the setting in an already-open chat rewraps the existing draft: an automatic
-      // box grows and shrinks with it.
       for (const width of [390, 1440]) await withCard(browser, width, { model: "claude-opus-5-5" }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         assert.equal(await page.getByRole("separator", { name: "Resize message box", exact: true }).count(), 0, "the message box has no resize grip");

@@ -6,19 +6,14 @@ import { stripVTControlCharacters } from "node:util";
 import { HerdrError } from "../herdr/client.ts";
 import { createSubmitText } from "./composer.ts";
 
-// An immediate chat send to an agent whose input box is recorded (shared/input-row.ts typedDraft), against the
-// real RPC client on a unix socket this test owns; only herdr's answers are synthetic. The screens are real
-// `pane.read --format ansi` recordings (src/lib/fixtures-input-rows/README.md).
 const FIXTURES = join(import.meta.dir, "../../src/lib/fixtures-input-rows");
 const recorded = (path: string): string => readFileSync(join(FIXTURES, path), "utf8");
 
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
-let pane: { agent: string; argv: string[] };
-/** `live`: the detection read, the viewport's text (`visible`) unless set */
+let pane: { agent: string; argv: string[]; status?: string };
 let screens: { visible: string; live?: string };
-/** what the pane shows from the second read on: a screen that opened after the first */
 let next: typeof screens | undefined;
 let reads: number;
 let calls: { method: string; params: Record<string, unknown> }[];
@@ -43,7 +38,7 @@ beforeEach(() => {
         calls.push({ method: request.method, params: request.params ?? {} });
         const result = request.method === "pane.get" ? { pane: {
           pane_id: "w:p1", workspace_id: "w", tab_id: "w:t1", terminal_id: "t1", cwd: root, focused: false, revision: 0,
-          agent: pane.agent, agent_status: "idle",
+          agent: pane.agent, agent_status: pane.status ?? "idle",
         } }
           : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: 2147483646, argv: pane.argv, cwd: root }] } }
           : request.method === "pane.read" ? { read: { text: shownBy(request.params?.["source"]) } }
@@ -85,7 +80,9 @@ it.each([
   ["pi", ["pi"], "pi/draft-typed-119.ansi"],
   ["codex", ["codex"], "codex-0.167.0/composer-ultra-draft-100.ansi"],
   ["codex", ["codex"], "codex/mention-closed-120.ansi"],
-  ...["gjc", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo"].map((agent): [string, string[], string] => [agent, [agent], `${agent}/draft-typed-119.ansi`]),
+  ...["gjc", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo", "omp"].map((agent): [string, string[], string] => [agent, [agent], `${agent}/draft-typed-119.ansi`]),
+  ["omp", ["omp"], "omp/draft-lines-119.ansi"],
+  ["omp", ["omp"], "omp/draft-slash-119.ansi"],
 ])("refuses an immediate send to %s over text typed in its input box (%s), typing nothing", async (agent, argv, screen) => {
   pane = { agent, argv };
   screens.visible = recorded(screen);
@@ -98,15 +95,15 @@ it.each([
   // pi's autocomplete pushes its box up past the footer: the box is not made out, so the send goes as before
   ["pi", ["pi"], "pi/draft-slash-119.ansi"],
   ["codex", ["codex"], "codex-0.167.0/composer-ultra-empty-100.ansi"],
-  ...["gjc", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo"].map((agent): [string, string[], string] => [agent, [agent], `${agent}/draft-empty-119.ansi`]),
-  // an agent without a recorded box is not read at all
+  ...["gjc", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo", "omp"].map((agent): [string, string[], string] => [agent, [agent], `${agent}/draft-empty-119.ansi`]),
+  // omp 18.8.7's framed editor was recorded only empty: its box reports no typed cells, so it is sent to as before
+  ["omp", ["omp"], "omp/settings-idle-119.ansi"],
   ["an-unrecorded-agent", ["an-unrecorded-agent"], "pi/draft-typed-119.ansi"],
 ])("sends to %s when its box shows no typed text (%s)", async (agent, argv, screen) => {
   pane = { agent, argv };
   screens.visible = recorded(screen);
   await submit();
   expect(prompted()).toBeTrue();
-  // the box check reads the viewport in colour first: never for an agent with no recorded box
   if (agent === "an-unrecorded-agent") expect(calls.some((call) => call.method === "pane.read" && call.params["source"] === "visible")).toBeFalse();
 });
 
@@ -121,13 +118,10 @@ it("judges Codex's own screens and its composer on the same last read: a dialog 
 
 it("takes no colours from a viewport that is not the live screen: a draft shown there, over an empty live composer, is no draft", async () => {
   pane = { agent: "codex", argv: ["codex"] };
-  // the viewport, in colour, shows a composer holding typed text (another client's scroll, or a screen since redrawn);
-  // the live composer is empty
   screens.visible = recorded("codex-0.167.0/composer-ultra-draft-100.ansi");
   screens.live = readFileSync(join(FIXTURES, "codex-0.167.0/composer-empty-100.txt"), "utf8");
   await submit();
   expect(prompted()).toBeTrue();
-  // read again while they disagree, a bounded number of times, then sent as before
   expect(new Set(calls.filter((call) => call.method === "pane.read").map((call) => call.params["source"]))).toEqual(new Set(["visible", "detection"]));
 });
 
@@ -151,6 +145,43 @@ it("takes the viewport for the live screen when the live read only holds a row m
 it("takes nothing from a read without colour, where a placeholder looks typed", async () => {
   pane = { agent: "pi", argv: ["pi"] };
   screens.visible = stripVTControlCharacters(recorded("pi/draft-typed-119.ansi"));
+  await submit();
+  expect(prompted()).toBeTrue();
+});
+
+// pi-powerline-footer 0.22.0 draws a working pi's spinner in the editor's upper border, and it turns between the
+// viewport's read and the live one (#4332)
+const working = recorded("pi/powerline-working-typed-200.ansi");
+const turned = (screen: string): string => stripVTControlCharacters(screen).replace("⠸", "⠴");
+
+it("refuses a send to a working pi over text typed in its pi-powerline-footer box, though the spinner turned between the reads", async () => {
+  pane = { agent: "pi", argv: ["pi"], status: "working" };
+  screens = { visible: working, live: turned(working) };
+  expect((await refused()).code).toBe("input_draft");
+  expect(prompted()).toBeFalse();
+});
+
+it("sends to a working pi whose pi-powerline-footer box is empty, the spinner turning between the reads", async () => {
+  pane = { agent: "pi", argv: ["pi"], status: "working" };
+  const empty = working.replace(">\u001b[0m how\u001b[0m", ">\u001b[0m\u001b[0m");
+  expect(empty).not.toBe(working);
+  screens = { visible: empty, live: turned(empty) };
+  await submit();
+  expect(prompted()).toBeTrue();
+});
+
+it("sends to a working plain pi as before, though its stock box is misread under a rule of earlier output", async () => {
+  // pi 1.5's own editor draws the turn's status in its upper border, not indented; with a full-width rule printed just
+  // above it (the end of /hotkeys) and a theme that leaves `Working` in the terminal's colour, the stock reading takes
+  // the rows between that rule and the editor's lower one for a typed draft. Its spinner turning keeps the reads apart.
+  pane = { agent: "pi", argv: ["pi"], status: "working" };
+  const rule = (cols: number): string => `\u001b[38;2;111;164;201m${"─".repeat(cols)}\u001b[0m`;
+  const visible = [
+    ...Array<string>(12).fill(""), " the last answer", rule(60),
+    `\u001b[38;2;111;164;201m── ⠸\u001b[0m Working \u001b[38;2;111;164;201m${"─".repeat(47)}\u001b[0m`,
+    "\u001b[7m \u001b[0m", rule(60), "\u001b[38;5;244m~/project (main)\u001b[0m", "\u001b[38;5;244m0.0%/200k  claude-opus\u001b[0m",
+  ].join("\n");
+  screens = { visible, live: turned(visible) };
   await submit();
   expect(prompted()).toBeTrue();
 });

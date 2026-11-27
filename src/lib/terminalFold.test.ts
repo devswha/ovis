@@ -1,31 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import type { IBufferCell, IBufferLine } from "@xterm/xterm";
+import type { ScreenCell, ScreenLine } from "./terminalScreen.ts";
 import { cellStyle, columnAt, contrastRatio, dimmedColor, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
-/** A grid row of plain cells: what rowHtml reads of xterm's buffer, palette colours only. */
-function line(cells: Cell[], cols: number): IBufferLine {
+function line(cells: Cell[], cols: number): ScreenLine {
   const at = (x: number): Cell => cells[x] ?? { chars: "" };
-  const cell = (x: number): IBufferCell => {
+  const cell = (x: number): ScreenCell => {
     const c = at(x);
     return {
       getChars: () => c.chars,
       getWidth: () => c.width ?? 1,
-      getCode: () => c.chars.codePointAt(0) ?? 0,
       isBold: () => (c.bold ? 1 : 0),
-      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isBlink: () => 0, isInverse: () => (c.inverse ? 1 : 0),
+      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isInverse: () => (c.inverse ? 1 : 0),
       isInvisible: () => 0, isStrikethrough: () => 0, isOverline: () => 0,
       isFgDefault: () => c.fg === undefined, isBgDefault: () => c.bg === undefined && c.bgRgb === undefined,
       isFgRGB: () => false, isBgRGB: () => c.bgRgb !== undefined,
-      isFgPalette: () => c.fg !== undefined, isBgPalette: () => c.bg !== undefined,
       getFgColor: () => c.fg ?? 0, getBgColor: () => c.bgRgb ?? c.bg ?? 0,
-      getFgColorMode: () => 0, getBgColorMode: () => 0, isAttributeDefault: () => c.fg === undefined && c.bg === undefined && !c.bold,
-    } as unknown as IBufferCell;
+    };
   };
-  return { length: cols, isWrapped: false, getCell: (x: number) => (x < cols ? cell(x) : undefined), translateToString: () => "" } as unknown as IBufferLine;
+  return { length: cols, isWrapped: false, getCell: (x: number) => (x < cols ? cell(x) : undefined), translateToString: () => "" };
 }
-const scratch = {} as IBufferCell;
+const scratch = line([], 1).getCell(0)!;
 const plain = (text: string): Cell[] => [...text].map((chars) => ({ chars }));
 
 describe("the folded view of a mirrored grid", () => {
@@ -99,6 +95,19 @@ describe("the folded view of a mirrored grid", () => {
     expect(columnAt(row, 6, 9, scratch)).toBe(-1);
   });
 
+  test("a folded row's character after a Kitty graphics placeholder is found in its grid column", () => {
+    const row = line([{ chars: "\u{10eeee}\u0305\u0305" }, ...plain("ab")], 4);
+    expect([0, 1, 2].map((offset) => columnAt(row, 4, offset, scratch))).toEqual([0, 1, 2]);
+  });
+
+  test("a folded Kitty graphics placeholder under reverse video paints its neighbour's background", () => {
+    const row = line([{ chars: "\u{10eeee}\u0305\u0305", fg: 1, bg: 4, inverse: true }, { chars: "x", fg: 1, bg: 4, inverse: true }], 2);
+    const html = rowHtml(row, 2, { foreground: "#d4d4d4", background: "#1e1e1e" }, scratch);
+    const backgrounds = [...html.matchAll(/background:([^;]*)/g)].map((m) => m[1]);
+    expect(new Set(backgrounds).size).toBe(1);
+    expect(html).not.toContain("\u{10eeee}");
+  });
+
   test("a colour that cannot reach the contrast one way reaches it the other", () => {
     const grey = readableColor("#aaaaaa", "#aaaaaa", 4.5);
     expect(contrastRatio(grey, "#aaaaaa")!).toBeGreaterThanOrEqual(4.5);
@@ -126,10 +135,8 @@ describe("the folded view of a mirrored grid", () => {
     const theme = { foreground: "#eeeeee", background: "#111111", cursor: "#ff0000", cursorAccent: "#000000" };
     expect(rowHtml(line(plain("abc"), 6), 6, theme, scratch, 1, { x: 1, shape: "block" }))
       .toBe('a<span class="terminal-fold-cursor" style="background:#ff0000;color:#000000;">b</span>c');
-    // a shell's prompt ends in a blank the caret stands after
     expect(rowHtml(line(plain("ab"), 6), 6, theme, scratch, 1, { x: 3, shape: "outline" }))
       .toBe('ab <span class="terminal-fold-cursor" style="box-shadow:inset 0 0 0 1px #ff0000;"> </span>');
-    // on the second half of a wide glyph: the glyph is the cursor's
     expect(rowHtml(line([{ chars: "한", width: 2 }, { chars: "", width: 0 }, { chars: "x" }], 3), 3, theme, scratch, 1, { x: 1, shape: "none" }))
       .toBe('<span class="terminal-fold-cursor">한</span>x');
     // a write that filled the row: the cursor waits past the last column, and stands on the last cell
@@ -150,7 +157,6 @@ describe("the folded view of a mirrored grid", () => {
       expect(heard).toBe(2);
       wideGrids.set(first, null);
       expect(wideGrids.snapshot().has(pane)).toBe(true);
-      // the other terminal moved on to another pane: this one is no longer wide anywhere
       wideGrids.set(second, wideGridKey("pc", "w1:p2"));
       expect(wideGrids.snapshot().has(pane)).toBe(false);
       wideGrids.set(second, null);

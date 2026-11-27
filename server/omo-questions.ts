@@ -3,31 +3,36 @@ import { omoTranscriptForPane } from "./omo.ts";
 import { OmoAskReader, omoAsksAfter, type OmoAskCall, type OmoAsks } from "./omo-ask.ts";
 import type { OmoAsk } from "./dialogs/shared.ts";
 
-/** A call's questions, or null for arguments that are not the shape omo asks with. */
+/**
+ * The key OmO files the answer to the call's question at `index` under (its ask-user schema.js at senpi 2026.11.19-5):
+ * `q1`, `q2`, ... for `ask_user_question`, whatever the call says; the call's own snake_case `id` for
+ * `request_user_input`. None for a call whose tool is not known.
+ */
+function answerKey(call: OmoAskCall, question: Record<string, unknown>, index: number): string | undefined {
+  if (call.tool === "ask_user_question") return `q${index + 1}`;
+  const id = question["id"];
+  return call.tool === "request_user_input" && typeof id === "string" && id.trim() !== "" ? id.trim() : undefined;
+}
+
 export function omoAskOf(call: OmoAskCall): OmoAsk | null {
   const questions = (call.args as { questions?: unknown } | null | undefined)?.questions;
   if (!Array.isArray(questions) || questions.length === 0) return null;
   const ask: OmoAsk = { id: call.id, questions: [], wait: call.wait };
-  for (const question of questions as Record<string, unknown>[]) {
+  for (const [index, question] of (questions as Record<string, unknown>[]).entries()) {
     if (typeof question?.["header"] !== "string" || typeof question["question"] !== "string" || (question["options"] !== undefined && !Array.isArray(question["options"]))) return null;
     const options = ((question["options"] ?? []) as Record<string, unknown>[]).map((option) => ({
       label: typeof option?.["label"] === "string" ? option["label"] : "",
       description: typeof option?.["description"] === "string" && option["description"] ? option["description"] : null,
     }));
     if (options.some((option) => !option.label)) return null;
-    ask.questions.push({ header: question["header"], question: question["question"], multiSelect: question["multiSelect"] === true, options });
+    const id = answerKey(call, question, index);
+    ask.questions.push({ ...(id === undefined ? {} : { id }), header: question["header"], question: question["question"], multiSelect: question["multiSelect"] === true, options });
   }
   return ask;
 }
 
-/** the records that can open or close a question; the rest of a session's tail is not parsed */
 const OMO_ASK_RECORD_RE = /"role":"(?:assistant|toolResult|user)"|ask-user:settlement/;
 
-/**
- * The questions omo's session (its .jsonl, or the tail of it) still has open (omo-ask.ts), newest
- * first: a waiting call until its tool result, a non-waiting call until it is settled. Calls whose arguments are not the shape omo asks
- * with are left out.
- */
 export function openOmoAsks(jsonl: string): OmoAsk[] {
   let open: OmoAsks = [];
   for (const line of jsonl.split("\n")) {
@@ -39,12 +44,10 @@ export function openOmoAsks(jsonl: string): OmoAsk[] {
   return open.flatMap((call) => omoAskOf(call) ?? []).reverse();
 }
 
-/** The newest question omo's session has open, or null. */
 export function pendingOmoAsk(jsonl: string): OmoAsk | null {
   return openOmoAsks(jsonl)[0] ?? null;
 }
 
-/** omo's form or widget hint: a narrow pane wraps it, including between "just" and "type". */
 export const OMO_FORM_RE = /\b1-9\s+select\b|enter\s+save\s+and\s+next|\btab\s+next\s+question\b|\bor\s+just\s+type\s+your\s+reply\b/;
 const omoAskReader = new OmoAskReader();
 

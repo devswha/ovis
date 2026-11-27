@@ -11,7 +11,7 @@ import { paneStorageId } from "../../shared/machines.ts";
 import { pendingMessages } from "./pendingMessages.ts";
 import type { PaneSubmitRetention } from "./paneSubmitRetention.ts";
 import type { Translate } from "./i18n.ts";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import type { InputDraft } from "./draft.ts";
 import type { Settings } from "./settings.ts";
 
@@ -29,20 +29,17 @@ export interface TerminalSendsDeps {
   hostRef: RefObject<HTMLDivElement | null>;
   inputLine: boolean;
   inputRowNow: () => InputRowState | null;
-  /** Settings > Terminal > Keyboard only from the key bar, with the keyboard down (#1635) */
   keyboardHeld: boolean;
-  /** this pane's keyboard-control owner (lib/keyboardControl.ts): the mode switch reads its keyboard */
   keyboardOwnerRef: RefObject<string>;
   keyboardToggleFocusRef: RefObject<boolean>;
-  /** the input line's handle, where a direct-to-line mode switch hands the grid's keyboard (no component type needed) */
   lineFocus: RefObject<{ focus(): boolean } | null>;
   knownOutcomes: (pane: string | null) => readonly string[] | null;
   lineComposingRef: RefObject<boolean>;
   machineId: string;
   modifiersRef: RefObject<StickyModifiers>;
-  /** after a key that carried the held modifiers: lets go of those held for one key */
   consumeModifiers: () => void;
   onChatSuggestion: (pane: string, value: string | null) => void;
+  onImmediateSubmit: () => void;
   paneId: string | null;
   paneRef: RefObject<string | null>;
   pendingEpochRef: RefObject<number>;
@@ -62,11 +59,12 @@ export interface TerminalSendsDeps {
   stillOpenRef: RefObject<{ pane: string; agent: string; command: string; named: boolean; history: string | undefined } | null>;
   submitRetention: PaneSubmitRetention | null;
   tRef: RefObject<Translate>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   updateSettings: (patch: Partial<Settings>) => void;
 }
 
 export function useTerminalSends(deps: TerminalSendsDeps) {
+  const { onImmediateSubmit } = deps;
   const { activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardHeld, keyboardOwnerRef, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, lineFocus, machineId, modifiersRef, consumeModifiers, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setChatUnsent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings } = deps;
   const sendDraft = useCallback(() => {
     const socket = socketRef.current;
@@ -86,7 +84,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
   // must not turn a one-letter message into a control key. Offline it sends nothing and
   // keeps its text (never-queue); a message the server could not deliver keeps it too,
   // with the reason. Bracketed-paste wrapping follows the pane program's mode.
-  const submitComposerMessage = useCallback((text: string, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false): Promise<SubmitResult> | null => {
+  const submitComposerMessage = useCallback((text: string, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false, commandKey?: string): Promise<SubmitResult> | null => {
     const term = termRef.current;
     const socket = socketRef.current;
     const session = sessionRef.current;
@@ -94,9 +92,11 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     if (!term || !socket || !session || pane === null || secretRef.current !== null || heldRef.current) return null;
     // its Enter would run the pty's line without the start a held draft keeps
     if (draftHeldForRef.current === pane) return Promise.resolve({ ok: false, code: "held_input", message: "send or discard the held input first" });
-    // not the scope itself: a message sent right after a reconnect leaves before the snapshot that names it
     const epoch = session.epoch;
-    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly);
+    const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly, commandKey,
+      delivery === "immediate" && !holdOnly ? () => {
+        if (paneRef.current === pane && socketRef.current === socket && sessionRef.current?.epoch === epoch) onImmediateSubmit();
+      } : undefined);
     if (sent === null) return null;
     const releaseSubmit = submitRetention?.retain(pane);
     const submission = delivery !== "immediate" ? { pane, socket, epoch } : null;
@@ -106,22 +106,18 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const owner = paneStorageId(machineId, pane);
     const history = greetingMemory(owner).history;
     if (delivery === "immediate") { rememberGreeting(owner, afterSend(greetingMemory(owner))); redrawGreeting(); }
-    // a message went out, from the box or a queued one: the agent's suggestion was for the turn before it
     onChatSuggestion(pane, null);
     return sent.then((result) => {
-      // a message refused before anything was typed leaves the greeting as it was; each answer
-      // settles its own message only, so one on its way beside it (a queued "Send now") is not undone
       const typed = result.ok ? result.pending === undefined : !submitNotTyped(result.code);
       if (delivery === "immediate") {
         rememberGreeting(owner, afterSettled(greetingMemory(owner), typed, history)); redrawGreeting();
-        // its setChatSent above had the chat hide a stopped turn as sent over: nothing was
         if (!typed && paneRef.current === pane) setChatUnsent((current) => current + 1);
       } else if (typed) {
         rememberGreeting(owner, afterSettled(afterSend(greetingMemory(owner)), true, history)); redrawGreeting();
       }
       if (!result.ok) return result;
       if (result.pending) {
-        session.acceptPending(pane, result.pending, epoch);
+        session.acceptPending(pane, result.pending, epoch, result.replayed);
       } else {
         if (paneRef.current === pane) {
           if (delivery !== "immediate") setChatSent((current) => current + 1);
@@ -130,7 +126,6 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
       }
       return result;
     }, (error: unknown) => {
-      // the send broke with no answer: it may have been typed, and it is no longer on its way
       rememberGreeting(owner, afterSettled(delivery === "immediate" ? greetingMemory(owner) : afterSend(greetingMemory(owner)), true, history)); redrawGreeting();
       throw error;
     }).finally(() => {
@@ -138,7 +133,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
       releaseSubmit?.();
       if (paneRef.current === pane && socketRef.current === socket && pendingEpochRef.current === epoch) releaseRef.current();
     });
-  }, [onChatSuggestion, machineId, submitRetention]);
+  }, [onChatSuggestion, onImmediateSubmit, machineId, submitRetention]);
 
   const sendComposerText = useCallback((text: string, delivery: "queue" | "immediate" = "immediate"): false | Promise<true | string> => {
     const pane = paneRef.current;
@@ -157,8 +152,6 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     });
   }, [submitComposerMessage, agent, machineId, showSentCommand, inputRowNow, stillOpenNote]);
 
-  // the terminal's input line: the text typed like the keyboard would, into an agent's open
-  // menu too, then Enter after the server's gap; several lines go as one paste
   const sendTerminalLine = useCallback((text: string): false | Promise<true | string> => {
     const term = termRef.current;
     const socket = socketRef.current;
@@ -172,7 +165,6 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     cancelTouchRef.current();
     const sent = socket.submit(pane, message, payload, true);
     if (sent === null) return false;
-    // the line's Enter was the next key: modifiers held for one key are done with, as pressEnter's
     consumeModifiers();
     const releaseSubmit = submitRetention?.retain(pane);
     term.scrollToBottom();
@@ -182,9 +174,6 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     });
   }, [submitRetention]);
 
-  // the input line's Insert: one line typed like the keyboard would, with no Enter after it, and
-  // answered once herdr has it (HerdrSocket.insert). Nothing but the insert frame goes: unlike Send,
-  // it takes no grid back from another device (no resize), and moves no focus
   const insertTerminalText = useCallback((text: string): false | Promise<true | string> => {
     const term = termRef.current;
     const socket = socketRef.current;
@@ -202,9 +191,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     });
   }, [submitRetention]);
 
-  // a tap into the input line is the user here: the grid is theirs again before they type
   const reassertGrid = useCallback(() => {
-    // not the keyboard control's focus of the line: it shows the keyboard and sizes nothing
     if (keyboardToggleFocusRef.current) return;
     reassertIfStaleRef.current();
   }, []);
@@ -230,12 +217,6 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     updateSettings({ terminalInputMode: directTyping ? "line" : "direct" });
   }, [directTyping, updateSettings]);
 
-  // the input line keeps a tapped grid from raising the keyboard; typing straight into it gives it
-  // back. A mode switch is no keyboard gesture: it leaves the keyboard as the key bar's control says
-  // it is (up, or on its way up from this pane's tap; lib/keyboardControl.ts). Up, the switch hands
-  // it to the new mode's field, focus and all, in the same commit that changes data-direct-typing
-  // (a layout effect, before paint); down, it focuses nothing, though a field kept the focus (the
-  // back gesture's state), where a focus would raise it. A pane's own remount keeps its blur
   const directTypingRef = useRef(directTyping);
   useLayoutEffect(() => {
     const wasDirect = directTypingRef.current;
@@ -247,8 +228,6 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     if (inputLine) {
       textarea.setAttribute("inputmode", "none");
       if (document.activeElement !== textarea) return;
-      // the handoff is a key-bar move on a touch screen only: a desktop keeps the old blur. The two
-      // moves take the focus the bar asked for: nothing they cause is a user's (keyboardToggleFocusRef)
       keyboardToggleFocusRef.current = true;
       try {
         if (wasDirect && coarse && keyboardUp) {
@@ -259,14 +238,10 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
       }
     } else {
       textarea.removeAttribute("inputmode");
-      // only the selected pane: a focused sibling would take the selection (PaneCanvas onFocusCapture)
       if (activeRef.current && coarse && !chatView && turnedOn && keyboardUp) termRef.current?.focus();
     }
   }, [inputLine, coarse, chatView, directTyping, paneId]);
 
-  // Settings > Terminal > Keyboard only from the key bar (#1635): in direct typing, xterm's field
-  // carries inputmode="none" while the keyboard is down, as the input line does. Its own effect, after
-  // the one above, so a re-hold never re-runs that one's blur or handoff
   useLayoutEffect(() => {
     if (inputLine) return;
     const textarea = hostRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");

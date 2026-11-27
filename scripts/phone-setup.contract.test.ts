@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it, onTestFinished } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,8 +7,11 @@ import { testShellEnv } from "./test-shell.ts";
 
 /** Its own XDG config isolates the global plugin registry as well as the owned herdr panes. */
 it("herdr loads the Phone setup entrypoint and keeps its QR and code visible in a pane", async () => {
-  // the session socket lives under root: macOS's temp dir is too deep for a socket path (104 bytes)
-  const root = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "herdr-phone-pane-"));
+  // the session socket lives under root: a temp dir (macOS's, or a TMPDIR set deeper by hand) is too deep for a socket
+  // path (104 bytes on macOS, 108 on Linux), and herdr then refuses to start
+  const root = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "herdr-phone-pane-"));
+  // after the test's own finally has stopped the daemon, also when an assertion before it fails
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const source = join(import.meta.dir, "..");
   const config = join(root, "config");
   const plugin = join(root, "plugin");
@@ -20,7 +23,6 @@ it("herdr loads the Phone setup entrypoint and keeps its QR and code visible in 
   expect(manifest.actions.find((action: any) => action.id === "phone").command).toEqual([
     "herdr", "plugin", "pane", "open", "--plugin", manifest.id, "--entrypoint", "phone", "--placement", "zoomed", "--focus",
   ]);
-  // The real pane entry, without installation/startup hooks that launch an app daemon.
   writeFileSync(join(plugin, "herdr-plugin.toml"), `id = "${manifest.id}"\nname = "Phone setup QA"\nversion = "0.0.0"\nmin_herdr_version = "0.9.0"\nplatforms = ["linux", "macos"]\n[[panes]]\nid = "phone"\ntitle = "Phone setup"\nplacement = "${phone.placement}"\ncommand = ${JSON.stringify([process.execPath, join(source, phone.command[2]), phone.command[3]])}\n`);
   const binary = process.env["OVIS_HERDR_BIN"] || Bun.which("herdr")!;
   const session = "phone-setup-qa";
@@ -74,6 +76,5 @@ it("herdr loads the Phone setup entrypoint and keeps its QR and code visible in 
     if (workspace) await workspaceClose(workspace, socket).catch(() => undefined);
     if (daemon) { daemon.kill(); await daemon.exited; }
     app.stop(true);
-    rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);

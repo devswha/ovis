@@ -2,15 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isolatedHcEnv, stopIsolatedCore } from "../../scripts/test-hc.ts";
+import { corePids, isolatedHcEnv, stopTestCores } from "../../scripts/test-hc.ts";
 import { workspaceCreate } from "../herdr/client.ts";
 import { coreDestination } from "../runtime-move-service.ts";
 import { startRuntime } from "./runtime.ts";
 
 /**
  * Terminals Ovis starts on a real hc whose core an agent's shell started first (herdr-core#86):
- * colour off there, and none of the tokens the user's profile exports. Runs only where
- * OVIS_TEST_HC_BIN names an hc.
+ * colour off there, and none of the tokens the user's profile exports.
  */
 const bin = process.env["OVIS_TEST_HC_BIN"];
 const TEST_MS = 60_000;
@@ -18,6 +17,8 @@ const TEST_MS = 60_000;
 describe.skipIf(!bin || process.platform === "win32")("terminals Ovis starts on a core an agent's shell started", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "te-")));
   let env: Record<string, string> = {};
+  /** the core and holder the agent's `hc run` started, read right after it */
+  let pids: number[] = [];
   const saved = Object.fromEntries(["OVIS_HC_ENV", "OVIS_HC_BIN", "OVIS_RUNTIME", "HERDR_SOCKET"].map((name) => [name, process.env[name]]));
 
   beforeAll(async () => {
@@ -28,15 +29,18 @@ describe.skipIf(!bin || process.platform === "win32")("terminals Ovis starts on 
     // as an agent starts it: `hc run` in its shell, which starts the core and a terminal (and so its holder)
     const started = Bun.spawn([bin!, "run", "--bg", "--json"], { env: agent, stdout: "ignore", stderr: "pipe" });
     expect({ exit: await started.exited, stderr: await new Response(started.stderr).text() }).toMatchObject({ exit: 0 });
+    pids = await corePids(bin!, env);
     process.env["OVIS_HC_ENV"] = JSON.stringify(env);
     process.env["OVIS_HC_BIN"] = bin!;
   }, TEST_MS);
 
   afterAll(async () => {
-    await stopIsolatedCore(bin!, env);
+    // a core that had to be killed, a pid left that is not proven its own, or a socket left, is a leak: it fails the suite (the hook outlasts the stop's 10 s wait)
+    const { killed, unproven, socketsLeft } = await stopTestCores(bin!, [{ env, pids }]);
     for (const [name, value] of Object.entries(saved)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
     rmSync(root, { recursive: true, force: true });
-  });
+    expect({ killed, unproven, socketsLeft }).toEqual({ killed: [], unproven: [], socketsLeft: [] });
+  }, TEST_MS);
 
   async function paneEnv(address: string): Promise<Record<string, string>> {
     const out = join(root, `env-${address}`);

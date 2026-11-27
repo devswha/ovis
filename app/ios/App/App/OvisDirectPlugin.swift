@@ -1,5 +1,6 @@
 import Capacitor
 import Foundation
+import OvisHomeCore
 import WebKit
 
 /// The PC's direct carriers for the hosted shell (src/lib/relay/directSocket.ts; docs/relay.md, "Direct on
@@ -7,7 +8,7 @@ import WebKit
 /// origin (DirectCallGate) may call it, only `ws://<private or Tailscale IPv4>:<port>/v1/ws?v=1` opens, at most two at
 /// once. Frames go to the page in order as `{ id, kind, data }` (binary as base64); a socket whose messages
 /// the page has not acknowledged pass 4 MiB or 16,384 is closed with 1009. Noise inside the channel proves
-/// the PC: the address is only a hint. Android's twin: app/android/app/src/main/java/sh/ovis/app/OvisDirectPlugin.java.
+/// the PC: the address is only a hint.
 @objc(OvisDirectPlugin)
 public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "OvisDirectPlugin"
@@ -26,20 +27,16 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private final class Socket {
         let task: URLSessionWebSocketTask
-        /// sizes of the messages sent to the page and not acknowledged yet, oldest first
         var unacked: [Int] = []
         var unackedBytes = 0
-        /// sends handed to the task and not completed yet: bounded as the page's queue is
         var pendingSends = 0
         var pendingBytes = 0
         var finished = false
         init(task: URLSessionWebSocketTask) { self.task = task }
     }
 
-    /// every socket's state, and the session's callbacks, on this one queue
     private let queue = DispatchQueue(label: "sh.ovis.direct")
     private var sockets: [String: Socket] = [:]
-    /// whether `session` was made, so teardown does not make one only to end it
     private var sessionMade = false
     private var pageObserver: NSObjectProtocol?
     private lazy var session: URLSession = {
@@ -102,7 +99,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             task.maximumMessageSize = Self.maxQueuedBytes
             let id = UUID().uuidString
             self.sockets[id] = Socket(task: task)
-            // answered before the socket starts, so the page knows it before any of its events
             call.resolve(["id": id])
             task.resume()
             self.receive(id)
@@ -159,7 +155,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let socket = self.sockets[id], !socket.finished else { call.resolve(); return }
             socket.task.cancel(with: URLSessionWebSocketTask.CloseCode(rawValue: code) ?? .normalClosure, reason: reason.data(using: .utf8))
             call.resolve()
-            // the PC's answer to the close usually comes first; a peer that never answers ends it here
             self.queue.asyncAfter(deadline: .now() + 5) { self.finish(id, code: code, reason: reason, error: false) }
         }
     }
@@ -219,7 +214,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Ends `id` once: an error event first when it broke, then its close event.
     fileprivate func finish(_ id: String, code: Int, reason: String, error: Bool) {
         guard let socket = sockets[id], !socket.finished else { return }
         socket.finished = true
@@ -261,7 +255,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
 }
 
 extension Notification.Name {
-    /// The web view's main frame committed a new page (NavigationFailureProxy).
     static let ovisPageCommitted = Notification.Name("sh.ovis.pageCommitted")
 }
 
@@ -285,16 +278,19 @@ private final class SessionEvents: NSObject, URLSessionWebSocketDelegate {
     }
 }
 
-/// Stands in front of Capacitor's script message handler: every OvisDirect message (its own methods and the
-/// listener methods it inherits, addListener, removeListener and removeAllListeners) goes on only from the main
-/// frame of the app's own origin (the hosted shell, https://app.ovis.sh), never from a PC page opened by its
-/// address or any frame, which Capacitor's iOS bridge would otherwise let call every plugin. The plugin's own
-/// methods act only on calls this approved, so without the gate they answer nothing; only those calls leave an
-/// approval, and each takes its own, so none is kept unused.
+/// Stands in front of Capacitor's script message handler and lets a page's message on only by what a page cannot
+/// choose: the frame it came from and that frame's origin (BridgeGate.decide, where each rule is). No message from a
+/// frame inside a page goes on, in any build, which Capacitor's iOS bridge would otherwise let call every plugin;
+/// OvisDirect answers only the main frame of the shell's origin (PCStore.shellOrigin: the hosted app, or its copy
+/// inside the app in a build that serves it itself), OvisSsh only the app's own pages.
+/// OvisDirect's own methods act only on calls this approved, so without the gate they answer nothing; only those
+/// calls leave an approval, and each takes its own, so none is kept unused. For the calls whose plugin decides by the
+/// page asking (HerdrShell's and OvisSsh's), the sender's origin is kept the same way: a plugin reads the page that
+/// asked, not the web view's address, which during a load is already the next page's.
 final class DirectCallGate: NSObject, WKScriptMessageHandler {
-    static let appHost = "app.ovis.sh"
     private static let lock = NSLock()
     private static var approved = Set<String>()
+    private static var senders: [String: URL] = [:]
     private let inner: WKScriptMessageHandler
 
     private init(inner: WKScriptMessageHandler) { self.inner = inner }
@@ -305,13 +301,11 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
         handler.contentController.add(DirectCallGate(inner: handler), name: "bridge")
     }
 
-    /// The plugin's own methods, each of which takes its approval (OvisDirectPlugin.allowed).
-    static let ownMethods: Set<String> = ["open", "send", "close", "ack", "features"]
-
-    /// A new page: approvals left by the old one are dropped.
+    /// A new page: approvals and senders left by the old one are dropped.
     static func clear() {
         lock.lock()
         approved.removeAll()
+        senders.removeAll()
         lock.unlock()
     }
 
@@ -321,20 +315,28 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
         return approved.remove(callbackId) != nil
     }
 
-    static func fromApp(_ frame: WKFrameInfo) -> Bool {
-        let origin = frame.securityOrigin
-        return frame.isMainFrame && origin.protocol == "https" && origin.host.lowercased() == appHost && (origin.port == 0 || origin.port == 443)
+    /// The origin of the main frame that made the call `callbackId` (`scheme://host[:port]`), once; nil for a call
+    /// the gate kept none for, which the plugins that ask take as no page of the app's.
+    static func sender(_ callbackId: String?) -> URL? {
+        guard let callbackId else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return senders.removeValue(forKey: callbackId)
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let body = message.body as? [String: Any], body["pluginId"] as? String == "OvisDirect" || body["service"] as? String == "OvisDirect" {
-            guard Self.fromApp(message.frameInfo) else { return }
-            if body["type"] as? String == "message", let method = body["methodName"] as? String, Self.ownMethods.contains(method),
-               let callbackId = body["callbackId"] as? String {
-                Self.lock.lock()
-                Self.approved.insert(callbackId)
-                Self.lock.unlock()
-            }
+        let body = message.body as? [String: Any], origin = message.frameInfo.securityOrigin
+        let plugins = Set([body?["pluginId"] as? String, body?["service"] as? String].compactMap { $0 })
+        let callbackId = body?["callbackId"] as? String
+        // a WKSecurityOrigin's port is 0 for its scheme's own
+        let decision = BridgeGate.decide(mainFrame: message.frameInfo.isMainFrame, scheme: origin.protocol, host: origin.host, port: origin.port, plugins: plugins,
+                                         type: body?["type"] as? String, method: body?["methodName"] as? String, callback: callbackId != nil, shell: PCStore.shellOrigin)
+        guard decision.pass else { return }
+        if let callbackId, decision.approve || decision.record {
+            Self.lock.lock()
+            if decision.approve { Self.approved.insert(callbackId) }
+            if decision.record { Self.senders[callbackId] = BridgeGate.sender(scheme: origin.protocol, host: origin.host, port: origin.port) }
+            Self.lock.unlock()
         }
         inner.userContentController(controller, didReceive: message)
     }

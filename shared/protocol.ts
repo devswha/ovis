@@ -1,4 +1,5 @@
 import type { HerdrKeys } from "./herdr-keys.ts";
+import type { ACCOUNT_OPENS_ALL_CAPABILITY, BlockReceipt, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen } from "./account-devices-api.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -33,7 +34,7 @@ export type {
   WorkspaceInfo,
 } from "./herdr-api.generated.ts";
 
-import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo } from "./herdr-api.generated.ts";
+import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo, WorkspaceWorktreeInfo } from "./herdr-api.generated.ts";
 
 /** GET /api/herdr-ui: the herdr client preferences of the PC serving the web UI, never the rest of its config. */
 export interface HerdrUiConfig {
@@ -42,9 +43,17 @@ export interface HerdrUiConfig {
   keys?: HerdrKeys;
 }
 
-/** Friendly aliases used across the UI. */
-export type HerdrWorkspace = WorkspaceInfo;
+/**
+ * A workspace's checkout as herdr reports it. herdr-core adds `git_id`, the identity of the checkout's
+ * git folder this row was drawn with: Delete worktree checkout… sends it back, so a checkout added
+ * again at the same path since is refused rather than deleted. Absent on herdr and older servers.
+ */
+export type HerdrWorkspaceWorktree = WorkspaceWorktreeInfo & { git_id?: string };
+export type HerdrWorkspace = Omit<WorkspaceInfo, "worktree"> & { worktree?: HerdrWorkspaceWorktree | null };
 export type HerdrTab = TabInfo;
+/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
+export type PaneContext = { used: number; window: number | null };
+
 /**
  * `background_tasks`: an OmO pane's `task` children, a Claude Code or OpenCode pane's subagents and background commands, or an agy or grok pane's background tasks, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
@@ -60,12 +69,15 @@ export type HerdrTab = TabInfo;
  * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
  * translated), and how far it is, 0 to 100.
  */
-/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
-export type PaneContext = { used: number; window: number | null };
-
 export type HerdrPane = PaneInfo & {
+  /** Latest verified Copilot UI activity sample, for badges only. */
+  copilot_processing?: boolean;
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
+  /** Stop on this pane cancels a keeper session rather than interrupting a TUI. */
+  acp_child?: true;
+  /** A person stopped this ACP child: the agent that started it gets no new turn until a person hands it back (POST /api/pane/turn/release with these). */
+  acp_hold?: AcpHold;
   own_tab?: true;
   agent_kind?: string;
   agent_message?: string;
@@ -80,8 +92,9 @@ export type HerdrPane = PaneInfo & {
   finish_id?: number;
 };
 /** Missing finish fields on an older bridge mean no finish can be acknowledged here. */
-export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
+export type SessionSnapshot = Omit<HerdrSnapshot, "panes" | "workspaces"> & {
   panes: HerdrPane[];
+  workspaces: HerdrWorkspace[];
   /** Random per bridge start and observed herdr socket/marker replacement, independently per PC. */
   finish_epoch?: string;
   /**
@@ -102,7 +115,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, PendingKey, PendingRedemptionsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
@@ -143,7 +156,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
  *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
- *                                          only: which runtime this server serves and what Settings may switch it to) } (boot_id: this server
+ *                                          only: which runtime this server serves and what Settings may switch it to),
+ *                                          account_devices?: { unlinked: { id, label }[], own_word: { id, label }[] } (a driving
+ *                                          owner only: docs/account.md, "How a device joined") } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)
  *  GET    /api/session                   -> { snapshot: SessionSnapshot }
  *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" | "alt-runtime" }, X-Herdr-Update: 1,
@@ -154,6 +169,14 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         [keys] prefix bindings, for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
  *         Tailscale on this PC already serves, or the command to run), no-store
+ *  POST   /api/access/tailscale/serve    -> RemoteAccess once Tailscale serves this server (runs `tailscale serve --bg
+ *         --https=<first free allowed port> http://127.0.0.1:<port>` unless it serves it already), no-store; this PC's own
+ *         window only (403 local_required before anything runs), x-herdr-machine: 1. 409 tailscale_owner_unknown (this
+ *         PC's Tailscale login is not known: nothing runs) / tailscale_missing /
+ *         tailscale_not_running / tailscale_no_port / tailscale_serve_refused (operator: true on Linux when the refusal
+ *         is for want of operator rights); the CLI's words go to the server log only
+ *  POST   /api/access/tailscale/open     -> 204 once the Tailscale app is opened on this PC (macOS, Windows); this PC's own
+ *         window only (403 local_required), x-herdr-machine: 1. 409 tailscale_app_unavailable (Linux, or no app)
  *  GET    /api/portal                    -> PortalStatus (an optional public HTTPS address through
  *         Portal, server/portal.ts), no-store
  *  POST   /api/portal/start              -> 202 { accepted: true }; body { relay, auth? } (PortalAuth: who may
@@ -175,19 +198,30 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/relay/start               -> RelayStatus; closes an ungated tokenless device gate first
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
- *         (the one Devices shows, else a new one); with x-ovis-no-account-only: 1, a code of its own made only
- *         while the PC is in no account (409 in_account otherwise), ended when the PC joins one; 409 relay_off
- *         while off, relay_offline in error
- *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *         (the one Devices shows, else a new one, which replaces the code of the header that follows: no other
+ *         offer carries that one); with x-ovis-no-account-only: 1, a code of its own made only
+ *         while the PC is in no account (409 in_account otherwise) and an account is named for it (409
+ *         no_account_named otherwise: RelayStatus.account_named), ended when the PC joins one; a device that
+ *         pairs with that code through the relay waits to link (docs/account.md, "Who may admit a device"):
+ *         403 link_required for all but its account status and its link, gone after 30 s; 409 relay_off
+ *         while off, relay_offline in error. With x-ovis-expect-account: <account id> (on POST /api/relay/code
+ *         too), such a code made for that account, whose waiting devices are taken into it alone, answered
+ *         with AccountPairing beside the fields above; the offer carries the code pending for the same account,
+ *         else one of its own; 400 invalid_account, 409 in_account (docs/account.md, "A code made for an account").
+ *         Either kind of code is made only with an account service (409 account_service_off), its offer carries
+ *         `admission: 1`, and a link while it lives needs the account's admission (docs/account.md, "The account's word")
+ *  POST   /api/relay/offer/keep          -> AccountPairingState; JSON { id }: such a code read by its pairing.id;
+ *         400 invalid_body without one
+ *  POST   /api/relay/link                -> { url, window_id }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
- *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
- *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *  POST   /api/relay/link/close          -> { ok: true }; ends the current window and declines its comparisons.
+ *         With `x-ovis-window: <window_id>`, a stale close does nothing. From this PC only (403 through the relay).
  *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
  *         404 relay_pairing_gone once it left, was decided or ran out of time
  *  POST   /api/relay/direct              -> RelayStatus; JSON { on: boolean }: direct connections on this PC's
- *         networks while the relay is on (on unless turned off; off ends every direct session); 400 invalid_relay_direct, 409 direct_unavailable on a server without them
+ *         networks while the relay is on (off unless turned on; off ends every direct session); 400 invalid_relay_direct, 409 direct_unavailable on a server without them
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
@@ -227,7 +261,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         0 (5 s limit, longer where the entry sets detect.version_timeout_ms; kept until the
  *         executable file changes; a flag that fails, version_error "failed", or hangs, "timeout", is
  *         asked again after a minute, and such an agent does not run: agentRuns). Read only,
- *         no-store; a watch device may read it. A remote PC
+ *         no-store; a watch device may read it. `providers` (below) controls `sign_in.provider`,
+ *         which is null for providers the client does not know. A remote PC
  *         from before the endpoint answers 404 through /api/machines/<id>/agent-catalog)
  *  POST   /api/agent-catalog/install { agent, alternative? } -> { pane_id, workspace_id, command,
  *         shell } (opens a tab and types that agent's official command for this PC's platform into its
@@ -311,7 +346,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         readable store answers no matches, one that loses it after a page was read 409 history_changed.)
  *  GET    /api/pane/summary?pane_id=&pane_id=... -> PaneSummaries (each pane's last words for a
  *         list row, read pane after pane within PANE_SUMMARY_DEADLINE_MS: a pane not read by then
- *         is left out, one with nothing said or no readable conversation is null. 400
+ *         is left out, one not reached is also listed in skipped, and one with nothing said
+ *         or no readable conversation is null. 400
  *         missing_pane_id, 400 too_many_panes past PANE_SUMMARY_MAX_IDS distinct ids)
  *  POST   /api/pane/close { pane_id }         -> { ok: true } (pane.close RPC; the collector's
  *         session-changed broadcast removes it from every client's sidebar)
@@ -478,17 +514,21 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
- *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
- *         checkout and closes its workspace, keeps the branch; a dirty checkout is refused without force:
- *         dirty_worktree_requires_force)
+ *  POST   /api/worktree/remove { workspace_id, force?, expected_checkout?, expected_git_id? } -> WorktreeRemoved
+ *         (worktree.remove: deletes the checkout and closes its workspace, keeps the branch; a dirty checkout is
+ *         refused without force: dirty_worktree_requires_force; a herdr-core server refuses a checkout other
+ *         than the confirmed path and git identity: worktree_target_changed; 400 invalid_expected_checkout,
+ *         invalid_expected_git_id when they are not an absolute path and a non-empty string)
  *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
- *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices; `current` marks the caller's,
+ *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices, then the account-joined ones
+ *         that may sign in here, marked `through_account`; `current` marks the caller's,
  *         `connection` how one with an encrypted session up reaches the PC; `?check=1` measures their round trips first, within 3 s)
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
- *         401 invalid_code when the code is wrong, spent after five tries, or expired). With
+ *         401 invalid_code when the code is wrong, spent after five tries, or expired, and for the code of an
+ *         offer asked for with x-ovis-no-account-only, which is redeemed through the relay only). With
  *         `Accept: application/json` (a script, never the browser app): 200 DevicePairToken + the same
  *         Set-Cookie; the script then sends `Authorization: Device <token>` in place of the cookie,
  *         under the same role, last-seen and revocation
@@ -508,6 +548,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         and one whose keys do not match, so nothing is enumerated; 403 status_unavailable to the open LAN, which
  *         signs in as no device and so owns no record (asked before any subscription is looked at)
  *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC)
+ *  GET    /api/usage/login              -> usage provider discovery
+ *         `providers` is a comma-separated list of usage provider IDs the client knows. These routes
+ *         only report IDs in that list that the server knows. Absent means the set from before Devin.
  *  DELETE /api/usage/accounts { account } -> 204 (removed from Ovis, CLI sign-in untouched) | 404 account_not_found
  *  POST   /api/usage/accounts { account } -> 204 (a removed account listed again)
  *  Errors: non-2xx with { error: { code, message } }
@@ -534,11 +577,11 @@ export interface ApiError {
 
 export type { PaneFindMatch, PaneFindRequest, PaneFindResponse } from "./find.ts";
 
-export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
+export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageFailure, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, DirectExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, DeviceConnection, DeviceRoute, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, DirectExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, DeviceConnection, DeviceRoute, PairingCode, AccountPairing, AccountPairingEnd, AccountPairingLink, AccountPairingState, AccountPairingTurnedAway, PortalLogin, TailscaleAccess } from "./access.ts";
 /** Older servers and the Tailscale-only builder omit relay state. */
 export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
@@ -599,6 +642,16 @@ export interface RelayStatus {
   readonly error: string | null;
   /** why, as a fixed code, whenever `error` says something (null otherwise); absent from an older server */
   readonly error_code?: RelayErrorCode | null;
+  /**
+   * Whether an account was named for this PC (`POST /api/account/relay-account`: its signed-in owner added it on
+   * its own page, or ran `ovis add`). The relay tab's QR code is made only once one is (`POST /api/relay/offer`
+   * with `x-ovis-no-account-only`). Absent from an older server.
+   */
+  readonly account_named?: boolean;
+  /** This PC's relay ID (null before it has one), to this PC's own window and CLI only; absent elsewhere and from an older server. */
+  readonly server_id?: string | null;
+  /** The account named for this PC (`account_named`), to its own window and CLI only, as `server_id`. */
+  readonly relay_account?: string | null;
   /**
    * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
    * listened on now (none while the relay is off). Absent from a server without them.
@@ -692,18 +745,21 @@ export type ConversationPart =
     kind: "tool"; name: string; summary: string; input: string; output: string; error?: boolean;
     /** Hermes could not load a tool-call list whose arguments exceeded its page limit. */
     arguments_omitted?: true;
+    /** File changes reported by ACP, separate from the call arguments and text output. */
+    edits?: { path: string; before: string; after: string }[];
     skill?: SkillActivity;
     /** set when `output` was cut: an opaque ref for GET /api/pane/conversation/tool-output, and the whole output's length */
     output_ref?: string; output_size?: number;
     /** images the call returned (pi reads a picture into the result); same fetch as a user image */
     images?: { media_type: string; ref: string }[];
-    /** the agent's own id for the call (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`); absent from other agents and older servers */
+    /** the agent's own id for the call, when available (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`, OpenCode `id`) */
     call_id?: string;
     /**
      * What the transcript itself records of the call's outcome, never guessed from its output text.
      * Claude: `pending` until its tool_result, then `ok`, or `error` when the result is flagged so.
      * Codex: `pending` until its output record, then absent (it records no failure flag: done, outcome
-     * unknown). Absent for other agents and older servers.
+     * unknown). OpenCode: `pending` while waiting or running, then `ok` or `error` as it records the call.
+     * Absent for other agents and older servers.
      */
     state?: "pending" | "ok" | "error";
   }
@@ -768,6 +824,12 @@ export interface ConversationMetadata {
    * `openai-codex`): set by a model change and by each answer, absent when none is named.
    */
   provider?: string;
+  /**
+   * Claude Code's permission mode (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), as its
+   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it. For a
+   * Codex Ovis started, `plan` while its own server says the thread is in Plan mode, else absent.
+   */
+  permission_mode?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
@@ -808,6 +870,9 @@ export interface OmpBtwHistory {
 }
 
 /** How far a pane's plan has got, for the sidebar: `current` names the step in progress. */
+/** The keeper's hold a person's Stop set on an ACP child, as the release route takes it back. */
+export interface AcpHold { child_id: string; generation: number }
+
 export interface PlanSummary {
   done: number;
   total: number;
@@ -829,13 +894,14 @@ export interface ConversationResponse {
    * fallback and from older bridges. A 200 and a 304 also carry it as the `x-server-time` header.
    */
   server_time?: string;
-  source: "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "acp" | "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
-   * `metadata` was read off the agent's own screen: a conversation not begun, or a Codex that has
-   * reported no session (whose scrollback answer carries `metadata` only so). No file records it
-   * and the pane's output can change it, so the chat re-reads on terminal output.
+   * `metadata` was read off the agent's own screen: a conversation not begun, a Codex that has
+   * reported no session (whose scrollback answer carries `metadata` only so), or an Antigravity
+   * conversation, whose ledger never records the model. No file records it and the pane's output
+   * can change it, so the chat re-reads on terminal output.
    */
   screen?: true;
   /**
@@ -931,6 +997,8 @@ export interface SlashCommand {
   forms?: CommandForm[];
   /** `terminal`: only works in the terminal; `agent-hidden`: the agent's own menu hides it, it still sends when typed */
   visibility?: "offered" | "terminal" | "agent-hidden";
+  /** Omit this ordinary live control from Chat suggestions without changing how typed commands run. */
+  readonly chatPaletteHidden?: true;
   /** where this row came from, and whether it was checked against the running agent version */
   provenance?: {
     /** how the row was found: `scan` read from disk, `static` shipped with the bridge, `native` asked of the agent */
@@ -1116,6 +1184,8 @@ export interface InteractivePromptAnswer {
 export interface InteractivePromptOption {
   label: string;
   description: string | null;
+  /** true when the agent explicitly marked this option as its recommended pick. */
+  recommended?: true;
 }
 
 /** POST /api/pane/prompt/answer body. One answer or navigation action; native OpenCode multiselect may combine option_indices and custom_text. */
@@ -1154,6 +1224,11 @@ export interface PromptAnswer {
  *  shared pty - the observer instead receives `pane-geometry` and adopts the pty's grid, so
  *  a phone watching a pane can never change the size the operator's PC sees. The client
  *  re-sends its role before the attach replay on reconnect.
+ *  On a supported Windows mirror, `attach {windows_fit:true}` opts into native fitting.
+ *  Only an interact attach without keep_size may claim control. A held slot is never taken
+ *  without `take-over`. `pane-geometry {windows_fit:true, fixed:false}` confirms a controller
+ *  stream frame; every other viewer adopts the fixed grid. Resize alone never takes a slot.
+ *  After release-size, a fresh attach is required to drive again. No HTTP resize RPC is used.
  *  secret requires the "secret-input" feature, an interact attachment, a matching fresh
  *  prompt and an idle input queue. Its result contains only ok/code, never the value.
  *  watch requires the "watch" feature: a read-only view of the pane drawn for the client's grid
@@ -1195,9 +1270,9 @@ export interface PendingMessage {
 
 export type ClientMessage =
   /** Subscribe to this connection server's authorized machine document; requires machine-events. */
-  | { type: "machine-events"; enabled: boolean }
+  | { type: "machine-events"; enabled: boolean; compact_agents?: boolean }
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
-  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
+  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Understands an explicit fixed:false geometry grant on a Windows mirror. Never grants authority by itself. */ windows_fit?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
   /** Native invalidations require "conversation-watch" and an attachment; observers may subscribe.
    * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative.
@@ -1262,8 +1337,12 @@ export type ClientMessage =
    * `agent_only` (feature "agent-only"): the message is for an agent alone (a chat message carrying comments on
    * a reply, #511, whose `> quote` lines a shell would read as redirects). The server refuses it with
    * agent_not_ready, typing nothing, when no agent is in front of the pane as it would type it; a queued or held
-   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery. */
-  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true }
+   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery.
+   * `command_key`: UUID of a draft send, kept across manual retries until edited or acknowledged.
+   * The WebSocket upgrade's optional `receipt_resume_id` identifies the browser even before attach.
+   * A recent acceptance for this pane, device and browser answers `replayed`; an uncertain result
+   * repeats its refusal. Neither writes again. A replayed pending item is a copy, not a lease. */
+  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true; command_key?: string }
   /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
    * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore
    * this optional field and retain their existing discard behaviour, without this protection.
@@ -1304,7 +1383,11 @@ export type ClientMessage =
    * client sends it when the page comes back, the network changes or nothing arrived for a while,
    * and drops a socket that stays silent: a half-open one still reads OPEN in the browser. A remote
    * PC's socket relays it unchanged, so the remote server's snapshot decides whether it is sent. */
-  | { type: "ping"; id: number };
+  | { type: "ping"; id: number }
+  /** device table T57 (feature "account-opens-all/1"): this row has seen the notices up to `seq`; it decides nothing */
+  | NoticeSeen
+  /** device table T51, T53 (feature "account-opens-all/1"): "It's me", or "Not me" with its signed blocks, for one notice */
+  | NoticeAnswer;
 
 /** Local-only diagnostic metadata. This contract never contains a message, URL or credential. */
 export type ClientConnectionEventKind = "connect" | "open" | "connect_timeout" | "close" | "socket_error"
@@ -1341,6 +1424,10 @@ export interface ClientConnectionTrace {
  * `terminal-history` (herdr-core, which has no viewport to scroll): each attach clears the client's scrollback and replays
  * the pane's last TERMINAL_HISTORY_LINES lines, so the client keeps the scrollback and scrolls it itself. Without it herdr
  * owns the scrollback and the client keeps none.
+ * `terminal-modes` (herdr-core, whose attach stream carries the program's modes, application cursor keys included): the
+ * client's own terminal knows how the program reads a plain arrow, so the browser types it as xterm encodes it (`input`),
+ * in order with the keys typed around it. Without it the attach never says (herdr), and a plain arrow is a named key
+ * (`keys`) herdr encodes for the program.
  * `conversation-search`: GET /api/pane/conversation/search answers; without it the browser offers no conversation search.
  * `conversation-watch-detached` and `prompt-watch`: a client may follow a pane's conversation and prompt without
  * attaching it (the `conversation-watch` and `prompt-watch` frames).
@@ -1349,8 +1436,11 @@ export interface ClientConnectionTrace {
  * sign-in, sudo in any language, passwd, mysql, gpg, openssl too). A bridge answers `invalid_secret` at a prompt
  * outside what it lists, so the browser types that secret as direct input instead (`input`, never kept), while
  * its own screen still shows the prompt.
+ * `account-opens-all/1` (ACCOUNT_OPENS_ALL_CAPABILITY): listed only while OVIS_ACCOUNT_OPENS_ALL is on at the PC (device
+ * table P10, P15, T57). Only then may the server send `device-notice` and `device-notice-replay`, and only then does a
+ * client send `notice-seen` and `notice-answer`.
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
+export type ServerFeature = typeof ACCOUNT_OPENS_ALL_CAPABILITY | "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "terminal-modes" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2" | "secret-prompts-3";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1380,7 +1470,7 @@ export type ServerMessage =
   /** sent to a client joining an attachment whose stream ended after it was ready, before the replay: the replay is the screen from before, so only output after the next `input-ready` shows the pane as it is. Presentation only; input readiness is unchanged */
   | { type: "output-recovering"; pane_id: string }
   /** the shared pty's grid changed: observe clients adopt it, interact clients drive it. `fixed`: the grid is the pane's own in herdr (a mirrored pane), so every client adopts it and none resizes */
-  | { type: "pane-geometry"; pane_id: string; cols: number; rows: number; fixed?: boolean }
+  | { type: "pane-geometry"; pane_id: string; cols: number; rows: number; fixed?: boolean; /** A fit-aware viewer can ask for control with a fresh interact attach after it released size. */ windows_fit?: true }
   | { type: "role-ack"; mode: ClientRole }
   /** ok after Enter delivery, or bridge acceptance (`pending`); never an agent execution acknowledgement.
    * `draft`: on an immediate send's input_draft, the one-row draft in Claude's input box that a send
@@ -1397,7 +1487,7 @@ export type ServerMessage =
    * `sending_at`: on an ok for a message this request typed (an immediate send, or one with
    * `typed_now`), the PC's clock (ISO 8601) before it typed anything, as a queued row's `sending_at`:
    * the message's turn is written after it on that clock. An older server never sends it. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; replayed?: true; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes
@@ -1445,6 +1535,16 @@ export type ServerMessage =
   | { type: "watch-end"; pane_id: string }
   /** the answer to a `ping`, with its id; only this frame, for a ping in flight, ends the client's liveness probe */
   | { type: "pong"; id: number }
+  /** device table P15, T57 (feature "account-opens-all/1"): one new journal entry, sent only by the server and only with the flag on */
+  | { type: "device-notice"; notice: DeviceNotice }
+  /** device table T57 (feature "account-opens-all/1"): the unseen notices. Sent right after the `features` frame and before
+   * any other frame (the snapshot included), never first, so the client already knows account-opens-all/1 when it arrives */
+  | { type: "device-notice-replay"; replay: NoticeReplay }
+  /**
+   * account-opens-all/1: the answer to a `notice-answer` "Not me", one receipt per block it carried, in its order
+   * (device table T51, T60). Only `applied` and `already_applied` are done
+   */
+  | { type: "notice-answer-result"; id: string; receipts: readonly BlockReceipt[] }
   /** `pane_id` names the pane an error is about, when it is about one (`attach_held`) */
   | { type: "error"; code: string; message: string; pane_id?: string };
 

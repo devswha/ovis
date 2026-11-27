@@ -1,50 +1,80 @@
 import { afterEach, expect, it } from "bun:test";
-import { createElement, StrictMode } from "react";
-import { act, create } from "react-test-renderer";
+import { act, createElement, StrictMode } from "react";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "../../../server/relay/test-helpers.ts";
 import type { RelaySessionOptions } from "../../../server/relay/session.ts";
 import type { WsStream } from "../../../shared/relay-mux-engine.ts";
+import { openPage, type Page } from "../page.fixture.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { WebSocketLike } from "../transport.ts";
 import { useResourceUrlState } from "../useResourceUrl.ts";
 import type { ResourceUrlState } from "../useResourceUrl.ts";
 import { RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../../shared/relay-regions.ts";
-import type { RelayChannelOptions } from "./channel.ts";
-import { isFatalRelayError, openRelayTransport, RECONNECT_PC_ANSWER_MS, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
+import type { RelayChannelOptions, RelaySocket } from "./channel.ts";
+import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import { DIRECT_BUDGET_MS, isFatalRelayError, openRelayTransport, RECONNECT_PC_ANSWER_MS, RelayWebSocket, SSE_BUFFER_LIMIT } from "./transport.ts";
 import { LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
 import { RelayResourceTooLargeError } from "./resources.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => {
+let browserPage: Page | undefined;
+function openBrowserPage(): Page {
+  return browserPage = openPage();
+}
+afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) close();
+  await browserPage?.close();
+  browserPage = undefined;
   setTransport(nativeTransport);
 });
 
-async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0 } = {}) {
+async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, features, featuresOf, listPlace, listKey = false }: {
+  relay?: string; unreachable?: number;
+  /** what the PC selected in its answer to HELLO, and the place in its account's list it handed a device it let in */
+  features?: readonly string[]; listPlace?: { readonly id: string; readonly seq: number; readonly hash: string };
+  /** what the PC selects for each carrier as it comes up, where that changes between carriers (in place of `features`) */
+  featuresOf?: () => readonly string[] | undefined;
+  /** the device signs in with the key its account's list holds for it */
+  listKey?: boolean;
+} = {}) {
   const app = relayFixture();
   cleanups.push(() => app.close());
   const device = await relayDevice(app);
   const clock = new TestClock();
   const connections: Awaited<ReturnType<typeof relayConnection>>[] = [];
-  /** each channel's relay socket: `open` false is one closing with no close event yet */
   const carriers: { open: boolean }[] = [];
   const callbacks: NonNullable<RelayChannelOptions["onClose"]>[] = [];
-  const attempts = { count: 0, failures: 0, offline: 0, unreachable, refusal: null as Error | null,
-    pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[] };
+  const attempts = { count: 0, failures: 0, offline: 0, away: 0, unreachable, refusal: null as Error | null,
+    pcAnswerMs: [] as (number | undefined)[], relays: [] as string[], offered: [] as string[],
+    /** attempts whose socket stays CONNECTING until aborted or failed through `stuck` (a page frozen mid-connect) */
+    hang: 0, stuck: [] as ((error: Error) => void)[],
+    /** a hanging attempt's socket the relay took, waiting for the PC (the channel's `assigned`) */
+    heldAtRelay: false, held: deferred<void>() };
   const fatal: Error[] = [];
   const offer = { v: 1 as const, server_id: "0123456789abcdef0123456789abcdef",
     server_public_key: "", relay };
   const transport = await openRelayTransport(offer, {
     clock,
+    // a session opened with the key the account's signed list holds for this device
+    ...(listKey ? { accountListKey: true } : {}),
     onFatal: (error) => fatal.push(error),
+    onPcAway: () => { attempts.away++; },
     openChannel: async (channelOffer, config = {}) => {
       attempts.count++;
       attempts.pcAnswerMs.push(config.pcAnswerMs);
       attempts.relays.push(config.carrier ?? channelOffer.relay);
       attempts.offered.push(channelOffer.relay);
+      if (attempts.hang > 0) {
+        attempts.hang--;
+        if (attempts.heldAtRelay) config.onAssigned?.();
+        attempts.held.resolve();
+        return new Promise<never>((_, reject) => {
+          attempts.stuck.push(reject);
+          config.signal?.addEventListener("abort", () => reject(new DOMException("Relay connection aborted", "AbortError")), { once: true });
+        });
+      }
       if (attempts.unreachable > 0) { attempts.unreachable--; throw new RelayUnreachableError(null, true); }
       if (attempts.refusal !== null) { const refusal = attempts.refusal; attempts.refusal = null; throw refusal; }
       if (attempts.failures > 0) { attempts.failures--; throw new TypeError("Network offline"); }
@@ -59,7 +89,9 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
       carriers.push(carrier);
       return {
         get carrierOpen() { return carrier.open; },
-        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16), server: { version: "0.4.20", relayProtocol: 1 },
+        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16),
+        server: (() => { const selected = featuresOf?.() ?? features; return { version: "0.4.20", relayProtocol: 1, ...(selected === undefined ? {} : { features: selected }) }; })(),
+        ...(listPlace === undefined ? {} : { listPlace }),
         device: { server_id: offer.server_id, device_id: device.id, private_key: device.keys.privateKey,
           public_spki: device.publicKey, label: "Test", server_public_key: "", relay: offer.relay },
         close: () => connection.stop(),
@@ -106,11 +138,36 @@ async function saturated() {
   return { ...f, requested, responses };
 }
 
+it("says whether the PC lets its account's devices in by the list, and the place it handed a device it let in", async () => {
+  const place = { id: "5c".repeat(32), seq: 2, hash: "ab".repeat(32) };
+  for (const [features, listPlace, follows] of [[["account", "account-list-1"], place, true], [["account"], undefined, false], [undefined, undefined, false]] as const) {
+    const { transport } = await fixture({}, { ...(features === undefined ? {} : { features }), ...(listPlace === undefined ? {} : { listPlace }) });
+    expect([transport.followsList, transport.listPlace]).toEqual([follows, listPlace]);
+  }
+});
+
+it("tells whoever listens for the route the features of the carrier that just came up, not those of the one before", async () => {
+  let selected: readonly string[] = ["account"];
+  const f = await fixture({}, { featuresOf: () => selected });
+  expect(f.transport.followsList).toBe(false);
+  const seen: boolean[] = [];
+  f.transport.onRouteChange(() => { if (f.transport.route !== undefined) seen.push(f.transport.followsList); });
+  // the PC pins its account's list between two carriers: the listener of the second one hears it
+  selected = ["account", "account-list-1"];
+  await f.drop();
+  await f.transport.connect();
+  expect(seen).toEqual([true]);
+  // and the other way round
+  selected = ["account"];
+  await f.drop();
+  await f.transport.connect();
+  expect(seen).toEqual([true, false]);
+});
+
 it("queues HTTP behind eight WS and twelve HTTP streams until a receive reservation is released", async () => {
   const f = await saturated();
   const waiting = f.transport.fetch("/api/waiting");
   expect(f.requested).toHaveLength(12);
-  // A body cancellation frees a real mux reservation, not merely the response headers.
   await f.responses[0]?.body?.cancel();
   const response = await bounded(waiting);
   expect(response.status).toBe(200);
@@ -151,7 +208,6 @@ it("rejects queued HTTP on carrier loss rather than replaying it after reconnect
 });
 
 it("fetches JSON and preserves Range, ETag and conditional responses through real Noise and RelaySession", async () => {
-  // Given an admitted encrypted carrier and a real dispatcher.
   const f = await fixture({ dispatch: async (request) => {
     if (request.headers.get("if-none-match") === '"v1"') return new Response(null, { status: 304, headers: { etag: '"v1"' } });
     if (request.headers.get("range") === "bytes=2-4") return new Response("234", {
@@ -159,11 +215,9 @@ it("fetches JSON and preserves Range, ETag and conditional responses through rea
     });
     return Response.json({ ok: true });
   } });
-  // When requests cross the transport seam, with browser-only policies ignored.
   const json = await f.transport.fetch("/api/json", { credentials: "include", mode: "no-cors" });
   const range = await f.transport.fetch("/api/file", { headers: { range: "bytes=2-4" } });
   const unchanged = await f.transport.fetch("/api/file", { headers: { "if-none-match": '"v1"' } });
-  // Then callers receive real Response objects with the original metadata and body.
   expect(json).toBeInstanceOf(Response);
   expect(await json.json()).toEqual({ ok: true });
   expect(range.status).toBe(206);
@@ -175,7 +229,6 @@ it("fetches JSON and preserves Range, ETag and conditional responses through rea
 });
 
 it("resets the server request when an AbortSignal interrupts a streaming response", async () => {
-  // Given a response that remains open until its request is aborted.
   const aborted = deferred<void>();
   const f = await fixture({ dispatch: async (request) => {
     request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
@@ -185,25 +238,19 @@ it("resets the server request when an AbortSignal interrupts a streaming respons
   const response = await f.transport.fetch("/api/stream", { signal: abort.signal });
   const reader = response.body?.getReader();
   expect(new TextDecoder().decode((await reader?.read())?.value)).toBe("first");
-  // When the caller aborts after the first body chunk.
   abort.abort();
-  // Then RESET aborts the handler and the remaining body fails rather than hanging.
   await bounded(aborted.promise);
   await expect(reader?.read()).rejects.toMatchObject({ name: "AbortError" });
 });
 
 it("sends a request body where the browser has no Request.body, as Firefox", async () => {
-  // Given a browser whose Request has no body property, and a PC that echoes what it received
   const native = globalThis.Request;
-  // only the page's requests (relay.ovis.invalid addresses) lack it: the PC in this process keeps its own
   globalThis.Request = class extends native {
     override get body() { return this.url.startsWith("https://relay.ovis.invalid/") ? undefined as unknown as null : super.body; }
   };
   cleanups.push(() => { globalThis.Request = native; });
   const f = await fixture({ dispatch: async (request) => new Response(await request.text()) });
-  // When the page posts JSON over the relay
   const response = await f.transport.fetch("/api/echo", { method: "POST", headers: { "content-type": "application/json" }, body: '{"a":1}' });
-  // Then the PC got the body
   expect(await response.text()).toBe('{"a":1}');
 });
 
@@ -211,7 +258,6 @@ it("sends a request body where the browser has no Request.body, as Firefox", asy
 function firefoxRequests(hold: Promise<void> = Promise.resolve()) {
   const native = globalThis.Request;
   const reads = { count: 0, bodies: 0 };
-  // only the page's requests (relay.ovis.invalid addresses) lack it: the PC in this process keeps its own
   const page = (url: string): boolean => url.startsWith("https://relay.ovis.invalid/");
   globalThis.Request = class extends native {
     constructor(input: RequestInfo | URL, init?: RequestInit) {
@@ -227,7 +273,6 @@ function firefoxRequests(hold: Promise<void> = Promise.resolve()) {
 }
 
 it("never sends a Firefox request on a carrier that reconnected while its body was read", async () => {
-  // Given a browser without Request.body, and a prompt answer whose body is still being read
   const held = deferred<void>();
   const reads = firefoxRequests(held.promise);
   const requested: string[] = [];
@@ -238,42 +283,34 @@ it("never sends a Firefox request on a carrier that reconnected while its body w
   const answer = f.transport.fetch("/api/pane/prompt/answer", { method: "POST", body: '{"custom_text":"typed answer"}' })
     .catch((error: unknown) => error);
   expect(reads.count).toBe(1);
-  // When the carrier drops and a new one opens before the read finishes
   await f.drop();
   await f.transport.connect();
   expect(f.connections).toHaveLength(2);
   held.resolve();
-  // Then the answer fails as not sent, and only what is asked on the new carrier reaches the PC
   expect(await bounded(answer)).toBeInstanceOf(TypeError);
   expect((await f.transport.fetch("/api/after")).status).toBe(200);
   expect(requested).toEqual(["/api/after"]);
 });
 
 it("refuses a Firefox request body without reading it when no carrier is up or it is over the request limit", async () => {
-  // Given a browser without Request.body
   const reads = firefoxRequests();
   let requests = 0;
   const f = await fixture({ dispatch: async () => { requests++; return new Response(null); } });
-  // When a body over the PC's request limit is posted, and then a small one while the carrier is down
   const big = new Blob([new Uint8Array(LIMITS_V1.max_request_body_bytes + 1)]);
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: big })).rejects.toBeInstanceOf(TypeError);
-  // a string's UTF-8 size: "\u00e9" is two bytes
   const text = "\u00e9".repeat(LIMITS_V1.max_request_body_bytes / 2 + 1);
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: text })).rejects.toBeInstanceOf(TypeError);
-  // a form (a voice upload) whose file and text field are together over the limit, neither alone
   const form = new FormData();
   form.append("audio", new File([new Uint8Array(LIMITS_V1.max_request_body_bytes / 2)], "voice.webm"));
   form.append("note", "x".repeat(LIMITS_V1.max_request_body_bytes / 2));
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: form })).rejects.toBeInstanceOf(TypeError);
   await f.drop();
   await expect(f.transport.fetch("/api/upload", { method: "POST", body: "small" })).rejects.toBeInstanceOf(TypeError);
-  // Then no body was copied into a request or read, and no request reached the PC
   expect(reads).toEqual({ count: 0, bodies: 0 });
   expect(requests).toBe(0);
 });
 
 it("rejects an upload on carrier loss with TypeError and aborts the server handler", async () => {
-  // Given an upload whose handler has read a chunk but has not returned headers.
   const reading = deferred<void>();
   const aborted = deferred<void>();
   const f = await fixture({ dispatch: async (request) => {
@@ -289,9 +326,7 @@ it("rejects an upload on carrier loss with TypeError and aborts the server handl
   }) });
   const rejection = request.then(() => null, (error: unknown) => error);
   await bounded(reading.promise);
-  // When the carrier disappears during upload.
   await f.drop();
-  // Then neither a success response nor an upload retry can mask the aborted handler.
   expect(await rejection).toBeInstanceOf(TypeError);
   await bounded(aborted.promise);
   console.log("DROP: upload fetch rejected TypeError; server handler signal aborted; no retry");
@@ -313,7 +348,6 @@ async function trace(socket: WebSocketLike, code: number, drop: () => void): Pro
 
 for (const code of [1000, 4008, 1006]) {
   it(`matches native WebSocket open/message/error/close ordering for ${code}`, async () => {
-    // Given a native server and an encrypted stream with the same echo behavior.
     let nativeDrop = () => {};
     const server = Bun.serve({
       hostname: "127.0.0.1", port: 0,
@@ -325,10 +359,8 @@ for (const code of [1000, 4008, 1006]) {
     });
     cleanups.push(() => server.stop(true));
     const f = await fixture({ onWs: (stream) => { stream.accept(); stream.onMessage = (data) => { stream.send(data); }; } });
-    // When both sockets echo then close normally, with 4008, or lose their carriers.
     const native = await trace(new WebSocket(`ws://127.0.0.1:${server.port}`), code, () => nativeDrop());
     const relay = await trace(f.transport.openSocket("/ws"), code, () => f.connections.at(-1)?.stop());
-    // Then browser state transitions and event ordering agree.
     // Bun's native TCP termination has no error event; browsers report one for abnormal loss.
     expect(relay.filter((entry) => entry !== "error")).toEqual(native.filter((entry) => entry !== "error"));
     if (code === 1006) expect(relay.slice(-2)).toEqual(["error", "close:1006:3"]);
@@ -337,7 +369,6 @@ for (const code of [1000, 4008, 1006]) {
 }
 
 it("preserves server initiated 4008 and listener removal without reopening the virtual socket", async () => {
-  // Given an accepted server stream.
   const server = deferred<WsStream>();
   const f = await fixture({ onWs: (stream) => { stream.accept(); server.resolve(stream); } });
   const socket = f.transport.openSocket("/ws");
@@ -346,23 +377,18 @@ it("preserves server initiated 4008 and listener removal without reopening the v
   socket.removeEventListener("open", removed);
   await opened(socket);
   const close = closed(socket);
-  // When the server reports output stalled.
   (await bounded(server.promise)).close(4008, "output stalled", true);
-  // Then its reason and code survive, with no replacement socket hidden underneath.
   expect(await close).toMatchObject({ code: 4008, reason: "output stalled", wasClean: false });
   expect(socket.readyState).toBe(socket.CLOSED);
   expect(f.connections).toHaveLength(1);
 });
 
 it("keeps a relay WS closing once its carrier is gone, even while a new carrier is current", async () => {
-  // Given an open relay WS whose carrier the transport loses while that carrier's stream is still open.
   const f = await fixture({ onWs: (stream) => { stream.accept(); } });
   const socket = f.transport.openSocket("/ws");
   await opened(socket);
   f.callbacks.at(-1)!(new TypeError("Carrier dropped"));
-  // Then it never reads open again: not with no carrier,
   expect(socket.readyState).toBe(socket.CLOSING);
-  // nor once a new carrier connects on the transport's retry, one second later on the injected clock.
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
   f.clock.advance(1000);
   await f.transport.connect();
@@ -371,21 +397,16 @@ it("keeps a relay WS closing once its carrier is gone, even while a new carrier 
 });
 
 it("reads a relay WS as closing once its carrier is, sends nothing into it, and ends that carrier for a new one", async () => {
-  // Given an open relay WS on an admitted carrier.
   const received: string[] = [];
   const f = await fixture({ onWs: (stream) => { stream.accept(); stream.onMessage = (data) => { received.push(String(data)); }; } });
   const socket = f.transport.openSocket("/ws");
   await opened(socket);
   const close = closed(socket);
-  // When the carrier's socket starts closing and no close event comes (closed under the page, the relay not answering).
   f.carriers.at(-1)!.open = false;
-  // Then the WS reads as closing at once (the app keeps typing as a draft), and a send in that state goes nowhere,
   expect(socket.readyState).toBe(socket.CLOSING);
   socket.send("typed while closing");
-  // the carrier is ended without waiting for the browser to give up on its close,
   expect((await bounded(close, 2000)).code).toBe(1006);
   expect(received).toEqual([]);
-  // and a new carrier connects on the transport's own retry, while the old WS never reads open again.
   await bounded(f.connections.at(-1)!.closed);
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
   f.clock.advance(1000);
@@ -399,7 +420,6 @@ it("reads a relay WS as closing once its carrier is, sends nothing into it, and 
 
 for (const initial of ["connecting", "open"]) {
   it(`keeps discarded send bytes through closing and closed after closing from ${initial}`, async () => {
-    // Given a socket with no application data queued.
     const received: string[] = [];
     const f = await fixture({ onWs: (stream) => {
       stream.accept();
@@ -414,7 +434,6 @@ for (const initial of ["connecting", "open"]) {
     socket.send("abc");
     expect(socket.readyState).toBe(socket.CLOSING);
     expect(socket.bufferedAmount).toBe(3);
-    // Then the close event preserves the count, and a CLOSED-state send adds bytes only.
     expect(await bounded(atClose.promise)).toBe(3);
     expect(socket.readyState).toBe(socket.CLOSED);
     socket.send(new Blob(["def"]));
@@ -424,7 +443,6 @@ for (const initial of ["connecting", "open"]) {
 }
 
 it("dispatches property handlers at their native listener position and copies binary sends", async () => {
-  // Given listeners registered before and after a reassigned property handler.
   const f = await fixture({ onWs: (stream) => {
     stream.accept();
     stream.onMessage = (data) => { stream.send(data); };
@@ -437,20 +455,17 @@ it("dispatches property handlers at their native listener position and copies bi
   socket.onopen = () => order.push("property");
   await opened(socket);
   expect(order).toEqual(["before", "property", "after"]);
-  // When a binary view is sent, then changed before the asynchronous send drains.
   const data = new Uint8Array([8, 9, 10]);
   const echoed = message(socket);
   socket.binaryType = "arraybuffer";
   socket.send(data.subarray(1));
   data.fill(0);
-  // Then the echoed payload is the send-time snapshot, with the selected browser binary type.
   const received = (await echoed).data;
   expect(received).toBeInstanceOf(ArrayBuffer);
   expect([...new Uint8Array(received)]).toEqual([9, 10]);
 });
 
 it("fails a websocket whose unsent messages pass the send queue bound, keeping every unsent byte counted", async () => {
-  // Given an open socket whose PC reads nothing, so its second message waits in the mux for credit
   const f = await fixture({ onWs: (stream) => stream.accept() });
   const socket = f.transport.openSocket("/ws");
   await opened(socket);
@@ -463,7 +478,6 @@ it("fails a websocket whose unsent messages pass the send queue bound, keeping e
   await socket["outgoing"];
   const held = socket.bufferedAmount;
   expect(held).toBeGreaterThanOrEqual(chunk.length);
-  // When one synchronous burst sends more than the bound
   for (let index = 0; index < 5; index++) socket.send(chunk);
   // Then the socket fails at once, as a browser's does when its send buffer is full, and nothing unsent is forgotten
   expect(socket.readyState).toBe(socket.CLOSING);
@@ -474,35 +488,28 @@ it("fails a websocket whose unsent messages pass the send queue bound, keeping e
 });
 
 it("fails a websocket sent more small messages at once than it may hold", async () => {
-  // Given an open socket
   const f = await fixture({ onWs: (stream) => stream.accept() });
   const socket = f.transport.openSocket("/ws");
   await opened(socket);
   const end = closed(socket);
-  // When one synchronous burst sends many empty messages
   for (let index = 0; index < 20_000; index++) socket.send("");
-  // Then the socket fails instead of holding a callback for each
   expect(socket.readyState).toBe(socket.CLOSING);
   expect(await end).toMatchObject({ code: 1006, wasClean: false });
 });
 
 it("fails a refused websocket handshake with error before abnormal close", async () => {
-  // Given todo 10's websocket adapter is absent.
   const f = await fixture();
   const socket = f.transport.openSocket("/ws");
   const events: string[] = [];
   socket.onerror = () => events.push("error");
   socket.onopen = () => events.push("open");
   const end = closed(socket);
-  // When RelaySession refuses WS_OPEN.
   const result = await end;
-  // Then the browser-facing socket never opens and reports abnormal failure.
   expect(events).toEqual(["error"]);
   expect(result).toMatchObject({ code: 1006, wasClean: false });
 });
 
 it("never replays an asynchronously queued send after reconnect and ignores old generation callbacks", async () => {
-  // Given a send waiting for Blob conversion when its carrier drops.
   const received: string[] = [];
   const f = await fixture({ onWs: (stream) => {
     stream.accept();
@@ -518,11 +525,9 @@ it("never replays an asynchronously queued send after reconnect and ignores old 
   await f.drop();
   await oldClosed;
   expect(socket.bufferedAmount).toBe(5);
-  // When a fresh carrier opens before the queued conversion finishes.
   await f.transport.connect();
   f.callbacks[0]?.(new TypeError("Late old close"));
   release.resolve(new TextEncoder().encode("stale").buffer);
-  // Observe the actual queued send's completion before opening the comparison stream.
   await socket["outgoing"];
   expect(socket.bufferedAmount).toBe(5);
   const replacement = f.transport.openSocket("/ws");
@@ -530,14 +535,12 @@ it("never replays an asynchronously queued send after reconnect and ignores old 
   const echoed = message(replacement);
   replacement.send("fresh");
   await echoed;
-  // Then only new explicit input reaches the new server, never the old queued input.
   expect(received).toEqual(["fresh"]);
   expect(socket.readyState).toBe(socket.CLOSED);
   expect(f.connections).toHaveLength(2);
 });
 
 it("fails every stream across repeated drops without HTTP retries or websocket replay", async () => {
-  // Given a transport repeatedly restored with a fresh mux.
   let requests = 0;
   const f = await fixture({ dispatch: async () => { requests++; return Response.json({ requests }); },
     onWs: (stream) => stream.accept() });
@@ -547,22 +550,18 @@ it("fails every stream across repeated drops without HTTP retries or websocket r
     const close = closed(socket);
     const response = await f.transport.fetch("/api/count");
     await response.json();
-    // When each admitted carrier drops.
     await f.drop();
     expect((await close).code).toBe(1006);
     await expect(f.transport.fetch("/api/offline")).rejects.toBeInstanceOf(TypeError);
     await f.transport.connect();
   }
-  // Then only the three explicitly requested HTTP operations ran.
   expect(requests).toBe(3);
 });
 
 it("reconnects only the carrier with backoff from one second capped at thirty seconds", async () => {
-  // Given an established carrier followed by seven failed connection attempts.
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   f.attempts.failures = 7;
   await f.drop();
-  // When every retry deadline fires on an injected clock, not wall-clock sleeps.
   for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
     expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([delay]);
     f.clock.advance(delay);
@@ -571,7 +570,6 @@ it("reconnects only the carrier with backoff from one second capped at thirty se
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([30000]);
   f.clock.advance(30000);
   await f.transport.connect();
-  // Then a fresh authenticated mux works, without retrying old application requests.
   expect(f.attempts.count).toBe(9);
   expect(await (await f.transport.fetch("/api/new")).json()).toEqual({ ok: true });
   expect(f.clock.tasks.size).toBe(0);
@@ -580,57 +578,85 @@ it("reconnects only the carrier with backoff from one second capped at thirty se
 });
 
 it("tries again a second after each attempt the relay held waiting for a PC that is away, so a restarted PC is reached at once", async () => {
-  // Given an established carrier whose PC goes away for six attempts: each waited PC_ANSWER_MS at the relay.
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   f.attempts.offline = 6;
   await f.drop();
-  // When every retry deadline fires.
   for (let attempt = 0; attempt < 6; attempt++) {
     expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
     f.clock.advance(1000);
     await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayPcOfflineError);
   }
-  // Then the next attempt still comes a second later, and reaches the PC once it is back.
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
   f.clock.advance(1000);
   await f.transport.connect();
   expect(f.attempts.count).toBe(8);
-  // the first open waits the shell's PC_ANSWER_MS; every reconnect waits nearly the relay's whole hold
   expect(f.attempts.pcAnswerMs).toEqual([undefined, ...Array<number>(7).fill(RECONNECT_PC_ANSWER_MS)]);
   expect(await (await f.transport.fetch("/api/back")).json()).toEqual({ ok: true });
   expect(f.fatal).toEqual([]);
 });
 
+it("says what a reconnect has found so far: the relay waiting for a PC that is away, or no relay reached", async () => {
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  expect(f.transport.unreached).toBeUndefined();
+  f.attempts.failures = 1;
+  await f.drop();
+  f.clock.advance(1000);
+  await expect(f.transport.connect()).rejects.toBeInstanceOf(TypeError);
+  expect(f.transport.unreached).toBe("relay");
+  f.attempts.hang = 1;
+  f.attempts.heldAtRelay = true;
+  f.clock.advance(2000);
+  const held = f.transport.connect();
+  await bounded(f.attempts.held.promise);
+  expect(f.transport.unreached).toBe("pc");
+  f.attempts.stuck[0]!(new RelayPcOfflineError());
+  await expect(held).rejects.toBeInstanceOf(RelayPcOfflineError);
+  expect(f.transport.unreached).toBe("pc");
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(f.transport.unreached).toBeUndefined();
+});
+
+it("tells the shell each time a reconnect finds nobody for the PC at the relay, and only then, and goes on reconnecting", async () => {
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+  f.attempts.failures = 1;
+  f.attempts.offline = 2;
+  await f.drop();
+  f.clock.advance(1000);
+  await expect(f.transport.connect()).rejects.toBeInstanceOf(TypeError);
+  expect(f.attempts.away).toBe(0);
+  for (const [delay, away] of [[2000, 1], [1000, 2]] as const) {
+    f.clock.advance(delay);
+    await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayPcOfflineError);
+    expect(f.attempts.away).toBe(away);
+  }
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(await (await f.transport.fetch("/api/back")).json()).toEqual({ ok: true });
+  expect([f.attempts.away, f.fatal]).toEqual([2, []]);
+});
+
 it("keeps the growing pause after such waits while the page is hidden", async () => {
-  // Given a hidden page whose PC goes away for two attempts.
-  const page = Object.assign(new EventTarget(), { visibilityState: "hidden" });
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
-  cleanups.push(() => { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else Reflect.deleteProperty(globalThis, "document"); });
+  page("hidden");
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   f.attempts.offline = 2;
   await f.drop();
-  // When each retry deadline fires.
   for (const delay of [1000, 2000]) {
     expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([delay]);
     f.clock.advance(delay);
     await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayPcOfflineError);
   }
-  // Then the pause still doubles: a hidden page reconnects when it is shown, not on the fast cadence.
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([4000]);
 });
 
 it("stops reconnecting once the PC refuses the device for good, and tells the shell", async () => {
-  // Given an established carrier whose next reconnect the PC answers with auth_revoked.
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   const revoked = new MuxProtocolError("auth_revoked", "Device revoked");
   f.attempts.refusal = revoked;
   await f.drop();
-  // When the retry deadline fires.
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
   f.clock.advance(1000);
   await expect(f.transport.connect()).rejects.toBe(revoked);
-  // Then no further attempt is scheduled, the transport is closed and the failure reached onFatal once.
   expect(f.fatal).toEqual([revoked]);
   expect(f.clock.tasks.size).toBe(0);
   expect(f.attempts.count).toBe(2);
@@ -639,9 +665,32 @@ it("stops reconnecting once the PC refuses the device for good, and tells the sh
   expect(f.attempts.count).toBe(2);
 });
 
+it("a session opened with the list key stops reconnecting when the PC refuses the account's way in, as one opened with the sign-in's key does (M60)", async () => {
+  for (const code of ["not_listed", "admission"]) {
+    const refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { listKey: true });
+    f.attempts.refusal = refusal;
+    await f.drop();
+    f.clock.advance(1000);
+    await expect(f.transport.connect()).rejects.toBe(refusal);
+    expect([f.fatal, f.clock.tasks.size]).toEqual([[refusal], 0]);
+    // a pairing's own session reads the same answer as a carrier that may come back, and tries again
+    const own = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+    own.attempts.refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    await own.drop();
+    own.clock.advance(1000);
+    await own.transport.connect().catch(() => undefined);
+    expect(own.fatal).toEqual([]);
+  }
+});
+
 it("tells a refusal that cannot change from a carrier that may come back", () => {
   for (const code of ["auth_revoked", "auth_failed", "unsupported_version", "unsupported_extension", "unsupported_transport"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(true);
+  }
+  // the PC answered and refused: asking again by itself would only ask the account service again
+  for (const code of ["account_unreachable", "account_readd_required"]) {
+    expect(isFatalRelayError(Object.assign(new MuxProtocolError("protocol_error", code), { code }))).toBe(true);
   }
   for (const code of ["auth_changed", "timeout", "internal_error", "protocol_error", "resource_exhausted", "flow_control_error"] as const) {
     expect(isFatalRelayError(new MuxProtocolError(code, code))).toBe(false);
@@ -664,16 +713,13 @@ it("signs in again on renew, so a session proves the key the saved pairing holds
 });
 
 it("settles a renew once the carrier that replaces it is up, not on one already on its way", async () => {
-  // Given a carrier that drops, and one renew asked while its reconnect is under way.
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   await f.drop();
   f.clock.advance(1000);
   const reconnecting = f.transport.connect();
   let up = false;
   const renewed = f.transport.renew().then(() => { up = true; });
-  // When the reconnect started before the renew lands.
   await reconnecting;
-  // Then it may have signed with the old key: it is ended, and the renew waits for the next carrier.
   await bounded(f.connections.at(-1)!.closed);
   expect(up).toBe(false);
   expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
@@ -686,7 +732,6 @@ it("settles a renew once the carrier that replaces it is up, not on one already 
 });
 
 it("reconnects after an authorization change without telling the shell to forget the PC", async () => {
-  // Keep the post-reconnect request independent of herdr, which unit runs never start.
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   const connection = f.connections.at(-1);
   if (!connection) throw new Error("Missing relay connection");
@@ -702,15 +747,12 @@ it("reconnects after an authorization change without telling the shell to forget
   expect(f.fatal).toEqual([]);
 });
 
-it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
-  // Given browser lifecycle event targets and a disconnected carrier.
-  const browser = new EventTarget();
-  const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+// The relay registers these browser events on globalThis, not on window.
+function installWindowListeners(browser: Page["window"]): void {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     addEventListener: browser.addEventListener.bind(browser),
     removeEventListener: browser.removeEventListener.bind(browser),
-    document: page,
   })) {
     descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -721,29 +763,185 @@ it("reconnects on online and visible-page events and removes wake listeners on c
       else Reflect.deleteProperty(globalThis, key);
     }
   });
+}
+
+it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
+  const shown = page("visible");
+  const browser = shown.window;
+  installWindowListeners(browser);
   const f = await fixture();
   await f.drop();
-  // When connectivity or page visibility returns, bypass the pending backoff.
-  browser.dispatchEvent(new Event("online"));
+  browser.dispatchEvent(new browser.Event("online"));
   await f.transport.connect();
   expect(f.connections).toHaveLength(2);
   await f.drop();
-  page.visibilityState = "hidden";
-  page.dispatchEvent(new Event("visibilitychange"));
+  shown.hide();
   expect(f.attempts.count).toBe(2);
-  page.visibilityState = "visible";
-  page.dispatchEvent(new Event("visibilitychange"));
+  shown.show();
   await f.transport.connect();
-  // Then no duplicate attempts or timers remain, including after disposal.
   expect(f.connections).toHaveLength(3);
   expect(f.clock.tasks.size).toBe(0);
   f.transport.close();
-  browser.dispatchEvent(new Event("online"));
-  page.dispatchEvent(new Event("visibilitychange"));
+  browser.dispatchEvent(new browser.Event("online"));
+  shown.show();
   expect(f.attempts.count).toBe(3);
 });
 
-/** Independent whole-input SSE reference, deliberately not the incremental adapter algorithm. */
+it("takes its carrier as gone when the page comes back from the back/forward cache, though it still reads open, and connects again", async () => {
+  const { window: browser } = page("visible");
+  installWindowListeners(browser);
+  const pageshow = (persisted: boolean) => Object.assign(new browser.Event("pageshow"), { persisted });
+  const f = await fixture();
+  // a page loaded fresh says nothing of its carrier
+  browser.dispatchEvent(pageshow(false));
+  expect([f.attempts.count, f.carriers[0]!.open]).toEqual([1, true]);
+  // restored whole: the browser (or the phone app, at the navigation away) ended the socket under it with no close event
+  browser.dispatchEvent(pageshow(true));
+  await bounded(f.connections[0]!.closed);
+  expect([...f.clock.tasks.values()].map((task) => task.at - f.clock.now())).toEqual([1000]);
+  f.clock.advance(1000);
+  await f.transport.connect();
+  expect(f.connections).toHaveLength(2);
+  expect(f.fatal).toEqual([]);
+  f.transport.close();
+  browser.dispatchEvent(pageshow(true));
+  expect(f.attempts.count).toBe(2);
+});
+
+function page(visibilityState: "visible" | "hidden") {
+  const { window } = openBrowserPage();
+  const setVisibility = (state: "visible" | "hidden"): void => {
+    Object.defineProperty(window.document, "visibilityState", { configurable: true, value: state });
+  };
+  setVisibility(visibilityState);
+  const turn = (state: "visible" | "hidden"): void => {
+    setVisibility(state);
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+  };
+  return { window, setVisibility, hide: () => turn("hidden"), show: () => turn("visible") };
+}
+
+it("drops an attempt that began while the page was hidden and connects again at once when it is shown", async () => {
+  const shown = page("visible");
+  const regional = REGIONAL_RELAYS[0]!;
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { relay: regional });
+  shown.hide();
+  f.attempts.hang = 1;
+  await f.drop();
+  // the backoff retry fires in the background, and the page is frozen with its socket still CONNECTING
+  f.clock.advance(1000);
+  expect(f.attempts.relays).toEqual([regional, regional]);
+  const resumedAt = f.clock.now();
+  shown.show();
+  expect(f.attempts.relays).toEqual([regional, regional, regional]);
+  expect(f.clock.now()).toBe(resumedAt);
+  await f.transport.connect();
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+  expect(f.attempts.relays).not.toContain(GLOBAL_RELAY);
+  expect([f.clock.tasks.size, f.fatal]).toEqual([0, []]);
+});
+
+it("does not fall back to the other relay when an attempt that began before the page hid fails", async () => {
+  const shown = page("visible");
+  const regional = REGIONAL_RELAYS[0]!;
+  const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { relay: regional });
+  f.attempts.hang = 1;
+  await f.drop();
+  f.clock.advance(1000);
+  shown.hide();
+  // back on screen, the stale socket's error runs before the page's visibilitychange
+  shown.setVisibility("visible");
+  f.attempts.stuck[0]!(new RelayUnreachableError(null, true));
+  await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayUnreachableError);
+  expect(f.attempts.relays).toEqual([regional, regional]);
+  shown.show();
+  expect(f.attempts.relays).toEqual([regional, regional, regional]);
+  await f.transport.connect();
+  expect((await f.transport.fetch("/api/health")).status).toBe(200);
+  expect([f.clock.tasks.size, f.fatal]).toEqual([0, []]);
+});
+
+it("carries the pairing code into the attempt that replaces a hidden first pairing, whose outcome the first callers wait for", async () => {
+  const shown = page("visible");
+  const offered: (string | undefined)[] = [];
+  const refusal = new MuxProtocolError("auth_failed", "Pairing refused");
+  const pairing = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", code: "123456", relay: "wss://relay.example" }, {
+    openChannel: (channelOffer, config = {}) => {
+      offered.push(channelOffer.code);
+      if (offered.length > 1) return Promise.reject(refusal);
+      // the first socket is still connecting when the app goes to the background
+      return new Promise<never>((_, reject) => config.signal?.addEventListener("abort", () => reject(new DOMException("Relay connection aborted", "AbortError")), { once: true }));
+    },
+  });
+  shown.hide();
+  shown.show();
+  await expect(pairing).rejects.toBe(refusal);
+  expect(offered).toEqual(["123456", "123456"]);
+});
+
+/** First pairing through the real channel, each read of the device store held until the test answers it, and sockets that stay connecting. */
+function heldPairing(signal?: AbortSignal) {
+  const reads: ReturnType<typeof deferred<RelayDevice | undefined>>[] = [];
+  const sockets: { closed: number }[] = [];
+  const socketOpened = deferred<void>();
+  const store: RelayDeviceStore = {
+    get: () => { const read = deferred<RelayDevice | undefined>(); reads.push(read); return read.promise; },
+    update: async (_id, change) => change(undefined), list: async () => [], remove: async () => {},
+  };
+  const socket = (): RelaySocket => {
+    const state = { closed: 0 };
+    sockets.push(state);
+    socketOpened.resolve();
+    return { binaryType: "arraybuffer", readyState: 0, send: () => {}, close: () => { state.closed++; }, onmessage: null, onclose: null, onerror: null };
+  };
+  const pairing = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", code: "123456", relay: "wss://relay.example" }, { store, socket, ...(signal ? { signal } : {}) });
+  return { pairing, reads, sockets, socketOpened: socketOpened.promise };
+}
+
+it("hands the callers of a dropped first pairing to its replacement at once, so its failure is theirs while the old read still hangs", async () => {
+  const shown = page("visible");
+  const { pairing, reads } = heldPairing();
+  shown.hide();
+  shown.show();
+  expect(reads).toHaveLength(2);
+  const refusal = new Error("Storage refused");
+  reads[1]!.reject(refusal);
+  expect(await bounded(pairing.then(() => null, (error: unknown) => error), 2_000)).toBe(refusal);
+  reads[0]!.resolve(undefined);
+});
+
+it("settles a first pairing cancelled while its replacement still reads the device store", async () => {
+  const shown = page("visible");
+  const controller = new AbortController();
+  const { pairing, reads, sockets, socketOpened } = heldPairing(controller.signal);
+  reads[0]!.resolve(undefined);
+  await bounded(socketOpened, 2_000);
+  shown.hide();
+  shown.show();
+  expect(reads).toHaveLength(2);
+  controller.abort();
+  await bounded(pairing.then(() => undefined, () => undefined), 2_000);
+  expect(sockets.map((socket) => socket.closed)).toEqual([1]);
+  reads[1]!.resolve(undefined);
+});
+
+it("settles a native connection with the relay's failure while the saved direct route is still being read", async () => {
+  const shown = page("visible");
+  let reads = 0;
+  const store: RelayDeviceStore = {
+    get: () => { reads++; return new Promise<never>(() => {}); },
+    update: async (_id, change) => change(undefined), list: async () => [], remove: async () => {},
+  };
+  const unreachable = new RelayUnreachableError(null, true);
+  const connecting = openRelayTransport({ v: 1, server_id: "a".repeat(32), server_public_key: "key", relay: "wss://relay.example" }, {
+    store, directSocket: () => { throw new Error("No direct route was read"); }, openChannel: () => Promise.reject(unreachable),
+  });
+  shown.hide();
+  shown.show();
+  expect(reads).toBe(2);
+  expect(await bounded(connecting.then(() => null, (error: unknown) => error), DIRECT_BUDGET_MS + 1_000)).toBe(unreachable);
+});
+
 function referenceSse(text: string) {
   const events: { type: string; data: string; id: string }[] = [];
   let id = "";
@@ -763,7 +961,6 @@ function referenceSse(text: string) {
 
 for (const width of [1, 2, 7, 31]) {
   it(`parses SSE like a reference parser across ${width}-byte arbitrary boundaries`, async () => {
-    // Given comments, malformed fields, UTF-8, CRLF, bare CR, ids and custom events.
     const text = "\uFEFF:comment\r\ngarbage\r\nid: first\r\ndata: 한글\r\ndata: next\r\n\r\nevent: custom\rdata: second\r\rid: bad\0id\ndata:\n\ndata: unfinished";
     const bytes = new TextEncoder().encode(text);
     const expected = referenceSse(text);
@@ -781,9 +978,7 @@ for (const width of [1, 2, 7, 31]) {
     source.addEventListener("message", receive);
     source.addEventListener("custom", receive);
     const ended = event(source, "error", (value) => value);
-    // When the encrypted HTTP body arrives in arbitrary chunks.
     await ended;
-    // Then only terminated events dispatch, and reconnect is left to keepEventStream.
     expect(received).toEqual(expected);
     expect(source.readyState).toBe(2);
     expect(f.connections).toHaveLength(1);
@@ -791,7 +986,6 @@ for (const width of [1, 2, 7, 31]) {
 }
 
 it("closes and resets SSE when an unfinished event exceeds its buffer bound", async () => {
-  // Given an unbounded unfinished event from the server.
   const aborted = deferred<void>();
   const f = await fixture({ dispatch: async (request) => {
     request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
@@ -801,15 +995,12 @@ it("closes and resets SSE when an unfinished event exceeds its buffer bound", as
   } });
   const source = f.transport.openEventSource("/api/machines/events");
   const error = event(source, "error", (value) => value);
-  // When the unfinished line crosses the bound.
   await error;
-  // Then it closes and cancels the server body rather than accumulating memory or reconnecting itself.
   expect(source.readyState).toBe(2);
   await bounded(aborted.promise);
 });
 
 it("fails streaming HTTP bodies and SSE together on carrier loss without reopening either", async () => {
-  // Given two open streams on one admitted carrier.
   let requests = 0;
   const f = await fixture({ dispatch: async (request) => {
     requests++;
@@ -823,9 +1014,7 @@ it("fails streaming HTTP bodies and SSE together on carrier loss without reopeni
   const source = f.transport.openEventSource("/api/events");
   await message(source);
   const error = event(source, "error", (value) => value);
-  // When the carrier disappears after both streams started.
   await f.drop();
-  // Then the already-returned body fails with a network error and EventSource is CLOSED.
   await expect(reader?.read()).rejects.toBeInstanceOf(TypeError);
   await error;
   expect(source.readyState).toBe(2);
@@ -853,14 +1042,12 @@ it("loads a real file larger than the mux session buffer as a bounded blob", asy
 }, 30_000);
 
 it("returns a blob resource fetched over the relay and stops a closed SSE without an error event", async () => {
-  // Given a resource route and an SSE route with no end.
   const aborted = deferred<void>();
   const f = await fixture({ dispatch: async (request) => {
     if (request.url.includes("/fs/file")) return new Response("resource", { headers: { "content-type": "text/plain" } });
     request.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
     return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } });
   } });
-  // When a browser resource is fetched and a caller closes its own event subscription.
   const url = await f.transport.resourceUrl("/api/fs/file?path=resource");
   cleanups.push(() => URL.revokeObjectURL(url));
   expect(url.startsWith("blob:")).toBe(true);
@@ -871,38 +1058,28 @@ it("returns a blob resource fetched over the relay and stops a closed SSE withou
   await opened(source);
   source.close();
   await bounded(aborted.promise);
-  // Then close cancels its server request without a spurious reconnect-triggering error.
   expect(source.readyState).toBe(2);
   expect(errors).toBe(0);
 });
 
 it("exposes resource failures as hook state without an unhandled promise rejection", async () => {
-  // Given a relay resource fetch that is refused.
+  const page = openBrowserPage();
   const f = await fixture({ dispatch: async () => new Response(null, { status: 404 }) });
   setTransport(f.transport);
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  cleanups.push(() => {
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
   const result = deferred<ResourceUrlState>();
   function Probe() {
     const state = useResourceUrlState("/api/fs/file?path=missing");
     if (state.error) result.resolve(state);
     return null;
   }
-  // When the resource promise rejects after the hook mounts.
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   await act(async () => { await bounded(result.promise); });
   // Then the caller can render the failure; Bun's test runner also fails unhandled rejections.
   expect(await result.promise).toMatchObject({ url: null, error: expect.any(TypeError) });
-  await act(async () => renderer?.unmount());
+  await page.render(null);
 });
 
 it("throws on send while connecting and validates close arguments synchronously", () => {
-  // Given a virtual socket not yet opened.
   const socket = new RelayWebSocket(() => { throw new TypeError("Offline"); });
   // When callers violate the browser socket contract.
   // Then errors are synchronous, not swallowed by an asynchronous send queue.
@@ -914,53 +1091,61 @@ it("throws on send while connecting and validates close arguments synchronously"
 
 it("keeps a StrictMode resource usable and revokes each owned blob on cleanup", async () => {
   // Given a resource hook whose effects will be replayed by React StrictMode.
+  const page = openBrowserPage();
   const f = await fixture({ dispatch: async () => new Response("image") });
   setTransport(f.transport);
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
   const revoke = URL.revokeObjectURL;
   const revoked: string[] = [];
   URL.revokeObjectURL = (url) => { revoked.push(url); revoke(url); };
-  cleanups.push(() => {
-    URL.revokeObjectURL = revoke;
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
+  cleanups.push(() => { URL.revokeObjectURL = revoke; });
   const loaded = deferred<string>();
   function Probe() {
     const state = useResourceUrlState("/api/fs/file?path=image");
     if (state.url) loaded.resolve(state.url);
     return null;
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  // When effect cleanup runs once for StrictMode, then again for unmount.
-  await act(async () => { renderer = create(createElement(StrictMode, null, createElement(Probe))); });
+  await page.render(createElement(StrictMode, null, createElement(Probe)));
   await act(async () => { await bounded(loaded.promise); });
   const url = await loaded.promise;
   expect(await (await fetch(url)).text()).toBe("image");
   expect(revoked).not.toContain(url);
-  await act(async () => renderer?.unmount());
-  // Then the live URL was not revoked by the stale effect, and is revoked by its owner's cleanup.
+  await page.render(null);
   expect(revoked).toContain(url);
   await expect(fetch(url)).rejects.toBeInstanceOf(TypeError);
 });
 
 it("falls back to the global relay when a regional one cannot be reached, and reconnects through it", async () => {
-  // Given a PC paired through a regional relay that does not answer
   const f = await fixture({}, { relay: REGIONAL_RELAYS[0]!, unreachable: 1 });
-  // Then the first open went on through the global relay, which the PC also keeps a link to
   expect(f.attempts.relays).toEqual([REGIONAL_RELAYS[0]!, GLOBAL_RELAY]);
   expect(f.connections).toHaveLength(1);
-  // And the device is still saved with the regional relay the offer named
   expect(f.attempts.offered).toEqual([REGIONAL_RELAYS[0]!, REGIONAL_RELAYS[0]!]);
-  // And a reconnect starts where the last connection got through
   await f.drop();
   await f.transport.connect();
   expect(f.attempts.relays).toEqual([REGIONAL_RELAYS[0]!, GLOBAL_RELAY, GLOBAL_RELAY]);
 });
 
 it("never falls back from a relay that is not one of Ovis's regional relays", async () => {
-  // Given a self-hosted relay that does not answer, the open fails without trying Ovis's relay
   await expect(fixture({}, { relay: "wss://relay.example", unreachable: 1 })).rejects.toBeInstanceOf(RelayUnreachableError);
 });
+
+it("uploads a JSON string body larger than the 3 MiB nonterminal queue over the relay (#4476)", async () => {
+  const payload = JSON.stringify({ pane_id: "w1:p1", content_type: "image/jpeg", data_base64: "A".repeat(4 * 1024 * 1024) });
+  expect(Buffer.byteLength(payload)).toBeGreaterThan(3 * 1024 * 1024);
+  const f = await fixture({ dispatch: async (request) => {
+    const received = await request.text();
+    return Response.json({ length: received.length, matches: received === payload });
+  } });
+  const direct = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(direct.status).toBe(200);
+  expect(await direct.json()).toEqual({ length: payload.length, matches: true });
+
+  firefoxRequests();
+  const buffered = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(buffered.status).toBe(200);
+  expect(await buffered.json()).toEqual({ length: payload.length, matches: true });
+}, 30_000);
 

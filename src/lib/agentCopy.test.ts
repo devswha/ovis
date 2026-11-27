@@ -1,18 +1,26 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { unwrapAgentRows } from "./agentCopy.ts";
+import { GhosttyVt } from "./ghostty/vt.ts";
+
+beforeAll(async () => {
+  const vt = await GhosttyVt.create(20, 2);
+  vt.dispose();
+});
 
 const REPLY = "Summary line. The build command is `npx example-cli@latest build -p ios --profile beta --auto-submit` and it should be copied exactly as one line without any extra spaces. Summary line. The build command is npx example-cli@latest build -p ios --profile beta --auto-submit and it should be copied exactly as one line.";
 
 describe("unwrapAgentRows", () => {
   it("joins a reply Claude Code wrapped at the pane width into one line (#2558)", () => {
-    // the rows the issue copied from a 158-column pane, the first after Claude's "⏺ " marker
     const copied = "Summary line. The build command is npx example-cli@latest build -p ios --profile beta --auto-submit and it should be copied exactly as one line without any\n"
       + "  extra spaces. Summary line. The build command is npx example-cli@latest build -p ios --profile beta --auto-submit and it should be copied exactly as one\n"
       + "  line.";
     expect(unwrapAgentRows(copied, 158, 2, [REPLY])).toBe(REPLY.replaceAll("`", ""));
     expect(unwrapAgentRows("⏺ The reply wraps\n  here.", 18, 0, ["The reply wraps here."])).toBe("⏺ The reply wraps here.");
-    // a selection that ends partway through the wrapped word
     expect(unwrapAgentRows("⏺ The reply wraps\n  he", 18, 0, ["The reply wraps here."])).toBe("⏺ The reply wraps he");
+  });
+
+  it("uses the cells of a ZWJ family, not its code points, to recognize a wrap", () => {
+    expect(unwrapAgentRows("  a👨‍👩‍👧\n  bee", 7, 0, ["a👨‍👩‍👧 bee"])).toBe("  a👨‍👩‍👧 bee");
   });
 
   it("keeps every break the agent's own text does not show as a wrap (#2575 review)", () => {
@@ -26,7 +34,6 @@ describe("unwrapAgentRows", () => {
       ["  bun run check fast && bun test src\n  git push origin HEAD", 38],
       ["  const answer = computeTheValue(a, b);\n  return answer;", 40],
       ["  export const first = makeTheFirstValue();\n  export const second = makeTheSecond();\n  export const third = 3;", 44],
-      // tool output is not the agent's text at all
       ["  ⎿  src/components/ConnectPhoneDialog.tsx\n     src/lib/api.ts", 44],
       ["⏺ Done. The fix is in the branch now\n  Next I will run the tests.", 38],
     ];

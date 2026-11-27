@@ -9,10 +9,6 @@ const submitter = () => createSubmitText({
   SUBMIT_DEADLINE_MS: 1000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 0, SUBMIT_DELAY_MS: 0,
 });
 
-/**
- * herdr's writes as herdrRpc makes them: the guard is asked once connected, and a false one writes nothing.
- * The sender starts watching while herdr is reached for the text, or for its Enter.
- */
 function senderLeavesWhileConnecting(during: "text" | "enter") {
   let watching = false;
   const authorize = () => { if (watching) throw new client.HerdrError("read_only", "this connection can only watch"); };
@@ -32,7 +28,7 @@ function senderLeavesWhileConnecting(during: "text" | "enter") {
   return { authorize, written };
 }
 
-const failure = (sent: Promise<void>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
+const failure = (sent: Promise<unknown>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
 
 it("types an input line and its Enter with a guard asked right before each write", async () => {
   const typed = spyOn(client, "paneSendText").mockResolvedValue();

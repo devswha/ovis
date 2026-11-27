@@ -1,5 +1,6 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
+import { FALLBACK_ENTER_WITHHELD_MESSAGE } from "../../shared/submit-outcome.ts";
 import * as client from "../herdr/client.ts";
 import { createSubmitText } from "./composer.ts";
 
@@ -27,6 +28,41 @@ it("sends one long input line to the pane's agent as its prompt, not typed raw",
   expect(keys).not.toHaveBeenCalled();
 });
 
+it.each([
+  ["devin", "../fixtures/devin-3000.12.43-composer.txt", "../fixtures/devin-3000.12.43-trust.txt"],
+  ["codex", "../../src/lib/fixtures-input-rows/codex-0.167.0/composer-empty-100.txt", "../../src/lib/fixtures-input-rows/codex-0.167.0/model-effort-40.txt"],
+])("withholds the fallback Enter when a %s menu appears after the paste", async (agent, composerFile, menuFile) => {
+  const { prompt, typed, keys } = herdr();
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent, agent_status: "idle", cwd: "/tmp", terminal_id: `${agent}-test` } as Awaited<ReturnType<typeof client.paneGet>>);
+  const menu = readFileSync(new URL(menuFile, import.meta.url), "utf8");
+  let screen = readFileSync(new URL(composerFile, import.meta.url), "utf8");
+  spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
+  prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
+  typed.mockImplementation(async () => { screen = menu; });
+  await expect(submitter()("w:p1", "hello agent", "hello agent", Date.now())).rejects.toMatchObject({
+    code: "submit_partial", message: FALLBACK_ENTER_WITHHELD_MESSAGE,
+  });
+  expect(typed).toHaveBeenCalledTimes(1);
+  expect(keys).not.toHaveBeenCalled();
+});
+
+it.each(["Up/Down and Enter.", "Up/Down to select a row, Enter to confirm."])("sends a Devin draft ending in %s after a fallback paste", async (ending) => {
+  const { prompt, typed, keys } = herdr();
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "devin", agent_status: "idle", cwd: "/tmp", terminal_id: "devin-test" } as Awaited<ReturnType<typeof client.paneGet>>);
+  const composer = readFileSync(new URL("../fixtures/devin-3000.12.43-composer.txt", import.meta.url), "utf8");
+  const message = `Document these keyboard shortcuts:\n${ending}`;
+  let screen = composer;
+  spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
+  prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "fixture refusal"));
+  typed.mockImplementation(async () => {
+    screen = composer.replace(/^❭ .*$/m, () => `❭ ${message}`);
+  });
+  await submitter()("w:p1", message, message.replaceAll("\n", "\r"), Date.now());
+  expect(typed).toHaveBeenCalledTimes(1);
+  expect(keys).toHaveBeenCalledTimes(1);
+  expect(keys).toHaveBeenCalledWith("w:p1", ["Enter"], undefined, expect.any(Function));
+});
+
 it("still types a short input line, an answer into an open menu included", async () => {
   const { prompt, typed, keys } = herdr();
   await submitter()("w:p1", "2", "2", Date.now(), true);
@@ -49,7 +85,6 @@ it("writes and types nothing of a long input line whose sender may no longer typ
   const { prompt, typed, keys } = herdr();
   let watching = false;
   const authorize = () => { if (watching) throw new client.HerdrError("read_only", "this connection can only watch"); };
-  // herdrRpc asks the guard once connected, right before the prompt is written
   prompt.mockImplementation(async (_target, _text, _socketPath, guard) => {
     watching = true;
     if (guard && !guard()) throw new client.HerdrError("cancelled", "herdr agent.prompt was not sent");
@@ -73,7 +108,6 @@ it("never types a long input line after its prompt failed in a way that may have
 it("sends chat text through the guarded terminal path when a custom dsh agent has no prompt adapter", async () => {
   const { prompt, typed, keys } = herdr();
   spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "dsh", agent_status: "idle", cwd: "/tmp", terminal_id: "dsh-test" } as Awaited<ReturnType<typeof client.paneGet>>);
-  // read for a picker of the agent's own (freeAgentPicker): dsh's prompt line is none
   spyOn(client, "paneRead").mockResolvedValue({ text: "dsh> " } as Awaited<ReturnType<typeof client.paneRead>>);
   prompt.mockRejectedValue(new client.HerdrError("agent_not_ready", "custom dsh agent"));
   await submitter()("w:p1", "hello dsh", "hello dsh", Date.now(), false);

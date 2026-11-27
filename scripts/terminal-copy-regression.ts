@@ -4,12 +4,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, Page } from "playwright-core";
-import { herdrRpc, paneSendText, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
-import { shownRow, shownRows } from "./shown-rows.ts";
+import { herdrRpc, paneRead, paneSendText, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
+import { shownRow } from "./shown-rows.ts";
 
-/** A plain left drag in the desktop terminal selects and copies instead of reaching herdr. */
 export async function checkTerminalCopy(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "herdr-copy-ui-"));
+  const prompt = "copy-fixture$ ";
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-copy-ui" });
   const pane = created.root_pane.pane_id;
   const script = join(root, "show.cjs");
@@ -22,6 +22,10 @@ setInterval(() => {}, 1000);
 `);
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   try {
+    // Set in the shell, not the pane's env: where /bin/sh is bash (Arch, Fedora), the test shell's #!/bin/sh
+    // wrapper runs non-interactive and drops PS1 before bash starts. The split quotes keep the typed
+    // line itself from matching the prompt.
+    await paneSendText(pane, `PS1='copy-fixture''$ '; clear\r`);
     await context.addInitScript((id) => {
       localStorage.setItem(`ovis:view:${id}`, "terminal");
       // WebKit requires the write to start in the gesture, even when its text is
@@ -32,22 +36,28 @@ setInterval(() => {}, 1000);
         releasing = true;
         setTimeout(() => { releasing = false; }, 0);
       }, { capture: true });
-      const state = { checking: false, writes: [] as boolean[], pending: 0, positions: { asked: 0, open: 0 } };
+      const state = { checking: false, writes: [] as boolean[], pending: 0, positions: { asked: 0, open: 0 }, scrollWrites: 0 };
       (window as any).clipboardGesture = state;
-      // A press reads the pane's scroll position, and only a release after it has arrived asks
-      // herdr for the text and reserves the async write. Count the reads asked for and still
-      // open, so a drag can wait for its own instead of racing it or taking an earlier press's.
       const fetchPage = window.fetch.bind(window);
       (window as any).fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         const method = init?.method ?? (input instanceof Request ? input.method : "GET");
         const url = new URL(input instanceof Request ? input.url : String(input), location.href);
-        if (method !== "GET" || !url.pathname.endsWith("/pane/scroll")) return fetchPage(input, init);
-        state.positions.asked++;
-        state.positions.open++;
+        if (!url.pathname.endsWith("/pane/scroll")) return fetchPage(input, init);
+        if (method === "GET") {
+          state.positions.asked++;
+          state.positions.open++;
+        } else if (method === "POST") state.scrollWrites++;
+        else return fetchPage(input, init);
         let closed = false;
         const close = (): void => {
-          if (!closed) state.positions.open--;
+          if (closed) return;
           closed = true;
+          if (method === "GET") state.positions.open--;
+          else {
+            // The drag queues its next write in the current write's promise
+            // continuation. Keep the current one counted through that handoff.
+            requestAnimationFrame(() => { state.scrollWrites--; });
+          }
         };
         try {
           const response = await fetchPage(input, init);
@@ -80,13 +90,12 @@ setInterval(() => {}, 1000);
     // letting go copies once herdr's copy_on_select is known: on here, as herdr's default with no config
     const preference = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/herdr-ui");
     await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
-    await page.locator(shownRows()).first().waitFor();
+    await page.locator(shownRow(), { hasText: prompt.trimEnd() }).waitFor();
     assert.equal((await (await preference).json()).copy_on_select, true, "no herdr config: herdr's default copies on release");
     await paneSendText(pane, `clear; node ${script}\r`);
     const first = page.locator(shownRow(), { hasText: "DRAGCOPY-first-line" });
     await first.waitFor();
 
-    /** Presses and waits for the viewport position the press asked for: until then a release copies the visible text alone. */
     const press = async (): Promise<void> => {
       const before = await page.evaluate(() => (window as any).clipboardGesture.positions.asked as number);
       await page.mouse.down();
@@ -95,7 +104,6 @@ setInterval(() => {}, 1000);
         return asked > count && open === 0;
       }, before);
     };
-    /** Drags and returns what reached the pane between press and release (hover reports before it are herdr's). */
     const drag = async (from: { x: number; y: number }, to: { x: number; y: number }): Promise<string[]> => {
       await page.mouse.move(from.x, from.y);
       await page.waitForTimeout(100);
@@ -110,7 +118,6 @@ setInterval(() => {}, 1000);
     const clipboard = (page: Page): Promise<string> => page.evaluate(() => navigator.clipboard.readText());
     const settled = () => page.waitForFunction(() => (window as any).clipboardGesture.pending === 0);
 
-    // plain drag: selects, copies on release, sends nothing to the pane
     await page.evaluate(() => navigator.clipboard.writeText(""));
     await page.evaluate(() => { (window as any).clipboardGesture.checking = true; });
     const box = (await first.boundingBox())!;
@@ -126,10 +133,8 @@ setInterval(() => {}, 1000);
       "drag copy must begin inside mouseup, before timers or server responses lose the gesture");
     await page.evaluate(() => { (window as any).clipboardGesture.checking = false; });
 
-    // Ctrl+C with a selection copies it and does not interrupt the pane
     await page.mouse.dblclick(box.x + 20, box.y + box.height / 2);
     await page.waitForTimeout(100);
-    // releasing the double click already copied: empty the clipboard so only Ctrl+C can fill it
     await page.evaluate(() => navigator.clipboard.writeText(""));
     const beforeCopy = inputs.length;
     await page.keyboard.press("Control+c");
@@ -140,7 +145,6 @@ setInterval(() => {}, 1000);
     await page.waitForTimeout(300);
     assert.equal(inputs.at(-1), "\x03", "Ctrl+C without a selection still interrupts");
 
-    // a Korean layout: the C key reports "ㅊ", and Ctrl+C with a selection still copies
     await page.mouse.dblclick(box.x + 20, box.y + box.height / 2);
     await page.waitForTimeout(100);
     await page.evaluate(() => navigator.clipboard.writeText(""));
@@ -172,7 +176,6 @@ setInterval(() => {}, 1000);
     }
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
 
-    // A slow response for the previous drag cannot replace the newer selection.
     let releaseOld!: () => void;
     const oldResponse = new Promise<void>((resolve) => { releaseOld = resolve; });
     let held = false;
@@ -197,7 +200,6 @@ setInterval(() => {}, 1000);
       assert.equal(delivered, true);
       await settled();
       assert.match(await clipboard(page), /^DRAGCOPY-second-line/, "an old selection response never overwrites the newer copy");
-      // emptied first, so the check sees what Ctrl+C itself wrote
       await page.evaluate(() => navigator.clipboard.writeText(""));
       await page.keyboard.press("Control+c");
       await settled();
@@ -217,7 +219,6 @@ setInterval(() => {}, 1000);
     assert.match(await clipboard(page), /^DRAGCOPY-first-line/, "an empty server range preserves the visible selection");
     await page.unroute("**/api/pane/selection?*");
 
-    // a line longer than the terminal is wide copies as herdr has it: one line
     const long = page.locator(shownRow(), { hasText: "LONG-" });
     const longBox = (await long.boundingBox())!;
     const endRow = page.locator(shownRow(), { hasText: "-END" });
@@ -266,7 +267,6 @@ setInterval(() => {}, 1000);
       await insecure.close();
     }
 
-    // a drag outlives one screen: the wheel, or the pointer past an edge, scrolls herdr
     const numbered = join(root, "numbered.cjs");
     writeFileSync(numbered, `
 for (let i = 0; i < 300; i++) process.stdout.write("S" + String(i).padStart(3, "0") + "\\r\\n");
@@ -282,7 +282,6 @@ setInterval(() => {}, 1000);
     }, shownRow());
     const lines = (text: string): number[] => text.split("\n").map((line) => Number(line.trim().slice(1)));
     const consecutive = (numbers: number[]): boolean => numbers.every((n, i) => i === 0 || n === numbers[i - 1]! + 1);
-    /** the copy lands after herdr answers: wait for the emptied clipboard to fill */
     const filled = async (): Promise<string> => {
       await settled();
       const deadline = Date.now() + 5_000;
@@ -295,17 +294,28 @@ setInterval(() => {}, 1000);
 
     const screen = (await page.locator(".pane-terminal .xterm-screen").boundingBox())!;
     const lineHeight = screen.height / (await page.locator(shownRow()).count());
-    // at the bottom of the history, a fast drag past the bottom edge still takes the last line
     await page.evaluate(() => navigator.clipboard.writeText(""));
     await page.mouse.move(screen.x + 1, screen.y + screen.height / 2);
     await press();
     await page.mouse.move(screen.x + 1, screen.y + screen.height + 20, { steps: 1 });
     await page.mouse.up();
     assert.equal(lines(await filled()).at(-1), 299, "a drag past the bottom edge takes the last line");
-    await page.mouse.wheel(0, lineHeight); // drops the highlight
+    await page.mouse.wheel(0, lineHeight);
     await page.waitForTimeout(2600); // the copy note fades before the evidence below
 
-    const firstTop = await topRow();
+    const herdrTop = async (): Promise<number> => Number((await paneRead({ paneId: pane, source: "visible", stripAnsi: true })).text.split("\n")[0]!.trim().slice(1));
+    const syncedTop = async (): Promise<number> => {
+      const deadline = Date.now() + 10_000;
+      await page.waitForFunction(() => (window as Window & { clipboardGesture?: { scrollWrites: number } }).clipboardGesture?.scrollWrites === 0);
+      const herdr = await herdrTop();
+      assert.ok(Number.isFinite(herdr), "herdr shows a numbered line");
+      await page.waitForFunction(([selector, line]) => {
+        const row = document.querySelector(selector);
+        return Number(row?.textContent?.trim().slice(1)) === line;
+      }, [shownRow(), herdr] as const, { timeout: Math.max(1, deadline - Date.now()) });
+      return herdr;
+    };
+    const firstTop = await syncedTop();
     const pressAt = { x: screen.x + 200, y: screen.y + lineHeight * 5.5 };
     await page.evaluate(() => navigator.clipboard.writeText(""));
     await page.mouse.move(pressAt.x, pressAt.y);
@@ -327,9 +337,8 @@ setInterval(() => {}, 1000);
     assert.deepEqual(inputs.slice(beforeWheel), [], "a selecting drag's wheel scrolls herdr through the API, never as input");
     assert.ok(await topRow() < firstTop, "herdr's viewport followed the drag");
 
-    // dragging past the top edge keeps scrolling
     await page.evaluate(() => navigator.clipboard.writeText(""));
-    const edgeStartTop = await topRow();
+    const edgeStartTop = await syncedTop();
     const bottomAt = { x: screen.x + 200, y: screen.y + screen.height - lineHeight * 1.5 };
     await page.mouse.move(bottomAt.x, bottomAt.y);
     await press();
@@ -343,7 +352,6 @@ setInterval(() => {}, 1000);
     assert.equal(copied.at(-1), edgeStartTop + rows - 2, `the edge drag ends at the pressed line (${copied.slice(0, 2)}..${copied.slice(-2)}, top ${edgeStartTop}, rows ${rows})`);
     assert.ok(copied.length > rows, `the edge scrolled past one screen (${copied.length} lines, ${rows} rows)`);
 
-    // Ctrl+C over that highlight copies herdr's text again, not the visible screen
     const edgeText = await clipboard(page);
     await page.evaluate(() => navigator.clipboard.writeText(""));
     const beforeKey = inputs.length;
@@ -351,7 +359,6 @@ setInterval(() => {}, 1000);
     assert.equal(await filled(), edgeText, "Ctrl+C copies the whole scrolled range");
     assert.deepEqual(inputs.slice(beforeKey), [], "Ctrl+C over a selection sends no ^C");
 
-    // the next wheel outside a drag drops the stale highlight
     await page.mouse.wheel(0, lineHeight * 3);
     await page.waitForTimeout(200);
     assert.equal(await page.evaluate(() => document.querySelector(".pane-terminal .xterm-selection div") !== null), false, "a wheel after a copy clears the highlight");

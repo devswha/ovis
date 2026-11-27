@@ -16,11 +16,12 @@ import { basename, dirname, join, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { openBound } from "./conversation-shared.ts";
+import { runsAgent } from "./gjc-runtime.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
 import { processAlive, processStartedAt, processStartUpperBound } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
+import { descendantProcesses, forgetWindowsProcessTable, freshWindowsProcessTableEntry, recentWindowsProcessTable, tryWindowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
-/** Every main wire log under `sessions` a pid holds open, by real path; empty on any read failure. */
 function wireLogsHeld(pid: number, sessions: string): string[] {
   let dir: ReturnType<typeof opendirSync>;
   try { dir = opendirSync(`/proc/${pid}/fd`); } catch { return []; }
@@ -46,7 +47,7 @@ const LOCK_BYTES = 4096;
  * but a crash leaves it behind, and its pid can come to name another process later. A lock
  * written before its pid's process started (by the latest that start can be) is that leftover.
  */
-function lockOwner(path: string, own: Set<number>): { pid: number; since: number } | null {
+function lockOwner(path: string, own: Set<number>, startUpperBound: (pid: number) => number | null): { pid: number; since: number } | null {
   let lock: unknown;
   try {
     if (statSync(path).size > LOCK_BYTES) return null;
@@ -57,7 +58,7 @@ function lockOwner(path: string, own: Set<number>): { pid: number; since: number
   if (typeof pid !== "number" || !own.has(pid)) return null;
   if (typeof host === "string" && host !== "" && host !== hostname()) return null;
   if (typeof startedAt !== "number" || !processAlive(pid)) return null;
-  const started = processStartUpperBound(pid);
+  const started = startUpperBound(pid);
   return started !== null && startedAt >= started ? { pid, since: startedAt } : null;
 }
 
@@ -69,12 +70,11 @@ function wireOfSession(sessionId: string, sessions: string): string | null {
     // a folder's sessions (wd_) and managed workspaces' (wm_)
     if (!store.startsWith("wd_") && !store.startsWith("wm_")) continue;
     const path = join(sessions, store, sessionId, "agents", "main", "wire.jsonl");
-    try { if (statSync(path).isFile()) return path; } catch { /* not in this store */ }
+    try { if (statSync(path).isFile()) return path; } catch {}
   }
   return null;
 }
 
-/** What the processes prove: one session's log, the process that holds it and since when it locked it, none, or two sessions. */
 type Proof = { path: string; pid: number; since?: number } | "none" | "ambiguous";
 
 /**
@@ -82,15 +82,15 @@ type Proof = { path: string; pid: number; since?: number } | "none" | "ambiguous
  * live lock of theirs names, else on Linux the main log they hold open, which a session has before
  * its lock.
  */
-function proveWire(own: Set<number>, home: string): Proof {
+function proveWire(own: Set<number>, home: string, startUpperBound: (pid: number) => number | null): Proof {
   const sessions = join(home, ".kimi-code", "sessions");
   const locks = join(home, ".kimi-code", "locks", "sessions");
   let names: string[] = [];
-  try { names = readdirSync(locks); } catch { /* no session holds a lock */ }
+  try { names = readdirSync(locks); } catch {}
   const locked = new Map<string, { pid: number; since: number }>();
   for (const name of names) {
     if (!name.endsWith(".lock")) continue;
-    const owner = lockOwner(join(locks, name), own);
+    const owner = lockOwner(join(locks, name), own, startUpperBound);
     if (owner !== null) locked.set(name.slice(0, -".lock".length), owner);
   }
   if (locked.size > 1) return "ambiguous";
@@ -117,13 +117,22 @@ function programOf(pid: number): string | null {
   try { return `${started}\0${readFileSync(`/proc/${pid}/cmdline`, "utf8")}`; } catch { return null; }
 }
 
+interface ProcessIdentity {
+  startUpperBound(pid: number): number | null;
+  /** Process program identity: string when known, null when dead/changed, undefined when snapshot omitted start time. */
+  program(pid: number): string | null | undefined;
+  /** True when a previously bound PID is still an in-pane descendant in an incomplete snapshot (missing start time or executable metadata). */
+  inconclusive?(pid: number, expectedProgram: string): boolean;
+}
+
+const nativeProcessIdentity: ProcessIdentity = { startUpperBound: processStartUpperBound, program: programOf };
+
 /** The most input history read at once: more typed since the last proof is no answer. */
 const HISTORY_BYTES = 1024 * 1024;
 
 /**
  * The input history of the folder a session runs in, as Kimi keeps it
- * (`user-history/<md5(cwd)>.jsonl`, one `{ content }` line per input, slash commands too);
- * undefined when the session names no folder.
+ * (`user-history/<md5(cwd)>.jsonl`, one `{ content }` line per input, slash commands too).
  */
 function historyPath(sessionDir: string, home: string): string | undefined {
   let cwd: unknown;
@@ -142,12 +151,6 @@ const PROMPT_WRITE_MS = 250;
 /** A command that moves a Kimi to another session: picking an existing one writes nothing to it. */
 const SWITCH_COMMAND = /^\/(?:sessions|resume|new|clear)(?:\s|$)/;
 
-/**
- * The whole lines of the history from `from` on (a line still being written is read once it ends):
- * where they end, whether one switches sessions, and when the history last changed. `from` 0 on a
- * history not written yet reads as empty; one cut short, unreadable or grown past HISTORY_BYTES is
- * null.
- */
 function readHistory(path: string, from: number): { end: number; switched: boolean; changed: number } | null {
   let fd: number;
   try { fd = openSync(path, "r"); } catch (error) { return from === 0 && (error as NodeJS.ErrnoException).code === "ENOENT" ? { end: 0, switched: false, changed: 0 } : null; }
@@ -167,7 +170,6 @@ function readHistory(path: string, from: number): { end: number; switched: boole
   } catch { return null; } finally { closeSync(fd); }
 }
 
-/** Where the history's last whole line ends now: what is typed after it is read from there. */
 function historyEnd(path: string): number | null {
   let fd: number;
   try { fd = openSync(path, "r"); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null; }
@@ -180,15 +182,8 @@ function historyEnd(path: string): number | null {
 }
 
 /**
- * Where the binding reads the folder's history from after this proof. Proving the same session
- * again moves past what was typed since, unless that holds a switch (or could: it cannot be read)
- * the proof does not postdate. Only a lock taken since the last proof does, by its next prompt: the
- * CLI writes the prompt to the history as it takes the lock (the same few milliseconds, either one
- * first), so the lock is no older than the history's last change. The lock the last proof saw
- * (a turn's lock lingers a few seconds) or an open log says nothing of it, unless the session's log
- * has been written since: it is still at work (the switch was typed in another Kimi of the folder).
- * The proof is then `stale`: the history stays where it was, and the pane shows its terminal until
- * such a lock.
+ * The CLI writes a prompt to the history as it takes the lock (the same few milliseconds, either one
+ * first), and a turn's lock lingers a few seconds.
  */
 function historyAfterProof(path: string | undefined, previous: { path: string; size: number } | undefined, since: number | undefined, sinceBefore: number | undefined, wire: string): { history?: { path: string; size: number }; stale: boolean } {
   if (path === undefined) return { stale: false };
@@ -196,9 +191,9 @@ function historyAfterProof(path: string | undefined, previous: { path: string; s
     const read = readHistory(path, previous.size);
     if (read !== null && !read.switched) return { history: { path, size: read.end }, stale: false };
     let changed = read?.changed;
-    try { changed ??= statSync(path).mtimeMs; } catch { /* gone: what it held is unknown */ }
+    try { changed ??= statSync(path).mtimeMs; } catch {}
     let written = -Infinity;
-    try { written = statSync(wire).mtimeMs; } catch { /* unknown: not written since */ }
+    try { written = statSync(wire).mtimeMs; } catch {}
     const postdated = since !== undefined && since !== sinceBefore && changed !== undefined && since + PROMPT_WRITE_MS >= changed;
     if (!postdated && !(changed !== undefined && written > changed)) return { history: previous, stale: true };
   }
@@ -207,58 +202,167 @@ function historyAfterProof(path: string | undefined, previous: { path: string; s
 }
 
 /**
- * The last session proven for each pane, and the program that held it. The CLI lets go of its lock
- * a few seconds after a turn ends and opens its log only to append, so an idle Kimi proves nothing;
- * while that same program still runs in the pane, holds no other session, no other process has
- * locked this one, the folder has started no session since and nobody has typed /sessions or
- * /resume there (which switch to an existing session without a write or a lock until its next
- * prompt), its last session is still the one it shows.
+ * The CLI lets go of its lock a few seconds after a turn ends and opens its log only to append, so
+ * an idle Kimi proves nothing; while that same program still runs in the pane, holds no other
+ * session, no other process has locked this one, the folder has started no session since and
+ * nobody has typed /sessions or /resume there (which switch to an existing session without a write
+ * or a lock until its next prompt), its last session is still the one it shows.
  */
-const proven = new Map<string, { path: string; pid: number; since?: number; program: string; store: number; history?: { path: string; size: number } }>();
+const proven = new Map<string, { path: string; pid: number; since?: number; program: string; store: number; history?: { path: string; size: number }; probeSeq?: number }>();
 
-/**
- * The wire log these processes own: the session they prove now, else the one the same live program
- * proved last for this pane. Two sessions are no answer, and neither is none.
- */
-export function kimiWireForPane(paneId: string, pids: number[], home = homedir()): string | null {
+export function kimiWireForPane(paneId: string, pids: number[], home = homedir(), identity: ProcessIdentity = nativeProcessIdentity, preserveOnMiss = false, probeSeq?: number): string | null {
+  const existing = proven.get(paneId);
+  const staleProbe = existing !== undefined && probeSeq !== undefined && existing.probeSeq !== undefined && probeSeq < existing.probeSeq;
   const own = new Set(pids.filter((pid) => Number.isSafeInteger(pid) && pid > 1));
-  const proof = proveWire(own, home);
+  const proof = proveWire(own, home, identity.startUpperBound);
   if (typeof proof === "object") {
-    const program = programOf(proof.pid);
+    if (staleProbe) return proof.path;
+    const program = identity.program(proof.pid);
     let store: number | null = null;
-    try { store = statSync(dirname(dirname(dirname(dirname(proof.path))))).mtimeMs; } catch { /* gone: nothing to keep */ }
-    if (program === null || store === null) proven.delete(paneId);
+    try { store = statSync(dirname(dirname(dirname(dirname(proof.path))))).mtimeMs; } catch {}
+    if (program == null || store === null) proven.delete(paneId);
     else {
       const previous = proven.get(paneId);
       const { history, stale } = historyAfterProof(historyPath(dirname(dirname(dirname(proof.path))), home), previous?.path === proof.path ? previous.history : undefined, proof.since, previous?.since, proof.path);
-      proven.set(paneId, { path: proof.path, pid: proof.pid, since: proof.since, program, store, history });
+      proven.set(paneId, { path: proof.path, pid: proof.pid, since: proof.since, program, store, history, ...(probeSeq === undefined ? {} : { probeSeq }) });
       if (stale) return null;
     }
     return proof.path;
   }
   const last = proven.get(paneId);
+  if (staleProbe) return null;
   proven.delete(paneId);
-  if (proof !== "none" || last === undefined || !own.has(last.pid) || !processAlive(last.pid) || programOf(last.pid) !== last.program) return null;
+  const miss = (): null => {
+    if (preserveOnMiss && last !== undefined) proven.set(paneId, last);
+    return null;
+  };
+  if (proof !== "none" || last === undefined || !processAlive(last.pid)) return miss();
+  if (identity.inconclusive?.(last.pid, last.program)) {
+    proven.set(paneId, last);
+    return null;
+  }
+  if (!own.has(last.pid)) return miss();
+  const currentProgram = identity.program(last.pid);
+  if (currentProgram === undefined) {
+    proven.set(paneId, last);
+    return null;
+  }
+  if (currentProgram !== last.program) return miss();
   // a lock on this session now is another process's (the pane's own would have proved it)
   const session = dirname(dirname(dirname(last.path)));
-  try { statSync(join(home, ".kimi-code", "locks", "sessions", `${basename(session)}.lock`)); return null; } catch { /* nobody holds it */ }
+  try { statSync(join(home, ".kimi-code", "locks", "sessions", `${basename(session)}.lock`)); return miss(); } catch {}
   // a session the folder got since (`/new`) may be the one this Kimi has switched to before it writes
-  try { if (statSync(dirname(session)).mtimeMs !== last.store) return null; } catch { return null; }
+  try { if (statSync(dirname(session)).mtimeMs !== last.store) return miss(); } catch { return miss(); }
   if (last.history !== undefined) {
     const read = readHistory(last.history.path, last.history.size);
-    if (read === null || read.switched) return null;
+    if (read === null || read.switched) return miss();
     last.history = { path: last.history.path, size: read.end };
   }
-  proven.set(paneId, last);
+  proven.set(paneId, probeSeq === undefined ? last : { ...last, probeSeq });
   return last.path;
 }
 
-/** The wire log of the Kimi session the pane's own processes hold, or null: the chat then stays on the terminal. */
-export async function kimiTranscriptPathForPane(pane: HerdrPane, home = homedir()): Promise<string | null> {
+const KIMI_EXECUTABLE = /(^|[\\/])kimi(?:-code)?(?:\.exe|\.[cm]?js)?$/i;
+const CONSOLE_HOST = /(^|\/)(conhost|openconsole)(\.exe)?$/i;
+const JS_RUNTIME = /(^|[\\/])(?:bun|node)(?:\.exe)?$/i;
+const windowsPath = (value: string): string => value.trim().replace(/^"(.*)"$/, "$1").replaceAll("\\", "/");
+const consoleExecutable = (row: ProcessRow): string => {
+  if (row.path) return windowsPath(row.path);
+  const cmd = (row.commandLine ?? "").trim();
+  if (!cmd) return "";
+  if (cmd.startsWith("\"")) {
+    const end = cmd.indexOf("\"", 1);
+    return windowsPath(end > 1 ? cmd.slice(1, end) : cmd.slice(1));
+  }
+  return windowsPath(cmd.split(/\s+/, 1)[0] ?? "");
+};
+
+export function forgetKimiWindowsTable(): void {
+  forgetWindowsProcessTable();
+}
+
+export function kimiWireOwner(paneId: string): string | null {
+  const entry = proven.get(paneId);
+  return entry === undefined ? null : `${entry.pid}:${entry.program}`;
+}
+
+export function kimiWireForWindowsProcesses(paneId: string, shellPid: number, rows: ProcessRow[] | null, home = homedir(), preserveOnMiss = false, probeSeq?: number): string | null {
+  if (rows === null) return null;
+  const startedOf = new Map<number, number | undefined>(rows.map((row) => [row.pid, row.started]));
+  const parentOf = new Map<number, number>(rows.map((row) => [row.pid, row.parent]));
+  const rowByPid = new Map<number, ProcessRow>(rows.map((row) => [row.pid, row]));
+  // A process started in its own console (`Start-Process kimi`) owns a conhost.exe/OpenConsole.exe child;
+  // an in-pane process shares herdr's console (matching server/omo.ts).
+  const ownConsole = new Set(rows.filter((row) => {
+    const candidate = consoleExecutable(row);
+    if (!CONSOLE_HOST.test(candidate)) return false;
+    const parentStarted = startedOf.get(row.parent);
+    return row.started === undefined || parentStarted === undefined || row.started >= parentStarted;
+  }).map((row) => row.parent));
+  const inPaneConsole = (pid: number): boolean => {
+    if (ownConsole.has(pid)) return false;
+    for (let at = parentOf.get(pid), steps = 0; at !== shellPid; at = parentOf.get(at), steps++) {
+      if (at === undefined || steps > rows.length || ownConsole.has(at)) return false;
+    }
+    return true;
+  };
+  const inPaneDescendants = descendantProcesses(rows, shellPid).filter((process) => inPaneConsole(process.pid));
+  const inPaneDescendantPids = new Set(inPaneDescendants.map((process) => process.pid));
+  const pids = inPaneDescendants
+    .filter((process) => runsAgent(process.argv, KIMI_EXECUTABLE))
+    .map((process) => process.pid);
+  const starts = new Map<number, number>();
+  for (const row of rows) if (typeof row.started === "number") starts.set(row.pid, row.started);
+  const identity: ProcessIdentity = {
+    startUpperBound: (pid) => starts.get(pid) ?? null,
+    program: (pid) => {
+      const started = starts.get(pid);
+      if (started !== undefined) return String(started);
+      return rowByPid.has(pid) ? undefined : null;
+    },
+    inconclusive: (pid, expectedProgram) => {
+      if (pid !== shellPid && !inPaneDescendantPids.has(pid)) return false;
+      const row = rowByPid.get(pid);
+      if (row === undefined) return false;
+      if (row.started === undefined) return true;
+      const missingScript = row.commandLine === null && (row.path === null || JS_RUNTIME.test(row.path));
+      return missingScript && String(row.started) === expectedProgram;
+    },
+  };
+  return kimiWireForPane(paneId, [shellPid, ...pids], home, identity, preserveOnMiss, probeSeq);
+}
+
+export async function kimiTranscriptForPane(
+  pane: HerdrPane,
+  home = homedir(),
+  options: { fresh?: boolean; freshAfter?: number } = {},
+): Promise<{ path: string; owner: string | null } | null> {
   const info = await paneProcessInfo(pane.pane_id).catch(() => null);
   if (!info) return null;
+  if (process.platform === "win32") {
+    if (typeof info.shell_pid !== "number") return null;
+    if (options.fresh === false) {
+      const recent = recentWindowsProcessTable(() => tryWindowsProcessTable());
+      const rows = await recent.rows;
+      const found = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, rows, home, recent.cached, recent.started);
+      if (found !== null) return { path: found, owner: kimiWireOwner(pane.pane_id) };
+      if (!recent.cached) return null;
+      // A cached discovery miss must not hide a newly started Kimi for the cache TTL.
+      const fresh = freshWindowsProcessTableEntry(() => tryWindowsProcessTable(), options.freshAfter);
+      const retried = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, await fresh.rows, home, false, fresh.started);
+      return retried === null ? null : { path: retried, owner: kimiWireOwner(pane.pane_id) };
+    }
+    const fresh = freshWindowsProcessTableEntry(() => tryWindowsProcessTable(), options.freshAfter);
+    const found = kimiWireForWindowsProcesses(pane.pane_id, info.shell_pid, await fresh.rows, home, false, fresh.started);
+    return found === null ? null : { path: found, owner: kimiWireOwner(pane.pane_id) };
+  }
   const pids = [info.shell_pid, ...(info.foreground_processes ?? []).map((process) => process.pid)];
-  return kimiWireForPane(pane.pane_id, pids.filter((pid): pid is number => typeof pid === "number"), home);
+  const found = kimiWireForPane(pane.pane_id, pids.filter((pid): pid is number => typeof pid === "number"), home);
+  return found === null ? null : { path: found, owner: kimiWireOwner(pane.pane_id) };
+}
+
+export async function kimiTranscriptPathForPane(pane: HerdrPane, home = homedir(), options: { fresh?: boolean; freshAfter?: number } = {}): Promise<string | null> {
+  return (await kimiTranscriptForPane(pane, home, options))?.path ?? null;
 }
 
 /** The text of a user message: Kimi stores content as parts, older ones as a plain string. */
@@ -271,10 +375,9 @@ function kimiUserText(content: unknown): string | null {
 }
 
 /**
- * The parts of a prompt the user sent, null for any other record. The CLI tags every stored message
- * with its origin: injections (AGENTS.md, system reminders), task notifications and cron firings are
- * not the user's and open no turn; records from older CLIs without an origin still count. One rule
- * for the parser and the page scanner, so a page starts where a turn does.
+ * The CLI tags every stored message with its origin: injections (AGENTS.md, system reminders), task
+ * notifications and cron firings are not the user's and open no turn; records from older CLIs
+ * without an origin still count.
  */
 export function kimiPrompt(record: unknown): ConversationPart[] | null {
   if (record === null || typeof record !== "object") return null;
@@ -287,17 +390,14 @@ export function kimiPrompt(record: unknown): ConversationPart[] | null {
 }
 
 /**
- * What `/undo` took back in a wire log, followed as the file is scanned: where each prompt it can
- * take back starts, and the byte ranges it took back. Kimi never rewrites the log: a
- * `context.undo` record (with `count`, after the `agent.switched` record newer CLIs write beside it)
+ * Kimi never rewrites the log: a `context.undo` record (with `count`, after the `agent.switched` record newer CLIs write beside it)
  * withdraws the last `count` prompts the user sent and everything after the first of them, but
- * never past a compaction or a clear. The pages read those ranges as blank lines, as a Claude rewind's.
+ * never past a compaction or a clear.
  */
 export interface KimiUndo { anchors: number[]; undone: [number, number][] }
 
 const KIMI_UNDO_MARKS = ['"context.append_message"', '"context.undo"', '"context.apply_compaction"', '"context.clear"'];
 
-/** follows the undo over one record, the bytes [start, end) of the log */
 export function followKimiUndo(undo: KimiUndo, line: Buffer, start: number, end: number): void {
   if (!KIMI_UNDO_MARKS.some((mark) => line.includes(mark))) return;
   let record: { type?: unknown; count?: unknown; message?: { origin?: { inTurn?: unknown } } } | null;
@@ -309,18 +409,15 @@ export function followKimiUndo(undo: KimiUndo, line: Buffer, start: number, end:
     if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1 || count > undo.anchors.length) return;
     let start = undo.anchors[undo.anchors.length - count]!;
     undo.anchors.length -= count;
-    // kept apart and in order: a range this one reaches back over or adjoins is part of it
     while (undo.undone.length > 0 && undo.undone.at(-1)![1] >= start) start = Math.min(start, undo.undone.pop()![0]);
     undo.undone.push([start, end]);
   } else if (kimiPrompt(record) !== null && record.message?.origin?.inTurn !== true) undo.anchors.push(start);
 }
 
-/** The ISO time of a record's millisecond epoch, null when it is not a sane epoch. */
 function kimiWireTs(time: unknown): string | null {
   return typeof time === "number" && Number.isSafeInteger(time) && Math.abs(time) <= 8.64e15 ? new Date(time).toISOString() : null;
 }
 
-/** A short rendering of a tool call for the fold: a command is its command line, else its name. */
 function kimiToolSummary(event: { name?: unknown; display?: { kind?: unknown; command?: unknown } }): string {
   const display = event.display;
   if (display?.kind === "command" && typeof display.command === "string" && display.command.length > 0) return display.command;
@@ -334,11 +431,7 @@ type PendingTool = Extract<ConversationPart, { kind: "tool" }> & { state: "pendi
  * wire.jsonl records, one per line: user prompts are `context.append_message`
  * records; the answer loop is `context.append_loop_event` records — `content.part`
  * (text or think), `tool.call` and its later `tool.result`, all carrying the loop's
- * `time`. Everything between two user prompts is one assistant turn. A stored user
- * message whose `origin.kind` is not "user" (injections, task notifications, cron
- * firings) is meta traffic and never becomes a turn. A record whose shape is wrong
- * (a `null` line, a wild timestamp) is skipped, never fails the page; a tool result
- * is cut like the other readers' (trimOutput), the rest fetched by its toolCallId.
+ * `time`.
  */
 export function parseKimiTranscript(text: string): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
@@ -415,19 +508,13 @@ export function parseKimiTranscript(text: string): ConversationTurn[] {
   return turns;
 }
 
-/** A result record longer than this is not read back whole. */
 const RECORD_BYTES = 64 * 1024 * 1024;
 
-/**
- * The whole output of one tool call, by Kimi's toolCallId, cut at `max`: the log is searched in
- * chunks for the id's bytes, and only a line that holds them is read back and parsed.
- */
 export function kimiToolOutput(path: string, ref: string, max: number): string | null {
   const id = Buffer.from(JSON.stringify(ref));
   let fd: number;
   // another file than the one the lookup is bound to (openBound) holds none of its calls
   try { fd = openBound(path); } catch { return null; }
-  /** The output if the line at [start, end) is this call's result. */
   const result = (start: number, end: number): string | undefined => {
     if (end - start > RECORD_BYTES) return undefined;
     const bytes = Buffer.alloc(end - start);
@@ -442,7 +529,6 @@ export function kimiToolOutput(path: string, ref: string, max: number): string |
   };
   try {
     const chunk = Buffer.alloc(1024 * 1024);
-    // where the current line starts, whether it holds the id, and its last bytes before this chunk (an id cut in two)
     let lineStart = 0;
     let hit = false;
     let tail = Buffer.alloc(0);

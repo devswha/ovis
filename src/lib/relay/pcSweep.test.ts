@@ -1,11 +1,10 @@
 import { afterEach, beforeEach, expect, it, jest } from "bun:test";
 import { createPcSweep } from "./pcSweep.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import type { PcStatus } from "./pcStatus.ts";
+import type { PcFinding as Found, ProbeTarget } from "./pcStatus.ts";
+import { OFFLINE_AFTER_MS } from "../account/myPcs.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
-
-type Found = Exclude<PcStatus, { kind: "checking" }>;
 
 const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 beforeEach(() => {
@@ -13,6 +12,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
   } });
 });
 afterEach(() => {
@@ -35,7 +35,6 @@ async function savedPcs(count: number): Promise<{ devices: RelayDevice[]; store:
   return { devices, store };
 }
 
-/** A probe that answers only when the test lets it: each call's resolver in `pending`, and `arrived(n)` resolves once n calls were made. */
 function heldProbe() {
   const pending: ReturnType<typeof Promise.withResolvers<Found>>[] = [];
   const checked: string[] = [];
@@ -46,7 +45,7 @@ function heldProbe() {
     waiting.set(count, gate);
     return gate.promise;
   };
-  const probe = async (device: RelayDevice): Promise<Found> => {
+  const probe = async (device: ProbeTarget): Promise<Found> => {
     checked.push(device.server_id);
     const result = Promise.withResolvers<Found>();
     pending.push(result);
@@ -67,7 +66,7 @@ it("limits each rotating sweep to eight PCs and two simultaneous checks, includi
   expect(pending).toHaveLength(2);
   for (let wave = 0; wave < 4; wave++) {
     pending[wave * 2]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
-    pending[wave * 2 + 1]?.resolve({ kind: "offline", reason: "relay" });
+    pending[wave * 2 + 1]?.resolve({ kind: "offline", reason: "pc" });
     if (wave < 3) await arrived((wave + 2) * 2);
   }
   await first;
@@ -79,8 +78,8 @@ it("limits each rotating sweep to eight PCs and two simultaneous checks, includi
   await arrived(10);
   expect(checked.slice(8)).toEqual(devices.slice(8, 10).map((device) => device.server_id));
   for (let wave = 4; wave < 8; wave++) {
-    pending[wave * 2]?.resolve({ kind: "offline", reason: "relay" });
-    pending[wave * 2 + 1]?.resolve({ kind: "offline", reason: "relay" });
+    pending[wave * 2]?.resolve({ kind: "offline", reason: "pc" });
+    pending[wave * 2 + 1]?.resolve({ kind: "offline", reason: "pc" });
     if (wave < 7) await arrived((wave + 2) * 2);
   }
   await arrived(16);
@@ -93,24 +92,22 @@ it("checks exactly the PC asked for, ahead of a sweep's remaining PCs and within
   const [queued, outside] = [ids[7] ?? "", ids[10] ?? ""];
   const { pending, checked, arrived, probe } = heldProbe();
   const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
-  // a PC outside the sweep's eight, asked for first: checked at once and marked as checking meanwhile
   const asked = sweep.checkOne(outside);
   await arrived(1);
   expect(checked).toEqual([outside]);
   expect(sweep.status.get(outside)).toEqual({ kind: "checking" });
-  // the sweep that follows gets the one worker left: two checks at once across both
   const first = sweep.check();
   await arrived(2);
   expect(checked).toEqual([outside, ids[0] ?? ""]);
-  // a PC still waiting in the sweep's queue moves to its front, a second one from outside goes before it; the one under way is not asked again
   const movedUp = sweep.checkOne(queued);
   const another = sweep.checkOne(ids[11] ?? "");
-  await sweep.checkOne(outside);
+  // asked again while its check runs: no second check, and it settles with that one
+  const repeat = sweep.checkOne(outside);
   expect(checked).toHaveLength(2);
   pending[0]?.resolve({ kind: "answered", route: "lan", rttMs: 4 });
   await arrived(3);
   expect(checked[2]).toBe(ids[11]);
-  await asked;
+  await Promise.all([asked, repeat]);
   expect(sweep.status.get(outside)).toEqual({ kind: "answered", route: "lan", rttMs: 4 });
   pending[1]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
   await arrived(4);
@@ -118,15 +115,14 @@ it("checks exactly the PC asked for, ahead of a sweep's remaining PCs and within
   pending[2]?.resolve({ kind: "offline", reason: "pc" });
   await another;
   expect(sweep.status.get(ids[11] ?? "")).toEqual({ kind: "offline", reason: "pc" });
-  pending[3]?.resolve({ kind: "offline", reason: "relay" });
+  pending[3]?.resolve({ kind: "offline", reason: "pc" });
   await movedUp;
-  expect(sweep.status.get(queued)).toEqual({ kind: "offline", reason: "relay" });
+  expect(sweep.status.get(queued)).toEqual({ kind: "offline", reason: "pc" });
   for (let turn = 4; turn < 10; turn++) {
     await arrived(turn + 1);
-    pending[turn]?.resolve({ kind: "offline", reason: "relay" });
+    pending[turn]?.resolve({ kind: "offline", reason: "pc" });
   }
   await first;
-  // the sweep's eight plus the two asked for, the PC moved up checked once
   expect(checked).toEqual([outside, ids[0], ids[11], queued, ...ids.slice(1, 7)].map((id) => id ?? ""));
 });
 
@@ -141,7 +137,6 @@ it("lets an answer go once it is older than the directory's 15 minutes, while a 
   await arrived(1);
   pending[0]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
   await first;
-  // ten minutes on, a second check answers again: the first answer's expiry leaves this one alone
   jest.advanceTimersByTime(10 * 60_000);
   const second = sweep.checkOne(id);
   await arrived(2);
@@ -149,9 +144,338 @@ it("lets an answer go once it is older than the directory's 15 minutes, while a 
   await second;
   jest.advanceTimersByTime(5 * 60_000);
   expect(sweep.status.get(id)).toEqual({ kind: "answered", route: "lan", rttMs: 4 });
-  // fifteen minutes after it, nothing answers for the PC any more, and the rows are drawn again
   const drawn = redraws;
   jest.advanceTimersByTime(10 * 60_000);
   expect(sweep.status.has(id)).toBe(false);
   expect(redraws).toBe(drawn + 1);
+});
+
+it("checks the list again every minute by itself, the PCs a relay refused first, until each of 20 PCs is checked, and calls a PC unanswered only when the relay refuses twice in a row", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(20);
+  const ids = devices.map((device) => device.server_id);
+  const { pending, checked, arrived, probe } = heldProbe();
+  // a sweep started by its timer has no promise of its own: its end is the redraw after its last result
+  const ends: { readonly count: number; readonly done: ReturnType<typeof Promise.withResolvers<void>> }[] = [];
+  const swept = (count: number): Promise<void> => {
+    const done = Promise.withResolvers<void>();
+    ends.push({ count, done });
+    return done.promise;
+  };
+  const sweep = createPcSweep(store, { active: () => true, redraw() {
+    const idle = ids.every((id) => sweep.status.get(id)?.kind !== "checking");
+    for (const end of ends) if (idle && checked.length === end.count) end.done.resolve();
+  } }, { probe });
+  const answer = { kind: "answered", route: "relay", rttMs: 20 } as const;
+  const refusal = { kind: "offline", reason: "refused" } as const;
+  const run = async (from: number, result: (turn: number) => Found): Promise<void> => {
+    const done = swept(from + 8);
+    for (let turn = from; turn < from + 8; turn++) {
+      await arrived(turn + 1);
+      pending[turn]?.resolve(result(turn));
+    }
+    await done;
+  };
+  // the cold open after a wave: the relay refuses all eight checks of the first sweep (429s)
+  void sweep.check();
+  await run(0, () => refusal);
+  // a refused check says nothing of the PC: none of the eight says "No answer", they still read as not checked
+  expect(ids.filter((id) => sweep.status.has(id))).toEqual([]);
+  // a minute on, with nobody pressing anything, the refused eight go first; one is refused again and that is kept
+  jest.advanceTimersByTime(60_000);
+  await run(8, (turn) => turn === 8 ? refusal : answer);
+  expect(checked.slice(8, 16)).toEqual(ids.slice(0, 8));
+  expect(sweep.status.get(ids[0] ?? "")).toEqual(refusal);
+  // the next two minutes take the twelve not checked yet, eight at a time, then the rotation goes round
+  jest.advanceTimersByTime(60_000);
+  await run(16, () => answer);
+  jest.advanceTimersByTime(60_000);
+  await run(24, () => answer);
+  expect(checked.slice(16)).toEqual([...ids.slice(8, 20), ...ids.slice(0, 4)]);
+  // three minutes after the cold open, every one of the 20 rows has its check's answer
+  expect(ids.filter((id) => sweep.status.get(id)?.kind === "answered")).toHaveLength(20);
+});
+
+it("lets an answer lapse during a re-check the relay then refuses: the row neither keeps it meanwhile nor gets it back", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]?.server_id ?? "";
+  const { pending, arrived, probe } = heldProbe();
+  const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  const answered = sweep.checkOne(id);
+  await arrived(1);
+  pending[0]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+  await answered;
+  jest.advanceTimersByTime(OFFLINE_AFTER_MS - 60_000);
+  const refused = sweep.checkOne(id);
+  await arrived(2);
+  expect(sweep.status.get(id)).toEqual({ kind: "checking", previous: { kind: "answered", route: "relay", rttMs: 20 } });
+  jest.advanceTimersByTime(60_000);
+  expect(sweep.status.get(id)).toEqual({ kind: "checking" });
+  pending[1]?.resolve({ kind: "offline", reason: "relay" });
+  await refused;
+  expect(sweep.status.has(id)).toBe(false);
+});
+
+it("sweeps again exactly a minute after the last sweep began, and a sweep that comes due while the page is hidden waits until it is shown", async () => {
+  jest.useFakeTimers();
+  const page = { visibilityState: "visible" };
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  try {
+    const { store } = await savedPcs(1);
+    const { pending, checked, arrived, probe } = heldProbe();
+    const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+    const first = sweep.check();
+    await arrived(1);
+    pending[0]?.resolve({ kind: "offline", reason: "pc" });
+    await first;
+    jest.advanceTimersByTime(59_999);
+    for (let turn = 0; turn < 500; turn++) await Promise.resolve();
+    expect(checked).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    await arrived(2);
+    // the next minute comes due while this sweep's check is still out: the sweep waits for it, and the page is hidden meanwhile
+    jest.advanceTimersByTime(60_000);
+    page.visibilityState = "hidden";
+    pending[1]?.resolve({ kind: "offline", reason: "pc" });
+    for (let turn = 0; turn < 500; turn++) await Promise.resolve();
+    expect(checked).toHaveLength(2);
+    page.visibilityState = "visible";
+    jest.advanceTimersByTime(60_000);
+    await arrived(3);
+  } finally { Reflect.deleteProperty(globalThis, "document"); }
+});
+
+it("lets a tab that finds another tab's sweep this minute wait for the next one, and sweep then once that tab is gone", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(8);
+  const ids = devices.map((device) => device.server_id);
+  const { pending, checked, arrived, probe } = heldProbe();
+  let aShown = true;
+  const tabA = createPcSweep(store, { active: () => aShown, redraw() {} }, { probe });
+  const tabB = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  const first = tabA.check();
+  await arrived(2);
+  // B is shown too: A's sweep began this minute (the shared gap), so B checks nothing and waits for the next one
+  await tabB.check();
+  expect(ids.filter((id) => tabB.status.has(id))).toEqual([]);
+  for (let turn = 0; turn < 8; turn++) {
+    pending[turn]?.resolve({ kind: "offline", reason: "pc" });
+    if (turn + 3 <= 8) await arrived(turn + 3);
+  }
+  await first;
+  // A's tab is closed: B's own minute, armed when it found A's sweep, sweeps
+  aShown = false;
+  jest.advanceTimersByTime(60_000);
+  await arrived(10);
+  expect(ids.filter((id) => tabB.status.get(id)?.kind === "checking")).toEqual(ids);
+  expect(checked).toHaveLength(10);
+});
+
+it("keeps a PC's earlier answer when the relay refuses its next check", async () => {
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]?.server_id ?? "";
+  const { pending, arrived, probe } = heldProbe();
+  const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  const answered = sweep.checkOne(id);
+  await arrived(1);
+  pending[0]?.resolve({ kind: "answered", route: "lan", rttMs: 4 });
+  await answered;
+  const refused = sweep.checkOne(id);
+  await arrived(2);
+  pending[1]?.resolve({ kind: "offline", reason: "relay" });
+  await refused;
+  expect(sweep.status.get(id)).toEqual({ kind: "answered", route: "lan", rttMs: 4 });
+});
+
+it("starts no sweep of its own while its page is hidden, and the first minute after it is shown again sweeps", async () => {
+  jest.useFakeTimers();
+  const page = { visibilityState: "visible" };
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  try {
+    const { store } = await savedPcs(1);
+    const { pending, checked, arrived, probe } = heldProbe();
+    const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+    const first = sweep.check();
+    await arrived(1);
+    pending[0]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+    await first;
+    page.visibilityState = "hidden";
+    jest.advanceTimersByTime(180_000);
+    // enough turns for a sweep wrongly started to reach the probe (it takes a few)
+    for (let turn = 0; turn < 500; turn++) await Promise.resolve();
+    expect(checked).toHaveLength(1);
+    page.visibilityState = "visible";
+    jest.advanceTimersByTime(60_000);
+    await arrived(2);
+    expect(checked).toHaveLength(2);
+  } finally { Reflect.deleteProperty(globalThis, "document"); }
+});
+
+it("keeps draining its queue while the front page shows another screen, as it always did", async () => {
+  const { store } = await savedPcs(4);
+  const { pending, checked, arrived, probe } = heldProbe();
+  let shown = true;
+  const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe });
+  const swept = sweep.check();
+  await arrived(2);
+  shown = false;
+  pending[0]!.resolve({ kind: "offline", reason: "pc" });
+  pending[1]!.resolve({ kind: "offline", reason: "pc" });
+  await arrived(4);
+  pending[2]!.resolve({ kind: "offline", reason: "pc" });
+  pending[3]!.resolve({ kind: "offline", reason: "pc" });
+  await swept;
+  expect(new Set(checked).size).toBe(4);
+});
+
+it("starts no new check while a pausing view is out of sight, and its next check goes on with what waited", async () => {
+  const { store } = await savedPcs(4);
+  const { pending, checked, arrived, probe } = heldProbe();
+  let shown = true;
+  const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe, pauseOutOfSight: true });
+  const swept = sweep.check();
+  await arrived(2);
+  shown = false;
+  pending[0]!.resolve({ kind: "offline", reason: "pc" });
+  pending[1]!.resolve({ kind: "offline", reason: "pc" });
+  for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+  expect(checked).toHaveLength(2);
+  // the drawer opens again: the view asks for a check, as ShellPcs does, and the paused sweep goes on
+  shown = true;
+  void sweep.check();
+  await arrived(4);
+  pending[2]!.resolve({ kind: "offline", reason: "pc" });
+  pending[3]!.resolve({ kind: "offline", reason: "pc" });
+  await swept;
+  expect(new Set(checked).size).toBe(4);
+  expect([...sweep.status.values()].every((status) => status.kind === "offline")).toBe(true);
+});
+
+it("is over once stopped: a list still being read, a later check and a later checkOne start and keep nothing", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(4);
+  const listed = Promise.withResolvers<RelayDevice[]>();
+  const slow: RelayDeviceStore = { ...store, list: () => listed.promise };
+  const { checked, probe } = heldProbe();
+  const sweep = createPcSweep(slow, { active: () => true, redraw() {} }, { probe });
+  const swept = sweep.check();
+  sweep.stop();
+  listed.resolve(devices);
+  await swept;
+  await sweep.check();
+  await sweep.checkOne(devices[0]!.server_id);
+  expect(checked).toEqual([]);
+  expect(sweep.status.size).toBe(0);
+  expect(jest.getTimerCount()).toBe(0);
+  expect(localStorage.getItem("ovis-pc-check-cursor")).toBeNull();
+});
+
+it("lets the next page sweep at once when a sweep stopped, or its page went, before it opened a connection", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(2);
+  const checked: string[] = [];
+  const answered = { probe: async (device: ProbeTarget): Promise<Found> => { checked.push(device.server_id); return { kind: "offline", reason: "pc" }; } };
+  for (const leave of ["stop", "pagehide"] as const) {
+    const listed = Promise.withResolvers<RelayDevice[]>();
+    const gone = createPcSweep({ ...store, list: () => listed.promise }, { active: () => true, redraw() {} }, answered);
+    const swept = gone.check();
+    if (leave === "stop") gone.stop(); else globalThis.dispatchEvent(new Event("pagehide"));
+    listed.resolve(devices);
+    await swept;
+    expect(checked).toEqual([]);
+    const next = createPcSweep(store, { active: () => true, redraw() {} }, answered);
+    await next.check();
+    expect(checked).toEqual(devices.map((device) => device.server_id));
+    next.stop();
+    gone.stop();
+    checked.length = 0;
+    localStorage.removeItem("ovis-pc-check-at");
+    localStorage.removeItem("ovis-pc-check-returned");
+  }
+});
+
+it("never hands back the minute of another tab's sweep that began after its own", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(2);
+  const { arrived, checked, probe } = heldProbe();
+  const listed = Promise.withResolvers<RelayDevice[]>();
+  const gone = createPcSweep({ ...store, list: () => listed.promise }, { active: () => true, redraw() {} }, { probe });
+  void gone.check();
+  jest.advanceTimersByTime(60_000);
+  // another tab's sweep, a minute on, opens its connections
+  const other = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  void other.check();
+  await arrived(2);
+  gone.stop();
+  listed.resolve(devices);
+  const next = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  await next.check();
+  expect(checked).toHaveLength(2);
+  for (const sweep of [other, next]) sweep.stop();
+});
+
+it("does not bring back an answer that lapsed while the check it queued waited, when its page goes", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]!.server_id;
+  const { pending, arrived, probe } = heldProbe();
+  let shown = true;
+  const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe, pauseOutOfSight: true });
+  const answered = sweep.checkOne(id);
+  await arrived(1);
+  pending[0]!.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+  await answered;
+  shown = false;
+  void sweep.check();
+  for (let turn = 0; turn < 50 && sweep.status.get(id)?.kind !== "checking"; turn++) await Promise.resolve();
+  expect(sweep.status.get(id)?.kind).toBe("checking");
+  jest.advanceTimersByTime(OFFLINE_AFTER_MS);
+  globalThis.dispatchEvent(new Event("pagehide"));
+  expect(sweep.status.has(id)).toBe(false);
+  sweep.stop();
+});
+
+it("keeps the minute of a sweep that opened a connection, though its page stopped it at once", async () => {
+  jest.useFakeTimers();
+  const { store } = await savedPcs(2);
+  const { arrived, checked, probe } = heldProbe();
+  const gone = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  void gone.check();
+  await arrived(2);
+  gone.stop();
+  const next = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  await next.check();
+  expect(checked).toHaveLength(2);
+  next.stop();
+});
+
+it("lets the answers it was keeping go when stopped, with no timer left", async () => {
+  jest.useFakeTimers();
+  const { store } = await savedPcs(2);
+  const { pending, arrived, probe } = heldProbe();
+  const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  const swept = sweep.check();
+  await arrived(2);
+  for (const held of pending) held.resolve({ kind: "answered", route: "relay", rttMs: 10 });
+  await swept;
+  sweep.stop();
+  expect(jest.getTimerCount()).toBe(0);
+});
+
+it("lets a check asked for while that PC's check is under way settle with that one's answer", async () => {
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]?.server_id ?? "";
+  const { pending, checked, arrived, probe } = heldProbe();
+  const sweep = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  const first = sweep.checkOne(id);
+  await arrived(1);
+  let settled = false;
+  const again = sweep.checkOne(id).then(() => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  pending[0]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+  await Promise.all([first, again]);
+  expect([checked.length, sweep.status.get(id)?.kind]).toEqual([1, "answered"]);
+  sweep.stop();
 });

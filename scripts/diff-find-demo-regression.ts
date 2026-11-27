@@ -1,29 +1,13 @@
-/**
- * Find in a file's diff on the static demo (Files → Changes → src/money.ts): Ctrl/Cmd+F or the
- * header's Find opens a bar of the dialog's own; a query is matched literally over the loaded patch,
- * context included, with its count, the active match's kind and line in words, its row ringed and
- * its text painted; Enter, Shift+Enter, Next and Previous step across both sides and wrap; an absent
- * term and pattern punctuation find nothing; Escape closes Find and gives the focus back, then the
- * viewer; a binary file leaves Find off; no request leaves the page while searching, and the
- * terminal's own find never opens. At 1440 and on a phone (390, DPR 3, touch), light and dark, and
- * in Korean on the phone; with UI_EVIDENCE_DIR set, each state is captured there as
- * `diff-find-<width>-<theme>[-ko]-<state>.png`. On an iPad (1180 and 820, touch, the platform iPadOS
- * reports) the focused query is at least 16px, the size under which Safari zooms the page into a field.
- */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Browser, Page } from "playwright-core";
+import { appContext, installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const evidence = process.env.UI_EVIDENCE_DIR;
-if (evidence) mkdirSync(evidence, { recursive: true });
 const HINT = { en: "Searches this loaded patch, including context. Content outside the patch is not searched.", ko: "불러온 이 패치를 문맥까지 포함해\u00a0검색합니다. 패치 밖의 내용은 검색하지\u00a0않습니다." } as const;
 type Language = keyof typeof HINT;
 
-/** The bar as a user reads it: the count, the active match's place, the hint, the ringed row and the painted text. */
 async function bar(page: Page): Promise<{ count: string; place: string; hint: string; ringed: string[]; painted: string[] }> {
   return page.evaluate(() => {
     const status = document.querySelector(".repo-diff-find .find-bar-count");
@@ -38,7 +22,6 @@ async function bar(page: Page): Promise<{ count: string; place: string; hint: st
     };
   });
 }
-/** Waits for the bar to say `count` and `place` with the active row ringed and its text painted. */
 async function settled(page: Page, count: string, place: string, step: string): Promise<{ ringed: string[]; painted: string[] }> {
   try {
     await page.waitForFunction(([count, place]) => {
@@ -70,7 +53,6 @@ async function pastDemoTurn(page: Page): Promise<void> {
   await page.clock.runFor(5_000);
   await page.addStyleTag({ content: ".droplet { visibility: hidden !important; }" });
 }
-/** Files → Changes → a file's diff, from the header on a computer or More on a phone. */
 async function openDiff(page: Page, phone: boolean, path: string): Promise<void> {
   if (!(await page.getByRole("dialog", { name: "Files", exact: true }).isVisible())) {
     if (phone) {
@@ -92,16 +74,15 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
   const phone = width === 390;
   const name = `${width}-${theme}${language === "ko" ? "-ko" : ""}`;
   const label = `${width}px ${theme} ${language}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme, locale: language === "ko" ? "ko-KR" : "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme, locale: language === "ko" ? "ko-KR" : "en-US" });
   try {
-    // English to reach the diff by name; a Korean run switches its language once the diff is open (a reload restores it)
     await context.addInitScript((theme) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); }, theme);
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
-    await page.clock.install();
+    await installClock(page);
     await page.goto(origin);
     await pastDemoTurn(page);
     await openDiff(page, phone, "src/money.ts");
@@ -134,7 +115,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       }) as typeof window.fetch;
     });
     if (!phone) {
-      // the palette over the diff keeps Ctrl/Cmd+F and its typing: Find stays closed underneath
       const palette = page.locator(".command-palette input");
       await page.keyboard.press("ControlOrMeta+Shift+K");
       await palette.waitFor();
@@ -172,7 +152,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       await query.fill("x".repeat(300));
       await shot(page, name, "long");
     } else {
-      // "amount": an unchanged line, the removed line and two added lines, in the patch's order
       await query.fill("amount");
       let at = await settled(page, "1 of 4", "Unchanged line 4", `${label} first`);
       assert.deepEqual([at.ringed, at.painted], [["context 4"], ["amount"]], `${label}: the first hit is the unchanged line`);
@@ -191,7 +170,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       await settled(page, "1 of 4", "Unchanged line 4", `${label} wraps forward`);
       await query.press("Shift+Enter");
       await settled(page, "4 of 4", "Added line 7", `${label} wraps back`);
-      // the buttons step as Enter does; a keyboard reaches them with Tab, ringed
       await query.press("Tab");
       assert.equal(await previous.evaluate((button) => button === document.activeElement && button.matches(":focus-visible")), true, `${label}: Tab reaches Previous, focus-visible`);
       await shot(page, name, "focus");
@@ -207,7 +185,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       if (phone) await previous.tap();
       else await previous.click();
       await settled(page, "4 of 4", "Added line 7", `${label} Previous`);
-      // literal: pattern punctuation is text, case counts, an absent term finds nothing
       await query.fill("Math.abs(");
       at = await settled(page, "1 of 1", "Added line 5", `${label} punctuation`);
       assert.deepEqual(at.painted, ["Math.abs("], `${label}: the literal text is painted`);
@@ -225,7 +202,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       assert.ok(fits.page <= fits.viewport && fits.bar <= fits.viewport + 0.5, `${label}: a long query scrolls in its field: ${JSON.stringify(fits)}`);
       await shot(page, name, "long");
       if (!phone) {
-        // the same match in split
         await query.fill("amount");
         await settled(page, "1 of 4", "Unchanged line 4", `${label} split first`);
         await query.press("Enter");
@@ -241,7 +217,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
         await settled(page, "3 of 4", "Added line 5", `${label} unified again`);
       }
       assert.deepEqual(await page.evaluate(() => (window as unknown as { findRequests: string[] }).findRequests), [], `${label}: searching sent no request`);
-      // Escape closes Find and gives the focus back, then the viewer
       await page.keyboard.press("Escape");
       await query.waitFor({ state: "detached" });
       await page.locator(".repo-diff-viewer").waitFor();
@@ -250,7 +225,6 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       assert.equal(await findButton.getAttribute("aria-pressed"), "false", `${label}: Find shows as off`);
       await page.keyboard.press("Escape");
       await page.locator(".repo-diff-viewer").waitFor({ state: "detached" });
-      // a binary file has no lines to search: Find is off, and Ctrl/Cmd+F opens nothing
       await openDiff(page, phone, "docs/checkout-flow.png");
       await page.locator(".repo-diff-note").filter({ hasText: "This is a binary file; there are no lines to compare." }).waitFor();
       assert.equal(await findButton.isDisabled(), true, `${label}: Find is off for a binary file`);
@@ -277,7 +251,7 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
  */
 async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, uiFontSize: number | null): Promise<void> {
   const label = `iPad ${width}px${uiFontSize === null ? "" : ` at a ${uiFontSize}px interface`}`;
-  const context = await browser.newContext({ viewport: { width, height: width === 1180 ? 820 : 1180 }, deviceScaleFactor: 2, hasTouch: true });
+  const context = await appContext(browser, { viewport: { width, height: width === 1180 ? 820 : 1180 }, deviceScaleFactor: 2, hasTouch: true });
   try {
     await context.addInitScript((uiFontSize) => {
       Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
@@ -289,7 +263,7 @@ async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, ui
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
-    await page.clock.install();
+    await installClock(page);
     await page.goto(origin);
     await pastDemoTurn(page);
     await openDiff(page, false, "src/money.ts");
@@ -316,32 +290,21 @@ async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, ui
   }
 }
 
-const app = mkdtempSync(join(tmpdir(), "herdr-diff-find-demo-"));
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => '<script src="./demo-transport.js"></script>\n    <script type="module"'));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix) && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice(prefix.length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true });
-  const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
+const serve = (app: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+  const path = new URL(request.url).pathname;
+  const prefix = "/herdr-web-ui/demo/app/";
+  if (!path.startsWith(prefix) && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
+  let file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice(prefix.length));
+  if (!file || file.endsWith("/")) file += "index.html";
+  if (file.split("/").includes("..")) return new Response("bad path", { status: 400 });
+  const body = Bun.file(join(app, file));
+  return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
+} });
+
+await withDemoBrowser({ tempPrefix: "herdr-diff-find-demo-", serve }, async ({ browser, baseUrl: origin }) => {
   for (const [width, theme, language] of [[1440, "dark", "en"], [1440, "light", "en"], [390, "dark", "en"], [390, "light", "en"], [390, "light", "ko"], [390, "dark", "ko"]] as const) {
     await check(browser, origin, width, theme, language);
   }
   for (const [width, uiFontSize] of [[1180, null], [820, null], [1180, 20]] as const) await checkIpad(browser, origin, width, uiFontSize);
   console.log("diff find: demo OK (count, steps, wrap, ring and paint, scope hint, literal text, Escape order, no patch, no requests, Korean, the iPad's field size)");
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

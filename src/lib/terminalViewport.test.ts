@@ -1,7 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import { SCROLL_POLL_BUSY_MS, SCROLL_POLL_FOLLOW_MS, SCROLL_POLL_IDLE_MAX_MS, idleScrollPollDelay, scrollPollDelay, validScroll, visibleFindRects, visibleTerminalInputBounds, type CellReader } from "./terminalViewport.ts";
+import { SCROLL_POLL_BUSY_MS, SCROLL_POLL_FOLLOW_MS, SCROLL_POLL_IDLE_MAX_MS, adoptPaneGrid, idleScrollPollDelay, scrollPollDelay, validScroll, visibleFindRects, visibleTerminalInputBounds, type CellReader } from "./terminalViewport.ts";
 const scroll = { max_offset_from_bottom: 100, offset_from_bottom: 20, viewport_rows: 2 };
 const cells = (lines: string[]): CellReader => (row, col) => ({ chars: lines[row]?.[col] ?? " ", width: 1 });
+
+it("draws the new controller's first frame on its granted grid, not the previous owner's grid", () => {
+  const term = { cols: 40, rows: 15, resize(cols: number, rows: number) { Object.assign(this, { cols, rows }); } };
+  const owner = { cols: 100, rows: 30, fixed: true, windows_fit: true };
+  adoptPaneGrid(term, owner, false, false);
+  expect([term.cols, term.rows]).toEqual([100, 30]);
+  adoptPaneGrid(term, { cols: 40, rows: 15, fixed: false, windows_fit: true }, true, true);
+  expect([term.cols, term.rows]).toEqual([40, 15]);
+  term.resize(45, 18);
+  adoptPaneGrid(term, { cols: 40, rows: 15, fixed: false, windows_fit: true }, false, true);
+  expect([term.cols, term.rows]).toEqual([45, 18]);
+});
 
 describe("terminal input viewport bounds", () => {
   it("expresses the host's visible area relative to a horizontally panned xterm screen", () => {
@@ -80,21 +92,16 @@ describe("scroll metrics poll", () => {
   it("reads a view following the bottom at the follow pace while only output moves it", () => {
     const bottom = { max_offset_from_bottom: 100, offset_from_bottom: 0, viewport_rows: 24 };
     expect(scrollPollDelay(true, 0, bottom, true)).toBe(SCROLL_POLL_FOLLOW_MS);
-    // a resize, scroll, refresh or search (outputOnly false) keeps the busy cadence
     expect(scrollPollDelay(true, 0, bottom, false)).toBe(SCROLL_POLL_BUSY_MS);
     expect(scrollPollDelay(true, 0, bottom)).toBe(SCROLL_POLL_BUSY_MS);
-    // scrolled up, or no usable metrics yet: output may move what is shown, so stay busy
     expect(scrollPollDelay(true, 0, { ...bottom, offset_from_bottom: 5 }, true)).toBe(SCROLL_POLL_BUSY_MS);
     expect(scrollPollDelay(true, 0, null, true)).toBe(SCROLL_POLL_BUSY_MS);
     expect(scrollPollDelay(true, 0, { ...bottom, offset_from_bottom: 200 }, true)).toBe(SCROLL_POLL_BUSY_MS);
-    // an alternate screen (no history) also follows; its page keys ask for fresh metrics themselves
     expect(scrollPollDelay(true, 0, { ...bottom, max_offset_from_bottom: 0 }, true)).toBe(SCROLL_POLL_FOLLOW_MS);
-    // not busy: the idle rules are unchanged
     expect(scrollPollDelay(false, 20, bottom, true)).toBe(SCROLL_POLL_IDLE_MAX_MS);
   });
   it("keeps a held page on the busy cadence even at the bottom of an alternate screen", () => {
     const bottom = { max_offset_from_bottom: 0, offset_from_bottom: 0, viewport_rows: 24 };
-    // A pending page means output is no longer the only reason for a fresh read.
     expect(scrollPollDelay(true, 0, bottom, false)).toBe(SCROLL_POLL_BUSY_MS);
   });
   it("uses the busy cadence for a failed or invalid current read despite output-only activity", () => {

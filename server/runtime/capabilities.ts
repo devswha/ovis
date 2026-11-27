@@ -1,10 +1,5 @@
 import type { HerdrCoreLayout, HerdrIdentity } from "../../shared/machines.ts";
 
-/**
- * What the runtime this server's terminals run on can do, as the server's own gates ask it. A gate
- * asks for the ability it needs (how a terminal attaches, who works out an agent's status), never for
- * a runtime by name: a runtime is one record here, not a branch at every gate.
- */
 export interface RuntimeCapabilities {
   /**
    * The runtime's own name. Read only where the question is which program this is (`herdr update`
@@ -33,39 +28,37 @@ export interface RuntimeCapabilities {
   readonly foreground: "job" | "leader";
   /** how a finish read here reaches the runtime's other clients: `label`, a `herdr.seen` label written on its terminal; null, it does not */
   readonly seen: "label" | null;
-  /** whether an agent pinned here is pinned for the runtime's other clients too */
   readonly pins: boolean;
-  /** whether the runtime reaches other machines, which Ovis shows as PCs of their own */
   readonly machines: boolean;
   /**
    * Which process hands a new terminal its environment: `server`, the one listening on the runtime's
    * socket; `core`, the core hc reports (the socket is this server's own adapter).
    */
   readonly spawner: "server" | "core";
+  /** whether an agent driven over ACP can run under its keeper in one of the runtime's terminals, labelled and under its parent (server/acp/children.ts) */
+  readonly acpChildren: boolean;
+  /**
+   * Whether an agent start can run a launcher Ovis wrote in place of the agent's own command (`agent.start`'s
+   * `program`, which the herdr-core adapter types into the pane's shell): how a Codex starts on its own app server
+   * (server/approvals/codex.ts). herdr starts only an agent's own command.
+   */
+  readonly launcher: boolean;
 }
 
-/** herdr's TUI server, behind its own socket. */
 export const HERDR: RuntimeCapabilities = {
-  runtime: "herdr", attach: "pty-cli", agents: "detected", foreground: "job", seen: null, pins: false, machines: false, spawner: "server",
+  runtime: "herdr", attach: "pty-cli", agents: "detected", foreground: "job", seen: null, pins: false, machines: false, spawner: "server", launcher: false, acpChildren: false,
 };
 
-/** herdr-core (`hc`), the core the Herdr app runs on, behind this server's adapter (server/herdr-core/adapter.ts). */
 export const HERDR_CORE: RuntimeCapabilities = {
-  runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core",
+  runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core", launcher: true, acpChildren: true,
 };
 
-/** what the runtime this process started says of itself; null until one does */
 let served: RuntimeCapabilities | null = null;
 
-/**
- * The runtime this process serves: herdr's TUI server until another runtime's start names itself
- * (a remote bridge that inherits OVIS_RUNTIME starts none, and serves herdr).
- */
 export function capabilities(): RuntimeCapabilities {
   return served ?? HERDR;
 }
 
-/** A runtime names itself as its start succeeds, and passes null as it stops. */
 export function serveRuntime(runtime: RuntimeCapabilities | null): void {
   served = runtime;
 }

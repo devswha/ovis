@@ -8,9 +8,6 @@ import { composerFitDemo, draft, drawn, LONG_MODEL, measure, upload, type Case, 
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
 
-// The message box's status row and its controls, on the demo app as scripts/composer-fit-harness.ts
-// patches it: the model label fitted to what is measured there, one Stop or Send control, the
-// follow-ups sent while the agent works, and the quota in that row.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-composer-fit-demo-"));
 try {
@@ -28,6 +25,41 @@ try {
         await page.evaluate(() => (window as any).fitReply(true));
         await page.locator(".composer-stop").waitFor();
       });
+      // plan mode is the one mode drawn: on a phone an icon named for it, on a desktop its name in words, whole in the row
+      // at every width, with or without the plan chip, also with the chip's step in progress (which steps out where the
+      // mode needs its room); every other mode draws nothing
+      for (const width of [320, 360, 390, 800, 1280]) for (const chip of ["none", "idle", "step"] as const) for (const mode of ["plan", "default", "acceptEdits", "auto", "bypassPermissions", "dontAsk"]) {
+        if (mode !== "plan" && (width !== 390 || chip !== "idle")) continue;
+        await withCard(browser, width, { agent: "claude", model: "claude-opus-5-5", status: "idle", pending: false, mode, noChip: chip === "none", step: chip === "step" }, async (page) => {
+          const what = `${mode} at ${width}px, plan chip ${chip}`;
+          await page.waitForFunction((want) => (document.querySelector(".bg-tasks-toggle") !== null) === (want !== "none")
+            && (want !== "step" || document.querySelector(".bg-tasks-current") !== null), chip, { timeout: 5_000 });
+          const phone = width <= 640;
+          const icon = () => page.evaluate(() => {
+            const item = document.querySelector<HTMLElement>(".composer-mode");
+            if (!item) return null;
+            const status = document.querySelector(".composer-status")!.getBoundingClientRect();
+            const box = (item.querySelector("svg") ?? item).getBoundingClientRect();
+            return { name: item.getAttribute("aria-label") ?? item.textContent?.replace("·", "").trim() ?? null, icon: item.querySelector("svg") !== null, clipped: item.scrollWidth > item.clientWidth + 0.5,
+              width: box.width, inRow: box.left >= status.left - 0.5 && box.right <= status.right + 0.5 && box.top >= status.top - 0.5 && box.bottom <= status.bottom + 0.5 };
+          });
+          if (mode === "plan") {
+            // the fit answers a frame after the chip's step is drawn: wait for the mode to stand whole, never a fixed time
+            await page.waitForFunction(() => {
+              const item = document.querySelector<HTMLElement>(".composer-mode");
+              const box = (item?.querySelector("svg") ?? item)?.getBoundingClientRect(), status = document.querySelector(".composer-status")!.getBoundingClientRect();
+              return box !== undefined && box.width > 1.5 && box.left >= status.left - 0.5 && box.right <= status.right + 0.5;
+            }, undefined, { timeout: 5_000 }).catch(async () => assert.fail(`${what}: the plan mode is not drawn whole in the row: ${JSON.stringify(await icon())}`));
+            const drawn = await icon();
+            assert.equal(drawn?.name, "Plan mode", `${what}: the mode is named`);
+            assert.equal(drawn?.icon, phone, `${what}: an icon on a phone, words on a desktop`);
+            assert.equal(drawn?.clipped, false, `${what}: the mode is not cut short`);
+          } else assert.equal(await icon(), null, `${what}: no mode is drawn`);
+          const row = await measure(page);
+          assert.deepEqual(row.overlaps, [], `${what}: nothing overlaps its neighbour`);
+          assert.equal(row.overflowing, false, `${what}: the page does not scroll sideways`);
+        });
+      }
       // Typography is applied by SettingsProvider after the render. At this fixed card width,
       // the larger interface font must step effort out without needing a viewport resize.
       await withCard(browser, 1075, { agent: "codex", model: LONG_MODEL }, async (page) => {
@@ -54,6 +86,19 @@ try {
         assert.equal(restored.effort?.clipped, false);
       });
       console.log("PASS live interface typography changes refit status labels at a fixed card width");
+
+      await withCard(browser, 330, { agent: "claude", model: "claude-opus-5-5", status: "idle", pending: false, uiFontSize: 15 }, async (page) => {
+        const draws = new Set<string>();
+        for (let width = 330; width >= 304; width -= 2) {
+          await page.setViewportSize({ width, height: 844 });
+          await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
+          const row = await measure(page);
+          await drawn(page, row.draw as Draw, `${width}px at a 15px interface font, whose 3ch floor of 23.78px clientWidth reads as 24`);
+          draws.add(row.draw);
+        }
+        assert.ok(draws.has("no-effort") && draws.has("out"), `the name is cut toward its floor, then the label steps out: ${[...draws].join(", ")}`);
+      });
+      console.log("PASS a name cut to a fractional floor steps the label out, so the pill never cuts the ring");
 
       for (const width of [390, 1440]) await withCard(browser, width, { model: LONG_MODEL }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
@@ -94,8 +139,6 @@ try {
       });
       console.log("PASS streaming context updates preserve draft geometry and selection while an upload hint is visible");
 
-      // Prompt suggestions update independently while an agent works. A populated draft keeps
-      // its own viewport and insertion point when only the unused placeholder changes.
       for (const width of [390, 1440]) await withCard(browser, width, { model: LONG_MODEL, suggestion: null }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await box.fill(Array.from({ length: 80 }, (_, i) => `Draft line ${i}: keep this text while the agent works.`).join("\n"));
@@ -127,20 +170,34 @@ try {
       });
       console.log("PASS prompt updates preserve a focused, internally scrolled draft and its mid-text caret at 390 and 1440px");
 
-      // One primary control across agents: Stop with an empty working draft, Send with text.
       for (const agent of ["claude", "codex"] as const) for (const width of [350, 390, 800, 1440]) for (const mic of [false, true]) await withCard(browser, width, { agent, model: "gpt-5.6", mic }, async (page) => {
         const rest = await measure(page);
         assert.ok(rest.stop && !rest.send && !rest.sendOptions && !rest.queue, JSON.stringify(rest));
-        // the ring only shows: a span with its number in a tooltip, nothing to press, open or focus
-        assert.equal(await page.locator(".composer-context").evaluate((node) =>
-          node.tagName === "SPAN" && node.getAttribute("title")?.includes("%") === true && !node.hasAttribute("aria-expanded") && !node.hasAttribute("tabindex")), true, "the context ring is display-only");
+        assert.equal(await page.locator(".composer-context").evaluate((node, desktop) =>
+          node.tagName === "SPAN" && node.getAttribute("title")?.includes("%") === true && !node.hasAttribute("aria-expanded") && node.hasAttribute("tabindex") === desktop && (!desktop || node.tabIndex === 0), width >= 800), true,
+          width >= 800 ? "the context ring is keyboard-focusable without expanding inline" : "a phone keeps the context ring out of the tab order");
         await draft(page);
         const row = await measure(page);
         await drawn(page, row.draw as Draw, `${agent} ${width}px, a written follow-up`);
         assert.ok(row.send && !row.stop && !row.sendOptions && !row.queue && row.ring, JSON.stringify(row));
         assert.equal(row.card.height, rest.card.height, "Send replaces Stop on the same row");
         if (width >= 800) {
-          // a press on the ring does nothing: no number opens and the row is drawn as before
+          // reached as a keyboard reaches it, back from Send, so its focus is a visible one
+          await page.locator(".composer-send").focus();
+          await page.keyboard.press("Shift+Tab");
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-context") === true), true, `${agent} ${width}px: desktop context ring is reachable by keyboard`);
+          assert.equal(await page.locator(".composer-context").evaluate((node) => {
+            if (!node.matches(":focus-visible") || getComputedStyle(node, "::after").content !== JSON.stringify(node.getAttribute("data-tooltip"))) return false;
+            for (let up = node.parentElement; up && !up.classList.contains("composer-surface"); up = up.parentElement) {
+              const style = getComputedStyle(up);
+              if (style.display !== "contents" && (style.overflowX !== "visible" || style.overflowY !== "visible")) return false;
+            }
+            return true;
+          }), true, `${agent} ${width}px: the focused ring draws its number above it, clipped by no box around it`);
+          const focused = await measure(page);
+          assert.equal(focused.draw, row.draw, `${agent} ${width}px: focusing the ring leaves the row as drawn`);
+          assert.equal(focused.card.height, row.card.height);
+          await page.locator(".composer-context").evaluate((node) => (node as HTMLElement).blur());
           await page.locator(".composer-context").click();
           const pressed = await measure(page);
           assert.equal(pressed.draw, row.draw, `${agent} ${width}px: a press on the ring leaves the row as drawn`);
@@ -168,8 +225,6 @@ try {
         assert.equal(await page.locator(".pending-message-bubble").count(), 0);
       });
 
-      // Queued text is not a transcript turn. Its selectable bubble has no action: the explicit
-      // Send now button acts on the ID, and X discards it. The current fixture turn keeps running.
       for (const agent of ["claude", "codex"] as const) for (const width of [350, 390, 1440]) await withCard(browser, width, { agent, model: "gpt-5.6" }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         await box.fill("check the first pending change");
@@ -282,7 +337,6 @@ try {
         assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "hold this");
         assert.equal(await page.locator(".pending-message-bubble").count(), 0);
         assert.match(await page.locator(".composer-note").textContent() ?? "", /Update this PC/);
-        // the reason sits on the box's top edge, the box's width, not under it
         const [noteBox, surfaceBox] = await Promise.all([page.locator(".composer-note").boundingBox(), page.locator(".composer-surface").boundingBox()]);
         assert.ok(noteBox && surfaceBox && noteBox.y + noteBox.height <= surfaceBox.y + 1, "the note is above the message box");
         assert.ok(noteBox && surfaceBox && Math.abs(noteBox.width - surfaceBox.width) <= 1 && Math.abs(noteBox.x - surfaceBox.x) <= 1, "and as wide as it");
@@ -301,7 +355,6 @@ try {
         assert.equal(await page.locator(".composer-status .composer-usage").count(), 0, "mobile omits the desktop quota even when sidebar limits are enabled");
         assert.equal(await page.locator(".composer-context").evaluate((node) => node.tagName === "SPAN" && !node.hasAttribute("aria-expanded")), true);
       });
-      // a pi pane draws on the plan of the provider its conversation runs at, and on none without one
       for (const [agent, provider, text, account] of [["pi", "openai-codex", "5h 22%", /sam@work\.example/], ["omo", "anthropic-subscription", "5h 38%", /Claude · sam@example\.com/]] as const) {
         await withCard(browser, 1440, { agent, model: "gpt-5.6", provider, showUsage: true }, async (page) => {
           const usage = page.locator(".composer-status .composer-usage");

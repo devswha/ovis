@@ -1,27 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { Terminal } from "@xterm/xterm";
+import { testTerminal, type TestTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState, type ScreenSnapshot } from "./inputRow.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 import { drawsColour, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 import { SCREEN_AUTO_RETURN, watchReturn } from "./terminalPeek.ts";
 
-// Recorded screens and frames (src/lib/fixtures-input-rows/README.md; kept out of server/ so remote bundles do not carry them), fed through the real xterm
-// buffer: the adapter (readScreen) is the one the pane uses.
 const FIXTURES = join(import.meta.dir, "fixtures-input-rows");
 const CLAUDE = join(import.meta.dir, "../../server/fixtures");
 
-const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
-const terminal = (cols: number, rows = 40): Terminal => {
-  const term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
-  matchHerdrWidths(term);
-  return term;
-};
+const parse = (term: TestTerminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
+const terminal = (cols: number, rows = 40) => testTerminal({ cols, rows });
 
 test("logical screen lines preserve spaces across wraps but not hard line breaks", async () => {
-  const term = terminal(40, 5);
+  const term = await terminal(40, 5);
   const text = `${"a".repeat(39)} b`;
   try {
     await parse(term, `${text}\r\nnext`);
@@ -32,7 +25,7 @@ test("logical screen lines preserve spaces across wraps but not hard line breaks
 });
 
 test("logical screen lines reject a wrapped line clipped at the screen top", async () => {
-  const term = terminal(40, 2);
+  const term = await terminal(40, 2);
   try {
     await parse(term, `${"a".repeat(81)}\r\nnext`);
     expect(readScreenLines(term.buffer.active, term.rows)).toBeNull();
@@ -41,9 +34,8 @@ test("logical screen lines reject a wrapped line clipped at the screen top", asy
   }
 });
 
-/** A static recording (one row per line, SGR only) as the screen shows it. */
 async function screenOf(text: string, cols: number): Promise<ScreenSnapshot> {
-  const term = terminal(cols);
+  const term = await terminal(cols);
   const rows = text.replace(/\r/g, "").split("\n").slice(0, 40);
   await parse(term, rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join(""));
   const screen = readScreen(term.buffer.active, term.cols, term.rows);
@@ -56,11 +48,10 @@ async function recorded(agent: string, name: string): Promise<InputRowState | nu
   return inputRowState(agent, await screenOf(readFileSync(join(FIXTURES, agent, file), "utf8"), columnsOf(file)));
 }
 
-/** A recorded frame stream replayed through the pane's frame gate, each frame cut in two as a read can cut it. */
 async function replay(agent: string, name: string): Promise<(InputRowState | null)[]> {
   const frames = readFileSync(join(FIXTURES, agent, `${name}.frames.jsonl`), "utf8").trim().split("\n")
     .map((line) => JSON.parse(line) as { cols: number; rows: number; data: string });
-  const term = terminal(frames[0]!.cols, frames[0]!.rows);
+  const term = await terminal(frames[0]!.cols, frames[0]!.rows);
   const gate = new FrameGate();
   term.onResize(() => gate.resized());
   const states: (InputRowState | null)[] = [];
@@ -70,7 +61,6 @@ async function replay(agent: string, name: string): Promise<(InputRowState | nul
     for (const part of [frame.data.slice(0, cut), frame.data.slice(cut)]) {
       const stamp = gate.enqueue(part, true);
       await parse(term, part);
-      // the first half of a frame never reads: its block is still open
       if (gate.settle(stamp, true)) states.push(inputRowState(agent, readScreen(term.buffer.active, term.cols, term.rows)));
       else expect(part).toBe(frame.data.slice(0, cut));
     }
@@ -79,7 +69,6 @@ async function replay(agent: string, name: string): Promise<(InputRowState | nul
   return states;
 }
 
-/** The watched peek over a run of frames: where it stands at the end, and at which frame it came back. */
 function watch(agent: string, states: readonly (InputRowState | null)[]): { armed: boolean; returnedAt: number | null; manualAt: number | null } {
   let armed = false;
   for (const [index, state] of states.entries()) {
@@ -92,17 +81,13 @@ function watch(agent: string, states: readonly (InputRowState | null)[]): { arme
   return { armed, returnedAt: null, manualAt: null };
 }
 
-// What each recorded screen shows of the agent's input row: idle and closed are ready, every screen
-// an allow-listed command opens is not (gone, or covered where the row stays drawn under it).
 const EXPECTED: Record<string, Record<string, InputRowState>> = {
-  // the still-open guard's reported case: /btw's answer, recorded on Claude Code 2.1.308 under both renderers
   claude: {
     "btw-open-119": "gone", "btw-closed-119": "ready", "btw-open-fullscreen-119": "gone", "btw-closed-fullscreen-119": "ready",
   },
   codex: {
     "permissions-idle-120": "ready", "permissions-idle-40": "ready", "permissions-open-120": "gone", "permissions-open-40": "gone",
     "permissions-closed-120": "ready", "permissions-closed-40": "ready",
-    // picker rows that start like the composer
     "theme-open-120": "gone", "theme-open-40": "gone", "statusline-open-120": "gone", "statusline-open-40": "gone",
     // /rename's field has the empty composer's very cells: its footer tells it apart
     "rename-open-120": "gone", "rename-open-40": "gone", "rename-closed-40": "ready",
@@ -120,10 +105,15 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     "btw-open-119": "gone", "btw-open-40": "gone", "switch-open-119": "gone",
     // /plan prints and keeps the editor: never armed, it stays manual
     "plan-open-119": "ready",
+    // omp 18.14 drops the status bar's frame: the peek (18.8.7's shape) does not make it out; the draft check does
+    "draft-empty-119": "gone", "draft-typed-119": "gone", "draft-lines-119": "gone", "draft-slash-119": "gone",
   },
   pi: {
-    // the chat send's draft check (shared/input-row.ts typedDraft): pi 1.4.0 recorded empty, typed into, with autocomplete open
     "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "gone",
+    // pi 1.5.2 with pi-powerline-footer 0.22.0, its status bar above the editor
+    "powerline-draft-empty-200": "ready", "powerline-draft-typed-200": "draft", "powerline-draft-multiline-200": "draft",
+    // its turn's spinner in the upper border (`── ⠸ Working ──`)
+    "powerline-working-typed-200": "draft",
     "settings-idle-119": "ready", "settings-idle-40": "ready", "settings-open-119": "gone", "settings-open-40": "gone",
     "settings-closed-119": "ready", "settings-closed-40": "ready",
     "tree-open-119": "gone", "tree-open-40": "gone", "resume-open-119": "gone", "resume-open-40": "gone",
@@ -138,11 +128,9 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     // /sessions keeps the empty box for 10 to 15 s before its list draws
     "sessions-open-early-119": "ready", "sessions-open-loading10s-119": "ready", "sessions-closed-119": "ready",
     "session-delete-after-first-enter-119": "draft",
-    // the chat send's draft check: gjc 0.18.12 in the agent lab, empty, typed into, `/mo` typed with its command list open
     "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "draft",
   },
   omo: {
-    // the chat send's draft check (shared/input-row.ts typedDraft): OmO 5.1.69 recorded empty, typed into, with autocomplete open
     "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "gone",
     "settings-idle-119": "ready", "settings-idle-40": "ready", "settings-open-119": "gone", "settings-open-40": "gone",
     "settings-closed-119": "ready", "settings-closed-40": "ready",
@@ -179,7 +167,6 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     // before the first key the welcome card and `[stable]` footer stand: not ready
     "settings-idle-119": "covered", "help-idle-40": "ready",
     "settings-open-119": "covered", "settings-open-40": "gone", "settings-closed-119": "ready", "settings-closed-40": "ready",
-    // the Agent Dashboard's own field, /history's search row
     "sessions-open-119": "gone", "sessions-open-40": "gone", "history-open-119": "gone", "history-open-40": "gone",
     "help-open-119": "covered",
     // Escape leaves `/model` in the row
@@ -198,7 +185,6 @@ describe("inputRowState on recorded screens", () => {
 
   test("every recorded screen is listed above", () => {
     const listed = Object.entries(EXPECTED).flatMap(([agent, screens]) => Object.keys(screens).map((name) => `${agent}/${name}.ansi`)).sort();
-    // the peek's agents; the draft check's own boxes (shared/input-row.ts typedDraft) are tested below
     const files = readdirSync(FIXTURES).filter((agent) => readsInputRow(agent)).flatMap((agent) =>
       readdirSync(join(FIXTURES, agent)).filter((file) => file.endsWith(".ansi")).map((file) => `${agent}/${file}`)).sort();
     expect(files).toEqual(listed);
@@ -208,7 +194,6 @@ describe("inputRowState on recorded screens", () => {
     const claude = readdirSync(CLAUDE).filter((file) => file.startsWith("claude-") && file.endsWith(".txt"));
     const found = Object.fromEntries(await Promise.all(claude.map(async (file) =>
       [file, inputRowState("claude", await screenOf(readFileSync(join(CLAUDE, file), "utf8"), columnsOf(file)))] as const)));
-    // the /effort dialog after `s`: closed, its result above the box
     const ready = ["claude-effort-2.1.311-set-120.txt", "claude-rewind-2.1.304-closed-40.txt", "claude-rewind-2.1.304-confirm-apple-esc-esc-120.txt", "claude-rewind-2.1.304-confirm-apple-esc-esc-40.txt"];
     expect(claude.length).toBeGreaterThan(10);
     for (const file of claude) expect([file, found[file]]).toEqual([file, ready.includes(file) ? "ready" : "gone"]);
@@ -227,7 +212,6 @@ describe("inputRowState on recorded screens", () => {
     expect(inputRowState("claude", await box("❯ still typing"))).toBe("draft");
     expect(inputRowState("claude", await box(`❯ ${pill}typed`))).toBe("draft");
     expect(inputRowState("claude", await box(grey("❯ [Pasted text #1 +12 lines]")))).toBe("draft");
-    // a cursor over a typed character has nothing grey after it
     expect(inputRowState("claude", await box("❯ \u001b[7mx\u001b[27m"))).toBe("draft");
     expect(inputRowState("claude", await box("! ls"))).toBe("draft");
     // NO_COLOR: the tip as the box's one row, on a screen without any colour, is Claude's own
@@ -235,18 +219,15 @@ describe("inputRowState on recorded screens", () => {
     expect(inputRowState("claude", await box("❯ Try this instead"))).toBe("draft");
     // a named session labels its rule
     expect(inputRowState("claude", await screenOf([`── my-session ${"─".repeat(40)}`, "❯ ", rule, "  ? for shortcuts"].join("\n"), 60))).toBe("ready");
-    // a picker's `❯ 1.` choice is no box, nor is a screen without rules
     expect(inputRowState("claude", await box("❯ 1. Yes"))).toBe("draft");
     expect(inputRowState("claude", await screenOf("  Side question\n\n  Press Space, Enter, or Escape to dismiss", 60))).toBe("gone");
   });
 
   test("Codex at Ultra reasoning effort marks its composer »: the same row, read the same way", async () => {
-    // recorded on Codex 0.167.0 (fixtures-input-rows/codex-0.167.0): the composer after /model's Ultra row, empty, with a draft, and under its shortcuts
     const ultra = (name: string): Promise<ScreenSnapshot> => screenOf(readFileSync(join(FIXTURES, "codex-0.167.0", `${name}.ansi`), "utf8"), columnsOf(`${name}.ansi`));
     expect(inputRowState("codex", await ultra("composer-ultra-empty-100"))).toBe("ready");
     expect(inputRowState("codex", await ultra("composer-ultra-empty-40"))).toBe("ready");
     expect(inputRowState("codex", await ultra("composer-ultra-draft-100"))).toBe("draft");
-    // a numbered row under either mark is a list's choice, not the composer (0.163's /permissions, its cursor's mark swapped)
     const swapped = readFileSync(join(FIXTURES, "codex", "permissions-open-120.ansi"), "utf8").replace("›", "»");
     expect(inputRowState("codex", await screenOf(swapped, 120))).toBe("gone");
   });
@@ -272,7 +253,6 @@ describe("FrameGate", () => {
     const first = gate.enqueue(`${OPEN}\u001b[1;1Hhalf`, true);
     expect(gate.settle(first, true)).toBe(false);
     expect(gate.current).toBe(false);
-    // the closing sequence itself cut in two
     const second = gate.enqueue(" a frame\u001b[?20", true);
     expect(gate.settle(second, true)).toBe(false);
     const third = gate.enqueue(`26l`, true);
@@ -283,22 +263,17 @@ describe("FrameGate", () => {
   test("after a resize, only a whole frame written for the new grid reads", () => {
     const gate = new FrameGate();
     expect(gate.settle(gate.enqueue(`${OPEN}idle${CLOSE}`, true), true)).toBe(true);
-    // queued before the resize, parsed after it: drawn for the old grid
     const queued = gate.enqueue(`${OPEN}old${CLOSE}`, true);
     gate.resized();
     expect(gate.current).toBe(false);
     expect(gate.settle(queued, true)).toBe(false);
-    // written before the pane's grid said it was this size
     expect(gate.settle(gate.enqueue(`${OPEN}old size${CLOSE}`, false), true)).toBe(false);
-    // the tail of a frame opened before the resize
     const opened = gate.enqueue(`${OPEN}redraw`, true);
     expect(gate.settle(opened, true)).toBe(false);
     gate.resized();
     expect(gate.settle(gate.enqueue(`rest${CLOSE}`, true), true)).toBe(false);
-    // a whole frame for the new grid; after it, any chunk at a frame's end reads
     expect(gate.settle(gate.enqueue(`${OPEN}new${CLOSE}`, true), true)).toBe(true);
     expect(gate.settle(gate.enqueue("\u001b[1;1Hmore", true), true)).toBe(true);
-    // a stream that is not current (recovering, a grid changed since) never reads
     expect(gate.settle(gate.enqueue(`${OPEN}x${CLOSE}`, true), false)).toBe(false);
   });
 
@@ -307,6 +282,172 @@ describe("FrameGate", () => {
     expect(gate.settle(gate.enqueue("\u001b[2J\u001b[Hscreen", true), true)).toBe(true);
     gate.resized();
     expect(gate.settle(gate.enqueue("\u001b[2J\u001b[Hscreen", true), true)).toBe(true);
+  });
+
+  // hc 0.1.21's attach paint (server/herdr-core/adapter.test.ts): CAN, DECSTR and an end of synchronized update, then the
+  // screen outside any block ending at win32-input-mode (?9001l/h); the server puts its history clear (attach-session.ts CLEAR_HISTORY) ahead of it
+  const CORE_PAINT = "\u001b[?1049l\u001b[3J\u001b[H\u001b[2J\u0018\u001b[!p\u001b[?2026l\u001b[H\u001b[2J\u00bb Ask Codex to do anything\u001b[?9001l";
+
+  test("an end that closes no block frames nothing: herdr-core's attach paint reads, and the program's blocks after it", () => {
+    const gate = new FrameGate();
+    const paint = gate.enqueue(CORE_PAINT, true);
+    expect(paint.synchronized).toBe(false);
+    expect(gate.settle(paint, true)).toBe(true);
+    expect(gate.current).toBe(true);
+    gate.resized();
+    expect(gate.settle(gate.enqueue(`${OPEN}\u001b[1;1Hhalf`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(` drawn${CLOSE}`, true), true)).toBe(true);
+    // a stream drawn in blocks stays one: after a resize, an end alone is no frame of the new grid
+    gate.resized();
+    expect(gate.settle(gate.enqueue(`late${CLOSE}`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}new${CLOSE}`, true), true)).toBe(true);
+  });
+
+  test("herdr-core's attach paint reads after a stream drawn in blocks, and when a read cuts its end in two", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}old${CLOSE}`, true), true)).toBe(true);
+    gate.reset();
+    expect(gate.settle(gate.enqueue(CORE_PAINT, true), true)).toBe(true);
+    gate.reset();
+    const cut = CORE_PAINT.indexOf("?2026l") + 3;
+    expect(gate.settle(gate.enqueue(CORE_PAINT.slice(0, cut), true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(CORE_PAINT.slice(cut), true), true)).toBe(true);
+    gate.resized();
+    expect(gate.settle(gate.enqueue("\u001b[1;1Hthe shell's prompt", true), true)).toBe(true);
+  });
+
+  test("a truncated replay with a restored unmatched ?2026l does not settle as a complete screen", () => {
+    // ReplayBuffer.text() prepends saved modes (\x1b[?2026l) with no CAN+DECSTR paint reset
+    const gate = new FrameGate();
+    const truncated = `\u001b[?1049h\u001b[?2026l\u001b[1;1H${"─".repeat(60)}\r\n❯ \r\n${"─".repeat(60)}\r\n  Waiting for 1 background agent`;
+    expect(gate.settle(gate.enqueue(truncated, true), true)).toBe(false);
+    expect(gate.current).toBe(false);
+    // a subsequent plain diff still waits until a real synchronized frame closes
+    expect(gate.settle(gate.enqueue("\u001b[2;3H ", true), true)).toBe(false);
+    expect(gate.current).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}\u001b[1;1Hfull frame${CLOSE}`, true), true)).toBe(true);
+    expect(gate.current).toBe(true);
+  });
+
+  test("a split herdr-core attach paint holds off until its ?9001 end mark, so history chunks never arm a peek watcher", async () => {
+    const idle = readFileSync(join(FIXTURES, "codex", "permissions-idle-120.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
+    const term = await terminal(120, 40);
+    const gate = new FrameGate();
+    const states: InputRowState[] = [];
+    const write = async (chunk: string): Promise<boolean> => {
+      const stamp = gate.enqueue(chunk, true);
+      await parse(term, chunk);
+      const settled = gate.settle(stamp, true);
+      if (settled) states.push(inputRowState("codex", readScreen(term.buffer.active, term.cols, term.rows))!);
+      return settled;
+    };
+    try {
+      const historyChunk = `\u001b[?1049l\u001b[3J\u001b[H\u001b[2J\u0018\u001b[!p\u001b[?2026l\u001b[H\u001b[2J${"old scrollback line\r\n".repeat(400)}`;
+      const screenChunk = `\u001b[0m\r\n${"\n".repeat(40)}\u001b[H\u001b[2J${idle.map((row, index) => `\u001b[${index + 1};1H${row}`).join("")}\u001b[0m\u001b[?9001l`;
+      expect(await write(historyChunk)).toBe(false);
+      expect(gate.current).toBe(false);
+      expect(await write(screenChunk)).toBe(true);
+      expect(gate.current).toBe(true);
+      expect(states).toEqual(["ready"]);
+      expect(watch("codex", states)).toEqual({ armed: false, returnedAt: null, manualAt: null });
+    } finally {
+      term.dispose();
+    }
+    // split byte-by-byte across CAN+DECSTR and ?9001h, and aborted paint restarted by a second CAN+DECSTR
+    const splitGate = new FrameGate();
+    const hPaint = CORE_PAINT.replace("\u001b[?9001l", "\u001b[?9001h");
+    for (let i = 0; i < hPaint.length - 1; i++) {
+      const stamp = splitGate.enqueue(hPaint[i]!, true);
+      if (i >= hPaint.indexOf("\u0018\u001b[!p") + 4) expect(splitGate.settle(stamp, true)).toBe(false);
+    }
+    expect(splitGate.settle(splitGate.enqueue(hPaint.at(-1)!, true), true)).toBe(true);
+    // aborted paint without ?9001 followed by a fresh paint settles only on the fresh paint
+    const abortGate = new FrameGate();
+    expect(abortGate.settle(abortGate.enqueue("\u0018\u001b[!p\u001b[?2026lSTALE", true), true)).toBe(false);
+    expect(abortGate.settle(abortGate.enqueue("\u0018\u001b[!p\u001b[?2026lFRESH\u001b[?9001l", true), true)).toBe(true);
+    // paint started before a resize does not settle as a whole frame for the new epoch
+    const resizeGate = new FrameGate();
+    expect(resizeGate.settle(resizeGate.enqueue("\u0018\u001b[!p\u001b[?2026lhalf", true), true)).toBe(false);
+    resizeGate.resized();
+    expect(resizeGate.settle(resizeGate.enqueue("old-size\u001b[?9001l", true), true)).toBe(false);
+  });
+
+  test("combined private mode sequences (?25;2026h / ?25;2026l) gate unfinished updates like xterm", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(CORE_PAINT, true), true)).toBe(true);
+    // combined mode opening in the next chunk holds the unfinished update
+    expect(gate.settle(gate.enqueue("\u001b[?25;2026h\u001b[1;1Hunfinished picker", true), true)).toBe(false);
+    expect(gate.current).toBe(false);
+    // split across chunks and closed with combined mode
+    expect(gate.settle(gate.enqueue(" still drawing\u001b[?25;020", true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue("26l", true), true)).toBe(true);
+    expect(gate.current).toBe(true);
+    // combined open sharing the tail of an attach paint chunk also holds until closed
+    gate.reset();
+    expect(gate.settle(gate.enqueue(`${CORE_PAINT}\u001b[?25;2026hpartial`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue("done\u001b[?2026;25l", true), true)).toBe(true);
+    // DECRQM (?2026$p) and distinct mode numbers (?20260h) are ignored
+    gate.reset();
+    expect(gate.settle(gate.enqueue("\u001b[?2026$p\u001b[?20260hplain", true), true)).toBe(true);
+  });
+
+  test("same-channel recovery paint after a resize settles without an external gate.reset()", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}before resize${CLOSE}`, true), true)).toBe(true);
+    gate.resized();
+    expect(gate.current).toBe(false);
+    // upstream reconnect repaints on the same channel (adapter.test.ts): CAN+DECSTR clears prior synced state
+    const recovery = "\u0018\u001b[!p\u001b[?2026l\u001b[?1049l\u001b[H\u001b[2J$ vim\r\n$ back\u001b[2;8H\u001b[?9001l";
+    const cut = recovery.indexOf("$ vim");
+    expect(gate.settle(gate.enqueue(recovery.slice(0, cut), true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(recovery.slice(cut), true), true)).toBe(true);
+    expect(gate.current).toBe(true);
+    // plain writes after the recovery paint continue to settle until a synchronized block opens again
+    expect(gate.settle(gate.enqueue("\u001b[2;8Hmore", true), true)).toBe(true);
+    expect(gate.settle(gate.enqueue(`${OPEN}half`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`done${CLOSE}`, true), true)).toBe(true);
+  });
+
+  test("a stale recovery paint never consumes the resize reflow guard, even if a display query follows or geometry catches up mid-paint", () => {
+    // case 1: recovery paint starts before a resize and closes after it; subsequent plain display query must not consume reflow
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}before${CLOSE}`, true), true)).toBe(true);
+    expect(gate.settle(gate.enqueue("\u0018\u001b[!p\u001b[?2026lold-half", true), true)).toBe(false);
+    gate.reflowed();
+    gate.resized();
+    expect(gate.settle(gate.enqueue("old-rest\u001b[?9001l", true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue("\u001b]10;?\u001b\\\u001b[c", true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}reflowed${CLOSE}`, true), true)).toBe(true);
+    expect(gate.reflowing).toBe(true);
+
+    // case 2: paint starts while geometry is false and closes after geometry becomes true
+    const geomGate = new FrameGate();
+    expect(geomGate.settle(geomGate.enqueue(`${OPEN}before${CLOSE}`, true), true)).toBe(true);
+    geomGate.resized();
+    expect(geomGate.settle(geomGate.enqueue("\u0018\u001b[!p\u001b[?2026lold-grid", false), true)).toBe(false);
+    geomGate.reflowed();
+    expect(geomGate.settle(geomGate.enqueue("old-rest\u001b[?9001l", true), true)).toBe(false);
+    expect(geomGate.settle(geomGate.enqueue(`${OPEN}reflowed${CLOSE}`, true), true)).toBe(true);
+    expect(geomGate.reflowing).toBe(true);
+  });
+
+  test("RIS (ESC c) and standalone DECSTR (CSI ! p) clear an open synchronized block like xterm 6, and CSI param count caps at 32", () => {
+    const risGate = new FrameGate();
+    expect(risGate.settle(risGate.enqueue("\u001b[?25;2026hpartial", true), true)).toBe(false);
+    expect(risGate.settle(risGate.enqueue("\u001bcplain prompt", true), true)).toBe(true);
+    expect(risGate.current).toBe(true);
+
+    const decstrGate = new FrameGate();
+    expect(decstrGate.settle(decstrGate.enqueue("\u001b[?25;2026hpartial", true), true)).toBe(false);
+    expect(decstrGate.settle(decstrGate.enqueue("\u001b[!pplain prompt", true), true)).toBe(true);
+    expect(decstrGate.current).toBe(true);
+
+    // xterm 6 ignores parameter #33 in a CSI private mode list
+    const capGate = new FrameGate();
+    expect(capGate.settle(capGate.enqueue(`${OPEN}partial`, true), true)).toBe(false);
+    const thirtyThree = `\u001b[?${Array(32).fill("25").join(";")};2026l`;
+    expect(capGate.settle(capGate.enqueue(thirtyThree, true), true)).toBe(false);
+    expect(capGate.settle(capGate.enqueue(CLOSE, true), true)).toBe(true);
   });
 
   test("a reset forgets a block the old stream left open", () => {
@@ -320,7 +461,6 @@ describe("FrameGate", () => {
     const gate = new FrameGate();
     expect(gate.settle(gate.enqueue(`${OPEN}idle${CLOSE}`, true), true)).toBe(true);
     expect(gate.reflowing).toBe(false);
-    // pane-geometry with a new size, then this terminal's grid follows it
     gate.reflowed();
     expect(gate.current).toBe(false);
     gate.resized();
@@ -328,16 +468,13 @@ describe("FrameGate", () => {
     expect(gate.reflowing).toBe(true);
     expect(gate.settle(gate.enqueue(`${OPEN}the agent's redraw${CLOSE}`, true), true)).toBe(true);
     expect(gate.reflowing).toBe(false);
-    // the grid this terminal drives: its own resize first, the pane's grid after
     gate.resized();
     expect(gate.settle(gate.enqueue(`${OPEN}before the pane's size${CLOSE}`, false), true)).toBe(false);
     gate.reflowed();
     expect(gate.settle(gate.enqueue(`${OPEN}old screen, reflowed${CLOSE}`, true), true)).toBe(true);
     expect(gate.reflowing).toBe(true);
-    // a chunk cut inside the next frame is not current, nor reflowing
     expect(gate.settle(gate.enqueue(`${OPEN}half`, true), true)).toBe(false);
     expect(gate.reflowing).toBe(false);
-    // a stream that starts over has no reflow of its own
     gate.reflowed();
     gate.reset();
     expect(gate.settle(gate.enqueue(`${OPEN}fresh${CLOSE}`, true), true)).toBe(true);
@@ -401,20 +538,18 @@ describe("recorded frame streams", () => {
   test("a phone peek's resize: herdr's reflowed frame of gjc's loading /sessions neither arms nor returns", async () => {
     const loading = readFileSync(join(FIXTURES, "gjc", "sessions-open-loading10s-119.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     // herdr's own frame for the new grid: the old screen, reflowed to 40 columns (its box cut at the borders)
-    const old = terminal(119);
+    const old = await terminal(119);
     await parse(old, loading.map((row, index) => `\u001b[${index + 1};1H${row}`).join(""));
     old.resize(40, 40);
     await parse(old, "");
     const reflowed = Array.from({ length: 40 }, (_, y) => old.buffer.active.getLine(old.buffer.active.baseY + y)!.translateToString(true));
     old.dispose();
     expect(inputRowState("gjc", await screenOf(reflowed.join("\n"), 40))).toBe("gone");
-    // gjc's own redraw at 40 columns: still its empty box (the recorded one after a close stands in for it)
     const redrawn = readFileSync(join(FIXTURES, "gjc", "settings-closed-40.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     const frame = (rows: readonly string[]): string => `\u001b[?2026h\u001b[2J${rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join("")}\u001b[?2026l`;
-    const term = terminal(119);
+    const term = await terminal(119);
     const gate = new FrameGate();
     term.onResize(() => gate.resized());
-    // as the pane takes its frames (PaneTerminal onInputRowFrame): a reflowing one changes nothing
     const states: InputRowState[] = [];
     const write = async (data: string): Promise<void> => {
       const stamp = gate.enqueue(data, true);
@@ -422,7 +557,6 @@ describe("recorded frame streams", () => {
       if (gate.settle(stamp, true) && !gate.reflowing) states.push(inputRowState("gjc", readScreen(term.buffer.active, term.cols, term.rows))!);
     };
     await write(frame(loading));
-    // pane-geometry: the pty took 40 columns, and this grid follows
     gate.reflowed();
     term.resize(40, 40);
     await write(frame(reflowed));
@@ -430,7 +564,6 @@ describe("recorded frame streams", () => {
     term.dispose();
     expect(states).toEqual(["ready", "ready"]);
     expect(watch("gjc", states)).toEqual({ armed: false, returnedAt: null, manualAt: null });
-    // read, the reflowed frame would have armed the watch and the redraw brought the chat back before the sessions opened
     expect(watch("gjc", ["ready", "gone", "ready"])).toEqual({ armed: true, returnedAt: 2, manualAt: null });
   });
 
@@ -444,14 +577,12 @@ describe("recorded frame streams", () => {
   test("omp /context at 119 columns arms on its covered editor and comes back on the closed one", async () => {
     expect(watch("omp", [await recorded("omp", "settings-idle-119"), await recorded("omp", "context-open-119"), await recorded("omp", "context-closed-119")]))
       .toEqual({ armed: true, returnedAt: 2, manualAt: null });
-    // a print form keeps the editor: never armed
     expect(watch("omp", [await recorded("omp", "settings-idle-119"), await recorded("omp", "plan-open-119"), await recorded("omp", "settings-closed-119")]))
       .toEqual({ armed: false, returnedAt: null, manualAt: null });
   });
 });
 
 describe("the chat send's read of the same screens (shared/input-row.ts)", () => {
-  // every recording: herdr's ANSI read, parsed on the server, reads as the xterm buffer does
   const agents = readdirSync(FIXTURES).filter((name) => !name.includes(".") && name !== "codex-0.167.0");
   const files = agents.flatMap((agent) => readdirSync(join(FIXTURES, agent)).filter((file) => file.endsWith(".ansi")).map((file) => [agent, file] as const));
   test.each(files)("%s %s", async (agent, file) => {
@@ -474,17 +605,51 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typed("omo", "omo/draft-slash-119.ansi")).toBeFalse();
   });
 
+  test("pi's editor drawn by pi-powerline-footer, its status bar above it, is read as pi's own", () => {
+    const screen = (name: string): ScreenSnapshot => screenFromAnsi(readFileSync(join(FIXTURES, `pi/powerline-${name}-200.ansi`), "utf8"));
+    // a chat message pasted over a typed `2` was sent and recorded as `2…`, so its receipt never matched
+    expect(inputRowState("pi", screen("draft-typed"))).toBe("draft");
+    expect(typedDraft("pi", screen("draft-typed"))).toBeTrue();
+    expect(typedDraft("pi", screen("draft-multiline"))).toBeTrue();
+    expect(inputRowState("pi", screen("draft-empty"))).toBe("ready");
+    expect(typedDraft("pi", screen("draft-empty"))).toBeFalse();
+    // Left moves pi's cursor onto the `2`, which its editor then draws inverse: still typed text
+    const onCursor = readFileSync(join(FIXTURES, "pi/powerline-draft-typed-200.ansi"), "utf8").replace(" 2\u001b[0m\u001b[7m\u001b[0m", " \u001b[7m2\u001b[0m");
+    expect(typedDraft("pi", screenFromAnsi(onCursor))).toBeTrue();
+    // after the first prompt the extension draws it under the editor (`powerline-last-prompt`, on by default), as
+    // its renderLastPromptLines does
+    const lastPrompt = (name: string, rows: string): ScreenSnapshot => screenFromAnsi(`${readFileSync(join(FIXTURES, `pi/powerline-${name}-200.ansi`), "utf8").replace(/\n$/, "")}\n${rows}\n`);
+    const arrow = " \u001b[38;2;102;102;102m↳\u001b[0m \u001b[38;2;102;102;102mwhat does this repo do?\u001b[0m";
+    expect(inputRowState("pi", lastPrompt("draft-typed", arrow))).toBe("draft");
+    expect(typedDraft("pi", lastPrompt("draft-typed", arrow))).toBeTrue();
+    expect(inputRowState("pi", lastPrompt("draft-empty", arrow))).toBe("ready");
+    // anything else under the editor (its autocomplete list) still fails safe
+    expect(inputRowState("pi", lastPrompt("draft-typed", `   /model  Select model\n${arrow}`))).toBe("gone");
+    // while pi works its upper border carries the spinner: a send then queues, and would join a typed `how`
+    expect(typedDraft("pi", screen("working-typed"))).toBeTrue();
+    const workingEmpty = readFileSync(join(FIXTURES, "pi/powerline-working-typed-200.ansi"), "utf8").replace(">\u001b[0m how\u001b[0m", ">\u001b[0m\u001b[0m");
+    expect(inputRowState("pi", screenFromAnsi(workingEmpty))).toBe("ready");
+    // pi 1.5.2 draws that border (CustomEditor.renderTopBorder) with the dashes the row leaves, one where its status fills
+    // the row, and ` ↑ 2 more ` in it where the editor scrolls: each is still the box's upper border
+    const accent = (text: string): string => `\u001b[38;2;111;164;201m${text}\u001b[0m`;
+    const workingBox = (border: string, rows: string[]): ScreenSnapshot => screenFromAnsi([" status", ` ${accent(border)}`,
+      ...rows.map((row, index) => index > 0 ? `   ${row}` : ` \u001b[38;2;200;200;200m>\u001b[0m${row === "" ? "" : ` ${row}`}\u001b[0m\u001b[7m\u001b[0m`),
+      ` ${accent("─".repeat(border.length))}`].join("\n"));
+    for (const border of ["── ⠸ Working ───────", "── ⠸ Auto-compacting... (esc to ─", "── ⠸ Working ──────── ↑ 2 more ─────────────"]) {
+      expect(typedDraft("pi", workingBox(border, ["how"]))).toBeTrue();
+      expect(typedDraft("pi", workingBox(border, ["line3", "line4", "line5", "line6", "line7"]))).toBeTrue();
+      expect(inputRowState("pi", workingBox(border, [""]))).toBe("ready");
+    }
+  });
+
   test("pi's editor holding a line typed with leading spaces is a draft to the send, still a dialog's row to the peek", () => {
     const indented = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8").replace("leftover draft", "  indented snippet");
     expect(typedDraft("pi", screenFromAnsi(indented))).toBeTrue();
     expect(inputRowState("pi", screenFromAnsi(indented))).toBe("gone");
     const typedRow = (row: string): boolean => typedDraft("pi", screenFromAnsi(readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8").replace("leftover draft", row)));
-    // a draft starting with a Markdown quote or an arrow is still one
     expect(typedRow("> please retain this quote")).toBeTrue();
     expect(typedRow("→ note to self")).toBeTrue();
-    // a dialog's search field typed into, over its select cursor drawn in colour, is none
     expect(typedRow("> sea\r\n\u001b[38;2;167;152;215m→ Auto-compact\u001b[0m")).toBeFalse();
-    // a typed draft of both, a quote and an arrow, in the terminal's own colour, is one (#3769)
     expect(typedRow("> quoted\r\n→ an arrow line")).toBeTrue();
   });
 
@@ -552,10 +717,46 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typed(agent, `${agent}/draft-slash-119.ansi`)).toBe(slash);
   });
 
+  test("omp 18.14's editor under its unframed status line: typed text, on one row or more, and `/mo` are a draft; its hint is not", () => {
+    expect(typed("omp", "omp/draft-typed-119.ansi")).toBeTrue();
+    expect(typed("omp", "omp/draft-lines-119.ansi")).toBeTrue();
+    expect(typed("omp", "omp/draft-slash-119.ansi")).toBeTrue();
+    expect(typed("omp", "omp/draft-empty-119.ansi")).toBeFalse();
+    // 18.8.7's framed editor reports no cells: never refused
+    expect(typed("omp", "omp/settings-idle-119.ansi")).toBeFalse();
+    const themed = readFileSync(join(FIXTURES, "omp/draft-typed-119.ansi"), "utf8").replace("\u001b[38;5;254mleftover", "\u001b[38;5;250mleftover");
+    expect(typedDraft("omp", screenFromAnsi(themed))).toBeFalse();
+  });
+
+  test("omp 18.14's draft is read past an empty first row, an indented row and an empty row between, and as typed when it is the hint's words", () => {
+    const lines = readFileSync(join(FIXTURES, "omp/draft-lines-119.ansi"), "utf8");
+    expect(typedDraft("omp", screenFromAnsi(lines.replace("leftover draft", "").replace("second line", "    indented")))).toBeTrue();
+    const rows = lines.replace("leftover draft", "").split("\n");
+    rows.splice(rows.findIndex((row) => row.includes("second line")), 0, "\r");
+    expect(typedDraft("omp", screenFromAnsi(rows.join("\n")))).toBeTrue();
+    expect(typedDraft("omp", screenFromAnsi(readFileSync(join(FIXTURES, "omp/draft-typed-119.ansi"), "utf8").replace("leftover draft", "⇧⇥ to change thinking effort")))).toBeTrue();
+  });
+
   test("Kilo's box in a session, under its first answer, reads as on its home screen", () => {
     expect(typed("kilo", "kilo/draft-session-typed-119.ansi")).toBeTrue();
     expect(typed("kilo", "kilo/draft-session-empty-119.ansi")).toBeFalse();
     expect(typed("kilo", "kilo/draft-session-slash-119.ansi")).toBeTrue();
+  });
+
+  test("Kilo's empty editor does not include the previous message across blank screen rows", () => {
+    const rows = readFileSync(join(FIXTURES, "kilo/draft-session-empty-119.ansi"), "utf8").split("\n");
+    rows.fill("", 4, 33);
+    expect(typedDraft("kilo", screenFromAnsi(rows.join("\n")))).toBeFalse();
+  });
+
+  test("a Pi draft can consist of a single private-use glyph", () => {
+    const screen = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("pi", screenFromAnsi(screen.replace("leftover draft", "\uE0B0")))).toBeTrue();
+  });
+
+  test("Letta's inverse cursor cell can contain the only typed character", () => {
+    const screen = readFileSync(join(FIXTURES, "letta/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("letta", screenFromAnsi(screen.replace("leftover draft", "\u001b[7mx\u001b[27m")))).toBeTrue();
   });
 
   test("a character that draws nothing (Letta pads its empty box with zero-width spaces) is no typed text", () => {
@@ -567,10 +768,8 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
   test("an agent that draws typed text in a colour of its own: only that colour, as recorded, is typed", () => {
     const muse = readFileSync(join(FIXTURES, "muse/draft-typed-119.ansi"), "utf8");
     expect(typedDraft("muse", screenFromAnsi(muse))).toBeTrue();
-    // the same words in another theme's colour are no evidence
     expect(typedDraft("muse", screenFromAnsi(muse.replaceAll("38;2;204;211;219m", "38;2;120;120;120m")))).toBeFalse();
     const cline = readFileSync(join(FIXTURES, "cline/draft-empty-119.ansi"), "utf8");
-    // cline's grey placeholder
     expect(typedDraft("cline", screenFromAnsi(cline))).toBeFalse();
   });
 
@@ -582,7 +781,6 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(styled("3")).toBeFalse();
     expect(styled("38;5;244")).toBeFalse();
     expect(styled("38:2::90:90:90")).toBeFalse();
-    // a recognizer that reports no cells (Claude and Hermes keep their own checks) never refuses
     expect(typedDraft("claude", screenFromAnsi(["\u2500".repeat(40), "\u276f still typing", "\u2500".repeat(40)].join("\n")))).toBeFalse();
     expect(typedDraft("letta", screenFromAnsi(omo))).toBeFalse();
     // a Codex `›` row with no model line under it is one of the history's messages, not the composer

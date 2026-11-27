@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, type ReactNode } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
@@ -25,43 +25,36 @@ function roster(finishes: Record<string, number>, statuses: Record<string, Agent
 
 describe("sidebar finish acknowledgement through React effects", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderers: ReactTestRenderer[];
+  let page: Page;
+  const probes = new Map<number, ReactNode>();
+  let nextProbe: number;
   let visibility: DocumentVisibilityState;
-  let events: EventTarget;
-  let storageEvents: EventTarget;
-  let data: Map<string, string>;
   let storageAdds: number;
   let storageRemoves: number;
 
   beforeEach(() => {
-    for (const key of ["document", "window", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    renderers = []; visibility = "visible"; events = new EventTarget(); storageEvents = new EventTarget(); data = new Map();
+    page = openPage();
+    probes.clear(); nextProbe = 0; visibility = "visible";
     storageAdds = 0; storageRemoves = 0;
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      get visibilityState() { return visibility; },
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
-        if (type === "storage") storageAdds++;
-        storageEvents.addEventListener(type, listener);
-      },
-      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
-        if (type === "storage") storageRemoves++;
-        storageEvents.removeEventListener(type, listener);
-      },
-    } });
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
-      get length() { return data.size; }, key: (index: number) => [...data.keys()][index] ?? null,
-      getItem: (key: string) => data.get(key) ?? null,
-      setItem: (key: string, value: string) => { data.set(key, value); },
-      removeItem: (key: string) => { data.delete(key); },
-    } });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, get: () => visibility });
+    const { window } = page;
+    const add = window.addEventListener.bind(window), remove = window.removeEventListener.bind(window);
+    Object.defineProperties(window, {
+      addEventListener: { configurable: true, value: (...args: Parameters<typeof add>) => {
+        if (args[0] === "storage") storageAdds++;
+        add(...args);
+      } },
+      removeEventListener: { configurable: true, value: (...args: Parameters<typeof remove>) => {
+        if (args[0] === "storage") storageRemoves++;
+        remove(...args);
+      } },
+    });
+    descriptors.set("localStorage", Object.getOwnPropertyDescriptor(globalThis, "localStorage"));
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: window.localStorage });
   });
   afterEach(async () => {
-    await act(async () => { for (const renderer of renderers) renderer.unmount(); });
     jest.useRealTimers();
+    await page.close();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -71,9 +64,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
   async function storage(key: string | null, newValue: string | null, storageArea?: Storage): Promise<void> {
     await act(async () => {
-      const event = new Event("storage");
+      const event = new page.window.Event("storage");
       Object.defineProperties(event, { key: { value: key }, newValue: { value: newValue }, storageArea: { value: storageArea } });
-      storageEvents.dispatchEvent(event);
+      page.window.dispatchEvent(event);
     });
   }
 
@@ -82,15 +75,13 @@ describe("sidebar finish acknowledgement through React effects", () => {
     let current = machines;
     let renders = 0;
     function Probe({ machines, selected, covered }: { machines: Machine[]; selected: string | null; covered: boolean }) {
-      // Keep callback identity stable between the hook's own renders.
       renders++;
       activity = useSidebarActivityState(machines, "local", selected, covered ? coveredView : loading.current ? loadingView : frontView, share);
       return null;
     }
-    let renderer: ReactTestRenderer | undefined;
-    await act(async () => { renderer = create(createElement(Probe, { machines, selected, covered })); });
-    if (!renderer) throw new Error("probe did not mount");
-    const mounted = renderer; renderers.push(mounted);
+    const key = nextProbe++;
+    probes.set(key, createElement(Probe, { key, machines, selected, covered }));
+    await page.render([...probes.values()]);
     return {
       status(id: string, override?: Partial<HerdrPane>): AgentStatus | undefined {
         const pane = current[0]?.snapshot?.panes.find((pane) => pane.pane_id === id);
@@ -104,18 +95,15 @@ describe("sidebar finish acknowledgement through React effects", () => {
       },
       async update(next: Machine[], selected: string | null = null, covered = false): Promise<void> {
         current = next;
-        await act(async () => { mounted.update(createElement(Probe, { machines: next, selected, covered })); });
+        probes.set(key, createElement(Probe, { key, machines: next, selected, covered }));
+        await page.render([...probes.values()]);
       },
       async unmount(): Promise<void> {
-        const index = renderers.indexOf(mounted);
-        if (index < 0) return;
-        await act(async () => { mounted.unmount(); });
-        renderers.splice(index, 1);
+        if (probes.delete(key)) await page.render([...probes.values()]);
       },
       get renders() { return renders; },
     };
   }
-  // stable identities, as App's memoized callback; content still loading: in view, not yet drawn
   const frontView = (): PanePresence => "front", coveredView = (): PanePresence => "covered", loadingView = (): PanePresence => "loading";
   const loading = { current: false };
 
@@ -139,15 +127,22 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const remoteA: Machine = { ...structuredClone(local), id: "remote-a" };
     const remoteB: Machine = { ...structuredClone(local), id: "remote-b" };
     for (const machine of [local, remoteA, remoteB]) {
-      data.set(seenKey(machine.id, "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
-      data.set(seenKey(machine.id, "server-a", "b"), JSON.stringify({ id: 1, at: 2 }));
+      page.window.localStorage.setItem(seenKey(machine.id, "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
+      page.window.localStorage.setItem(seenKey(machine.id, "server-a", "b"), JSON.stringify({ id: 1, at: 2 }));
     }
     const client = await open([local, remoteA, remoteB], "a");
     let keyCalls = 0, readCalls = 0;
     const storage = localStorage;
     const key = storage.key.bind(storage), getItem = storage.getItem.bind(storage);
-    storage.key = (index) => { keyCalls++; return key(index); };
-    storage.getItem = (name) => { readCalls++; return getItem(name); };
+    // happy-dom's Storage ignores an assignment to a method it has: install the counters as own properties
+    Object.defineProperties(storage, {
+      key: { configurable: true, value: (index: number) => { keyCalls++; return key(index); } },
+      getItem: { configurable: true, value: (name: string) => { readCalls++; return getItem(name); } },
+    });
+    storage.key(0);
+    storage.getItem("probe");
+    expect([keyCalls, readCalls]).toEqual([1, 1]);
+    keyCalls = readCalls = 0;
 
     const changed = roster({ a: 1, b: 1 }, { a: "working" })[0]!;
     await client.update([changed, remoteA, remoteB], "b");
@@ -159,7 +154,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("keeps the seen map identity when a repeated acknowledgement changes no value", async () => {
-    data.set(seenKey("local", "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
+    page.window.localStorage.setItem(seenKey("local", "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
     const client = await open(roster({ a: 1 }), "a");
     const before = client.renders;
     await client.update(roster({ a: 1 }), "a");
@@ -183,25 +178,25 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
   it("keeps the global record cap without restoring evicted history on roster updates", async () => {
     for (let index = 0; index < 1900; index++) {
-      data.set(seenKey("local", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
+      page.window.localStorage.setItem(seenKey("local", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
     }
     const client = await open(roster({ p0: 1 }));
     await act(async () => {
       for (let index = 1900; index < 2200; index++) saveSeen("remote", "server-b", `p${index}`, 1);
     });
 
-    expect(data.size).toBe(SEEN_LIMIT);
-    expect(data.has(seenKey("local", "server-a", "p0"))).toBe(false);
+    expect(page.window.localStorage.length).toBe(SEEN_LIMIT);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "p0")) !== null).toBe(false);
     expect(loadSeen("local", "server-a").p0).toBeUndefined();
     await client.update(roster({ p0: 1 }, { p0: "working" }));
-    expect(data.size).toBe(SEEN_LIMIT);
-    expect(data.has(seenKey("local", "server-a", "p0"))).toBe(false);
+    expect(page.window.localStorage.length).toBe(SEEN_LIMIT);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "p0")) !== null).toBe(false);
     expect(loadSeen("local", "server-a").p0).toBeUndefined();
   });
 
   it("publishes records after a later PC acknowledgement evicts an earlier PC", async () => {
     for (let index = 0; index < SEEN_LIMIT; index++) {
-      data.set(seenKey("remote", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
+      page.window.localStorage.setItem(seenKey("remote", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
     }
     const remote = { ...roster({ p0: 1 })[0]!, id: "remote" };
     const local = roster({ newest: 1 })[0]!;
@@ -210,7 +205,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
     await client.update([remote, local], "newest");
     expect(client.statusAt("remote", "p0")).toBe("done");
-    expect(data.has(seenKey("remote", "server-a", "p0"))).toBe(false);
+    expect(page.window.localStorage.getItem(seenKey("remote", "server-a", "p0")) !== null).toBe(false);
   });
 
   it("updates the mounted epoch when one same-page batch contains mixed epochs for a PC", async () => {
@@ -227,12 +222,12 @@ describe("sidebar finish acknowledgement through React effects", () => {
   it("forgets deleted and cleared marks until their content is presented again", async () => {
     const client = await open(roster({ a: 1 }), "a");
     const key = seenKey("local", "server-a", "a");
-    data.delete(key);
+    page.window.localStorage.removeItem(key);
     await storage(key, null);
     expect(client.status("a")).toBe("done");
     expect(loadSeen("local", "server-a")).toEqual({});
 
-    data.clear();
+    page.window.localStorage.clear();
     await storage(null, null);
     expect(client.status("a")).toBe("done");
     expect(loadSeen("local", "server-a")).toEqual({});
@@ -257,12 +252,12 @@ describe("sidebar finish acknowledgement through React effects", () => {
       Object.defineProperty(globalThis, "localStorage", { configurable: true, value: available });
     }
     expect(loadSeen("local", "server-a")).toEqual({ a: 2 });
-    expect(JSON.parse(data.get(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2 });
+    expect(JSON.parse(page.window.localStorage.getItem(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2 });
   });
 
   it("keeps a newer persisted finish when an older clear event arrives", async () => {
     const client = await open(roster({ a: 1, b: 2 }), "a");
-    data.clear();
+    page.window.localStorage.clear();
     await act(async () => { saveSeen("local", "server-a", "b", 2); });
     await storage(null, null, localStorage);
     expect(client.status("a")).toBe("done");
@@ -280,16 +275,18 @@ describe("sidebar finish acknowledgement through React effects", () => {
   it("persists a session-only finish when the same storage methods recover", async () => {
     const storage = localStorage;
     const getItem = storage.getItem, setItem = storage.setItem;
-    storage.getItem = () => { throw new Error("blocked"); };
-    storage.setItem = () => { throw new Error("blocked"); };
+    const blocked = () => { throw new Error("blocked"); };
+    const useMethods = (getItem: Storage["getItem"], setItem: Storage["setItem"]) => Object.defineProperties(storage, {
+      getItem: { configurable: true, value: getItem }, setItem: { configurable: true, value: setItem },
+    });
+    useMethods(blocked, blocked);
     const client = await open(roster({ a: 1 }), "a");
     expect(client.status("a")).toBe("idle");
-    expect(data.has(seenKey("local", "server-a", "a"))).toBe(false);
+    expect(getItem(seenKey("local", "server-a", "a")) !== null).toBe(false);
 
-    storage.getItem = getItem;
-    storage.setItem = setItem;
+    useMethods(getItem, setItem);
     await client.update(roster({ a: 1 }), "a");
-    expect(data.get(seenKey("local", "server-a", "a"))).toMatch(/"id":1/);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "a"))).toMatch(/"id":1/);
   });
 
   it("tells the other browsers of a presented finish once, and again after a failed attempt", async () => {
@@ -319,7 +316,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
   for (const failure of [502, 503, "network"] as const) {
     it(`delivers once after backoff despite 20 roster updates when sharing fails with ${failure}`, async () => {
-      // Given a transient failure followed by a successful delivery.
       jest.useFakeTimers();
       const delivered: unknown[] = [];
       let attempts = 0;
@@ -335,26 +331,22 @@ describe("sidebar finish acknowledgement through React effects", () => {
       try {
         const client = await open(roster({ a: 1 }), "a", false, shareSeen);
 
-        // When roster updates arrive before the retry deadline.
         for (let index = 0; index < 20; index++) await client.update(roster({ a: 1 }), "a");
         await act(async () => { jest.advanceTimersByTime(999); });
         expect(attempts).toBe(1);
         await act(async () => { jest.advanceTimersByTime(1); });
 
-        // Then exactly one retry delivers, without another request after success.
         await client.update(roster({ a: 1 }), "a");
         await act(async () => { jest.advanceTimersByTime(60_000); });
         expect(post.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
           ["/api/seen", "POST"], ["/api/seen", "POST"],
         ]);
-        // a retry tells an earlier look: it cannot overrule an unread told since
         expect(delivered).toEqual([{ pc: "local", epoch: "server-a", pane: "a", id: 1, presented: "held" }]);
       } finally { post.mockRestore(); }
     });
   }
 
   it("does not retry a bad request even after backoff and roster updates", async () => {
-    // Given a finish refused as invalid.
     jest.useFakeTimers();
     const told: SeenFinish[] = [];
     const client = await open(roster({ a: 1 }), "a", false, async (finish) => {
@@ -362,17 +354,14 @@ describe("sidebar finish acknowledgement through React effects", () => {
       throw Object.assign(new Error("invalid_finish"), { status: 400 });
     });
 
-    // When time passes and the roster changes.
     for (let index = 0; index < 20; index++) await client.update(roster({ a: 1 }), "a");
     await act(async () => { jest.advanceTimersByTime(60_000); });
 
-    // Then the refused finish remains local without another send.
     expect(told).toHaveLength(1);
     expect(client.status("a")).toBe("idle");
   });
 
   it("doubles retry delays up to 30 seconds without roster-driven sends", async () => {
-    // Given a server that remains unavailable.
     jest.useFakeTimers();
     let attempts = 0;
     const client = await open(roster({ a: 1 }), "a", false, async () => {
@@ -380,7 +369,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
       throw Object.assign(new Error("restart"), { status: 503 });
     });
 
-    // When each retry deadline is approached and then reached.
     let expected = 1;
     for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
       await client.update(roster({ a: 1 }), "a");
@@ -388,14 +376,12 @@ describe("sidebar finish acknowledgement through React effects", () => {
       expect(attempts).toBe(expected);
       await act(async () => { jest.advanceTimersByTime(1); });
       expected++;
-      // Then only that chain's scheduled request has been sent.
       expect(attempts).toBe(expected);
     }
   });
 
   for (const retirement of ["unmount", "epoch", "new finish"] as const) {
     it(`cancels a pending retry on ${retirement}`, async () => {
-      // Given a finish waiting to retry.
       jest.useFakeTimers();
       const told: SeenFinish[] = [];
       const client = await open(roster({ a: 1 }), "a", false, async (finish) => {
@@ -403,7 +389,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
         throw Object.assign(new Error("restart"), { status: 502 });
       });
 
-      // When the owner or finish is retired before the timer fires.
       await {
         unmount: () => client.unmount(),
         epoch: () => client.update(roster({ a: 1 }, {}, "server-b")),
@@ -411,13 +396,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
       }[retirement]();
       await act(async () => { jest.advanceTimersByTime(1_000); });
 
-      // Then the retired finish is never sent again.
       expect(told.filter(({ id }) => id === 1)).toHaveLength(1);
     });
   }
 
   it("resumes a 401 only after authentication succeeds without reloading", async () => {
-    // Given an unauthorized share and a browser still signed out.
     jest.useFakeTimers();
     let authenticated = false;
     const health = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () =>
@@ -432,11 +415,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
       await client.update(roster({ a: 1 }), "a");
       expect(told).toHaveLength(1);
 
-      // When a later health response confirms sign-in.
       authenticated = true;
       await act(async () => { jest.advanceTimersByTime(2_000); });
 
-      // Then the existing finish is shared once and its chain stops.
       await act(async () => { jest.advanceTimersByTime(60_000); });
       expect(told).toHaveLength(2);
       expect(health.mock.calls.map(([url]) => url)).toEqual([
@@ -462,7 +443,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("uses one health request per backoff window for 100 unauthorized finishes", async () => {
-    // Given 100 finishes read while signed out.
     jest.useFakeTimers();
     const health = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () =>
       Response.json({ auth: { authenticated: false } }), { preconnect: fetch.preconnect }));
@@ -471,13 +451,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
       const client = await open(roster({ p0: 1 }), "p0", false, share);
       for (let index = 1; index < 100; index++) await client.update(roster({ [`p${index}`]: 1 }), `p${index}`);
 
-      // When each shared backoff window expires, including at the delay cap.
       let windows = 0;
       for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
         await act(async () => { jest.advanceTimersByTime(delay); });
         windows++;
 
-        // Then pending finish count does not multiply authentication probes.
         expect(health.mock.calls.map(([url]) => url)).toEqual(
           Array.from({ length: windows }, () => "/api/health?scope=bridge"),
         );
@@ -486,7 +464,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("sends each of 100 paused finishes once after one successful auth observation", async () => {
-    // Given 100 pending finishes behind the same authentication gate.
     jest.useFakeTimers();
     let authenticated = false;
     const delivered: SeenFinish[] = [];
@@ -501,14 +478,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
       for (let index = 1; index < 100; index++) await client.update(roster({ [`p${index}`]: 1 }), `p${index}`);
       await act(async () => { jest.advanceTimersByTime(1_000); });
 
-      // When one later health response confirms sign-in.
       authenticated = true;
       await act(async () => { jest.advanceTimersByTime(2_000); });
-      // roster updates on the pane still in front (going back to the others would be a look again)
       for (let index = 0; index < 100; index++) await client.update(roster({ p99: 1 }), "p99");
       await act(async () => { jest.advanceTimersByTime(60_000); });
 
-      // Then every finish is delivered exactly once, and health polling stops.
       expect(delivered).toHaveLength(100);
       expect(delivered.map(({ pane }) => pane).sort()).toEqual(
         Array.from({ length: 100 }, (_, index) => `p${index}`).sort(),
@@ -519,7 +493,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
   for (const failure of [503, "network"] as const) {
     it(`bounds ${failure} outage retries independently of 100 pending finishes and drains on recovery`, async () => {
-      // Given 100 finishes presented during a transient outage.
       jest.useFakeTimers();
       let available = false;
       let attempts = 0;
@@ -535,7 +508,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
       const initial = attempts;
       expect(initial).toBe(1);
 
-      // When the outage continues across retry deadlines and roster traffic.
       let windows = 0;
       for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000]) {
         for (let index = 0; index < 20; index++) await client.update(roster({ p99: 1 }), "p99");
@@ -547,7 +519,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
       await act(async () => { jest.advanceTimersByTime(30_000); });
       await act(async () => { jest.advanceTimersByTime(60_000); });
 
-      // Then the aggregate outage sends were bounded, but no pending finish was lost.
       expect(delivered).toHaveLength(100);
       expect(new Set(delivered.map(({ pane }) => pane)).size).toBe(100);
       expect(attempts).toBe(initial + windows + 100);
@@ -555,7 +526,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   }
 
   it("does not duplicate an in-flight auth probe or resume shares after unmount", async () => {
-    // Given 100 paused finishes and one unanswered authentication probe.
     jest.useFakeTimers();
     const reply = Promise.withResolvers<Response>();
     const health = spyOn(globalThis, "fetch").mockImplementation(Object.assign(
@@ -570,14 +540,12 @@ describe("sidebar finish acknowledgement through React effects", () => {
       for (let index = 1; index < 100; index++) await client.update(roster({ [`p${index}`]: 1 }), `p${index}`);
       await act(async () => { jest.advanceTimersByTime(1_000); });
 
-      // When time and roster updates pass, then the owner unmounts before the reply.
       await act(async () => { jest.advanceTimersByTime(60_000); });
       await client.update(roster({ p99: 1 }), "p99");
       await client.unmount();
       await act(async () => { reply.resolve(Response.json({ auth: { authenticated: true } })); });
       await act(async () => { jest.advanceTimersByTime(60_000); });
 
-      // Then no overlapping health poll or stale resumed share was sent.
       expect(health).toHaveBeenCalledTimes(1);
       expect(attempts).toBe(1);
     } finally { health.mockRestore(); }
@@ -587,15 +555,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const told: [number, string | undefined][] = [];
     const share = async (finish: SeenFinish, presented?: SeenPresentation) => { told.push([finish.id, presented]); };
     const client = await open(roster({ a: 1, b: 1 }, { b: "working" }), "a", false, share);
-    // a finish that arrives while the pane is in front (another client marked it unread)
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    // away and back: the same finish, now shown again
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    // once told as a look, coming back to it tells nothing more
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
-    // content still loading and a reconnect are no look: the pane stayed in view
     loading.current = true;
     await client.update(roster({ a: 3, b: 1 }, { b: "working" }), "a");
     loading.current = false;
@@ -604,17 +568,14 @@ describe("sidebar finish acknowledgement through React effects", () => {
     away[0]!.state = "reconnecting";
     await client.update(away, "a");
     await client.update(roster({ a: 4, b: 1 }, { b: "working" }), "a");
-    // a pane selected while covered is new once it is first presented
     await client.update(roster({ a: 4, b: 5 }), "b", true);
     await client.update(roster({ a: 4, b: 5 }), "b");
-    // closing an overlay over it brings it into view again
     await client.update(roster({ a: 4, b: 6 }), "b", true);
     await client.update(roster({ a: 4, b: 6 }), "b");
     expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"], [3, "held"], [4, "held"], [5, "new"], [6, "new"]]);
   });
 
   it("tells a return made while a held share is in flight as a look right away, once", async () => {
-    // Given finish 2 of pane a shared as held, its request still unanswered.
     const told: [number, string | undefined][] = [];
     const pending = Promise.withResolvers<void>();
     const share = (finish: SeenFinish, presented?: SeenPresentation) => {
@@ -624,11 +585,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const client = await open(roster({ a: 1, b: 1 }, { b: "working" }), "a", false, share);
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
 
-    // When the person goes away and comes back before it answers.
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
 
-    // Then the return is told as a look then, not when the held share answers, and not again.
     expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"]]);
     await act(async () => { pending.resolve(); await pending.promise; });
     expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"]]);
@@ -638,7 +597,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("tells a return made while its held share waits for a retry as a look right away", async () => {
-    // Given finish 2 of pane a shared as held, failed with a transient error and waiting for its retry.
     jest.useFakeTimers();
     const told: [number, string | undefined][] = [];
     let failed = false;
@@ -653,11 +611,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
       await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
       expect(told).toEqual([[1, "new"], [2, "held"]]);
 
-      // When the person goes away and comes back before the retry.
       await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "b");
       await client.update(roster({ a: 2, b: 1 }, { b: "working" }), "a");
 
-      // Then the return is told as a look then, and the held retry it replaced is not sent.
       expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"]]);
       await act(async () => { jest.advanceTimersByTime(60_000); });
       expect(told).toEqual([[1, "new"], [2, "held"], [2, "new"]]);
@@ -667,7 +623,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("tells a return as a look right away while another pane's share waits for a retry", async () => {
-    // Given finish 2 of pane a told as held, and pane c's finish waiting for a retry.
     jest.useFakeTimers();
     const told: [string, number, string | undefined][] = [];
     let failed = false;
@@ -683,10 +638,8 @@ describe("sidebar finish acknowledgement through React effects", () => {
       await client.update(roster({ a: 2, c: 1 }), "c");
       expect(told).toEqual([["a", 1, "new"], ["a", 2, "held"], ["c", 1, "new"]]);
 
-      // When the person comes back to a before c's retry.
       await client.update(roster({ a: 2, c: 1 }), "a");
 
-      // Then the return is told as a look then, not behind c's retry, and c's retry is held.
       expect(told).toEqual([["a", 1, "new"], ["a", 2, "held"], ["c", 1, "new"], ["a", 2, "new"]]);
       await act(async () => { jest.advanceTimersByTime(60_000); });
       expect(told).toEqual([["a", 1, "new"], ["a", 2, "held"], ["c", 1, "new"], ["a", 2, "new"], ["c", 1, "held"]]);
@@ -696,13 +649,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("keeps a finish told as a look when its answer upgrade is shared as held", async () => {
-    // Given finish 1 of a shared as new without an answer.
     const told: [number, string | undefined, boolean][] = [];
     const share = async (finish: SeenFinish, presented?: SeenPresentation) => { told.push([finish.id, presented, finish.answer !== undefined]); };
     const pane = "proof-upgrade-told";
     const client = await open(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane, false, share);
 
-    // When its answer arrives while it stays in front, and the person goes away and back.
     expect(conversationFinishEvidence.accept(seenKey("local", "server-a", pane), 1, {
       source: "pi-transcript", history_id: "session",
       turns: [{ role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:01Z",
@@ -712,12 +663,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
 
-    // Then the return tells nothing more: the finish was already told as a look.
     expect(told).toEqual([[1, "new", false], [1, "held", true]]);
   });
 
   it("keeps a look that answers after its answer upgrade answered first", async () => {
-    // Given finish 1 of a shared as new, its request still unanswered.
     const told: [number, string | undefined, boolean][] = [];
     const pending = Promise.withResolvers<void>();
     const share = (finish: SeenFinish, presented?: SeenPresentation) => {
@@ -727,7 +676,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const pane = "proof-upgrade-in-flight";
     const client = await open(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane, false, share);
 
-    // When its answer upgrade is shared and answers, then the look answers, and the person goes away and back.
     expect(conversationFinishEvidence.accept(seenKey("local", "server-a", pane), 1, {
       source: "pi-transcript", history_id: "session",
       turns: [{ role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:01Z",
@@ -738,12 +686,10 @@ describe("sidebar finish acknowledgement through React effects", () => {
     await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), "b");
     await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
 
-    // Then the look is not told a second time.
     expect(told).toEqual([[1, "new", false], [1, "held", true]]);
   });
 
   it("tells a return as a look while the look in flight at its answer upgrade then fails", async () => {
-    // Given finish 1 of a shared as new, its request still unanswered, and its answer upgrade shared.
     const told: [number, string | undefined, boolean][] = [];
     const pending = Promise.withResolvers<void>();
     const share = (finish: SeenFinish, presented?: SeenPresentation) => {
@@ -762,13 +708,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
       })).toBe(true);
       await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
 
-      // When the person goes away and back while the look is in flight, and the look then fails.
       await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), "b");
       await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
       await act(async () => { pending.reject(new TypeError("offline")); await pending.promise.catch(() => undefined); });
       await client.update(roster({ [pane]: 1, b: 1 }, { b: "working" }), pane);
 
-      // Then the return was told as a look.
       expect(told).toEqual([[1, "new", false], [1, "held", true], [1, "new", true]]);
     } finally {
       console.warn = warn;
@@ -795,7 +739,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("retries a failed share once, with the answer fingerprint that arrived before the retry", async () => {
-    // Given a share of a finish whose answer was not read yet, failed with a transient error.
     jest.useFakeTimers();
     const pane = "proof-late-answer";
     const told: SeenFinish[] = [];
@@ -805,7 +748,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
     });
     expect(told).toEqual([{ pc: "local", epoch: "server-a", pane, id: 1 }]);
 
-    // When the answer is read before the retry is due.
     expect(conversationFinishEvidence.accept(seenKey("local", "server-a", pane), 1, {
       source: "pi-transcript", history_id: "session",
       turns: [{ role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:01Z",
@@ -816,7 +758,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
     await act(async () => { jest.advanceTimersByTime(1_000); });
     await act(async () => { jest.advanceTimersByTime(60_000); });
 
-    // Then the retry shares it once, carrying the answer.
     expect(told).toHaveLength(2);
     expect(told[1]).toMatchObject({ pane, id: 1, answer: expect.any(String) });
   });
@@ -876,7 +817,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     expect([client.status("a"), client.status("b")]).toEqual(["idle", "done"]);
     await act(async () => { receiveSeen([{ pc: "local", epoch: "server-a", pane: "a", id: 1 }, { pc: "local", epoch: "server-b", pane: "b", id: 1 }]); });
     expect([client.status("a"), client.status("b")]).toEqual(["idle", "done"]);
-    expect(JSON.parse(data.get(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2, answer: "proof" });
+    expect(JSON.parse(page.window.localStorage.getItem(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2, answer: "proof" });
   });
 
   it("does not scan unrelated storage on repeated or new acknowledgement", async () => {
@@ -884,8 +825,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
     let unrelatedReads = 0;
     const read = localStorage.getItem;
     const key = seenKey("remote", "server-b", "other");
-    data.set(key, JSON.stringify({ id: 4, at: 1 }));
-    localStorage.getItem = (name) => { if (name === key) unrelatedReads++; return read(name); };
+    page.window.localStorage.setItem(key, JSON.stringify({ id: 4, at: 1 }));
+    Object.defineProperty(localStorage, "getItem", { configurable: true, value: (name: string) => { if (name === key) unrelatedReads++; return Reflect.apply(read, localStorage, [name]); } });
+    localStorage.getItem(key);
+    expect(unrelatedReads).toBe(1);
+    unrelatedReads = 0;
     await client.update(roster({ a: 1 }), "a");
     expect(unrelatedReads).toBe(0);
     await client.update(roster({ a: 2 }), "a");
@@ -931,7 +875,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const set = Map.prototype.set;
     let cached: unknown[] = [];
     const spy = spyOn(Map.prototype, "set").mockImplementation(function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
-      // A scope's cached record maps panes to IDs; a change notice carries its epoch.
       if (value && typeof value === "object" && !Object.hasOwn(value, "epoch")) cached.push(key);
       return set.call(this, key, value);
     });
@@ -983,7 +926,6 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("persists independent pane writes even with both reads before either write", () => {
-    // This is the read/read/write/write schedule that lost a mark in the old whole-record store.
     const first = loadSeen("local", "server-a"), second = loadSeen("local", "server-a");
     expect([first, second]).toEqual([{}, {}]);
     saveSeen("local", "server-a", "a", 1);
@@ -994,9 +936,8 @@ describe("sidebar finish acknowledgement through React effects", () => {
   it("updates another mounted tab on storage events and repairs a lower same-pane race", async () => {
     const client = await open(roster({ a: 4 }));
     const key = seenKey("local", "server-a", "a");
-    // Both contexts already prepared values; the older write lands last.
-    data.set(key, JSON.stringify({ id: 4, at: 1 }));
-    data.set(key, JSON.stringify({ id: 2, at: 2 }));
+    page.window.localStorage.setItem(key, JSON.stringify({ id: 4, at: 1 }));
+    page.window.localStorage.setItem(key, JSON.stringify({ id: 2, at: 2 }));
     await storage(key, JSON.stringify({ id: 4, at: 1 }));
     expect(loadSeen("local", "server-a")).toEqual({ a: 4 });
     expect(client.status("a")).toBe("idle");
@@ -1006,7 +947,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     visibility = "hidden";
     const client = await open(roster({ a: 1 }), "a");
     expect(client.status("a")).toBe("done");
-    await act(async () => { visibility = "visible"; events.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { visibility = "visible"; page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(client.status("a")).toBe("idle");
     const absent = await open(roster({ b: 1 }), "not-rendered");
     expect(absent.status("b")).toBe("done");
@@ -1018,9 +959,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const client = await open(roster({ a: 1 }), "a");
     await client.update(roster({ a: 1 }));
     const key = seenKey("local", "server-a", "a");
-    data.delete(key);
+    page.window.localStorage.removeItem(key);
     await storage(key, JSON.stringify({ id: 1, at: 1 }));
-    expect(data.has(key)).toBe(false);
+    expect(page.window.localStorage.getItem(key) !== null).toBe(false);
     expect(client.status("a")).toBe("done");
     expect(loadSeen("local", "server-a")).toEqual({});
   });
@@ -1037,13 +978,13 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("removes old-format records and caps keys oldest first, never by a roster", () => {
-    data.set("ovis:seen:local", '{"a":5}');
-    data.set("ovis:settings", "{}");
-    for (let i = 0; i <= SEEN_LIMIT; i++) data.set(seenKey("local", "server-a", `p${i}`), JSON.stringify({ id: 1, at: i }));
+    page.window.localStorage.setItem("ovis:seen:local", '{"a":5}');
+    page.window.localStorage.setItem("ovis:settings", "{}");
+    for (let i = 0; i <= SEEN_LIMIT; i++) page.window.localStorage.setItem(seenKey("local", "server-a", `p${i}`), JSON.stringify({ id: 1, at: i }));
     loadSeen("local", "server-a");
-    expect(data.has("ovis:seen:local")).toBe(false);
-    expect(data.has(seenKey("local", "server-a", "p0"))).toBe(false);
-    expect(data.has(seenKey("local", "server-a", `p${SEEN_LIMIT}`))).toBe(true);
-    expect(data.get("ovis:settings")).toBe("{}");
+    expect(page.window.localStorage.getItem("ovis:seen:local") !== null).toBe(false);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "p0")) !== null).toBe(false);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", `p${SEEN_LIMIT}`)) !== null).toBe(true);
+    expect(page.window.localStorage.getItem("ovis:settings")).toBe("{}");
   });
 });

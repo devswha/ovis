@@ -1,6 +1,6 @@
 /**
  * Simplified Chinese for the keys only the chat files use:
- * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
+ * components/ChatView.tsx, components/ChatWork.tsx, components/ChatTurn.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
  * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
@@ -9,6 +9,8 @@
  */
 export const CHAT_ZH: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 聊天暂不可用。请打开终端查看运行状态和工具调用。",
+  "Not in the conversation. If the agent showed an error, it is in the terminal.": "未记录在对话中。如果智能体显示了错误，它在终端里。",
+  "Not in the conversation. If {agent} showed an error, it is in the terminal.": "未记录在对话中。如果 {agent} 显示了错误，它在终端里。",
   "{agent} has not recorded a conversation Ovis can find for this pane yet. Before the first message this is normal; if it stays, use the terminal.": "{agent} 尚未记录 Ovis 能为此窗格找到的对话。在第一条消息之前这是正常的；如果一直如此，请使用终端。",
   "Ovis can't read {agent} conversations yet. Use the terminal to work with it.": "Ovis 暂时无法读取 {agent} 的对话。请在终端中使用它。",
   "Ovis couldn't find or read the file {agent} keeps this conversation in. Use the terminal.": "Ovis 找不到或无法读取 {agent} 保存此对话的文件。请使用终端。",
@@ -88,7 +90,6 @@ export const CHAT_ZH: Record<string, string> = {
   "The list is empty.": "列表为空。",
   "Every update, in order": "全部更新（按顺序）",
   "Loading conversation…": "正在加载对话…",
-  "Waiting for the PC…": "正在等待电脑响应…",
   "The PC isn't responding": "电脑没有响应",
   "Couldn't load the conversation": "无法加载对话",
   "Couldn't load the terminal output": "无法加载终端输出",
@@ -115,6 +116,7 @@ export const CHAT_ZH: Record<string, string> = {
   "Ran in terminal": "已在终端运行",
   "Open Terminal": "打开终端",
   "Background result delivered": "后台结果已送达",
+  "Stopped|chat": "已停止",
   "Background task ended": "后台任务已结束",
   "Goal continues": "目标继续推进",
   "background work": "后台工作",
@@ -240,7 +242,6 @@ export const CHAT_ZH: Record<string, string> = {
   "{n} of {count}": "第 {n} 张，共 {count} 张",
   "Couldn't copy the image. Download it instead.": "无法复制图片。请改为下载。",
   "Couldn't save the image.": "无法保存图片。",
-  "Saved to Downloads.": "已保存到“下载”。",
   "Conversation turns": "对话轮次",
   "Go to turn {n}": "跳到第 {n} 轮",
   "Show full message": "显示完整消息",

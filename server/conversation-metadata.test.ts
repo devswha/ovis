@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,6 @@ const jsonl = (...entries: unknown[]) => entries.map((entry) => JSON.stringify(e
 
 // A pi window is looked up in the agent dir's models.json, so a test that left that unset
 // would read whatever machine ran it: the same test would pass here and fail on a laptop.
-// Everything in here points at a directory of its own instead.
 const emptyDir = mkdtempSync(join(tmpdir(), "herdr-meta-empty-"));
 const previousAgentDir = process.env["PI_CODING_AGENT_DIR"];
 process.env["PI_CODING_AGENT_DIR"] = emptyDir;
@@ -76,20 +76,15 @@ describe("recorded conversation model settings", () => {
       const provider = (...entries: unknown[]) => parseConversationMetadata(jsonl(...entries), source).provider;
       expect(provider({ type: "model_change", provider: "anthropic", modelId: "claude-opus-5-5" })).toBe("anthropic");
       expect(provider({ type: "model_change", model: "openai-codex/gpt-5.6-sol" })).toBe("openai-codex");
-      // each answer names its own provider; one that names none leaves it as it was
       expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, answer("openai-codex"))).toBe("openai-codex");
-      // an answer at a model that names no provider says nothing of the plan it ran on
       expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, answer())).toBeUndefined();
       expect(provider({ type: "model_change", model: "anthropic/claude-opus-5-5" }, { type: "message", message: { role: "assistant" } })).toBe("anthropic");
-      // a model change that names no provider, and a context reset, leave none
       expect(provider(answer("anthropic"), { type: "model_change", modelId: "local-model" })).toBeUndefined();
       expect(provider(answer("anthropic"), clear)).toBeUndefined();
-      // the fold keeps it across reads, and a later read can clear it
       const before = parseConversationMetadata(jsonl(answer("anthropic")), source);
       expect(parseConversationMetadata(jsonl({ type: "thinking_level_change", thinkingLevel: "high" }), source, before).provider).toBe("anthropic");
       expect(parseConversationMetadata(jsonl(clear), source, before).provider).toBeUndefined();
     }
-    // other transcripts never state one
     expect(parseConversationMetadata(jsonl(answer("anthropic")), "cmd-transcript").provider).toBeUndefined();
     expect(parseConversationMetadata(jsonl({ type: "assistant", message: { role: "assistant", model: "claude-test", provider: "anthropic" } }), "claude-transcript").provider).toBeUndefined();
   });
@@ -114,19 +109,18 @@ describe("recorded conversation model settings", () => {
   it("takes the model and effort Claude's /model and /effort set, before the next answer", () => {
     const seen: unknown[] = [];
     let metadata = before;
-    // one line at a time, as appends arrive
     for (const line of recorded) {
       const next = parseConversationMetadata(line, "claude-transcript", metadata);
       if (next.model !== metadata.model || next.reasoning_effort !== metadata.reasoning_effort) seen.push(next);
       metadata = next as typeof before;
     }
+    // each prompt of the recording was sent under the default mode
     expect(seen).toEqual([
-      { model: "claude-sonnet-5-5", reasoning_effort: "medium" },
-      { model: "claude-sonnet-5-5", reasoning_effort: "xhigh" },
-      { model: "claude-haiku-5-5", reasoning_effort: "xhigh" },
+      { model: "claude-sonnet-5-5", reasoning_effort: "medium", permission_mode: "default" },
+      { model: "claude-sonnet-5-5", reasoning_effort: "xhigh", permission_mode: "default" },
+      { model: "claude-haiku-5-5", reasoning_effort: "xhigh", permission_mode: "default" },
     ]);
-    expect(parseConversationMetadata(recorded.join("\n"), "claude-transcript", before)).toEqual({ model: "claude-haiku-5-5", reasoning_effort: "xhigh" });
-    // the next answer still names what it ran at
+    expect(parseConversationMetadata(recorded.join("\n"), "claude-transcript", before)).toEqual({ model: "claude-haiku-5-5", reasoning_effort: "xhigh", permission_mode: "default" });
     expect(parseConversationMetadata(jsonl({ type: "assistant", effort: "high", message: { role: "assistant", model: "claude-haiku-4-5-20251001" } }), "claude-transcript", { model: "claude-haiku-5-5", reasoning_effort: "xhigh" }))
       .toEqual({ model: "claude-haiku-4-5-20251001", reasoning_effort: "high" });
   });
@@ -134,7 +128,6 @@ describe("recorded conversation model settings", () => {
   it("reads the forms other Claude Code versions print, and keeps the old value for anything else", () => {
     const said = (text: string) => ({ type: "user", message: { role: "user", content: `<local-command-stdout>${text}</local-command-stdout>` } });
     const after = (...entries: unknown[]) => parseConversationMetadata(jsonl(...entries), "claude-transcript", before);
-    // the forms in issue #2273, from the reporter's own transcripts
     expect(after(said("Set model to `Sonnet 5.5` for this session only"))).toEqual({ ...before, model: "claude-sonnet-5-5" });
     expect(after(said("Set model to `Sonnet 5` and saved as your default for new sessions with `xhigh` effort"))).toEqual({ model: "claude-sonnet-5", reasoning_effort: "xhigh" });
     expect(after(said("Set model to `Opus 5 (1M context)` and saved as your default for new sessions"))).toEqual({ ...before, model: "claude-opus-5" });
@@ -142,7 +135,6 @@ describe("recorded conversation model settings", () => {
     expect(after(said("Set model to \u001b[1mHaiku 4.5\u001b[22m and saved as your default for new sessions"))).toEqual({ ...before, model: "claude-haiku-4-5" });
     expect(after(said("Set effort level to low (saved as your default for new sessions): Quick, straightforward implementation"))).toEqual({ ...before, reasoning_effort: "low" });
     expect(after(said("Set effort level to high (this session only): Comprehensive implementation with extensive testing and documentation · Ultracode on"))).toEqual({ ...before, reasoning_effort: "high" });
-    // the picker's own record names its command
     expect(after({ type: "system", subtype: "local_command", commandRun: { command: "model", args: "" }, content: "<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>" }))
       .toEqual({ ...before, model: "claude-fable-5-1" });
     for (const unchanged of [
@@ -155,17 +147,19 @@ describe("recorded conversation model settings", () => {
       said("Set model to `Sonnet 5.05` for this session only"),
       said("Set model to `claude-sonnet-5-5` for this session only"),
       said("Set model to `Nova 6` for this session only"),
-      // a prompt the user typed is not the command's answer, nor is the tag quoted in one
       { ...said("Set model to `Sonnet 5.5` for this session only"), permissionMode: "default" },
       { ...said("Set model to `Sonnet 5.5` for this session only"), origin: { kind: "human" } },
       { type: "user", message: { role: "user", content: "<local-command-stdout>Set model to `Sonnet 5.5`</local-command-stdout> Explain this format." } },
       { type: "user", message: { role: "user", content: "<command-name>/model</command-name>\n<command-args>x <local-command-stdout>Set model to `Sonnet 5.5`</local-command-stdout></command-args>" } },
-      // a subagent's, another command's, or an answer's text sets nothing
       { ...said("Set model to `Sonnet 5.5` for this session only"), isSidechain: true },
       { type: "system", subtype: "local_command", commandRun: { command: "effort", args: "" }, content: "<local-command-stdout>Set model to `Sonnet 5.5`</local-command-stdout>" },
       { type: "system", subtype: "turn_duration", content: "<local-command-stdout>Set model to `Sonnet 5.5`</local-command-stdout>" },
       { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "<local-command-stdout>Set model to `Sonnet 5.5`</local-command-stdout>" }] } },
-    ]) expect(after(unchanged)).toEqual(before);
+    ]) {
+      // a typed prompt still says the permission mode it was sent under
+      const { permission_mode: _mode, ...settings } = after(unchanged);
+      expect(settings).toEqual(before);
+    }
   });
 
   it("tolerates absent metadata, unexpected types and a torn append without losing valid settings", () => {
@@ -194,7 +188,6 @@ describe("context use", () => {
     const long = parseConversationMetadata(jsonl(
       assistant({ input_tokens: 5, cache_read_input_tokens: 420_000 }),
       assistant({ input_tokens: 1, cache_read_input_tokens: 5_000 }, "claude-opus-5-5", { isSidechain: true }),
-      // compacted: the use shrinks, the window stays
       assistant({ input_tokens: 3, cache_read_input_tokens: 30_000 }),
       assistant({ input_tokens: 0, output_tokens: 0 }, "<synthetic>"),
     ), "claude-transcript");
@@ -235,8 +228,6 @@ describe("context use", () => {
     try {
       const entry = (extra: Record<string, unknown> = {}) => ({ type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 100_000 }, ...extra } });
       expect(parseConversationMetadata(jsonl(entry()), "pi-transcript").context).toEqual({ used: 100_000, window: 215_000 });
-      // the provider that answered is the one asked: a model_change to another provider, whose
-      // catalog says nothing about this model, must not borrow the first one's number
       const changed = [
         { type: "model_change", provider: "lwsa", modelId: "qwen-test" },
         entry(),
@@ -244,11 +235,27 @@ describe("context use", () => {
         entry({ provider: "other" }),
       ];
       expect(parseConversationMetadata(jsonl(...changed), "pi-transcript").context).toEqual({ used: 100_000, window: null });
-      // omp, omo and gjc are read by the same code and resolve nothing: their figure stays
       const omp = { type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 } } };
       expect(parseConversationMetadata(jsonl(omp), "omp-transcript").context).toEqual({ used: 8, window: null });
     } finally {
       if (previous === undefined) delete process.env["PI_CODING_AGENT_DIR"]; else process.env["PI_CODING_AGENT_DIR"] = previous;
+      forgetPiModels();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stats pi's catalog once per fold, not once per answer", () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-meta-stats-"));
+    const catalog = join(dir, "models.json");
+    writeFileSync(catalog, JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: 215_000 }] } } }));
+    forgetPiModels();
+    const stat = spyOn(fs, "statSync");
+    try {
+      const answers = Array.from({ length: 50 }, (_, i) => ({ type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 1_000 + i } } }));
+      expect(parseConversationMetadata(jsonl(...answers), "pi-transcript", undefined, dir).context).toEqual({ used: 1_049, window: 215_000 });
+      expect(stat.mock.calls.filter(([path]) => path === catalog)).toHaveLength(1);
+    } finally {
+      stat.mockRestore();
       forgetPiModels();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -265,9 +272,7 @@ describe("context use", () => {
     try {
       const entry = jsonl({ type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 100_000 } } });
       expect(parseConversationMetadata(entry, "pi-transcript", undefined, pane).context).toEqual({ used: 100_000, window: 400_000 });
-      // a pane whose pi processes name different agent dirs has no catalog of its own to read
       expect(parseConversationMetadata(entry, "pi-transcript", undefined, null).context).toEqual({ used: 100_000, window: null });
-      // a reader that names no pane keeps the bridge's
       expect(parseConversationMetadata(entry, "pi-transcript").context).toEqual({ used: 100_000, window: 215_000 });
     } finally {
       if (previous === undefined) delete process.env["PI_CODING_AGENT_DIR"]; else process.env["PI_CODING_AGENT_DIR"] = previous;
@@ -275,5 +280,27 @@ describe("context use", () => {
       rmSync(bridge, { recursive: true, force: true });
       rmSync(pane, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Claude Code's permission mode", () => {
+  // Claude Code 2.1.330 as recorded (Haiku, an isolated config): a prompt under auto, Shift+Tab, a prompt, Shift+Tab, a prompt
+  const recorded = readFileSync(new URL("./fixtures/claude-permission-mode-2.1.330.jsonl", import.meta.url), "utf8").trim().split("\n");
+
+  it("follows the mode each prompt was sent under and each switch it recorded", () => {
+    const seen: (string | undefined)[] = [];
+    let metadata = parseConversationMetadata("", "claude-transcript");
+    for (const line of recorded) {
+      metadata = parseConversationMetadata(line, "claude-transcript", metadata);
+      if ((JSON.parse(line) as { type?: string }).type === "user") seen.push(metadata.permission_mode);
+    }
+    expect(seen).toEqual(["auto", "default", "acceptEdits"]);
+    expect(parseConversationMetadata(recorded.join("\n"), "claude-transcript").permission_mode).toBe("acceptEdits");
+  });
+
+  it("leaves a subagent's mode and a transcript that names none out", () => {
+    const sidechain = jsonl({ type: "user", isSidechain: true, permissionMode: "bypassPermissions", message: { role: "user", content: "go" } });
+    expect(parseConversationMetadata(sidechain, "claude-transcript").permission_mode).toBeUndefined();
+    expect(parseConversationMetadata(`${recorded[1]}\n${sidechain}`, "claude-transcript").permission_mode).toBe("auto");
   });
 });

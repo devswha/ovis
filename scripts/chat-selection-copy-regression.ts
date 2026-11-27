@@ -1,10 +1,10 @@
-/** Real ChatView selection and browser clipboard over fictional conversation HTTP. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, webkit, type Page } from "playwright-core";
 import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES } from "../shared/markdown.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-selection-copy-"));
 const longCode = Array.from({ length: FOLD_CODE_AFTER_LINES + 1 }, (_, index) => `line ${index + 1}`).join("\n");
@@ -43,7 +43,6 @@ try {
       : { source: "claude-transcript", history_id: "copy-fixture", cursor: null, turns: [{ role: "assistant", ts: null, parts: [{ kind: "text", text: reply }] }] });
     if (path.endsWith("/pane/read")) {
       snapshotReads++;
-      // each read adds 30 lines, so a pane at its end has to follow a taller snapshot
       const progress = Array.from({ length: snapshotReads * 30 }, (_, line) => `progress ${Math.floor(line / 30) + 1}.${line % 30 + 1}\n`).join("");
       return Response.json({ read: { text: growing ? snapshot + progress : snapshot, truncated: false } });
     }
@@ -51,6 +50,7 @@ try {
     return new Response(Bun.file(join(root, path.slice(1))));
   } });
   try {
+    if (!safari) checkChromeTmpdir();
     const browser = await (safari ? webkit : chromium).launch({ executablePath: safari ? undefined : process.env.CHROME_PATH, headless: true });
     try {
       for (const width of [1440, 390]) {
@@ -235,12 +235,10 @@ try {
         });
         assert.ok(layout.bodyWidth <= layout.viewport && layout.preWidth <= layout.preClient, `snapshot overflows at ${width}: ${JSON.stringify(layout)}`);
         assert.ok(layout.padding >= 150, `composer clearance is missing at ${width}: ${JSON.stringify(layout)}`);
-        // output that keeps coming must not take away a selection made in the snapshot
         growing = true;
         try {
           const pre = terminal.locator("pre");
           const view = page.locator(".chat-view");
-          // at the end, a growing read is followed in the same commit: nothing new stays below the fold
           await view.evaluate((node) => { node.scrollTop = node.scrollHeight; });
           const before = (await pre.textContent())!;
           await page.evaluate(() => window.chatQa.refresh());
@@ -249,7 +247,6 @@ try {
             const text = document.querySelector(".chat-terminal-snapshot pre")!.textContent!;
             return text !== previous && text.length > previous.length && node.scrollHeight - node.scrollTop - node.clientHeight <= 2;
           }, before);
-          // a selection in the snapshot pins the text on screen; the newer read waits until it lets go
           const selected = await pre.evaluate((node) => new Promise<string>((resolve) => {
             const text = node.firstChild!;
             const at = text.textContent!.indexOf("spaces preserved");

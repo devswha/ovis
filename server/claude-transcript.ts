@@ -1,16 +1,38 @@
 import type { ConversationPart, ConversationTurn, OmoTaskResult } from "../shared/protocol.ts";
+import { readBytes } from "./claude-subagents.ts";
 import { invokedSkill } from "./skill-activity.ts";
 import { claudeCommandEcho } from "./skill-invocations/claude.ts";
 import { agentTaskResult, CLAUDE_HANDBACK_POINTER, claudeHandback, claudePeerId, claudePeerNotice, isContextClear, MAX_TURNS, OMO_TASK_RESULT_MAX, toolSummary, type TranscriptParser } from "./transcript-records.ts";
 import { taskNotification, type SubagentDetail } from "./claude-subagents.ts";
 import { trimOutput } from "./tool-output.ts";
 import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
+import { POLL_TOOL, REPL_TOOL, replDeliveries, replDispatched, replOutput, virtualCallOutput, type ReplOutput } from "./claude-code-mode.ts";
 
-/** Slash-command and bookkeeping entries Claude logs as user turns — not conversations. */
+/**
+ * Claude Code's mark of a stop (Esc), which it records in the person's seat: "for tool use" after the call it refused,
+ * plainly when it stopped an answer. Nobody typed it, and it starts no turn; the chat shows it as a quiet "Stopped" line.
+ */
+export function claudeStopMark(text: string): boolean {
+  return /^\[Request interrupted by user( for tool use)?\]$/.test(text.trim());
+}
+
+/**
+ * Whether a user entry is Claude Code's own stop mark (Esc), never a human-typed prompt:
+ * Claude Code records stops without `origin` or `permissionMode`, as a single text block
+ * (never a raw string prompt, human queued command, approval feedback beside a `tool_result`,
+ * or multi-block prompt with other text/images).
+ */
+export function isClaudeStopEntry(entry: { origin?: unknown; permissionMode?: unknown }, content: unknown): boolean {
+  if ("origin" in entry || "permissionMode" in entry) return false;
+  if (!Array.isArray(content) || content.length !== 1) return false;
+  const only = content[0];
+  return typeof only === "object" && only !== null && (only as { type?: unknown }).type === "text"
+    && typeof (only as { text?: unknown }).text === "string" && claudeStopMark((only as { text: string }).text);
+}
+
 export function isCommandEntry(text: string, entry: { origin?: unknown; permissionMode?: unknown }): boolean {
   if (claudeCommandEcho(text)) return false;
   return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
-    // bash-mode output, only as the whole entry: the parser joins it to its command
     || (!("origin" in entry) && !("permissionMode" in entry) && text.trimStart().startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
 }
 
@@ -18,20 +40,17 @@ export function isCommandEntry(text: string, entry: { origin?: unknown; permissi
  * What a slash command printed, from the `local_command` entry Claude Code records it in. The
  * command's echo (`<command-name>…`) is a separate entry with no output tag, and reads as nothing.
  */
-/** A command's answer is a notice, not a log: the rest of a long one stays in the terminal. */
 const LOCAL_COMMAND_MAX_CHARS = 4000;
 
 function localCommandOutput(content: unknown): string {
   return capNotice((taggedStreams(content, "local-command") ?? []).map(({ text }) => text.trim()).filter((text) => text.length > 0).join("\n"));
 }
 
-/** What a slash command printed to stdout, terminal controls stripped, when the whole entry is its output. */
 export function localCommandStdout(content: unknown): string | null {
   const streams = taggedStreams(content, "local-command");
   return streams === null ? null : streams.filter(({ stream }) => stream === "stdout").map(({ text }) => text.trim()).join("\n");
 }
 
-/** Bash payloads are opaque: only an unambiguous boundary identifies stderr. */
 function bashStreams(content: string): { stream: "stdout" | "stderr"; text: string }[] | null {
   const envelope = content.trim();
   if (envelope.startsWith("<bash-stdout>") && envelope.endsWith("</bash-stderr>")) {
@@ -45,7 +64,6 @@ function bashStreams(content: string): { stream: "stdout" | "stderr"; text: stri
         { stream: "stderr", text: stripTerminalControls(inner.slice(first.index + first[0].length)).trimEnd() },
       ];
     }
-    // Multiple boundaries never establish stderr: retain every inner character verbatim.
     return [{ stream: "stdout", text: stripTerminalControls(inner) }];
   }
   // Older records can carry a single stream, but not reordered or partial envelopes.
@@ -55,11 +73,6 @@ function bashStreams(content: string): { stream: "stdout" | "stderr"; text: stri
     ? [{ stream, text: stripTerminalControls(text).trimEnd() }] : null;
 }
 
-/**
- * The streams a whole entry holds, `<{tag}-stdout>…</{tag}-stdout>` and `<{tag}-stderr>…`, in order and with
- * terminal controls stripped; ambiguous bash output stays verbatim in stdout. Null when the entry
- * holds anything else.
- */
 function taggedStreams(content: unknown, tag: "local-command" | "bash"): { stream: "stdout" | "stderr"; text: string }[] | null {
   if (typeof content !== "string") return null;
   if (tag === "bash") return bashStreams(content);
@@ -74,7 +87,7 @@ function taggedStreams(content: unknown, tag: "local-command" | "bash"): { strea
     if (stream === null) return null;
     const start = at + `<${tag}-${stream}>`.length;
     // a closing tag the output prints itself ends nothing: the stream's own one is at the end of
-    // the entry or before the next stream. Each candidate looks only at the whitespace after it.
+    // the entry or before the next stream.
     const close = `</${tag}-${stream}>`;
     let end = content.indexOf(close, start);
     let next = 0;
@@ -91,24 +104,20 @@ function taggedStreams(content: unknown, tag: "local-command" | "bash"): { strea
   return streams;
 }
 
-/** The command of a bash-mode entry (`!` in Claude Code): the whole entry is `<bash-input>…</bash-input>`. */
 const BASH_INPUT = /^\s*<bash-input>([\s\S]*)<\/bash-input>\s*$/;
 
 /** Lines of one notice Claude Code writes as separate entries, a moment apart. */
 const NOTICE_JOIN_MS = 1000;
 
-/** A notice is not a log: past the cap the rest stays in the terminal, also for lines joined into one. */
 function capNotice(text: string): string {
   return text.length > LOCAL_COMMAND_MAX_CHARS ? `${text.slice(0, LOCAL_COMMAND_MAX_CHARS)}\u2026` : text;
 }
 
-/** The notice a turn is, when it is nothing else. */
 function loneNotice(turn: ConversationTurn | undefined): Extract<ConversationPart, { kind: "notice" }> | null {
   const part = turn?.parts.length === 1 ? turn.parts[0] : undefined;
   return part?.kind === "notice" ? part : null;
 }
 
-/** Were these two entries written together? Never when either has no readable time. */
 function writtenTogether(a: string | null | undefined, b: string | null | undefined): boolean {
   return a != null && b != null && Math.abs(Date.parse(a) - Date.parse(b)) <= NOTICE_JOIN_MS;
 }
@@ -135,7 +144,6 @@ function stripTerminalControls(input: string): string {
   while (i < input.length) {
     const code = input.charCodeAt(i);
     if (code !== 0x1b) {
-      // tab and newline are text; every other C0 control and DEL is not
       if (code === 0x09 || code === 0x0a || (code >= 0x20 && code !== 0x7f)) out += input[i];
       i++;
       continue;
@@ -191,7 +199,6 @@ const HOST_MESSAGE_BREAK = "\n\n";
 /** senpi's denial, in each wording it has shipped: the host runs the tool, and this is not its result */
 const HOST_HANDOFF = /^PreToolUse:\S+ hook error: [\s\S]*\bSenpi (?:executes|runs) this tool on the host and returns its result as the next user message\b/;
 
-/** One host tool result in a prompt's blocks: the call it answers, its header's index, and the end of its blocks (exclusive). */
 export interface HostToolResult { name: string; id: string; header: number; end: number }
 
 const isTextBlock = (block: unknown, text?: string): block is { type: "text"; text: string } =>
@@ -199,8 +206,8 @@ const isTextBlock = (block: unknown, text?: string): block is { type: "text"; te
   && typeof (block as { text?: unknown }).text === "string" && (text === undefined || (block as { text: string }).text === text);
 
 /**
- * The host tool results a prompt's blocks carry, in order. Only a message's first block can be a
- * header: one quoted inside a message's text, or inside another result, is that message's words.
+ * Only a message's first block can be a header: one quoted inside a message's text, or inside
+ * another result, is that message's words.
  */
 export function hostToolResults(content: readonly unknown[]): HostToolResult[] {
   const results: HostToolResult[] = [];
@@ -224,7 +231,6 @@ export function entryHostToolResults(entry: { type?: unknown; promptSource?: unk
   return sdk && entry.type === "user" && Array.isArray(content) ? hostToolResults(content) : [];
 }
 
-/** The blocks host results take in a prompt, the breaks around them included: the rest is the prompt's own. */
 function hostedBlocks(results: readonly HostToolResult[]): Set<number> {
   const hosted = new Set<number>();
   for (const host of results) for (let at = host.header - 1; at <= host.end; at++) hosted.add(at);
@@ -271,10 +277,6 @@ const HISTORY_INSTRUCTIONS = new Set([
  */
 const TASK_COMPLETION = /^task completion (?:\(resumed turn\) )?name:(\S+) id:(st_[A-Za-z0-9_-]+) ((?:[^\n]* )?status:\S+ duration:[^\n]*)\nresult:"/;
 
-/**
- * OmO's report of a task that ended at the start of a block, as the card OmO's own transcript shows,
- * and how much of the block it takes; null when the block does not start with a whole report.
- */
 function senpiTaskReport(text: string): { task: OmoTaskResult; length: number } | null {
   const head = TASK_COMPLETION.exec(text);
   if (head === null) return null;
@@ -284,7 +286,6 @@ function senpiTaskReport(text: string): { task: OmoTaskResult; length: number } 
   const trailer = new RegExp(`"\\n(?:result_file:\\S+\\n)?next:Use task_send\\(\\{ to: "${id}", message: "\\.\\.\\." \\}\\) to continue\\.(?=$|\\n\\n)`, "g");
   trailer.lastIndex = line.length;
   const closing = trailer.exec(text);
-  // a report with no `next:` line is the rest of the block, up to its closing quote
   const end = closing !== null ? closing.index : text.length > line.length && text.endsWith("\"") ? text.length - 1 : -1;
   if (end === -1) return null;
   const result = text.slice(line.length, end);
@@ -352,24 +353,15 @@ function senpiMessages(text: string): (OmoTaskResult | Notice)[] | null {
   return rest.trim() === "" || isGoalContinuation(rest) ? found : null;
 }
 
-/** What senpi itself put in an SDK prompt, beside what a person or a lead sent. */
 export interface SenpiPrompt {
-  /** a program sent it through Claude Code's SDK */
   sdk: boolean;
   hosts: HostToolResult[];
-  /** the prompt's blocks with senpi's own as null, and each break between its messages as an empty text */
   own: unknown[];
-  /**
-   * In the order senpi sent them: OmO's reports of tasks that ended, drawn as the card OmO's own
-   * transcript draws, and team members' messages, drawn as another session's
-   */
   notices: (TaskResults | Notice)[];
 }
 
-/** Where a fresh session's replay ends: the instruction after it (and after any recovered results), or -1. */
 function replayEnd(content: readonly unknown[]): number {
   const instruction = (at: number): boolean => isTextBlock(content[at]) && HISTORY_INSTRUCTIONS.has(content[at].text);
-  // no history to replay: the instruction alone
   if (instruction(0)) return 0;
   if (!isTextBlock(content[0], HISTORY_OPENER)) return -1;
   // the first closer the instruction follows (a replayed message can hold a closer of its own)
@@ -411,12 +403,10 @@ export function senpiPrompt(entry: { type?: unknown; promptSource?: unknown; ent
   return { sdk: true, hosts, own, notices };
 }
 
-/** A parsed JSONL line's message shape (only the fields we read). */
 export interface TranscriptEntry {
   type?: string;
   subtype?: string;
   operation?: string;
-  /** a `system` entry's own text; a message's is under `message` */
   content?: unknown;
   timestamp?: string;
   uuid?: string;
@@ -433,7 +423,12 @@ export interface TranscriptEntry {
   /** "updates": Claude Code shows the entry's thinking text as a progress message, not as reasoning */
   thinkingDisplay?: unknown;
   message?: { role?: string; content?: unknown; stop_reason?: unknown };
-  attachment?: { type?: unknown; prompt?: unknown; commandMode?: unknown; origin?: { kind?: unknown } };
+  /** `envelopes`: a `poll_events` attachment's events (claude-code-mode.ts) */
+  attachment?: { type?: unknown; prompt?: unknown; commandMode?: unknown; origin?: { kind?: unknown }; envelopes?: unknown };
+  /** a call a Code Mode script made, and its answer: written after the script, not by the model (claude-code-mode.ts) */
+  isVirtual?: unknown;
+  /** what Claude Code kept of a tool's result: the only place a script's call has its output */
+  toolUseResult?: unknown;
 }
 
 export function claudeResultText(output: unknown): string {
@@ -442,16 +437,11 @@ export function claudeResultText(output: unknown): string {
       : "";
 }
 
-/**
- * A Claude image's ref: the entry, the block, and for a picture a tool returned its place in the
- * result. The parser names only what transcriptImage can read back by it.
- */
 export const CLAUDE_IMAGE_REF = /^([0-9a-f-]{8,64}):(\d{1,3})(?::(\d{1,3}))?$/i;
 
 /**
  * The type of a picture Claude Code holds inline (pasted into a prompt, or a Read of an image
  * file), by its leading bytes: a raster the chat shows, within the size the image endpoint serves.
- * Null for anything else, so the page and the endpoint agree on what is a picture.
  */
 export function claudeImageType(block: unknown): string | null {
   const image = block as { type?: unknown; source?: { type?: unknown; media_type?: unknown; data?: unknown } } | null | undefined;
@@ -459,11 +449,6 @@ export function claudeImageType(block: unknown): string | null {
   return inlineImageType(image.source.media_type, image.source.data);
 }
 
-/**
- * A record with its inline pictures cut to what claudeImageType reads of them: their first bytes,
- * or none past the size the endpoint serves. A screenshot can make a prompt megabytes long, and its
- * bytes say nothing of where the record hangs in the session.
- */
 export function withoutPictureBytes(text: string): string {
   return text.replace(/("(?:data|base64)"\s*:\s*")([A-Za-z0-9+/]*={0,2})"/g,
     (_whole: string, key: string, data: string) => `${key}${base64Size(data) > MAX_IMAGE_BYTES ? "" : data.slice(0, 16)}"`);
@@ -475,10 +460,6 @@ function claudeImageRef(uuid: unknown, ...at: number[]): string | null {
   return CLAUDE_IMAGE_REF.test(ref) ? ref : null;
 }
 
-/**
- * The pictures among blocks, each named by the entry, the places that lead to the blocks (none for a
- * prompt's own, the result's for a tool's) and its own: named here, fetched only when shown.
- */
 export function claudeImages(uuid: unknown, blocks: readonly unknown[], ...at: number[]): { media_type: string; ref: string }[] {
   return blocks.flatMap((block, index) => {
     const mediaType = claudeImageType(block);
@@ -494,23 +475,23 @@ interface ClaudeTranscriptOptions {
 
 interface ClaudeParseState {
   turns: ConversationTurn[];
-  /** Tool parts still waiting for their result, by tool_use id. */
   pending: Map<string, Extract<ConversationPart, { kind: "tool" }>>;
   /** Every tool part by its tool_use id: a host tool result answers its call after Claude Code's own result did. */
   calls: Map<string, Extract<ConversationPart, { kind: "tool" }>>;
-  /** The agent's last entry called a tool: its turn is not over. */
   atWork: boolean;
-  /** Injected feedback can resume the model after a completed reply. */
   completed: boolean;
   noticed: Set<string>;
   lastPrompt: { turn: ConversationTurn; parent: string | null | undefined; answered: boolean } | null;
   peersSeen: Set<string>;
-  /** By task id, a subagent's SubagentHandback report and the card of its notification that points at it,
-   * whichever came first, until the report is in the card */
   handbacks: Map<string, { report?: string; notice?: ConversationTurn; card?: OmoTaskResult }>;
+  /** Code Mode (claude-code-mode.ts): a REPL call was seen, so a Poll call is how its scripts' output is fetched */
+  codeMode: boolean;
+  /** By script number, a REPL call whose script went on running, and the output delivered for it so far */
+  scripts: Map<number, { part: Extract<ConversationPart, { kind: "tool" }>; text: string; delivered: Set<string> }>;
+  /** Poll calls not drawn, by tool_use id, with the turn they belong to should their result hold more than output */
+  polls: Map<string, { part: Extract<ConversationPart, { kind: "tool" }>; turn: ConversationTurn }>;
 }
 
-/** a subagent's hand-back report as its card's result (claudeHandback reads only one a card holds whole) */
 function fillCard(card: OmoTaskResult, report: string): void {
   card.result = report;
   delete card.result_cut;
@@ -520,27 +501,38 @@ function claudeParseState(options: ClaudeTranscriptOptions): ClaudeParseState {
   return {
     turns: [], pending: new Map(), calls: new Map(), atWork: false, completed: false,
     noticed: options.noticed ?? new Set(), lastPrompt: null, peersSeen: new Set(), handbacks: new Map(),
+    codeMode: false, scripts: new Map(), polls: new Map(),
   };
 }
 
-/**
- * Incrementally splits one transcript file's contents into turns. Adjacent assistant entries
- * merge into a single turn (text parts + tool parts); each tool_use is followed
- * by a user tool_result entry, which is folded into the tool part it answers.
- *
- * A subagent that ended (its `<task-notification>`) is drawn as a task_result in the user's seat,
- * once however many records carry it; `options.subagents` holds what the subagents' own files say
- * of them, by agent id, since the parser reads no files. Other notifications stay hidden.
- */
 export function createClaudeTranscriptParser(options: ClaudeTranscriptOptions = {}): TranscriptParser {
   return claudeTranscriptParser(options, claudeParseState(options));
 }
 
 function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeParseState): TranscriptParser {
-  const { turns, pending, calls, noticed, peersSeen, handbacks } = state;
-  /** Where a notice goes: before the turn at work it was written in, else at the end. */
+  const { turns, pending, calls, noticed, peersSeen, handbacks, scripts, polls } = state;
+  /** A script's output, into the REPL row that started it; late output under its number is added after it. */
+  const deliver = (output: ReplOutput): void => {
+    const script = scripts.get(output.eval);
+    if (script === undefined) return;
+    // one event can be delivered twice (a Poll result and an attachment); its own time tells it apart
+    const key = output.at ?? `${script.delivered.size}`;
+    if (script.delivered.has(key)) return;
+    script.delivered.add(key);
+    script.text = script.text.length > 0 && output.output.length > 0 ? `${script.text}\n${output.output}` : script.text + output.output;
+    const { part } = script;
+    delete part.output_ref; delete part.output_size;
+    trimOutput(part, script.text, part.call_id ?? "");
+    if (output.error) part.error = true;
+    part.state = part.error === true ? "error" : "ok";
+  };
   const noticeAt = (): number => state.atWork && turns.at(-1)?.role === "assistant" ? turns.length - 1 : turns.length;
-  /** True when the block was a notification (shown or not): it is no turn of anyone's typing. */
+  /** a stop ends the turn it cut short and stands as one notice where it was */
+  const stopped = (ts: string | null): void => {
+    state.atWork = false;
+    turnEnded();
+    turns.push({ role: "user", ts, parts: [{ kind: "notice", text: "Stopped", source: "stopped" }] });
+  };
   const notified = (block: string, ts: string | null): boolean => {
     const notice = taskNotification(block);
     if (notice === null) return false;
@@ -549,13 +541,11 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       noticed.add(key);
       const card = agentTaskResult(notice, options.subagents?.get(notice.taskId));
       const turn: ConversationTurn = { role: "user", ts, parts: [{ kind: "task_result", tasks: [card] }] };
-      // the report it points at is drawn in the card, as a report in the notification itself is
       const pointed = CLAUDE_HANDBACK_POINTER.exec(card.result)?.[1];
       const held = pointed === undefined ? undefined : handbacks.get(pointed);
       if (held?.report !== undefined && held.card === undefined) {
         fillCard(card, held.report);
         held.card = card;
-        // the card takes the row the report was drawn in, before what the agent said after it
         const at = held.notice === undefined ? -1 : turns.indexOf(held.notice);
         if (at !== -1) turns[at] = { ...turn, ts: held.notice!.ts };
         else turns.splice(noticeAt(), 0, turn);
@@ -578,7 +568,13 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
 
   /** the last human prompt and the entry it hangs from: a send Claude Code cancelled before
    *  any reply is re-sent as a sibling of it, and its own screen shows only the re-send */
+  /** A script still running when its turn ended reads as its receipt, as before Code Mode was read, not as running:
+   *  its output may come only after the next prompt, on a page read apart from this one. Output that comes replaces it. */
+  const turnEnded = (): void => {
+    for (const [n, { part }] of scripts) if (part.state === "pending") { trimOutput(part, `(dispatched #${n})`, part.call_id ?? ""); part.state = "ok"; }
+  };
   const pushPrompt = (turn: ConversationTurn, entry: TranscriptEntry): void => {
+    turnEnded();
     const { lastPrompt } = state;
     if (lastPrompt !== null && !lastPrompt.answered && typeof entry.parentUuid === "string" && entry.parentUuid === lastPrompt.parent) {
       const index = turns.indexOf(lastPrompt.turn);
@@ -592,16 +588,13 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
   };
 
   const fold = (entry: TranscriptEntry): void => {
-    // another session's message: its own turn, so the work it started is not appended to the answer before it
     const peer = claudePeerNotice(entry);
     if (peer !== null) {
-      // a subagent's hand-back is its card's report: into the card when the card came first, else
-      // shown as the message until the card comes
       const handback = claudeHandback(entry);
       // A hand-back and its notification pair only within one turn, as the page reader parses a
       // settled turn on its own (transcript-turns.ts turnStarts): a record that starts a turn there (a
       // prompt, any other session's message) ends the wait, so a warm read and a cold one agree (#3658)
-      if (handback === null) handbacks.clear();
+      if (handback === null) { turnEnded(); handbacks.clear(); }
       const id = claudePeerId(entry);
       if (id !== null) { if (peersSeen.has(id)) return; peersSeen.add(id); }
       const held = handback === null ? undefined : handbacks.get(handback.taskId);
@@ -617,9 +610,8 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       return;
     }
     if (entry.isMeta) return;
-    if (isContextClear(entry, "claude-transcript")) { turns.length = 0; pending.clear(); calls.clear(); handbacks.clear(); state.lastPrompt = null; return; }
+    if (isContextClear(entry, "claude-transcript")) { turns.length = 0; pending.clear(); calls.clear(); handbacks.clear(); scripts.clear(); polls.clear(); state.lastPrompt = null; return; }
     const content = entry.message?.content;
-    // a compaction's summary marks where the conversation was folded, readable on request
     if (entry.isCompactSummary) {
       const summary = typeof content === "string" ? content
         : Array.isArray(content) ? content.map((block) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : "").join("\n") : "";
@@ -633,6 +625,13 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     // lines around a prompt repeat it; a task completion can arrive only in its enqueue.
     if (entry.type === "queue-operation" && entry.operation === "enqueue" && typeof entry.content === "string" && notified(entry.content, entry.timestamp ?? null)) return;
     const queued = entry.type === "attachment" ? entry.attachment : undefined;
+    // Code Mode: the output of a script the model did not Poll for comes before its next turn, in this attachment
+    if (queued?.type === "poll_events") {
+      for (const envelope of Array.isArray(queued.envelopes) ? queued.envelopes : []) {
+        if (typeof envelope === "string") for (const output of replDeliveries(envelope, true).outputs) deliver(output);
+      }
+      return;
+    }
     if (queued?.commandMode === "task-notification" && typeof queued.prompt === "string" && notified(queued.prompt, entry.timestamp ?? null)) return;
     if (queued?.type === "queued_command" && queued.commandMode === "prompt" && queued.origin?.kind === "human") {
       if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim(), queued)) {
@@ -655,9 +654,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     // that drew one is not recorded, so without it a refused command just vanished from the chat.
     // Lines written together read as one notice.
     // Claude Code also writes them while the agent works (a message another session held, a
-    // stopped response): about half of the real ones. Such a notice does not end the turn: it
-    // goes before the turn it was written in, so the turn stays whole and stays the last one,
-    // which is what the chat reads as the turn still running.
+    // stopped response): about half of the real ones.
     if (entry.type === "system" && entry.subtype === "informational") {
       const text = typeof entry.content === "string" ? capNotice(stripTerminalControls(entry.content).trim()) : "";
       if (text.length === 0) return;
@@ -699,7 +696,6 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     }
 
     if (entry.type === "user" && Array.isArray(content)) {
-      // the host's results of senpi's calls are the calls' output; what else the entry holds is still the prompt
       const sent = senpiPrompt(entry, content);
       for (const host of sent.hosts) {
         const call = calls.get(host.id);
@@ -729,7 +725,6 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       // theirs, and the rest is what senpi told the model, hidden as Claude Code's own reminders are
       const ts = entry.timestamp ?? null;
       for (const notice of sent.notices) turns.splice(noticeAt(), 0, { role: "user", ts, parts: [notice] });
-      // the results, the breaks around them and senpi's notices were senpi's, not the person's
       const blocks = sent.own;
       const invocations: ConversationPart[] = [];
       const said = blocks.flatMap((block: unknown) => {
@@ -744,7 +739,6 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         }
         return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim(), entry) ? [part.text] : [];
       }).join("\n");
-      // a notice before or after the person's words leaves its break behind
       const prompt = sent.sdk ? said.replace(/^\n+|\n+$/g, "") : said;
       for (const [index, block] of blocks.entries()) {
         if (typeof block !== "object" || block === null) continue;
@@ -755,7 +749,35 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         pending.delete(result.tool_use_id);
         // senpi took the call to its host: no outcome yet, and its output arrives as a host tool result
         if (isHostHandoff(result)) continue;
-        trimOutput(tool, claudeResultText(result.content), result.tool_use_id);
+        const text = claudeResultText(result.content);
+        // Code Mode: a Poll result is the scripts' output, drawn in their REPL rows; the Poll row itself only
+        // when it brought something else too
+        const poll = polls.get(result.tool_use_id);
+        if (poll !== undefined) {
+          polls.delete(result.tool_use_id);
+          const { outputs, other } = replDeliveries(text);
+          for (const output of outputs) deliver(output);
+          if (other.length === 0 && (outputs.length > 0 || text.includes("<system>authentic event nonces"))) continue;
+          poll.turn.parts.push(tool);
+          trimOutput(tool, other.length > 0 ? other.join("\n\n") : text, result.tool_use_id);
+          tool.state = result.is_error === true ? "error" : "ok";
+          continue;
+        }
+        // a REPL whose script runs on: running until its output comes; one that ended in time holds its output
+        if (tool.name === REPL_TOOL && result.is_error !== true) {
+          const dispatched = replDispatched(text);
+          if (dispatched !== null) { scripts.set(dispatched, { part: tool, text: "", delivered: new Set() }); continue; }
+          const own = replOutput(text);
+          if (own !== null) {
+            trimOutput(tool, own.output, result.tool_use_id);
+            if (own.error) tool.error = true;
+            tool.state = own.error ? "error" : "ok";
+            // what the script logs after it ended comes later under its number, as a dispatched one's output does
+            if (own.eval !== null) scripts.set(own.eval, { part: tool, text: own.output, delivered: new Set() });
+            continue;
+          }
+        }
+        trimOutput(tool, text.length === 0 ? virtualCallOutput(entry) ?? "" : text, result.tool_use_id);
         if (result.is_error === true) tool.error = true;
         // the result's flag, and only it, says how the call went: an empty result is still a success
         if (tool.call_id !== undefined) tool.state = result.is_error === true ? "error" : "ok";
@@ -764,6 +786,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         const pictures = Array.isArray(result.content) ? claudeImages(entry.uuid, result.content, index) : [];
         if (pictures.length > 0) tool.images = pictures;
       }
+      if (isClaudeStopEntry(entry, content)) { stopped(entry.timestamp ?? null); return; }
       const images = claudeImages(entry.uuid, blocks).map((image) => ({ kind: "image" as const, ...image }));
       if (prompt.trim() || images.length > 0) pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [...images, ...(prompt.trim() ? [{ kind: "text" as const, text: unwrapPastes(prompt) }] : []), ...invocations] }, entry);
       return;
@@ -774,14 +797,19 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       const turn = assistantTurn(entry.timestamp);
       // an entry that names no stop reason is still at work when it calls a tool
       const stop = entry.message?.stop_reason;
-      state.completed = stop === "end_turn";
-      state.atWork = stop === "tool_use" || (stop == null && content.some((block: unknown) => typeof block === "object" && block !== null && "type" in block && block.type === "tool_use"));
+      // a call a Code Mode script made (isVirtual) is written after the script, inside the model's turn: it
+      // leaves whether the turn is at work as it stands. Calls written after the turn's answer open one turn
+      // after it, which the calls after them and the answer that follows join.
+      if (entry.isVirtual !== true) {
+        state.completed = stop === "end_turn";
+        state.atWork = stop === "tool_use" || (stop == null && content.some((block: unknown) => typeof block === "object" && block !== null && "type" in block && block.type === "tool_use"));
+        if (state.completed) turnEnded();
+      } else state.completed = false;
       if (entry.timestamp) turn.end_ts = entry.timestamp;
       for (const block of content) {
         if (typeof block !== "object" || block === null) continue;
         const b = block as { type?: string; text?: unknown; thinking?: unknown; name?: unknown; input?: unknown };
         if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
-          // the API refused the request: the failed request every reader shows, in Claude Code's own words, never an answer
           turn.parts.push(entry.isApiErrorMessage === true ? { kind: "text", text: b.text, failed: true }
             : { kind: "text", text: b.text, ...(state.completed ? { phase: "final_answer" as const } : {}) });
         } else if (b.type === "thinking") {
@@ -802,13 +830,15 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
           const skill = invokedSkill(b.name, input);
           if (skill) { part.skill = skill; part.summary = skill.name; }
           const id = (block as { id?: unknown }).id;
-          // the native id, and pending until a tool_result answers it
           if (typeof id === "string" && id.length > 0) { part.call_id = id; part.state = "pending"; }
-          turn.parts.push(part);
+          if (b.name === REPL_TOOL && entry.isVirtual !== true) state.codeMode = true;
+          // Code Mode's Poll only fetches the scripts' output (drawn in their REPL rows): drawn only if its result
+          // holds something else
+          if (b.name === POLL_TOOL && state.codeMode && entry.isVirtual !== true && typeof id === "string" && id.length > 0) polls.set(id, { part, turn });
+          else turn.parts.push(part);
           pending.set(String(id ?? ""), part);
           if (typeof id === "string" && id.length > 0) calls.set(id, part);
         }
-        // unsupported transcript blocks are intentionally ignored
       }
     }
   };
@@ -828,8 +858,6 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
   return {
     write,
     snapshot(tail = ""): ConversationTurn[] {
-      // Preview a valid final record without committing tools, prompt resends or dedup ids.
-      // Clone the whole graph so pending tools and lastPrompt still refer to the cloned turns.
       if (tail.trim()) {
         const preview = structuredClone(state);
         claudeTranscriptParser(options, preview).write(tail);
@@ -840,11 +868,88 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
   };
 }
 
-/** The one-shot API uses the same record fold as the live reader. */
 export function parseClaudeTranscript(text: string, maxTurns = MAX_TURNS, options: ClaudeTranscriptOptions = {}): ConversationTurn[] {
   const state = claudeParseState(options);
   claudeTranscriptParser(options, state).write(text);
-  // No writer survives this call, so its owned turns need no detached snapshot.
   return state.turns.filter((turn) => turn.parts.length > 0).slice(-maxTurns);
+}
+
+export type ClaudeTurnEnd = "failed" | "answered" | "running" | null;
+
+const LOCAL_LINE_RE = /^<(?:local-command-(?:stdout|stderr|caveat)|bash-(?:input|stdout|stderr))>/;
+/**
+ * A user entry Claude Code wrote of its own (LOCAL_LINE_RE): bash mode's lines only when they carry no origin and no
+ * permission mode, as parseClaudeTranscript reads them; a person's prompt that opens on such a tag is a prompt.
+ */
+const localLine = (entry: TranscriptEntry, content: unknown): boolean => typeof content === "string" && LOCAL_LINE_RE.test(content)
+  && (content.startsWith("<local-command-") || (!("origin" in entry) && !("permissionMode" in entry)));
+
+/**
+ * How a Claude transcript's last turn stands, by the last entry of the session's own that tells it: `failed` when
+ * that is the answer Claude Code wrote for a request the API refused (`isApiErrorMessage`: a rate limit, a cooldown,
+ * an overloaded model), `answered` when it is an answer (one a retry got after such an error included), `running`
+ * when it is a prompt (one sent while Claude worked and taken in from the queue included: a `queued_command` record,
+ * as parseClaudeTranscript reads it), a tool's result or a tool call. A subagent's entries (`isSidechain`), Claude
+ * Code's own records (meta entries, a compaction's summary, a local command's output), the calls a Code Mode script
+ * made (`isVirtual`) and every other entry tell nothing.
+ */
+export function claudeTurnEnd(text: string): ClaudeTurnEnd {
+  let end: ClaudeTurnEnd = null;
+  for (const line of text.split("\n")) {
+    if (!line.includes('"assistant"') && !line.includes('"user"') && !line.includes('"queued_command"')) continue;
+    let entry: (TranscriptEntry & { isSidechain?: unknown }) | null;
+    try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+    // a call a Code Mode script made, and its answer (isVirtual), are written once the script ends, which can be after
+    // the turn did: they tell nothing of it
+    if (entry === null || typeof entry !== "object" || entry.isSidechain === true || entry.isMeta === true || entry.isCompactSummary === true || entry.isVirtual === true) continue;
+    const content = entry.message?.content;
+    if (entry.type === "assistant") {
+      if (entry.isApiErrorMessage === true) { end = "failed"; continue; }
+      const calling = entry.message?.stop_reason === "tool_use"
+        || (Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_use"));
+      end = calling ? "running" : "answered";
+    } else if (entry.type === "user" && !localLine(entry, content)) end = "running";
+    else if (entry.type === "attachment" && entry.attachment?.type === "queued_command" && entry.attachment.commandMode === "prompt") end = "running";
+  }
+  return end;
+}
+
+/**
+ * How the turn that wrote a Claude transcript's bytes from `from` to the end `plain` found (`file`) stands: what
+ * claudeTurnEnd reads in them (their last `tailBytes`). Read at once and as the subagent tracker reads the same file
+ * (claude-subagents.ts readBytes): only the plain file looked at, never a FIFO or a link put in its place. A record
+ * still being written, or a file not read, leaves the turn's end unknown: it is read whole once the file grows.
+ */
+export function claudeLastTurnEnd(path: string, file: { size: number; exact: string }, from: number, tailBytes = 256 * 1024): ClaudeTurnEnd {
+  const start = Math.max(from, file.size - tailBytes);
+  const text = readBytes(path, file.exact, start, file.size - start)?.toString("utf8");
+  return text?.endsWith("\n") === true ? claudeTurnEnd(text) : null;
+}
+
+/**
+ * null while no such prompt is written whole, or when that first entry is no prompt: a file that opens on an answer, a
+ * tool call or its result (entries a session continued into it copied, freshly stamped) holds a turn this one did not write.
+ */
+export function claudeTranscriptStart(path: string, file: { size: number; exact: string }, headBytes = 64 * 1024): number | null {
+  const head = readBytes(path, file.exact, 0, Math.min(file.size, headBytes))?.toString("utf8") ?? "";
+  const stamp = (value: unknown): number | null => {
+    const time = typeof value === "string" ? Date.parse(value) : Number.NaN;
+    return Number.isNaN(time) ? null : time;
+  };
+  let first: number | null = null;
+  for (const line of head.split("\n").slice(0, -1)) {
+    let entry: (TranscriptEntry & { isSidechain?: unknown }) | null;
+    try { entry = JSON.parse(line) as typeof entry; } catch { return null; }
+    if (entry === null || typeof entry !== "object") continue;
+    first ??= stamp(entry.timestamp);
+    if (entry.isSidechain === true || entry.isMeta === true || entry.isCompactSummary === true) continue;
+    const content = entry.message?.content;
+    if (entry.type === "assistant") return null;
+    if (entry.type !== "user" || localLine(entry, content)) continue;
+    const result = Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_result");
+    const at = stamp(entry.timestamp);
+    return result || at === null ? null : Math.min(first ?? at, at);
+  }
+  return null;
 }
 

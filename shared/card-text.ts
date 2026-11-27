@@ -4,7 +4,6 @@
  * fallback card's own question. Each is an English key of the client's dictionaries, with its
  * values in `{placeholders}`: InteractivePrompt.own_text names the key and the values, and the
  * client shows the card in the user's language. Text read off the screen is never one of them.
- * src/lib/i18n.test.ts reads this list as a label map of the composer's part.
  */
 const CARD_TEXT = [
   "Question",
@@ -21,6 +20,8 @@ const CARD_TEXT = [
   "Claude Code removed {count} invisible characters",
   "Command approval",
   "Choose an option",
+  "This request cannot be shown in full. Press F4 in the terminal to read it.",
+  "Show all choices",
   "Permission request",
   "Waiting for your answer",
   "Waiting for input",
@@ -49,6 +50,7 @@ const CARD_TEXT = [
   "{question}. {count} more models are listed in the terminal.",
   "{question}. More models are listed in the terminal.",
   "{question}. More levels are listed in the terminal.",
+  "{question}. More options are listed in the terminal.",
   "{answered}/{total} answered",
   "Comment: {comment}",
   "{notice}\nComment: {comment}",
@@ -72,6 +74,15 @@ const CARD_TEXT = [
   "Question {n}",
   "Approve",
   "Deny",
+  "Allow once",
+  "Always allow",
+  "Run a shell command",
+  "Edit {file}",
+  "Fetch {url}",
+  "Access a folder outside the project",
+  "Use the tool {tool}",
+  "Allows every {action} request in this project from now on",
+  "Allows these in this project from now on: {patterns}",
 ] as const;
 
 export type CardTextKey = (typeof CARD_TEXT)[number];

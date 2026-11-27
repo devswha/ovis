@@ -1,4 +1,14 @@
 import type { PaneFindMatch, PaneScrollInfo } from "../../shared/protocol.ts";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
+
+/** A new controller still displays the old owner's grid. Adopt its grant before drawing the first
+ * frame; otherwise an active driver ignores geometry echoes, which may lag a later local fit. */
+export function adoptPaneGrid(term: Pick<GhosttyTerminal, "cols" | "rows" | "resize">,
+  grid: { cols: number; rows: number; fixed?: boolean; windows_fit?: boolean }, wasFixed: boolean, drives: boolean): boolean {
+  if (drives && !(wasFixed && grid.fixed === false && grid.windows_fit)) return false;
+  if (term.cols !== grid.cols || term.rows !== grid.rows) term.resize(grid.cols, grid.rows);
+  return true;
+}
 
 export interface ViewportCell { chars: string; width: number }
 export interface FindCellRect { row: number; col: number; width: number; current: boolean }
@@ -7,7 +17,6 @@ export interface TerminalInputBounds { left: number; top: number; right: number;
 
 interface RectBounds { left: number; top: number; right: number; bottom: number; width: number; height: number }
 
-/** The host's visible scrollport expressed in xterm-screen-local pixels. */
 export function visibleTerminalInputBounds(host: RectBounds, screen: RectBounds): TerminalInputBounds {
   const left = Math.min(screen.width, Math.max(0, host.left - screen.left));
   const top = Math.min(screen.height, Math.max(0, host.top - screen.top));
@@ -23,17 +32,13 @@ export function validScroll(value: PaneScrollInfo | null | undefined): value is 
   return value != null && [value.offset_from_bottom, value.max_offset_from_bottom, value.viewport_rows].every(Number.isSafeInteger)
     && value.viewport_rows > 0 && value.max_offset_from_bottom >= 0 && value.offset_from_bottom >= 0 && value.offset_from_bottom <= value.max_offset_from_bottom;
 }
-/** a metrics read re-arms this soon while something the view depends on is moving */
 export const SCROLL_POLL_BUSY_MS = 250;
 /** While output is all that moved and the view follows the bottom, a read only learns that the history
  * grew: this pace keeps the scroll bar current without a request every 250 ms for every busy pane (each one
  * is a round trip, and behind a metered relay a billed request). A key, wheel or drag that needs fresh
  * metrics still asks at once. */
 export const SCROLL_POLL_FOLLOW_MS = 2000;
-/** Output after this long a quiet spell starts a burst (a program starting, one entering its alternate screen),
- * and a burst reads at the busy cadence for this long before it slows to the follow pace. */
 export const SCROLL_POLL_SETTLE_MS = 1000;
-/** the longest an idle, visible pane waits between metrics reads */
 export const SCROLL_POLL_IDLE_MAX_MS = 15_000;
 /** Delay before the next metrics read after `idleReads` reads in a row with no output, scroll,
  * resize or visibility change in between: 1 s, 2 s, 4 s, 8 s, then 15 s. Any of those events
@@ -84,7 +89,6 @@ export function visibleFindRects(matches: readonly PaneFindMatch[], scroll: Pane
       parts.push({ row: row - top, col: start, width: end - start + 1, current: sameFindMatch(current, match) });
     }
     if (!valid || !text) continue;
-    // A clipped match must still agree with the corresponding visible end of the query.
     const pattern = `${match.start.row >= top ? "^" : ""}${quote(text)}${match.end.row <= bottom ? "$" : ""}`;
     if (new RegExp(pattern, flags).test(query)) result.push(...parts);
   }

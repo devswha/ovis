@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,8 +12,10 @@ import {
   hermesConversationPage,
   hermesDbPath,
   hermesHomeInPsLine,
+  hermesTerminalId,
   hermesToolOutput,
   hermesToolSummary,
+  hermesTranscriptForPane,
   isHermesProcess,
   parseHermesRows,
   processHermesHome,
@@ -21,6 +24,7 @@ import {
 import { ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type RecognizedConversation } from "./conversation.ts";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { toolSummary } from "./transcript-records.ts";
+import { hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
 
 describe("hermes paths", () => {
   it("computes default hermes home and db path", () => {
@@ -104,6 +108,48 @@ describe("hermes terminal breadcrumb resolution", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("resolves a breadcrumb when the foreground name is Python and argv is the Hermes installer launcher", async () => {
+    const ready = Promise.withResolvers<void>();
+    const child = Bun.spawn(["/bin/sh", "-c", "printf ready; exec cat"], {
+      env: process.env,
+      terminal: { cols: 80, rows: 24, data: () => ready.resolve() },
+    });
+    const path = join(tempDir, "herdr.sock");
+    const socket = createServer((client) => {
+      let input = "";
+      client.on("data", (data) => {
+        input += data.toString();
+        if (!input.endsWith("\n")) return;
+        const { id, method } = JSON.parse(input);
+        const result = method === "pane.process_info"
+          ? { process_info: { foreground_processes: [{ pid: child.pid, name: "Python", argv: hermesLauncherArgv }] } }
+          : { agent: {} };
+        client.end(`${JSON.stringify({ id, result })}\n`);
+      });
+    });
+    const previous = process.env["HERDR_SOCKET"];
+    try {
+      await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path, resolve); });
+      process.env["HERDR_SOCKET"] = path;
+      await Promise.race([ready.promise, child.exited]);
+      const terminalId = hermesTerminalId(child.pid);
+      if (terminalId === null) throw new Error("The test process has no terminal");
+      const markers = join(tempDir, "terminal-sessions");
+      mkdirSync(markers);
+      writeFileSync(join(markers, terminalId), JSON.stringify({ session_id: "installed-session", cwd: tempDir, ts: Date.now() / 1000 }));
+      const dbPath = join(tempDir, "state.db");
+      writeFileSync(dbPath, "");
+      const pane = { agent: "hermes", agent_status: "idle", focused: true, pane_id: "p_1", revision: 0, tab_id: "tab", terminal_id: "term", workspace_id: "work" } as const;
+      expect(await hermesTranscriptForPane(pane, tempDir, tempDir)).toEqual({ sessionId: "installed-session", dbPath });
+    } finally {
+      if (previous === undefined) delete process.env["HERDR_SOCKET"]; else process.env["HERDR_SOCKET"] = previous;
+      socket.close();
+      child.kill();
+      await child.exited;
+      child.terminal?.close();
+    }
+  });
+
   it.skipIf(process.platform === "win32")("accepts only a current-process breadcrumb for the canonical cwd", () => {
     const sessionsDir = join(tempDir, "terminal-sessions");
     const project = join(tempDir, "project");
@@ -132,10 +178,8 @@ describe("hermes message rows parsing", () => {
     const prompt = "Reply with one word: what color is the attached image? Then use your vision tool to look at ./blue.png and reply with its color in one word.";
     expect(parseHermesRows(rows)[0]!.parts).toEqual([{ kind: "text", text: `![red.png](/tmp/hermes-proj/red.png)\n\n${prompt}` }]);
     const user = (content: string) => parseHermesRows([{ ...rows[0]!, content }])[0]!.parts[0];
-    // a path Markdown would read otherwise is written so the file API gets it back exactly
     expect(user("Look\n\n[Image attached at: /tmp/a (1)/b c#2.png]\n[screenshot]")).toEqual({ kind: "text", text: "![b c#2.png](/tmp/a%20%281%29/b%20c%232.png)\n\nLook" });
     expect(user("Look\n\n[Image attached at: /tmp/a[b.png]\n[screenshot]")).toEqual({ kind: "text", text: "![a[b.png](/tmp/a%5Bb.png)\n\nLook" });
-    // anything Hermes itself would not read as its hints stays as written
     for (const content of [
       "Look\n\n[Image attached: https://example.com/a.png]\n[screenshot]",
       "Look\n\n[Image attached at: relative/a.png]",
@@ -146,9 +190,7 @@ describe("hermes message rows parsing", () => {
       "Look\n\n[Image attached at: /tmp/a.png]",
       "[Image attached at: /tmp/a.png]",
     ]) expect(user(content)).toEqual({ kind: "text", text: content });
-    // words with a code fence left open come after the pictures, so they cannot take them in
     expect(user("```js\nLook\n```text\n\n[Image attached at: /tmp/a.png]\n[screenshot]")).toEqual({ kind: "text", text: "![a.png](/tmp/a.png)\n\n```js\nLook\n```text" });
-    // a skill invocation keeps its picture: it comes off the stored text before the skill is read
     const skill = readFileSync(new URL("./fixtures/skill-invocations/hermes.txt", import.meta.url), "utf8");
     expect(parseHermesRows([{ ...rows[0]!, content: `${skill}\n\n[Image attached at: /tmp/a.png]\n[screenshot]` }])[0]!.parts[0]).toEqual({ kind: "text", text: "![a.png](/tmp/a.png)\n\n/probe-skill hello" });
   });
@@ -171,7 +213,6 @@ describe("hermes message rows parsing", () => {
     expect(toolSummary("Bash", { command: "bun test", description: "Run the unit tests" })).toBe("Run the unit tests");
     expect(toolSummary("Agent", { prompt: "Find the callers", description: "Find callers" })).toBe("Find callers");
     expect(toolSummary("eval", { code: "1", summary: "x".repeat(200) })).toHaveLength(120);
-    // a blank purpose falls back to the command; a summary without code is another tool's data
     expect(toolSummary("Bash", { command: "bun test", description: " " })).toBe("bun test");
     expect(toolSummary("mcp__notes__add", { summary: "Weekly notes", path: "notes.md" })).toBe("notes.md");
   });
@@ -432,7 +473,6 @@ describe("hermesConversationPage SQLite integration", () => {
     expect(() => hermesConversationPage("s_curs", dbPath, { before: "other:session:10" })).toThrow(HistoryChanged);
   });
 
-  /** Creates alternating turns so a 100-row page starts on a user message. */
   const populate = (count = 150): void => {
     const db = new Database(dbPath);
     try {

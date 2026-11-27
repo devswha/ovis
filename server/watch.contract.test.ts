@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerMessage } from "../shared/protocol.ts";
+import { ownProcesses } from "../scripts/own-processes.ts";
 import { herdrRpc, sessionSnapshot } from "./herdr/client.ts";
 import { createServer, type ServerInstance } from "./index.ts";
 
@@ -11,12 +12,11 @@ async function until(predicate: () => boolean, label: string, ms = 10_000): Prom
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error(`${label} not observed within ${ms}ms`);
     // These are real CLI processes and WebSocket deliveries; fake timers cannot
-    // advance their external lifecycle. Poll the named condition to a deadline.
+    // advance their external lifecycle.
     await Bun.sleep(25);
   }
 }
 
-/** Capture real wire frames, with bounded waits rather than assuming delivery timing. */
 class RecordingSocket {
   readonly seen: ServerMessage[] = [];
   private readonly ws: WebSocket;
@@ -52,13 +52,7 @@ class RecordingSocket {
   }
 }
 
-function processCount(pattern: string): number {
-  const found = Bun.spawnSync(["pgrep", "-f", pattern]);
-  if (found.exitCode !== 0 && found.exitCode !== 1) {
-    throw new Error(`pgrep failed (${found.exitCode}): ${found.stderr.toString()}`);
-  }
-  return found.stdout.toString().split("\n").filter(Boolean).length;
-}
+const processCount = (pattern: string): number => ownProcesses(new RegExp(pattern)).length;
 
 describe("WebSocket read-only live watch", () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-watch-"));
@@ -148,7 +142,6 @@ describe("WebSocket read-only live watch", () => {
       await until(() => observeCount() === 1, "live observe process");
       socket.send({ type: "unwatch", pane_id: paneId });
       await until(() => observeCount() === 0, "observer gone after unwatch");
-      // A subsequent answered frame proves this connection is still usable.
       socket.send({ type: "role", mode: "observe" });
       await socket.waitFor((message) => message.type === "role-ack", "role after unwatch");
       expect(socket.seen.some((message) => message.type === "watch-end" && message.pane_id === paneId)).toBe(false);
@@ -161,7 +154,6 @@ describe("WebSocket read-only live watch", () => {
       socket.send({ type: "watch", pane_id: paneId, cols: 100, rows: 30 });
       await socket.waitFor((message) => message.type === "watch-data" && message.pane_id === paneId, "initial watch frame");
       await until(() => observeCount() === 1, "live observe process");
-      // the tab's window was resized: the view starts again once the first process has ended
       socket.send({ type: "watch", pane_id: paneId, cols: 90, rows: 28 });
       await until(() => processCount(`terminal session observe ${paneId} --cols 90 --rows 28`) === 1, "the observe process of the new grid", 5_000);
       await until(() => observeCount() === 1, "the first observe process gone");

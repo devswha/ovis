@@ -19,7 +19,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   preflight:
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # the release's run: GitHub-hosted whatever the runner variables say, and no shared cache (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require main
@@ -31,20 +32,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: none
       - name: Validate version, notes and unused tag
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           bun scripts/release-notes.ts "$RELEASE_VERSION"
-          # the remote-vN this version names is published from this tree, and the Worker deploy is recorded
           bun scripts/release-guards.ts --release "$RELEASE_VERSION"
           if git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
             echo 'This version already has a tag; choose a new version.' >&2
             exit 1
           fi
-  # The push to main already ran ci.yml on this commit: release-validate.yml takes that run when
-  # scripts/release-ci-reuse.ts verifies it green, running only Fast checks again on GitHub's runner,
-  # and otherwise (always with `revalidate`) runs ci.yml here.
   validate:
     needs: preflight
     uses: ./.github/workflows/release-validate.yml
@@ -53,7 +52,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-  # the Rust PTY host for Linux and macOS, attached when the release is created: installs read it by tag.
   # Its attest job signs each binary's build provenance, which needs these permissions.
   pty-sidecar:
     needs: preflight
@@ -71,7 +69,8 @@ jobs:
   server-binary:
     # the Rust PTY hosts go under the signed manifest too: an installer runs no host the manifest does not name
     needs: [preflight, pty-sidecar]
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # it builds what server-binary-sign signs and publish releases: GitHub-hosted whatever the runner variables say, and no shared cache (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -79,21 +78,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # install scripts run here: restore the dependency cache, never save one other jobs trust
+      # install scripts run here: neither restore a cache a self-hosted job could have written nor save one
       - uses: ./.github/actions/setup-ci
         with:
-          cache: restore
+          cache: none
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ovis-pty-sidecar
           path: ${{ runner.temp }}/pty-sidecar
-      - name: Build the five binaries, the client and their manifest, which names the PTY hosts too
+      - name: Build the server manifest and the separate ACP keeper manifest
         run: |
           bun run build
           bun scripts/build-server.ts release "$RUNNER_TEMP/server-binary"
-          for host in ovis-pty-sidecar-linux-x64 ovis-pty-sidecar-linux-arm64 ovis-pty-sidecar-darwin-universal; do
-            cp "$RUNNER_TEMP/pty-sidecar/$host" "$RUNNER_TEMP/server-binary/$host"
+          for file in ovis-{pty-sidecar,acp-keeper}-{linux-x64,linux-arm64,darwin-universal}; do
+            cp "$RUNNER_TEMP/pty-sidecar/$file" "$RUNNER_TEMP/server-binary/$file"
           done
           bun scripts/build-server.ts manifest "$RUNNER_TEMP/server-binary"
       # the binary for this runner answers before anything is signed
@@ -110,13 +109,13 @@ jobs:
           path: ${{ runner.temp }}/server-binary/*
           if-no-files-found: error
   # The signing key reaches this job alone, on GitHub's runner. Beside it run only Bun, installed by the SHA-pinned
-  # oven-sh/setup-bun, and scripts/server-manifest.ts (Node's built-ins): none of the repository's dependencies is
-  # installed. The key is the secret OVIS_SERVER_SIGNING_KEY of the environment release-signing, which only main may
-  # use (docs/development.md, "The server binary's signing key"); no other job names that environment, and a job that
-  # deploys (production) never sees the key. Without the environment or its secret this job fails, and publish, which
-  # needs it, never runs: nothing is published unsigned. sign refuses a key whose public half is not
-  # RELEASE_PUBLIC_KEY (scripts/server-manifest.ts), the one key every installer trusts, so a key put into the secret by
-  # mistake fails the release too. In a fork the job is skipped, and so is publish.
+  # oven-sh/setup-bun, and scripts/build-server.ts with the scripts/server-manifest.ts it imports (Node's built-ins):
+  # none of the repository's dependencies is installed. The key is the secret OVIS_SERVER_SIGNING_KEY of the environment
+  # release-signing, which only main may use (docs/development.md, "The server binary's signing key"); no other job
+  # names that environment, and a job that deploys (production) never sees the key. Without the environment or its
+  # secret this job fails, and publish, which needs it, never runs: nothing is published unsigned. sign refuses a key
+  # whose public half is not RELEASE_PUBLIC_KEY (scripts/server-manifest.ts), the one key every installer trusts, so a
+  # key put into the secret by mistake fails the release too. In a fork the job is skipped, and so is publish.
   server-binary-sign:
     needs: server-binary
     if: github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'
@@ -131,7 +130,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.4'
           no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -173,10 +172,12 @@ jobs:
             server-binary/ovis-server-*
             server-binary/ovis-dist.tar.gz
             server-binary/ovis-server.json
+            server-binary/ovis-acp-keeper-server.json
             server-binary/ovis-server.SHA256SUMS
   publish:
     needs: [validate, pty-sidecar, server-binary-sign, server-binary-attest]
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # a write token: GitHub-hosted whatever the runner variables say (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
@@ -194,6 +195,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
+        with:
+          cache: none
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ovis-pty-sidecar
@@ -221,11 +224,12 @@ jobs:
           test "$(bun -e 'console.log((await Bun.file(process.argv[1]).json()).version)' "$RUNNER_TEMP/pty-sidecar/ovis-pty-sidecar.json")" = "$RELEASE_VERSION"
           # the server's files by name, and only once they verify for this version against the committed key (not one the
           # sign job reports about itself): a file anything else left in the folder is refused, never attached
-          server_files=(ovis-server-linux-x64 ovis-server-linux-arm64 ovis-server-darwin-arm64 ovis-server-darwin-x64 ovis-server-windows-x64.exe ovis-dist.tar.gz ovis-server.json ovis-server.json.sig ovis-server.SHA256SUMS)
+          server_files=(ovis-server-linux-x64 ovis-server-linux-arm64 ovis-server-darwin-arm64 ovis-server-darwin-x64 ovis-server-windows-x64.exe ovis-dist.tar.gz ovis-server.json ovis-server.json.sig ovis-server.SHA256SUMS ovis-acp-keeper-server.json ovis-acp-keeper-server.json.sig)
           bun scripts/build-server.ts verify "$RUNNER_TEMP/server-binary" --expect-version "$RELEASE_VERSION"
-          # the PTY hosts attached are the very ones ovis-server.json signed
-          for host in ovis-pty-sidecar-linux-x64 ovis-pty-sidecar-linux-arm64 ovis-pty-sidecar-darwin-universal; do
-            cmp "$RUNNER_TEMP/pty-sidecar/$host" "$RUNNER_TEMP/server-binary/$host"
+          bun scripts/build-server.ts keeper-manifest "$RUNNER_TEMP/pty-sidecar" "$RUNNER_TEMP/server-binary/ovis-server.json" "$RELEASE_VERSION" | cmp - "$RUNNER_TEMP/server-binary/ovis-acp-keeper-server.json"
+          # attach only the native binaries whose exact bytes the signed manifest covers
+          for file in ovis-{pty-sidecar,acp-keeper}-{linux-x64,linux-arm64,darwin-universal}; do
+            cmp "$RUNNER_TEMP/pty-sidecar/$file" "$RUNNER_TEMP/server-binary/$file"
           done
           gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP"/pty-sidecar/* "${server_files[@]/#/$RUNNER_TEMP/server-binary/}" --target "$GITHUB_SHA" --title "Ovis v$RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
   # The hosted shell (https://app.ovis.sh/) is built from the release tag and nothing else. shell-build
@@ -247,10 +251,10 @@ jobs:
         with:
           ref: refs/tags/v${{ inputs.version }}
           persist-credentials: false
-      # install scripts run here: restore the dependency cache, never save one other jobs trust
+      # install scripts run here: neither restore a cache a self-hosted job could have written nor save one
       - uses: ./.github/actions/setup-ci
         with:
-          cache: restore
+          cache: none
       - name: Require the release tag's commit
         env:
           RELEASE_TAG: v${{ inputs.version }}
@@ -300,7 +304,7 @@ jobs:
     steps:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.4'
           no-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -396,7 +400,8 @@ jobs:
   # did not fail (one skipped for unset secrets passes), and only the tarball shell-build hashed
   shell-attach:
     needs: [shell-build, shell-deploy]
-    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
+    # a write token: GitHub-hosted whatever the runner variables say (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write
@@ -424,7 +429,6 @@ jobs:
       tag: v${{ inputs.version }}
     permissions:
       contents: write
-  # the desktop app (app/electron): AppImages, dmg and zip, and the feed files it updates from
   desktop:
     needs: publish
     uses: ./.github/workflows/desktop.yml
