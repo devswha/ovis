@@ -321,6 +321,11 @@ export class AgentDetector {
     return (await this.#locate(binary)) ?? (platform === null ? null : this.#inInstallDirs(binary, dirs, platform));
   }
 
+  commandPath(executable: string): string {
+    // The agent's own folder first (npm's global folder holds its node), then the PATH it was found on.
+    return [dirname(executable), this.#locate.searchPath?.() ?? process.env["PATH"] ?? ""].filter((part) => part !== "").join(delimiter);
+  }
+
   /**
    * Where another program has the binary's name (detect.unreliable_on), nothing is looked up or run;
    * while a program it needs (detect.needs) is missing, it is not installed and nothing is run either.
@@ -338,9 +343,7 @@ export class AgentDetector {
       if (executable === null) continue;
       const fingerprint = fingerprintOf(executable);
       if (fingerprint === null) continue;
-      // the agent's own folder first (npm's global folder holds its node), then the PATH it was found on
-      const path = [dirname(executable), this.#locate.searchPath?.() ?? process.env["PATH"] ?? ""].filter((part) => part !== "").join(delimiter);
-      const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args, entry.detect.version_timeout_ms ?? this.#timeoutMs, path);
+      const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args, entry.detect.version_timeout_ms ?? this.#timeoutMs, this.commandPath(executable));
       const authMode = entry.id === "agy" ? await antigravityAuthMode(this.#home, this.#env["ANTIGRAVITY_APP_DATA_DIR"]) : undefined;
       return {
         installed: true,

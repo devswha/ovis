@@ -1068,6 +1068,22 @@ describe("providers", () => {
     expect(report.providers).toHaveLength(1);
   });
 
+  it("reads Antigravity Starter usage from a Linux file-backed sign-in without secret-tool", async () => {
+    absent.add("secret-tool");
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
+      token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: 403 });
+    commands.set("agy --print /usage --output-format json --print-timeout 20s", JSON.stringify({
+      status: "SUCCESS",
+      command: { data: { groups: [{ buckets: [{ bucketId: "gemini-weekly", remainingFraction: 0.75 }] }] } },
+    }));
+
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toMatchObject([{ id: "antigravity", problem: null, windows: [{ used_percent: 25 }] }]);
+  });
+
   it("never names secret-tool off Linux", async () => {
     absent.add("secret-tool");
     expect(await new UsageService(context("darwin"), only("antigravity")).report()).toEqual({ server_time: expect.any(String), providers: [] });
@@ -1596,6 +1612,22 @@ echo past-deadline`);
   const output = await new Response(child.stdout).json();
   expect(await child.exited).toBe(0);
   expect(output).toEqual({ answer: "absolute", late: null });
+});
+
+it.skipIf(process.platform === "win32")("runs Antigravity usage from the catalog's install folder when it is off PATH", async () => {
+  const executable = join(home, ".local", "bin", "agy");
+  write(executable, '#!/bin/sh\n[ "$1" = "--print" ] && [ "$2" = "/usage" ] && echo "installed outside PATH"\n');
+  chmodSync(executable, 0o700);
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { systemUsageContext } from ${JSON.stringify(join(import.meta.dir, "usage.ts"))};
+    console.log(JSON.stringify(await systemUsageContext().run(["agy", "--print", "/usage"])));
+  `], {
+    cwd: home, env: { PATH: join(home, "empty-path"), HOME: home, SHELL: "/bin/false" },
+    stdin: "ignore", stdout: "pipe", stderr: "inherit",
+  });
+  const output = await new Response(child.stdout).json();
+  expect(await child.exited).toBe(0);
+  expect(output).toBe("installed outside PATH");
 });
 
 describe("the service", () => {

@@ -20,8 +20,9 @@ import { createHash } from "node:crypto";
 import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import { antigravityAuthMode, captureAgentCommand, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { AGENT_CATALOG, catalogPlatform } from "../shared/agent-catalog.ts";
+import { AgentDetector, antigravityAuthMode, captureAgentCommand, catalogLocator, defaultLoginProbe } from "./agent-catalog-detect.ts";
 import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
 import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
@@ -784,7 +785,7 @@ async function antigravityCredentials(ctx: UsageContext, checkLocked: boolean) {
   const dir = ctx.env["ANTIGRAVITY_APP_DATA_DIR"] || join(ctx.home, ".gemini", "antigravity-cli");
   const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
   const keychain = ctx.platform === "linux"
-    ? await linuxKeyring(ctx, ["service", "gemini", "username", "antigravity"], antigravitySignIn, checkLocked || file === null)
+    ? ctx.has("secret-tool") ? await linuxKeyring(ctx, ["service", "gemini", "username", "antigravity"], antigravitySignIn, checkLocked || file === null) : null
     : await fromKeychain(ctx, "gemini", ["antigravity"], antigravitySignIn);
   return { file, keychain };
 }
@@ -796,7 +797,7 @@ async function antigravityRefusedWindows(ctx: UsageContext, { token }: SignIn): 
   const signal = AbortSignal.timeout(budget);
   const check = async (): Promise<"api-key" | "same-token" | "unknown"> => {
     if (await antigravityUsesApiKey(ctx)) return "api-key";
-    if (signal.aborted || (ctx.platform === "linux" && !ctx.has("secret-tool"))) return "unknown";
+    if (signal.aborted) return "unknown";
     const { file, keychain } = await antigravityCredentials(ctx, true);
     if (keychain === "locked" || (file && file.token !== token) || (keychain && keychain.token !== token)) return "unknown";
     return file || keychain ? "same-token" : "unknown";
@@ -1232,8 +1233,12 @@ export async function runCommand(argv: string[], timeoutMs = COMMAND_TIMEOUT_MS)
   }
 }
 
+const antigravityDetection = AGENT_CATALOG.find((entry) => entry.id === "agy")?.detect;
+
 export function systemUsageContext(): UsageContext {
-  const locate = catalogLocator({ probe: defaultLoginProbe() });
+  const detector = new AgentDetector({ locate: catalogLocator({ probe: defaultLoginProbe() }) });
+  const platform = catalogPlatform(process.platform);
+  const agyDirs = platform === null ? [] : antigravityDetection?.install_dirs?.[platform] ?? [];
   return {
     home: homedir(),
     env: process.env,
@@ -1242,9 +1247,9 @@ export function systemUsageContext(): UsageContext {
     keychain: readKeychain,
     async run(argv, timeoutMs = COMMAND_TIMEOUT_MS, signal) {
       if (argv[0] !== "agy") return runCommand(argv, timeoutMs);
-      const executable = await locate("agy");
-      if (executable === null || signal?.aborted) return null;
-      const path = [dirname(executable), ...(locate.searchPath?.() ?? "").split(delimiter).filter(isAbsolute)].join(delimiter);
+      const executable = await detector.executable("agy", agyDirs, platform);
+      if (executable === null || !isAbsolute(executable) || signal?.aborted) return null;
+      const path = detector.commandPath(executable).split(delimiter).filter(isAbsolute).join(delimiter);
       const { stdout, exitCode, timedOut } = await captureAgentCommand(executable, argv.slice(1), { timeoutMs, path, signal, stdoutBytes: MAX_READ_BYTES + 1 });
       return !timedOut && exitCode === 0 && Buffer.byteLength(stdout) <= MAX_READ_BYTES ? stdout.trim() : null;
     },
