@@ -503,7 +503,26 @@ export function Composer({
     element.style.height = `${measurement.scrollHeight}px`;
   }, []);
 
-  useLayoutEffect(sizeTextarea, [sizeTextarea, text, text.length === 0 ? placeholder : null, boxWidth, facesLoaded]);
+  // A keystroke burst coalesces into one measure per frame: the first character schedules the
+  // frame, the rest leave it pending, and the callback clears its own id so the next burst re-arms.
+  const sizeFrame = useRef(0);
+  useLayoutEffect(() => {
+    if (sizeFrame.current !== 0) return;
+    sizeFrame.current = requestAnimationFrame(() => {
+      sizeFrame.current = 0;
+      sizeTextarea();
+    });
+  }, [sizeTextarea, text]);
+  useEffect(() => () => cancelAnimationFrame(sizeFrame.current), []);
+
+  // Rare events (the placeholder showing or hiding, a box width change, a face arriving) resize in
+  // the same layout pass: a synchronous measure costs nothing there and avoids a frame of
+  // visibly-wrong height. It also drops any pending coalesced frame, which would only re-measure.
+  useLayoutEffect(() => {
+    cancelAnimationFrame(sizeFrame.current);
+    sizeFrame.current = 0;
+    sizeTextarea();
+  }, [sizeTextarea, text.length === 0 ? placeholder : null, boxWidth, facesLoaded]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(sizeTextarea);

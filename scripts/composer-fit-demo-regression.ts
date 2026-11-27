@@ -2,11 +2,38 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { composerFitDemo, draft, drawn, LONG_MODEL, measure, upload, type Case, type Draw } from "./composer-fit-harness.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
+
+/** Count the composer's height-measure body: scrollHeight reads on the hidden measure field, and
+ *  the textarea's height writes. The body reads scrollHeight (a property, not a method) and never
+ *  calls getBoundingClientRect on the textarea, so the count is taken at the read and the write. */
+const countMeasures = (page: Page) => page.evaluate(() => {
+  const measure = document.querySelector<HTMLTextAreaElement>(".composer-measure")!;
+  const text = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
+  const counts = { reads: 0, writes: 0 };
+  Object.assign(window, { fitMeasureCounts: counts });
+  let proto: object | null = measure;
+  let descriptor: PropertyDescriptor | undefined;
+  while (proto !== null && (descriptor = Object.getOwnPropertyDescriptor(proto, "scrollHeight")) === undefined) proto = Object.getPrototypeOf(proto);
+  if (descriptor === undefined || descriptor.get === undefined) throw new Error("scrollHeight is not an accessor");
+  const read = descriptor.get;
+  Object.defineProperty(proto!, "scrollHeight", { configurable: true, get(this: Element) {
+    if (this === measure) counts.reads++;
+    return read.call(this);
+  } });
+  const style = CSSStyleDeclaration.prototype;
+  const height = Object.getOwnPropertyDescriptor(style, "height");
+  const get = height?.get ?? function(this: CSSStyleDeclaration) { return this.getPropertyValue("height"); };
+  const set = height?.set ?? function(this: CSSStyleDeclaration, value: string) { this.setProperty("height", value); };
+  Object.defineProperty(style, "height", { configurable: true, get, set(this: CSSStyleDeclaration, value: string) {
+    set.call(this, value);
+    if (this === text.style) counts.writes++;
+  } });
+});
 
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-composer-fit-demo-"));
@@ -25,6 +52,110 @@ try {
         await page.evaluate(() => (window as any).fitReply(true));
         await page.locator(".composer-stop").waitFor();
       });
+      // A burst of characters within one frame is measured once, not once per keystroke: the composer
+      // coalesces the text-driven measure into a single requestAnimationFrame. The measure body reads
+      // scrollHeight on the hidden measurement field (it never calls getBoundingClientRect on the
+      // textarea), so the count is taken there, with the textarea's height write as a cross-check.
+      for (const width of [390, 1440]) await withCard(browser, width, { model: LONG_MODEL }, async (page) => {
+        const box = page.getByRole("textbox", { name: "Message", exact: true });
+        // start non-empty: the empty↔non-empty transition is a rare path (the placeholder dep) and is
+        // measured synchronously by design, so the burst must be incremental typing
+        await box.fill("seed");
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        await countMeasures(page);
+        // ten characters in one task, inside one frame: no inter-input wait, so a burst spread across
+        // frames cannot pass this
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => {
+          const text = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
+          const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+          const base = text.value;
+          for (let i = 1; i <= 10; i++) {
+            set.call(text, base + "x".repeat(i));
+            text.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "x" }));
+          }
+          done();
+        })));
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        const counts = await page.evaluate(() => (window as unknown as { fitMeasureCounts: { reads: number; writes: number } }).fitMeasureCounts);
+        assert.equal(counts.reads, 1, `${width}px: a ten-character burst measures the composer once, not once per keystroke`);
+        assert.equal(counts.writes, 1, `${width}px: and writes the textarea's height once`);
+        // the final height is the one the un-coalesced code would produce: a fresh measure of the final text
+        const final = await page.evaluate(() => {
+          const text = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
+          const measure = document.querySelector<HTMLTextAreaElement>(".composer-measure")!;
+          const clone = measure.cloneNode(true) as HTMLTextAreaElement;
+          clone.value = text.value;
+          measure.parentElement!.appendChild(clone);
+          const height = clone.scrollHeight;
+          clone.remove();
+          return { style: text.style.height, manual: `${height}px`, value: text.value };
+        });
+        assert.ok(final.style !== "", `${width}px: the burst leaves a height on the textarea`);
+        assert.equal(final.style, final.manual, `${width}px: the burst's final height is a fresh measure of its text`);
+        // the id is cleared inside the frame's own callback, so the next keystroke re-arms
+        await page.evaluate(() => {
+          const text = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
+          const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+          set.call(text, text.value + "y");
+          text.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "y" }));
+        });
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        const after = await page.evaluate(() => (window as unknown as { fitMeasureCounts: { reads: number } }).fitMeasureCounts);
+        assert.equal(after.reads, 2, `${width}px: a keystroke after the frame re-arms the coalesced measure`);
+      });
+      console.log("PASS a keystroke burst is measured once per frame, its final height is a fresh measure, and the next keystroke re-arms");
+
+      // The rare paths stay synchronous: a placeholder change (the empty box's suggestion) writes the
+      // height in the commit's layout phase, before the next frame, not through the coalesced frame.
+      await withCard(browser, 390, { model: LONG_MODEL, suggestion: null }, async (page) => {
+        const box = page.getByRole("textbox", { name: "Message", exact: true });
+        await box.fill("");
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        await page.evaluate(() => {
+          const text = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
+          const measure = document.querySelector<HTMLTextAreaElement>(".composer-measure")!;
+          const writes: string[] = [];
+          Object.assign(window, { fitPlaceholderWrites: writes, fitPlaceholderSync: -1 });
+          const style = CSSStyleDeclaration.prototype;
+          const height = Object.getOwnPropertyDescriptor(style, "height");
+          const get = height?.get ?? function(this: CSSStyleDeclaration) { return this.getPropertyValue("height"); };
+          const set = height?.set ?? function(this: CSSStyleDeclaration, value: string) { this.setProperty("height", value); };
+          Object.defineProperty(style, "height", { configurable: true, get, set(this: CSSStyleDeclaration, value: string) {
+            set.call(this, value);
+            if (this === text.style) writes.push(value);
+          } });
+          // the observer's callback is a microtask after the placeholder mutation and before the next
+          // frame: a write it can already see was made in the commit's layout phase
+          new MutationObserver(() => { (window as unknown as { fitPlaceholderSync: number }).fitPlaceholderSync = writes.length; })
+            .observe(measure, { attributes: true, attributeFilter: ["placeholder"] });
+        });
+        await page.evaluate(() => { (window as unknown as { fitCase: Case }).fitCase.suggestion = "A much longer suggestion that wraps onto more than one line in the composer box"; });
+        await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".composer-measure")?.placeholder.startsWith("A much longer"), undefined, { timeout: 5_000 });
+        const sync = await page.evaluate(() => (window as unknown as { fitPlaceholderSync: number }).fitPlaceholderSync);
+        assert.ok(sync >= 1, `a placeholder change writes the height synchronously, in the commit's layout phase: ${sync}`);
+      });
+      console.log("PASS a placeholder change resizes the composer synchronously, not through the coalesced frame");
+
+      // A synchronous rare path drops a pending coalesced frame: the empty→non-empty transition changes
+      // the placeholder dep, so the rare effect measures once and cancels the frame the text effect
+      // scheduled. Without the cancel the frame would measure a second time.
+      await withCard(browser, 390, { model: LONG_MODEL }, async (page) => {
+        const box = page.getByRole("textbox", { name: "Message", exact: true });
+        await box.fill("");
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        await countMeasures(page);
+        await page.evaluate(() => {
+          const text = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
+          const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+          set.call(text, "x");
+          text.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "x" }));
+        });
+        await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+        const reads = await page.evaluate(() => (window as unknown as { fitMeasureCounts: { reads: number } }).fitMeasureCounts.reads);
+        assert.equal(reads, 1, "the empty→non-empty rare path measures once and cancels the pending coalesced frame");
+      });
+      console.log("PASS a synchronous rare path cancels the pending coalesced frame instead of measuring twice");
+
       // plan mode is the one mode drawn: on a phone an icon named for it, on a desktop its name in words, whole in the row
       // at every width, with or without the plan chip, also with the chip's step in progress (which steps out where the
       // mode needs its room); every other mode draws nothing
