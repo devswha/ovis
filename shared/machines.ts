@@ -231,6 +231,11 @@ export function pcAlertKey(machine: Pick<Machine, "name" | "relay" | "server_id"
 
 /** GET /api/machines: with ?verify_source_boot=<id>, also that PC's freshly proved boot id */
 export interface MachineRoster { machines: Machine[]; verified_source_boot?: { machine_id: string; boot_id: string } }
+
+/** POST /api/machines/:machine_id/forward: one TCP port on the SSH PC's IPv4 loopback. */
+export interface MachineForwardRequest { readonly port: number }
+/** The listener on the Ovis server's own IPv4 loopback, not a public URL. */
+export interface MachineForwardResponse { readonly url: string }
 /**
  * The herdr behind a PC, as its bridge can serve it. terminal_attach is false on a Windows
  * host: herdr has no `terminal attach` there yet (herdrdev/herdr#4821), and it is false on

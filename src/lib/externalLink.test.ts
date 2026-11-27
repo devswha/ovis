@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createWebLinkOpener, ExternalLink, isWebLink, openExternal, reserveTab } from "./externalLink.ts";
+import { getTransport, nativeTransport, setTransport } from "./transport.ts";
 
 /** Runs `run` with `window.open` answering `answer`, and gives back each call's arguments. */
 function withWindowOpen(answer: (url: string) => unknown, run: () => void): unknown[][] {
@@ -35,6 +36,56 @@ describe("openExternal", () => {
   it("gives an address that is not http(s) a tab of its own, with no opener or referrer", () => {
     const calls = withWindowOpen(() => null, () => openExternal("mailto:team@ovis.sh", "link", true));
     expect(calls).toEqual([["mailto:team@ovis.sh", "_blank", "noopener,noreferrer"]]);
+  });
+
+  it("opens an SSH pane's loopback link at a separate forwarded origin", async () => {
+    const opened: string[] = [];
+    const originals = { window: Object.getOwnPropertyDescriptor(globalThis, "window"), location: Object.getOwnPropertyDescriptor(globalThis, "location") };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      ovisBrowsers: { list: async () => null, choose: async () => {}, open: (url: string) => opened.push(url) },
+    } });
+    Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://127.0.0.1:7317") });
+    const request = spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ url: "http://127.0.0.1:42001" }));
+    const transport = getTransport();
+    try {
+      setTransport(nativeTransport);
+      await openExternal("http://localhost:5173/preview?q=one#two", "link", false, { id: "ssh-pc", kind: "ssh" });
+      expect(opened).toEqual(["http://ovis-ssh-pc-5173.localhost:42001/preview?q=one#two"]);
+      expect(request).toHaveBeenCalledWith("/api/machines/ssh-pc/forward", expect.objectContaining({
+        method: "POST", body: JSON.stringify({ port: 5173 }),
+      }));
+      request.mockClear();
+      await openExternal("http://localhost:5173/local", "link", false, { id: "local", kind: "local" });
+      await openExternal("http://localhost:5173/relay", "link", false, { id: "paired-pc", kind: "relay" });
+      await openExternal("https://example.com/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("https://ovis.example.com") });
+      await openExternal("http://localhost:5173/nonlocal", "link", false, { id: "ssh-pc", kind: "ssh" });
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("capacitor://localhost") });
+      await openExternal("http://localhost:5173/packaged", "link", false, { id: "ssh-pc", kind: "ssh" });
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://localhost:7317") });
+      setTransport({ ...nativeTransport, kind: "relay" });
+      await openExternal("http://localhost:5173/relayed", "link", false, { id: "ssh-pc", kind: "ssh" });
+      setTransport(nativeTransport);
+      expect(request).not.toHaveBeenCalled();
+      expect(opened.slice(1)).toEqual([
+        "http://localhost:5173/local", "http://localhost:5173/relay", "https://example.com/", "http://localhost:5173/nonlocal",
+        "http://localhost:5173/packaged", "http://localhost:5173/relayed",
+      ]);
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("http://[::1]:7317") });
+      request.mockResolvedValueOnce(Response.json({ url: "http://127.0.0.1:7317" }));
+      await openExternal("http://127.1.2.3:8080/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      expect(opened.at(-1)).toBe("http://127.1.2.3:8080/");
+      request.mockRejectedValueOnce(new Error("connection failed"));
+      await openExternal("http://[::1]:8080/", "link", false, { id: "ssh-pc", kind: "ssh" });
+      expect(opened.at(-1)).toBe("http://[::1]:8080/");
+    } finally {
+      setTransport(transport);
+      request.mockRestore();
+      for (const name of ["window", "location"] as const) {
+        if (originals[name]) Object.defineProperty(globalThis, name, originals[name]);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
   });
 });
 
@@ -104,6 +155,21 @@ describe("reserveTab", () => {
     expect(tab.opener).toBeNull();
     withWindowOpen(() => null, () => { reserved = reserveTab(); });
     expect(reserved).toBeNull();
+  });
+
+  it("holds a browser tab with no opener while a forwarded link is resolved", async () => {
+    const shown: string[] = [];
+    const tab = { opener: {} as unknown, closed: false, location: { replace: (address: string) => shown.push(address) } };
+    const forwarding = Promise.withResolvers<string>();
+    let pending: void | Promise<void> = undefined;
+    expect(withWindowOpen(() => tab, () => {
+      pending = createWebLinkOpener()("http://localhost:5173/", false, forwarding.promise);
+    })).toEqual([["about:blank", "_blank"]]);
+    expect(tab.opener).toBeNull();
+    expect(shown).toEqual([]);
+    forwarding.resolve("http://ovis-ssh-pc-5173.localhost:42001/");
+    await pending;
+    expect(shown).toEqual(["http://ovis-ssh-pc-5173.localhost:42001/"]);
   });
 });
 

@@ -248,6 +248,21 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
   });
 
   describe("forwards", () => {
+    it("closes an individual browser forward without ending the machine connection", async () => {
+      const { ssh, ask } = fixture();
+      await ssh.start(ask("unused"));
+      const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      const port = free.port;
+      free.stop(true);
+      const forward = await ssh.forward(port, 5173, true);
+      expect(forward.listening()).toBe(true);
+      await forward.close();
+      expect(forward.listening()).toBe(false);
+      expect(ssh.connected()).toBe(true);
+      const reclaimed = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+      reclaimed.stop(true);
+    });
+
     for (const [how, extra] of [["", {}], [" behind a ProxyJump", { FAKE_JUMP: "1" }], [" with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`opens the loopback port, and its ending ends the connection${how}`, async () => {
       const { ssh, ask } = fixture({ FAKE_TUNNEL_ENDS_AT: "1", ...extra });
       await ssh.start(ask("unused"));

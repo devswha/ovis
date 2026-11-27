@@ -6,7 +6,7 @@
  * it: a tap still opens the link, a swipe over one still scrolls, and a press on other words still
  * selects them.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useState } from "react";
 import { ExternalLink, Link2, Share2 } from "lucide-react";
 
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
@@ -15,6 +15,7 @@ import { useT } from "../lib/i18n.ts";
 import { inAndroidApp } from "../lib/nativeApp.ts";
 import { useSettings } from "../lib/settings.ts";
 import { openExternal } from "../lib/externalLink.ts";
+import { MachineRosterContext } from "../lib/machineContext.tsx";
 
 export function pressedLink(event: MouseEvent): HTMLAnchorElement | null {
   // Android ends a dragged text selection with a contextmenu typed "mouse": that is the selection's, not the link's
@@ -34,6 +35,7 @@ function hostOf(href: string): string {
 export function MarkdownLinkMenu() {
   const t = useT();
   const { settings } = useSettings();
+  const roster = useContext(MachineRosterContext);
   const [pressed, setPressed] = useState<{ link: HTMLAnchorElement; point: { x: number; y: number } } | null>(null);
   const close = useCallback(() => setPressed(null), []);
   useEffect(() => {
@@ -58,7 +60,7 @@ export function MarkdownLinkMenu() {
     { id: "copy", label: t("Copy link"), icon: Link2, run: () => { void copyText(href); } },
     { id: "open", label: t("Open link"), icon: ExternalLink, run: () => {
       if (link.isConnected) link.click();
-      else openExternal(href, "link", settings.reuseExternalLinkTab);
+      else void openExternal(href, "link", settings.reuseExternalLinkTab, roster?.current.find((machine) => machine.id === link.dataset.linkMachine));
     } },
     ...(typeof navigator.share === "function" ? [{ id: "share", label: t("Share link"), icon: Share2, run: () => {
       // the share sheet rejects when the user closes it: nothing to tell them

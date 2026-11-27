@@ -29,7 +29,7 @@ import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from
 import type { FoundHerdrSession, FoundOvis } from "../shared/machines.ts";
 import { DESKTOP_APP_UPDATES, REVISION, type UpdateStatus } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
-import { SshConnection, sshClient } from "./ssh.ts";
+import { SshConnection, sshClient, type SshForward } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
@@ -55,6 +55,19 @@ import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAd
 const RELAY_FOUND_MS = 10 * 60_000;
 /** the account service keeps an admission for 10 minutes: a key made for another PC of the account waits no longer */
 const ACCOUNT_PC_MS = 10 * 60_000;
+const WEB_FORWARDS_PER_MACHINE = 8;
+
+export class MachineForwardError extends Error {
+  constructor(readonly code: "machine_not_found" | "forward_not_ssh" | "machine_offline" | "forward_busy" | "forward_failed", message: string) {
+    super(message);
+  }
+}
+
+interface WebForwards {
+  open: Map<number, { port: number; ssh: SshForward }>;
+  pending: Map<number, Promise<number>>;
+  tail: Promise<unknown>;
+}
 
 export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
@@ -72,6 +85,7 @@ type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: Se
 interface Runtime {
   machine: Machine;
   ssh?: SshConnection;
+  webForwards?: WebForwards;
   tunnel?: RelayPcTunnel;
   forward?: AddressPcForward;
   routeProbes?: RouteProbes;
@@ -1941,6 +1955,53 @@ export class MachineManager {
     await ssh.forward(port, descriptor.port);
     return { url: `http://127.0.0.1:${port}`, token: descriptor.token };
   }
+  /** A browser's local TCP forward is separate from the bridge and belongs to this SSH connection. */
+  async forwardWebPort(id: string, remotePort: number, ovisPort: number): Promise<number> {
+    const runtime = this.machines.get(id);
+    if (id === LOCAL_MACHINE || (runtime && runtime.machine.kind !== "ssh")) throw new MachineForwardError("forward_not_ssh", "This PC is not connected over SSH");
+    if (!runtime) throw new MachineForwardError("machine_not_found", "PC not found");
+    const ssh = runtime.ssh;
+    const offline = () => new MachineForwardError("machine_offline", "Connect this PC over SSH first");
+    if (!ssh?.connected() || runtime.machine.state !== "connected") throw offline();
+    const forwards = runtime.webForwards ??= { open: new Map(), pending: new Map(), tail: Promise.resolve() };
+    const pending = forwards.pending.get(remotePort);
+    if (pending) return pending;
+    const existing = forwards.open.get(remotePort);
+    if (existing?.ssh.listening()) return existing.port;
+    forwards.open.delete(remotePort);
+    if (forwards.pending.size >= WEB_FORWARDS_PER_MACHINE) throw new MachineForwardError("forward_busy", "Too many ports are being opened for this PC");
+
+    const current = () => runtime.ssh === ssh && runtime.webForwards === forwards && runtime.machine.state === "connected" && ssh.connected();
+    const opening = forwards.tail.then(async () => {
+      if (!current()) throw offline();
+      try {
+        const port = await freePort();
+        // If Ovis listens only on another interface, freePort may still pick its port number.
+        if (port === ovisPort) throw new Error("That port is in use by Ovis");
+        if (!current()) throw offline();
+        const oldest = forwards.open.entries().next().value;
+        if (forwards.open.size >= WEB_FORWARDS_PER_MACHINE && oldest) {
+          await oldest[1].ssh.close();
+          forwards.open.delete(oldest[0]);
+        }
+        if (!current()) throw offline();
+        const tunnel = await ssh.forward(port, remotePort, true);
+        if (!current() || !tunnel.listening()) {
+          await tunnel.close();
+          if (!current()) throw offline();
+          throw new Error("The port forward is no longer listening");
+        }
+        forwards.open.set(remotePort, { port, ssh: tunnel });
+        return port;
+      } catch {
+        if (!current()) throw offline();
+        throw new MachineForwardError("forward_failed", "Ovis could not open this SSH port forward");
+      }
+    }).finally(() => forwards.pending.delete(remotePort));
+    forwards.pending.set(remotePort, opening);
+    forwards.tail = opening.catch(() => undefined);
+    return opening;
+  }
   private pause(signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
       const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
@@ -2393,6 +2454,12 @@ export class MachineManager {
     runtime.observer?.close(); runtime.observer = undefined;
     for (const close of runtime.terminals) close(); runtime.terminals.clear();
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
+    const webForwards = runtime.webForwards;
+    runtime.webForwards = undefined;
+    if (webForwards) {
+      for (const { ssh } of webForwards.open.values()) void ssh.close().catch(() => {});
+      webForwards.open.clear();
+    }
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
     runtime.forward?.close(); runtime.forward = undefined;
     if (runtime.hc?.bridge) {
