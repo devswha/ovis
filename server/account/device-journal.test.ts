@@ -7,7 +7,7 @@ import { parseSnapshotPage } from "../../shared/account-snapshot.ts";
 import { DEVICE_COOKIE } from "../auth.ts";
 import { DeviceStore, readDeviceRegistry } from "../devices.ts";
 import { relayFixture } from "../relay/test-helpers.ts";
-import { DeviceJournal, JOURNAL_FILE, OPEN_NOTICES_MAX } from "./device-journal.ts";
+import { DeviceJournal, JOURNAL_FILE, JOURNAL_MAX, OPEN_NOTICES_MAX } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
 import { SafetyLog } from "./safety-log.ts";
@@ -260,10 +260,10 @@ describe("the device journal (P10, P15)", () => {
     expect(journal.admitsFromList()).toBe(true);
     admit(journal, "ffffffffffffffff", 999);
     expect(journal.admitsFromList()).toBe(false);
-    // Seed a full history in one write: 1,100 appends would rewrite and flush the whole file each time.
+    // Fill the history to the cap in one write (an append rewrites and flushes the whole file), so the next append trims.
     const path = join(dir, JOURNAL_FILE);
     const doc = JSON.parse(readFileSync(path, "utf8")) as { next_seq: number; entries: unknown[] };
-    for (let index = 0; index < 1_100; index += 1) {
+    for (let index = doc.entries.length; index < JOURNAL_MAX; index += 1) {
       doc.entries.push({ kind: "drop", how: "list", key: null, no: 1, row: "eeeeeeeeeeeeeeee", label: "x", by: null, account: "acct_1",
         seq: doc.next_seq, id: `drop${index}`, at: new Date(0).toISOString() });
       doc.next_seq += 1;
@@ -272,7 +272,7 @@ describe("the device journal (P10, P15)", () => {
     const full = DeviceJournal.open(dir);
     full.append({ kind: "drop", how: "list", key: null, no: 1, row: "eeeeeeeeeeeeeeee", label: "x", by: null, account: "acct_1" });
     const reopened = DeviceJournal.open(dir);
-    expect(reopened.entries().length).toBeLessThanOrEqual(1_000);
+    expect(reopened.entries()).toHaveLength(JOURNAL_MAX);
     expect(reopened.openNotices()).toHaveLength(OPEN_NOTICES_MAX);
     reopened.decide(reopened.openNotices()[0]!.id);
     expect(reopened.admitsFromList()).toBe(true);
