@@ -9,8 +9,9 @@
  * the one-time migration (T50). Read only while OVIS_ACCOUNT_OPENS_ALL is on.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isIsoTime } from "../../shared/account-records.ts";
 import { writePrivateState } from "../private-state.ts";
 import { logAccess } from "../connection-diagnostics.ts";
 import { ADMISSION_FILE, type OriginFrom, type OriginHow, type RowOrigin } from "./admission-order.ts";
@@ -51,13 +52,21 @@ export const FIRST_LISTING_MS = 10 * 60_000;
 export const UNPINNED_CLEAR = "unpinned";
 /** Who made an `unlisted` clear when the account's signed list removed this PC: an entry a member signed, never the account service's word. */
 export const LIST_REMOVED = "list";
+const MOVE_CLEAR = "move";
 // A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
 /** `admits`: this PC's next admission number when it cleared, so what it admitted since can be told from what it kept. */
 /**
  * `removed_as`: the account's signed list removed this PC (`by` LIST_REMOVED): the account it was removed from and the
  * relay identity it had. That identity joins that account again on no path.
  */
-export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string; readonly admits?: number; readonly removed_as?: { readonly account: string; readonly server_id: string } }
+export interface AccountClear {
+  readonly bind_id: string;
+  readonly reason: ClearReason | "left_on_pc";
+  readonly by: string;
+  readonly admits?: number;
+  readonly removed_as?: { readonly account: string; readonly server_id: string };
+  readonly moved?: { readonly from: string; readonly into: string; readonly at: string };
+}
 export interface AccountBinding {
   readonly account: string;
   readonly bind_id: string;
@@ -141,7 +150,11 @@ export function parsePcAccount(value: unknown): (PcDoc & { counterOnly?: true })
   if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string"
     && (clear.admits === undefined || (Number.isSafeInteger(clear.admits) && clear.admits >= 0))
     && (clear.removed_as === undefined || (typeof clear.removed_as === "object" && clear.removed_as !== null && typeof clear.removed_as.account === "string" && ACCOUNT.test(clear.removed_as.account)
-      && typeof clear.removed_as.server_id === "string" && ID.test(clear.removed_as.server_id))))) return "invalid clears";
+      && typeof clear.removed_as.server_id === "string" && ID.test(clear.removed_as.server_id)))
+    && (clear.moved === undefined || (typeof clear.moved === "object" && clear.moved !== null
+      && typeof clear.moved.from === "string" && ACCOUNT.test(clear.moved.from)
+      && typeof clear.moved.into === "string" && ACCOUNT.test(clear.moved.into) && clear.moved.from !== clear.moved.into
+      && isIsoTime(clear.moved.at))))) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
@@ -198,7 +211,9 @@ export function restampMemberProblem(path: string, pc: (PcDoc & { counterOnly?: 
     return "A pending binding names a different account from the other folder's binding";
   }
   const binding = merge === null ? settleLink(pc?.binding ?? null, pc?.first?.key ?? null, rows) : merge.binding;
-  const accounts = rows.flatMap(row => row.account === undefined ? [] : [row.account]);
+  const movedFrom = new Set((merge?.clears ?? pc?.clears ?? []).flatMap(clear =>
+    clear.moved !== undefined && clear.moved.from !== binding?.account ? [clear.moved.from] : []));
+  const accounts = rows.flatMap(row => row.account === undefined || movedFrom.has(row.account) ? [] : [row.account]);
   const migrating = pc === null || pc.counterOnly === true;
   return memberBindingProblem(path, (migrating ? merge?.inherited?.account ?? accounts[0] : binding?.account) ?? null, accounts);
 }
@@ -210,6 +225,49 @@ const LOCK_WAIT_MS = 500;
 /** The wall clock, whatever a test set `Date.now` to: a lock's age is real time. */
 const wallNow = (): number => performance.timeOrigin + performance.now();
 
+/** A lock as one look at it found it: which file it is (its inode and change time, to the nanosecond) and how old. */
+function lockSeen(lock: string): { readonly id: string; readonly age: number } | null {
+  try {
+    const stat = statSync(lock, { bigint: true });
+    return { id: `${stat.ino}-${stat.ctimeNs}`, age: wallNow() - Number(stat.mtimeMs) };
+  } catch { return null; }
+}
+
+/**
+ * Removes the stale lock `seen` found, and never another: there is no unlink of "this file only", so the one writer
+ * that makes the claim named for that very lock looks again and removes it only while it is still the one there.
+ * Nobody else removes it meanwhile (they would need the same claim), and nobody makes a lock in its place while it is
+ * there, so a lock another writer made after it is never removed. True when the lock there is no longer the one seen.
+ * A claim its writer left behind (it ended while reclaiming) is itself taken over once that old.
+ */
+function reclaimLock(lock: string, seen: string): boolean {
+  const claim = `${lock}.${seen}.reclaim`;
+  try { closeSync(bindingFs.openSync(claim, "wx", 0o600)); } catch {
+    const left = lockSeen(claim);
+    if (left !== null && left.age > LOCK_STALE_MS) { try { bindingFs.unlinkSync(claim); } catch { /* another took it over */ } }
+    return lockSeen(lock)?.id !== seen;
+  }
+  try {
+    if (lockSeen(lock)?.id !== seen) return true;
+    bindingFs.unlinkSync(lock);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  } finally { try { bindingFs.unlinkSync(claim); } catch { /* a claim left behind is taken over once old */ } }
+}
+
+/**
+ * Whether the process that wrote `lock` (the pid it holds) is gone for certain: no process answers to that pid. A pid
+ * that answers may be another process that reuses it, so such a lock, as one that names nobody, waits out its age.
+ */
+function lockOwnerGone(lock: string): boolean {
+  let pid: number;
+  try { pid = Number(bindingFs.readFileSync(lock, "utf8").trim()); } catch { return false; }
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
 /**
  * One writer of `path` at a time, among every Ovis server that shares the folder (two can run on one state folder):
  * what `work` reads of the file it then writes is what is there. A lock another server holds is waited for, briefly;
@@ -220,17 +278,26 @@ export function withFileLock<T>(path: string, work: () => T): T {
   const deadline = performance.now() + LOCK_WAIT_MS;
   let held = false;
   for (;;) {
-    try { closeSync(bindingFs.openSync(lock, "wx", 0o600)); held = true; break; } catch (error) {
+    let fd: number;
+    try { fd = bindingFs.openSync(lock, "wx", 0o600); } catch (error) {
       // nothing is written without the lock: a folder that takes no lock file ends the write with an error
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error(`${path} cannot be locked (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
-      let age = Number.POSITIVE_INFINITY;
-      try { age = wallNow() - statSync(lock).mtimeMs; } catch { /* gone meanwhile: taken at the next turn */ }
-      // a lock left by a server that ended while it wrote is taken over. One that cannot be deleted is waited for
-      // like any other, and no longer: the wait ends in an error, never in a loop
-      if (age > LOCK_STALE_MS) { try { bindingFs.unlinkSync(lock); continue; } catch (gone) { if ((gone as NodeJS.ErrnoException).code === "ENOENT") continue; } }
+      const seen = lockSeen(lock);
+      // gone meanwhile: taken at the next turn
+      if (seen === null) continue;
+      // a lock left by a server that ended while it wrote (its process is gone, or it is that old) is taken over, that
+      // very lock alone. One that cannot be deleted is waited for like any other, and no longer: the wait ends in an
+      // error, never in a loop
+      if ((seen.age > LOCK_STALE_MS || lockOwnerGone(lock)) && reclaimLock(lock, seen.id)) continue;
       if (performance.now() >= deadline) throw new Error(`${path} is being written by another Ovis on this PC`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      continue;
     }
+    held = true;
+    // the lock names the process that holds it, so a start after that process was killed takes it over at once
+    try { writeSync(fd, String(process.pid)); } catch { /* a lock that names nobody waits out its age */ }
+    finally { closeSync(fd); }
+    break;
   }
   try { return work(); } finally { if (held) { try { bindingFs.unlinkSync(lock); } catch { /* already gone */ } } }
 }
@@ -277,6 +344,14 @@ const standingIn = (doc: PcDoc): AccountBinding | null => {
  * - the counters never go back, and a number given is one the file had not given.
  */
 function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string): PcDoc {
+  const from = base.binding;
+  const moving = from !== null && next.binding !== null && from.bind_id !== next.binding.bind_id
+    && next.clears.some(clear => clear.bind_id === from.bind_id && clear.moved !== undefined);
+  if (moving) {
+    const held = disk === null ? null : standingIn(disk);
+    if (held?.bind_id !== from.bind_id) throw new AccountRebindError(`${path}: the binding to move no longer stands`);
+    if (held.list !== undefined) throw new PinnedOnDiskError(`${path}: the binding to move is pinned to a signed list`);
+  }
   if (disk === null) return next;
   const clears = mergeClears(disk.clears, next.clears);
   const cleared = (binding: AccountBinding | null) => binding !== null && clears.some((clear) => clear.bind_id === binding.bind_id);
@@ -315,7 +390,7 @@ function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string):
     next_admit: step(next.next_admit, base.next_admit, disk.next_admit),
     gen: step(next.gen, base.gen, disk.gen),
     others_ever: next.others_ever || disk.others_ever,
-    first: next.first ?? disk.first,
+    first: moving ? null : next.first ?? disk.first,
   };
   if (disk.evidence_written === true) doc.evidence_written = true;
   if (JSON.stringify(next.service_step2) === JSON.stringify(base.service_step2) && disk.service_step2 !== undefined) doc.service_step2 = disk.service_step2;
@@ -330,6 +405,7 @@ export class RemovedOnDiskError extends Error {}
 
 /** A write that would end, on the account service's word, a binding the file on disk holds pinned: refused, whoever holds an older document. */
 export class PinnedOnDiskError extends Error {}
+export class AccountRebindError extends Error {}
 
 /** The file as it is written: its version says whether an Ovis that knows no list may read it (PcDoc.v). */
 function onDisk(doc: PcDoc): PcDoc {
@@ -345,7 +421,9 @@ function mergeClears(mine: readonly AccountClear[], theirs: readonly AccountClea
   const merged = new Map<string, AccountClear>();
   for (const clear of [...mine, ...theirs]) {
     const held = merged.get(clear.bind_id);
-    if (held === undefined || held.removed_as === undefined || clear.removed_as !== undefined) merged.set(clear.bind_id, clear);
+    if (held === undefined || clear.removed_as !== undefined || (held.removed_as === undefined && (held.moved === undefined || clear.moved !== undefined))) {
+      merged.set(clear.bind_id, clear);
+    }
   }
   return [...merged.values()];
 }
@@ -648,6 +726,20 @@ export class PcAccountState {
   bindByService(account: string, listingId?: string): void {
     if (this.doc.binding !== null) throw new Error("This PC is already in an account");
     this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true, listing_id: listingId }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
+  }
+
+  /** Replace the standing account without a moment in which the PC has no binding. */
+  rebind(fromBindId: string, { account, listing_id, at }: { readonly account: string; readonly listing_id: string; readonly at: string }): void {
+    this.refresh();
+    const binding = this.doc.binding;
+    if (binding === null || binding.bind_id !== fromBindId || binding.pending === true) {
+      throw new AccountRebindError(`${this.path}: the binding to move no longer stands`);
+    }
+    if (binding.list !== undefined) throw new PinnedOnDiskError(`${this.path}: the binding to move is pinned to a signed list`);
+    const clear: AccountClear = { bind_id: fromBindId, reason: "unlisted", by: MOVE_CLEAR, admits: this.doc.next_admit,
+      moved: { from: binding.account, into: account, at } };
+    this.write({ ...this.doc, binding: { account, listing_id, bind_id: randomBytes(16).toString("hex"), service: true },
+      clears: [...this.doc.clears, clear], first: null, others_ever: true, gen: this.doc.gen + 1 });
   }
 
   /**
