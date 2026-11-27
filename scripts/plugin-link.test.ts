@@ -761,6 +761,28 @@ describe("ovis link, on the PC itself", () => {
     });
   });
 
+  it("starts sign-in instead of returning early when the PC is in a merged account", async () => {
+    const local = localPc((_request, path) => {
+      if (path === "/api/account/status") return Response.json({ account: "acct_before", account_merged: true });
+      if (path === "/api/relay") return Response.json({ phase: "online", blocked: null });
+      return undefined;
+    });
+    const service = new FakeAccountService();
+    const stop = new AbortController();
+    let signIn: Response | undefined;
+    await link(["--account", "acct_after"], {
+      origin: ORIGIN, headers: {}, fetch: local.fetch, accountService: SERVICE, lines: answers(), terminal: true, isTty: true,
+      out: () => {}, signal: stop.signal, serviceFetch: async (input, init) => {
+        const request = new Request(input, init);
+        const response = await service.fetch(request);
+        signIn = response;
+        stop.abort();
+        return response;
+      },
+    });
+    expect(signIn?.ok).toBe(true);
+  });
+
   it("does not sign in when this PC is already in an account, or when the account service is off", async () => {
     let account: string | null = "acct_1";
     const local = localPc((_request, path) => path === "/api/account/status" ? Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] }) : undefined);

@@ -1361,7 +1361,7 @@ function runningVersion(): string | null {
 }
 
 /** The devices an owner's health answer lists apart (server/devices.ts accountGroups). */
-interface AccountDevices { readonly unlinked: readonly ShownDevice[]; readonly own_word: readonly ShownDevice[] }
+interface AccountDevices { readonly unlinked: readonly ShownDevice[]; readonly own_word: readonly ShownDevice[]; readonly before_merge: readonly ShownDevice[] }
 interface ShownDevice { readonly id: string; readonly label: string }
 
 /** The `account_devices` of a health answer, in the shape this command reads; null without one (an older server, or a caller that is not its owner). */
@@ -1370,7 +1370,7 @@ function accountDevicesOf(body: unknown): AccountDevices | null {
   const shown = (list: unknown): list is ShownDevice[] => Array.isArray(list)
     && list.every((device) => typeof device?.id === "string" && typeof device.label === "string");
   return typeof groups === "object" && groups !== null && shown(groups["unlinked"]) && shown(groups["own_word"])
-    ? { unlinked: groups["unlinked"], own_word: groups["own_word"] } : null;
+    ? { unlinked: groups["unlinked"], own_word: groups["own_word"], before_merge: shown(groups["before_merge"]) ? groups["before_merge"] : [] } : null;
 }
 
 /** One group's line: each device by its name and its id, neither with a control character. */
@@ -1391,17 +1391,17 @@ const listSummaryOf = (value: unknown): ListSummary | null => {
  * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
  * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
  */
-async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null; readonly merged: boolean } | { readonly problem: string } | null> {
   try {
     const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
     if (!response.ok) {
       const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
       return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
     }
-    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown; migrate_time_scale?: unknown };
+    const body = await response.json() as { account?: unknown; account_merged?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown; migrate_time_scale?: unknown };
     if (!(typeof body.account === "string" || body.account === null) || !Number.isSafeInteger(body.members)) return null;
     // null from a server from before the field
-    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list),
+    return { account: body.account, merged: body.account_merged === true, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list),
       scale: Number.isSafeInteger(body.migrate_time_scale) && (body.migrate_time_scale as number) > 1 ? body.migrate_time_scale as number : null };
   } catch { return null; }
 }
@@ -1438,6 +1438,7 @@ async function statusJson(): Promise<number> {
     relay: phase === null ? null : { on: phase !== "off", connected: phase === "online", phase },
     account: account?.account ?? null,
     account_known: account !== null,
+    ...(account?.merged ? { account_merged: true } : {}),
     waiting_for_add: account?.waiting ?? null,
     // a PC pinned to its account's signed list: the list, where the PC stands in it, and why it lets nobody in when it does not
     list: account?.list ?? null,
@@ -1464,6 +1465,10 @@ async function status(args: readonly string[] = []): Promise<number> {
     process.stdout.write(`account: ${account.account === null ? "none (run ovis login)" : `${shortAccount(account.account)} (${account.members} device${account.members === 1 ? "" : "s"})`}\n`);
   }
   if (typeof answer?.relay === "string") process.stdout.write(`relay: ${answer.relay}\n`);
+  const told = await accountTold();
+  if (told !== null && "merged" in told && told.merged) {
+    process.stdout.write("This PC's account was merged into another one. Run ovis add on this PC: the devices paired with it stay.\n");
+  }
   // the groups of the app's own answer, which carries no token: on a machine profile's owner socket, or over TCP when
   // the app lets the command in without one. Nothing proves which program holds a TCP port, so no token goes there
   const devices = answer?.devices ?? null;
@@ -1471,6 +1476,7 @@ async function status(args: readonly string[] = []): Promise<number> {
     // relay rows only: a browser paired on the PC's own address is outside the account too, and listed in Settings → Devices
     process.stdout.write(deviceLine("relay devices outside the account", devices.unlinked));
     process.stdout.write(deviceLine("devices that joined the account on their own word", devices.own_word));
+    if (devices.before_merge.length) process.stdout.write(deviceLine("devices paired before the account merge", devices.before_merge));
   } else if (answer !== null) {
     // the answer of an app that is not its owner's (a token, a pairing or the owner's login needed, the open LAN), or of a
     // release from before the groups: only the token is something to name

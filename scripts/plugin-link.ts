@@ -2422,14 +2422,14 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const { out, signal } = options;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
-  const status = () => api<{ account: string | null; enrolling?: boolean; list?: { needs_keys?: boolean } }>("GET", "/api/account/status");
-  let first: { account: string | null; enrolling?: boolean; list?: { needs_keys?: boolean } };
+  const status = () => api<{ account: string | null; account_merged?: true; enrolling?: boolean; list?: { needs_keys?: boolean } }>("GET", "/api/account/status");
+  let first: Awaited<ReturnType<typeof status>>;
   try { first = await status(); } catch (error) {
     if (!(error instanceof LocalError && error.status === 404)) throw error;
     out("The Ovis running on this PC is older than link needs. Update it in Settings → Updates (or reinstall the plugin), then run this again.\n");
     return 1;
   }
-  if (first.account !== null) {
+  if (first.account !== null && first.account_merged !== true) {
     // a script's --account names the account it means: another one is never reported as done, nor switched to
     if (mode.account !== undefined && !pins(mode.account, first.account)) {
       out(`${inAnotherAccount(options, first.account, `${cli(options)} add`)}\n`);
