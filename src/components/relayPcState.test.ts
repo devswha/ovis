@@ -16,7 +16,7 @@ describe("outOfReachReason", () => {
       .toBe("This device could not reach the relay. Check this device's network. Checked 5 min ago.");
   });
 
-  it("keeps the last finding on screen while a new check runs", () => {
+  it("reads the last finding while a new check runs", () => {
     expect(outOfReachReason({ displayState: "offline", last_seen_at: null, check: { kind: "checking", previous: { kind: "offline", reason: "pc", at: NOW - 5 * MIN } } }, t, NOW))
       .toBe("The relay answered, but the PC did not. Checked 5 min ago.");
   });

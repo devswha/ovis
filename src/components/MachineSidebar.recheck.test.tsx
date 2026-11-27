@@ -145,8 +145,8 @@ it("offers no Check again for a connected PC or an off PC of the relay, and to a
   expect(recheckButtons()).toHaveLength(0);
   expect(page.container.querySelectorAll('[class="machine-off"]')).toHaveLength(0);
   // the relay took the connection and nothing answered in time: it cannot be reached, and may be off, no more
-  expect(page.one('[class^="machine-dot"]').getAttribute("title")).toBe("Can't reach the PC: it may be off");
-  expect(page.one('[class="machine-state visually-hidden"]').textContent).toBe("Can't reach the PC: it may be off");
+  expect(page.one('[class^="machine-dot"]').getAttribute("title")).toBe("The PC is not answering");
+  expect(page.one('[class="machine-state visually-hidden"]').textContent).toBe("The PC is not answering");
   await page.render(null);
   await mount([local, sshPc({})], true);
   expect(recheckButtons()).toHaveLength(0);
