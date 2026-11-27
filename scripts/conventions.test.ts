@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
+import { browserScriptFiles, demoLaunchCounts, demoLaunches, directContextCounts, directContexts } from "./direct-contexts.ts";
 import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
@@ -349,6 +350,36 @@ describe("turn waits", () => {
     expect(covered).toContain("server/core/codex-status-hub.test.ts");
     expect(covered).toContain("scripts/ui-regression.ts");
     expect(covered).not.toContain("server/core/status.ts");
+  });
+});
+
+describe("browser contexts", () => {
+  countRatchet({
+    json: "scripts/direct-contexts.json", what: "direct context", counts: directContextCounts, list: directContexts, print: "bun scripts/direct-contexts.ts", covered: browserScriptFiles,
+    instead: "Open a context through the shared factory, not with Playwright's own call: `newContext(overrides)` of withDemoBrowser's session (scripts/demo-browser.ts), taken from the session by name, or `appContext(browser, overrides)` from scripts/app-context.ts. Both start from the same context (no service worker, English); what a script needs different goes in `overrides`.",
+  });
+
+  it("counts a call on a browser, and neither the session's helper nor a mention", () => {
+    const found = (text: string) => directContexts("scripts/x-regression.ts", text).length;
+    expect(found("const context = await browser.newContext({ locale: \"en-US\" });\nconst second = await browser!\n  .newContext();")).toBe(2);
+    expect(found("const context = await chromium.launchPersistentContext(profile, { headless: true });")).toBe(1);
+    expect(found("const context = await newContext({ viewport });\nconst other = await appContext(browser, { viewport });")).toBe(0);
+    expect(found("// was browser.newContext()\nconsole.log(\"browser.newContext() is counted\");")).toBe(0);
+  });
+});
+
+describe("demo launches", () => {
+  countRatchet({
+    json: "scripts/demo-launches.json", what: "demo launch", counts: demoLaunchCounts, list: demoLaunches, print: "bun scripts/direct-contexts.ts --launches", covered: browserScriptFiles,
+    instead: "Run a script that checks the demo inside withDemoBrowser (scripts/demo-browser.ts), which builds the demo app, serves it and launches Chromium the same way for every script, in place of buildDemoApp and chromium.launch of its own. A snippet for the page goes in `beforeTransport` or `afterTransport`.",
+  });
+
+  it("counts a launch only in a script that builds the demo itself", () => {
+    const found = (text: string) => demoLaunches("scripts/x-demo-regression.ts", text).length;
+    expect(found("await buildDemoApp(app);\nconst browser = await chromium.launch({ headless: true });")).toBe(1);
+    expect(found("await buildDevelopmentDemoApp(app);\nconst browser = await chromium\n  .launch();")).toBe(1);
+    expect(found("const server = await createServer();\nconst browser = await chromium.launch({ headless: true });")).toBe(0);
+    expect(found("await withDemoBrowser({ tempPrefix: \"x-\" }, async ({ newContext }) => { await newContext(); });")).toBe(0);
   });
 });
 
