@@ -56,11 +56,10 @@ describe("sign-in methods", () => {
       },
     } });
     try {
-      const after = await service.addMethod("apple", async (linkToken, bearer, generation) => {
-        const redeemed = await nativeSignIn("apple", { store, service: SERVICE, fetch: fake.fetch, link: { linkToken, bearer, generation } });
-        expect(await store.get("session")).toEqual(before);
-        return redeemed;
-      });
+      const started = await service.startMethodLink("apple");
+      const redeemed = await nativeSignIn("apple", { store, service: SERVICE, fetch: fake.fetch, link: started });
+      expect(await store.get("session")).toEqual(before);
+      const after = await service.installMethodLink(started, redeemed, started.link);
       expect(after).toMatchObject({ account: before.account, provider: "apple" });
     } finally {
       if (capacitor === undefined) Reflect.deleteProperty(globalThis, "Capacitor");

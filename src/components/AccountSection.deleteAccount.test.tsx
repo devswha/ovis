@@ -501,7 +501,7 @@ describe("deleting the account from Settings", () => {
   });
 
   it("shows the latest changes to the ways in under the chips in Manage account's sheet", async () => {
-    methodChanges = [{ kind: "add", provider: "google", at: "2026-11-27T12:00:00.000Z", device_no: 3 }];
+    methodChanges = [{ kind: "add", provider: "google", at: new Date(2026, 10, 27, 12).toISOString(), device_no: 3 }];
     await signedIn();
     const changes = (): string[] => [...document.body.querySelectorAll('[data-testid="manage-account"] .account-methods [data-testid="account-method-history"] li')].map(text);
     await until(() => changes().length > 0);

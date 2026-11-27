@@ -417,11 +417,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   keepShellAccount(account.enabled ? {
     signOut: account.signOut, leave: account.leave,
     signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
+    signInAgainForMethod: (shown, add) => account.signInAgainForMethod(shown, add, entry.serverId ?? undefined),
     signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
     methods: account.methods,
-    offered: account.offered,
-    addMethod: (provider) => account.addMethod(provider, entry.serverId ?? undefined),
+    offered: account.listed,
+    addMethod: async (provider, shown) => { await account.addMethod(provider, shown, entry.serverId ?? undefined); },
     removeMethod: account.removeMethod,
     methodsChange: () => account.methodsChange,
     deleteAccount: async () => {
@@ -1556,7 +1557,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the PC whose own page started the sign-in this load returns from: its connecting screen keeps this page from launching
   let returningPc: string | undefined;
   if (left) return;
-  await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
+  const addingMethod = await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
     if (entries !== loaded) return;
     returning = kept;
     show({ kind: "failed", failure: "sign-in-first", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id, account: account.state });
@@ -1581,6 +1582,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     returningPc = serverId;
     show({ kind: "connecting", name: null });
   });
+  if (addingMethod) return;
   if (returningPc !== undefined) {
     if (!left && entries === loaded) await showFront();
     return;

@@ -9,8 +9,8 @@
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
 import { AccountService, requestToken } from "./service.ts";
-import { beginSignIn, finishIssuedSignIn, finishOwnSignIn, type FinishOptions } from "./signin.ts";
-import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
+import { beginSignIn, finishIssuedSignIn, finishOwnSignIn, takePendingSignIn, type FinishOptions } from "./signin.ts";
+import type { AccountProvider, AccountSession, AccountStore, LinkSignIn } from "./store.ts";
 
 export const AUTH_PLUGIN = "OvisAuth";
 export const NATIVE_REDIRECT = "ovis://account/callback";
@@ -35,7 +35,7 @@ export async function nativeSignIn(provider: AccountProvider, options: {
   readonly service: string;
   readonly wanted?: () => boolean | Promise<boolean>;
   readonly fetch?: FinishOptions["fetch"];
-  readonly link?: { readonly linkToken: string; readonly bearer: string; readonly generation: string };
+  readonly link?: { readonly linkToken: string; readonly link: LinkSignIn; readonly generation: string };
 }): Promise<AccountSession> {
   const { link } = options;
   if (provider === "apple" && link === undefined && !inAndroidApp()) {
@@ -47,11 +47,17 @@ export async function nativeSignIn(provider: AccountProvider, options: {
     return finishIssuedSignIn(session, generation, options);
   }
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT,
-    ...(link === undefined ? {} : { linkToken: link.linkToken, generation: link.generation }) });
-  if (options.wanted !== undefined && !await options.wanted()) throw new SignInNotWanted();
-  if (link !== undefined) await AccountService.checkGeneration(options.store, link.generation);
-  const { url: callback } = await callNative<{ url: string }>(AUTH_PLUGIN, "authenticate", { url });
-  const back = new URL(callback);
+    ...(link === undefined ? {} : { linkToken: link.linkToken, generation: link.generation, link: link.link }) });
+  let back: URL;
+  try {
+    if (options.wanted !== undefined && !await options.wanted()) throw new SignInNotWanted();
+    if (link !== undefined) await AccountService.checkGeneration(options.store, link.generation);
+    const { url: callback } = await callNative<{ url: string }>(AUTH_PLUGIN, "authenticate", { url });
+    back = new URL(callback);
+  } catch (error) {
+    await takePendingSignIn(options.store, new URL(url).searchParams.get("state") ?? "");
+    throw error;
+  }
   return finishOwnSignIn(url, back.hash.length > 1 ? back.hash : back.search, { store: options.store,
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }), ...(link === undefined ? {} : { bearer: link.bearer }) });
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
 }

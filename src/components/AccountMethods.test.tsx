@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { act } from "react";
 
 import type { AccountIdentity, AccountIdentityChange, AccountIdentityList } from "../lib/account/service.ts";
-import { indexedAccountStore, memoryAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
+import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { HostedAccountMethods } from "./AccountMethods.tsx";
@@ -10,14 +10,15 @@ import { HostedAccountMethods } from "./AccountMethods.tsx";
 type Shell = Parameters<typeof HostedAccountMethods>[0]["signIn"];
 type Outcome = ReturnType<NonNullable<Shell["methodsChange"]>>;
 
-// noon UTC: the same day of the month in every time zone a test runs in
-const at = (day: number): string => `2026-11-${String(day).padStart(2, "0")}T12:00:00.000Z`;
+// Use local dates: the chip shows the local calendar day of the service's ISO instant.
+const at = (day: number): string => new Date(2026, 10, day, 12).toISOString();
+const session: AccountSession = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 };
 const way = (provider: AccountProvider): AccountIdentity => ({ provider, added_at: at(1) });
 const changed = (kind: AccountIdentityChange["kind"], provider: AccountProvider, day: number, device_no: number | null): AccountIdentityChange => ({ kind, provider, at: at(day), device_no });
 const ways = (providers: readonly AccountProvider[], history: AccountIdentityChange[] = []): AccountIdentityList => ({ identities: providers.map(way), history });
 
 const shell = (extra: Partial<Shell> = {}): Shell => ({
-  provider: "github", account: "acct",
+  provider: "github", account: "acct", session,
   methods: async () => ways(["github", "google"]),
   offered: async () => ["github", "google", "apple"],
   addMethod: async () => {}, removeMethod: async () => {},
@@ -50,6 +51,7 @@ describe("the hosted Manage account's ways to sign in", () => {
   it.each([
     { offered: ["github", "google", "apple"] as const, adds: ["apple"] },
     { offered: ["github", "google"] as const, adds: [] },
+    { offered: [] as const, adds: [] },
   ])("shows the account's ways in as chips, and Add only for what the service offers ($offered) and the account lacks", async ({ offered, adds }) => {
     await show(shell({ offered: async () => offered }));
     expect(linked()).toEqual(["github", "google"]);
@@ -57,10 +59,10 @@ describe("the hosted Manage account's ways to sign in", () => {
   });
 
   it("asks the shell to add the provider whose Add was pressed", async () => {
-    const addMethod = jest.fn(async (_provider: AccountProvider): Promise<void> => {});
+    const addMethod = jest.fn(async (_provider: AccountProvider, _shown: AccountSession): Promise<void> => {});
     await show(shell({ addMethod }));
     await press(add("apple"));
-    expect(addMethod.mock.calls).toEqual([["apple"]]);
+    expect(addMethod.mock.calls).toEqual([["apple", session]]);
   });
 
   it.each([
@@ -75,10 +77,10 @@ describe("the hosted Manage account's ways to sign in", () => {
 
   it("removes the way in whose Remove was pressed, then reads the ways in again", async () => {
     let now = ways(["github", "google"]);
-    const removeMethod = jest.fn(async (_provider: AccountProvider): Promise<void> => { now = ways(["github"], [changed("remove", "google", 27, 2)]); });
+    const removeMethod = jest.fn(async (_provider: AccountProvider, _shown: AccountSession): Promise<void> => { now = ways(["github"], [changed("remove", "google", 27, 2)]); });
     await show(shell({ methods: async () => now, removeMethod }));
     await press(remove("google"));
-    expect(removeMethod.mock.calls).toEqual([["google"]]);
+    expect(removeMethod.mock.calls).toEqual([["google", session]]);
     expect(linked()).toEqual(["github"]);
     expect(recent()).toEqual(["Nov 27 · Google removed · Device 2"]);
   });
@@ -104,7 +106,7 @@ describe("the hosted Manage account's ways to sign in", () => {
     { does: "remove", provider: "google", error: "failed", says: "The sign-in method could not be removed. Try again.", steps: false },
   ] as const)("says under the row why the shell refused to $does a way in ($error), with the steps link only for a provider account another Ovis account holds", async ({ does, provider, error, says, steps }) => {
     let outcome: Outcome;
-    const refuse = async (asked: AccountProvider): Promise<void> => { outcome = { provider: asked, error }; };
+    const refuse = async (asked: AccountProvider): Promise<void> => { outcome = { account: session.account, provider: asked, error }; };
     await show(shell({ addMethod: refuse, removeMethod: refuse, methodsChange: () => outcome }));
     expect(alerts()).toHaveLength(0);
     await press(does === "add" ? add(provider) : remove(provider));
@@ -114,13 +116,22 @@ describe("the hosted Manage account's ways to sign in", () => {
   });
 
   it("says a link's refusal that came back with the page when the sheet opens, and not again in a sheet opened later", async () => {
-    const outcome = { provider: "apple", error: "in_use" } as const;
+    const outcome = { account: session.account, provider: "apple", error: "in_use" } as const;
     const signIn = shell({ methodsChange: () => outcome });
     await show(signIn);
     expect(alerts()).toHaveLength(1);
     await show(signIn, "opened again");
     expect(linked()).toEqual(["github", "google"]);
     expect(alerts()).toHaveLength(0);
+  });
+
+  it("shows a returned link's refusal only on the account that asked for it", async () => {
+    const outcome = { account: "acct", provider: "apple", error: "expired" } as const;
+    const signIn = shell({ account: "acct_other", methodsChange: () => outcome });
+    await show(signIn);
+    expect(alerts()).toHaveLength(0);
+    await show({ ...signIn, account: outcome.account }, "asking account");
+    expect(alerts()).toHaveLength(1);
   });
 
   describe("when the service wants a fresh sign-in first", () => {
@@ -130,26 +141,22 @@ describe("the hosted Manage account's ways to sign in", () => {
       const asked: AccountProvider[] = [];
       return {
         asked, freshNow: () => { fresh = true; },
-        addMethod: async (provider) => { asked.push(provider); outcome = { provider, error: fresh ? null : "reauth_required" }; },
+        addMethod: async (provider, from) => { asked.push(provider); outcome = { account: from.account, provider, error: fresh ? null : "reauth_required" }; },
         methodsChange: () => outcome,
       };
     };
     const signInAgain = (): HTMLElement | null => page.container.querySelector<HTMLElement>(".account-reauth button");
 
     it("says to sign in again with the provider this device uses, and its button starts the shell's sign-in with it", async () => {
-      const leaves = jest.fn((_provider: AccountProvider): void => {});
-      await show(shell({ ...stale(), signInAgain: leaves }));
+      const leaves = jest.fn(async (_from: AccountSession, _add: AccountProvider | undefined): Promise<void> => {});
+      await show(shell({ ...stale(), signInAgainForMethod: leaves }));
       await press(add("apple"));
       expect(page.one(".account-reauth p").textContent).toBe("To change how you sign in, sign in again with GitHub first.");
       await press(signInAgain()!);
-      expect(leaves.mock.calls).toEqual([["github"]]);
+      expect(leaves.mock.calls).toEqual([[session, "apple"]]);
     });
 
     it("signs in again in place where the shell can, then makes the change that was asked", async () => {
-      const session: AccountSession = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 };
-      const store = memoryAccountStore();
-      await store.set("session", session);
-      spyOn(indexedAccountStore, "get").mockImplementation((name) => store.get(name));
       const link = stale();
       const freshSignIn = jest.fn(async (from: AccountSession): Promise<AccountSession | null> => { link.freshNow(); return from; });
       await show(shell({ ...link, freshSignIn }));

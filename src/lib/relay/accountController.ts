@@ -989,7 +989,7 @@ export function createAccountController(mount: RelayShellMount, view: {
   };
   const openSignIn = mount.openSignIn ?? ((url: string) => window.location.assign(url));
   const methods = accountMethods(account, {
-    store: accountStore, service: accountService, open: openSignIn, changed, refresh: () => refresh(false, true, "skip"),
+    store: accountStore, service: accountService, open: openSignIn, changed, refresh: reread, register: registerSignIn,
     ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}),
   });
   /** `pairing`: a web sign-in leaves the page, so the pairing it is for waits in its pending record (load hands it back) */
@@ -1028,16 +1028,17 @@ export function createAccountController(mount: RelayShellMount, view: {
    * `ended`: told how that sign-in itself ended (`refused`: the reason shown; null once its code was traded), whatever
    * session another tab may have stored meanwhile, as soon as the code is traded and before the directory is read;
    * undefined when the return carried no pairing and no PC. `toPc`: told of the PC whose own page started the returned
-   * sign-in, once it is taken, before the code is traded (as `carried`).
+   * sign-in, once it is taken, before the code is traded (as `carried`), except when signing in again to Add. A true
+   * result means Add started another redirect, so the shell must not navigate to a PC or launch one on this page.
    */
-  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void, ended?: (outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined) => void, toPc?: (serverId: string) => void): Promise<void> => {
+  const load = async (returned: SignInReturn | null, carried?: (pairing: PendingPairing) => void, ended?: (outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined) => void, toPc?: (serverId: string) => void): Promise<true | void> => {
     let outcome: { readonly refused: string | null; readonly provider: AccountProvider } | undefined;
     let registrationJustTried: AccountSession | undefined;
     if (returned !== null && accountService !== null) {
       const pending = await takePendingSignIn(accountStore, returned.state);
       if (pending?.link !== undefined) {
         if (pending.pc !== undefined) toPc?.(pending.pc);
-        const result = await methods.finish(pending, returned);
+        const result = await methods.finish({ ...pending, link: pending.link }, returned);
         ended?.(pending.pc === undefined ? undefined : {
           provider: pending.provider, refused: result.error === null ? null : signInFailure(result.error),
         });
@@ -1046,7 +1047,7 @@ export function createAccountController(mount: RelayShellMount, view: {
       }
       accountView = { kind: "signing-in", ...(pending ? { provider: pending.provider } : {}) };
       if (pending?.pairing) carried?.(pending.pairing);
-      else if (pending?.pc !== undefined) toPc?.(pending.pc);
+      else if (pending?.pc !== undefined && pending.resume_add === undefined) toPc?.(pending.pc);
       await changed();
       try {
         const session = await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
@@ -1062,6 +1063,7 @@ export function createAccountController(mount: RelayShellMount, view: {
         } else {
           registrationJustTried = session;
           await registerSignIn(session);
+          if (pending?.resume_add?.account === session.account && await methods.addMethod(pending.resume_add.provider, session, pending.pc)) return true;
           if (pending?.pc !== undefined) outcome = { refused: null, provider: pending.provider };
         }
       } catch (error) {
@@ -1069,6 +1071,7 @@ export function createAccountController(mount: RelayShellMount, view: {
         if (pending?.pairing || pending?.pc !== undefined) outcome = { refused: signInFailure(error), provider: pending!.provider };
         await changed();
       }
+      if (pending?.resume_add !== undefined && pending.pc !== undefined) toPc?.(pending.pc);
       ended?.(outcome);
     }
     await refresh(true, false, registrationJustTried);
@@ -1626,5 +1629,5 @@ export function createAccountController(mount: RelayShellMount, view: {
   return { dispose, get state() { return accountView; }, /** this page's copy of its account's list, or null */ get list() { return lists; }, get directory() { return directory; }, get listKey() { return listKey(); }, /** the account, list and key in it that listKey is this device's for: read with it */ get listScope() { return listKey() === null || lists === null ? null : scopeOf(lists.view()); }, listHolds, listSays, listTimeOver, readList, sessionOpened, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh,
-    methods: methods.methods, addMethod: methods.addMethod, removeMethod: methods.removeMethod, get methodsChange() { return methods.last; } };
+    methods: methods.methods, addMethod: methods.addMethod, removeMethod: methods.removeMethod, signInAgainForMethod: methods.signInAgain, get methodsChange() { return methods.last; } };
 }

@@ -1,38 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { FakeAccountService, LINK_TOKEN_TTL_S, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import { LINK_TOKEN_TTL_S, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { keepShellAccount, shellAccountActions } from "../account/hostedSignIn.ts";
 import { AccountService } from "../account/service.ts";
-import { beginSignIn, finishOwnSignIn, signInReturn } from "../account/signin.ts";
-import { memoryAccountStore, type AccountProvider } from "../account/store.ts";
-import { createAccountController } from "./accountController.ts";
-import type { ShellDeviceStore } from "./device.ts";
+import { beginSignIn, signInReturn } from "../account/signin.ts";
+import { noDevices, SERVICE, setup as signInSetup } from "./accountController.methods.test-helpers.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { mountRelayShell } from "./shell.tsx";
 
-const SERVICE = "https://account.example";
 const PC = "a".repeat(32);
-const noDevices: ShellDeviceStore = {
-  async get() { return undefined; }, async list() { return []; }, async remove() {}, async removeRow() { return false; },
-  async update(_id, change) { return change(undefined); },
-};
-
 async function setup(now: () => number = Date.now) {
-  const fake = new FakeAccountService(now);
-  fake.signInAs("github", "acct_1");
-  const store = memoryAccountStore();
-  const service = new AccountService({ store, fetch: fake.fetch });
-  const start = (provider: AccountProvider) => beginSignIn(provider, { store, service: SERVICE, redirectUri: WEB_REDIRECT });
-  const callback = async (url: string) => new URL((await fake.fetch(url)).headers.get("location") ?? "").hash;
-  const signIn = async (provider: AccountProvider) => {
-    const url = await start(provider);
-    return finishOwnSignIn(url, await callback(url), { store, fetch: fake.fetch });
-  };
-  const before = await signIn("github");
-  const controller = (openSignIn?: (url: string) => void) => createAccountController({
-    container: Object.create(null), entryUrl: WEB_REDIRECT, label: "Test phone", store: noDevices, accountStore: store,
-    accountService: SERVICE, accountFetch: fake.fetch, renderApp: () => ({ render() {}, unmount() {} }),
-    ...(openSignIn ? { openSignIn } : {}),
-  }, { active: () => false, changed: async () => {}, outdated: () => new Set() });
+  const signedIn = await signInSetup(now);
+  const { before, fake, store, callback } = signedIn;
   // Drive a real OAuth return independently of the controller's start, so these cases can
   // distinguish sending a redemption from refusing one before it reaches the service.
   const pendingLink = async () => {
@@ -49,7 +27,7 @@ async function setup(now: () => number = Date.now) {
     });
     return signInReturn(await callback(url));
   };
-  return { fake, store, service, before, controller, signIn, callback, pendingLink };
+  return { ...signedIn, pendingLink };
 }
 
 describe("linking sign-in methods in the hosted shell", () => {
@@ -57,16 +35,17 @@ describe("linking sign-in methods in the hosted shell", () => {
   beforeEach(() => { browser = createShellTestPage(); });
   afterEach(() => browser.dispose());
 
-  it("finishes a web link after reload, resumes its PC and does not register a sign-in key", async () => {
+  it("finishes a web link after reload, resumes its PC and can open PCs with the new sign-in's key", async () => {
     const { fake, store, before, controller, callback } = await setup();
     const key = await store.key();
     if (before.sign_in_id === undefined) throw new Error("the sign-in has no id");
-    const signInKey = { account: before.account, sign_in_id: before.sign_in_id, key, no: 1 };
+    const signInKey = { account: before.account, sign_in_id: before.sign_in_id, key, no: fake.registerSessionKey(before.access_token, key.public_spki, "Test phone") };
     await store.set("signin_key", signInKey);
     let went: string | undefined;
     const first = controller((url) => { went = url; });
     await first.load(null);
-    await first.addMethod("google", PC);
+    expect(first.openKey).toEqual(signInKey);
+    await first.addMethod("google", before, PC);
     first.dispose();
     if (went === undefined) throw new Error("the browser did not start the link");
     const state = new URL(went).searchParams.get("state") ?? "";
@@ -74,17 +53,100 @@ describe("linking sign-in methods in the hosted shell", () => {
     const returned = signInReturn(await callback(went));
     const second = controller();
     let resumed: string | undefined;
-    await second.load(returned, undefined, (outcome) => expect(outcome?.refused).toBeNull(), (id) => { resumed = id; });
+    let refused: string | null | undefined;
+    await second.load(returned, undefined, (outcome) => { refused = outcome?.refused; }, (id) => { resumed = id; });
 
     expect(resumed).toBe(PC);
-    expect(second.methodsChange).toEqual({ provider: "google", error: null });
-    expect(await store.get("session")).toMatchObject({ account: before.account, provider: "google" });
-    expect((await store.get("session"))?.access_token).not.toBe(before.access_token);
-    expect(await store.get("signin_key")).toEqual(signInKey);
-    expect(fake.requests).not.toContain("POST /v1/devices/challenge");
-    const { identities, history } = await second.methods();
+    expect(refused).toBeNull();
+    expect(second.methodsChange).toEqual({ account: before.account, provider: "google", error: null });
+    const installed = await store.get("session");
+    if (installed === undefined) throw new Error("the linked sign-in was not installed");
+    expect(installed).toMatchObject({ account: before.account, provider: "google" });
+    expect(installed.access_token).not.toBe(before.access_token);
+    expect(second.openKey).toMatchObject({ account: before.account, sign_in_id: installed.sign_in_id, no: 2 });
+    expect(second.openKey?.key.public_spki).not.toBe(key.public_spki);
+    const { identities, history } = await second.methods(installed);
     expect(identities.map(({ provider }) => provider).sort()).toEqual(["github", "google"]);
     expect(history).toEqual([{ kind: "add", provider: "google", at: expect.any(String), device_no: null }]);
+  });
+
+  it.each(["add", "remove"] as const)("does not %s a method for a replacement sign-in when the sheet showed the old one", async (action) => {
+    const { fake, before, signIn, controller } = await setup();
+    const opened: string[] = [];
+    const page = controller((url) => { opened.push(url); });
+    await page.load(null);
+    fake.signInAs("google", "acct_other");
+    await signIn("google");
+    fake.signInAs("apple", "acct_other");
+    const replacement = await signIn("apple");
+    const requests = fake.requests.length;
+
+    if (action === "add") await page.addMethod("github", before);
+    else await page.removeMethod("google", before);
+
+    expect(fake.requests.slice(requests)).not.toContain(action === "add" ? "POST /v1/identities/link" : "DELETE /v1/identities/google");
+    expect(opened).toEqual([]);
+    expect(page.methodsChange?.error).toBe("signed_out");
+    expect(page.signedInAs).toEqual(replacement);
+  });
+
+  it("installs the linked session for both tabs without revoking the family another tab refreshed", async () => {
+    const { fake, before, store, controller, callback } = await setup();
+    const urls: string[] = [];
+    const first = controller((url) => { urls.push(url); });
+    await first.addMethod("google", before);
+    const [url] = urls;
+    if (url === undefined) throw new Error("the browser did not start the link");
+    const returned = signInReturn(await callback(url));
+    const service = new AccountService({ store, fetch: fake.fetch, now: () => before.expires_at });
+    await service.listPcs();
+    const refreshed = await store.get("session");
+    expect(refreshed?.sign_in_id).toBe(before.sign_in_id);
+    expect(refreshed?.access_token).not.toBe(before.access_token);
+    const otherTab = controller();
+    await otherTab.load(null);
+    expect(otherTab.signedInAs).toEqual(refreshed);
+
+    await controller().load(returned);
+    await otherTab.reread();
+
+    const installed = await store.get("session");
+    expect(installed?.provider).toBe("google");
+    expect(otherTab.signedInAs).toEqual(installed);
+    expect((await fake.fetch(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${refreshed?.access_token}` } })).status).toBe(200);
+  });
+
+  it.each(["acct_1", "acct_other"])("resumes the requested Add only if signing in again returns for the asking account (%s)", async (account) => {
+    let now = Date.now();
+    const { fake, before, controller, callback, service } = await setup(() => now);
+    const opened: string[] = [];
+    const first = controller((url) => { opened.push(url); });
+    now += 11 * 60_000;
+    expect(await first.addMethod("google", before, PC)).toBe(false);
+    expect(first.methodsChange?.error).toBe("reauth_required");
+    await first.signInAgainForMethod(before, "google", PC);
+    const signInAgain = opened.shift();
+    if (signInAgain === undefined) throw new Error("the browser did not start reauthentication");
+    fake.signInAs("github", account);
+    const resumedPc: string[] = [];
+    const reloaded = controller((url) => { opened.push(url); });
+    const continued = await reloaded.load(signInReturn(await callback(signInAgain)), undefined, undefined, (id) => { resumedPc.push(id); });
+
+    if (account !== before.account) {
+      expect(continued).toBeUndefined();
+      expect(opened).toEqual([]);
+      expect(resumedPc).toEqual([PC]);
+      expect(fake.requests.filter((request) => request === "POST /v1/identities/link")).toHaveLength(1);
+      return;
+    }
+    expect(continued).toBe(true);
+    expect(resumedPc).toEqual([]);
+    expect(opened).toHaveLength(1);
+    const [link] = opened;
+    if (link === undefined) throw new Error("the browser did not resume Add");
+    const finished = controller();
+    await finished.load(signInReturn(await callback(link)));
+    expect((await service.identities()).identities.map(({ provider }) => provider).sort()).toEqual(["github", "google"]);
   });
 
   it.each(["signed out", "another account", "another sign-in of the same account"])("never redeems a web link after %s replaces its sign-in", async (change) => {
@@ -103,7 +165,7 @@ describe("linking sign-in methods in the hosted shell", () => {
 
     expect(fake.requests.slice(requests)).not.toContain("POST /v1/token");
     expect(await store.get("session")).toEqual(replacement);
-    expect(reloaded.methodsChange).toEqual({ provider: "google", error: "signed_out" });
+    expect(reloaded.methodsChange).toEqual({ account: "acct_1", provider: "google", error: "signed_out" });
   });
 
   it("reports a web link's in_use refusal and keeps the existing account and methods", async () => {
@@ -116,7 +178,7 @@ describe("linking sign-in methods in the hosted shell", () => {
     const reloaded = controller();
     await reloaded.load(returned);
 
-    expect(reloaded.methodsChange).toEqual({ provider: "google", error: "in_use" });
+    expect(reloaded.methodsChange).toEqual({ account: before.account, provider: "google", error: "in_use" });
     expect(await store.get("session")).toEqual(before);
     expect(await service.identities()).toMatchObject({ identities: [{ provider: "github" }], history: [] });
   });
@@ -129,9 +191,9 @@ describe("linking sign-in methods in the hosted shell", () => {
     const page = controller((url) => { opened.push(url); });
     const provider = error === "identity_exists" ? "github" : "google";
 
-    await page.addMethod(provider);
+    await page.addMethod(provider, before);
 
-    expect(page.methodsChange).toEqual({ provider, error });
+    expect(page.methodsChange).toEqual({ account: before.account, provider, error });
     expect(opened).toEqual([]);
     expect(await store.get("session")).toEqual(before);
   });
@@ -140,19 +202,20 @@ describe("linking sign-in methods in the hosted shell", () => {
     let now = Date.now();
     const { before, store, controller, callback } = await setup(() => now);
     let went: string | undefined;
-    await controller((url) => { went = url; }).addMethod("google");
+    await controller((url) => { went = url; }).addMethod("google", before);
     if (went === undefined) throw new Error("the browser did not start the link");
     now += LINK_TOKEN_TTL_S * 1000;
     const reloaded = controller();
 
     await reloaded.load(signInReturn(await callback(went)));
 
-    expect(reloaded.methodsChange).toEqual({ provider: "google", error: "expired" });
+    expect(reloaded.methodsChange).toEqual({ account: before.account, provider: "google", error: "expired" });
     expect(await store.get("session")).toEqual(before);
   });
 
-  it("hands the page the shell opens the providers the account service offers, not the build's own list", async () => {
+  it.each([{ offered: ["github", "google", "apple"] }, { offered: [] }] as const)("hands Manage account the service's provider list ($offered), even when empty", async ({ offered }) => {
     const { fake, store } = await setup();
+    fake.offerSignIns([...offered], []);
     try {
       await mountRelayShell({
         container: Object.create(null), entryUrl: WEB_REDIRECT, shellVersion: "0.0.0-test", label: "Test phone", store: noDevices,
@@ -160,7 +223,7 @@ describe("linking sign-in methods in the hosted shell", () => {
         open: () => Promise.reject(new Error("no connection is expected here")), checkPc: async () => ({ kind: "offline", reason: "relay" }), reload: async () => {},
         accountService: SERVICE, accountProviders: ["github"], accountStore: store, accountFetch: fake.fetch,
       });
-      expect(await shellAccountActions()?.offered?.()).toEqual(["github", "google", "apple"]);
+      expect(await shellAccountActions()?.offered?.()).toEqual(offered);
     } finally {
       keepShellAccount(null);
     }

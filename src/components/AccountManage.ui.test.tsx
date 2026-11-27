@@ -413,7 +413,10 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
 
   type Leave = (shown?: unknown) => Promise<{ readonly left: boolean; readonly message: string | null }>;
   type Everywhere = (asked?: unknown) => Promise<string | null>;
-  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere });
+  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({
+    provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere,
+    session: { provider: "github" as const, account: "acct", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 },
+  });
   const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
   const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<HTMLElement> => {
     await page.render(group(signIn));

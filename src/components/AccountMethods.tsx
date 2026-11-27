@@ -3,7 +3,7 @@ import { Check, Plus, X } from "lucide-react";
 
 import type { HostedSignIn } from "../lib/account/hostedSignIn.ts";
 import type { AccountIdentity, AccountIdentityChange, AccountIdentityList } from "../lib/account/service.ts";
-import { indexedAccountStore, type AccountProvider } from "../lib/account/store.ts";
+import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { useLocale, useT, type Translate } from "../lib/i18n.ts";
 import { PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
@@ -97,7 +97,7 @@ export function AccountMethods({ methods, current, offered, history, hint, onAdd
   );
 }
 
-type MethodsShell = Pick<HostedSignIn, "provider" | "account" | "methods" | "offered" | "addMethod" | "removeMethod" | "methodsChange" | "signInAgain" | "freshSignIn">;
+type MethodsShell = Pick<HostedSignIn, "provider" | "account" | "session" | "methods" | "offered" | "addMethod" | "removeMethod" | "methodsChange" | "signInAgainForMethod" | "freshSignIn">;
 type MethodAction = "add" | "remove";
 
 interface Refusal {
@@ -114,7 +114,7 @@ const taken = new WeakSet<object>();
 
 function untaken(shell: MethodsShell) {
   const outcome = shell.methodsChange?.();
-  if (outcome === undefined || taken.has(outcome)) return null;
+  if (outcome?.account !== shell.account || taken.has(outcome)) return null;
   taken.add(outcome);
   return outcome;
 }
@@ -143,11 +143,11 @@ export function HostedAccountMethods({ signIn }: { readonly signIn: MethodsShell
   const changing = useRef(false);
   const reads = useRef(0);
 
-  const read = async (): Promise<void> => {
+  const read = async (shown = signIn.session): Promise<void> => {
     if (signIn.methods === undefined) return;
     const mine = ++reads.current;
     try {
-      const now = await signIn.methods();
+      const now = await signIn.methods(shown);
       if (reads.current === mine) setList(now);
     } catch (error) {
       console.warn("Ovis: the ways to sign in could not be read", error instanceof Error ? error.name : error);
@@ -164,18 +164,19 @@ export function HostedAccountMethods({ signIn }: { readonly signIn: MethodsShell
   useEffect(() => {
     opened();
     return () => { reads.current++; };
-  }, []);
+  }, [signIn.session.sign_in_id]);
 
-  const change = (action: MethodAction, provider: AccountProvider): void => {
+  const change = (action: MethodAction, provider: AccountProvider, shown: AccountSession = signIn.session): void => {
     const run = action === "add" ? signIn.addMethod : signIn.removeMethod;
     if (run === undefined || changing.current) return;
     changing.current = true;
     setRefusal(null);
-    void run(provider).then(() => {
+    void run(provider, shown).then(() => {
       // none to take up: the change went through, or the page is leaving for the provider, whose return says the rest
       const outcome = untaken(signIn);
       if (outcome !== null && outcome.error !== null) setRefusal({ action, provider: outcome.provider, code: outcome.error });
-      return read();
+      // A successful phone Add installed a new sign-in; its session event reads the new methods.
+      if (outcome?.error !== "signed_out" && (action === "remove" || outcome?.error != null)) return read(shown);
     }).catch((error: unknown) => {
       console.warn("Ovis: the way to sign in was not changed", error instanceof Error ? error.name : error);
       setRefusal({ action, provider, code: "failed" });
@@ -185,11 +186,12 @@ export function HostedAccountMethods({ signIn }: { readonly signIn: MethodsShell
   const signInAgain = (waiting: Refusal): void => {
     const fresh = signIn.freshSignIn;
     // a browser signs in by leaving the page: the change is asked again after the return
-    if (fresh === undefined) { signIn.signInAgain?.(signIn.provider); return; }
-    void indexedAccountStore.get("session").then(async (from) => {
-      if (from === undefined || from.account !== signIn.account) return;
-      if (await fresh(from, () => {}) !== null) change(waiting.action, waiting.provider);
-    }).catch((error: unknown) => console.warn("Ovis: the sign-in again did not finish", error instanceof Error ? error.name : error));
+    const from = signIn.session;
+    const again = fresh === undefined ? signIn.signInAgainForMethod?.(from, waiting.action === "add" ? waiting.provider : undefined)
+      : fresh(from, () => {}).then((renewed) => {
+        if (renewed?.account === from.account) change(waiting.action, waiting.provider, renewed);
+      });
+    void again?.catch((error: unknown) => console.warn("Ovis: the sign-in again did not finish", error instanceof Error ? error.name : error));
   };
 
   if (signIn.methods === undefined || list === "failed") return null;
@@ -201,7 +203,7 @@ export function HostedAccountMethods({ signIn }: { readonly signIn: MethodsShell
       {refusal?.code === "reauth_required" ? (
         <div className="account-reauth" role="alert">
           <p className="settings-description">{t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[signIn.provider] })}</p>
-          {(signIn.freshSignIn !== undefined || signIn.signInAgain !== undefined) && <button type="button" className="btn btn-primary" onClick={() => signInAgain(refusal)}>{t("Sign in again")}</button>}
+          {(signIn.freshSignIn !== undefined || signIn.signInAgainForMethod !== undefined) && <button type="button" className="btn btn-primary" onClick={() => signInAgain(refusal)}>{t("Sign in again")}</button>}
         </div>
       ) : refusal !== null && (
         <p className="settings-condition" role="alert">{refusalText(t, refusal)}{refusal.code === "in_use" && <> <InUseSteps /></>}</p>

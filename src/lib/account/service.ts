@@ -452,7 +452,7 @@ export class AccountService {
     await this.options.store.updateMany(["session", "generation"], (current) => {
       const stored = current.session;
       if (generation !== undefined && current.generation !== generation) return current;
-      if (stored === undefined || (expected !== undefined && !sameSignIn(stored, expected))) return current;
+      if (stored === undefined || (expected !== undefined && (stored.account !== expected.account || !sameSignIn(stored, expected)))) return current;
       const session = stored.sign_in_id === undefined ? { ...stored, sign_in_id: legacySignInId(stored.refresh_token) } : stored;
       seen = { generation: current.generation ?? crypto.randomUUID(), session };
       return seen;
@@ -794,12 +794,12 @@ export class AccountService {
     const before = await this.current(started);
     return {
       generation: started.generation, session: before, linkToken, bearer: before.access_token,
-      link: { account: before.account, sign_in_id: before.sign_in_id ?? legacySignInId(before.refresh_token) },
+      link: { account: before.account, sign_in_id: before.sign_in_id ?? legacySignInId(before.refresh_token), refresh_id: legacySignInId(before.refresh_token) },
     };
   }
 
-  /** Keeps the redeemed session only in place of the session whose bearer redeemed it. */
-  async installMethodLink(started: SignInSnapshot, after: AccountSession): Promise<AccountSession> {
+  /** Keeps the redeemed session only in place of the sign-in that asked for the link, even if its tokens rotated. */
+  async installMethodLink(started: SignInSnapshot, after: AccountSession, link?: LinkSignIn): Promise<AccountSession> {
     const before = started.session;
     const end = (session: AccountSession) => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now });
     if (after.account !== before.account) {
@@ -807,29 +807,30 @@ export class AccountService {
       throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
     }
     // under the lock sign-out and refresh take: the answer replaces only the sign-in that asked for it
-    const outcome = await this.lock(async () => {
-      let result: "kept" | "moved-on" | "signed-out" = "signed-out";
+    const replaced = await this.lock(async () => {
+      let previous: AccountSession | undefined;
       await this.options.store.updateMany(["session", "generation"], (current) => {
-        if (current.generation !== started.generation || current.session === undefined || current.session.account !== before.account || !sameSignIn(current.session, before)) return current;
-        if (current.session.refresh_token === before.refresh_token) { result = "kept"; return { ...current, session: after }; }
-        // Refreshed by another tab: the link holds at the service, and that session stays.
-        result = "moved-on";
-        return current;
+        if (current.generation !== started.generation || current.session === undefined || current.session.account !== before.account || current.session.sign_in_id !== before.sign_in_id) return current;
+        previous = current.session;
+        return { ...current, session: after };
       });
-      return result;
+      return previous;
     });
-    if (outcome === "signed-out") {
+    if (replaced === undefined) {
       // signed out (or into another account) meanwhile: the new sign-in must not outlive that
       await end(after);
       throw new SignedOutError();
     }
-    // The link already holds at the service. Cleanup failure does not undo it.
-    try {
-      await end(outcome === "moved-on" ? after : before);
-    } catch {
-      console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
+    // Other tabs will read the new sign-in from the store, but a tab that refreshed the old one may still be using it.
+    // Old redirects without a departure digest cannot prove the family did not rotate either.
+    if (link === undefined ? replaced.refresh_token === before.refresh_token : link.refresh_id === legacySignInId(replaced.refresh_token)) {
+      try {
+        await end(replaced);
+      } catch {
+        console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
+      }
     }
-    return this.current(outcome === "moved-on" ? started : { generation: started.generation, session: after });
+    return this.current({ generation: started.generation, session: after });
   }
 
   /**

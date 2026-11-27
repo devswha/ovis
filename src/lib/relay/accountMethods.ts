@@ -1,9 +1,10 @@
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
-import { AccountService, AccountServiceError, SignedOutError } from "../account/service.ts";
-import { beginSignIn, redeemSignIn, SignInError, type FinishOptions, type SignInReturn } from "../account/signin.ts";
-import type { AccountProvider, PendingSignIn } from "../account/store.ts";
+import { AccountService, AccountServiceError, sameSignIn, SignedOutError } from "../account/service.ts";
+import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn, type FinishOptions, type SignInReturn } from "../account/signin.ts";
+import type { AccountProvider, AccountSession, LinkSignIn, PendingSignIn } from "../account/store.ts";
 
 export interface MethodsChange {
+  readonly account: string;
   readonly provider: AccountProvider;
   readonly error: string | null;
 }
@@ -13,62 +14,100 @@ export function accountMethods(account: AccountService, options: Pick<FinishOpti
   readonly open: (url: string) => void;
   readonly changed: () => Promise<void>;
   readonly refresh: () => Promise<void>;
+  readonly register: (session: AccountSession) => Promise<unknown>;
 }) {
   let last: MethodsChange | undefined;
-  const record = async (provider: AccountProvider, error: string | null): Promise<MethodsChange> => {
-    const result = { provider, error };
+  const record = async (asked: Pick<MethodsChange, "account" | "provider">, error: string | null): Promise<MethodsChange> => {
+    const result = { ...asked, error };
     last = result;
     await options.changed();
     return result;
   };
-  const refused = (provider: AccountProvider, error: Error): Promise<MethodsChange> => {
-    if (error instanceof SignInError || error instanceof AccountServiceError || error instanceof SignedOutError) return record(provider, error.code);
-    return record(provider, "failed");
+  const refused = async (asked: Pick<MethodsChange, "account" | "provider">, error: Error): Promise<MethodsChange> => {
+    if (error instanceof SignedOutError) await options.refresh();
+    const code = error instanceof SignInError || error instanceof AccountServiceError || error instanceof SignedOutError ? error.code : "failed";
+    return record(asked, code);
   };
-  const change = async (provider: AccountProvider, work: () => Promise<void>): Promise<MethodsChange> => {
+  const change = async (asked: Pick<MethodsChange, "account" | "provider">, work: () => Promise<void>): Promise<MethodsChange> => {
     try { await work(); } catch (error) {
-      if (error instanceof Error) return refused(provider, error);
+      if (error instanceof Error) return refused(asked, error);
       throw error;
     }
-    return record(provider, null);
+    return record(asked, null);
+  };
+  const stillShown = async (shown: AccountSession): Promise<void> => {
+    const current = await options.store.get("session");
+    if (current?.account !== shown.account || !sameSignIn(current, shown)) throw new SignedOutError();
+  };
+  const leaveFor = async (provider: AccountProvider, shown: AccountSession, pending: Pick<Parameters<typeof beginSignIn>[1], "linkToken" | "link" | "pc" | "resumeAdd"> & { readonly generation: string }): Promise<void> => {
+    const { store } = options;
+    const url = await beginSignIn(provider, { store, service: shown.service, redirectUri: `${window.location.origin}/`, ...pending });
+    try {
+      await AccountService.checkGeneration(store, pending.generation);
+      await stillShown(shown);
+    } catch (error) {
+      await takePendingSignIn(store, new URL(url).searchParams.get("state") ?? "");
+      throw error;
+    }
+    options.open(url);
   };
   return {
     get last() { return last; },
-    methods: () => account.identities(),
-    async addMethod(provider: AccountProvider, pc?: string): Promise<void> {
+    methods: (shown: AccountSession) => account.forSignIn(shown).identities(),
+    /** True only when the web page is leaving for the provider. */
+    async addMethod(provider: AccountProvider, shown: AccountSession, pc?: string): Promise<boolean> {
       const { service, store, fetch } = options;
-      if (service === null) return;
-      if (nativeSignInAvailable()) {
-        const result = await change(provider, async () => {
-          await account.addMethod(provider, (linkToken, bearer, generation) => nativeSignIn(provider, {
-            store, service, ...(fetch === undefined ? {} : { fetch }), link: { linkToken, bearer, generation },
-          }));
-        });
-        if (result.error === null) await options.refresh();
-        return;
-      }
+      if (service === null) return false;
+      const asked = { account: shown.account, provider };
+      const bound = account.forSignIn(shown);
       try {
-        const { linkToken, link, generation, session } = await account.startMethodLink(provider);
-        const url = await beginSignIn(provider, {
-          store, service: session.service, redirectUri: `${window.location.origin}/`, linkToken, link, generation, ...(pc === undefined ? {} : { pc }),
-        });
-        await AccountService.checkGeneration(store, generation);
-        options.open(url);
+        const started = await bound.startMethodLink(provider);
+        const { linkToken, link, generation, session } = started;
+        if (nativeSignInAvailable()) {
+          const issued = await nativeSignIn(provider, {
+            store, service: session.service, ...(fetch === undefined ? {} : { fetch }), link: { linkToken, link, generation },
+          });
+          await options.register(await bound.installMethodLink(started, issued, link));
+          await record(asked, null);
+          await options.refresh();
+          return false;
+        }
+        await leaveFor(provider, session, { linkToken, link, generation, ...(pc === undefined ? {} : { pc }) });
+        return true;
       } catch (error) {
-        if (error instanceof Error) await refused(provider, error);
+        if (error instanceof Error) await refused(asked, error);
+        else throw error;
+        return false;
+      }
+    },
+    async signInAgain(shown: AccountSession, add: AccountProvider | undefined, pc?: string): Promise<void> {
+      const { store, service } = options;
+      if (service === null) return;
+      const asked = { account: shown.account, provider: add ?? shown.provider };
+      try {
+        const generation = await AccountService.signInGeneration(store);
+        await stillShown(shown);
+        await leaveFor(shown.provider, shown, {
+          generation,
+          ...(pc === undefined ? {} : { pc }), ...(add === undefined ? {} : { resumeAdd: asked }),
+        });
+      } catch (error) {
+        if (error instanceof Error) await refused(asked, error);
         else throw error;
       }
     },
-    async removeMethod(provider: AccountProvider): Promise<void> {
+    async removeMethod(provider: AccountProvider, shown: AccountSession): Promise<void> {
       if (options.service === null) return;
-      const result = await change(provider, () => account.removeIdentity(provider));
+      const result = await change({ account: shown.account, provider }, () => account.forSignIn(shown).removeIdentity(provider));
       if (result.error === null) await options.refresh();
     },
-    finish(pending: PendingSignIn, returned: SignInReturn): Promise<MethodsChange> {
+    finish(pending: PendingSignIn & { readonly link: LinkSignIn }, returned: SignInReturn): Promise<MethodsChange> {
       const { store, fetch } = options;
-      return change(pending.provider, async () => { await redeemSignIn(pending, returned, {
-        store, ...(fetch === undefined ? {} : { fetch }), linkService: account,
-      }); });
+      return change({ account: pending.link.account, provider: pending.provider }, async () => {
+        await options.register(await redeemSignIn(pending, returned, {
+          store, ...(fetch === undefined ? {} : { fetch }), linkService: account,
+        }));
+      });
     },
   };
 }

@@ -167,10 +167,17 @@ describe("sign-in methods", () => {
     const real = globalThis.fetch;
     globalThis.fetch = Object.assign(fake.fetch, { preconnect: real.preconnect });
     try {
-      await desktopSignIn("github", bridge, store);
+      const before = await desktopSignIn("github", bridge, store);
+      if (before.sign_in_id === undefined) throw new Error("the desktop sign-in has no id");
+      const key = await store.key();
+      const oldKey = { key, account: before.account, sign_in_id: before.sign_in_id, no: fake.registerSessionKey(before.access_token, key.public_spki, "Desktop") };
+      await store.set("signin_key", oldKey);
       const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
       const after = await service.addMethod("google", (token, bearer) => desktopSignIn("google", bridge, store, { linkToken: token, bearer }));
       expect(after).toMatchObject({ account: "acct_1", provider: "google" });
+      expect(after.sign_in_id).not.toBe(before.sign_in_id);
+      expect((await fake.fetch(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${before.access_token}` } })).status).toBe(401);
+      expect(await store.get("signin_key")).toEqual(oldKey);
     } finally {
       globalThis.fetch = real;
     }

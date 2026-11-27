@@ -6,7 +6,7 @@
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { AccountService, AccountServiceError, requestToken, SignedOutError } from "./service.ts";
-import type { AccountProvider, AccountSession, AccountStore, LinkSignIn, PendingPairing, PendingSignIn } from "./store.ts";
+import type { AccountProvider, AccountSession, AccountStore, LinkSignIn, PendingPairing, PendingSignIn, ResumeAdd } from "./store.ts";
 
 /** A sign-in left at the provider's pages longer than this is not finished: its return is refused. */
 export const SIGN_IN_MS = 10 * 60_000;
@@ -30,14 +30,15 @@ function random(bytes: number): string {
  * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead. `pairing` waits in the
  * same record, so only this sign-in's return takes it, and it goes when the sign-in does.
  */
-export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; link?: LinkSignIn; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string; generation?: string }): Promise<string> {
+export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; link?: LinkSignIn; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string; generation?: string; resumeAdd?: ResumeAdd }): Promise<string> {
   const generation = options.generation ?? await AccountService.signInGeneration(options.store);
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const now = (options.now ?? Date.now)();
   const pending: PendingSignIn = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now, generation, ...(options.pairing ? { pairing: options.pairing } : {}), ...(options.pc ? { pc: options.pc } : {}),
-    ...(options.signOutEverywhere ? { sign_out_everywhere: options.signOutEverywhere } : {}), ...(options.link ? { link: options.link } : {}) };
+    ...(options.signOutEverywhere ? { sign_out_everywhere: options.signOutEverywhere } : {}), ...(options.link ? { link: options.link } : {}),
+    ...(options.resumeAdd ? { resume_add: options.resumeAdd } : {}) };
   // one per state: another tab's sign-in stays, and only ones past their time are dropped
   await options.store.update("pending", (current) => ({
     ...Object.fromEntries(Object.entries(current ?? {}).filter(([, waiting]) => now - waiting.started_at <= SIGN_IN_MS)),
@@ -111,13 +112,12 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
   // A pending record is consumed once. A previous build did not stamp it, so adopt the generation now.
   const generation = pending.generation ?? await AccountService.signInGeneration(options.store);
   await AccountService.checkGeneration(options.store, generation);
-  let link: { readonly service: AccountService; readonly before: AccountSession } | undefined;
+  let before: AccountSession | undefined;
   if (pending.link !== undefined) {
-    const before = await options.store.get("session");
-    if (options.linkService === undefined || before?.account !== pending.link.account || before.sign_in_id !== pending.link.sign_in_id || before.service !== pending.service) throw new SignedOutError();
-    link = { service: options.linkService, before };
+    before = await options.store.get("session");
+    if (before?.account !== pending.link.account || before.sign_in_id !== pending.link.sign_in_id || before.service !== pending.service) throw new SignedOutError();
   }
-  const bearer = link?.before.access_token ?? options.bearer;
+  const bearer = before?.access_token ?? options.bearer;
   let session: AccountSession;
   try {
     session = await requestToken(pending.service, {
@@ -130,7 +130,8 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
     throw error;
   }
   const issued = await finishIssuedSignIn(session, generation, { ...options, ...(bearer === undefined ? {} : { bearer }) });
-  return link === undefined ? issued : link.service.installMethodLink({ generation, session: link.before }, issued);
+  return before === undefined || options.linkService === undefined ? issued
+    : options.linkService.installMethodLink({ generation, session: before }, issued, pending.link);
 }
 
 /** A link is installed by addMethod; other sign-ins are installed atomically against the generation. */
@@ -151,11 +152,7 @@ export async function finishOwnSignIn(started: string, back: string, options: Fi
   const state = new URL(started).searchParams.get("state") ?? "";
   const returned = signInReturn(back);
   if (returned === null || returned.state !== state) {
-    await options.store.update("pending", (current) => {
-      if (current?.[state] === undefined) return current;
-      const { [state]: _dropped, ...rest } = current;
-      return rest;
-    });
+    await takePendingSignIn(options.store, state);
     throw new SignInError("no_sign_in", "This return is not for the sign-in started here");
   }
   return finishSignIn(returned, options);
