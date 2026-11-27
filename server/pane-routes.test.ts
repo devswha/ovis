@@ -119,7 +119,7 @@ it("answers a conversation with the PC's clock, which its turns' times are on", 
   } finally { read.mockRestore(); }
 });
 
-it.each(["omp", "omo"] as const)("uses %s's live context without rereading its screen, and keeps the fallback", async (kind) => {
+it.each(["omp", "omo", "pi"] as const)("uses %s's live context without rereading its screen, and keeps the fallback", async (kind) => {
   const pane = crypto.randomUUID();
   const url = new URL(`http://x/api/pane/conversation?pane_id=${pane}`);
   const fileContext = { used: 32_002, window: null };
@@ -762,7 +762,7 @@ it("refuses a summary with no pane, too many panes or another method", async () 
   } finally { read.mockRestore(); }
 });
 
-it("leaves out the panes it has no time left to read", async () => {
+it("reports only the panes it has no time left to start reading as skipped", async () => {
   let clock = 1_000_000;
   const now = spyOn(Date, "now").mockImplementation(() => clock);
   const stuck = Promise.withResolvers<conversation.RecognizedConversation>();
@@ -775,6 +775,7 @@ it("leaves out the panes it has no time left to read", async () => {
     const body = await (await askSummary(["w:p1", "stuck", "w:p3"]))!.json() as PaneSummaries;
     expect(Object.keys(body.summaries)).toEqual(["w:p1"]);
     expect(read.mock.calls.map((call) => call[0])).toEqual(["w:p1", "stuck"]);
+    expect(body).toMatchObject({ skipped: ["w:p3"] });
   } finally {
     stuck.resolve(said("late", "2026-11-12T10:00:00Z"));
     await stuck.promise;
