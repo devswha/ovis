@@ -922,7 +922,7 @@ describe("adding a PC with an old sign-in's key proof, and who asks", () => {
 describe("PC account transfers", () => {
   const from = "acct_before";
   const into = "acct_after";
-  const merge_id = "mrg_123";
+  const merge_id = `mrg_${"a".repeat(22)}`;
   async function setup(list = true) {
     const service = new FakeAccountService();
     service.opensAll = service.completions = true;
@@ -939,12 +939,15 @@ describe("PC account transfers", () => {
     const { line, key } = await newInvite(BASE, into, null);
     service.openMerge({ merge_id, from, into, invite_key: key });
     const call = async (path: string, body: object, scope?: { account: string; listing_id: string }) => {
+      const merge = path === "transfer" && "merge_id" in body && typeof body.merge_id === "string" ? body.merge_id : undefined;
       const challenge = await (await service.fetch(post("/v1/pc/challenge", {
         server_id: machine.serverId, public_key: machine.publicKey, ...(scope ? { completion: scope } : {}),
+        ...(merge === undefined ? {} : { transfer: { merge_id: merge } }),
       }))).json();
       const proof = answerServerChallenge(challenge.frame, machine.keys.secretKey, {
         server_id: machine.serverId, role: "account",
-        connection_id: scope ? `pc-complete/1:${scope.account}:${scope.listing_id}:${challenge.challenge_id}` : challenge.challenge_id,
+        connection_id: scope ? `pc-complete/1:${scope.account}:${scope.listing_id}:${challenge.challenge_id}`
+          : merge === undefined ? challenge.challenge_id : `pc-transfer/1:${merge}:${challenge.challenge_id}`,
       });
       const fields = { ...body, server_id: machine.serverId, challenge_id: challenge.challenge_id, proof };
       if (path === "transfer") {
@@ -1016,6 +1019,7 @@ describe("PC account transfers", () => {
     const scope = { account: from, listing_id };
     service.setMergeState(merge_id, "finished");
     const response = await call(path, path === "complete" ? scope : { account: from, ...(path === "mailbox" ? { ack: null } : {}) }, path === "complete" ? scope : undefined);
+    expect(response.status).toBe(410);
     const body = await response.text();
     expect(JSON.parse(body)).toMatchObject({ error: { code: "account_merged" } });
     expect(body).not.toContain(into);

@@ -37,6 +37,7 @@ interface FakeMerge {
   readonly invites: Map<string, string | null>;
   readonly moves: Map<string, { readonly account: string; readonly listing_id: string }>;
   state: MergeState;
+  closedAt?: number;
 }
 
 /** account#57's completion scope, and the context its challenge is stored and proved under */
@@ -461,6 +462,7 @@ export class FakeAccountService {
     const ticket = this.merges.get(id);
     if (!ticket) throw new Error("Unknown fake merge");
     ticket.state = state;
+    ticket.closedAt = this.now();
     if (state === "finished") {
       this.mergedAccounts.add(ticket.from);
       this.directories.delete(ticket.from);
@@ -1372,7 +1374,11 @@ export class FakeAccountService {
       // a completion's proof is scoped to its account and listing: its context is not a wire nonce (account#57)
       const scope = this.completions ? completionScope(body.completion) : null;
       if (body.completion !== undefined && scope === null) return problem(400, "invalid_body", "Name the account and listing");
-      const context = scope ? completionKey(scope, challengeId) : challengeId;
+      const transfer = body.transfer;
+      const merge = typeof transfer === "object" && transfer !== null && "merge_id" in transfer
+        && typeof transfer.merge_id === "string" && isAccountId(transfer.merge_id) ? transfer.merge_id : null;
+      if (transfer !== undefined && (merge === null || scope !== null)) return problem(400, "invalid_body", "Name one merge");
+      const context = scope ? completionKey(scope, challengeId) : merge === null ? challengeId : `pc-transfer/1:${merge}:${challengeId}`;
       const { expected, frame } = serverChallenge(key, { server_id: body.server_id, role: "account", connection_id: context });
       this.challenges.set(context, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
       return json({ challenge_id: challengeId, frame });
@@ -1388,7 +1394,8 @@ export class FakeAccountService {
       if (!scope || !challenge || challenge.server_id !== body.server_id || this.now() > challenge.expires || !verifyServerProof(body.proof, challenge.expected)) {
         return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       }
-      if (this.mergedAccounts.has(scope.account)) return problem(409, "account_merged", "This account was merged");
+      const merged = this.pcMergeRefusal(scope.account, challenge.server_id);
+      if (merged) return merged;
       const entry = this.directories.get(scope.account)?.get(challenge.server_id);
       // the listing still current, and its own evidence: an admission of it taken (or a completion already stamped)
       const taken = this.pcAdmissions.get(box(challenge.server_id, scope.account))?.taken === true;
@@ -1405,7 +1412,8 @@ export class FakeAccountService {
       const challenge = this.takeProof({ server_id: body.server_id, challenge_id: body.challenge_id, proof: body.proof });
       if (!challenge) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
-      if (this.mergedAccounts.has(body.account)) return problem(409, "account_merged", "This account was merged");
+      const merged = this.pcMergeRefusal(body.account, body.server_id);
+      if (merged) return merged;
       if (path === "/v1/pc/admission") {
         // G1: only the named account's own admission, while that account lists the PC; any other account's is invisible
         const open = this.pcAdmissions.get(box(challenge.server_id, body.account));
@@ -1465,24 +1473,39 @@ export class FakeAccountService {
     return ticket.state === "open" && this.now() >= ticket.expires ? "expired" : ticket.state;
   }
 
+  private keptMerge(ticket: FakeMerge): boolean {
+    const closed = ticket.closedAt ?? (this.mergeState(ticket) === "expired" ? ticket.expires : undefined);
+    return closed === undefined || this.now() < closed + MAILBOX_TTL_MS;
+  }
+
+  private pcMergeRefusal(account: string, serverId: unknown): Response | null {
+    if (typeof serverId === "string" && [...this.merges.values()].some(ticket =>
+      ticket.from === account && this.keptMerge(ticket) && ticket.moves.has(serverId))) return problem(404, "not_found", "Unknown request");
+    return this.mergedAccounts.has(account) ? problem(410, "account_merged", "This account was merged") : null;
+  }
+
   private async pcMerge(body: Record<string, unknown>, transfer: boolean): Promise<Response> {
-    const proved = this.takeProof({ server_id: body.server_id, challenge_id: body.challenge_id, proof: body.proof });
-    if (!proved || typeof body.challenge_id !== "string") return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
+    const nonce = body.challenge_id;
+    if (typeof nonce !== "string" || typeof body.merge_id !== "string" || !isAccountId(body.merge_id)) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
+    const proved = this.takeProof({ server_id: body.server_id, challenge_id: transfer ? `pc-transfer/1:${body.merge_id}:${nonce}` : nonce, proof: body.proof });
+    if (!proved) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
     const { server_id } = proved;
     if (typeof body.merge_id !== "string" || !isAccountId(body.merge_id)) return problem(400, "invalid_request", "Name the merge");
     const ticket = this.merges.get(body.merge_id);
     const unavailable = () => problem(409, "merge_closed", "That merge is no longer open");
-    if (!ticket) return transfer ? unavailable() : problem(404, "not_found", "That merge was not found");
+    const hidden = () => problem(404, "not_found", "That merge was not found");
+    if (!ticket || !this.keptMerge(ticket)) return transfer ? unavailable() : hidden();
     const from = this.directories.get(ticket.from);
     const receipt = ticket.moves.get(server_id);
+    const target = this.directories.get(ticket.into)?.get(server_id);
+    const old = from?.get(server_id);
     if (!transfer) {
-      const to = this.directories.get(ticket.into)?.get(server_id);
-      const old = from?.get(server_id);
-      const placement = to && this.confirmed(to) ? { account: ticket.into, listing_id: to.listing_id ?? null }
-        : old && this.confirmed(old) ? { account: ticket.from, listing_id: old.listing_id ?? null } : { account: null, listing_id: null };
+      if (!receipt && !old) return hidden();
+      const placement = receipt && target?.listing_id === receipt.listing_id ? receipt
+        : !receipt && old && this.confirmed(old) ? { account: ticket.from, listing_id: old.listing_id ?? null } : { account: null, listing_id: null };
       return json({ ...placement, merge: this.mergeState(ticket) });
     }
-    if (receipt) return json(receipt);
+    if (receipt) return target?.listing_id === receipt.listing_id ? json(receipt) : unavailable();
     if (this.mergeState(ticket) !== "open") return unavailable();
     const entry = from?.get(server_id);
     const notListed = () => problem(409, "not_listed", "The account does not list this PC");
@@ -1490,7 +1513,7 @@ export class FakeAccountService {
     const invite = body.invite_key;
     const invalidInvite = () => problem(409, "invite_invalid", "This invite does not work");
     if (typeof invite !== "string" || ticket.invites.get(invite) !== null
-      || !await verifyInviteRedeem({ account: ticket.into, server_id, public_key: entry.public_key, challenge_id: body.challenge_id }, body.invite_signature, invite)) {
+      || !await verifyInviteRedeem({ account: ticket.into, server_id, public_key: entry.public_key, challenge_id: nonce }, body.invite_signature, invite)) {
       return invalidInvite();
     }
     const concurrent = ticket.moves.get(server_id);
@@ -1502,14 +1525,14 @@ export class FakeAccountService {
     if (this.mergeRelayLimits.has(ticket.into) || (!into.has(server_id) && into.size >= DIRECTORY_MAX)) {
       return problem(409, "relay_limit", "The destination is at its PC limit");
     }
-    const listing_id = randomHex(16);
+    const listing_id = entry.listing_id ?? randomHex(16);
     const at = this.now();
     // No await in the commit: neither directory can observe a partial move or consume this invite twice.
     from.delete(server_id);
     this.pcAdmissions.delete(box(server_id, ticket.from));
     this.directories.set(ticket.into, into);
     into.set(server_id, { ...entry, listing_id, added_at: this.iso(), admitted_at: this.iso(), completed_at: null,
-      listed_by_device: false, listed_by_session: undefined, pending_under_step2: false, pulled_since_listed: false, new_until: null });
+      listed_by_device: false, listed_by_session: undefined, pending_under_step2: false, pulled_since_listed: false, new_until: new Date(at + PC_NEW_MS).toISOString() });
     this.pcAdmissions.set(box(server_id, ticket.into), { at, taken: true, family: "", listing: listing_id });
     this.usedAccounts.add(ticket.into);
     const moved = { account: ticket.into, listing_id };
