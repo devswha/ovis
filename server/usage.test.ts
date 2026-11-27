@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { UsageReport } from "../shared/protocol.ts";
 import { FRESH_MS, handleStatuslineRequest, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
 import { installStatusline } from "./statusline-install.ts";
@@ -812,7 +812,7 @@ describe("providers", () => {
     expect(requests).toHaveLength(1);
   });
 
-  it.each([401, 403, 429])("preserves HTTP %s handling without starting the CLI", async (status) => {
+  it.each([401, 429])("preserves HTTP %s handling without starting the CLI", async (status) => {
     write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
       token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() },
     });
@@ -823,6 +823,94 @@ describe("providers", () => {
     expect(usage!.problem).toBe(status === 429 ? "rate_limited" : "expired");
     expect(calls).toBe(0);
     expect(requests).toHaveLength(1);
+  });
+
+  it.each([
+    { daily: 403, standard: 200, hasQuota: true },
+    { daily: 503, standard: 403, hasQuota: true },
+    { daily: 403, standard: 200, hasQuota: false },
+  ])("checks Antigravity Starter quota on a 403 ($daily/$standard, quota: $hasQuota)", async ({ daily, standard, hasQuota }) => {
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
+      token: { access_token: "ya29-starter", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: daily });
+    replies.set("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: standard });
+    const argv = ["agy", "--print", "/usage", "--output-format", "json", "--print-timeout", "20s"];
+    if (hasQuota) commands.set(argv.join(" "), JSON.stringify({ status: "SUCCESS", command: { data: {
+      groups: [{ buckets: [{ id: "gemini-weekly", remaining_fraction: 0.75 }] }],
+    } } }));
+
+    const [usage] = (await new UsageService(context("win32"), only("antigravity")).report()).providers;
+    expect(usage).toMatchObject(hasQuota
+      ? { id: "antigravity", problem: null, windows: [{ kind: "week", scope: null, used_percent: 25 }] }
+      : { id: "antigravity", problem: "expired", windows: [] });
+    expect(commandCalls).toEqual([argv]);
+    expect(requests).toHaveLength(daily === 403 ? 1 : 2);
+  });
+
+  it.each(["before CLI", "while CLI runs"])("drops Antigravity quota when auth changes %s", async (when) => {
+    const dir = join(home, ".gemini", "antigravity-cli");
+    write(join(dir, "antigravity-oauth-token"), {
+      token: { access_token: "ya29-old", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+    const switchMode = () => write(join(dir, "settings.json"), { modelProvider: "gemini" });
+    const calls: string[][] = [];
+    const ctx: UsageContext = { ...context("win32"), async fetch() {
+      if (when === "before CLI") switchMode();
+      return new Response(null, { status: 403 });
+    }, async run(argv) {
+      calls.push(argv);
+      switchMode();
+      return JSON.stringify({ status: "SUCCESS", command: { data: { groups: [{ buckets: [{ id: "gemini-weekly", remaining_fraction: 0.5 }] }] } } });
+    } };
+    expect((await new UsageService(ctx, only("antigravity")).report()).providers).toEqual([]);
+    expect(calls).toHaveLength(when === "before CLI" ? 0 : 1);
+  });
+
+  it("does not ask Antigravity CLI for quota when its OAuth stores disagree", async () => {
+    const credential = (name: string) => ({
+      token: { access_token: `token-${name}`, expiry: new Date(NOW + HOUR).toISOString() },
+      id_token: jwt({ sub: name, email: `${name}@example.test` }),
+    });
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), credential("file"));
+    keychain.set("gemini|antigravity", { status: "found", value: JSON.stringify(credential("keyring")) });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: 403 });
+
+    const report = await new UsageService(context("darwin"), only("antigravity")).report();
+    expect(report.providers).toMatchObject([{ account: "keyring@example.test", problem: "expired", windows: [] }]);
+    expect(commandCalls).toEqual([]);
+  });
+
+  it.each([false, true])("does not reuse cached Antigravity quota after switching to API-key mode (hidden: %s)", async (hidden) => {
+    const dir = join(home, ".gemini", "antigravity-cli");
+    write(join(dir, "antigravity-oauth-token"), {
+      token: { access_token: "ya29-old", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+      body: { groups: [{ buckets: [{ bucketId: "gemini-weekly", remainingFraction: 0.75 }] }] },
+    });
+    const service = new UsageService(context("win32"), only("antigravity"));
+    const initial = (await service.report()).providers;
+    expect(initial).toMatchObject([{ windows: [{ used_percent: 25 }] }]);
+    if (hidden) service.skipAccounts(() => new Set(initial.map(({ key }) => key)));
+    write(join(dir, "settings.json"), { modelProvider: "gemini" });
+
+    expect((await service.report(true)).providers).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("does not read Antigravity usage for an old OAuth sign-in in API-key mode", async () => {
+    const dir = join(home, ".gemini", "antigravity-cli");
+    write(join(dir, "settings.json"), { modelProvider: "gemini" });
+    write(join(dir, "antigravity-oauth-token"), {
+      token: { access_token: "ya29-old", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.providers).toEqual([]);
+    expect(report.missing_commands).toBeUndefined();
+    expect(requests).toEqual([]);
+    expect(commandCalls).toEqual([]);
   });
 
   it("uses the official CLI only after HTTP omits Gemini quotas", async () => {
@@ -978,6 +1066,22 @@ describe("providers", () => {
     const report = await new UsageService(context("linux"), only("antigravity")).report();
     expect(report.missing_commands).toBeUndefined();
     expect(report.providers).toHaveLength(1);
+  });
+
+  it("reads Antigravity Starter usage from a Linux file-backed sign-in without secret-tool", async () => {
+    absent.add("secret-tool");
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), {
+      token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() },
+    });
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { status: 403 });
+    commands.set("agy --print /usage --output-format json --print-timeout 20s", JSON.stringify({
+      status: "SUCCESS",
+      command: { data: { groups: [{ buckets: [{ bucketId: "gemini-weekly", remainingFraction: 0.75 }] }] } },
+    }));
+
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.missing_commands).toBeUndefined();
+    expect(report.providers).toMatchObject([{ id: "antigravity", problem: null, windows: [{ used_percent: 25 }] }]);
   });
 
   it("never names secret-tool off Linux", async () => {
@@ -1479,6 +1583,51 @@ describe("providers", () => {
     const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
     expect(usage).toMatchObject({ id: "devin", problem: "expired", windows: [] });
   });
+});
+
+it.skipIf(process.platform === "win32")("runs Antigravity usage from an absolute PATH and stops its command at the deadline", async () => {
+  const relativeBin = join(home, "relative-bin");
+  const absoluteBin = join(home, "absolute-bin");
+  const stub = (dir: string, script: string) => {
+    const file = join(dir, "agy");
+    write(file, `#!/bin/sh\n${script}\n`);
+    chmodSync(file, 0o700);
+  };
+  stub(relativeBin, "echo relative");
+  stub(absoluteBin, `if [ "$1" != "--print" ]; then exit 1; fi
+if [ "$2" = "/usage" ]; then echo absolute; exit 0; fi
+trap '' TERM
+/bin/sleep 0.4
+echo past-deadline`);
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { systemUsageContext } from ${JSON.stringify(join(import.meta.dir, "usage.ts"))};
+    const ctx = systemUsageContext();
+    const answer = await ctx.run(["agy", "--print", "/usage"]);
+    const late = await ctx.run(["agy", "--print", "/usage-test-timeout"], 100);
+    console.log(JSON.stringify({ answer, late }));
+  `], {
+    cwd: home, env: { PATH: ["relative-bin", absoluteBin].join(delimiter), HOME: home, ANTIGRAVITY_APP_DATA_DIR: home },
+    stdin: "ignore", stdout: "pipe", stderr: "inherit",
+  });
+  const output = await new Response(child.stdout).json();
+  expect(await child.exited).toBe(0);
+  expect(output).toEqual({ answer: "absolute", late: null });
+});
+
+it.skipIf(process.platform === "win32")("runs Antigravity usage from the catalog's install folder when it is off PATH", async () => {
+  const executable = join(home, ".local", "bin", "agy");
+  write(executable, '#!/bin/sh\n[ "$1" = "--print" ] && [ "$2" = "/usage" ] && echo "installed outside PATH"\n');
+  chmodSync(executable, 0o700);
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { systemUsageContext } from ${JSON.stringify(join(import.meta.dir, "usage.ts"))};
+    console.log(JSON.stringify(await systemUsageContext().run(["agy", "--print", "/usage"])));
+  `], {
+    cwd: home, env: { PATH: join(home, "empty-path"), HOME: home, SHELL: "/bin/false" },
+    stdin: "ignore", stdout: "pipe", stderr: "inherit",
+  });
+  const output = await new Response(child.stdout).json();
+  expect(await child.exited).toBe(0);
+  expect(output).toBe("installed outside PATH");
 });
 
 describe("the service", () => {

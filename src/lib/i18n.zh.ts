@@ -766,7 +766,7 @@ const BASE: Record<string, string> = {
   "No answer": "无响应",
   "Machine offline": "机器离线",
   "Could not reach this machine": "无法连接此机器",
-  "Can't reach the PC: it may be off": "无法连接到这台电脑：它可能已关机",
+  "The PC is not answering": "电脑没有应答",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name} 有响应，但没有及时完成连接。它可能正忙或正在重启。请重试；如果一直这样，请在 {name} 上重启 Ovis。",
   "Account setup is incomplete.": "账户设置尚未完成。",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
