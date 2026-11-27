@@ -13,6 +13,7 @@ import { isListHash } from "../../shared/account-list-entry.ts";
 import type { ListPlace } from "../../shared/account-list-signers.ts";
 import { ACCOUNT_RECORDS_MAX, isAccountKeyEncoding, isIsoTime } from "../../shared/account-records.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
+import { parseRelayPass } from "../../shared/relay-pass.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { RelayIdentity } from "../relay/identity.ts";
@@ -641,6 +642,7 @@ export class AccountMailbox {
   /** `whole`: the account's rows were read whole, or there were none to read, or the service reads none (step2_off): what unreadKey may rest on. */
   private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number; whole: boolean }> {
     const empty = { outcome: null, adds: 0, whole: true };
+    if (this.options.devices.accountRowsMoving()) return { ...empty, whole: false };
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
     const account = snapshot.account();
@@ -720,8 +722,7 @@ export class AccountMailbox {
    * One press (docs/account.md): the account service's word that `account`, the one this PC's owner named, admitted
    * this PC within the last ten minutes. The admission is spent by this read. Null when there is none (404).
    */
-  async admission(account: string): Promise<{ readonly account: string; readonly new_until: string; readonly listing_id?: string } | null> {
-    const identity = this.options.identity();
+  async admission(account: string, identity = this.options.identity()): Promise<{ readonly account: string; readonly new_until: string; readonly listing_id?: string } | null> {
     if (!identity) throw new Error("This PC has no relay identity");
     try {
       // the listing it was admitted in: the completion receipt after the bind names it (an older service names none)
@@ -733,6 +734,44 @@ export class AccountMailbox {
       if (error instanceof AccountServiceRefusal && error.status === 404) return null;
       throw error;
     }
+  }
+
+  /** Read evidence of this PC's taken admission without applying the target's records to the source binding. */
+  async moveListing(identity: RelayIdentity, account: string): Promise<{ listing: string | null; admitted: boolean }> {
+    const answer = await this.proved(identity, "/v1/pc/mailbox", { account, with_listing_id: true });
+    const listing = answer === null ? undefined : namedListing(answer);
+    const admitted = answer === null ? undefined : listingAdmitted(answer);
+    if (listing === undefined || admitted === undefined) throw new Error("The account service did not name the PC's listing and admission");
+    return { listing, admitted };
+  }
+
+  /** Apply the source's waiting removals before its rows become local pairings. No source read can straddle the switch. */
+  commitMove<T>(binding: string, work: () => T): Promise<T | undefined> {
+    return this.exclusively(async () => {
+      if (this.stopped || this.options.devices.standingAccountBinding()?.bind_id !== binding) return undefined;
+      this.drainedAt = null;
+      await this.drain();
+      if (this.drainedAt === null || this.error !== null) return undefined;
+      const read = await this.readSnapshotNow(undefined, this.drainedListing);
+      if (!read.whole || this.error !== null || this.stopped) return undefined;
+      try { return work(); }
+      finally {
+        if (this.options.devices.standingAccountBinding()?.bind_id !== binding) this.readBegan = null;
+      }
+    });
+  }
+
+  /** A relay pass under the destination before the switch: `relay_limit` there gives the move up; the answer is the pass kept after it. */
+  async moveRelayPass(identity: RelayIdentity, account: string): Promise<Record<string, unknown>> {
+    const answer = await this.proved(identity, "/v1/pc/relay-pass", { account, pass_versions: [1, 2] });
+    if (answer === null || parseRelayPass(answer.pass)?.payload.sid !== identity.server_id) throw new Error("The account service did not issue this PC a relay pass");
+    return answer;
+  }
+
+  async leaveMovedAccount(identity: RelayIdentity, account: string): Promise<void> {
+    const path = `/v1/pcs/${identity.server_id}/leave`;
+    const response = await this.post(path, { server_id: identity.server_id, ...await this.prove(identity), account });
+    if (response.status !== 204) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
   }
 
   /**
@@ -1203,11 +1242,15 @@ export class AccountMailbox {
     early.splice(0, over);
   }
 
+  private post(path: string, body: unknown): Promise<Response> {
+    return (this.options.fetch ?? fetch)(new Request(String(this.options.service) + path, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000), redirect: "error",
+    }));
+  }
+
   /** One POST to the account service; `gone` answers 410 with null instead of throwing. */
   private async call(path: string, body: unknown, gone = false): Promise<Record<string, unknown> | null> {
-    const response = await (this.options.fetch ?? fetch)(new Request(String(this.options.service) + path, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
-    }));
+    const response = await this.post(path, body);
     if (gone && response.status === 410) return null;
     if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
     return await response.json() as Record<string, unknown>;
