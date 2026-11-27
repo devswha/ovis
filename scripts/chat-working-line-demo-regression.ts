@@ -117,6 +117,7 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
   // transcript has the new turn. The finished turn stays finished; the Working head is the new one's.
   await page.goto(url(panes.flaky));
   const flaky = page.locator(`.pane-frame[data-layout-pane="${panes.flaky}"]`);
+  const transcript = flaky.getByRole("log");
   await flaky.locator("[data-chat-row] .work-block-title", { hasText: "Worked for" }).last().waitFor();
   await painted(page);
   await record(page, panes.flaky);
@@ -144,7 +145,7 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
   const asked: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "Count the shelves." }] };
   await addTurns(page, panes.flaky, [asked]);
   await status(page, panes.flaky, "working");
-  await flaky.getByText("Count the shelves.", { exact: true }).waitFor();
+  await transcript.getByText("Count the shelves.", { exact: true }).waitFor();
   await painted(page);
   await record(page, panes.flaky);
   // the pane rests 300 ms after the frame that paints the answer, timed in the page
@@ -210,7 +211,7 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
   const dusted: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "Dust shelf c." }] };
   await addTurns(page, panes.flaky, [...atlasTurns, dusted]);
   await status(page, panes.flaky, "working");
-  await flaky.getByText("Dust shelf c.", { exact: true }).waitFor();
+  await transcript.getByText("Dust shelf c.", { exact: true }).waitFor();
   await painted(page);
   await record(page, panes.flaky);
   const restedLate = page.evaluate(([id, answer]) => new Promise<void>((done) => {
@@ -240,14 +241,14 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
   const shelvedBefore = [...atlasTurns, dusted, { role: "assistant" as const, ts: "2026-11-04T09:01:00.000Z", parts: [{ kind: "text" as const, text: "Shelf c is dusted.", phase: "final_answer" as const }] }];
   await addTurns(page, panes.flaky, [...shelvedBefore, shelved]);
   await status(page, panes.flaky, "working");
-  await flaky.getByText("Shelve the atlas.", { exact: true }).waitFor();
+  await transcript.getByText("Shelve the atlas.", { exact: true }).waitFor();
   await page.evaluate((id) => (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id, "blocked"), panes.flaky);
   await painted(page);
   await record(page, panes.flaky);
   await addTurns(page, panes.flaky, [...shelvedBefore, shelved,
     { role: "assistant", ts: "2026-11-04T09:02:00.000Z", parts: [{ kind: "text", text: "The atlas is shelved.", phase: "final_answer" }] },
   ]);
-  await flaky.getByText("The atlas is shelved.", { exact: true }).waitFor();
+  await transcript.getByText("The atlas is shelved.", { exact: true }).waitFor();
   await painted(page);
   await status(page, panes.flaky, "working");
   const restedAfterBlock = page.evaluate((id) => new Promise<void>((done) => {
@@ -276,7 +277,7 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
   ];
   await addTurns(page, panes.flaky, bookTurns);
   await status(page, panes.flaky, "working");
-  await flaky.getByText("How many books?", { exact: true }).waitFor();
+  await transcript.getByText("How many books?", { exact: true }).waitFor();
   await flaky.locator(".chat-activity", { hasText: "Working" }).waitFor();
   await painted(page);
   await record(page, panes.flaky);
@@ -289,7 +290,7 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
   await page.waitForFunction((id) => [...document.querySelectorAll(`.pane-frame[data-layout-pane="${id}"] [data-chat-row]`)].at(-1)?.textContent?.includes("1 command") === true, panes.flaky);
   await painted(page);
   await addTurns(page, panes.flaky, [...bookTurns, { ...counting, parts: [...counting.parts, { kind: "text", text: "There are forty books.", phase: "final_answer" }] }]);
-  await flaky.getByText("There are forty books.", { exact: true }).waitFor();
+  await transcript.getByText("There are forty books.", { exact: true }).waitFor();
   await painted(page);
   const lagged = await stop(page);
   assert.deepEqual(lagged.filter((frame) => !frame.lastRow.includes("There are forty books.") && frame.footer.length === 0 && !frame.lastBlocks.some((block) => block.startsWith("live/"))), [],
@@ -298,7 +299,7 @@ await withDemoBrowser({ tempPrefix: "herdr-working-line-demo-", afterTransport: 
 
   await addTurns(page, panes.flaky, [...bookTurns.slice(0, -1), { role: "user", ts: null, parts: [{ kind: "text", text: "Stop here." }] }]);
   await status(page, panes.flaky, "working");
-  await flaky.getByText("Stop here.", { exact: true }).waitFor();
+  await transcript.getByText("Stop here.", { exact: true }).waitFor();
   await flaky.locator(".chat-activity", { hasText: "Working" }).waitFor();
   await status(page, panes.flaky, "done");
   await flaky.locator(".chat-activity").waitFor({ state: "detached", timeout: 5_000 });

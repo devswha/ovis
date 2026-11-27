@@ -49,6 +49,7 @@ import { CommandPalette } from "./components/CommandPalette.tsx";
 import { AppLayoutContext, appLayoutOf, MachineContext, MachineRosterContext } from "./lib/machineContext.tsx";
 import { addPcExit, addPcMoreItem, MachineActionBanner, MachineSidebar } from "./components/MachineSidebar.tsx";
 import { SidebarResizer } from "./components/SidebarResizer.tsx";
+import { BackgroundAgentAnnouncer } from "./components/BackgroundAgentAnnouncer.tsx";
 import { type PanePresence, useSidebarActivityState } from "./lib/sidebarActivity.tsx";
 import { useAgentStateStamping } from "./lib/useAgentStateSince.ts";
 import { FilePanelResizer } from "./components/FilePanelResizer.tsx";
@@ -992,6 +993,7 @@ export function App() {
       ...(filePanelWidth === null ? {} : { "--file-panel-user-w": `${filePanelWidth}px` }),
     } as CSSProperties}>
       {selectedPane !== null && !guideShown && !inbox.shown && <h1 className="visually-hidden">{selectedTitle}</h1>}
+      <BackgroundAgentAnnouncer machines={sidebarMachines} openMachineId={selectedMachineId} openPaneId={presentedPaneId} />
       {listScreen || inboxWide ? null : <header className={`app-header is-zoned${chatShown ? " is-chat" : ""}${stripInHeader && !phoneTabRow ? " has-tab-row" : ""}${phoneTabRow && stripInHeader ? " has-phone-tabs" : ""}`}>
         <div className="header-side">
           {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} />}

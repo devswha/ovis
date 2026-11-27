@@ -641,13 +641,13 @@ export function createServer(
     if (path === null) return null;
     try { return { path, mark: String(statSync(path).mtimeMs) }; } catch { return null; }
   };
-  const herdrKinds = new InstalledLookup({ onPath: (binary) => agentDetector.onPath(binary), inInstallFolder: installFolder, refresh: (interactive) => agentDetector.refreshPath(interactive) });
-  const shellKinds = new InstalledLookup({ onPath: (kind) => shellAgents.executable(kind), inInstallFolder: installFolder, refresh: (interactive) => shellAgents.refresh(interactive) });
-  const agentOffered = async (kind: string): Promise<boolean> => {
+  const herdrKinds = new InstalledLookup({ onPath: (binary, checkProfile) => agentDetector.onPath(binary, checkProfile), inInstallFolder: installFolder, refresh: (interactive) => agentDetector.refreshPath(interactive) });
+  const shellKinds = new InstalledLookup({ onPath: (kind, checkProfile) => shellAgents.executable(kind, checkProfile), inInstallFolder: installFolder, refresh: (interactive) => shellAgents.refresh(interactive) });
+  const agentOffered = async (kind: string, checkProfile = true): Promise<boolean> => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
-    for (const needed of entry?.detect.needs ?? []) if (!(await herdrKinds.has(needed))) return false;
-    if (kind in SHELL_AGENTS) return shellKinds.has(kind);
-    return herdrKinds.has(entry?.detect.binaries[0] ?? kind);
+    for (const needed of entry?.detect.needs ?? []) if (!(await herdrKinds.has(needed, checkProfile))) return false;
+    if (kind in SHELL_AGENTS) return shellKinds.has(kind, checkProfile);
+    return herdrKinds.has(entry?.detect.binaries[0] ?? kind, checkProfile);
   };
   const agentInstaller = new AgentInstaller(agentDetector);
   const openCodeState = new OpenCodePromptState();

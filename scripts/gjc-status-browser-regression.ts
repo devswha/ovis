@@ -197,7 +197,7 @@ async function settled(paneId: string, status: Status, start?: number, expected:
       // Chat presents this key only after validating the finish and showing the last row.
       const key = JSON.stringify(["local", pushed.pane_id, pane.terminal_id, "chat", pushed.finish_epoch, pushed.finish_id]);
       await currentChat(paneId).and(page.locator(`[data-pane-content=${JSON.stringify(key)}]`))
-        .getByText(finish.answer, { exact: true }).waitFor({ state: "visible", timeout: remaining(deadline, "presented final answer") });
+        .getByRole("log").getByText(finish.answer, { exact: true }).waitFor({ state: "visible", timeout: remaining(deadline, "presented final answer") });
     }
     await agentRow(paneId).locator(`.badge[data-status="${browserStatus}"]`)
       .waitFor({ state: "visible", timeout: remaining(deadline, `browser ${browserStatus}`) });

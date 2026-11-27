@@ -1876,6 +1876,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Screen readers can browse the named status badges and the transcript without their DOM changes
+  speaking. Following T3 Code, separate polite regions announce completed replies in the open chat
+  and transitions to input needed or done in other panes, with the agent and workspace named.
+  Chat reads at most 300 characters of each new final answer. Opening a thread or loading older
+  rows does not announce their contents; the composer's own open-pane status stays in place.
 - Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
   filter is) moves the Agents list above the workspaces and splits its unpinned rows into
   groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)

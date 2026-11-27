@@ -360,8 +360,8 @@ try {
     await agentRow(paneA).locator('.badge[data-status="blocked"]').waitFor();
     assert.equal(await agentRow(paneA).locator('.agent-select[aria-current="true"]').count(), 1,
       "Agents independently marks its selected pane");
-    assert.equal(await agentRow(paneA).locator('.sidebar-status[role="status"]').count(), 1,
-      "Agents uses a compact accessible status");
+    assert.equal(await agentRow(paneA).getByRole("img", { name: /Agent INPUT/ }).count(), 1,
+      "Agents uses a named, non-live status badge");
     assert.ok((await agentRow(paneA).locator(".agent-title").textContent())?.trim(), "an agent has a task title");
     let releasePoll!: () => void;
     const heldPoll = new Promise<void>((resolve) => { releasePoll = resolve; });
