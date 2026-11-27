@@ -87,7 +87,7 @@ class FakeCore implements HcTransport {
   }
 }
 
-function attach(onData: (data: string) => void = () => {}, options: ConstructorParameters<typeof FakeCore>[0] = {}) {
+function attach(onData: (data: string) => void = () => {}, options: ConstructorParameters<typeof FakeCore>[0] = {}, onPaintEnd: () => void = () => {}) {
   const core = new FakeCore(options);
   const exits: (number | null)[] = [];
   const exited = Promise.withResolvers<void>();
@@ -97,6 +97,7 @@ function attach(onData: (data: string) => void = () => {}, options: ConstructorP
     cols: 80,
     rows: 24,
     onData,
+    onPaintEnd,
     onExit: (code) => { exits.push(code); exited.resolve(); },
   });
   return { core, session, exits, exited: exited.promise };
@@ -255,6 +256,22 @@ describe("CoreAttachSession", () => {
       await next.hit.promise;
       expect(seen.slice(start).join("")).toContain(`${marker}END_${split}`);
     }
+    session.kill();
+  });
+
+  it("tells the end of hc's first paint once, right after the bytes that close it with the 9001 mark, though a frame splits the mark", async () => {
+    const events: string[] = [];
+    const live = Promise.withResolvers<void>();
+    const { core, session } = attach((data) => {
+      if (data !== ASKED) events.push(data);
+      if (data.endsWith("live 2")) live.resolve();
+    }, {}, () => events.push("END"));
+    core.output("\x18history\r\nscreen\x1b[0m\x1b[?90");
+    core.output("01lprompt");
+    core.output("live 1\x1b[?9001h");
+    core.output("live 2");
+    await live.promise;
+    expect(events).toEqual([`${CLEARED}\x18history\r\nscreen\x1b[0m\x1b[?90`, "01lprompt", "END", "live 1\x1b[?9001h", "live 2"]);
     session.kill();
   });
 

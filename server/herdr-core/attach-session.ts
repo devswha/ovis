@@ -18,6 +18,13 @@ export const CLEAR_HISTORY = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
  * tail of in-place updates cannot draw it again (hc has no repaint), and the tail's lines land once.
  */
 export const CLEAR_JOINER_HISTORY = "\x1b[?1049l\x1b[3J";
+/**
+ * What hc sends right after the screen in a first paint: the win32-input-mode state (herdr-core viewers.rs
+ * `first_paint`, since hc 0.1.11; its README lists it in the first paint). hc queues the whole paint before any
+ * live byte and the screen's own bytes never carry it, so its first `h` or `l` ends the history replay.
+ */
+export const PAINT_END = "\x1b[?9001";
+const PAINT_ENDED = /\x1b\[\?9001[hl]/;
 /** One unmodified cursor or Home/End key, in either cursor mode's form. */
 export const CURSOR_KEY = /^\x1b[[O]([ABCDHF])$/;
 /** The key a CURSOR_KEY names, as hc's `terminal.keys` names it. */
@@ -75,6 +82,8 @@ export interface CoreAttachOptions {
   cols: number;
   rows: number;
   onData: (data: string, source?: "display-query") => void;
+  /** hc's first paint is all in onData now (its PAINT_END came): what follows is the program's live output */
+  onPaintEnd: () => void;
   onExit: (code: number | null) => void;
 }
 
@@ -124,6 +133,8 @@ export class CoreAttachSession {
     const decoder = new TextDecoder();
     let ended = false;
     let first = true;
+    /** the stream's last bytes while the first paint lasts, as a PAINT_END split across hc's frames needs them */
+    let paintTail: string | null = "";
     this.end = (code) => {
       if (ended) return;
       ended = true;
@@ -140,6 +151,8 @@ export class CoreAttachSession {
         this.settle();
         let text = decoder.decode(payload, { stream: true });
         this.trackCursorMode(text);
+        const painted = paintTail !== null && PAINT_ENDED.test(paintTail + text);
+        if (paintTail !== null) paintTail = painted ? null : (paintTail + text).slice(-PAINT_END.length);
         if (text && first) {
           first = false;
           text = CLEAR_HISTORY + text;
@@ -147,6 +160,7 @@ export class CoreAttachSession {
         // a program turning focus reports off would leave hc without this viewer's focus;
         // insert right after FOCUS_OFF so a trailing incomplete escape sequence at a 16 KiB chunk boundary stays intact
         if (text) options.onData(text.includes(FOCUS_OFF) ? text.replaceAll(FOCUS_OFF, FOCUS_OFF + FOCUS_ON) : text);
+        if (painted) options.onPaintEnd();
       },
       onClose: (reason) => this.end(typeof reason?.["exit_code"] === "number" ? reason["exit_code"] : null),
     }).then(({ channel }) => {
