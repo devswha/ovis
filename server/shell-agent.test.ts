@@ -197,14 +197,14 @@ it("reads the login PATH between its markers, whatever the profile prints around
  * A login shell that also takes `-i`, as zsh does: `-l` sets the login PATH, `-i` runs `rc` (a
  * .zshrc) and puts gjc's folder in front of it.
  */
-function rcFixture(rc = ":") {
+function rcFixture(rc = ":", shellName = "zsh") {
   const f = fixture();
   const rcBin = join(f.root, "rc bin");
   mkdirSync(rcBin);
   const gjc = join(rcBin, "gjc");
   writeFileSync(gjc, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   unlinkSync(f.gjc);
-  const shell = join(f.root, "interactive-shell");
+  const shell = join(f.root, shellName);
   writeFileSync(shell, [
     "#!/bin/sh",
     "PATH=/usr/bin:/bin",
@@ -284,6 +284,7 @@ it("finds agents after a shell profile edit without rerunning an unchanged profi
   expect(runs()).toBe(2);
 
   clock += 61_000;
+  writeFileSync(join(f.home, ".bashrc"), "echo unrelated\n");
   expect(await agents()).toEqual([claude, omo]);
   expect(runs()).toBe(2);
 
@@ -294,6 +295,46 @@ it("finds agents after a shell profile edit without rerunning an unchanged profi
   expect(runs()).toBe(2);
   expect(await agents()).toEqual([null, null]);
   expect(runs()).toBe(3);
+});
+
+it("detects edits to fish's config in XDG_CONFIG_HOME", async () => {
+  const f = rcFixture('. "$XDG_CONFIG_HOME/fish/config.fish"', "fish");
+  const config = join(f.root, "config");
+  const dir = join(config, "fish");
+  mkdirSync(dir, { recursive: true });
+  const rc = join(dir, "config.fish");
+  writeFileSync(rc, 'export PATH="/old:$PATH"\n');
+  utimesSync(rc, 1, 1);
+  const probe = agentPathProbe({ shell: f.shell, env: { ...f.env, XDG_CONFIG_HOME: config }, rereadGapMs: 0 });
+  expect((await once(probe)).path?.split(":")).toContain("/old");
+  writeFileSync(rc, 'export PATH="/new:$PATH"\n');
+  utimesSync(rc, 2, 2);
+  expect((await once(probe)).path?.split(":")).toContain("/new");
+});
+
+it("does not return an obsolete cache when a profile edit supersedes a locator read", async () => {
+  const f = fixture();
+  const first = Promise.withResolvers<LoginPathResult>();
+  const second = Promise.withResolvers<LoginPathResult>();
+  const firstStarted = Promise.withResolvers<void>();
+  const secondStarted = Promise.withResolvers<void>();
+  let revision = 0;
+  const probe: LoginPathProbe = Object.assign((_signal: AbortSignal, wanted?: number | null) => {
+    if (wanted === 0) { firstStarted.resolve(); return first.promise; }
+    secondStarted.resolve();
+    return second.promise;
+  }, { profileRevision: async () => revision });
+  const locator = new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe });
+  const prior = locator.executable("gjc");
+  await firstStarted.promise;
+  revision++;
+  const latest = locator.executable("gjc");
+  await secondStarted.promise;
+  first.resolve({ path: null, reason: "obsolete PATH" });
+  // Let the older read finish while the new result is still pending.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  second.resolve({ path: f.loginBin });
+  expect(await Promise.all([prior, latest])).toEqual([f.gjc, f.gjc]);
 });
 
 it("reads an edit that arrives while the interactive shell is still running (#3731)", async () => {
@@ -390,6 +431,39 @@ it("service miss resolves the same executable for offer and start", async () => 
   }
   expect(sent).toEqual([`${shellCommandLine("posix", f.gjc, ["it's"])}\n`]);
   expect(runs()).toBe(1);
+});
+
+it("types Command Code only if herdr's own idle shell is still in front after executable lookup", async () => {
+  const f = fixture();
+  const executable = join(f.loginBin, "cmd");
+  writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const { probe, found } = manual();
+  const locator = new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe });
+  const typed: string[] = [];
+  let front = { pid: 7, argv: ["/bin/bash", "--noprofile", "--norc"] };
+  const rpc = spyOn(client, "herdrRpc").mockImplementation((async (method: string, params: { text?: string }) => {
+    if (method === "pane.send_text") {
+      typed.push(params.text ?? "");
+      front = { pid: 4242, argv: ["command-code"] };
+      return {};
+    }
+    if (method === "pane.process_info") return { process_info: { shell_pid: 7, foreground_process_group_id: front.pid, foreground_processes: [front] } };
+    throw new Error(`unexpected ${method}`);
+  }) as typeof client.herdrRpc);
+  try {
+    const started = startShellAgent("cmd", "w1-1", ["a b"], { locator });
+    front = { pid: 8, argv: ["vim"] };
+    found(f.loginBin);
+    await expect(started).rejects.toMatchObject({ code: "agent_pane_busy" });
+    expect(typed).toEqual([]);
+
+    front = { pid: 7, argv: ["/bin/bash", "--noprofile", "--norc"] };
+    expect(await startShellAgent("cmd", "w1-1", ["a b"], { locator })).toBe(4242);
+    expect(typed).toEqual([`${shellCommandLine("posix", executable, ["a b"])}\n`]);
+  } finally {
+    rpc.mockRestore();
+    await locator.stop();
+  }
 });
 
 it("finds a kind installed on the kept login PATH after a miss, with no new login shell", async () => {

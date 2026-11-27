@@ -72,8 +72,10 @@ describe("GET /api/agent-catalog", () => {
     expect((await fetch(url("/api/agent-catalog"))).status).toBe(401);
     const watched = await fetch(url("/api/agent-catalog"), { headers: { cookie: `ovis_device=${WATCH_TOKEN}`, "x-forwarded-for": "100.64.0.9" } });
     expect(watched.status).toBe(200);
-    expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
+    expect((await fetch(url("/api/agent-catalog?profile-recheck=0"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
     expect(profileChecks).toBe(checks);
+    expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBeGreaterThan(checks);
     expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BROWSER_TOKEN) })).status).toBe(200);
     expect(profileChecks).toBeGreaterThan(checks);
     const watchPost = await fetch(url("/api/agent-catalog"), { method: "POST", headers: { cookie: `ovis_device=${WATCH_TOKEN}`, "x-forwarded-for": "100.64.0.9", origin: url("") } });

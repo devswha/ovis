@@ -1025,9 +1025,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     }
   }
 
-  // A PC proxy sends its full bridge token for watchers too. It can forward an explicit Check again
-  // for drivers, but ordinary bridge reads must not refresh the interactive shell on profile edits.
-  const checkAgentProfile = !readOnly && !bridgeAuthorized && !options.bridgeOnly;
+  // A PC proxy sends its full token for watchers too, with an opt-out from profile refresh.
+  const checkAgentProfile = !readOnly && url.searchParams.get("profile-recheck") !== "0";
   const agentsResponse = await handleAgentsRequest(request, pathname, shellAgents, (kind) => agentOffered(kind, checkAgentProfile));
   if (agentsResponse) return agentsResponse;
 
