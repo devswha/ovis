@@ -500,7 +500,9 @@ export class PendingInputs<Owner, Lease> {
     const released: string[] = [];
     for (const [paneId, gate] of this.gates) {
       if (gate.deadline !== null && this.now() >= gate.deadline && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
-        if (gate.lenient) released.push(paneId);
+        // a Send now still waiting for review may not have started its turn yet: its pane's queue waits for the user
+        const reviewing = [...this.records.values()].some((item) => item.paneId === paneId && this.reviewOnly.has(item) && item.message.state === "uncertain");
+        if (gate.lenient && !reviewing) released.push(paneId);
         else this.holdPane(paneId, { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" });
         this.gates.delete(paneId);
       }
