@@ -432,7 +432,7 @@ export class FakeAccountService {
   /** by block id: when the service kept it, for frozenSignIn */
   private readonly blocksKeptAt = new Map<string, number>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(private readonly now: () => number = Date.now, private readonly accessTokenTtlS = ACCESS_TOKEN_TTL_S) {}
 
   /** `device`: the token is a device code's sign-in (a PC's), never an app's own */
   issueToken(account: string, { twoStep = null, device = false }: { twoStep?: boolean | null; device?: boolean } = {}): string {
@@ -524,9 +524,9 @@ export class FakeAccountService {
     }
     const access = randomHex(32);
     const refresh = randomHex(32);
-    this.tokens.set(access, { account, provider, family, expires: this.now() + ACCESS_TOKEN_TTL_S * 1000 });
+    this.tokens.set(access, { account, provider, family, expires: this.now() + this.accessTokenTtlS * 1000 });
     this.refreshTokens.set(refresh, { account, provider, family, used: false });
-    return json({ access_token: access, refresh_token: refresh, expires_in: ACCESS_TOKEN_TTL_S, account, provider });
+    return json({ access_token: access, refresh_token: refresh, expires_in: this.accessTokenTtlS, account, provider });
   }
 
   private signIn(url: URL, provider: string): Response {

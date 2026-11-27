@@ -794,12 +794,12 @@ export class AccountService {
     const before = await this.current(started);
     return {
       generation: started.generation, session: before, linkToken, bearer: before.access_token,
-      link: { account: before.account, sign_in_id: before.sign_in_id ?? legacySignInId(before.refresh_token), refresh_id: legacySignInId(before.refresh_token) },
+      link: { account: before.account, sign_in_id: before.sign_in_id ?? legacySignInId(before.refresh_token) },
     };
   }
 
   /** Keeps the redeemed session only in place of the sign-in that asked for the link, even if its tokens rotated. */
-  async installMethodLink(started: SignInSnapshot, after: AccountSession, link?: LinkSignIn): Promise<AccountSession> {
+  async installMethodLink(started: SignInSnapshot, after: AccountSession): Promise<AccountSession> {
     const before = started.session;
     const end = (session: AccountSession) => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now });
     if (after.account !== before.account) {
@@ -821,16 +821,19 @@ export class AccountService {
       await end(after);
       throw new SignedOutError();
     }
-    // Other tabs will read the new sign-in from the store, but a tab that refreshed the old one may still be using it.
-    // Old redirects without a departure digest cannot prove the family did not rotate either.
-    if (link === undefined ? replaced.refresh_token === before.refresh_token : link.refresh_id === legacySignInId(replaced.refresh_token)) {
-      try {
-        await end(replaced);
-      } catch {
-        console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
-      }
+    try {
+      await end(replaced);
+    } catch {
+      console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
     }
     return this.current({ generation: started.generation, session: after });
+  }
+
+  /** Gets a usable token for a redirect's sign-in without sending a request with that token yet. */
+  async refreshSignIn(expected: SignInSnapshot): Promise<AccountSession> {
+    const started = await this.snapshot(expected.session, expected.generation);
+    await this.fresh(started);
+    return this.current(started);
   }
 
   /**

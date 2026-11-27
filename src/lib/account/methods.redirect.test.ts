@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
 import { FakeAccountService, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { nativeSignIn, NATIVE_REDIRECT } from "./native.ts";
 import { AccountService } from "./service.ts";
@@ -8,8 +8,8 @@ import { memoryAccountStore, memoryLock } from "./store.ts";
 const SERVICE = "https://account.example";
 const AT = "2026-11-27T09:42:00.000Z";
 
-async function setup() {
-  const fake = new FakeAccountService();
+async function setup(accessTokenTtlS?: number) {
+  const fake = new FakeAccountService(Date.now, accessTokenTtlS);
   const store = memoryAccountStore();
   const start = await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
   const callback = new URL((await fake.fetch(start)).headers.get("location") ?? "").hash;
@@ -41,8 +41,8 @@ describe("sign-in methods", () => {
     expect(await service.identities()).toEqual({ identities, history: [] });
   });
 
-  it("adds Apple on iOS through the linking sheet, not native Apple sign-in", async () => {
-    const { fake, store, before } = await setup();
+  it("adds Apple through the iOS linking sheet even if the access token expires while it is open", async () => {
+    const { fake, store, before } = await setup(120);
     const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
     const service = new AccountService({ store, fetch: fake.fetch, lock: memoryLock() });
     Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
@@ -52,16 +52,18 @@ describe("sign-in methods", () => {
         const url = new URL(options.url);
         expect(url.searchParams.get("link_token")).toBeTruthy();
         expect(url.searchParams.get("redirect_uri")).toBe(NATIVE_REDIRECT);
+        setSystemTime(new Date(before.expires_at + 1));
         return { url: (await fake.fetch(url)).headers.get("location") };
       },
     } });
     try {
       const started = await service.startMethodLink("apple");
       const redeemed = await nativeSignIn("apple", { store, service: SERVICE, fetch: fake.fetch, link: started });
-      expect(await store.get("session")).toEqual(before);
-      const after = await service.installMethodLink(started, redeemed, started.link);
+      expect(await store.get("session")).toMatchObject({ sign_in_id: before.sign_in_id, provider: "github" });
+      const after = await service.installMethodLink(started, redeemed);
       expect(after).toMatchObject({ account: before.account, provider: "apple" });
     } finally {
+      setSystemTime();
       if (capacitor === undefined) Reflect.deleteProperty(globalThis, "Capacitor");
       else Object.defineProperty(globalThis, "Capacitor", capacitor);
     }

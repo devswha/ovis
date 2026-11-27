@@ -11,8 +11,8 @@ export const noDevices: ShellDeviceStore = {
   async update(_id, change) { return change(undefined); },
 };
 
-export async function setup(now: () => number = Date.now) {
-  const fake = new FakeAccountService(now);
+export async function setup(now: () => number = Date.now, accessTokenTtlS?: number) {
+  const fake = new FakeAccountService(now, accessTokenTtlS);
   fake.signInAs("github", "acct_1");
   const store = memoryAccountStore();
   const service = new AccountService({ store, fetch: fake.fetch });

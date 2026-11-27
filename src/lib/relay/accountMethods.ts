@@ -67,7 +67,7 @@ export function accountMethods(account: AccountService, options: Pick<FinishOpti
           const issued = await nativeSignIn(provider, {
             store, service: session.service, ...(fetch === undefined ? {} : { fetch }), link: { linkToken, link, generation },
           });
-          await options.register(await bound.installMethodLink(started, issued, link));
+          await options.register(await bound.installMethodLink(started, issued));
           await record(asked, null);
           await options.refresh();
           return false;

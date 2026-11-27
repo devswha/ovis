@@ -1063,7 +1063,10 @@ export function createAccountController(mount: RelayShellMount, view: {
         } else {
           registrationJustTried = session;
           await registerSignIn(session);
-          if (pending?.resume_add?.account === session.account && await methods.addMethod(pending.resume_add.provider, session, pending.pc)) return true;
+          if (pending?.resume_add?.account === session.account && await methods.addMethod(pending.resume_add.provider, session, pending.pc)) {
+            await refresh(true, false, session);
+            return true;
+          }
           if (pending?.pc !== undefined) outcome = { refused: null, provider: pending.provider };
         }
       } catch (error) {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
 import { LINK_TOKEN_TTL_S, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
 import { keepShellAccount, shellAccountActions } from "../account/hostedSignIn.ts";
 import { AccountService } from "../account/service.ts";
@@ -33,10 +33,11 @@ async function setup(now: () => number = Date.now) {
 describe("linking sign-in methods in the hosted shell", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   beforeEach(() => { browser = createShellTestPage(); });
-  afterEach(() => browser.dispose());
+  afterEach(() => { setSystemTime(); browser.dispose(); });
 
-  it("finishes a web link after reload, resumes its PC and can open PCs with the new sign-in's key", async () => {
-    const { fake, store, before, controller, callback } = await setup();
+  it("finishes a web link after the access token expires, then opens PCs with the new sign-in's key", async () => {
+    setSystemTime(new Date());
+    const { fake, store, before, controller, callback } = await signInSetup(Date.now, 120);
     const key = await store.key();
     if (before.sign_in_id === undefined) throw new Error("the sign-in has no id");
     const signInKey = { account: before.account, sign_in_id: before.sign_in_id, key, no: fake.registerSessionKey(before.access_token, key.public_spki, "Test phone") };
@@ -50,6 +51,7 @@ describe("linking sign-in methods in the hosted shell", () => {
     if (went === undefined) throw new Error("the browser did not start the link");
     const state = new URL(went).searchParams.get("state") ?? "";
     expect((await store.get("pending"))?.[state]).toMatchObject({ pc: PC, link: { account: before.account, sign_in_id: before.sign_in_id } });
+    setSystemTime(new Date(before.expires_at + 1));
     const returned = signInReturn(await callback(went));
     const second = controller();
     let resumed: string | undefined;
@@ -90,7 +92,7 @@ describe("linking sign-in methods in the hosted shell", () => {
     expect(page.signedInAs).toEqual(replacement);
   });
 
-  it("installs the linked session for both tabs without revoking the family another tab refreshed", async () => {
+  it("moves both tabs to the linked sign-in and revokes the family another tab refreshed", async () => {
     const { fake, before, store, controller, callback } = await setup();
     const urls: string[] = [];
     const first = controller((url) => { urls.push(url); });
@@ -101,8 +103,9 @@ describe("linking sign-in methods in the hosted shell", () => {
     const service = new AccountService({ store, fetch: fake.fetch, now: () => before.expires_at });
     await service.listPcs();
     const refreshed = await store.get("session");
-    expect(refreshed?.sign_in_id).toBe(before.sign_in_id);
-    expect(refreshed?.access_token).not.toBe(before.access_token);
+    if (refreshed === undefined) throw new Error("the other tab did not refresh the sign-in");
+    expect(refreshed.sign_in_id).toBe(before.sign_in_id);
+    expect(refreshed.access_token).not.toBe(before.access_token);
     const otherTab = controller();
     await otherTab.load(null);
     expect(otherTab.signedInAs).toEqual(refreshed);
@@ -113,7 +116,7 @@ describe("linking sign-in methods in the hosted shell", () => {
     const installed = await store.get("session");
     expect(installed?.provider).toBe("google");
     expect(otherTab.signedInAs).toEqual(installed);
-    expect((await fake.fetch(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${refreshed?.access_token}` } })).status).toBe(200);
+    expect((await fake.fetch(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${refreshed.access_token}` } })).status).toBe(401);
   });
 
   it.each(["acct_1", "acct_other"])("resumes the requested Add only if signing in again returns for the asking account (%s)", async (account) => {
@@ -140,6 +143,7 @@ describe("linking sign-in methods in the hosted shell", () => {
       return;
     }
     expect(continued).toBe(true);
+    expect(reloaded.signedInAs).toMatchObject({ account, provider: "github" });
     expect(resumedPc).toEqual([]);
     expect(opened).toHaveLength(1);
     const [link] = opened;

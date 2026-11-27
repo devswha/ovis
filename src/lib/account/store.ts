@@ -40,8 +40,6 @@ export interface AccountSession {
 export interface LinkSignIn {
   readonly account: string;
   readonly sign_in_id: string;
-  /** A digest of the refresh token at departure, not a credential; rotation means another tab may still use that family. */
-  readonly refresh_id?: string;
 }
 
 export interface ResumeAdd {

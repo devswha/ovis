@@ -116,6 +116,7 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
   if (pending.link !== undefined) {
     before = await options.store.get("session");
     if (before?.account !== pending.link.account || before.sign_in_id !== pending.link.sign_in_id || before.service !== pending.service) throw new SignedOutError();
+    before = await (options.linkService ?? new AccountService(options)).refreshSignIn({ generation, session: before });
   }
   const bearer = before?.access_token ?? options.bearer;
   let session: AccountSession;
@@ -131,7 +132,7 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
   }
   const issued = await finishIssuedSignIn(session, generation, { ...options, ...(bearer === undefined ? {} : { bearer }) });
   return before === undefined || options.linkService === undefined ? issued
-    : options.linkService.installMethodLink({ generation, session: before }, issued, pending.link);
+    : options.linkService.installMethodLink({ generation, session: before }, issued);
 }
 
 /** A link is installed by addMethod; other sign-ins are installed atomically against the generation. */
