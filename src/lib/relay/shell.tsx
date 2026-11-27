@@ -420,6 +420,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
     methods: account.methods,
+    offered: account.offered,
     addMethod: (provider) => account.addMethod(provider, entry.serverId ?? undefined),
     removeMethod: account.removeMethod,
     methodsChange: () => account.methodsChange,

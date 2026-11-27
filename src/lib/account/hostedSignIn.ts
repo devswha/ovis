@@ -35,6 +35,8 @@ export interface ShellAccount {
   /** the phone app's fresh own sign-in in place (accountController); a browser has none, it signs in by leaving the page */
   readonly freshSignIn?: FreshSignIn | undefined;
   readonly methods?: () => Promise<AccountIdentityList>;
+  /** the providers the account service offers now: a way in is added only with one of them */
+  readonly offered?: () => Promise<readonly AccountProvider[]>;
   readonly addMethod?: (provider: AccountProvider) => Promise<void>;
   readonly removeMethod?: (provider: AccountProvider) => Promise<void>;
   readonly methodsChange?: () => { readonly provider: AccountProvider; readonly error: string | null } | undefined;

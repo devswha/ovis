@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { FakeAccountService, LINK_TOKEN_TTL_S, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import { keepShellAccount, shellAccountActions } from "../account/hostedSignIn.ts";
 import { AccountService } from "../account/service.ts";
 import { beginSignIn, finishOwnSignIn, signInReturn } from "../account/signin.ts";
 import { memoryAccountStore, type AccountProvider } from "../account/store.ts";
 import { createAccountController } from "./accountController.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
+import { mountRelayShell } from "./shell.tsx";
 
 const SERVICE = "https://account.example";
 const PC = "a".repeat(32);
@@ -147,5 +149,20 @@ describe("linking sign-in methods in the hosted shell", () => {
 
     expect(reloaded.methodsChange).toEqual({ provider: "google", error: "expired" });
     expect(await store.get("session")).toEqual(before);
+  });
+
+  it("hands the page the shell opens the providers the account service offers, not the build's own list", async () => {
+    const { fake, store } = await setup();
+    try {
+      await mountRelayShell({
+        container: Object.create(null), entryUrl: WEB_REDIRECT, shellVersion: "0.0.0-test", label: "Test phone", store: noDevices,
+        renderApp: () => ({ render() {}, unmount() {} }), createRoot: () => ({ render() {}, unmount() {} }),
+        open: () => Promise.reject(new Error("no connection is expected here")), checkPc: async () => ({ kind: "offline", reason: "relay" }), reload: async () => {},
+        accountService: SERVICE, accountProviders: ["github"], accountStore: store, accountFetch: fake.fetch,
+      });
+      expect(await shellAccountActions()?.offered?.()).toEqual(["github", "google", "apple"]);
+    } finally {
+      keepShellAccount(null);
+    }
   });
 });

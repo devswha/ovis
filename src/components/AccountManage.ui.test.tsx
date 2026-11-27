@@ -564,4 +564,13 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     const root = await leaveFromSheet(async () => ({ left: true, message: null }));
     expect(sheets(root)).toHaveLength(0);
   });
+
+  it("draws the account's ways to sign in first in the hosted sheet, with only its Account ID above them", async () => {
+    const withWays = { ...hosted(async () => ({ left: true, message: null })), methods: async () => ({ identities: [{ provider: "github" as const, added_at: ago(60) }], history: [] }) };
+    const root = await openSheet(withWays);
+    const parts = [...one(root, ".account-manage-body").children];
+    const ways = parts.findIndex((part) => part.classList.contains("account-methods"));
+    expect(parts.slice(0, ways).map((part) => part.hasAttribute("data-account-id"))).toEqual([true]);
+    expect([...parts[ways]?.querySelectorAll("li.account-method") ?? []].map((chip) => chip.getAttribute("data-provider"))).toEqual(["github"]);
+  });
 });
