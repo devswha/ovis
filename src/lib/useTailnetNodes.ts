@@ -17,9 +17,19 @@ export function useTailnetNodes(enabled: boolean, again = 0, machineSessions?: M
     if (!enabled) { setAnswer(null); return; }
     let live = true;
     let refused = false;
+    // a read that answers after a newer one was applied is older news: it would bring back a device already decided
+    let issued = 0;
+    let applied = 0;
     const read = (): void => {
       if (refused || document.hidden) return;
-      fetchTailnetNodes().then((next) => { if (live) setAnswer(next); }, (error: unknown) => {
+      const seq = ++issued;
+      fetchTailnetNodes().then((next) => {
+        if (!live || refused || seq < applied) return;
+        applied = seq;
+        setAnswer(next);
+      }, (error: unknown) => {
+        // an older refusal must not shut out a newer read that is still in flight
+        if (!live || seq !== issued) return;
         if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) refused = true;
         else console.warn("Ovis: the Tailscale devices could not be read", error instanceof Error ? error.name : error);
       });

@@ -24,11 +24,13 @@ export function useListAdd(enabled: boolean, again = 0, machineSessions?: Machin
       if (refused || document.hidden) return;
       const seq = ++issued;
       fetchListAdd().then((next) => {
-        if (!live || seq < applied) return;
+        if (!live || refused || seq < applied) return;
         applied = seq;
         setState(next);
       }, (error: unknown) => {
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) { refused = true; if (live) setState(null); }
+        // an older refusal must not shut out a newer read that is still in flight, or clear what it brought
+        if (!live || seq !== issued) return;
+        if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) { refused = true; setState(null); }
         else console.warn("Ovis: the add by the account's list could not be read", error instanceof Error ? error.name : error);
       });
     };

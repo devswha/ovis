@@ -26,7 +26,8 @@ export function useOwnWindowPrompts(relayPairings: readonly RelayPairingRequest[
   const joins = useOwnJoins(ownWindow && unlocked, reads, machineSessions);
   // a first join's deadline is counted from its own read: an unrelated update rebuilds the list, never that deadline
   const firstJoins = useMemo(() => firstJoinPrompts(joins), [joins]);
-  const tailnet = useTailnetNodes(ownWindow, 0, machineSessions)?.pending ?? null;
+  // a lock closes the local socket: only an unlocked window listens, to the socket opened after it
+  const tailnet = useTailnetNodes(ownWindow, 0, unlocked ? machineSessions : undefined)?.pending ?? null;
   const tailnetAsks = useMemo(() => tailnetPrompts(tailnet), [tailnet?.id, tailnet?.asked_at]); // eslint-disable-line react-hooks/exhaustive-deps
   const listAdd = useListAdd(ownWindow && unlocked, reads, machineSessions);
   // a number a wait shows in the dialog it was pressed in is that wait's to answer: one place alone takes the yes
