@@ -95,6 +95,8 @@ let pendingLink: string | null = null;
 /** the built-in browser while its setting is on (browserTabs.ts), and the port of the server it keeps out */
 let browser: BrowserTabs | null = null;
 let browserPort: number | null = null;
+/** whether the server's page can show a built-in browser tab now (a wide window, not in a mode): it says so on each change */
+let tabsShowable = false;
 let stateWatch: FSWatcher | null = null;
 /** the agents' way into it (browserBroker.ts), open only while it is on; none where there is no local-only socket (Windows) */
 const brokerSocket = brokerPath(app.getPath("userData"), process.platform);
@@ -370,7 +372,7 @@ function createWindow(): void {
   window.on("closed", () => { window = null; cancelHide = null; });
   guard(window.webContents);
   window.webContents.on("did-finish-load", () => tellLink(true));
-  window.webContents.on("did-start-navigation", (details) => { if (details.isMainFrame && !details.isSameDocument) browser?.hide(); });
+  window.webContents.on("did-start-navigation", (details) => { if (details.isMainFrame && !details.isSameDocument) { browser?.hide(); tabsShowable = false; } });
   void window.loadFile(connectPage);
 }
 
@@ -433,17 +435,22 @@ async function openWebLink(url: string): Promise<void> {
 }
 
 /**
- * A web link in a tab of the person's own in the built-in browser, which the page then shows beside the pane. With
- * the browser turned off since, or an address its policy refuses (an Ovis server), the system browser opens it.
+ * A web link in a tab of the person's own in the built-in browser, which the page then shows beside the pane. When
+ * the page cannot show a tab now (a narrow window, a mode), the browser was turned off since, or its policy refuses
+ * the address (an Ovis server) or the page does not load, the system browser opens it, so a click never opens a tab
+ * nobody sees or an empty one.
  */
-function openInBuiltIn(address: string): void {
-  const id = browser?.open(address, "mine") ?? null;
+async function openInBuiltIn(address: string): Promise<void> {
   const contents = window?.webContents;
-  if (id === null || !contents || !serverPage(contents.mainFrame)) {
+  const shown = contents && tabsShowable && serverPage(contents.mainFrame) ? contents : null;
+  const id = shown ? await browser?.openLoaded(address, "mine") ?? null : null;
+  if (shown === null || id === null || shown.isDestroyed()) {
     if (id !== null) browser?.close(id);
-    return openOutside(address);
+    openOutside(address);
+    updateLog("The built-in browser could not show a link: the system browser opened it.");
+    return;
   }
-  contents.send("ovis:tabs-opened", id);
+  shown.send("ovis:tabs-opened", id);
 }
 
 function openInstead(browser: LinkBrowser | null, address: string): void {
@@ -870,6 +877,7 @@ if (!app.requestSingleInstanceLock()) {
     if (tabs && tab !== null && numbers) tabs.show(tab, box as BrowserBounds);
   });
   ipcMain.on("ovis:tabs-hide", (event) => browserFor(event)?.hide());
+  ipcMain.on("ovis:tabs-showable", (event, showable: unknown) => { if (serverPage(event.senderFrame)) tabsShowable = showable === true; });
   ipcMain.handle("ovis:tabs-thumbnail", (event, id: unknown) => {
     const tab = tabId(id);
     return tab === null ? null : browserFor(event)?.thumbnail(tab) ?? null;

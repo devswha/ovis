@@ -3,6 +3,7 @@ import { Compass } from "lucide-react";
 
 import { BUILT_IN_LINK_BROWSER } from "../../shared/browser-policy.ts";
 import { linkBrowsers, type LinkBrowserChoices } from "../lib/externalLink.ts";
+import { useDesktopBrowser } from "../lib/desktopBrowser.ts";
 import { useT } from "../lib/i18n.ts";
 import { SettingsRow, SettingsSelect } from "./SettingsControls.tsx";
 
@@ -16,6 +17,8 @@ export function LinkBrowserRow() {
   // what the app has saved, and the latest choice asked for: a failed save shows the saved one again, unless a later choice came since
   const saved = useRef<string | null>(null);
   const asked = useRef(0);
+  // the built-in browser is listed only while it is on: listed again once main says it turned on or off
+  const builtIn = useDesktopBrowser() !== null;
   useEffect(() => {
     let current = true;
     void bridge?.list().then((listed) => {
@@ -24,7 +27,7 @@ export function LinkBrowserRow() {
       setChoices(listed);
     }).catch(() => {});
     return () => { current = false; };
-  }, [bridge]);
+  }, [bridge, builtIn]);
   if (bridge === null || choices === null) return null;
   const chosen = choices.chosen !== null && choices.browsers.some((browser) => browser.id === choices.chosen) ? choices.chosen : SYSTEM_DEFAULT;
   const choose = (id: string) => {

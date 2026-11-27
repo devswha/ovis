@@ -60,6 +60,7 @@ interface Bridge {
   go?(id: number, step: "back" | "forward" | "reload" | "stop"): void;
   hold?(id: number, held: boolean): void;
   onOpened?(listener: (id: unknown) => void): () => void;
+  showable?(showable: boolean): void;
 }
 
 function bridge(): Bridge | undefined {
@@ -169,6 +170,11 @@ export function onBrowserTabOpened(listener: (id: number) => void): () => void {
   const onOpened = bridge()?.onOpened;
   if (typeof onOpened !== "function") return () => undefined;
   return onOpened((id) => { if (typeof id === "number" && Number.isSafeInteger(id)) listener(id); });
+}
+
+/** Tells main whether this page can show a tab now: it opens a clicked web link in the built-in browser only then. */
+export function setBrowserTabsShowable(showable: boolean): void {
+  bridge()?.showable?.(showable);
 }
 
 /** has main draw the tab over `bounds` of the window, in the page's CSS pixels */
