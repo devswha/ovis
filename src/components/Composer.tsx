@@ -147,6 +147,18 @@ type Attachment = {
 
 type UploadFailure = { attachment: Attachment; failure: UserFailure };
 
+/** The textarea counts each CRLF as one character; upload places index the unmodified draft. */
+function draftOffset(text: string, offset: number): number {
+  for (let cr = text.indexOf("\r\n"); cr !== -1 && cr < offset; cr = text.indexOf("\r\n", cr + 2)) offset++;
+  return offset;
+}
+
+function fieldOffset(text: string, offset: number): number {
+  return text.slice(0, offset).replace(/\r\n/g, "\n").length;
+}
+
+const fieldText = (draft: string): string => draft.replace(/\r\n?/g, "\n");
+
 function readSlashUsage(): Record<string, number> {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(SLASH_USAGE_KEY) ?? "{}");
@@ -265,10 +277,11 @@ export function Composer({
   /** where each file's path goes, by attachment id (#3216): places in `placesText`, moved with each edit this composer makes */
   const places = useRef(new Map<number, number>());
   const placesText = useRef(text);
-  /** places whose draft was cleared from elsewhere: they hold, at the start, only while the box stays empty */
+  /** Places from our own untouched restored fill: they hold only while the cleared box stays empty. */
   const orphans = useRef(new Set<number>());
   /** the draft's replacement count (composerDrafts.replacements) the places were last checked against */
-  const seenReplacements = useRef(composerDrafts.replacements(draftKey));
+  const replacements = composerDrafts.replacements(draftKey);
+  const seenReplacements = useRef(replacements);
   /** each placed path, by attachment id: where it is, followed through every edit, so its tile never claims a path that is gone */
   const placed = useRef(new Map<number, PlacedMention>());
   /** the box's selection as last seen: what the next edit typed or pasted over */
@@ -350,13 +363,13 @@ export function Composer({
   }, [announce, announceDetached, settleOrphans, t]);
   /**
    * The draft replaced by a write that is not this box's own edit (another tab, a restored send): no
-   * place or placed path points into it any more. A file still uploading keeps a place at the start
-   * only while the box is empty; the placed ones are detached.
+   * place or placed path points into it any more. Only withdrawing our own untouched restored fill
+   * leaves waiting files at the start, and only until the user begins a new draft.
    */
-  const dropPlaces = useCallback((next: string) => {
+  const dropPlaces = useCallback((next: string, clearedFill = false) => {
     forgetErased();
     takeOut([...placed.current.keys()]);
-    if (next === "") for (const id of places.current.keys()) { places.current.set(id, 0); orphans.current.add(id); }
+    if (clearedFill) for (const id of places.current.keys()) { places.current.set(id, 0); orphans.current.add(id); }
     else { places.current.clear(); orphans.current.clear(); }
     placesText.current = next;
   }, [forgetErased, takeOut]);
@@ -379,7 +392,7 @@ export function Composer({
   /** the box's text replaced whole by this composer: a restored send's fill of a blank box, and the clear of that fill untouched */
   const replaceText = useCallback((next: string) => {
     syncPlaces(textRef.current);
-    dropPlaces(next);
+    dropPlaces(next, next === "");
     setText(next);
     textRef.current = next;
   }, [dropPlaces, setText, syncPlaces]);
@@ -653,9 +666,24 @@ export function Composer({
   const syncTextarea = (element: HTMLTextAreaElement): void => {
     const { value, selectionStart, selectionEnd } = element;
     // a textarea reports CRLF and CR as LF: a draft that holds them (a pasted clipboard) is not edited by that
-    if (viewOnly || value === composerDrafts.read(draftKey).text.replace(/\r\n?/g, "\n")) return;
+    if (viewOnly || value === fieldText(composerDrafts.read(draftKey).text)) return;
     barePick.current = null;
     syncPlaces(textRef.current);
+    // The first actual input adopts the field's line endings. Translate the tracked ranges
+    // before following the user's edit: normalizing a newline did not replace any prose.
+    const raw = placesText.current;
+    if (raw.includes("\r")) {
+      const range = (mention: PlacedMention, text: string) => ({
+        ...mention, start: fieldOffset(text, mention.start), end: fieldOffset(text, mention.end),
+      });
+      for (const [id, at] of places.current) places.current.set(id, fieldOffset(raw, at));
+      for (const [id, mention] of placed.current) placed.current.set(id, range(mention, raw));
+      for (const [id, out] of erased.current) erased.current.set(id, {
+        ...out, before: fieldText(out.before), mention: range(out.mention, out.before), remains: out.remains && range(out.remains, raw),
+      });
+      compositionStart.current = fieldOffset(raw, compositionStart.current);
+      placesText.current = fieldText(raw);
+    }
     movePlaces(editBetween(placesText.current, value, { caret: selectionStart, selected: selection.current }), value);
     selection.current = { start: selectionStart, end: selectionEnd };
     textRef.current = value;
@@ -714,8 +742,9 @@ export function Composer({
   /** the box's selection, or the caret where the box does not hold this text yet */
   const readSelection = useCallback((): { start: number; end: number; direction?: "forward" | "backward" | "none" } => {
     const element = textareaRef.current;
-    if (element?.value !== textRef.current) return { start: caretRef.current, end: caretRef.current };
-    return { start: element.selectionStart, end: element.selectionEnd, direction: element.selectionDirection };
+    const draft = textRef.current;
+    if (element?.value !== fieldText(draft)) return { start: caretRef.current, end: caretRef.current };
+    return { start: draftOffset(draft, element.selectionStart), end: draftOffset(draft, element.selectionEnd), direction: element.selectionDirection };
   }, []);
 
   // an upload finishes while the user may be typing: its mention goes where it was pasted, picked or
@@ -729,12 +758,13 @@ export function Composer({
     textRef.current = next.text;
     placesText.current = next.text;
     caretRef.current = start;
-    selection.current = { start, end };
+    const fieldStart = fieldOffset(next.text, start), fieldEnd = fieldOffset(next.text, end);
+    selection.current = { start: fieldStart, end: fieldEnd };
     flushSync(() => {
       setText(next.text);
       setCaret(start);
     });
-    textareaRef.current?.setSelectionRange(start, end, selected.direction);
+    textareaRef.current?.setSelectionRange(fieldStart, fieldEnd, selected.direction);
   }, []);
 
   const uploadQueue = useRef<Attachment[]>([]);
@@ -765,14 +795,24 @@ export function Composer({
       // file stays attached without its path going into the new one
       if (place !== undefined) {
         const selected = readSelection();
-        // a selection across the place: the path goes before it, at the start of its first word, and the
-        // selection stays on the same text, so typing over it leaves the path; nothing waits. (A selection
-        // that starts inside a leading /command is the exception: the path goes after the command, inside it)
-        let at = selected.start < place && place < selected.end ? selected.start : place;
-        if (at !== place) while (at > 0 && /\S/u.test(textRef.current[at - 1]!)) at--;
-        // never inside a path already placed: it goes to the front of that one, which stays whole
-        for (const other of placed.current.values()) if (other.start < at && at < other.end) at = other.start;
-        const next = insertMentionAt(textRef.current, mention, at);
+        const text = textRef.current;
+        const landing = (place: number): number => {
+          let at = mentionPlace(text, place);
+          if (selected.start < at && at < selected.end) {
+            at = selected.start;
+            while (at > 0 && /\S/u.test(text[at - 1]!)) at--;
+            at = mentionPlace(text, at);
+          }
+          for (const other of placed.current.values()) if (other.start < at && at < other.end) at = other.start;
+          if (selected.start < at && at < selected.end) {
+            // The leading /command or an existing path rules out the left edge. Use the right one.
+            at = selected.end;
+            for (const other of placed.current.values()) if (other.start < at && at < other.end) at = other.end;
+            while (/\S/u.test(text[at] ?? " ")) at++;
+          }
+          return at;
+        };
+        const next = insertMentionAt(text, mention, landing(place));
         // no room for the whole path: this attachment and the ones picked after it stay waiting, in
         // their order, Send stays off, and the next edit of the text tries again (the effect below);
         // a cut path would name a file that is not there, so the tile says how much to cut instead
@@ -788,9 +828,8 @@ export function Composer({
         places.current.delete(id);
         orphans.current.delete(id);
         for (const [other, at] of places.current) {
-          let lands = mentionPlace(textRef.current, at);
-          for (const path of placed.current.values()) if (path.start < lands && lands < path.end) lands = path.start;
-          places.current.set(other, lands > next.at || (lands === next.at && other > id) ? lands + next.length : lands === next.at ? lands : at);
+          const lands = landing(at);
+          places.current.set(other, lands === next.at ? lands + (other > id ? next.length : 0) : at + (at >= next.at ? next.length : 0));
         }
         const shift: TextEdit = { start: next.at, removed: 0, inserted: next.length };
         for (const [other, earlier] of placed.current) {
@@ -813,9 +852,9 @@ export function Composer({
     if (waitingMentions.current.length === 0) return;
     const frame = requestAnimationFrame(placeWaitingMentions);
     return () => cancelAnimationFrame(frame);
-  }, [placeWaitingMentions, text]);
+  }, [placeWaitingMentions, replacements, text]);
 
-  useEffect(() => syncPlaces(text), [syncPlaces, text]);
+  useEffect(() => syncPlaces(text), [replacements, syncPlaces, text]);
 
   const selectCompletion = useCallback(
     (choice: SlashCommand | string, currentTrigger: ActiveTrigger) => {
@@ -983,20 +1022,22 @@ export function Composer({
       const { text: rest, edited } = acknowledged;
       // the sent prefix left the box: the places after it move back with the rest (unless another tab
       // wrote the draft meanwhile, which syncPlaces counts as a replacement); an edited draft stays as it was
-      for (const attachment of sentAttachments) placed.current.delete(attachment.id);
-      forgetErased();
       if (composerDrafts.replacements(draftKey) !== seenReplacements.current) syncPlaces(rest);
-      else if (!edited) movePlaces({ start: 0, removed: sent.length, inserted: 0 }, rest);
+      if (!edited) {
+        const sentIds = new Set(sentAttachments.map(({ id }) => id));
+        for (const id of sentIds) {
+          releasePreview(id);
+          places.current.delete(id);
+          placed.current.delete(id);
+        }
+        forgetErased();
+        movePlaces({ start: 0, removed: sent.length, inserted: 0 }, rest);
+        setAttachments((current) => current.filter(({ id }) => !sentIds.has(id)));
+      }
       setCaret(rest.length);
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) {
-        releasePreview(attachment.id);
-        places.current.delete(attachment.id);
-        placed.current.delete(attachment.id);
-      }
-      setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
     const pressedOn = drops.current;
@@ -1588,7 +1629,7 @@ export function Composer({
           className="composer-text"
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
-          value={text}
+          value={fieldText(text)}
           placeholder={placeholder}
           aria-label={t("Message")}
           aria-controls={menuOpen ? menuId : undefined}

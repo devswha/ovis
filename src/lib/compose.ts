@@ -298,6 +298,7 @@ export function placedMention(next: { text: string; at: number; length: number }
  * it keeps what it typed there with it; one across an end keeps only the path's own side.
  */
 export function followMention(mention: PlacedMention, edit: TextEdit): PlacedMention | null {
+  if (!edit.inserted && !edit.removed) return mention;
   const editEnd = edit.start + edit.removed;
   const shift = edit.inserted - edit.removed;
   let { start, end } = mention;
@@ -308,9 +309,9 @@ export function followMention(mention: PlacedMention, edit: TextEdit): PlacedMen
   else if (editEnd > end) end = edit.start;
   else end += shift;
   if (end <= start) return null;
-  // a space the upload added that the edit took is gone: one typed there since is the user's
-  const trail = mention.trail && !(edit.removed > 0 && edit.start === mention.end);
-  const lead = mention.lead && !(edit.removed > 0 && editEnd === mention.start);
+  // Removing its separator, or typing between the separator and the path, ends ownership.
+  const trail = mention.trail && edit.start !== mention.end;
+  const lead = mention.lead && editEnd !== mention.start;
   return { ...mention, start, end, lead, trail };
 }
 

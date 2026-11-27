@@ -145,6 +145,112 @@ async function finish(name: string): Promise<void> {
   await act(async () => { pendingUpload(name).resolve(path(name)); });
 }
 
+it("detaches an upload when another tab clears the draft before it finishes", async () => {
+  await open();
+  await type("old question");
+  await paste(4, "shot");
+  await act(async () => {
+    paneLifetimes.paneStorage.removeItem(draftKey);
+    onDraftStorage(draftKey);
+  });
+  await finish("shot");
+  expect(box().value).toBe("");
+  expect(badges()).toEqual([]);
+});
+
+it("keeps a space typed between the path and its separator on Remove", async () => {
+  await open();
+  await type("leftright");
+  await pick(4, "shot");
+  await finish("shot");
+  const text = box().value, at = text.indexOf(".png") + 4;
+  await select(at);
+  await type(`${text.slice(0, at)} note${text.slice(at)}`, at + 5);
+  await act(async () => { button("Remove shot.png").click(); });
+  expect(box().value).toBe("left note right");
+});
+
+it("removes an image restored by undo while Send awaited its acknowledgement", async () => {
+  const sent: string[] = [];
+  let acknowledge!: (ok: boolean) => void;
+  await open(null, (message) => {
+    sent.push(message);
+    return sent.length === 1 ? new Promise<boolean>((resolve) => { acknowledge = resolve; }) : true;
+  });
+  await type("before after");
+  await paste(7, "shot");
+  await finish("shot");
+  const whole = box().value, cut = whole.indexOf(".png");
+  await act(async () => { button("Send message").click(); });
+  await select(cut, cut + 1);
+  await type(whole.slice(0, cut) + whole.slice(cut + 1), cut);
+  await type(whole);
+  await act(async () => { acknowledge(true); });
+  await act(async () => { button("Remove shot.png").click(); });
+  await act(async () => { button("Send message").click(); });
+  expect(sent).toEqual([whole, "before after"]);
+});
+
+it("keeps a selected slash command and its arguments separate from the arriving path", async () => {
+  const sent: string[] = [], command = "/review this please";
+  await open(null, (message) => { sent.push(message); return true; });
+  await type(command);
+  await paste(8, "shot");
+  await select(0, command.length);
+  await finish("shot");
+  const field = box(), { selectionStart, selectionEnd } = field;
+  expect(field.value.slice(selectionStart, selectionEnd)).toBe(command);
+  await type(`Review this${field.value.slice(selectionEnd)}`, 11);
+  await act(async () => { button("Send message").click(); });
+  expect(sent).toEqual([`Review this @${path("shot")} `]);
+});
+
+it("keeps pick order when a selection moves a batch and the second upload finishes first", async () => {
+  await open();
+  await type("before after");
+  await pick(7, "one", "two");
+  await select(3, 10);
+  await finish("two");
+  await finish("one");
+  expect(box().value).toBe(`@${path("one")} @${path("two")} before after`);
+});
+
+it("pastes at the visible caret on line two of a restored CRLF draft", async () => {
+  const sent: string[] = [];
+  await open("one\r\ntwo words", (message) => { sent.push(message); return true; });
+  // happy-dom does not normalize a textarea's value to LF as browsers do.
+  box().value = "one\ntwo words";
+  await select(4);
+  await paste(4, "shot");
+  await finish("shot");
+  await act(async () => { button("Send message").click(); });
+  expect(sent).toEqual([`one\r\n@${path("shot")} two words`]);
+});
+
+it("keeps the second-line pick point through a textarea edit that normalizes CRLF", async () => {
+  await open("one\r\ntwo words");
+  await pick(4, "shot");
+  await type("one\ntwo words!");
+  await finish("shot");
+  expect(box().value).toBe(`one\n@${path("shot")} two words!`);
+});
+
+it("releases Send when another tab clears and restores a full draft with a waiting image", async () => {
+  await open();
+  const full = "x".repeat(20_000);
+  await type(full);
+  await paste(0, "shot");
+  await finish("shot");
+  expect(badges()).toEqual(["no-room"]);
+  await act(async () => {
+    paneLifetimes.paneStorage.removeItem(draftKey);
+    paneLifetimes.paneStorage.setItem(draftKey, full);
+    onDraftStorage(draftKey);
+    onDraftStorage(draftKey);
+  });
+  expect({ tiles: badges(), sendDisabled: sendOff() }).toEqual({ tiles: [], sendDisabled: false });
+});
+
 it("puts a pasted image's path where it was pasted, after edits made before and after it while it uploads", async () => {
   await open();
   await type("before after", 7);

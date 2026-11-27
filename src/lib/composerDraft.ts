@@ -58,14 +58,6 @@ export class ComposerDraftStore {
   private replace(key: string): void { this.replaced.set(key, (this.replaced.get(key) ?? 0) + 1); }
   /** A count that changes each time the draft `key` is replaced by a write that is not its composer's own edit or an append. */
   replacements(key: string): number { return this.replaced.get(key) ?? 0; }
-  /**
-   * Another tab wrote the draft `key` (a storage event): a replacement, whatever its text. Counted per
-   * event, as its value may already have been overwritten again by the same text when this tab reads it.
-   */
-  writtenElsewhere(key: string): void {
-    this.replace(key);
-    this.refresh(key);
-  }
   constructor(
     private storage: () => DraftStorage = () => paneLifetimes.paneStorage,
     private schedule: (run: () => void, ms: number) => unknown = (run, ms) => setTimeout(run, ms),
@@ -91,7 +83,7 @@ export class ComposerDraftStore {
   private inFlight(key: string): InFlight | null {
     try { return sendLease(this.storage(), key); } catch { return null; }
   }
-  refresh(key: string): void {
+  refresh(key: string, writtenElsewhere = false): void {
     if (this.unsaved.has(key)) return;
     const draft = this.read(key);
     // another tab's send is on its way: its draft must not be sent a second time from here
@@ -103,15 +95,15 @@ export class ComposerDraftStore {
     let text: string | null = null;
     try { text = this.storage().getItem(key); } catch { return; }
     this.adoptMark(key, text);
-    if (text === this.saved.get(key) && sending === draft.sending) return;
-    if (text !== this.saved.get(key)) {
+    // A storage event replaces the draft even if a later write already restored the same text.
+    if (text !== this.saved.get(key) || writtenElsewhere) {
       this.commands.delete(key);
       const pending = this.pending.get(key);
       if (pending && !(text ?? "").startsWith(pending.sent)) pending.edited = true;
       this.saved.set(key, text);
       // another tab wrote it: whatever that write was, it was not this tab's box
       this.replace(key);
-    }
+    } else if (sending === draft.sending) return;
     this.drafts.set(key, { text: text ?? "", sending });
     this.notify();
   }
@@ -316,7 +308,6 @@ export function storageEventDraft(key: string | null): string | null {
 export function onDraftStorage(eventKey: string | null): void {
   const key = storageEventDraft(eventKey);
   if (key === null) return;
-  if (key === eventKey) composerDrafts.writtenElsewhere(key);
-  else composerDrafts.refresh(key);
+  composerDrafts.refresh(key, key === eventKey);
 }
 if (typeof window !== "undefined") window.addEventListener("storage", (event) => onDraftStorage(event.key));
