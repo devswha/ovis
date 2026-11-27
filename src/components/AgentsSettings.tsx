@@ -449,7 +449,7 @@ export function AgentsSettings({ watching, agentCalls = false, onLocalLogin, onO
 
       <SettingsBare.Provider value="rows">
         {ownGroups.map((id) => {
-          const notInstalled = catalogError === null && catalog?.pathProblem === null && agents?.find((agent) => agent.id === id)?.state.installed === false;
+          const notInstalled = !checking && catalogError === null && catalog?.pathProblem === null && agents?.find((agent) => agent.id === id)?.state.installed === false;
           return <SettingsGroup key={id} title={OWN_NAMES[id]!} section={`agent-${id}`} keepNote
             note={notInstalled ? t("Not installed on this PC. These settings apply once it is installed here.") : undefined}>
             <AgentOwnRows agentId={id} />

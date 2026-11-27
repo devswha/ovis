@@ -6,7 +6,7 @@ import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AgentsSettings } from "./AgentsSettings.tsx";
 
-async function withAgentsPage({ installed, pathProblem }: { installed: boolean | null; pathProblem?: string }, check: (page: Page) => Promise<void> | void) {
+async function withAgentsPage({ installed, pathProblem, recheck }: { installed: boolean | null; pathProblem?: string; recheck?: () => Promise<Response> }, check: (page: Page) => Promise<void> | void) {
   const page = openPage();
   const agents = AGENT_CATALOG.filter(({ id }) => id === "claude" || id === "codex").map((entry) => {
     const present = entry.id === "claude" ? true : installed;
@@ -18,7 +18,7 @@ async function withAgentsPage({ installed, pathProblem }: { installed: boolean |
   const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => {
     switch (String(input)) {
       case "/api/agent-catalog": return Response.json({ platform: "linux", agents, path_problem: pathProblem });
-      case "/api/agent-catalog?recheck=1": return new Response(null, { status: 503 });
+      case "/api/agent-catalog?recheck=1": return recheck ? recheck() : new Response(null, { status: 503 });
       case "/api/integrations": return Response.json({ integrations: [] });
       case "/api/cliproxy": return Response.json({ configured: false });
       default: throw new Error(`Unexpected request: ${String(input)}`);
@@ -73,3 +73,20 @@ test("withdraws the previous Codex install status when Check again fails", () =>
   expect(group.textContent).not.toContain("Not installed on this PC");
   expect(group.querySelector("#settings-codex-launch-model")).toBeInstanceOf(page.window.HTMLInputElement);
 }));
+
+test("keeps the withdrawn Codex install status hidden while Check again runs once more", () => {
+  const answers = [Promise.resolve(new Response(null, { status: 503 })), Promise.withResolvers<Response>()];
+  let asked = 0;
+  return withAgentsPage({ installed: false, recheck: () => { const next = answers[asked++]!; return next instanceof Promise ? next : next.promise; } }, async (page) => {
+    const group = page.one('[data-section="agent-codex"]');
+    const checkAgain = page.one<HTMLButtonElement>(".agents-check-again");
+    await act(async () => { checkAgain.click(); });
+    expect(group.textContent).not.toContain("Not installed on this PC");
+
+    await act(async () => { checkAgain.click(); });
+
+    expect(asked).toBe(2);
+    expect(group.textContent).not.toContain("Not installed on this PC");
+    await act(async () => { (answers[1] as ReturnType<typeof Promise.withResolvers<Response>>).resolve(new Response(null, { status: 503 })); });
+  });
+});
