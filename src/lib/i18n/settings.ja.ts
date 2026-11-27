@@ -17,6 +17,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Direct typing": "直接入力",
   "Microphone permission was denied": "マイクの使用が許可されませんでした",
   "Terminal input mode": "端末入力モード",
+  "Password field": "パスワード欄",
+  "When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.": "端末がパスワードを尋ねたとき、端末ではなく伏せ字の欄に入力して、スマートフォンのキーボードに覚えられないようにします。タッチ画面では最初からオンで、入力欄モードでは常に使います。",
   "Reset shortcuts": "ショートカットをリセット",
   "Your browser or operating system may intercept {keys}.": "ブラウザーや OS が {keys} を先に処理する場合があります。",
   "Reserved": "予約済み",

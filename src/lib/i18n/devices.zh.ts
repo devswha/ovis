@@ -377,5 +377,10 @@ export const DEVICES_ZH: Record<string, string> = {
   "Not added: listed with a sign-in code": "未添加：通过登录码登记的 PC",
   "{name} was listed in your account with a sign-in code and never added. It leaves your account; to add it later, start again on {name}.": "{name} 通过登录码登记到你的账号，但从未被添加。它会从账号中移除；之后要添加，请在 {name} 上重新开始。",
   "This PC is in another account. Sign in with {provider}.": "这台 PC 在另一个账号中。请使用 {provider} 登录。",
+  "This PC is in another account.": "这台 PC 在另一个账号中。",
+  "Move this PC to this account": "将这台 PC 移到此账号",
+  "Sign in with the PC's account": "使用这台 PC 的账号登录",
+  "Couldn't move this PC. Try again.": "无法移动这台 PC。请重试。",
+  "This PC is still listed in {account}; remove it there if you don't want it.": "这台 PC 仍在 {account} 的 PC 列表中。如果不需要，请在该列表中移除。",
   "This PC is in another account. Sign in the way you used when you first added this PC.": "这台 PC 在另一个账号中。请使用首次添加这台 PC 时的方式登录。",
 };

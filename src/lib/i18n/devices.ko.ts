@@ -377,5 +377,10 @@ export const DEVICES_KO: Record<string, string> = {
   "Not added: listed with a sign-in code": "추가 안 됨: 로그인 코드로 올라온 PC",
   "{name} was listed in your account with a sign-in code and never added. It leaves your account; to add it later, start again on {name}.": "{name}: 로그인 코드로 계정에 올라왔지만 추가되지 않은 PC입니다. 계정에서 빠지며, 나중에 추가하려면 {name}에서 다시 시작하세요.",
   "This PC is in another account. Sign in with {provider}.": "이 PC는 다른 계정에 있어요. {provider}로 로그인하세요.",
+  "This PC is in another account.": "이 PC는 다른 계정에 있어요.",
+  "Move this PC to this account": "이 PC를 이 계정으로 옮기기",
+  "Sign in with the PC's account": "PC의 계정으로 로그인",
+  "Couldn't move this PC. Try again.": "PC를 옮기지 못했어요. 다시 시도해 주세요.",
+  "This PC is still listed in {account}; remove it there if you don't want it.": "{account} 계정의 PC 목록에 이 PC가 남아 있어요. 필요 없으면 거기서 삭제하세요.",
   "This PC is in another account. Sign in the way you used when you first added this PC.": "이 PC는 다른 계정에 있어요. 처음 이 PC를 추가할 때 쓴 방법으로 로그인하세요.",
 };

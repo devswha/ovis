@@ -49,7 +49,7 @@ import type { AcpHold, AgentStatus, ClientRole, PlanSummary, ServerMessage } fro
 import { holdAcpChild, releaseAcpChild } from "../lib/api.ts";
 import type { PaneControls, PaneView } from "../lib/actions.ts";
 import { usePaneLane } from "../lib/chatLane.ts";
-import { useSettings } from "../lib/settings.ts";
+import { secretFieldOn, useSettings } from "../lib/settings.ts";
 import type { TerminalColors } from "../lib/themes.ts";
 import { learnFromSend } from "../lib/tabLabels.ts";
 import { useT } from "../lib/i18n.ts";
@@ -377,6 +377,10 @@ export function PaneTerminal({
   const coarse = useMediaQuery("(pointer: coarse)");
   const coarseRef = useRef(coarse); coarseRef.current = coarse;
   const { settings, update: updateSettings } = useSettings();
+  // the field stands in for the chat lens's composer and the input line, which a prompt puts away; typing straight
+  // into the grid where it is not wanted (a mouse, by default) answers there, its keys out of every draft while
+  // secretRef holds the prompt
+  const secretField = secretActive && (chatView || settings.terminalInputMode === "line" || secretFieldOn(settings, coarse));
   const reuseExternalLinkTabRef = useRef(settings.reuseExternalLinkTab);
   reuseExternalLinkTabRef.current = settings.reuseExternalLinkTab;
   const availableModifiers = settings.keyBarItems.reduce((mask, item) => item.type === "modifier"
@@ -954,7 +958,7 @@ export function PaneTerminal({
     return () => { if (controls.current === current) controls.current = null; };
   }, [controls, active, paneId]);
 
-  const secretInput = presented && paneId !== null && secretActive && !observing && !ended && connected && outputReady ? <SecretInput
+  const secretInput = presented && paneId !== null && secretField && !observing && !ended && connected && outputReady ? <SecretInput
     key={`${paneId}:${secret.prompt}`} prompt={secret.prompt} active={active} unchecked={secret.unchecked}
     onSend={(value) => socketRef.current?.sendSecret(paneId, secret.prompt, value, () => secretRef.current === secret.prompt) ?? null}
     onCancel={() => { if (socketRef.current?.connected) { cancelTouchRef.current(); socketRef.current.sendInput(paneId, "\u0003"); } }}
@@ -977,7 +981,7 @@ export function PaneTerminal({
     return () => observer.disconnect();
   }, [inputSlot]);
   const [keysOpen, setKeysOpen] = useState(false);
-  const foldKeys = coarse && settings.terminalFoldKeyBar && lineSlot && !secretActive;
+  const foldKeys = coarse && settings.terminalFoldKeyBar && lineSlot && !secretField;
   const lineLast = foldKeys && !keysOpen;
   useLayoutEffect(() => {
     if (!foldKeys) setKeysOpen(false);
@@ -1337,7 +1341,7 @@ export function PaneTerminal({
         {secretInput ?? (!chatView && lineSlot && !secretActive && <TerminalInput key={paneId} ref={lineRef} active={active} owner={paneStorageId(machineId, paneId)} onComposing={setLineComposing} connected={connected && !held} onSend={sendTerminalLine} onEnter={pressEnter} onInsert={insertTerminalText} pasteTarget={pasteTarget} onPasting={setLinePasting} uploadFile={uploadImage} attach={settings.terminalAttachButton} onFocus={reassertGrid} keyboardHeld={keyboardHeld}
           {...(foldKeys ? { keyControls: <LineKeysButton open={keysOpen} onToggle={() => setKeysOpen((open) => !open)} /> } : {})} />)}
       </div>}
-      {presented && paneId !== null && !secretActive && !observing && !chatView && (!foldKeys || keysOpen) && <KeyBar disabled={composing || !connected || !inputReady || held || ended || viewOnly} onKey={pressKey}
+      {presented && paneId !== null && !secretField && !observing && !chatView && (!foldKeys || keysOpen) && <KeyBar disabled={composing || !connected || !inputReady || held || ended || viewOnly} onKey={pressKey}
         holdScope={`${paneStorageId(machineId, paneId)}:${view}`}
         onKeyHoldEnd={consumeModifiers}
         modifiers={modifiers} lockedModifiers={lockedModifiers} onToggleModifier={toggleModifier} items={settings.keyBarItems}

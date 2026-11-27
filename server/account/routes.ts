@@ -1,6 +1,7 @@
 import { canonicalBase64Url, isListHash } from "../../shared/account-list-entry.ts";
 import type { Sealed } from "../../shared/account-list.ts";
 import type { SignedNaming, SignedVouch } from "../../shared/account-list-migrate.ts";
+import { isAccountId } from "../../shared/account-list-invite.ts";
 import { isSignInMethod } from "../../shared/account-devices-api.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
@@ -169,6 +170,12 @@ export async function handleAccountRequest(request: Request, pathname: string, c
   }
   const ownLink = waiting !== null && (pathname === "/api/account/link" || pathname === "/api/account/list/named") && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);
+  if (pathname === "/api/account/move" && request.method === "GET") {
+    setRequestRoute(pathname);
+    const move = context.services.accountMove;
+    return move === null || !devices.opensAll() ? fail("not_found", "Unknown account action", 404)
+      : reply(move.status());
+  }
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
     const mailbox = context.services.accountMailbox;
@@ -373,6 +380,18 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }) : null;
       if (typeof entry !== "string" || entry.length > 16_384 || given === null || (Array.isArray(wraps) && given.length !== wraps.length)) return fail("invalid_join", "Send the signed join and its wraps", 400);
       return await ended(await list.joinPlace({ account, list: id, invite, entry, wraps: given }));
+    }
+    case "/api/account/move": {
+      setRequestRoute(pathname);
+      const move = context.services.accountMove;
+      if (move === null || !devices.opensAll()) return fail("not_found", "Unknown account action", 404);
+      if (peer.kind === "relay") return fail("owner_only", "Move this PC from its own window.", 403);
+      const { into, stage, provider } = body;
+      if (typeof into !== "string" || !isAccountId(into) || (stage !== undefined && stage !== "prepare" && stage !== "cancel")
+        || (provider !== undefined && !isSignInMethod(provider))) return fail("invalid_move", "Name the destination account and the move step", 400);
+      const answer = await move.order({ into, ...(stage === undefined ? {} : { stage }), ...(provider === undefined ? {} : { provider }) });
+      if ("error" in answer) return fail(answer.error.code, answer.error.message, answer.status);
+      return reply(answer, answer.state === "pending" ? 202 : 200);
     }
     case "/api/account/one-press": {
       if (!devices.opensAll()) return fail("not_found", "Unknown account action", 404);

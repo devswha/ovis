@@ -1876,6 +1876,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   It changes only the Agents list; herdr's order and the workspace rows stay as they are.
   A raw counter rollback clears synthetic recency even on older bridges without an epoch.
   This ordering correction never changes finish identities or read records.
+- Screen readers can browse the named status badges and the transcript without their DOM changes
+  speaking. Following T3 Code, separate polite regions announce completed replies in the open chat
+  and transitions to input needed or done in other panes, with the agent and workspace named.
+  Chat reads at most 300 characters of each new final answer. Opening a thread or loading older
+  rows does not announce their contents; the composer's own open-pane status stays in place.
 - Appearance's **Group agents by state** (off by default, kept on this device, as the sidebar
   filter is) moves the Agents list above the workspaces and splits its unpinned rows into
   groups: **Needs you** (blocked), **Working** (BG included), **Done** (a finish not read yet)
@@ -5235,8 +5240,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Add a connection (`components/ConnectPhoneDialog.tsx`, a `.modal`, a bottom sheet on a phone) follows
   herdr's own **Add a machine** sheet: one tab per way across the top (the `.segmented` primitive,
   as FilesDialog's tabs), and under each the things that way found, each with one action, then a
-  field to type one. **SSH** (only for the PC's owner on its own page) lists the PCs saved in herdr
-  (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
+  field to type one. If the PC's own window is signed in to a different account, the relay tab keeps
+  this hierarchy: one line explaining the mismatch, **Move this PC to this account** as the primary
+  action, then a quiet button for the PC's existing sign-in path. **SSH** (only for the PC's owner
+  on its own page) lists the PCs saved in herdr (**Connect**), the server's ssh config hosts and its
+  Tailscale login's PCs, one row each: the name,
   the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
   typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**

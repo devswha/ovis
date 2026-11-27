@@ -1754,7 +1754,7 @@ export function Composer({
             state word are read, not drawn: the mark and the header name the agent, and Stop, the live row and
             the prompt card say the state. All state words stay available to assistive tech only.
             Where the model label does not fit, it steps out and is still read (fitStatus marks data-model) */}
-        <div ref={statusRef} className="composer-status" role="status" data-status={shownStatus}
+        <div ref={statusRef} className="composer-status" role="status" aria-live={active ? undefined : "off"} data-status={shownStatus}
           data-offline={connected ? undefined : ""} data-hint={hint ?? undefined}>
           {/* everything but the sentence: one row that never wraps, also where the sentence takes a line of its own */}
           <span className="composer-status-meta">

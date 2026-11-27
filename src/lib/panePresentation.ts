@@ -27,7 +27,7 @@ function commanded(conversation: ConversationProof, index: number): number | nul
  * asked for (its `/compact` and its summary, #3675), and one Claude Code ran by itself (at rest it leaves the finish as
  * it was). Only the first proves a finish of its own (compactionsAfter).
  */
-function finalAnswerIndex(conversation: ConversationProof): number {
+function lastModelTurnIndex(conversation: ConversationProof): number {
   let index = conversation.turns.length - 1;
   while (index >= 0) {
     const turn = conversation.turns[index];
@@ -38,11 +38,15 @@ function finalAnswerIndex(conversation: ConversationProof): number {
   return index;
 }
 
-function finalAnswer(conversation: ConversationProof): ConversationTurn | undefined {
-  const index = finalAnswerIndex(conversation);
+export function finalAnswerIndex(conversation: ConversationProof): number {
+  const index = lastModelTurnIndex(conversation);
   const turn = conversation.turns[index];
   const last = turn?.parts.at(-1);
-  return turn?.role === "assistant" && last?.kind === "text" && last.phase === "final_answer" && last.text.trim().length > 0 ? turn : undefined;
+  return turn?.role === "assistant" && last?.kind === "text" && last.phase === "final_answer" && last.text.trim().length > 0 ? index : -1;
+}
+
+function finalAnswer(conversation: ConversationProof): ConversationTurn | undefined {
+  return conversation.turns[finalAnswerIndex(conversation)];
 }
 
 export function conversationFinishPresented(conversation: ConversationProof): boolean {
