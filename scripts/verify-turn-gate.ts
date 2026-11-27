@@ -17,7 +17,7 @@ const PENDING_INPUT_MEMBERS = new Set([
   "resend", "expireResends", "holdQueued", "finish", "enqueue", "next", "claim", "committing",
   "typedAtOnce", "settle", "confirmRecorded", "discard", "mark", "current", "status", "baseline",
   "observe", "read", "waiting", "forget", "apply", "hold", "holdItem", "rehold", "holdPane",
-  "move", "close", "expire",
+  "move", "close", "expire", "blocksQueue",
 ]);
 
 const PENDING_INPUT_VARS = new Set(["ready", "PENDING_START_TIMEOUT_MS"]);

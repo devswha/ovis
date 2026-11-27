@@ -20,12 +20,12 @@ interface Gate { by: string; committed: boolean; sawWorking: boolean; completed:
 /** The class under test, with the fields the explorer saves and puts back between steps. */
 interface Inst {
   records: Map<string, Rec>; statuses: Map<string, St>; events: Map<string, number>; gates: Map<string, Gate>;
-  movedInFlight: WeakSet<Rec>; closed: Map<string, number>; resends: Map<string, Resend>;
+  movedInFlight: WeakSet<Rec>; reviewOnly: WeakSet<Rec>; closed: Map<string, number>; resends: Map<string, Resend>;
   enqueue(owner: string, paneId: string, requestId: number, text: string, lease: null, identity: object, held?: boolean): Rec;
   next(paneId: string): Rec | null;
   claim(item: Rec, automatic: boolean): boolean;
   committing(item: Rec, steeringWorkingTurn?: boolean, restartingWorkingTurn?: boolean, readMark?: number): void;
-  settle(item: Rec, fault?: Fault, uncertain?: boolean, retryWhenReady?: boolean): void;
+  settle(item: Rec, fault?: Fault, uncertain?: boolean | "preserve-turn", retryWhenReady?: boolean): void;
   confirmRecorded(item: Rec, remember: () => boolean): boolean;
   discard(item: Rec): boolean;
   mark(paneId: string): number;
@@ -177,7 +177,7 @@ interface Task {
 interface World {
   /** how many of the run's `via` steps the path has taken */
   via: number;
-  c: { records: { id: string; o: string; p: string; f: boolean; s: string; rq: number; mv: boolean }[]; statuses: [string, St][]; events: [string, number][]; gates: [string, Gate][] };
+  c: { records: { id: string; o: string; p: string; f: boolean; s: string; rq: number; mv: boolean; ro: boolean }[]; statuses: [string, St][]; events: [string, number][]; gates: [string, Gate][] };
   /** what the agent does: its turn (`base`: one this queue did not start), and Enters that wait in its own queue */
   turn: null | "base" | "queue"; aq: string[]; blocked: boolean;
   /** herdr's reading of it, and the status events sent and not yet applied: each with when it was read and the pane id it names */
@@ -222,6 +222,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
         message: { id: r.id, request_id: r.rq, text: r.id, state: r.s, created_at: "", ...(r.s === "held" || r.s === "uncertain" ? { error: F("x") } : {}) } };
       inst.records.set(r.id, rec);
       if (r.mv) inst.movedInFlight.add(rec);
+      if (r.ro) inst.reviewOnly.add(rec);
     }
     for (const [pane, status] of c.statuses) inst.statuses.set(pane, status);
     for (const [pane, count] of c.events) inst.events.set(pane, count);
@@ -253,7 +254,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
     for (const task of w.tasks) { task.at = rank(task.at); task.overAt = rank(task.overAt); }
     w.seq = times.length;
     w.c = {
-      records: [...inst.records.values()].map((r) => ({ id: r.message.id, o: r.owner, p: r.paneId, f: r.inFlight, s: r.message.state, rq: r.message.request_id, mv: inst.movedInFlight.has(r) })),
+      records: [...inst.records.values()].map((r) => ({ id: r.message.id, o: r.owner, p: r.paneId, f: r.inFlight, s: r.message.state, rq: r.message.request_id, mv: inst.movedInFlight.has(r), ro: inst.reviewOnly.has(r) })),
       statuses: [...inst.statuses].sort(([a], [b]) => a.localeCompare(b)),
       events,
       gates: [...inst.gates].sort(([a], [b]) => a.localeCompare(b)).map(([pane, gate]) => [pane, {
@@ -317,6 +318,15 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
   const uncertain = (w: World, inst: Inst, task: Task): void => {
     // pending.ts dispatchPendingText: once `wrote` is set every failure is submit_changed, which dispatchPending settles uncertain
     inst.settle(item(inst, task.id), F("submit_changed"), true, false);
+    end(w, task);
+  };
+  /**
+   * codex-steering.ts interruptCodexSteering answers "unconfirmed" for a Codex Send now on the terminal: its Enter (or
+   * Escape) went, nothing proves Codex took this message, and dispatchPending settles it uncertain with keepTurnGate
+   * ("preserve-turn"): the row waits for review while its turn's gate stays and the rest of the queue keeps its order
+   */
+  const unconfirmed = (w: World, inst: Inst, task: Task): void => {
+    inst.settle(item(inst, task.id), F("submit_changed"), "preserve-turn", false);
     end(w, task);
   };
   const observe = (w: World, inst: Inst, task: Task, status: St): void => {
@@ -627,7 +637,12 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
       }
       if (t0.pc === "entered" || t0.pc === "escaped") {
         const loops = t0.pc === "entered" && t0.steering && config.agent === "codex";
-        if (!loops) add("sent", (w, inst, task) => { inst.settle(item(inst, task.id)); end(w, task); });
+        // a Codex Send now that found Codex at rest reads the pane once more after its Enter (codex-steering.ts): a turn
+        // at work then may be its own or one that began before the Enter, so it is not confirmed. After an Escape, never
+        const rereads = t0.pc === "entered" && !t0.steering && t0.kind === "steer" && config.agent === "codex";
+        if (t0.pc === "escaped") add("the restart is not confirmed: uncertain, its turn kept", unconfirmed);
+        else if (!loops) add(rereads ? "Codex reads at rest after the Enter: sent" : "sent", (w, inst, task) => { inst.settle(item(inst, task.id)); end(w, task); });
+        if (rereads) add("Codex reads at work after the Enter: uncertain, its turn kept", unconfirmed);
         add(loops ? "Codex's immediate delivery is not confirmed in time: uncertain" : "the send's outcome is not known: uncertain", uncertain);
         // codex-steering.ts interruptCodexSteering: read, and Escape once the steering panel shows the message
         if (loops) add("Send now reads the pane for Codex's steering panel", (_w, inst, task) => { task.statusAtRead = inst.current(task.lane) ?? "none"; task.reading = true; task.pc = "loop"; });
@@ -635,7 +650,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
       }
       if (t0.pc === "loop") {
         if (t0.lost || t0.ctx === "blocked") add("refused: uncertain", uncertain);
-        else if (t0.ctx !== "working") add("Codex is no longer at work: sent", (w, inst, task) => { inst.settle(item(inst, task.id)); end(w, task); });
+        else if (t0.ctx !== "working") add("Codex is no longer at work: uncertain, its turn kept", unconfirmed);
         else {
           const shown = config.free ? [true, false] : [w0.turn !== null && w0.aq.includes(t0.id)];
           if (shown.includes(true) && (config.free || config.lateEvents || w0.q.length === 0)) add("the panel shows it: committing (restarting the turn)", (w, inst, task) => {
