@@ -43,6 +43,9 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (store.accountError !== null) return refused("account_unavailable");
   // a PC pinned to the account's signed list takes its devices from that list: a record still removes one, and adds none
   if (record.kind === "add" && store.listFollowed()) return refused("list_followed");
+  if (record.kind === "remove" && record.signer === record.key && store.revokeBeforeMerge(record.key, record.account)) {
+    return { id: record.id, outcome: "applied" };
+  }
   const account = store.account();
   if (account !== null && account !== record.account) return refused("account_mismatch");
   // A lock can hide the signer as well. It is a final refusal, not a missing signer to retry.

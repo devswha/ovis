@@ -11,6 +11,19 @@ import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { createPushService, PUSH_EXTRA_KEYS } from "./push.ts";
 import { mergeRegistries, mergeSiblingState, recordedLegacyCredential, siblingStateDir } from "./state-merge.ts";
 
+it("a before-merge mark from either sibling survives a twin with old membership", () => {
+  const row: StoredDevice = { id: "a".repeat(16), role: "drive", label: "Phone", token_hash: "hash", relay_public_key: "key",
+    created_at: "2026-11-15T00:00:00.000Z", last_seen_at: null };
+  const old = { ...row, account: "acct_before", linked_at: row.created_at };
+  const before_merge = { account: "acct_before", merge: "move_1", at: "2026-11-27T00:00:00.000Z", listed: true } as const;
+  const moved = { ...row, before_merge };
+  for (const [a, b] of [[old, moved], [moved, old]] as const) {
+    const rules = { boundAccount: "acct_after", dropConflictingKeys: true };
+    const result = mergeRegistries({ devices: [a], gate_closed_at: null }, { devices: [b], gate_closed_at: null }, { own: null, other: null }, undefined, rules);
+    expect(result.devices).toEqual([{ ...row, before_merge }]);
+  }
+});
+
 it("settled sibling twins share membership and the signed add only for the reconciled binding", () => {
   const plain: StoredDevice = { id: "a".repeat(16), role: "watch", label: "Phone", token_hash: "t", relay_public_key: "k",
     created_at: "2026-11-15T00:00:00.000Z", last_seen_at: null };

@@ -14,7 +14,9 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { admissionPosition, compareAdmission, compareAdmissionPositions, isRowOrigin, legacyOrigin, type AdmissionPosition, type RowOrigin } from "./account/admission-order.ts";
-import { type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
+import { type AccountBinding, type AccountClear, type ClearReason, LIST_REMOVED, type ListBound, PcAccountState } from "./account/pc-binding.ts";
+import { isAccountId } from "../shared/account-list-invite.ts";
+import { expiresAt } from "./account/row-expiry.ts";
 import type { ListAuthority } from "./account/list-follow.ts";
 import type { BlockAsOf, LiftCause, SafetyGot, SafetyLog, SafetyState } from "./account/safety-log.ts";
 import type { RemovalEvidence } from "./account/removal-evidence.ts";
@@ -176,6 +178,13 @@ function isRelayPublicKey(value: unknown): value is string {
   }
 }
 
+export interface BeforeMerge {
+  readonly account: string;
+  readonly merge: string | null;
+  readonly at: string;
+  readonly listed?: true;
+}
+
 export interface StoredDevice {
   id: string;
   label: string;
@@ -185,6 +194,7 @@ export interface StoredDevice {
   created_at: string;
   last_seen_at: string | null;
   account?: string;
+  before_merge?: BeforeMerge;
   /** the account member on this PC that approved it from another device; absent when this PC or a code admitted it */
   added_by?: string;
   linked_at?: string;
@@ -236,6 +246,18 @@ export interface StoredDevice {
   paired_over?: string[];
   /** the Tailscale StableNodeIDs its own credential arrived from, oldest first: removing the row keeps them out (tailnet-nodes.ts) */
   tailnet_nodes?: string[];
+}
+
+export function markBeforeMerge(row: StoredDevice, mark: BeforeMerge): StoredDevice {
+  if (row.account !== mark.account && row.member_approved_in !== mark.account) return row;
+  const { account: _account, linked_at: _linked, member_approved_in: _approval, account_add: _add, joined_by: _joined, ...paired } = row;
+  return { ...paired, before_merge: mark };
+}
+
+function isBeforeMerge(value: unknown): value is BeforeMerge {
+  return isJsonObject(value) && typeof value.account === "string" && isAccountId(value.account)
+    && (value.merge === null || typeof value.merge === "string" && isAccountId(value.merge))
+    && isIsoTime(value.at) && (value.listed === undefined || value.listed === true);
 }
 
 /**
@@ -376,6 +398,7 @@ export function parseDeviceRegistry(parsed: unknown, opensAll: boolean): Exclude
       && typeof d.label === "string" && typeof d.created_at === "string"
       && (d.last_seen_at === null || typeof d.last_seen_at === "string")
       && (d.account === undefined || typeof d.account === "string")
+      && (d.before_merge === undefined || (d.account === undefined && isBeforeMerge(d.before_merge)))
       && (d.added_by === undefined || typeof d.added_by === "string")
       && (d.vouched_pc === undefined || (typeof d.vouched_pc === "string" && /^[0-9a-f]{64}$/.test(d.vouched_pc)))
       && (d.linked_at === undefined || typeof d.linked_at === "string")
@@ -892,8 +915,10 @@ export class DeviceStore {
    * it. A marker covers a row of its account, or one that names no account while this PC is in that account, unless
    * that row names no account and was paired here knowing every standing removal of the marker (`paired_over`).
    */
-  private coveredByEvidence(device: Pick<StoredDevice, "relay_public_key" | "account" | "paired_over">): boolean {
-    return this.evidence?.covers(device, this.account()) ?? false;
+  private coveredByEvidence(device: Pick<StoredDevice, "relay_public_key" | "account" | "paired_over" | "before_merge">): boolean {
+    // A move changes membership, not which account's existing removal evidence covers this pairing.
+    const before = device.before_merge;
+    return this.evidence?.covers(before === undefined ? device : { ...device, account: before.account }, this.account()) ?? false;
   }
 
   /**
@@ -1010,10 +1035,16 @@ export class DeviceStore {
     const numbered = this.devices.flatMap((d) => d.origin === undefined || d.origin.from === "legacy" ? [] : [d.origin.admit_no]);
     try { this.pc.settlePending(rows); }
     catch (error) { this.pc.unwritten(error); return; }
-    // a row the journal already ended is no member, also on a start that could not replay its removal yet (P24)
-    const members = [...new Set(rows.flatMap((d) => d.account === undefined || this.journalEnded(d.id) ? [] : [d.account]))];
     if (!this.pc.migrating) {
       this.pc.checkAbove(numbered);
+      if (this.pc.strict !== null) return;
+      try {
+        for (const { merged } of this.pc.clears()) {
+          if (merged && merged.from !== this.pc.account()) this.settleMovedRows({ from: merged.from, merge: merged.merge, at: new Date().toISOString() });
+        }
+      } catch (error) { this.pc.unwritten(error, "Could not settle rows from a previous account"); return; }
+      // A row the journal already ended is no member, even if its removal could not yet be replayed.
+      const members = [...new Set(this.devices.flatMap(d => d.account === undefined || this.journalEnded(d.id) ? [] : [d.account]))];
       this.pc.checkMembers(members);
       return;
     }
@@ -1551,6 +1582,21 @@ export class DeviceStore {
     this.pc.bindByService(account, listingId);
   }
 
+  standingAccountBinding(): AccountBinding | null { this.pc?.refresh(); return this.pc?.binding() ?? null; }
+  accountClears(): readonly AccountClear[] { return this.pc?.clears() ?? []; }
+
+  rebindAccount(fromBindId: string, next: Parameters<PcAccountState["rebind"]>[1]): void {
+    this.assertWritable();
+    if (this.pc === null) throw new Error("An account move needs OVIS_ACCOUNT_OPENS_ALL");
+    this.pc.rebind(fromBindId, next);
+  }
+
+  private accountMove: { pending(bindId: string): boolean } | null = null;
+  attachAccountMove(move: typeof this.accountMove): void { this.accountMove = move; }
+  accountMovePending(bindId = this.standingAccountBinding()?.bind_id): boolean {
+    return bindId !== undefined && this.accountMove?.pending(bindId) === true;
+  }
+
   /**
    * Binds this PC, in no account, to `account` by the account's signed list (PcAccountState.bindByList): its own entry
    * on a list a person at this PC confirmed. Only with the release flag on. An account whose list removed this relay
@@ -1680,6 +1726,7 @@ export class DeviceStore {
     if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();
     if (!pc || !binding || pc.strict !== null) return false;
+    if (reason === "unlisted" && this.accountMovePending(binding.bind_id)) return false;
     try {
       // The binding clear is the commit point: after it reaches disk no row can still name the old account.
       this.assertWritable();
@@ -1711,6 +1758,33 @@ export class DeviceStore {
     });
     this.save(next);
     this.devices = next;
+  }
+
+  /** Save the ordinary pairings before retiring their listed rows; do not close their open sessions. */
+  settleMovedRows({ from, merge, at }: { readonly from: string; readonly merge: string | null; readonly at: string }): void {
+    this.assertWritable();
+    const mark = { account: from, merge, at };
+    const next = this.devices.map(row => markBeforeMerge(row, mark));
+    const ids: string[] = [];
+    // During startup the binding might already have flipped but this folder's listed file still belongs to B.
+    if (this.account() === from) for (const row of this.joinedRows?.rows() ?? []) {
+      if (row.state !== "live" || expiresAt(row) <= Date.now() || this.accountRowStale(row)) continue;
+      const held = next.find(device => device.id === row.id || device.relay_public_key === row.key);
+      if (held) {
+        if (held.id === row.id && held.relay_public_key === row.key && held.before_merge?.account === from
+          && held.before_merge.merge === merge && held.before_merge.listed) ids.push(row.id);
+        continue;
+      }
+      next.push({ id: row.id, label: row.label, role: this.joinedRole(row), relay_public_key: row.key,
+        created_at: row.confirmed_at, last_seen_at: null, origin: row.origin, token_hash: randomBytes(32).toString("hex"),
+        before_merge: { ...mark, listed: true } });
+      ids.push(row.id);
+    }
+    if (next.length !== this.devices.length || next.some((row, index) => row !== this.devices[index])) {
+      this.save(next);
+      this.devices = next;
+    }
+    if (ids.length) this.joinedRows?.removeRows(ids, "promoted");
   }
 
   /** Every account-joined row ends: its sessions close first, then it leaves account-devices.json (T44, P8 order). */
@@ -1881,6 +1955,7 @@ export class DeviceStore {
       ...(d.relay_public_key === undefined ? {} : { via_relay: true as const }),
       ...(withAccounts && d.account !== undefined && d.relay_public_key !== undefined
         ? { account: d.account, account_key: d.relay_public_key, ...(d.added_by === undefined ? {} : { added_by: d.added_by }) } : {}),
+      ...(withAccounts && d.before_merge !== undefined ? { before_merge: true as const, account_key: d.relay_public_key } : {}),
     }));
   }
 
@@ -3021,7 +3096,7 @@ export class DeviceStore {
   /** A drive account member: the only device that may approve a pairing or start a code through the relay (docs/account.md). */
   isAccountApprover(id: string): boolean {
     const device = this.devices.find((d) => d.id === id);
-    if (device === undefined || device.role !== "drive" || device.account === undefined || device.relay_public_key === undefined || this.stale(device) || !this.canSpeak(id)) return false;
+    if (device === undefined || device.role !== "drive" || device.account === undefined || device.account !== this.account() || device.relay_public_key === undefined || this.stale(device) || !this.canSpeak(id)) return false;
     // On a PC pinned to its account's list, what may add a device to the list may approve a join, and nothing else:
     // a member of this PC's own devices counts only while the list holds its key to drive with full power, read from
     // the PC's copy now. A row the list does not hold (a v1 add from before the pin, say) approves nobody
@@ -3715,11 +3790,12 @@ export class DeviceStore {
     return joined && this.canSpeak(joined.id, true) && !this.accountRowStale(joined) ? { id: joined.id, label: joined.label, role: this.joinedRole(joined) } : null;
   }
 
-  accountRows(): { members: number; unlinked: string[]; own_word: string[] } {
+  accountRows(): { members: number; unlinked: string[]; own_word: string[]; before_merge?: string[] } {
     const groups = this.accountGroups();
     return {
       members: this.devices.filter((d) => d.account !== undefined).length,
       unlinked: groups.unlinked.map((d) => d.id), own_word: groups.own_word.map((d) => d.id),
+      ...(this.opensAll() ? { before_merge: groups.before_merge.map(d => d.id) } : {}),
     };
   }
 
@@ -3727,12 +3803,22 @@ export class DeviceStore {
    * The rows the owner is shown apart (/api/account/status, the owner's /api/health, `ovis status`): relay rows in no
    * account, and members whose link was on their own word (`joined_by`). A row is in one of them at most.
    */
-  accountGroups(): { unlinked: { id: string; label: string }[]; own_word: { id: string; label: string }[] } {
+  accountGroups(): { unlinked: { id: string; label: string }[]; own_word: { id: string; label: string }[]; before_merge: { id: string; label: string }[] } {
     const shown = (d: StoredDevice) => ({ id: d.id, label: d.label });
     return {
       unlinked: this.devices.filter((d) => d.account === undefined && d.relay_public_key !== undefined).map(shown),
       own_word: this.devices.filter((d) => d.account !== undefined && d.joined_by !== undefined && !VOUCHED.has(d.joined_by)).map(shown),
+      before_merge: this.devices.filter(d => d.before_merge !== undefined).map(shown),
     };
+  }
+
+  wasListedBeforeMerge(id: string, key: string): boolean {
+    return this.devices.some(row => row.id === id && row.relay_public_key === key && row.before_merge?.listed === true);
+  }
+
+  revokeBeforeMerge(key: string, account: string): boolean {
+    const row = this.devices.find(device => device.relay_public_key === key && device.before_merge?.account === account);
+    return row !== undefined && this.revoke(row.id, { device_id: row.id, label: row.label });
   }
 
   isTombstoned(key: string): boolean { return this.tombstones.some((t) => t.key === key); }
@@ -3761,6 +3847,8 @@ export class DeviceStore {
     const device = this.devices.find((candidate) => candidate.id === id);
     return device !== undefined && device.account === account && device.relay_public_key === sessionKey && !this.stale(device);
   }
+
+  canOrderAccountMove(id: string): boolean { return this.canSpeak(id); }
 
   /**
    * Whether this PC holds a removal of its own against `key`: a person's Revoke here, a signed removal or block it
@@ -3871,6 +3959,7 @@ export class DeviceStore {
    * row holding the key is revoked, closing its sessions.
    */
   removeAccountKey(key: string, account: string, record: { id: string; issuedAt: string; by?: { device_id: string; label: string }; signed?: RemoveRecord }, now = Date.now()): boolean {
+    if (this.devices.some(row => row.relay_public_key === key && row.before_merge !== undefined)) return false;
     // a deny that failed earlier does not keep a removal from trying again: its landing is what ends the closing (P8)
     if (this.evidence !== null) {
       this.assertWritable();
@@ -3938,6 +4027,7 @@ export class DeviceStore {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId, vouched, replacement);
+    if (device.before_merge?.listed) return null;
     if (this.pc !== null && device.untrusted_created_at === device.created_at) return null;
     const moved = key !== oldKey || device.link_moved_key === true;
     // the link that takes a row from no account into one is on the device's own word unless a member of that same
@@ -3953,7 +4043,8 @@ export class DeviceStore {
       this.replacements.set(deviceId, { key, account, at: Date.now(), challenge: randomBytes(32).toString("base64url"), sessionId, vouched, ownWord });
       return this.list(null).find((d) => d.id === deviceId) ?? null;
     }
-    const linked: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}) };
+    const { before_merge: _beforeMerge, ...pairing } = device;
+    const linked: StoredDevice = { ...pairing, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}) };
     // Linking widens membership even if it keeps the key (G3); flag-off links retain the moved-key-only check.
     if ((this.safety !== null || key !== oldKey) && !this.admits(key)) return null;
     // the new key has no age of the key before it, flag on or off, until this PC numbers it (P22)
@@ -4007,7 +4098,8 @@ export class DeviceStore {
     const device = this.devices.find((d) => d.id === confirm.row);
     if (device === undefined) return null;
     if (!this.admits(confirm.key, proof)) return null;
-    const updated: StoredDevice = { ...device, relay_public_key: confirm.key, account: waiting.account, linked_at: new Date(now).toISOString(), link_moved_key: true, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}), origin: this.pc.admit("pc", "link", null, now) };
+    const { before_merge: _beforeMerge, ...pairing } = device;
+    const updated: StoredDevice = { ...pairing, relay_public_key: confirm.key, account: waiting.account, linked_at: new Date(now).toISOString(), link_moved_key: true, ...(ownWord ? { joined_by: vouched ? "service" as const : "word" as const } : {}), origin: this.pc.admit("pc", "link", null, now) };
     delete updated.imported;
     delete updated.invalid_origin;
     this.bindingWith(waiting.account, confirm.key, () => this.enroll(updated, now, [], false, { replaces: device, confirm: proof }));

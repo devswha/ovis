@@ -185,7 +185,7 @@ test("the PC's own health answer names both groups to its owner, and to a watchi
     const label = (id: string) => f.stored().find((device) => device.id === id)?.label;
     const health = await f.local("/api/health");
     expect(health.status).toBe(200);
-    expect(health.body.account_devices).toEqual({ unlinked: [{ id: outside.id, label: label(outside.id) }], own_word: [{ id: own.id, label: label(own.id) }] });
+    expect(health.body.account_devices).toEqual({ unlinked: [{ id: outside.id, label: label(outside.id) }], own_word: [{ id: own.id, label: label(own.id) }], before_merge: [] });
     // a device that drives reads them through the relay too
     expect((await ask(own.session, "/api/health")).body.account_devices).toEqual(health.body.account_devices);
     const watching = f.devices.pair(f.devices.startPairing().code, `Watcher ${randomBytes(2).toString("hex")}`, "watch");

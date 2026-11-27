@@ -102,6 +102,8 @@ export interface PairedDevice {
   readonly through_account?: true;
   /** account members only, and only to a caller that may drive (docs/account.md, "Account members") */
   readonly account?: string;
+  /** A pairing kept from this PC's previous account, shown only to a driving caller. */
+  readonly before_merge?: true;
   /** that member's account key: its `relay_public_key`, which is public */
   readonly account_key?: string;
   /** the member on this PC that added it */

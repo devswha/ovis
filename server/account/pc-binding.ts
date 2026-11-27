@@ -210,7 +210,9 @@ export function restampMemberProblem(path: string, pc: (PcDoc & { counterOnly?: 
     return "A pending binding names a different account from the other folder's binding";
   }
   const binding = merge === null ? settleLink(pc?.binding ?? null, pc?.first?.key ?? null, rows) : merge.binding;
-  const accounts = rows.flatMap(row => row.account === undefined ? [] : [row.account]);
+  const movedFrom = new Set((merge?.clears ?? pc?.clears ?? []).flatMap(clear =>
+    clear.merged !== undefined && clear.merged.from !== binding?.account ? [clear.merged.from] : []));
+  const accounts = rows.flatMap(row => row.account === undefined || movedFrom.has(row.account) ? [] : [row.account]);
   const migrating = pc === null || pc.counterOnly === true;
   return memberBindingProblem(path, (migrating ? merge?.inherited?.account ?? accounts[0] : binding?.account) ?? null, accounts);
 }
