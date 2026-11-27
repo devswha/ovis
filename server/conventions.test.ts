@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { posix } from "node:path";
-import { fail, files, lineOf, read, stripComments } from "../scripts/source-scan.ts";
+import { existsSync } from "node:fs";
+import { join, posix } from "node:path";
+import { fail, files, importClosure, lineOf, read, repo, stripComments } from "../scripts/source-scan.ts";
 
 const serverCode = (): string[] => files("server/**/*.{ts,mjs,js}").filter((file) => !/\.test\.ts$|\.fake\.ts$/.test(file));
 
@@ -15,17 +16,14 @@ function matches(fileList: string[], pattern: RegExp): { file: string; at: strin
 }
 
 describe("PTY sidecar boundary", () => {
-  // node-pty panics Bun (oven-sh/bun#18546): only the Node sidecar loads it. `Bun.resolveSync`
-  // in server/pty/sidecar.ts only finds the package for Node and is not a load.
-  const NODE_SIDE = new Set(["server/pty/pty-host.mjs", "server/pty/smoke.mjs"]);
+  // node-pty panics Bun (oven-sh/bun#18546); terminals run on the Rust PTY host instead
   const LOAD = /\bfrom\s*["'](?:@lydell\/)?node-pty[^"']*["']|\bimport\s*\(?\s*["'](?:@lydell\/)?node-pty[^"']*["']|\b(?:require|createRequire\s*\([^()]*(?:\([^()]*\))?[^()]*\))\s*\(\s*["'](?:@lydell\/)?node-pty[^"']*["']/;
 
-  it("loads node-pty only in the Node sidecar", () => {
+  it("never loads node-pty", () => {
     const code = [...files("{server,src,shared,scripts,site,telemetry,tui}/**/*.{ts,tsx,mjs,cjs,js}"), "vite.config.ts"].filter((file) => file !== "server/conventions.test.ts");
     const loads = matches(code, LOAD);
-    fail(loads.filter((load) => !NODE_SIDE.has(load.file)).map((load) => load.at),
-      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts): the Rust PTY host (crates/pty-sidecar), or the Node sidecar server/pty/pty-host.mjs as its fallback.");
-    expect(loads.map((load) => load.file)).toContain("server/pty/pty-host.mjs");
+    fail(loads.map((load) => load.at),
+      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts) on the Rust PTY host (crates/pty-sidecar).");
   });
 
   it("knows an import from a mention", () => {
@@ -140,6 +138,96 @@ function unixConnects(file: string, code: string): { file: string; at: string; b
   return found;
 }
 
+describe("herdr-core's socket transport", () => {
+  // The terminal screen reaches herdr-core through this file so that no core is ever started (hc
+  // connect starts one when none runs). A PATH stand-in sees only a spawn by name; this rule also
+  // sees one by absolute path, and every file the transport imports, however deep.
+  const ENTRY = "server/herdr-core/socket-transport.ts";
+  const RUNS_HC_OR_HERDR = new Set(["server/herdr-core/hc-connect.ts", "server/herdr-core/discovery.ts", "server/herdr/client.ts"]);
+  /**
+   * child_process, and any value import of "bun" (named, default, namespace, re-export or dynamic), spaces or none
+   * around the braces and `from`: only `import type` passes
+   */
+  const PROCESS_START = /["'](?:node:)?child_process["']|(?<![\w$.])(?:import|export)(?![\w$])(?!\s*type(?:\s*[{*]|\s+(?!from[\s"'])[\w$]))[^;]*?(?<![\w$])from\s*["']bun["']|\b(?:import|require)\s*\(\s*["']bun["']\s*\)/g;
+  /** the global Bun's members the closure uses; any other use of `Bun` (Bun.spawn, Bun.$, Bun["spawn"], `const B = Bun`) could start a process */
+  const BUN_MEMBERS = ["connect", "Socket", "TOML"];
+  const OTHER_BUN = new RegExp(`(?<![\\w$])Bun(?![\\w$])(?!\\s*\\.\\s*(?:${BUN_MEMBERS.join("|")})(?![\\w$]))`, "g");
+  const repoSource = (path: string) => (existsSync(join(repo, path)) ? read(path) : undefined);
+
+  /** Each import of a file that runs hc or herdr in `entry`'s import closure, and each process start there, as `file:line: text`. */
+  function processStarts(entry: string, source: (path: string) => string | undefined): string[] {
+    const { reached, offenders } = importClosure(entry, source, (path) => !RUNS_HC_OR_HERDR.has(path));
+    const starts = reached.filter((file) => /\.(?:ts|tsx|mjs|js)$/.test(file)).flatMap((file) => {
+      const code = stripComments(source(file) ?? "");
+      // `Bun` inside a string counts too: a template literal's `${...}` is code
+      const offsets = [...code.matchAll(PROCESS_START), ...code.matchAll(OTHER_BUN)].map((match) => match.index + match[0].search(/\S/));
+      return [...new Set(offsets.map((at) => lineOf(code, at)))].sort((a, b) => a - b).map((line) => `${file}:${line}: ${code.split("\n")[line - 1]!.trim().slice(0, 160)}`);
+    });
+    return [...offenders, ...starts];
+  }
+
+  it("starts no process anywhere in its import closure", () => {
+    expect(importClosure(ENTRY, repoSource).reached).toContain("server/herdr-core/connection.ts");
+    fail(processStarts(ENTRY, repoSource),
+      "server/herdr-core/socket-transport.ts must never start a core: nothing in its import closure may start a process (Bun.spawn, Bun.spawnSync, Bun.$, child_process, a value import of \"bun\", or Bun used as anything but Bun.connect, Bun.Socket or Bun.TOML) or import hc-connect.ts, discovery.ts or server/herdr/client.ts, which run hc or herdr. Take the process start out of the file named, or import what the transport needs from a file that starts nothing.");
+  });
+
+  it("finds a process start or an import of what runs hc in any file of the closure", () => {
+    const graph: Record<string, string> = {
+      [ENTRY]: "import { a } from \"./connection.ts\";\nimport { b } from \"./hc-connect.ts\";\nBun.spawn([\"hc\"]);",
+      "server/herdr-core/connection.ts": "import \"../../shared/x.ts\";\n// Bun.spawn in a comment\nconst p = Bun . spawnSync([\"sh\"]);",
+      "shared/x.ts": "import { spawn } from \"bun\";\nimport { execFile } from \"node:child_process\";\nimport \"./y.ts\";",
+      "server/herdr-core/hc-connect.ts": "Bun.spawn([\"hc\", \"connect\"]);",
+      // every other way to reach Bun's process starts; the members the closure really uses and a type import pass
+      "shared/y.ts": [
+        "import { $ } from \"bun\";",
+        "import * as b from \"bun\";",
+        "const B = Bun;",
+        "Bun[\"spawn\"]([\"hc\"]);",
+        "globalThis.Bun.spawn([\"hc\"]);",
+        "const run = await import(\"bun\");",
+        "import type { Socket } from \"bun\";",
+        "const s: Bun.Socket<undefined> = await Bun.connect({ unix: \"x\" }); Bun.TOML.parse(\"\");",
+        "const text = `${Bun.spawn([\"hc\"])}`;",
+        // the same imports written without spaces, after a brace, or across lines
+        "import{spawn}from\"bun\";",
+        "import {spawn}from \"bun\";",
+        "import{ spawn } from \"bun\";",
+        "import{spawnSync}from\"bun\";",
+        "{}import { spawn } from \"bun\";",
+        "import {",
+        "  spawn,",
+        "}from \"bun\";",
+        "import{$}from\"bun\";",
+        "export*from'bun';",
+        "import type{Socket}from\"bun\";",
+      ].join("\n"),
+    };
+    expect(processStarts(ENTRY, (path) => graph[path])).toEqual([
+      `${ENTRY}:2: ./hc-connect.ts (server/herdr-core/hc-connect.ts)`,
+      `${ENTRY}:3: Bun.spawn(["hc"]);`,
+      "server/herdr-core/connection.ts:3: const p = Bun . spawnSync([\"sh\"]);",
+      "shared/x.ts:1: import { spawn } from \"bun\";",
+      "shared/x.ts:2: import { execFile } from \"node:child_process\";",
+      "shared/y.ts:1: import { $ } from \"bun\";",
+      "shared/y.ts:2: import * as b from \"bun\";",
+      "shared/y.ts:3: const B = Bun;",
+      "shared/y.ts:4: Bun[\"spawn\"]([\"hc\"]);",
+      "shared/y.ts:5: globalThis.Bun.spawn([\"hc\"]);",
+      "shared/y.ts:6: const run = await import(\"bun\");",
+      "shared/y.ts:9: const text = `${Bun.spawn([\"hc\"])}`;",
+      "shared/y.ts:10: import{spawn}from\"bun\";",
+      "shared/y.ts:11: import {spawn}from \"bun\";",
+      "shared/y.ts:12: import{ spawn } from \"bun\";",
+      "shared/y.ts:13: import{spawnSync}from\"bun\";",
+      "shared/y.ts:14: {}import { spawn } from \"bun\";",
+      "shared/y.ts:15: import {",
+      "shared/y.ts:18: import{$}from\"bun\";",
+      "shared/y.ts:19: export*from'bun';",
+    ]);
+  });
+});
+
 describe("herdr socket", () => {
   // herdr closes the socket after each answer, so every RPC opens its own connection in
   // server/herdr/client.ts (no pooling), and only server/collector.ts holds a status
@@ -148,13 +236,17 @@ describe("herdr socket", () => {
     "server/herdr/client.ts": "the one herdr RPC client: one connection per call, plus subscribeEvents",
     "server/herdr-marker.ts": "a liveness probe: connects and ends at once, sends no request",
     "server/account/recovery.ts": "ovis recover's own private recovery socket in this PC's state folder, not herdr's",
+    "server/herdr-core/socket-transport.ts": "herdr-core's socket, not herdr's: a line that never starts a core, for a client that must not",
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
+    "server/line-call.ts": "one request to a private tool broker's socket, never herdr's",
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
+    "server/approvals/relay.ts": "an agent's approval hook reaching the approval hub's own socket or pipe, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
-    "server/browser-mcp.ts": "the desktop app's built-in browser socket (app/electron/src/browserBroker.ts), not herdr's: one call per connection",
+    "server/omo-control.ts": "OmO's own terminal-control socket, the one the pane's OmO process listens on, not herdr's: one request per connection",
+    "server/acp/client.ts": "an ACP keeper's own socket in this server's state folder (crates/acp-keeper), not herdr's: one connection the keeper streams its log on",
   };
 
   it("opens herdr's socket only in server/herdr/client.ts", () => {
@@ -175,30 +267,17 @@ describe("herdr socket", () => {
     expect(found("import { connect as tcpConnect, createServer } from \"node:net\";\ntcpConnect({ host, port });\ntcpConnect(port, host);")).toBe(0);
   });
 
-  const HERDR_RPC_ALLOWED: Record<string, string> = {
-    "server/conversation.ts": "open PRs #869 #912 #923 change it",
-    "server/gjc-runtime.ts": "open PR #912 changes it",
-    "server/hermes.ts": "open PR #910 changes it",
-    "server/omo.ts": "open PR #923 changes it",
-    "server/shell-agent.ts": "open PRs #885 #923 change it",
-  };
-  const HERDR_RPC_PENDING: Record<string, string> = {
-    "server/gjc-status.ts": "open PR #928 adds a call",
-    "server/index.ts": "open PR #859 adds a call",
-  };
-
   it("calls herdrRpc only inside server/herdr/", () => {
     const uses = matches(serverCode().filter((file) => !file.startsWith("server/herdr/")), /\bherdrRpc\b/);
-    fail(uses.filter((use) => !(use.file in HERDR_RPC_ALLOWED) && !(use.file in HERDR_RPC_PENDING)).map((use) => use.at),
-      "Do not call herdrRpc outside server/herdr/: add a typed wrapper in server/herdr/client.ts (its method in HerdrMethods, server/herdr/methods.ts) and call that; for pane status use the server/collector.ts listeners. Files waiting on open PRs are listed in HERDR_RPC_ALLOWED in server/conventions.test.ts; do not add new ones.");
-    const users = new Set(uses.map((use) => use.file));
-    fail(Object.keys(HERDR_RPC_ALLOWED).filter((file) => !users.has(file)),
-      "These files no longer call herdrRpc: remove them from HERDR_RPC_ALLOWED in server/conventions.test.ts.");
+    fail(uses.map((use) => use.at),
+      "Do not call herdrRpc outside server/herdr/: add a typed wrapper in server/herdr/client.ts (its method in HerdrMethods, server/herdr/methods.ts) and call that; for pane status use the server/collector.ts listeners.");
   });
 
   it("subscribes to status only in server/collector.ts", () => {
     const subscribers = matches(serverCode(), /\bsubscribeEvents\b/).filter((match) => match.file !== "server/herdr/client.ts" && match.file !== "server/collector.ts");
-    const HC_STREAM_TYPES = ["server/herdr-core/adapter.ts", "server/herdr-core/hc-api.generated.ts", "scripts/hc-types.ts", "server/herdr-core/connection.ts", "server/herdr-core/pin-label.ts", "server/herdr-core/machine-scope.ts"];
+    // server/herdr-core/core.fake.ts is the tests' stand-in for hc, answering the method as hc does
+    // server/herdr-core/event-stream.ts opens that hc stream for the adapter (and the terminal screen)
+    const HC_STREAM_TYPES = ["server/herdr-core/adapter.ts", "server/herdr-core/event-stream.ts", "server/herdr-core/hc-api.generated.ts", "scripts/hc-types.ts", "server/herdr-core/connection.ts", "server/herdr-core/pin-label.ts", "server/herdr-core/machine-scope.ts", "server/herdr-core/core.fake.ts"];
     const raw = matches(files("{server,src,shared,scripts}/**/*.{ts,tsx,mjs,js}").filter((file) => !file.endsWith(".test.ts")), /["']events\.subscribe["']/).filter((match) => match.file !== "server/herdr/client.ts" && !HC_STREAM_TYPES.includes(match.file));
     fail([...subscribers, ...raw].map((match) => match.at),
       "server/collector.ts is the only status subscription (startStatusCollector), and `events.subscribe` is sent only by subscribeEvents in server/herdr/client.ts: take pane status from the collector's callbacks (onStatus, onPaneEnded, onBaseline) in server/index.ts instead of subscribing again.");
@@ -249,6 +328,28 @@ describe("runtime gates", () => {
   });
 });
 
+describe("conversations told by their text", () => {
+  // a pane's conversation chosen by matching what it shows (codexTranscriptPath's `inferred`) is a guess: these may
+  // be named where they are now, and fewer times, never more or anywhere else. Every mention counts (a definition, an
+  // import, an alias, `?.(`, `["..."]`), so none reaches a new caller unseen
+  const TEXT_MATCHED = /\b(?:matchCodexTranscript|matchCodexFirstExchange|loadedConversation|matchShortCodexAnswers|lastTurnConversation|opencodeTitled|opencodeSessionsTitled)\b/;
+  const NAMED: Record<string, number> = {
+    "server/codex.ts": 21,
+    "server/herdr-core/adapter.ts": 3,
+    "server/herdr-core/runtime.ts": 3,
+    "server/opencode.ts": 1,
+  };
+
+  it("names the text matchers no more often and nowhere new", () => {
+    const found = matches(serverCode(), TEXT_MATCHED);
+    const count = (file: string) => found.filter((use) => use.file === file).length;
+    fail(found.filter((use) => count(use.file) > (NAMED[use.file] ?? 0)).map((use) => use.at),
+      "Do not tie a pane to a conversation by its text: take what the agent or the pane's own process tells (served or held in codexTranscriptPath), or open the terminal.");
+    fail(Object.entries(NAMED).filter(([file, pinned]) => count(file) < pinned).map(([file]) => file),
+      "These files name the text matchers less often now: lower their count in NAMED in server/conventions.test.ts.");
+  });
+});
+
 describe("remote PC bundle boundary", () => {
   // scripts/build-remote-bundle.ts ships server/, shared/ and integrations/ but not src/ or relay/: code
   // there that imports either loads from a checkout, where every check runs, and not on a remote PC (#2220)
@@ -283,7 +384,8 @@ describe("server entries", () => {
   };
 
   it("starts the server's own entries only through entryCommand", () => {
-    const starts = matches([...serverCode(), "scripts/plugin.ts"].filter((file) => file !== "server/entries.ts"), START_BY_PATH);
+    // a *.test-helpers.ts is test support, as a test is: it runs from a checkout, never in the compiled binary
+    const starts = matches([...serverCode(), "scripts/plugin.ts", "scripts/plugin-tui.ts"].filter((file) => file !== "server/entries.ts" && !file.endsWith(".test-helpers.ts")), START_BY_PATH);
     fail(starts.filter((start) => !(start.file in ALLOWED)).map((start) => start.at),
       "Start the server's own code with entryCommand(name) from server/entries.ts (add the entry to ENTRIES), never with process.execPath and a .ts path: the compiled binary has no such file.");
     const users = new Set(starts.map((start) => start.file));

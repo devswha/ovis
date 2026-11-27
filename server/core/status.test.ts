@@ -4,12 +4,15 @@ import { join } from "node:path";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import * as claudeStore from "../claude-store.ts";
 import * as conversation from "../conversation.ts";
+import { CopilotActivity } from "../copilot-activity.ts";
+import * as copilot from "../copilot-foreground.ts";
 import * as herdr from "../herdr/client.ts";
 import * as gjc from "../gjc-status.ts";
 import * as omo from "../omo.ts";
 import * as records from "../omo-records.ts";
 import * as service from "../opencode-service.ts";
 import * as agyStore from "../agy-store.ts";
+import * as grokStore from "../grok-store.ts";
 import * as processStart from "../process-start.ts";
 import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, PANE_VERIFIED_MS, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import type { StatusCollectorDeps } from "../collector.ts";
@@ -18,6 +21,77 @@ import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
 import { at, claude, collectorSnapshot, handlers, hub, line, opencode, originalCollector, root, workingClaude } from "./status.fake.ts";
 import { notePaneFolders, otherHostsShare } from "../windows-share.ts";
+
+it.skipIf(process.platform !== "linux")("exposes a Copilot badge change without announcing a Chat session change", async () => {
+  jest.useFakeTimers();
+  const h = hub(undefined, undefined, undefined, () => "copilot-herdr");
+  const pane: HerdrPane = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "copilot-term", agent: "copilot", agent_status: "idle", focused: false, revision: 1 };
+  const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+    pane_id: pane.pane_id, shell_pid: 41000,
+    foreground_processes: [{ pid: 41001, name: "copilot", argv: ["/usr/bin/copilot", "--ui-server"] }],
+  });
+  const foreground = spyOn(copilot, "readCopilotForeground").mockResolvedValue({ state: "selected", sessionId: "copilot-session", binding: "fixture", processing: true });
+  const settled = Promise.withResolvers<void>();
+  const tick = CopilotActivity.prototype.tick;
+  const sampled = spyOn(CopilotActivity.prototype, "tick").mockImplementation(function (this: CopilotActivity, ...args: Parameters<typeof tick>) {
+    return tick.apply(this, args).then(settled.resolve, settled.reject);
+  });
+  try {
+    handlers.herdrLive?.onChange("copilot-herdr");
+    h.herdrSays(pane);
+    await h.snapshot();
+    const before = h.sessionChanges();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(true);
+    expect(h.sessionChanges()).toBe(before);
+  } finally {
+    sampled.mockRestore();
+    foreground.mockRestore();
+    info.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it.skipIf(process.platform !== "linux")("drops a cached Copilot idle sample when Herdr reports new work", async () => {
+  jest.useFakeTimers();
+  const h = hub(undefined, undefined, undefined, () => "copilot-herdr");
+  const pane: HerdrPane = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", terminal_id: "copilot-term", agent: "copilot", agent_status: "idle", focused: false, revision: 1 };
+  const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+    pane_id: pane.pane_id, shell_pid: 41000,
+    foreground_processes: [{ pid: 41001, name: "copilot", argv: ["/usr/bin/copilot", "--ui-server"] }],
+  });
+  const foreground = spyOn(copilot, "readCopilotForeground").mockResolvedValue({ state: "selected", sessionId: "copilot-session", binding: "fixture", processing: false });
+  let settled = Promise.withResolvers<void>();
+  const tick = CopilotActivity.prototype.tick;
+  const sampled = spyOn(CopilotActivity.prototype, "tick").mockImplementation(function (this: CopilotActivity, ...args: Parameters<typeof tick>) {
+    return tick.apply(this, args).then(settled.resolve, settled.reject);
+  });
+  try {
+    handlers.herdrLive?.onChange("copilot-herdr");
+    h.herdrSays(pane);
+    await h.snapshot();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(false);
+
+    h.herdrSays({ ...pane, agent_status: "working" });
+    handlers.onStatus(pane.pane_id, "working", "copilot");
+    const snapshot = await h.snapshot();
+    expect(snapshot.panes[0]?.agent_status).toBe("working");
+    expect(snapshot.panes[0]?.copilot_processing).toBeUndefined();
+
+    settled = Promise.withResolvers<void>();
+    jest.advanceTimersByTime(3000);
+    await settled.promise;
+    expect((await h.snapshot()).panes[0]?.copilot_processing).toBe(false);
+  } finally {
+    sampled.mockRestore();
+    foreground.mockRestore();
+    info.mockRestore();
+    jest.useRealTimers();
+  }
+});
 
 describe.each(["baseline", "gap", "resync", "newer-event"] as const)("native OpenCode ownership reconciliation (%s)", (mode) => {
   it.each([
@@ -564,6 +638,35 @@ describe("the status hub's OpenCode subagents", () => {
     await h.snapshot();
     handlers.onStatus("w1:p1", "idle", "claude");
     expect(h.last().bg).toBe(false);
+  });
+});
+
+describe("the status hub's grok tasks", () => {
+  it("drops the tasks a Grok restarted on the same session left running in its file, and keeps the new one's (#3488)", async () => {
+    const path = join(root, "grok-updates.jsonl");
+    const update = (offset: number, value: Record<string, unknown>) => line({ timestamp: (at + offset) / 1000, params: { update: value } });
+    const tasks = (...list: [string, number][]) => ({ sessionUpdate: "background_tasks", tasks: list.map(([id, offset]) => ({ task_id: id, status: "running", started_at: new Date(at + offset).toISOString() })) });
+    writeFileSync(path, update(0, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "watch CI" } }) + update(10_000, tasks(["old", 10_000])));
+    const h = hub();
+    const bound = spyOn(processStart, "processStartLowerBound").mockReturnValue(at - 1000);
+    const stubs = [spyOn(grokStore, "resolveGrokSession").mockResolvedValue({ path, pid: 1 }), bound];
+    try {
+      const grok = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent_status: "idle", agent: "grok", agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value: "s1" } } as unknown as HerdrPane;
+      await h.status.taskAgents.refresh([grok]);
+      expect(h.status.taskAgents.countOf("w1:p1")).toBe(1);
+      // restarted 20 s after the old process began its task, inside the slack an agy start is given
+      bound.mockReturnValue(at + 30_000);
+      setSystemTime(Date.now() + 30_000);
+      await h.status.taskAgents.refresh([grok]);
+      h.status.taskAgents.poll();
+      expect(h.status.taskAgents.countOf("w1:p1")).toBe(0);
+      appendFileSync(path, update(35_000, tasks(["new", 35_000])));
+      h.status.taskAgents.poll();
+      expect(h.status.taskAgents.countOf("w1:p1")).toBe(1);
+    } finally {
+      setSystemTime();
+      for (const stub of stubs) stub.mockRestore();
+    }
   });
 });
 
@@ -1416,7 +1519,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         options: { submitDelayMs: 0 }, clients: new Set([client]), attachments: new Map(), serialize, lastTyped: new Map(),
         sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
         submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
-        clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null },
+        clientSnapshot: () => h.status.deliverySnapshot(), omo: { sessionOf: () => null },
         queueHeld: (paneId, fresh) => { steps.push(fresh === true ? "hold read now" : "hold as last read"); const held = on.held?.(fresh === true) ?? h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
         SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
@@ -1487,6 +1590,29 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       d.on.read = () => { if (d.asked.length > 0 && !fired.yet) { fired.yet = true; fires(d.h.path); } };
       return fired;
     };
+
+    it.each(["claude", "codex"] as const)("sends queued input for %s on herdr readiness, not on the failure notice", async (agent) => {
+      const { h, writes, submit, flush, waiting } = await delivering();
+      const id = h.pane.pane_id;
+      const report = (status: "working" | "idle") => {
+        h.herdrSays({ ...h.pane, agent, agent_status: status });
+        handlers.onStatus(id, status, agent);
+      };
+      report("working");
+      h.status.hookTurn(id, agent, { turn: "began", prompt: "u1" });
+      await submit(91, "not yet");
+      expect(waiting()).toEqual(["queued"]);
+      h.status.hookTurn(id, agent, { turn: "ended", prompt: "u1", failed: true });
+      await flush();
+      expect(writes).toEqual([]);
+      expect(waiting()).toEqual(["queued"]);
+      // A new app-server turn notice without a matching end cannot hold herdr's ready event.
+      if (agent === "codex") h.status.hookTurn(id, agent, { turn: "began", prompt: "u2" });
+      report("idle");
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~not yet\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
+    });
 
     it("keeps a message sent as the wakeup fires waiting, and types it at the resumed turn's rest", async () => {
       const { h, delivery, writes, client, submit, flush } = await delivering();
@@ -2565,4 +2691,185 @@ describe("the read of herdr's snapshot", () => {
     await answerOlder();
     expect(otherHostsShare("\\\\nas\\work\\proj\\a.md", [])).toBe(false);
   });
+});
+
+/**
+ * The orchestrator's case: a Claude session that keeps teammates (Claude Code's agent teams) or subagents at work
+ * after its own turn ended. Claude Code 2.1.326 then reports itself `working` all along (a teammate at work makes it
+ * busy, and herdr-core passes the report on as it is) and writes no `turn_duration` while a teammate runs, idle ones
+ * too: only the answer, and the Stop hooks' summary when the session runs any. Its prompt takes what is typed as a new
+ * turn at once, as the CLI shows; a queued Chat message waited for a rest nothing told.
+ */
+describe("a Claude turn at rest while its teammate works, with no turn_duration written", () => {
+  const READY = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 80 };
+  const spies: { mockRestore(): void }[] = [];
+  afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
+  const ts = (ms: number) => new Date(at + ms).toISOString();
+  let fixtures = 0;
+  const answers = (path: string, ms: number) =>
+    appendFileSync(path, line({ type: "assistant", isSidechain: false, timestamp: ts(ms), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "started" }] } }));
+  const hooksRan = (path: string, ms: number) =>
+    appendFileSync(path, line({ type: "system", subtype: "stop_hook_summary", isSidechain: false, hookCount: 1, hookInfos: [{ command: "node stop-hook.mjs", durationMs: 86 }], hookErrors: [], preventedContinuation: false, stopReason: "", hasOutput: false, level: "suggestion", timestamp: ts(ms) }));
+  /** the prompt Claude writes for a message typed into it */
+  const prompted = (path: string, ms: number, text: string) =>
+    appendFileSync(path, line({ type: "user", isSidechain: false, origin: { kind: "human" }, permissionMode: "bypassPermissions", timestamp: ts(ms), message: { role: "user", content: text } }));
+
+  async function teammateAtWork() {
+    const id = `66666666-6666-4666-8666-${String(++fixtures).padStart(12, "0")}`;
+    const path = join(root, `${id}.jsonl`);
+    const dir = join(root, id, "subagents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, line({ type: "user", isSidechain: false, origin: { kind: "human" }, permissionMode: "bypassPermissions", timestamp: ts(-1000), message: { role: "user", content: "start the teammate" } }));
+    writeFileSync(join(dir, "agent-asleeper-1.meta.json"), JSON.stringify({ agentType: "sleeper", name: "sleeper", description: "Sleep teammate", spawnDepth: 0, requestShape: "background", taskKind: "in_process_teammate", teamName: `session-${id.slice(0, 8)}` }));
+    writeFileSync(join(dir, "agent-asleeper-1.jsonl"), line({ isSidechain: true, sessionId: id, agentId: "asleeper-1", type: "user", timestamp: ts(0), message: { role: "user", content: "sleep" } }));
+    const writes: string[] = [];
+    const on: { keys?: () => void } = {};
+    const client: Client = { data: connectionData({ readOnly: false, deviceId: undefined }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: () => 1, close: () => {} };
+    let lane: Promise<unknown> = Promise.resolve();
+    const serialize = <T>(_paneId: string, task: () => T | Promise<T>): Promise<T> => { const next = lane.catch(() => undefined).then(task); lane = next; return next; };
+    let h!: ReturnType<typeof hub<Client, unknown>>;
+    const delivery = createPendingDelivery({
+      options: { submitDelayMs: 0 }, clients: new Set([client]), attachments: new Map(), serialize, lastTyped: new Map(),
+      sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
+      submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
+      clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null }, queueHeld: (paneId, fresh) => h.status.queueHeld(paneId, fresh),
+      SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    h = hub(path, delivery.pending as never, delivery.drainPending);
+    const pane = { ...claude, agent_session: { ...claude.agent_session, value: id } };
+    h.herdrSays(pane);
+    handlers.onBaseline([pane]);
+    await h.snapshot();
+    h.herdrSays({ ...pane, agent_status: "working" });
+    handlers.onStatus(pane.pane_id, "working", "claude");
+    spies.push(
+      spyOn(herdr, "paneRead").mockResolvedValue({ text: "" } as never),
+      spyOn(herdr, "paneProcessInfo").mockResolvedValue({ foreground_processes: [], shell_pid: null } as never),
+      spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text, _socket, guard) => {
+        if (guard && !guard()) throw new herdr.HerdrError("cancelled", "herdr pane.send_text was not sent: the sender may no longer send");
+        writes.push(`paste ${text}`);
+      }),
+      spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys, _socket, guard) => {
+        on.keys?.();
+        if (guard && !guard()) throw new herdr.HerdrError("cancelled", "herdr pane.send_keys was not sent: the sender may no longer send");
+        writes.push(`keys ${keys.join(",")}`);
+      }),
+    );
+    const flush = async () => {
+      for (let seen: unknown = null; seen !== lane;) { seen = lane; await lane.catch(() => undefined); await new Promise((resolve) => setTimeout(resolve, 0)); }
+    };
+    const submit = (id: number, text: string) => delivery.pendingFrames.submit(client, { type: "submit", id, pane_id: pane.pane_id, text, payload: text, delivery: "queue" } as never);
+    const waiting = () => delivery.pending.list(client, pane.pane_id).map((message) => message.state);
+    return { ...h, path, pane, delivery, writes, submit, flush, waiting, on };
+  }
+
+  it("tells the pane and its queue at rest once the session's own turn answered and its Stop hooks ran, though herdr still reads working", async () => {
+    const h = await teammateAtWork();
+    h.poll();
+    expect(h.last()).toEqual({ status: "working", tasks: 1, bg: false });
+    expect(h.pending.current(h.pane.pane_id)).toBe("working");
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    expect(h.pending.current(h.pane.pane_id)).toBe("done");
+    expect((await h.snapshot()).panes[0]).toMatchObject({ agent_status: "done", background_tasks: 1 });
+  });
+
+  it("types a queued Chat message at that rest, and the next one only once a turn after the first's Enter has answered and its hooks ran", async () => {
+    const h = await teammateAtWork();
+    await h.submit(1, "first");
+    await h.submit(2, "second");
+    await h.flush();
+    expect(h.writes).toEqual([]);
+    expect(h.waiting()).toEqual(["queued", "queued"]);
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toEqual(["paste \u001b[200~first\u001b[201~", "keys Enter"]);
+    expect(h.waiting()).toEqual(["queued"]);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toHaveLength(2);
+    prompted(h.path, 5000, "first");
+    h.poll();
+    await h.flush();
+    expect(h.writes).toHaveLength(2);
+    answers(h.path, 6000);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toHaveLength(2);
+    hooksRan(h.path, 6100);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toEqual(["paste \u001b[200~first\u001b[201~", "keys Enter", "paste \u001b[200~second\u001b[201~", "keys Enter"]);
+    expect(h.waiting()).toEqual([]);
+  });
+
+  it("sends no Enter when a teammate's message begins a turn after the reads before the Enter, and leaves the paste uncommitted", async () => {
+    const h = await teammateAtWork();
+    await h.submit(1, "pasted");
+    await h.flush();
+    h.on.keys = () => {
+      delete h.on.keys;
+      appendFileSync(h.path, line({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: ts(400), message: { role: "user", content: "Another Claude session sent a message: done" } }));
+    };
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+    expect(h.waiting()).toEqual(["uncertain"]);
+  });
+
+
+  it("sends no Enter when the watcher's poll has read a turn begun after the reads before the Enter", async () => {
+    const h = await teammateAtWork();
+    await h.submit(1, "pasted");
+    await h.flush();
+    h.on.keys = () => {
+      delete h.on.keys;
+      appendFileSync(h.path, line({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: ts(400), message: { role: "user", content: "Another Claude session sent a message: done" } }));
+      h.poll();
+    };
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.flush();
+    expect(h.writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+    expect(h.waiting()).toEqual(["uncertain"]);
+  });
+
+
+  it("keeps the transcript's rest a newer read took when an older read that saw herdr at rest comes back after it", async () => {
+    const h = await teammateAtWork();
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    h.herdrSays({ ...h.pane, agent_status: "idle" });
+    const older = await h.heldSnapshot();
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    await h.snapshot();
+    await older();
+    appendFileSync(h.path, line({ type: "user", isSidechain: false, turnPosition: { promptIndex: 1, turnIndex: 2 }, timestamp: ts(400), message: { role: "user", content: "Another Claude session sent a message: done" } }));
+    h.poll();
+    expect(h.status.queueHeld(h.pane.pane_id, true)).toBe(true);
+  });
+
+  it("lets a turn herdr tells after herdr told the pane at rest take a message typed at once", async () => {
+    const h = await teammateAtWork();
+    answers(h.path, 200);
+    hooksRan(h.path, 300);
+    h.poll();
+    await h.snapshot();
+    h.herdrSays({ ...h.pane, agent_status: "idle" });
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    prompted(h.path, 5000, "next");
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    h.poll();
+    expect(h.status.queueHeld(h.pane.pane_id, true)).toBe(false);
+  });
+
 });

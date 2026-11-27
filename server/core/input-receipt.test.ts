@@ -4,6 +4,14 @@ import { type Client, connectionData } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import { KEY_SETTLE_MS, TYPED_SETTLE_MS } from "../index.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
+import { WindowsControl } from "../windows-control.ts";
+import * as paneContext from "../pane-context.ts";
+import type { AcpChildren } from "../acp/children.ts";
+import { KeeperClient } from "../acp/client.ts";
+import { keeperBuilt, keeperRoot, startKeeper, until } from "../acp/keeper.fake.ts";
+import { dirname, join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
+import { Socket } from "node:net";
 
 afterEach(() => mock.restore());
 
@@ -13,7 +21,7 @@ function connection(told: Told[]): Client {
   return { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, send: (raw: string) => { told.push(JSON.parse(raw)); return 1; }, getBufferedAmount: () => 0, close: () => {} } as unknown as Client;
 }
 
-function lane(ready = true, pty: unknown = "pty") {
+function lane(ready = true, pty: unknown = "pty", acp?: Pick<AcpChildren, "forPane">) {
   const typed: string[] = [];
   const told: Told[] = [];
   const phone = connection(told);
@@ -31,13 +39,83 @@ function lane(ready = true, pty: unknown = "pty") {
   });
   spyOn(client, "paneSendText").mockImplementation(async (_pane, text) => { typed.push(`text ${text}`); });
   const clients = new Set([phone, other]);
-  const { inputFrames, typedInto } = createInputLane({
-    TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight: () => sighting, poke: () => {},
+  const { inputFrames, typedInto, serialize } = createInputLane({
+    TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, acp, sight: () => sighting, poke: () => {},
     terminalAttach: async () => false, terminalAttachKnown: () => true, mayType: () => true, authorizeSocket: () => {},
   });
   const results = () => told.filter((frame) => frame.type === "input-result");
-  return { typed, results, clients, phone, other, inputFrames, typedInto, keyStarted, answer };
+  return { typed, results, clients, phone, other, inputFrames, typedInto, serialize, keyStarted, answer };
 }
+
+it("brackets a fitted Windows agent's multiline paste before sending the following Enter", async () => {
+  const pane = "w:p1";
+  const live = lane(true, Object.create(WindowsControl.prototype));
+  const agent = Promise.withResolvers<string>();
+  spyOn(paneContext, "paneAgentOf").mockReturnValue(agent.promise);
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "first\rsecond", id: 1 });
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "\r", id: 2 });
+  agent.resolve("omp");
+  await live.serialize(pane, () => {});
+  expect(live.typed).toEqual(["pty \x1b[200~first\rsecond\x1b[201~", "pty \r"]);
+  expect(live.results()).toMatchObject([{ id: 1, ok: true }, { id: 2, ok: true }]);
+});
+
+it("counts a fitted Windows keystroke queued behind another send, but not a mouse report", async () => {
+  const pane = "w:p1";
+  const live = lane(true, Object.create(WindowsControl.prototype));
+  const blocked = Promise.withResolvers<void>();
+  void live.serialize(pane, () => blocked.promise);
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "a", id: 1 });
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "\x1b[<0;10;5M" });
+  const beforeTyping = live.typedInto(pane);
+  blocked.resolve();
+  await live.serialize(pane, () => {});
+  expect(live.results()).toMatchObject([{ id: 1, ok: true }]);
+  expect(live.typedInto(pane) - beforeTyping).toBe(1);
+});
+
+it.skipIf(!keeperBuilt)("Stop cancels the running ACP turn instead of typing into its terminal", async () => {
+  const root = keeperRoot();
+  const keeper = await startKeeper(root);
+  const client = new KeeperClient(root);
+  try {
+    await client.ready();
+    await until(client, "session", () => client.session !== null);
+    await client.submit("hold");
+    const child = { id: "child", terminal: "t1", harness: "codex", root, client };
+    const live = lane(true, "pty", { forPane: pane => pane === "t1" ? child : undefined });
+    live.inputFrames.input(live.phone, { type: "input", pane_id: "t1", text: "\x1b", stop: true });
+    await until(client, "cancelled turn", () => client.turn?.stopReason === "cancelled", 2000);
+    expect(client.holdGeneration).toBeNumber();
+    await expect(client.submit("follow-up", "ask")).rejects.toThrow("held by a person");
+    const rows = readFileSync(join(root, "archive.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.filter(row => row.dir === "to-agent").map(row => JSON.parse(row.raw))).toContainEqual({
+      jsonrpc: "2.0", method: "session/cancel", params: { sessionId: client.session },
+    });
+    expect(live.typed).toEqual([]);
+  } finally { client.close(); await keeper.stop(); rmSync(dirname(root), { recursive: true, force: true }); }
+});
+
+it("sends Stop keys to the real TUI while its ACP child stays registered", async () => {
+  const root = keeperRoot();
+  const socket = new Socket();
+  const keeper = new KeeperClient(root, { connect: () => socket });
+  const child = { id: "child", terminal: "t1", harness: "codex", root, client: keeper };
+  const live = lane(true, "pty", { forPane: pane => pane === "t1" ? child : undefined });
+  try {
+    socket.emit("data", [
+      { seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s1" } }) },
+      { seq: 2, dir: "keeper", raw: JSON.stringify({ method: "_keeper/mode", params: { mode: "terminal", phase: "ready" } }) },
+      { through: 2, client: 1 },
+    ].map(row => JSON.stringify(row)).join("\n") + "\n");
+    live.inputFrames.input(live.phone, { type: "input", pane_id: "t1", text: "\x03", stop: true, id: 1 });
+    live.inputFrames.input(live.phone, { type: "input", pane_id: "t1", text: "\x1b", stop: true, id: 2 });
+    live.answer();
+    await live.inputFrames.keys(live.phone, { type: "keys", pane_id: "t1", keys: ["right"] });
+    expect(live.typed).toEqual(["pty \x03", "text \x1b", "keys right"]);
+    expect(live.results()).toMatchObject([{ id: 1, ok: true }, { id: 2, ok: true }]);
+  } finally { keeper.close(); rmSync(dirname(root), { recursive: true, force: true }); }
+});
 
 it("counts what a person types into a pane, by any way, and not the terminal's own answers or the mouse", async () => {
   const live = lane();

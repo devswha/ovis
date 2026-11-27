@@ -1,3 +1,3 @@
 ### Fixed
-- Settings → Agents omits the keyring note and sign-in button when Antigravity is set to use a
-  Gemini API key.
+- Settings → Agents says Antigravity is using a Gemini API key instead of showing a keyring
+  warning or sign-in button.

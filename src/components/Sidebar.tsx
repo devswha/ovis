@@ -4,7 +4,7 @@ import { Bot, ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, GitBranch
 
 import "./Sidebar.css";
 
-import type { AgentStatus, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrWorkspaceWorktree, PaneContext, PaneInfo, PlanSummary, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";
 import { MAX_LABEL_CHARS } from "../../shared/labels.ts";
 import { renamesWorkspace } from "../lib/layoutTargets.ts";
@@ -40,6 +40,7 @@ import { worktreeLabel } from "../lib/worktreeName.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
 import { agentTabName, paneMark, sidebarAgents, workspaceAgentLabels, type SidebarAgent } from "../lib/sidebarAgents.ts";
 import { PANE_DRAG_TYPE, paneDragData } from "../lib/split.ts";
+import { paneDrag } from "../lib/paneDrag.ts";
 import { publishWorkspaceRows, workspaceRows } from "../lib/adjacentTarget.ts";
 import { currentSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneWorkspacePins, reorderWorkspacePins, setSidebarPins, splitPinnedGroups, subscribeSidebarPins, toggleSidebarPin, workspacePinKey, type WorkspaceGroup } from "../lib/sidebarPins.ts";
 
@@ -309,6 +310,14 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     [reorder, orderVersion, machineId, snapshot]);
   const [dragWorkspaceId, setDragWorkspaceId] = useState<string | null>(null);
   const [touchDrag, setTouchDrag] = useState<{ source: string; over: string | null } | null>(null);
+  const tabDropWorkspaceId = useSyncExternalStore(
+    paneDrag.subscribe,
+    () => {
+      const hit = paneDrag.snapshot()?.workspaceTarget;
+      return hit && hit.machineId === machineId ? hit.workspaceId : null;
+    },
+    () => null,
+  );
   // the browser's drag and drop is a mouse's: on a touch screen a long press lifts the row instead
   const coarsePointer = useMediaQuery("(pointer: coarse)");
   const sheet = useMediaQuery(SHEET_QUERY);
@@ -501,6 +510,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     ] : [];
     const closes = [workspace.workspace_id, ...sameRepo.map((candidate) => candidate.workspace_id)];
     const scope = (group: boolean): CloseScope | undefined => closeScope(snapshot, workspace.workspace_id, group) ?? undefined;
+    // a snapshot's row, which a herdr-core server draws with its checkout's git identity
+    const drawnCheckout: HerdrWorkspaceWorktree | null | undefined = workspace.worktree;
+    const confirmedCheckout = drawnCheckout
+      ? { expected_checkout: drawnCheckout.checkout_path, ...(drawnCheckout.git_id ? { expected_git_id: drawnCheckout.git_id } : {}) } : {};
     const deleteItems: RowMenuItem[] = linked && worktreesOffered && !holdsLock([workspace.workspace_id]) ? [{
       id: "delete-worktree", label: t("Delete worktree checkout…"), icon: Trash2, danger: true,
       run: () => setConfirm({
@@ -508,9 +521,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         title: t("Delete the checkout of {name}?", { name: workspace.label }),
         body: t("The folder at {path} is deleted and the workspace closes. The branch stays.", { path: workspace.worktree?.checkout_path ?? "" }),
         action: t("Delete"),
-        run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id }); }),
+        // the folder this question shows goes with the delete: a server whose workspace names another by now refuses it
+        run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, ...confirmedCheckout }); }),
         // git refuses a checkout with unsaved changes: the refusal shows, and the action becomes a forced one
-        escalation: { label: t("Delete anyway"), code: "dirty_worktree_requires_force", run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, force: true }); }) },
+        escalation: { label: t("Delete anyway"), code: "dirty_worktree_requires_force", run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, force: true, ...confirmedCheckout }); }) },
       }),
     }] : [];
     const closeItem: RowMenuItem = { id: "close", label: t("Close workspace"), icon: X, danger: true, divider: true, run: () => setConfirm({
@@ -807,8 +821,9 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const unfolded = children.length > 0 && repoKey !== undefined && !collapsed;
     const face = <WorkspaceFavicon root={workspace.worktree?.checkout_path ?? pane.cwd ?? null} fallback={<span className="sidebar-mark workspace-folder" aria-hidden="true">{unfolded ? <FolderOpen /> : <Folder />}</span>} />;
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void => setMenu(menuOpen ? null : { anchor, point, previousFocus, workspace, title: rowTitle, place: [branchNote, ...paths].filter(Boolean).join(" · ") || workspace.label });
+    const tabDrop = online && !watching && tabDropWorkspaceId === workspace.workspace_id;
     return <li
-      className={`workspace workspace-group pane-item${selected ? " is-selected" : ""}${workerSelected ? " has-selected-agent" : ""}${collapsed ? " is-collapsed" : ""}${context ? " is-filter-context" : ""}${dragWorkspaceId === workspace.workspace_id ? " is-dragging" : ""}${touchDrag?.source === workspace.workspace_id ? " is-lifted" : ""}`}
+      className={`workspace workspace-group pane-item${selected ? " is-selected" : ""}${workerSelected ? " has-selected-agent" : ""}${collapsed ? " is-collapsed" : ""}${context ? " is-filter-context" : ""}${dragWorkspaceId === workspace.workspace_id ? " is-dragging" : ""}${touchDrag?.source === workspace.workspace_id ? " is-lifted" : ""}${tabDrop ? " is-tab-drop" : ""}`}
       key={workspace.workspace_id}
       data-workspace={workspace.workspace_id}
       data-branch={branchTitle ?? undefined}
@@ -926,7 +941,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   };
 
   return (
-    <div className={`machine-workspaces${twoLine ? " is-two-line" : ""}`} ref={workspaceRoot}>
+    <div className={`machine-workspaces${twoLine ? " is-two-line" : ""}`} data-machine={online && !watching ? machineId : undefined} ref={workspaceRoot}>
       <nav className="sidebar-list" aria-label={t("Herdr workspaces")}>
         <>
           <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>

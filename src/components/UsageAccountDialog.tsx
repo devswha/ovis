@@ -17,12 +17,6 @@ import "./UsageAccountDialog.css";
 type Step = { readonly kind: "provider" } | { readonly kind: "hub"; readonly returnTo: UsageLoginProvider | null }
   | { readonly kind: "account"; readonly provider: UsageLoginProvider; readonly method: "choose" | "local" | "hub" };
 
-export function externalUsageSignInHint(provider: UsageProviderId, t: ReturnType<typeof useT>): string {
-  return provider === "gemini"
-    ? t("Sign in through Gemini CLI on the server PC.")
-    : t("Sign in from the Antigravity app on the server PC.");
-}
-
 export function UsageAccountDialog({ editHub, provider: preset = null, hub, onHubChanged, onAccountsChanged, onLocalLogin, onClose }: {
   readonly editHub: boolean;
   readonly provider?: UsageProviderId | null;
@@ -91,7 +85,7 @@ export function UsageAccountDialog({ editHub, provider: preset = null, hub, onHu
             ? <p className="settings-hint">{t("Install {cli} on the server PC first.", { cli: step.provider.cli })}</p>
             : step.provider.local
               ? <button type="button" className="account-choice" onClick={() => setStep({ ...step, method: "local" })}><SquareTerminal size={24} aria-hidden="true" /><span><strong>{t("On this PC")}</strong><span className="settings-hint">{t("Official CLI in a new tab")}</span></span></button>
-              : <p className="settings-hint">{externalUsageSignInHint(step.provider.id, t)}</p>;
+              : <p className="settings-hint">{t("Sign in from the Antigravity app on the server PC.")}</p>;
           break;
         case "local":
           title = t("Sign in to {provider}", { provider: PROVIDER_NAME[step.provider.id] }); current = 2;

@@ -57,6 +57,10 @@ function parseCodexContinueMenu(screen: string): ParsedPrompt | null {
 function parseCodexQuestion(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const hintIndex = findLastIndex(lines, (_, index) => CODEX_ASK_HINT_RE.test(wrapped(lines, index)));
+  return readCodexQuestion(lines, hintIndex, CODEX_NAVIGATE_RE.test(wrapped(lines, hintIndex)));
+}
+
+function readCodexQuestion(lines: string[], hintIndex: number, canNavigate: boolean): ParsedPrompt | null {
   if (hintIndex < 0) return null;
   const rows = menuRows(lines, Math.max(0, hintIndex - 48), hintIndex);
   if (!sequentialRows(rows) || rows.filter((row) => row.selected).length !== 1) return null;
@@ -74,7 +78,7 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
   // several questions, and the hint says ←/→ move between them without answering: the card's Back and Next
   const at = progress ? Number(progress[1]) - 1 : 0;
   const total = progress ? Number(progress[2]) : 1;
-  const navigates = total > 1 && at < total && CODEX_NAVIGATE_RE.test(wrapped(lines, hintIndex));
+  const navigates = canNavigate && total > 1 && at < total;
   return finishPrompt("codex", {
     kind: "question", title, question, body: null, options,
     multi_select: false, custom_option_index: options.length,
@@ -87,16 +91,49 @@ function parseCodexQuestion(screen: string): ParsedPrompt | null {
   }, { can_step_back: undefined, can_step_next: undefined });
 }
 
+// Codex replaces the options footer when Tab opens notes. The menu above the notes
+// composer still identifies the question, but the composer itself isn't an option row.
+export function parseCodexNotes(screen: string, answer?: string): ParsedPrompt | null {
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  const end = findLastIndex(lines, (line) => line.trim() !== "");
+  const last = cleanLine(lines[end] ?? "");
+  const before = cleanLine(lines[end - 1] ?? "");
+  const submit = /^enter to submit (?:answer|all)$/i;
+  const footer = /^tab or esc to clear notes\s*\|\s*enter to submit (?:answer|all)$/i.test(last) ? end
+    : before.toLowerCase() === "tab or esc to clear notes" && submit.test(last) ? end - 1 : -1;
+  if (footer < 0) return null;
+  const notesRow = findLastIndex(lines.slice(0, footer), (line) => /^\s*›(?: |$)/u.test(line));
+  if (notesRow < 0) return null;
+  const parsed = readCodexQuestion(lines, notesRow, false);
+  if (parsed === null || parsed.selectedIndex !== parsed.customMenuIndex) return null;
+  if (answer !== undefined) {
+    const prefix = /^([ \t]*)› /u.exec(lines[notesRow] ?? "");
+    if (!prefix) return null;
+    const indent = " ".repeat(prefix[0].length);
+    const rest = lines.slice(notesRow + 1, footer);
+    while (rest.length > 0 && rest.at(-1)?.trimEnd() === "") rest.pop();
+    if (!rest.every((line) => line.trimEnd() === "" || line.startsWith(indent))) return null;
+    // Don't guess whether a line break is a soft wrap or was typed.
+    const visible = [lines[notesRow]?.slice(prefix[0].length) ?? "", ...rest.map((line) => line.slice(indent.length))]
+      .map((line) => line.trimEnd()).join("\n");
+    if (visible === "Add notes" || visible !== answer) return null;
+  }
+  return parsed;
+}
+
 /**
  * A question from Codex's queue, open: under the queue header, an optional "1 of 2", the
  * question (wrapped over as many lines as the pane needs), then its options and a last
  * row that takes a typed answer ("Other", or what was typed there). A free-form question
  * has no options, only that answer line ("Type your answer").
  */
-function parseCodexAsyncQuestion(screen: string): ParsedPrompt | null {
+function parseCodexAsyncQuestion(screen: string, answer?: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
-  const hintIndex = findLastIndex(lines, (_, index) => CODEX_ASYNC_ASK_HINT_RE.test(wrapped(lines, index)));
+  const hintIndex = findLastIndex(lines, (line, index) => CODEX_ASYNC_ASK_HINT_RE.test(wrapped(lines, index))
+    && (answer === undefined || /^(?:enter|return)\s+submit\b/i.test(cleanLine(line))));
   if (hintIndex < 0) return null;
+  if (answer !== undefined && lines.slice(hintIndex + 1).map(cleanLine).some((line) => line !== ""
+    && !/^(?:\S+ (?:skip|main prompt|prev question|next question|queued messages)|option \d+\/\d+)(?:\s|$)/i.test(line))) return null;
   const header = findLastIndex(lines.slice(Math.max(0, hintIndex - 48), hintIndex), (line) => CODEX_QUEUE_HEADER_RE.test(cleanLine(line)));
   const top = header < 0 ? Math.max(0, hintIndex - 48) : Math.max(0, hintIndex - 48) + header + 1;
   const rows = menuRows(lines, top, hintIndex);
@@ -116,14 +153,25 @@ function parseCodexAsyncQuestion(screen: string): ParsedPrompt | null {
     if (header < 0) return null;
     const answerLine = findLastIndex(lines.slice(0, hintIndex), (line) => Boolean(cleanLine(line)) && !isDivider(line));
     if (answerLine < top) return null;
+    if (answer !== undefined) {
+      // The free-form input and the question start in the same column. Remove
+      // that inset, not spaces a person may have typed into the field.
+      const firstQuestionRow = lines.slice(top, answerLine).find((line) => line.trim() !== "");
+      const inset = firstQuestionRow?.match(/^[ \t]*/u)?.[0];
+      if (inset === undefined || answer === "Type your answer" || lines[answerLine]?.trimEnd() !== inset + answer) return null;
+    }
     question = normalizeText(questionLines(answerLine).join(" ")) || null;
     options = [];
     menuLabels = [];
     selectedIndex = 0;
   } else {
     if (!sequentialRows(rows) || rows.length < 2 || rows.filter((row) => row.selected).length !== 1) return null;
-    // an old layout without the header must still end in its "Other" row
-    if (header < 0 && !/^Other\b/i.test(rows.at(-1)!.label)) return null;
+    const lastRow = rows.at(-1)!;
+    if (answer !== undefined && (!lastRow.selected || answer === "Other" || answer === "Other (write an answer)"
+      || lines[lastRow.lineIndex]?.trimEnd().replace(/^\s*› *\d+\. /u, "") !== answer
+      || text(lastRow.lineIndex + 1, hintIndex).length !== 0)) return null;
+    // an old layout without the header must still end in its "Other" row, until an answer is typed there
+    if (header < 0 && answer === undefined && !/^Other\b/i.test(rows.at(-1)!.label)) return null;
     // a wrapped option continues on the lines under it: these rows carry no descriptions
     const labels = rows.map((row, index) => normalizeText([row.label, ...text(row.lineIndex + 1, rows[index + 1]?.lineIndex ?? hintIndex)].join(" ")));
     question = header < 0 ? nearestQuestion(lines, rows[0]!.lineIndex) : normalizeText(questionLines(rows[0]!.lineIndex).join(" ")) || null;
@@ -143,6 +191,34 @@ function parseCodexAsyncQuestion(screen: string): ParsedPrompt | null {
   });
 }
 
+export function codexAsyncAnswerMatches(screen: string, expected: ParsedPrompt, answer: string): boolean {
+  return parseCodexAsyncQuestion(screen, answer)?.id === expected.id;
+}
+
+/** The dialogs of an approval Codex asks a client on its app server (server/approvals/codex.ts holds them), by kind. */
+const CODEX_REQUEST_DIALOGS: readonly [RegExp, string][] = [
+  [/^Would you like to run the following command\b/, "command"],
+  [/^Would you like to make the following edits\b/, "edit"],
+  [/^Would you like to grant\b/, "grant"],
+];
+
+/**
+ * The command a `Would you like to run the following command?` dialog shows after its `$ `, its lines as the pane
+ * wrapped them, or null where it may not show it whole (Codex marks a cut with `…`). Its edit and grant dialogs show
+ * no command: null, bound by their kind to a request Ovis holds (server/approvals/hub.ts), and undefined for a dialog of
+ * no request.
+ */
+function codexApproval(header: string, lines: readonly string[]): Pick<ParsedPrompt, "approvalCommand" | "approvalKind"> {
+  const kind = CODEX_REQUEST_DIALOGS.find(([pattern]) => pattern.test(header))?.[1];
+  if (kind === undefined) return {};
+  const start = kind === "command" ? lines.findIndex((line) => line.startsWith("$ ")) : -1;
+  if (start < 0) return { approvalCommand: null, approvalKind: kind };
+  const shown = lines.slice(start);
+  const end = shown.indexOf("");
+  const command = (end < 0 ? shown : shown.slice(0, end)).join("\n").slice(2);
+  return { approvalCommand: command.includes("…") ? null : command, approvalKind: kind };
+}
+
 function parseCodexApproval(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
   const headerIndex = findLastIndex(lines, (line) => CODEX_APPROVAL_HEADER_RE.test(line) && !NUMBERED_OPTION_RE.test(line));
@@ -153,7 +229,9 @@ function parseCodexApproval(screen: string): ParsedPrompt | null {
   const header = cleanLine(lines[headerIndex]!);
   const split = header.match(/^(.*?\?)\s+(.+)$/);
   const heading = split ? split[1]! : header;
-  const body = [split?.[2] ?? "", ...lines.slice(headerIndex + 1, rows[0]!.lineIndex).map(cleanLine)].filter(Boolean).join("\n");
+  const between = lines.slice(headerIndex + 1, rows[0]!.lineIndex).map(cleanLine);
+  const body = [split?.[2] ?? "", ...between].filter(Boolean).join("\n");
+  const approval = codexApproval(header, between);
   return finishPrompt("codex", {
     kind: "approval", title: heading, question: heading, body: body || null,
     options: rows.map((row) => ({ label: row.label, description: null })), multi_select: false, custom_option_index: null,
@@ -161,6 +239,7 @@ function parseCodexApproval(screen: string): ParsedPrompt | null {
     responder: "codex-approval", menuLabels: rows.map((row) => row.label),
     selectedIndex: rows.findIndex((row) => row.selected), checkedOptionIndices: [], customMenuIndex: null,
     rejectWithEscapeIndex: rows.findIndex((row) => /^(?:No|Reject|Cancel|Deny)\b/i.test(row.label)),
+    ...approval,
   });
 }
 
