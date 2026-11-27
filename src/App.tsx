@@ -532,7 +532,7 @@ export function App() {
     setBrowserTab(tab);
   };
   // a web link main opened in the built-in browser (Settings → Browser for links) is shown there once main lists it
-  useBrowserLinkTabs(browserTabs !== null && filePanelAvailable && !inMode, (id) => { openBrowserTab("new"); setOpeningTab(id); });
+  useBrowserLinkTabs(browserTabs !== null && filePanelAvailable && !inMode && locked === false, (id) => { openBrowserTab("new"); setOpeningTab(id); });
   const browserShown = browserTabs !== null && filePanelAvailable && !inMode && (browserTab === "new" || shownBrowserTab !== null) && webPage === null && !(viewing !== null && fileDocked);
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen

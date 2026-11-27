@@ -21,10 +21,14 @@ export function LinkBrowserRow() {
   const builtIn = useDesktopBrowser() !== null;
   useEffect(() => {
     let current = true;
+    const since = asked.current;
     void bridge?.list().then((listed) => {
       if (!current) return;
-      saved.current = listed?.chosen ?? null;
-      setChoices(listed);
+      // a choice made while the list was on its way is newer than the one the list read
+      if (listed === null || asked.current === since) {
+        saved.current = listed?.chosen ?? null;
+        setChoices(listed);
+      } else setChoices((shown) => ({ ...listed, chosen: shown?.chosen ?? listed.chosen }));
     }).catch(() => {});
     return () => { current = false; };
   }, [bridge, builtIn]);

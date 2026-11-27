@@ -444,7 +444,8 @@ async function openInBuiltIn(address: string): Promise<void> {
   const contents = window?.webContents;
   const shown = contents && tabsShowable && serverPage(contents.mainFrame) ? contents : null;
   const id = shown ? await browser?.openLoaded(address, "mine") ?? null : null;
-  if (shown === null || id === null || shown.isDestroyed()) {
+  // the page may have stopped being able to show it (a narrower window, a lock) while it loaded
+  if (shown === null || id === null || shown.isDestroyed() || !tabsShowable || !serverPage(shown.mainFrame)) {
     if (id !== null) browser?.close(id);
     openOutside(address);
     updateLog("The built-in browser could not show a link: the system browser opened it.");
