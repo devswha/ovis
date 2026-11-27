@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -261,7 +261,6 @@ describe("/api/alerts/webhook", () => {
   });
 });
 
-let inUseNow = false;
 let mutedNow = false;
 
 describe("web push alerts reach the webhook", () => {
@@ -286,7 +285,7 @@ describe("web push alerts reach the webhook", () => {
     expect(destination.received).toHaveLength(1);
   });
 
-  it("tells the destination the alerts it chose, as push tells a device, and nothing while the app is in use", async () => {
+  it("tells the destination the alerts it chose, deferring questions while the app is in use", async () => {
     const hook = webhook();
     hook.save({ preset: "json", url: destination.url() }, "https://pc.example");
     let inUse = false;
@@ -308,8 +307,19 @@ describe("web push alerts reach the webhook", () => {
     expect(destination.received).toHaveLength(3);
 
     inUse = true;
-    await step(() => push.onStatus("w1:p1", "blocked"));
-    expect(destination.received).toHaveLength(3);
+    jest.useFakeTimers();
+    try {
+      await push.onStatus("w1:p1", "blocked");
+      jest.advanceTimersByTime(5 * 60_000 - 1);
+      await hook.settled();
+      expect(destination.received).toHaveLength(3);
+      jest.advanceTimersByTime(1);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
+    await hook.settled();
+    expect(destination.received.map((post) => JSON.parse(post.body).kind)).toEqual(["input", "done", "ended", "input"]);
   });
 
   it("still posts an exit waiting behind another post once a snapshot no longer lists its pane", async () => {
@@ -326,6 +336,34 @@ describe("web push alerts reach the webhook", () => {
     answer();
     await hook.settled();
     expect(destination.received.map((post) => JSON.parse(post.body).kind)).toEqual(["input", "ended"]);
+  });
+
+  it("drops a deferred webhook queued with the old link when its question moves and is answered", async () => {
+    const hook = webhook();
+    hook.save({ preset: "json", url: destination.url() }, undefined);
+    let inUse = false;
+    const push = createPushService({ stateDir, timing: { short: 0 }, inUse: () => inUse, webhook: hook });
+    push.seed([pane("w1:p1", "working"), pane("w1:p2", "working")]);
+    const release = destination.hold();
+    try {
+      await push.onStatus("w1:p2", "blocked");
+      await destination.posts(1);
+      inUse = true;
+      jest.useFakeTimers();
+      try {
+        await push.onStatus("w1:p1", "blocked");
+        jest.advanceTimersByTime(5 * 60_000);
+      } finally {
+        jest.useRealTimers();
+      }
+      await push.settled();
+      push.moved("w1:p1", "w2:p1", "blocked");
+      await push.onStatus("w2:p1", "working");
+    } finally {
+      release();
+    }
+    await hook.settled();
+    expect(destination.received.map((post) => JSON.parse(post.body).pane_id)).toEqual(["w1:p2"]);
   });
 
   it("does not tell a destination set after the alert arose", async () => {
@@ -347,25 +385,37 @@ describe("web push alerts reach the webhook", () => {
 
   it.each([
     ["the terminal ended", async (push: ReturnType<typeof createPushService>) => { await push.onEnded("w1:p1"); }],
-    ["it went working and blocked again", async (push: ReturnType<typeof createPushService>) => { inUseNow = true; await push.onStatus("w1:p1", "working"); await push.onStatus("w1:p1", "blocked"); await push.settled(); inUseNow = false; }],
+    ["it went working and blocked again", async (push: ReturnType<typeof createPushService>, holdNext: () => Promise<void>) => {
+      const held = holdNext();
+      await push.onStatus("w1:p1", "working");
+      await push.onStatus("w1:p1", "blocked");
+      await held;
+    }],
     ["it was muted and unmuted", async (push: ReturnType<typeof createPushService>) => { mutedNow = true; push.mutesChanged(); mutedNow = false; push.mutesChanged(); }],
   ])("drops a retry once %s", async (_name, change) => {
     destination.answer([503, 200]);
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
+    const windowChecked = Promise.withResolvers<void>();
+    let inUse = false;
     const hook = createAlertWebhook({ stateDir, loopbackHttp: true, retryDelays: [1] });
     hook.save({ preset: "json", url: destination.url(), alerts: { input: true, done: "off" } }, undefined);
-    const push = createPushService({ stateDir, timing: { short: 0, long: 0, longTurn: 0 }, inUse: () => inUseNow, muted: () => mutedNow,
+    const push = createPushService({ stateDir, timing: { short: 0, long: 0, longTurn: 0 }, inUse: () => {
+      if (inUse) windowChecked.resolve();
+      return inUse;
+    }, muted: () => mutedNow,
       webhook: { prefs: hook.prefs, wants: hook.wants, generation: hook.generation, send: (sent) => { hook.send(sent); release(); } } });
     push.seed([pane("w1:p1", "working")]);
     const answer = destination.hold();
     await push.onStatus("w1:p1", "blocked");
     await held;
     await destination.posts(1);
-    await change(push);
+    await change(push, () => { inUse = true; return windowChecked.promise; });
+    inUse = false;
     answer();
-    await push.settled();
     await hook.settled();
+    push.closed("w1:p1");
+    await push.settled();
     expect(destination.received).toHaveLength(1);
   });
 

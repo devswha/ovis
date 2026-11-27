@@ -2451,7 +2451,8 @@ export class MachineManager {
     runtime.machine.snapshot = snapshot;
     if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
-    this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
+    // A refresh that did not race the observer can recover status changes it missed while disconnected.
+    this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine), { reconcileDeferrals: settled });
   }
   private proved(runtime: Runtime, boot: string): void {
     runtime.machine.source_boot_id = boot;

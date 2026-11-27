@@ -39,10 +39,9 @@
  * waits `long`, and only one after a turn that worked `longTurn` or more is worth it,
  * unless the device asked for every finish (which then waits `short`).
  *
- * No device gets an alert while a window of the app is in use somewhere (`inUse`: a
- * connected page that is visible and has focus, which says so over its WebSocket): the
- * person is at a screen that already shows the change (#751). It is asked when an alert
- * would go out, so a window brought forward while the alert waits still holds it back.
+ * A window of the app in use (`inUse`: a connected page that is visible and has focus)
+ * holds back alerts when they would go out (#751). If a question or finish is still
+ * waiting five minutes after the status changed, it goes out even with a focused window (#4201).
  *
  * A pane on the shared mute list (`muted`, shared/preferences.ts `muted_panes`) gets no alert
  * on any device: none is scheduled for it, one already waiting is called off when the list
@@ -91,6 +90,7 @@ import { privateStateRefusal, writePrivateState } from "./private-state.ts";
 const PUSH_TTL_SECONDS = 12 * 60 * 60;
 const PUSH_TIMEOUT_MS = 10_000;
 const PROMPT_LOOKUP_MS = 3_000;
+const FOCUSED_ALERT_WAIT_MS = 5 * 60_000;
 /** The longest option label an alert's button carries: a longer one is cut by the platform, so its alert opens the pane. */
 const ACTION_LABEL_MAX = 24;
 /** The most of a prompt an alert with buttons shows whole: the lines of its body, and its length in all. A longer one gets no buttons. */
@@ -188,7 +188,7 @@ export interface PushService {
    * token, local or Tailscale sign-in pairing itself, or a device pairing again. Resolves once delivered.
    */
   devicePaired(event: DevicePairedEvent, origin?: readonly string[]): Promise<void>;
-  seed(panes: readonly HerdrPane[], machineId?: string, machineName?: string, serverId?: string): void;
+  seed(panes: readonly HerdrPane[], machineId?: string, machineName?: string, serverId?: string, options?: { reconcileDeferrals: boolean }): void;
   resync(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
   /**
    * A status the pane already had, where nothing was heard of it yet: nothing is announced, and the change after it (a
@@ -384,6 +384,7 @@ interface Scheduled {
   questionAt?: symbol;
   silenced: boolean;
   cancel: () => void;
+  cancelDeferrals: () => void;
 }
 
 export function createPushService(options: PushServiceOptions): PushService {
@@ -770,14 +771,15 @@ export function createPushService(options: PushServiceOptions): PushService {
 
   const changes = new Map<string, symbol>();
 
-  function tellWebhook(key: string, machineId: string, paneId: string, message: PushPayload, generation?: number): void {
+  function tellWebhook(key: string, machineId: string, paneId: string, message: PushPayload, generation?: number, presenceAt?: symbol): void {
     const workspace = workspaces.get(key);
     const at = epochs.get(key) ?? 0;
-    hooked.set(key, { machineId, paneId });
+    hooked.set(key, { machineId, paneId, ...(presenceAt === undefined ? {} : { deferredKind: message.kind }) });
     options.webhook?.send({
       kind: message.kind ?? "input", title: message.title, body: message.body, pane_id: paneId,
       // a terminal that ended stays ended: what changes the pane after it (closed, gone from a snapshot) does not call it off
-      current: () => (message.kind === "ended" || (epochs.get(key) ?? 0) === at) && !muted(machineId, paneId) && options.inUse?.() !== true,
+      current: () => (message.kind === "ended" || (epochs.get(key) ?? 0) === at) && !muted(machineId, paneId)
+        && (presenceAt === undefined ? options.inUse?.() !== true : changes.get(key) === presenceAt),
       ...(machineId === "local" ? { pc: pcKeys(machineId)[0] } : { machine_id: machineId }),
       ...(workspace ? { workspace_id: workspace } : {}),
       ...(generation === undefined ? {} : { generation }),
@@ -785,7 +787,7 @@ export function createPushService(options: PushServiceOptions): PushService {
   }
 
   const epochs = new Map<string, number>();
-  const hooked = new Map<string, { machineId: string; paneId: string }>();
+  const hooked = new Map<string, { machineId: string; paneId: string; deferredKind?: AlertKind }>();
   const bump = (key: string): void => { epochs.set(key, (epochs.get(key) ?? 0) + 1); };
 
   function callOff(key: string): void {
@@ -858,32 +860,61 @@ export function createPushService(options: PushServiceOptions): PushService {
     return worked === null || worked >= timing.longTurn ? timing.long : null;
   }
 
-  function schedule(key: string, machineId: string, paneId: string, groups: Map<number, PushSubscriptionRecord[]>, send: (to: PushSubscriptionRecord[], silenced: () => boolean, delay: number, pane: Scheduled) => Promise<void>, questionAt?: symbol): void {
+  function schedule(key: string, machineId: string, paneId: string, groups: Map<number, PushSubscriptionRecord[]>, send: (to: PushSubscriptionRecord[], silenced: () => boolean, delay: number, pane: Scheduled, ignorePresence: boolean) => Promise<"defer" | void>, questionAt?: symbol, presenceDeadline?: number): void {
     const cancels: Array<() => void> = [];
-    let remaining = groups.size;
+    const deferredCancels = new Set<() => void>();
+    let deferralAllowed = true;
     let open = groups.size;
     for (const [delay, to] of groups) {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      let fired = false;
+      let cancelled = false;
       const done = new Promise<void>((resolve) => {
-        timer = setTimeout(() => {
-          fired = true;
-          remaining -= 1;
-          if (remaining === 0 && waiting.get(entry.key) === entry) waiting.delete(entry.key);
-          send(to, () => entry.silenced, delay, entry).catch((error: unknown) => {
+        function cancel(): void {
+          cancelled = true;
+          if (timer === undefined) return;
+          clearTimeout(timer);
+          resolve();
+        }
+        function defer(): void {
+          if (presenceDeadline === undefined || !deferralAllowed || cancelled || entry.silenced) { resolve(); return; }
+          deferredCancels.add(cancel);
+          timer = setTimeout(() => fire(true), Math.max(0, Math.ceil(presenceDeadline - performance.now())));
+        }
+        function fire(ignorePresence: boolean): void {
+          timer = undefined;
+          deferredCancels.delete(cancel);
+          if (entry.silenced) { resolve(); return; }
+          if (presenceDeadline !== undefined && !ignorePresence && options.inUse?.()) { defer(); return; }
+          send(to, () => entry.silenced || (ignorePresence && !deferralAllowed), delay, entry, ignorePresence).then((result) => {
+            if (result === "defer") defer();
+            else resolve();
+          }, (error: unknown) => {
             console.error(`web push failed: ${error instanceof Error ? error.message : String(error)}`);
-          }).finally(resolve);
-        }, delay);
-        cancels.push(() => { if (fired) return; clearTimeout(timer); resolve(); });
+            resolve();
+          });
+        }
+        timer = setTimeout(() => fire(false), delay);
+        cancels.push(cancel);
       });
       inFlight.add(done);
       void done.finally(() => {
         inFlight.delete(done);
         open -= 1;
-        if (open === 0) unsent.delete(entry);
+        if (open === 0) {
+          if (waiting.get(entry.key) === entry) waiting.delete(entry.key);
+          unsent.delete(entry);
+        }
       });
     }
-    const entry: Scheduled = { key, machineId, paneId, ...(questionAt === undefined ? {} : { questionAt }), silenced: false, cancel: () => { for (const cancel of cancels) cancel(); } };
+    const entry: Scheduled = {
+      key, machineId, paneId, ...(questionAt === undefined ? {} : { questionAt }), silenced: false,
+      cancel: () => { for (const cancel of cancels) cancel(); },
+      cancelDeferrals: () => {
+        deferralAllowed = false;
+        for (const cancel of deferredCancels) cancel();
+        deferredCancels.clear();
+      },
+    };
     waiting.set(key, entry);
     unsent.add(entry);
   }
@@ -894,6 +925,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     const previous = lastStatus.get(key);
     lastStatus.set(key, status);
     if (previous === status) return;
+    const presenceDeadline = performance.now() + FOCUSED_ALERT_WAIT_MS;
     callOff(key);
     const busy = (value: AgentStatus | undefined): boolean => value === "working" || value === "blocked";
     if (timed && busy(status) && previous !== undefined && !busy(previous)) turnStart.set(key, now());
@@ -918,15 +950,17 @@ export function createPushService(options: PushServiceOptions): PushService {
     if (groups.size === 0) return;
     // the destination the alert arose for: one set before the timer fires was not there to be told
     const hookAt = options.webhook?.generation();
-    schedule(key, machineId, paneId, groups, async (to, silenced, delay, pane) => {
-      if (options.inUse?.() || muted(machineId, pane.paneId)) return;
+    const statusAt = changes.get(key);
+    schedule(key, machineId, paneId, groups, async (to, silenced, delay, pane, ignorePresence) => {
+      if (muted(machineId, pane.paneId) || (ignorePresence && changes.get(pane.key) !== statusAt)) return;
       // only this PC's prompts are read here, and only a question's alert carries buttons
       const reading = status === "blocked" && machineId === "local" ? readActions(pane.paneId) : Promise.resolve(null);
       const [{ title, agentKind }, answer] = await Promise.all([lookUp(pane.key, machineId, pane.paneId), reading]);
-      if (options.inUse?.() || silenced() || muted(machineId, pane.paneId)) return;
+      if (silenced() || muted(machineId, pane.paneId)) return;
       // a question whose pane changed while its prompt was read: the next asking's alert, under the same tag, holds what
       // the pane asks now, and this one's buttons must not replace it. A finish already under way still goes out
-      if (status === "blocked" && changes.get(pane.key) !== pane.questionAt) return;
+      if ((status === "blocked" || ignorePresence) && changes.get(pane.key) !== statusAt) return;
+      if (!ignorePresence && options.inUse?.()) return "defer";
       const kind: AlertKind = status === "blocked" ? blockedAlertKind(agentKind) : "done";
       // a device that dropped out meanwhile is not written to, nor one that does not want this kind
       const live = to.flatMap((subscription) => {
@@ -936,7 +970,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       const hook = delay === hookDelay && options.webhook?.wants(kind) === true;
       if (live.length === 0 && !hook) return;
       const message = statusMessage(pane.paneId, title, status, kind);
-      if (hook) tellWebhook(pane.key, machineId, pane.paneId, message, hookAt);
+      if (hook) tellWebhook(pane.key, machineId, pane.paneId, message, hookAt, ignorePresence ? statusAt : undefined);
       if (live.length === 0) return;
       const alert: PushPayload = { ...message, ...where(pane.key, machineId), tag: paneNotificationTag(pane.paneId, machineId) };
       const urgency = status === "blocked" ? "high" : "normal";
@@ -946,7 +980,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         broadcast({ ...alert, ...(answer === null ? {} : { body: answer.body, prompt_id: answer.promptId, actions: answer.actions }) }, urgency, answering, true),
         broadcast(alert, urgency, live.filter((subscription) => !answering.includes(subscription)), true),
       ]);
-    }, status === "blocked" ? changes.get(key) : undefined);
+    }, status === "blocked" ? statusAt : undefined, presenceDeadline);
   }
 
   return {
@@ -1028,7 +1062,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       await broadcast({ pane_id: null, title: "Ovis", body: `New device paired: ${event.label}`, tag: `herdr-device-paired-${event.event_id}` }, "high", others);
     },
 
-    seed(panes, machineId = "local", machineName, serverId) {
+    seed(panes, machineId = "local", machineName, serverId, seedOptions) {
       if (machineName) pcNames.set(machineId, machineName);
       if (serverId) pcIds.set(machineId, serverId);
       for (const pane of panes) {
@@ -1037,6 +1071,22 @@ export function createPushService(options: PushServiceOptions): PushService {
         workspaces.set(key, pane.workspace_id);
         if (pane.agent_kind) kinds.set(key, pane.agent_kind); else kinds.delete(key);
         if (!lastStatus.has(key)) lastStatus.set(key, pane.agent_status);
+      }
+      if (!seedOptions?.reconcileDeferrals) return;
+      const statuses = new Map(panes.map((pane) => [pane.pane_id, pane.agent_status]));
+      const stale = (paneId: string, question: boolean): boolean => {
+        const status = statuses.get(paneId);
+        return question ? status !== "blocked" : status !== "done" && status !== "idle";
+      };
+      // Snapshots can race a status frame not yet delivered. Don't take its place as the baseline
+      // or it could hide the ordinary alert; only disarm the long fallback for an older change.
+      for (const entry of unsent) {
+        if (entry.machineId === machineId && stale(entry.paneId, entry.questionAt !== undefined)) entry.cancelDeferrals();
+      }
+      for (const [key, pane] of hooked) {
+        if (pane.machineId !== machineId || pane.deferredKind === undefined || !stale(pane.paneId, pane.deferredKind !== "done")) continue;
+        bump(key);
+        hooked.delete(key);
       }
     },
 
@@ -1091,6 +1141,10 @@ export function createPushService(options: PushServiceOptions): PushService {
       const before = paneStorageId(machineId, from);
       const after = paneStorageId(machineId, to);
       if (before === after || !lastStatus.has(before)) return;
+      if (status === "working") {
+        // Preserve ordinary finish delivery on a move, but the long presence fallback requires no follow-up.
+        for (const entry of unsent) if (entry.key === before && entry.questionAt === undefined) entry.cancelDeferrals();
+      }
       const destination = lastStatus.get(after);
       if (changes.has(after) && (lastStatus.get(before) === "blocked" || destination === "blocked")) {
         // A question already reported at the new ID takes precedence over the move payload.
