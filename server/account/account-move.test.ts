@@ -172,10 +172,73 @@ test("Revoke all wins over a pending move", async () => {
   const fx = await setup({ accountFetch: async (req, fake) => route(req) === "/v1/pc/transfer" ? new Response(null, { status: 503 }) : fake.fetch(req) });
   expect((await fx.order()).status).toBe(202);
   fx.pc.devices.revokeAll();
+  expect(existsSync(fx.path)).toBe(false);
   fx.services.accountMove?.resume();
   await fx.services.accountMove?.idle();
   expect(fx.pc.devices.account()).toBeNull();
   expect(existsSync(fx.path)).toBe(false);
+});
+
+test.each(["source", "destination", "another binding"] as const)("a stale journal checks placement once: %s", async (outcome) => {
+  let checked = 0;
+  const fx = await setup({ accountFetch: async (req, fake) => {
+    if (route(req) === "/v1/pc/transfer") {
+      if (outcome !== "source") expect((await fake.fetch(req)).ok).toBe(true);
+      return new Response(null, { status: 503 });
+    }
+    if (route(req) === "/v1/pc/whereami") checked++;
+    return fake.fetch(req);
+  } });
+  expect((await fx.order()).status).toBe(202);
+  const binding = PcAccountState.open(fx.pc.stateDir);
+  expect(binding.clear("unlisted", "account")).toBe(true);
+  if (outcome === "another binding") binding.bindByService("acct_other", LISTING);
+  fx.services.accountMove?.resume();
+  await fx.services.accountMove?.idle();
+  expect(checked).toBe(1);
+  expect(existsSync(fx.path)).toBe(false);
+  expect(fx.pc.devices.standingAccountBinding()?.account ?? null).toBe(outcome === "source" ? null : outcome === "destination" ? INTO : "acct_other");
+});
+
+test("resetting the relay identity cancels a pending move immediately", async () => {
+  const fx = await setup({ accountFetch: (req, fake) => route(req) === "/v1/pc/transfer"
+    ? Promise.resolve(new Response(null, { status: 503 })) : fake.fetch(req) });
+  expect((await fx.order()).status).toBe(202);
+  const before = fx.services.relay.currentIdentity()?.server_id;
+  await fx.services.relay.resetIdentity();
+  expect(fx.services.relay.currentIdentity()?.server_id).not.toBe(before);
+  expect(existsSync(fx.path)).toBe(false);
+});
+
+test("forgetting the named account on an unbound PC discards the old journal", async () => {
+  const fx = await setup({ accountFetch: (req, fake) => route(req) === "/v1/pc/transfer"
+    ? Promise.resolve(new Response(null, { status: 503 })) : fake.fetch(req) });
+  expect((await fx.order()).status).toBe(202);
+  expect(PcAccountState.open(fx.pc.stateDir).clear("unlisted", "account")).toBe(true);
+  const response = await fx.pc.local("/api/account/relay-account", { method: "POST", body: { account: null }, headers: { "x-herdr-machine": "1" } });
+  expect(response.status).toBe(204);
+  expect(existsSync(fx.path)).toBe(false);
+});
+
+test("a delayed successful transfer cannot restore an explicitly revoked binding", async () => {
+  const transferred = deferred<void>();
+  const release = deferred<void>();
+  const fx = await setup({ accountFetch: async (req, fake) => {
+    const result = await fake.fetch(req);
+    if (route(req) === "/v1/pc/transfer") {
+      transferred.resolve();
+      await release.promise;
+    }
+    return result;
+  } });
+  const ordering = fx.order();
+  try {
+    await bounded(transferred.promise);
+    fx.pc.devices.revokeAll();
+    expect(existsSync(fx.path)).toBe(false);
+  } finally { release.resolve(); }
+  expect((await ordering).body).toMatchObject({ error: { code: "revoked" } });
+  expect(fx.pc.devices.standingAccountBinding()).toBeNull();
 });
 
 test("a pending attempt logs the error explaining why it could not finish", async () => {

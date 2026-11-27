@@ -172,6 +172,14 @@ export class AccountMove {
   async idle(): Promise<void> { await this.attempt; }
   stop(): void { this.stopped = true; this.cancelRetry?.(); }
 
+  /** An explicit local exit must win over a transfer or placement answer still on its way. */
+  discard(): void {
+    const journal = this.journal.read();
+    if (journal === "unavailable") throw new Error("The move journal could not be read");
+    if (journal !== null) this.remove(journal);
+    this.cancelRetry?.();
+  }
+
   private retry(): void {
     this.cancelRetry?.();
     this.cancelRetry = this.clock.setTimeout(() => this.resume(), RETRIES[this.retries++] ?? MAILBOX_PULL_MS);
@@ -194,15 +202,12 @@ export class AccountMove {
   private async settle(journal: MoveJournal, fresh: boolean, parsed?: JoinLine): Promise<MoveOutcome> {
     const { devices, relay, mailbox } = this.ports;
     const identity = relay.currentIdentity();
+    if (!identity) return pending;
     const initial = this.local(journal, identity);
-    if (initial !== "standing") return initial;
-    if (!identity || devices.failsClosed || this.ports.safety?.state().locked) return pending;
+    if (initial !== "standing") return initial === "stale" ? this.recoverStale(journal, identity) : initial;
+    if (devices.failsClosed || this.ports.safety?.state().locked) return pending;
     if (!fresh) {
       const where = await mailbox.whereami(identity, journal.merge_id);
-      if (devices.accountClears().some(clear => clear.bind_id === journal.from.bind_id && clear.reason === "revoke_all")) {
-        this.remove(journal);
-        return refused("revoked", "This PC's connections were revoked during the move");
-      }
       if (where?.account === journal.into) return where.listing_id === null ? pending : this.finish(journal, identity, where.listing_id);
       if (where?.account !== journal.from.account || where.merge !== "open") {
         this.remove(journal);
@@ -217,7 +222,7 @@ export class AccountMove {
     }
     const invite = parsed ?? await readJoinLine(journal.invite, { service, followsLists: false });
     const live = this.local(journal, relay.currentIdentity());
-    if (live !== "standing") return live;
+    if (live !== "standing") return live === "stale" ? this.recoverStale(journal, identity) : live;
     if (this.stopped || invite.account !== journal.into || devices.failsClosed || this.ports.safety?.state().locked) return pending;
     try {
       const answer = await mailbox.transfer(identity, journal.merge_id, invite);
@@ -233,26 +238,49 @@ export class AccountMove {
     }
   }
 
-  private local(journal: MoveJournal, identity: RelayIdentity | undefined): "standing" | MoveOutcome {
+  private local(journal: MoveJournal, identity: RelayIdentity | undefined): "standing" | "stale" | MoveOutcome {
     const { devices } = this.ports;
     const binding = devices.standingAccountBinding();
     if (this.stopped || identity === undefined) return pending;
+    if (identity.server_id !== journal.server_id || devices.accountClears().some(clear =>
+      clear.bind_id === journal.from.bind_id && (clear.reason !== "unlisted" || clear.removed_as !== undefined))) {
+      this.remove(journal);
+      return refused("revoked", "This PC's account or identity changed during the move");
+    }
+    const kept = this.journal.read();
+    if (kept === "unavailable") return pending;
+    if (!Bun.deepEquals(kept, journal, true)) return refused("revoked", "This PC's move was cancelled here");
     if (devices.failsClosed && binding === null) return pending;
-    if (binding?.account === journal.into && binding.listing_id && identity.server_id === journal.server_id
+    if (binding?.account === journal.into && binding.listing_id
       && devices.accountClears().some(clear => clear.bind_id === journal.from.bind_id && clear.merged?.merge === journal.merge_id)) {
       return this.finishCommitted(journal, binding.listing_id);
     }
-    if (identity.server_id === journal.server_id && binding?.bind_id === journal.from.bind_id) return "standing";
-    // A same-identity PC explicitly revoked here may reconcile with the service, but cannot switch.
-    return identity.server_id === journal.server_id && devices.accountClears().some(clear =>
-      clear.bind_id === journal.from.bind_id && clear.reason === "revoke_all") ? "standing" : pending;
+    return binding?.bind_id === journal.from.bind_id ? "standing" : "stale";
   }
 
-  private finish(journal: MoveJournal, identity: RelayIdentity, listing_id: string): MoveOutcome {
+  private async recoverStale(journal: MoveJournal, identity: RelayIdentity): Promise<MoveOutcome> {
+    const { devices, mailbox, relay, safety } = this.ports;
+    const where = await mailbox.whereami(identity, journal.merge_id).catch((error: unknown) => {
+      if (!(error instanceof Error)) throw error;
+      return null;
+    });
+    const state = this.local(journal, relay.currentIdentity());
+    if (state !== "standing" && state !== "stale") return state;
+    if (where?.account !== journal.into || where.listing_id === null || devices.standingAccountBinding() !== null) {
+      this.remove(journal);
+      return closed();
+    }
+    if (devices.failsClosed || safety?.state().locked) return pending;
+    switchMovedAccount(devices, journal.from, { account: journal.into, listing_id: where.listing_id, merge: journal.merge_id,
+      at: new Date().toISOString(), by: journal.by, recoverFrom: journal.from.account });
+    return this.finishCommitted(journal, where.listing_id);
+  }
+
+  private finish(journal: MoveJournal, identity: RelayIdentity, listing_id: string): MoveOutcome | Promise<MoveOutcome> {
     const { devices, relay, safety } = this.ports;
     const current = relay.currentIdentity();
     const state = this.local(journal, current);
-    if (state !== "standing") return state;
+    if (state !== "standing") return state === "stale" ? this.recoverStale(journal, identity) : state;
     if (current?.server_id !== identity.server_id || devices.failsClosed || safety?.state().locked) return pending;
     switchMovedAccount(devices, journal.from, { account: journal.into, listing_id, merge: journal.merge_id, at: new Date().toISOString(), by: journal.by });
     return this.finishCommitted(journal, listing_id);

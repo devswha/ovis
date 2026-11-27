@@ -677,17 +677,27 @@ export class PcAccountState {
   }
 
   /** Replace the standing account without a moment in which the PC has no binding. */
-  rebind(fromBindId: string, { account, listing_id, merge, by }: { readonly account: string; readonly listing_id: string; readonly merge: string | null; readonly by?: string }): void {
+  rebind(fromBindId: string, { account, listing_id, merge, by, recoverFrom }: {
+    readonly account: string; readonly listing_id: string; readonly merge: string | null; readonly by?: string; readonly recoverFrom?: string;
+  }): void {
     this.refresh();
     const binding = this.doc.binding;
-    if (binding === null || binding.bind_id !== fromBindId || binding.pending === true) {
+    const recovery = recoverFrom !== undefined && binding === null;
+    if (!recovery && (binding === null || binding.bind_id !== fromBindId || binding.pending === true)) {
       throw new AccountRebindError(`${this.path}: the binding to move no longer stands`);
     }
-    if (binding.list !== undefined) throw new PinnedOnDiskError(`${this.path}: the binding to move is pinned to a signed list`);
+    if (binding?.list !== undefined) throw new PinnedOnDiskError(`${this.path}: the binding to move is pinned to a signed list`);
+    const from = binding?.account ?? recoverFrom;
+    if (from === undefined) throw new AccountRebindError(`${this.path}: no source account for this move`);
     const clear: AccountClear = { bind_id: fromBindId, reason: "unlisted", by: MERGE_CLEAR, admits: this.doc.next_admit,
-      merged: { from: binding.account, into: account, merge, ...(by === undefined || by === "pc" ? {} : { by }) } };
-    this.write({ ...this.doc, binding: { account, listing_id, bind_id: randomBytes(16).toString("hex"), service: true },
-      clears: [...this.doc.clears, clear], first: null, others_ever: true, gen: this.doc.gen + 1 });
+      merged: { from, into: account, merge, ...(by === undefined || by === "pc" ? {} : { by }) } };
+    const bind_id = randomBytes(16).toString("hex");
+    this.write({ ...this.doc, binding: { account, listing_id, bind_id, service: true },
+      clears: mergeClears(this.doc.clears, [clear]), first: null, others_ever: true, gen: this.doc.gen + 1 }, recovery ? (doc, disk) => {
+        if (doc.binding?.bind_id !== bind_id || disk?.clears.some((held) => held.bind_id === fromBindId && (held.reason !== "unlisted" || held.removed_as !== undefined))) {
+          throw new AccountRebindError(`${this.path}: the PC left or joined another account during move recovery`);
+        }
+      } : undefined);
   }
 
   /**
@@ -822,7 +832,7 @@ export class PcAccountState {
   }
 
   /** `check`: asked of what would be written, under the lock; a throw writes nothing. */
-  private write(next: PcDoc, check?: (doc: PcDoc) => void): void {
+  private write(next: PcDoc, check?: (doc: PcDoc, disk: PcDoc | null) => void): void {
     if (this.problem !== null) throw new Error(this.strict!);
     // The provisional first-link write and its rollback both represent no committed binding.
     const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
@@ -830,8 +840,9 @@ export class PcAccountState {
     const pinned = this.doc.binding?.list;
     withFileLock(this.path, () => {
       // read, reconcile, write, as one turn: what another server of this folder wrote meanwhile is never written over
-      const doc = reconciled(this.doc, next, docOnDisk(this.path), this.path);
-      check?.(doc);
+      const disk = docOnDisk(this.path);
+      const doc = reconciled(this.doc, next, disk, this.path);
+      check?.(doc, disk);
       writePrivateState(this.path, onDisk(doc));
       this.doc = doc;
       this.seen = stamp(this.path);

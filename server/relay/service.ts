@@ -354,6 +354,7 @@ export class RelayService {
    */
   clearRelayAccount(): void {
     const before = this.passAccount(), named = this.savedRelayAccount();
+    this.services?.accountMove?.discard();
     rmSync(this.relayAccountPath(), { force: true });
     if (named !== null) this.services?.devices.endNoAccountPairing();
     if (before !== this.passAccount()) void this.passKeeper?.refresh();

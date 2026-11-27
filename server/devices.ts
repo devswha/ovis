@@ -1614,7 +1614,7 @@ export class DeviceStore {
     this.pc.rebind(fromBindId, next);
   }
 
-  private accountMove: { pending(bindId: string): boolean } | null = null;
+  private accountMove: { pending(bindId: string): boolean; discard(): void } | null = null;
   attachAccountMove(move: typeof this.accountMove): void { this.accountMove = move; }
   accountMovePending(bindId = this.standingAccountBinding()?.bind_id): boolean {
     return bindId !== undefined && this.accountMove?.pending(bindId) === true;
@@ -1748,7 +1748,11 @@ export class DeviceStore {
     if (reason === "unlisted" && by !== LIST_REMOVED && pc?.binding()?.list !== undefined) return false;
     if (reason !== "revoke_all") this.resumeRevokeAll();
     const binding = pc?.binding();
-    if (!pc || !binding || pc.strict !== null) return false;
+    const localExit = reason === "revoke_all" || reason === "identity_reset";
+    if (!pc || !binding || pc.strict !== null) {
+      if (localExit && pc?.strict == null) this.accountMove?.discard();
+      return false;
+    }
     if (reason === "unlisted" && this.accountMovePending(binding.bind_id)) return false;
     try {
       // The binding clear is the commit point: after it reaches disk no row can still name the old account.
@@ -1756,7 +1760,9 @@ export class DeviceStore {
       this.unbindingSessions = 0;
       this.endAccountRows(reason);
       this.settleMemberRows(binding.account, reason);
-      return pc.clear(reason, by, by === LIST_REMOVED ? removedAs : undefined);
+      const cleared = pc.clear(reason, by, by === LIST_REMOVED ? removedAs : undefined);
+      if (cleared && localExit) this.accountMove?.discard();
+      return cleared;
     } catch (error) {
       pc.unwritten(error, "This PC could not finish clearing its account");
       throw error;
