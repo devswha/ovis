@@ -229,6 +229,7 @@ describe("translate", () => {
     ];
     for (const provider of ["GitHub", "Google", "Apple"]) {
       for (const key of keys) expect(translate("ko", key, { provider })).toContain(`${provider}로`);
+      expect(translate("ko", "It looks like you already have an account made with {provider}.", { provider })).toEndWith(".");
     }
   });
   it.each(["ko", "ja", "zh"] as const)("uses the same %s agent state in groups, rows and alert filters", (language) => {

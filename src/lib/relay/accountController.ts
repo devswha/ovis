@@ -1070,7 +1070,7 @@ export function createAccountController(mount: RelayShellMount, view: {
       if (pending?.link !== undefined) {
         if (pending.link.fromHint !== true && pending.pc !== undefined) toPc?.(pending.pc);
         const result = await methods.finish({ ...pending, link: pending.link }, returned);
-        if (pending.link.fromHint === true && result.error !== null) {
+        if (pending.link.fromHint === true && result.error !== null && pending.pairing === undefined) {
           await refresh(true, false);
           return;
         }

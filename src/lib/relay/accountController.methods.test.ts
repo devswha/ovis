@@ -9,6 +9,7 @@ import { beginSignIn, signInReturn } from "../account/signin.ts";
 import { noDevices, SERVICE, setup as signInSetup } from "./accountController.methods.test-helpers.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { mountRelayShell } from "./shell.tsx";
+import { takePairingReturn } from "./shellState.ts";
 
 const PC = "a".repeat(32);
 async function setup(now: () => number = Date.now) {
@@ -41,7 +42,7 @@ describe("linking sign-in methods in the hosted shell", () => {
   it.each([
     { scope: "PC page", phase: "start" }, { scope: "QR pairing", phase: "start" },
     { scope: "PC page", phase: "return" }, { scope: "QR pairing", phase: "return" },
-  ] as const)("shows the method refusal without leaving the hosted shell ($scope, $phase)", async ({ scope, phase }) => {
+  ] as const)("keeps the existing sign-in and handles a method refusal ($scope, $phase)", async ({ scope, phase }) => {
     const { fake, store, before, callback } = await signInSetup();
     const { publicKey } = generateKeyPair();
     const serverId = deriveServerId(publicKey);
@@ -72,8 +73,13 @@ describe("linking sign-in methods in the hosted shell", () => {
         open: () => Promise.reject(new Error("the PC must not connect")), checkPc: async () => ({ kind: "offline", reason: "relay" }), reload: async () => {},
         accountService: SERVICE, accountStore: store, accountFetch: fake.fetch,
       });
-      expect(screen).toContain(phase === "start" ? "Finish or cancel the account merge" : "This Google account is linked to another Ovis account.");
-      expect(navigations).toEqual([]);
+      if (phase === "return" && "pairing" in context && context.pairing !== undefined) {
+        expect(navigations).toHaveLength(1);
+        expect(takePairingReturn(context.pairing.offer)).toMatchObject({ at: context.pairing.at, refused: null });
+      } else {
+        expect(screen).toContain(phase === "start" ? "Finish or cancel the account merge" : "This Google account is linked to another Ovis account.");
+        expect(navigations).toEqual([]);
+      }
       expect(await store.get("session")).toMatchObject({ account: before.account, provider: "github" });
     } finally { keepShellAccount(null); }
   });

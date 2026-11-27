@@ -105,8 +105,10 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
           try {
             installed = await addOwnSignInMethod(creation.thenAdd, session, options);
           } catch (error) {
-            if (!(error instanceof Error)) throw error;
-            refusal = { provider: creation.thenAdd, code: error instanceof AccountServiceError || error instanceof SignInError || error instanceof SignedOutError ? error.code : "failed" };
+            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
+              if (!(error instanceof Error)) throw error;
+              refusal = { provider: creation.thenAdd, code: error instanceof AccountServiceError || error instanceof SignInError || error instanceof SignedOutError ? error.code : "failed" };
+            }
           }
         }
         if (running.current === controller) running.current = null;

@@ -3,7 +3,7 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const RELAY_KO: Record<string, string> = {
-  "It looks like you already have an account made with {provider}.": "이미 {provider}로 만든 계정이 있는 것 같아요",
+  "It looks like you already have an account made with {provider}.": "이미 {provider}로 만든 계정이 있는 것 같아요.",
   "Sign in with {provider} and it will be connected to the same account.": "{provider}로 로그인하면 같은 계정에 연결돼요.",
   "Sign in with {provider} to connect": "{provider}로 로그인해서 연결",
   "Create a new account": "새 계정 만들기",

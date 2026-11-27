@@ -484,11 +484,11 @@ describe("the relay tab's Sign in in the desktop app", () => {
     expect(new URL(await opened.promise).searchParams.has("create")).toBe(false);
   });
 
-  it("keeps Add a connection open with the method refusal after signing into the PC's account", async () => {
+  it.each(["merge_open", "cancel"] as const)("keeps the existing sign-in and only displays real link refusals (%s)", async (outcome) => {
     const existing = await seedGitHub();
     pcAccountId = existing.account;
     fake.emailMatches = { google: "github" };
-    fake.methodLinkRefusal = "merge_open";
+    if (outcome === "merge_open") fake.methodLinkRefusal = outcome;
     const finished = Promise.withResolvers<ReturnType<typeof closedBySignIn>>();
     const account = { service: SERVICE, onOpen() {}, onSignedIn: (home: boolean) => finished.resolve(closedBySignIn(home, "relay")) };
     const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? existing.account : null}
@@ -501,10 +501,21 @@ describe("the relay tab's Sign in in the desktop app", () => {
     answer = Promise.withResolvers<string>();
     await act(async () => { firstAnswer.resolve(await returned(first)); });
     await press("Sign in with GitHub to connect");
-    await act(async () => { answer.resolve(await returned(await opened.promise)); await finished.promise; });
-    expect(await finished.promise).toBe("nothing");
+    await act(async () => {
+      const connectAnswer = answer;
+      const connectUrl = await opened.promise;
+      opened = Promise.withResolvers<string>();
+      answer = Promise.withResolvers<string>();
+      connectAnswer.resolve(await returned(connectUrl));
+      if (outcome === "cancel") {
+        expect(new URL(await opened.promise).searchParams.has("link_token")).toBe(true);
+        answer.reject(new DOMException("Cancelled by the user", "AbortError"));
+      }
+      await finished.promise;
+    });
+    expect(await finished.promise).toBe(outcome === "cancel" ? "settings" : "nothing");
     await page.render(tab(true));
-    expect([...alerts()].map(text)).toContain("Finish or cancel the account merge before adding another sign-in method.");
+    expect([...alerts()].map(text)).toEqual(outcome === "cancel" ? [] : ["Finish or cancel the account merge before adding another sign-in method."]);
     expect(await indexedAccountStore.get("session")).toMatchObject({ account: existing.account, provider: "github" });
   });
 
