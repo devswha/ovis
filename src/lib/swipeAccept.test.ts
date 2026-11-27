@@ -38,6 +38,11 @@ describe("trackAcceptSwipe", () => {
     expect(verdicts([[200, 300], [100, 300]])).toEqual(["accept", "accept"]);
   });
 
+  test("a forward stroke survives a stray point back at the start, but not a turn into a vertical drag", () => {
+    expect(verdicts([[130, 300], [100, 300], [150, 301]])).toEqual(["pending", "pending", "accept"]);
+    expect(verdicts([[130, 300], [135, 340], [200, 340]])).toEqual(["pending", "cancel", "cancel"]);
+  });
+
   test("a finger that rests before it moves is a long press", () => {
     expect(verdicts([[102, 301, LONG_PRESS_MS], [200, 300, LONG_PRESS_MS + 1]])).toEqual(["pending", "cancel"]);
     expect(verdicts([[120, 301, LONG_PRESS_MS], [200, 300, 5 * LONG_PRESS_MS]])).toEqual(["pending", "accept"]);

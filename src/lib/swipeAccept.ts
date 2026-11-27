@@ -47,12 +47,17 @@ export function trackAcceptSwipe(start: SwipeStart): (move: SwipeMove) => SwipeV
     if (verdict !== "pending") return verdict;
     const dx = (x - start.x) * (start.rtl ? -1 : 1);
     const dy = Math.abs(y - start.y);
-    if (touches !== 1) verdict = "cancel";
-    else if (!moved && Math.abs(dx) < SLOP_PX && dy < SLOP_PX) return verdict;
-    else if (!moved && at - start.at > LONG_PRESS_MS) verdict = "cancel";
-    else if (dx <= 0 || dx <= HORIZONTAL_RATIO * dy) verdict = "cancel";
-    else if (dx >= ACCEPT_SWIPE_PX) verdict = "accept";
-    moved = true;
+    const horizontal = dx > HORIZONTAL_RATIO * dy;
+    if (touches !== 1) return (verdict = "cancel");
+    if (!moved) {
+      if (Math.abs(dx) < SLOP_PX && dy < SLOP_PX) return verdict;
+      moved = true;
+      if (at - start.at > LONG_PRESS_MS || !horizontal) return (verdict = "cancel");
+    } else if (dy >= SLOP_PX && !horizontal) {
+      // the stroke turned into a vertical drag; a stray point back near the start is not one
+      return (verdict = "cancel");
+    }
+    if (horizontal && dx >= ACCEPT_SWIPE_PX) verdict = "accept";
     return verdict;
   };
 }
