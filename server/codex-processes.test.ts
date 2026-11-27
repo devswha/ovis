@@ -1021,6 +1021,110 @@ async function holding(ids: string[], kind: "readable" | "unreadable"): Promise<
   return child;
 }
 
+/**
+ * A Codex TUI on `--remote unix://<socket>` beside the app server its launcher started (server/approvals/codex.ts):
+ * both are children of one launcher. Its command line listens on `listen`, it binds `bound`, has `held` open and
+ * write-flocks `locked`.
+ */
+async function besideOwnServer(socket: string, listen: string, held: string[], locked: string[], bound = listen): Promise<void> {
+  const bin = mkdtempSync(join(root, "launch-"));
+  const child = Bun.spawn(["python3", "-c", [
+    "import fcntl, json, os, signal, socket, sys",
+    "codex, listen, held, locked, bound = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4]), sys.argv[5]",
+    "sleep = 'import time; time.sleep(600)'",
+    "tui = os.fork()",
+    "if tui == 0: os.execv(sys.executable, [codex, '-c', sleep])",
+    // the server tells it runs under its own command line, its files open, through a pipe its parent waits on
+    "up, told = os.pipe()",
+    "server = os.fork()",
+    "if server == 0:",
+    "  for path in held:",
+    "    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT)",
+    "    if path in locked: fcntl.flock(fd, fcntl.LOCK_EX)",
+    "    os.set_inheritable(fd, True)",
+    "  path = bound[len('unix://'):]",
+    "  os.makedirs(os.path.dirname(path), exist_ok=True)",
+    "  server_socket = socket.socket(socket.AF_UNIX)",
+    "  server_socket.bind(path)",
+    "  server_socket.listen()",
+    "  os.set_inheritable(server_socket.fileno(), True)",
+    "  os.set_inheritable(told, True)",
+    "  os.execv(sys.executable, [codex, '-c', f'import os; os.write({told}, b\"x\"); {sleep}', 'app-server', '--listen', listen])",
+    "os.read(up, 1)",
+    "def stop(*_):",
+    "  for pid in (tui, server): os.kill(pid, signal.SIGKILL)",
+    "  os._exit(0)",
+    "signal.signal(signal.SIGTERM, stop)",
+    "print(tui, flush=True)",
+    "sys.stdin.read()",
+    "stop()",
+  ].join("\n"), join(bin, "codex"), listen, JSON.stringify(held), JSON.stringify(locked), bound], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  children.push(child);
+  const tui = Number((await firstLine(child.stdout)).trim());
+  foreground = [{ pid: tui, name: "codex", argv: [join(bin, "codex"), "--remote", `unix://${socket}`] }];
+}
+
+describe("a Codex TUI on the app server its own launcher started (codex --remote)", () => {
+  const served = "01a21926-fab0-7380-8781-a54f0544e7a5";
+  const other = "01a21931-27d9-7fe2-a119-2c0d822e4809";
+  const shown = "An answer the screen still shows from before a /new.";
+  const launchIt = (name: string, test: () => Promise<void>) => it.skipIf(process.platform !== "linux")(name, test, 20_000);
+  let socket: string;
+  let rollout: string;
+  let lock: (id: string) => string;
+
+  beforeEach(() => {
+    socket = join(root, "s", "codex.sock");
+    rollout = join(home, "sessions", `rollout-2026-11-27T03-38-34-${served}.jsonl`);
+    writeFileSync(rollout, [
+      { type: "session_meta", payload: { id: served, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Say it again" } },
+      { type: "event_msg", payload: { type: "agent_message", message: shown } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'vscode')").run(served, rollout, root);
+    db.close();
+    mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+    lock = (id) => join(home, "thread-writer-locks", `${id}.lock`);
+    screen = "› Ask Codex to do anything";
+  });
+
+  launchIt("reads the one conversation the server beside it holds, with no screen evidence", async () => {
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
+    expect(await resolve()).toBe(rollout);
+  });
+
+  launchIt("takes none, not even by the screen, while the server holds another thread's lock too: a /new not written yet", async () => {
+    screen = `› Say it again\n\n• ${shown}\n\n› Ask Codex to do anything`;
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served), lock(other)], [lock(served), lock(other)]);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none when the one lock it holds is another thread's", async () => {
+    writeFileSync(lock(served), "");
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(other)], [lock(other)]);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none for a lock file the server has open but does not flock", async () => {
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], []);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none from a server that listens on another socket than the TUI's", async () => {
+    await besideOwnServer(socket, `unix://${join(root, "o", "codex.sock")}`, [rollout, lock(served)], [lock(served)]);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none from a server whose command line names the TUI's socket but that listens elsewhere", async () => {
+    // a file left at the socket's path, which no process listens on
+    mkdirSync(join(root, "s"), { recursive: true });
+    writeFileSync(socket, "");
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)], `unix://${join(root, "o", "codex.sock")}`);
+    expect(await resolve()).toBeNull();
+  });
+});
+
 function elsewhereThread(id: string, records: (string | { type: string; payload: Record<string, unknown> })[], source = "cli"): string {
   const folder = join(root, `elsewhere-${id.slice(-4)}`);
   mkdirSync(folder, { recursive: true });
@@ -1041,6 +1145,32 @@ function ownThread(records: { type: string; payload: Record<string, unknown> }[]
 const said = (type: "user_message" | "agent_message", message: string) => ({ type: "event_msg", payload: { type, message } });
 
 const heldIt = (name: string, test: () => Promise<void>) => it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(name, test, 20_000);
+
+heldIt("does not bind an argv resume outside the folder when another loaded thread gave the visible answer", async () => {
+  const launch = "01a16b22-7e1f-7072-8897-d5e46a0d5f90";
+  const picked = "01a16b22-7e1f-7072-8897-d5e46a0d5f91";
+  ownThread([]);
+  const rollout = elsewhereThread(launch, [answer]);
+  const competitor = elsewhereThread(picked, ["This conversation answered a different question before it was loaded in the picker."]);
+  foreground = [{ pid: 2147483523, argv: ["codex", "resume", launch] }];
+  screen = `• ${answer}`;
+  await loaded(launch, picked);
+  expect(await resolve()).toBe(rollout);
+  appendFileSync(competitor, `${JSON.stringify(said("agent_message", answer))}\n`);
+  expect(await resolve()).toBeNull();
+  expect(await codexOpenRollout(root, root, home)).toBeNull();
+});
+
+heldIt("does not trust tool-only output on an argv resume when the loaded set cannot be enumerated", async () => {
+  const older = "01a16b22-7e1f-7072-8897-d5e46a0d5f92";
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 0, 0, 'cli')").run(older, path + ".missing", root);
+  db.close();
+  foreground = [{ pid: 2147483523, argv: ["codex", "resume", thread] }];
+  screen = "• Ran inspect\n  └ Tool output\n\n› Ask Codex to do anything";
+  await loaded(older);
+  expect(await resolve()).toBeNull();
+});
 
 describe("a thread of another folder Codex has loaded, as a resume through the picker leaves it (#896)", () => {
   heldIt("is matched on screen while its answer shows there, with Codex's default title, and never remembered", async () => {
@@ -1166,6 +1296,27 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     screen = `  >_ OpenAI Codex (v0.164.0)\n\n• Ran printf '%s' '${otherAnswer}'\n  └ done\n\n› `;
     await loaded(other, peer);
     expect(await resolve()).toBeNull();
+  });
+
+  heldIt("takes no tool call's title, wrapped or not, for an answer another loaded conversation gave in the same words", async () => {
+    const rollout = otherFolderThread();
+    const command = "echo Deploy finished for every region and the canary plus rollback checks passed cleanly";
+    foreground = picker;
+    const titles = [`• Ran ${command.replace(" plus", "\n  plus")}`, `• Ran ${command}`];
+    const cases = titles.flatMap((title) => [`Ran ${command}`, `**Ran ${command}**`].map((said) => ({ title, said })));
+    for (const [index, { title, said }] of cases.entries()) {
+      const ran = `${title}\n  └ Deploy finished`;
+      const peer = `01a16b22-7e1f-7072-8897-dddddddd000${index}`;
+      elsewhereThread(peer, [said]);
+      const both = await loaded(other, peer);
+      screen = `  >_ OpenAI Codex (v0.164.0)\n\n${ran}\n\n› `;
+      expect({ title, said, found: await resolve() }).toEqual({ title, said, found: null });
+      // the pane's own answer beside that call still tells
+      screen = `  >_ OpenAI Codex (v0.164.0)\n\n• ${otherAnswer}\n\n${ran}\n\n› `;
+      expect({ title, said, found: await resolve() }).toEqual({ title, said, found: rollout });
+      both.kill();
+      await both.exited;
+    }
   });
 
   heldIt("weighs what another loaded conversation reasoned, long ago too", async () => {
@@ -2747,17 +2898,21 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(await resolve()).toBeNull();
   });
 
-  it("answers the thread the command line resumed, of another folder, when this folder's ended on the same answer", async () => {
+  it("requires a distinguishing screen for a cross-folder resume with the same finished exchange nearby", async () => {
     finishedRollout(path, thread, [[fencedPrompt, fenced]]);
     const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f79";
     const fileX = elsewhereThread(elsewhere, finishedRecords(fencedPrompt, fenced));
     foreground = [{ pid: 2147483523, argv: ["codex", "resume", elsewhere] }];
     screen = fencedScreen();
+    expect(await resolve()).toBeNull();
+    finishedRollout(path, thread, [["A different local prompt", "An unrelated local answer."]]);
     expect(await resolve()).toBe(fileX);
     finishedRollout(path, thread, [["thanks", "You're welcome!"]]);
     writeFileSync(fileX, `${[{ type: "session_meta", payload: { id: elsewhere, cwd: join(root, `elsewhere-${elsewhere.slice(-4)}`), source: "cli" } }, ...finishedRecords("thanks", "You're welcome!")].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     foreground = [{ pid: 2147483524, argv: ["codex", "resume", elsewhere] }];
     screen = [...header(), "› thanks", "", "", "• You're welcome!", "", footer, ...idle].join("\n");
+    expect(await resolve()).toBeNull();
+    finishedRollout(path, thread, [["A different local prompt", "An unrelated local answer."]]);
     expect(await resolve()).toBe(fileX);
   });
 
@@ -3231,6 +3386,23 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(await resolve()).toBe(path);
   });
 
+  it("keeps a whole rendered commentary bound after tools scroll it away", async () => {
+    foreground = live;
+    const reply = `**The application requirements are verified against the original posting.** ${answer}`;
+    writeRollout(path, thread, turn("t0", "Inspect the application", reply, false));
+    screen = [
+      "› Inspect the application", "", `• ${reply.replaceAll("**", "")}`, "",
+      "• Ran inspect-application", "  └ Fields checked", "",
+      "• Working (4s • esc to interrupt)", "", "› Ask Codex to do anything", "",
+      "  GPT-6-Luna low · /tmp/proj",
+    ].join("\n");
+    expect(await resolve()).toBe(path);
+    screen = "• Ran another-command\n  └ More output\n\n• Working (5s • esc to interrupt)";
+    expect(await resolve()).toBe(path);
+    screen = "";
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+  });
+
   it("leaves a long answer's binding as it was when a short turn follows: kept when the screen no longer tells", async () => {
     foreground = live;
     writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
@@ -3242,6 +3414,37 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     screen = "";
     expect(await resolve()).toBe(path);
     expect(await codexOpenRollout(root, root, home)).toBe(path);
+  });
+
+  for (const [issue, launch] of [[3725, ["/usr/bin/codex", "resume", thread]], [3491, ["/usr/bin/codex"]]] as const) {
+    it(`does not show the previous thread when a picker resume leaves no readable screen (#${issue})`, async () => {
+      foreground = [{ pid: 2147483629, argv: [...launch] }];
+      const started = spyOn(processStart, "processStartedAt").mockReturnValue(1_000_000);
+      try {
+        writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+        folderThread(otherThread, turn("b1", "Original B request", "ok"));
+        if (issue === 3491) {
+          screen = footed(["› Explain which conversation this pane shows"], [`• ${answer}`]);
+          expect(await resolve()).toBe(path);
+        }
+        title = issue === 3491 ? "Older named thread B" : null;
+        screen = "";
+        expect(await resolve()).toBeNull();
+        screen = ["• ok", "", "› Ask Codex to do anything"].join("\n");
+        expect(await resolve()).toBeNull();
+      } finally { started.mockRestore(); }
+    });
+  }
+
+  it("keeps the resumed chat when only a model-change notice is visible", async () => {
+    foreground = [{ pid: 2147483629, argv: ["/usr/bin/codex", "resume", thread] }];
+    const started = spyOn(processStart, "processStartedAt").mockReturnValue(1_000_000);
+    try {
+      writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+      folderThread(otherThread, turn("b1", "An older conversation", "ok"));
+      screen = "OpenAI Codex (v0.164.0)\n• Model changed to gpt-5\n\n› Ask Codex to do anything";
+      expect(await resolve()).toBe(path);
+    } finally { started.mockRestore(); }
   });
 
   it("drops a long answer's binding once the pane's last turn is another conversation's: it is the one the pane left", async () => {

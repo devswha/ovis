@@ -1,11 +1,12 @@
 import { type CardText, type InteractivePrompt, type InteractivePromptOption, type InteractivePromptStep } from "../../shared/protocol.ts";
 import { type CardTextKey } from "../../shared/card-text.ts";
-import { type OpenCodeFormFieldOption, type OpenCodeFormInfo } from "../opencode-service.ts";
+import { type OpenCodeFormFieldOption, type OpenCodeFormInfo, type OpenCodePermissionDecision, type OpenCodePermissionRequest } from "../opencode-service.ts";
 import { createHash } from "node:crypto";
 import type { ReaderContext } from "./registry.ts";
 import type { InteractionPlan } from "./interaction-plan.ts";
 import type { PiAskUserForm } from "../pi-ask-bridge.ts";
 import type { NativeSteps } from "./step-navigate.ts";
+import type { RecordRequest } from "./record.ts";
 
 export function onePerPass<T>(parse: (screen: string, ctx: ReaderContext) => T): (screen: string, ctx: ReaderContext) => T {
   let last: { screen: string; ctx: ReaderContext; value: T } | null = null;
@@ -102,6 +103,7 @@ type Responder =
   | "agy-question"
   | "hermes-approval"
   | "dsh-question"
+  | "kiro-approval"
   | "hermes-help"
   | "hermes-status"
   | "hermes-version"
@@ -109,7 +111,9 @@ type Responder =
   | "hermes-reload-skills"
   | "omp-submit"
   | "omp-handoff"
+  | "omp-form"
   | "opencode-question"
+  | "opencode-permission"
   | "opencode-v1-question"
   | "fallback-menu"
   | "fallback-gjc-menu"
@@ -121,6 +125,11 @@ export type ParsedPrompt = InteractivePrompt & {
   catalogChanged?: true;
   responder: Responder;
   omoQuestion?: { call: string; index: number };
+  /**
+   * An OmO question its call asks alone, and does not wait on: the key OmO files its answer under and its options' labels
+   * as OmO keeps them (trimmed, as its ask-user schema does), for an answer sent as data on the pane's control socket (omo-answer.ts).
+   */
+  omoData?: { key: string; labels: string[] };
   nativeSteps?: NativeSteps;
   openCodeForm?: {
     formId: string;
@@ -133,6 +142,8 @@ export type ParsedPrompt = InteractivePrompt & {
     revision: number;
     available: boolean;
   };
+  /** the pending request of OpenCode's permission service the card answers, and the decision each option sends */
+  openCodePermission?: { requestID: string; sessionID: string; decisions: OpenCodePermissionDecision[] };
   piAskForm?: { identity: string; index: number };
   claudeTabs?: { identity: string; index: number };
   piAskUser?: PiAskUserForm;
@@ -145,7 +156,38 @@ export type ParsedPrompt = InteractivePrompt & {
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
   ompCall?: string;
+  /** The choice group shown in an omp 19 form; rows may run past the scrolled box's edges. */
+  ompFormChoices?: OmpFormChoiceWindow;
+  /** A text or dropdown field whose position in a multi-field form isn't visible. */
+  ompFormPositionUnverified?: true;
+  /** The uniquely matched radio group in the bound omp form call, stable as the box scrolls. */
+  ompFormRadioGroup?: number;
+  /** gjc's selector: its title's rows as drawn, top to bottom, which the card splits into a question and a body (server/gjc-ask.ts) */
+  gjcTitleRows?: string[];
+  /** gjc's selector: the width of its outer border rule, when framed, for width-consistent soft-wrap checks (server/gjc-ask.ts) */
+  gjcTitleWidth?: number;
+  /** gjc: the pane's one open ask call and question index this card was bound to (server/gjc-ask.ts), rechecked before committing keys */
+  gjcCall?: string;
   claudeUltracode?: boolean | null;
+  /**
+   * the shell command of an approval dialog the approval hub binds a held request to (server/approvals/hub.ts): Claude's
+   * Bash approval, as its panel shows it between its dashed rules, and OmO's permission dialog for a shell command and
+   * the one Ovis's pi extension draws like it (dialogs/pi.ts), omp's bash approval (dialogs/omp.ts), and the command of
+   * Codex's approval of a request it asks a client on its own app server (dialogs/codex.ts), and the words of Claude's
+   * one-question dialog (kind `question`); null for a dialog the screen does not show whole
+   */
+  approvalCommand?: string | null;
+  /** which of the agent's approval dialogs it is, where it has several (server/approvals/hub.ts ApprovalDialog.kind) */
+  approvalKind?: string;
+  /**
+   * a card only while the approval hub holds a request for it, which then shows that request's command whole: an omp
+   * bash approval whose command omp cut, which two calls could draw the same
+   */
+  approvalHeldOnly?: true;
+  /** the pending request in the agent's own record whose command the card shows (dialogs/record.ts), checked again before each key */
+  record?: RecordRequest;
+  /** the JSON-RPC id of the question the pane's own Codex server waits on that the card shows (codex-question.ts) */
+  servedAsk?: string;
   lettaSearch?: string;
   lettaTab?: string;
   lettaTabs?: string[];
@@ -160,6 +202,25 @@ export type ParsedPrompt = InteractivePrompt & {
   multiSteps?: (choices: number[]) => AnswerStep[];
   rowKey?: AnswerStep | null;
 };
+
+/** A choice group as the omp 19 form draws it: its option labels (Other apart), their ticks and the row under the cursor. */
+export interface OmpFormChoices {
+  labels: string[];
+  checked: boolean[];
+  multi: boolean;
+  /** an index into `labels`, or `labels.length` on the Other row */
+  cursor: number;
+  /** the Other row, null when none shows */
+  other: { label: string; text: string; ticked: boolean } | null;
+  caption: string;
+}
+
+/** The visible rows of a choice group: more options may be above (`top`) or below (`bottom`). */
+export interface OmpFormChoiceWindow {
+  shown: OmpFormChoices;
+  top: boolean;
+  bottom: boolean;
+}
 
 export type AnswerStep = { keys?: string[]; text?: string; pick?: true };
 
@@ -299,6 +360,9 @@ function ownByIndex(words: readonly (CardWords | null)[]): Record<number, CardTe
   return found.length > 0 ? Object.fromEntries(found) : undefined;
 }
 
+/** The most of a card's body the card shows; finishPrompt cuts a longer one there. */
+export const CARD_BODY_MAX = 12_000;
+
 export function finishPrompt(
   agent: string,
   draft: PromptDraft,
@@ -329,7 +393,7 @@ export function finishPrompt(
     .slice(0, 12);
   // Hash all approval details before applying the display cap. Cursor movement
   // is excluded, but a different command, plan or option description is stale.
-  return { id, agent, ...input, body: input.body?.slice(0, 12_000) ?? null, ...(Object.keys(owned).length > 0 ? { own_text: owned } : {}), ...internal };
+  return { id, agent, ...input, body: input.body?.slice(0, CARD_BODY_MAX) ?? null, ...(Object.keys(owned).length > 0 ? { own_text: owned } : {}), ...internal };
 }
 
 export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
@@ -366,7 +430,8 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
 
 export interface OmoAsk {
   id?: string;
-  questions: { header: string; question: string; multiSelect: boolean; options: { label: string; description: string | null }[] }[];
+  /** `id`: the key OmO files this question's answer under, where its call says it (omo-questions.ts omoAskOf) */
+  questions: { id?: string; header: string; question: string; multiSelect: boolean; options: { label: string; description: string | null }[] }[];
   /** false: the call does not wait for its answer, and OmO folds it into a widget over its input box */
   wait?: boolean;
 }
@@ -562,6 +627,19 @@ export function navigationKeys(delta: number): string[] {
   return Array.from({ length: Math.abs(delta) }, () => delta > 0 ? KEY.down : KEY.up);
 }
 
+export function toggleMultiSelectKeys(count: number, selectedIndex: number, checked: readonly number[], picked: readonly number[]): { keys: string[]; cursor: number } {
+  const want = new Set(picked);
+  const have = new Set(checked);
+  let cursor = selectedIndex;
+  const keys: string[] = [];
+  for (let index = 0; index < count; index++) {
+    if (want.has(index) === have.has(index)) continue;
+    keys.push(...navigationKeys(index - cursor), KEY.space);
+    cursor = index;
+  }
+  return { keys, cursor };
+}
+
 export function sliderKeys(delta: number): string[] {
   return Array.from({ length: Math.abs(delta) }, () => delta > 0 ? KEY.right : KEY.left);
 }
@@ -582,6 +660,8 @@ export interface OpenCodePromptEntry {
   form: string | null;
   listed: OpenCodeFormInfo | null;
   available: boolean;
+  /** the permission requests the latest read listed (null: none read), so an older read finishing later shows none it no longer lists */
+  permissions?: OpenCodePermissionRequest[] | null;
   draft?: OpenCodeFormDraft;
   revision: number;
   issued: number;

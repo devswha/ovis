@@ -10,7 +10,9 @@
  */
 import { createElement, type AnchorHTMLAttributes, type MouseEvent, type ReactElement, type Ref } from "react";
 
+import { isWebLink } from "../../shared/terminal-links.ts";
 import { inMacApp, inNativeApp } from "./nativeApp.ts";
+import { safariAddress } from "./safariLinks.ts";
 
 export type ExternalLinkKind = "link" | "sign-in" | "ovis";
 
@@ -52,9 +54,7 @@ export function canReuseExternalLinkTab(): boolean {
  * PaneTerminal answer to it, so a line crafted to look like a link cannot hand the browser a
  * scheme of its own choosing (`javascript:`, `data:`, an OS handler).
  */
-export function isWebLink(uri: string): boolean {
-  return /^https?:\/\//i.test(uri);
-}
+export { isWebLink };
 
 /**
  * Makes an http(s) link opener. Each instance owns at most one reusable tab. A browser lets a page
@@ -71,6 +71,12 @@ export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
     link.click();
   };
   return (uri, reuse) => {
+    const address = safariAddress(uri);
+    if (address !== uri) {
+      newTab(address);
+      return;
+    }
+
     if (!reuse || !canReuseExternalLinkTab()) {
       newTab(uri);
       return;
@@ -124,11 +130,26 @@ type ExternalLinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "target" 
   ref?: Ref<HTMLAnchorElement>;
 };
 
+/** `href` as the page resolves it, or `href` itself where there is no page or it does not parse. */
+function resolvedHref(href: string): string {
+  if (typeof location === "undefined") return href;
+  try { return new URL(href, location.origin).href; } catch { return href; }
+}
+
 export function ExternalLink({ kind, referrer = false, href, onClick, ...props }: ExternalLinkProps): ReactElement {
   const click = (event: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);
     // only a plain click: a modified one keeps what the browser or the app does with it
-    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || href === undefined || !choosesBrowser(kind, href)) return;
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || href === undefined) return;
+    // a protocol-relative `//host/path` is another site's address too, so the Safari rule reads it resolved
+    const address = resolvedHref(href);
+    if (safariAddress(address) !== address) {
+      event.preventDefault();
+      openExternal(address, kind);
+      return;
+    }
+
+    if (!choosesBrowser(kind, href)) return;
     const browsers = linkBrowsers();
     if (!browsers) return;
     event.preventDefault();

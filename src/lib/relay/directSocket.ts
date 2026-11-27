@@ -9,11 +9,21 @@
 import { arrayBufferToBase64, base64ToArrayBuffer } from "../../../shared/vendor/paseo-e2ee/base64.ts";
 import type { RelaySocket } from "../../../shared/relay-channel.ts";
 import { isDirectCarrier } from "../../../shared/relay-mux.ts";
+import { appShell, type AppShell } from "../appShell.ts";
 import { hasNativePlugin } from "../nativeApp.ts";
 
 export const DIRECT_PLUGIN = "OvisDirect";
-/** The hosted shell's origin: the plugin answers only a main-frame page of it. */
+/** The hosted shell's origin: the plugin answers only a main-frame page of it, or of the app's own copy. */
 export const APP_ORIGIN = "https://app.ovis.sh";
+
+/**
+ * Whether this page asks the plugin at all: the hosted shell at APP_ORIGIN, or the app's own copy of the client at
+ * whatever origin its platform gives it (`capacitor://` on iOS). The plugin's own gate, which answers only the app's
+ * main frame, is the one that holds; this only spares a page it would refuse.
+ */
+export function directPageAllowed(origin: string, app: AppShell | null): boolean {
+  return app !== null || origin === APP_ORIGIN;
+}
 
 /** Whether `url` is the one address the plugin opens: a direct carrier's `/v1/ws?v=1`, nothing more. */
 export function isDirectSocketUrl(url: string): boolean {
@@ -98,7 +108,8 @@ class DirectSocket implements RelaySocket {
   private closeAsked: { code?: number; reason?: string } | undefined;
   private unacked = 0;
 
-  constructor(private readonly bridge: DirectBridge) {}
+  /** `unqueue` takes it out of the factory's wait for a place, true when it was still waiting there. */
+  constructor(private readonly bridge: DirectBridge, private readonly unqueue: () => boolean) {}
 
   opened(id: string): void {
     this.id = id;
@@ -134,6 +145,13 @@ class DirectSocket implements RelaySocket {
 
   close(code?: number, reason?: string): void {
     if (this.readyState === CLOSING || this.readyState === CLOSED) return;
+    // given up while it waited for a place: it ends here, as a WebSocket closed while connecting
+    if (this.id === undefined && this.unqueue()) {
+      this.readyState = CLOSED;
+      this.early = [];
+      queueMicrotask(() => this.onclose?.(new CloseEvent("close", { code: 1006, reason: "", wasClean: false })));
+      return;
+    }
     this.readyState = CLOSING;
     if (this.id === undefined) this.closeAsked = { ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }) };
     else this.closeNative(code, reason);
@@ -176,27 +194,46 @@ class DirectSocket implements RelaySocket {
   }
 }
 
+/** The plugin's refusal while it holds as many sockets as it opens (OvisDirectPlugin `too_many`). */
+const isTooMany = (error: unknown): boolean => typeof error === "object" && error !== null && (error as { code?: unknown }).code === "too_many";
+
 /**
  * A RelaySocket factory over `bridge`: it throws for an address that is not a direct carrier's, before
- * the plugin hears of it.
+ * the plugin hears of it. The plugin counts a socket until it reports its close (iOS until the close is done, up to
+ * 5 s), whoever asked for it: a race, a probe or a sweep. So a socket it refuses `too_many` waits here, still
+ * connecting, and is asked for again once the plugin reports a close, unless `waitForPlace` is false (a background
+ * sweep, which must not take a place ahead of a connection the user waits for). It is asked for at once when a close
+ * came while the refused ask was on its way.
  */
-export function directSocketFactory(bridge: DirectBridge): (url: string) => RelaySocket {
+export function directSocketFactory(bridge: DirectBridge): (url: string, waitForPlace?: boolean) => RelaySocket {
   const sockets = new Map<string, DirectSocket>();
   const waiting = new Map<string, DirectEvent[]>();
+  const refused: { readonly socket: DirectSocket; readonly url: string }[] = [];
   let opening = 0;
+  let closes = 0;
+  const closed = (id: string): void => {
+    sockets.delete(id);
+    closes++;
+    for (let next = refused.shift(); next; next = refused.shift()) {
+      if (next.socket.readyState !== CONNECTING) continue;
+      start(next.socket, next.url, true);
+      return;
+    }
+  };
+  const deliver = (socket: DirectSocket, id: string, event: DirectEvent): void => {
+    try { socket.event(event); } finally { if (event.type === "close") closed(id); }
+  };
   bridge.listen((event) => {
     const socket = sockets.get(event.id);
     if (socket) {
-      socket.event(event);
-      if (event.type === "close") sockets.delete(event.id);
+      deliver(socket, event.id, event);
       return;
     }
     if (opening > 0) waiting.set(event.id, [...(waiting.get(event.id) ?? []), event]);
   });
-  return (url) => {
-    if (!isDirectSocketUrl(url)) throw new TypeError("Not a direct carrier's address");
-    const socket = new DirectSocket(bridge);
+  const start = (socket: DirectSocket, url: string, waitForPlace: boolean): void => {
     opening++;
+    const closesBefore = closes;
     bridge.open(url).then((id) => {
       opening--;
       const early = waiting.get(id) ?? [];
@@ -204,20 +241,32 @@ export function directSocketFactory(bridge: DirectBridge): (url: string) => Rela
       if (opening === 0) waiting.clear();
       sockets.set(id, socket);
       socket.opened(id);
-      for (const event of early) {
-        socket.event(event);
-        if (event.type === "close") sockets.delete(id);
-      }
-    }, () => {
+      for (const event of early) deliver(socket, id, event);
+    }, (error: unknown) => {
       opening--;
       if (opening === 0) waiting.clear();
+      if (waitForPlace && isTooMany(error) && socket.readyState === CONNECTING) {
+        if (closes !== closesBefore) start(socket, url, true);
+        else refused.push({ socket, url });
+        return;
+      }
       socket.refused();
     });
+  };
+  return (url, waitForPlace = true) => {
+    if (!isDirectSocketUrl(url)) throw new TypeError("Not a direct carrier's address");
+    const socket: DirectSocket = new DirectSocket(bridge, () => {
+      const at = refused.findIndex((entry) => entry.socket === socket);
+      if (at < 0) return false;
+      refused.splice(at, 1);
+      return true;
+    });
+    start(socket, url, waitForPlace);
     return socket;
   };
 }
 
-let shared: ((url: string) => RelaySocket) | undefined;
+let shared: ((url: string, waitForPlace?: boolean) => RelaySocket) | undefined;
 let tailnet: (() => boolean) | undefined;
 
 /**
@@ -246,8 +295,8 @@ export function nativeDirectTailnet(): () => boolean {
  * the relay only: a browser, an app built before the plugin, or a page that is not the hosted
  * shell's (the plugin refuses those).
  */
-export function nativeDirectSocket(): ((url: string) => RelaySocket) | undefined {
-  if (typeof window === "undefined" || window.location.origin !== APP_ORIGIN || !hasNativePlugin(DIRECT_PLUGIN)) return undefined;
+export function nativeDirectSocket(): ((url: string, waitForPlace?: boolean) => RelaySocket) | undefined {
+  if (typeof window === "undefined" || !directPageAllowed(window.location.origin, appShell()) || !hasNativePlugin(DIRECT_PLUGIN)) return undefined;
   if (shared) return shared;
   const bridge = capacitorDirectBridge();
   if (!bridge) return undefined;

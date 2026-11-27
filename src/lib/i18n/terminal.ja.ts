@@ -9,6 +9,7 @@ export const TERMINAL_JA: Record<string, string> = {
   "Searching…": "検索中…",
   "Pane changed. Search again.": "ペインの内容が変わりました。再検索してください。",
   "Search moves the pane for every client.": "検索すると接続中の全クライアントのペイン画面が移動します。",
+  "This terminal could not be drawn. Reload the page to try again.": "このターミナルを描画できませんでした。ページを再読み込みしてもう一度お試しください。",
   "Waiting for terminal input…": "端末の入力準備中…",
   "Paused while you use another window": "別のウィンドウを使っている間は一時停止中",
   "View only while you use another window · click to type": "別のウィンドウを使っている間は表示のみ · クリックで入力",
@@ -127,4 +128,6 @@ export const TERMINAL_JA: Record<string, string> = {
   "Codex selected this: Shift+drag copies or quotes it here": "Codex が選択しました。ここでコピーや引用をするには Shift+ドラッグ",
   "Codex selected this: Option+drag copies or quotes it here": "Codex が選択しました。ここでコピーや引用をするには Option+ドラッグ",
   "Pane {index} of {count}": "ペイン {index}/{count}",
+  "Hand back": "再び任せる",
+  "Not handed back: Ovis could not reach this agent. Try again.": "任せ直せませんでした: Ovis がこのエージェントに届きませんでした。もう一度お試しください。",
 };

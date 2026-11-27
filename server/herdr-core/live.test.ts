@@ -6,7 +6,7 @@ import { HC_METHODS } from "../../scripts/hc-types.ts";
 import { corePids, stopTestCores } from "../../scripts/test-hc.ts";
 import { herdrRpc, paneMoveToNewTab, paneRead, paneSendText, ping, sessionSnapshot, tabRename, workspaceClose, workspaceCreate, workspaceRename } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
-import { CoreAttachSession } from "./attach-session.ts";
+import { CoreAttachSession, PAINT_END } from "./attach-session.ts";
 import { HcConnection } from "./connection.ts";
 import { listHcMachines } from "./machine-bridge.ts";
 import { MachineScopedConnection } from "./machine-scope.ts";
@@ -81,9 +81,9 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     hc?.close();
     // a core started with anything but the isolated env could be the user's: only this test's is stopped,
     // its holder included (read again: there was none right after the start)
-    const { stopped, killed, unproven } = bin && env ? await stopTestCores(bin, [{ env, pids }], WAIT_MS) : { stopped: [], killed: [], unproven: [] };
+    const { stopped, killed, unproven, socketsLeft } = bin && env ? await stopTestCores(bin, [{ env, pids }], WAIT_MS) : { stopped: [], killed: [], unproven: [], socketsLeft: [] };
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect({ stopped, killed, unproven }).toEqual({ stopped: bin && env ? [0] : [], killed: [], unproven: [] });
+    expect({ stopped, killed, unproven, socketsLeft }).toEqual({ stopped: bin && env ? [0] : [], killed: [], unproven: [], socketsLeft: [] });
   }, TEST_MS);
 
   it("publishes the schema hc-api.generated.ts was made from, or what the types rely on in an older hc", async () => {
@@ -170,6 +170,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
       cols: 80,
       rows: 24,
       onData: (data) => { screen += data; wake(); },
+      onPaintEnd: () => {},
       onExit: (code) => exit.resolve(code),
     });
     await until("first paint", () => screen.length > 0);
@@ -190,6 +191,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
       onClose: () => {},
     });
     let screen = "";
+    let painted: string | null = null;
     const exit = Promise.withResolvers<number | null>();
     const session = new CoreAttachSession({
       hc,
@@ -197,9 +199,13 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
       cols: 80,
       rows: 24,
       onData: (data) => { screen += data; wake(); },
+      onPaintEnd: () => { painted = screen; wake(); },
       onExit: (code) => exit.resolve(code),
     });
-    await until("first paint", () => screen.length > 0);
+    await until("first paint", () => painted !== null);
+    // the paint's end is told once its 9001 mark is in, from a real core too
+    expect(painted!.split(PAINT_END)).toHaveLength(2);
+    expect(painted!).toMatch(/\x1b\[\?9001[hl]/);
     session.resize(90, 20);
     await until("resize", () => sizes.includes('"cols":90'));
     const sized = await hc.call("terminal.get", { terminal: record.address });
@@ -379,9 +385,9 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
     // only this test's cores, each by its own isolated env, holders included. `here` goes first: while it
     // runs it keeps dialing `lab` through the --via command, and an `hc connect` there starts a core again
     // once `lab` is stopped (and, with `dir` deleted, from the hc on the PATH rather than this one)
-    const { stopped, killed, unproven } = await stopTestCores(bin!, envs.map((env, at) => ({ env, pids: pids[at] ?? [] })), WAIT_MS);
+    const { stopped, killed, unproven, socketsLeft } = await stopTestCores(bin!, envs.map((env, at) => ({ env, pids: pids[at] ?? [] })), WAIT_MS);
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect({ stopped, killed, unproven }).toEqual({ stopped: envs.map(() => 0), killed: [], unproven: [] });
+    expect({ stopped, killed, unproven, socketsLeft }).toEqual({ stopped: envs.map(() => 0), killed: [], unproven: [], socketsLeft: [] });
   }, TEST_MS);
 
   it("lists the machine, then starts, types into and reads a terminal there by its own address", async () => {

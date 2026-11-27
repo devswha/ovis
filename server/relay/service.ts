@@ -1,8 +1,9 @@
 import { MACHINE_DIRECT_CARRIER_ENABLED, MachineCodeForAccountError } from "../machine-profile.ts";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { DeviceConnection } from "../../shared/access.ts";
+import { isSignInMethod, type SignInMethod } from "../../shared/account-devices-api.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { parseRelayPass, relayPassAdmitsNewSessions } from "../../shared/relay-pass.ts";
@@ -15,6 +16,8 @@ import { writePrivateState } from "../private-state.ts";
 import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
 import { loadRelayIdentity, RelayIdentityError, rotateRelayIdentity, savedIdentityReader, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
+import { forgetListKeys } from "../account/list-keys.ts";
+import { forgetList } from "../account/list-follow.ts";
 import { SignedInSessions } from "./admissions.ts";
 import { DirectCarrier } from "./direct.ts";
 import type { DirectCarrierOptions } from "./direct.ts";
@@ -45,6 +48,18 @@ export class ResetRegistryUnavailableError extends Error {
 }
 
 /**
+ * The reset a person confirmed for a PC its account's list removed, refused: the PC is no longer the one the question
+ * was about (`identity_changed`), it is in an account again (`in_account`), or that list did not remove it (`not_removed`).
+ */
+export class ResetNotAskedError extends Error {
+  constructor(readonly code: "identity_changed" | "in_account" | "not_removed") {
+    super(code === "identity_changed" ? "This PC's relay identity is no longer the one that was to be reset."
+      : code === "in_account" ? "This PC is in an Ovis account now, so it was not reset."
+      : "That account's list did not remove this PC.");
+  }
+}
+
+/**
  * The account service is turned off on this PC (OVIS_ACCOUNT_SERVICE_URL=off), so no code is made that puts it in an
  * account: a device that pairs with one is let in only on its account's word (server/account/records.ts applyLink).
  */
@@ -63,6 +78,7 @@ export interface RelayServiceOptions {
   readonly clock?: RelayLinkOptions["clock"];
   readonly random?: RelayLinkOptions["random"];
   readonly serverVersion?: RelayLinkOptions["serverVersion"];
+  readonly minSupportedClient?: RelayLinkOptions["minSupportedClient"];
   /**
    * Regional relays to measure against `relay`. Ovis's own (shared/relay-regions.ts) when neither
    * `relay` nor OVIS_RELAY_URL names a relay; none otherwise, so a self-hosted relay stays the only one.
@@ -75,8 +91,8 @@ export interface RelayServiceOptions {
    */
   readonly pairCodeRelay?: string;
   /**
-   * Direct connections on this PC's networks while the relay is on (server/relay/direct.ts), unless
-   * turned off: the real entrypoint passes `{}`; without it (tests) nothing listens on the network.
+   * Direct connections on this PC's networks while the relay is on (server/relay/direct.ts), once
+   * turned on: the real entrypoint passes `{}`; without it (tests) nothing listens on the network.
    */
   readonly direct?: Pick<DirectCarrierOptions, "addresses" | "peerAllowed" | "preferredPort" | "refreshMs" | "advertise" | "tailnetIp" | "tailnetAddresses">;
   /** The account service a relay pass comes from (server/relay/pass.ts), or why none can be used; none is asked without it. */
@@ -174,7 +190,7 @@ export class RelayService {
   private directStarting: Promise<void> = Promise.resolve();
   /** signed-in sessions over the relay links and the direct carriers alike, against one set of limits */
   private readonly signedIn = new SignedInSessions();
-  /** whether direct connections are on, read once from `relay/direct.json`: on unless turned off */
+  /** whether direct connections are on, read once from `relay/direct.json`: off unless turned on */
   private directOn: boolean | undefined;
 
   constructor(private readonly options: RelayServiceOptions) {
@@ -203,6 +219,24 @@ export class RelayService {
     return this.link ? this.identity : this.readSavedIdentity();
   }
 
+  /**
+   * What this PC tells another PC of its owner that adds it to an account over SSH (docs/account.md, "Adding a PC over
+   * SSH"): its ID, public key, advertised relay and name, as a pairing link would carry them, and nothing secret. It opens
+   * no pairing window.
+   */
+  publicFields(): { server_id: string; public_key: string; relay: string; name?: string } | null {
+    const identity = this.currentIdentity();
+    return identity ? { server_id: identity.server_id, public_key: identity.public_key, relay: this.advertised, ...offerName() } : null;
+  }
+
+
+  /**
+   * An explicit SSH add of a PC whose relay never started (an SSH install skips onboarding): its identity, created when
+   * none is saved yet. A damaged one is never replaced (RelayIdentityError), and no pairing window opens.
+   */
+  ensureIdentity(): RelayIdentity {
+    return this.currentIdentity() ?? loadRelayIdentity(this.options.stateDir);
+  }
 
   private get advertised(): string {
     return this.regionalRelay !== null && this.regionalPhase === "online" ? this.regionalRelay : this.relay;
@@ -277,17 +311,31 @@ export class RelayService {
    * tab's QR code is made only once one is named (offer).
    */
   savedRelayAccount(): string | null {
+    return this.savedRelayNaming()?.account ?? null;
+  }
+
+  /**
+   * The account named for this PC (savedRelayAccount) read once with how the owner who named it signed in to it (GitHub,
+   * Google or Apple; null when no naming said so): the relay tab tells a person signed in to another account which way
+   * leads to this PC's.
+   */
+  savedRelayNaming(): { readonly account: string; readonly provider: SignInMethod | null } | null {
     try {
       const saved: unknown = JSON.parse(readFileSync(this.relayAccountPath(), "utf8"));
-      return isJsonObject(saved) && typeof saved.account === "string" && ACCOUNT_ID.test(saved.account) ? saved.account : null;
+      if (!isJsonObject(saved) || typeof saved.account !== "string" || !ACCOUNT_ID.test(saved.account)) return null;
+      return { account: saved.account, provider: isSignInMethod(saved.provider) ? saved.provider : null };
     } catch { return null; }
   }
 
-  /** The account a signed-in owner listed this PC under: a relay pass is asked for under it while the PC has no members. */
-  setRelayAccount(account: string): boolean {
+  /**
+   * The account a signed-in owner listed this PC under: a relay pass is asked for under it while the PC has no members.
+   * `provider`: how that owner signed in; a naming that does not say keeps the one said for the same account before.
+   */
+  setRelayAccount(account: string, provider?: SignInMethod): boolean {
     if (!ACCOUNT_ID.test(account)) return false;
-    const before = this.passAccount(), named = this.savedRelayAccount();
-    writePrivateState(this.relayAccountPath(), { account });
+    const before = this.passAccount(), saved = this.savedRelayNaming(), named = saved?.account ?? null;
+    const method = provider ?? (named === account ? saved!.provider : null);
+    writePrivateState(this.relayAccountPath(), method === null ? { account } : { account, provider: method });
     // a device that waits under the relay tab's QR code is taken only into the account named when that code was made,
     // and only while that account is the one named (records.ts look); naming another in place of the one read here also
     // ends that code and its rows at once
@@ -295,6 +343,17 @@ export class RelayService {
     const unlisted = this.passKeeper?.current() === null && this.passKeeper.refusal === "not_listed";
     if (before !== this.passAccount() || unlisted) void this.passKeeper?.refresh();
     return true;
+  }
+
+  /**
+   * Forgets the account named for this PC, as before any was (`ovis join` that ended unbound puts back what it found).
+   * A no-account code made under the one named ends, as naming another ends it.
+   */
+  clearRelayAccount(): void {
+    const before = this.passAccount(), named = this.savedRelayAccount();
+    rmSync(this.relayAccountPath(), { force: true });
+    if (named !== null) this.services?.devices.endNoAccountPairing();
+    if (before !== this.passAccount()) void this.passKeeper?.refresh();
   }
 
   /** Whether `relay` is one of Ovis's own: the only relays a pass goes to. */
@@ -359,11 +418,13 @@ export class RelayService {
 
   private directEnabled(): boolean {
     if (this.directOn === undefined) {
-      // on unless turned off; a choice that cannot be read is taken as off, so a damaged file never opens the network
+      // only a person's choice is ever written (setDirect), so no file is no choice: off, for a new install and for one
+      // that only had the old default (on). A choice that cannot be read is taken as off, so a damaged file never opens
+      // the network
       let text: string | undefined;
       try { text = readFileSync(this.directPath(), "utf8"); }
       catch (error) { if (!(isJsonObject(error) && error.code === "ENOENT")) text = ""; }
-      if (text === undefined) this.directOn = true;
+      if (text === undefined) this.directOn = false;
       else {
         let saved: unknown;
         try { saved = JSON.parse(text); } catch { saved = null; }
@@ -392,7 +453,8 @@ export class RelayService {
   private startDirect(services: RequestServices, identity: RelayIdentity): void {
     if (!this.options.direct || !this.directAvailable || this.directCarrier || !this.directEnabled()) return;
     this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn,
-      ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}) });
+      ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}),
+      ...(this.options.minSupportedClient ? { minSupportedClient: this.options.minSupportedClient } : {}) });
     this.directStarting = this.directCarrier.start();
   }
 
@@ -433,6 +495,7 @@ export class RelayService {
       const regional = new RelayLink({
         relay, identity, services, port: this.port, ...this.passOptions(relay, false),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
+        minSupportedClient: this.options.minSupportedClient,
         relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
         onState: (phase) => { if (this.regionalLink === regional) this.regionalPhase = phase; },
       });
@@ -441,6 +504,11 @@ export class RelayService {
       this.regionalPhase = "connecting";
       regional.start();
     });
+  }
+
+  /** Whether this PC's relay switch was ever set (start or stop saved it): an Ovis installed over SSH never set it. */
+  switchSet(): boolean {
+    return existsSync(join(this.options.stateDir, "relay", "state.json"));
   }
 
   /** Boot never enables a missing or damaged state file and never replaces a damaged identity. */
@@ -489,6 +557,7 @@ export class RelayService {
       const link = new RelayLink({
         relay: this.relay, identity: this.identity, services, port: this.port, ...this.passOptions(this.relay, true),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
+        minSupportedClient: this.options.minSupportedClient,
         relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
         onState: (phase, error, code) => { if (this.link === link) { this.phase = phase; this.error = error; this.errorCode = code ?? null; } },
       });
@@ -623,14 +692,28 @@ export class RelayService {
     return { window_id, url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key, relay: this.advertised, ...offerName() }, this.app) };
   }
 
-  async resetIdentity(): Promise<RelayStatus> {
+  /**
+   * `removed`: the reset a person confirmed to add a PC its account's list removed again, as a new PC. It resets the
+   * relay identity it names, of a PC that list removed and that is in no account, and nothing else: asked first, and
+   * again in the turn that resets, with no wait in between (ResetNotAskedError).
+   */
+  async resetIdentity(removed?: { readonly account: string; readonly server_id: string }): Promise<RelayStatus> {
     const services = this.services;
     if (!services || this.shuttingDown) throw new Error("Relay service is not available.");
     if (services.serveOnly) { this.blocked = "serve_only"; return this.status(); }
     // Close old admissions before revoking or replacing the key they authenticated against.
     if (services.devices.error !== null) throw new ResetRegistryUnavailableError();
     if (this.resetting) throw new Error("Relay identity reset is in progress.");
+    const asked = (): ResetNotAskedError | null => {
+      if (removed === undefined) return null;
+      if (this.currentIdentity()?.server_id !== removed.server_id) return new ResetNotAskedError("identity_changed");
+      const stands = services.devices.readdReset(removed.account, removed.server_id);
+      return stands === "removed" ? null : new ResetNotAskedError(stands);
+    };
+    const early = asked();
+    if (early !== null) throw early;
     this.resetting = true;
+    let refused: ResetNotAskedError | null = null;
     try {
       // a window opened for the old key's link does not carry over to the new key
       this.approvals.closeWindow();
@@ -638,12 +721,25 @@ export class RelayService {
       // under the old identity writes no member after the new one
       services.devices.endPairing();
       await this.disconnect();
-      for (const device of services.devices.list(null)) if (device.via_relay) services.devices.revoke(device.id);
-      // a new relay identity is a new PC to the account: the binding of the old one is cleared (P12, T59)
-      services.devices.clearAccountBinding("identity_reset", "pc");
-      this.identity = rotateRelayIdentity(this.options.stateDir);
-      this.blocked = null;
+      // the PC may have joined an account while its relay closed: what the reset is for is asked again in this turn
+      refused = asked();
+      if (refused === null) this.resetNow(services);
     } finally { this.resetting = false; }
-    return this.enabled ? this.start() : this.status();
+    // a reset that was not made leaves the relay as it found it: running again
+    const status = this.enabled ? this.start() : this.status();
+    if (refused !== null) throw refused;
+    return status;
+  }
+
+  /** The reset itself, in the turn that asked whether it is still wanted: nothing is awaited here. */
+  private resetNow(services: RequestServices): void {
+    for (const device of services.devices.list(null)) if (device.via_relay) services.devices.revoke(device.id);
+    // a new relay identity is a new PC to the account: the binding of the old one is cleared (P12, T59)
+    services.devices.clearAccountBinding("identity_reset", "pc");
+    this.identity = rotateRelayIdentity(this.options.stateDir);
+    // a new relay identity is a new PC to the account's signed list too: the keys of the old one go with it
+    forgetListKeys(this.options.stateDir);
+    forgetList(this.options.stateDir);
+    this.blocked = null;
   }
 }

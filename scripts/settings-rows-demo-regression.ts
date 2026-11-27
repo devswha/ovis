@@ -9,6 +9,7 @@ import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, themeSide } from "./settings-page.ts";
 import { SETTINGS, closeSettings, dialogOf, historyHolds, openPalette, openSettings } from "./settings-pages-harness.ts";
 import { DEFAULT_SETTINGS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN } from "../src/lib/settings.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // All files and HTTP traffic stay in these disposable, loopback-only apps; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
@@ -496,8 +497,8 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       // no row claims to open its PC: this page cannot tell whether the browser is paired with it at app.ovis.sh.
       assert.equal(await list.getByRole("link", { name: "Open in browser" }).count(), 0, `no account PC row has an Open of its own (${width}px, ${theme})`);
       assert.equal(await list.getByRole("link").count(), 0, `no sentence or link to the hosted app under the account's PCs (${width}px, ${theme})`);
-      // Remove only on the PC the account has not heard from for two days: one in use would be listed again
-      assert.deepEqual(await accountRows.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))), ["Remove office-mac from the list"], `only the PC not heard from is offered for removal (${width}px, ${theme})`);
+      // the rows only list: an offline PC is removed in Manage account, behind a confirm (below)
+      assert.equal(await accountRows.getByRole("button").count(), 0, `no account PC row has a button of its own (${width}px, ${theme})`);
       const fit = await list.locator(".devices-row").filter({ hasText: /home-server|office-mac/ }).evaluateAll((rows) => rows.map((row) => {
         const box = row.getBoundingClientRect();
         const inside = [...row.querySelectorAll(".devices-name, .devices-actions > *, .settings-description, .btn")].every((part) => {
@@ -513,28 +514,36 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
         await list.scrollIntoViewIfNeeded();
         await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pcs-${width}-${theme}.png`), animations: "disabled" });
       }
-      await accountRows.getByRole("button", { name: "Remove office-mac from the list", exact: true }).click();
-      const confirm = page.getByRole("alertdialog", { name: "Remove office-mac from the list?" });
-      await confirm.getByText("It revokes nothing: devices paired with office-mac keep their access", { exact: false }).waitFor();
-      await confirm.getByText("If office-mac is used again, it comes back on the list when a device of your account opens it.", { exact: false }).waitFor();
+      // Manage account offers Remove only on the PC the account has not heard from: one in use would list itself again
+      await page.locator("[data-section='account'] [data-action='manage-account']").click();
+      const sheetPcs = page.locator("[data-testid='manage-account'] [data-testid='account-pcs']");
+      await sheetPcs.locator("li").filter({ hasText: "home-server" }).waitFor();
+      assert.deepEqual(await sheetPcs.locator("[data-action='remove-pc']").evaluateAll((buttons) => buttons.map((button) => button.closest("li")?.getAttribute("data-pc-id"))), ["b".repeat(32)], `Manage account offers Remove only on the PC not heard from (${width}px, ${theme})`);
+      const removeOffice = sheetPcs.locator("li").filter({ hasText: "office-mac" }).getByRole("button", { name: "Remove", exact: true });
+      await removeOffice.click();
+      const confirm = page.getByRole("alertdialog", { name: "Remove office-mac from your account?" });
+      await confirm.getByText("Once office-mac is online again it leaves your account too", { exact: false }).waitFor();
+      const asked = await confirm.innerText();
+      assert.ok(asked.includes("add it on office-mac"), `the removal's confirm says where the PC is added again (${width}px, ${theme})`);
+      assert.ok(!asked.includes("revokes nothing"), `the removal's confirm no longer says it revokes nothing on the PC (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pc-remove-${width}-${theme}.png`), animations: "disabled" });
       await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
       await confirm.waitFor({ state: "detached" });
       assert.deepEqual(removed, [], `a cancelled removal removes nothing (${width}px, ${theme})`);
-      await accountRows.getByRole("button", { name: "Remove office-mac from the list", exact: true }).click();
-      await confirm.getByRole("button", { name: "Remove from list", exact: true }).click();
+      await removeOffice.click();
+      await confirm.getByRole("button", { name: "Remove", exact: true }).click();
       await confirm.waitFor({ state: "detached" });
+      await sheetPcs.locator("li").filter({ hasText: "office-mac" }).waitFor({ state: "detached" });
+      await sheetPcs.locator("li").filter({ hasText: "home-server" }).waitFor();
       await list.locator(".devices-row").filter({ hasText: "office-mac" }).waitFor({ state: "detached" });
-      await list.locator(".devices-row").filter({ hasText: "home-server" }).waitFor();
       assert.deepEqual(removed, ["b".repeat(32)], `the removal is the directory's, once (${width}px, ${theme})`);
-      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-section")), "devices", `the focus goes to the list's group once the removed row is gone (${width}px, ${theme})`);
-      assert.equal(await list.getByRole("button", { name: /from the list$/ }).count(), 0, `the PC in use has no Remove (${width}px, ${theme})`);
+      assert.equal(await sheetPcs.locator("[data-action='remove-pc']").count(), 0, `the PC in use has no Remove (${width}px, ${theme})`);
       assert.deepEqual(errors, []);
     } finally {
       await context.close();
     }
   }
-  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark: one link to the hosted app, Remove only on a PC not heard from, behind a confirm");
+  console.log("PASS the account's PCs are styled rows of My devices at 390 and 1280px, light and dark: no button on a row; Manage account removes only a PC not heard from, behind a confirm");
 }
 
 /**
@@ -602,7 +611,7 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
             assert.equal(await account.count(), 0, `signed out, Devices and PCs has no account card (${width}px)`);
             await add.click();
             const sheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
-            await sheet.locator('.connect-ways [data-tab="relay"]').click();
+            await sheet.locator('.connect-tabs [data-tab="relay"]').click();
             account = sheet.getByTestId("connect-signin");
             const buttons = account.locator(".account-provider");
             if (offered.length === 2) {
@@ -668,7 +677,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     const reset = (row: string) => page.getByRole("button", { name: `Restore defaults: ${row}`, exact: true });
     await page.goto(`${url}?settings=appearance`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     const mode = page.getByRole("group", { name: "Theme", exact: true });
     await mode.getByRole("button", { name: "Light", exact: true }).click();
     await page.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
@@ -695,7 +704,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     await custom.waitFor({ state: "detached" });
     assert.equal(await uiFont.inputValue(), "default", "the select shows Default once the font is put back");
     await page.goto(`${url}?settings=appearance`);
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     assert.equal(await page.getByLabel("Interface font", { exact: true }).inputValue(), "default", "the font put back stays put back after a reload");
 
     const dark = themeSide(page, "dark");
@@ -734,7 +743,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
   const appearance = async (page: Page, query = ""): Promise<void> => {
     await page.goto(`${url}?settings=appearance${query}`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
   };
 
   const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
@@ -1127,6 +1136,7 @@ try {
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   const devUrl = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/dev/`;
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       await dialogSearch(browser, url);

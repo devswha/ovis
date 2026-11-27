@@ -38,13 +38,14 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
   (once an update is downloaded, see [Updates](#updates)), Quit Ovis. Closing the window keeps Ovis running in the tray; Quit stops the server.
   On a Linux desktop without a tray (GNOME without an AppIndicator extension), starting the app
   again shows the window: only one copy runs.
-- **Keep Computer Awake** (tray, off by default): **While an Agent Is Working** holds off system sleep
+- **Keep Computer Awake** (tray, on while plugged in by default): **While an Agent Is Working** holds off system sleep
   while any of this PC's agents works, so phones and browsers keep reaching it; the display may still
   turn off (`powerSaveBlocker` with `prevent-app-suspension`). On battery only with **Also on
   Battery**. While it holds, the tray's menu and tooltip say so and how many agents work; it lets go
   within a few seconds of the last one stopping. The server says how many work in
   `desktop-activity.json` in its state folder (`server/desktop-activity.ts`); the choice is kept in
-  `<user data>/awake.json`.
+  `<user data>/awake.json`. Until the user changes either item it holds on power only; a choice the
+  user saved, off included, stays.
 - **Links**: the server's own pages may open more Ovis windows; any other address opens in the
   default browser. A blank window a page opens for a sign-in sends its address to the default
   browser and closes. Only the microphone (dictation, never the camera), the clipboard,
@@ -186,9 +187,16 @@ A downloaded update says so, in three places:
   may be what a server that cannot start needs. A window a page opens has no line.
 - **Restart to Update** in the tray, as long as the update waits.
 
-The line is drawn by the pages, from what the app's preload tells them (`ovisUpdate`): the
-downloaded version and whether its line was closed. Only the connection screen and the server's
-own pages are answered.
+**Settings → About** in the app's window shows the app's own version on the Ovis row, with
+**Check for updates**: it checks now, the same check the hourly one runs (one at a time), and
+says how it goes there: checking, up to date, the version it downloads and how far, then
+**Restart to Update** once the app holds it, or the error in one line. A build that does not
+update itself says so instead. A browser on the app's server keeps the sentence that updates come
+with the app.
+
+The line and About's row are drawn by the pages, from what the app's preload tells them
+(`ovisUpdate`): the downloaded version and whether its line was closed, and the app's version and
+where its check stands. Only the connection screen and the server's own pages are answered.
 
 On Linux the AppImage replaces itself, so one kept in a folder the user cannot write (under
 `/opt`, say) does not update itself: the log says why its updates are off. A .deb install
@@ -221,8 +229,15 @@ with its production packages into `stage/`. Each build checks the cached downloa
 pins again and unpacks them afresh. It also adds the release's Rust PTY host
 (`scripts/pty-sidecar.ts install`, checked against the release manifest) when the release named
 by `package.json` was built from this checkout's PTY host sources, as on a release tag; otherwise
-the server uses Node for the few things that need a PTY host of its own, where the PC has Node. `bun run start` then runs the app from `stage/`
+the app has none, and a sign-in from Settings offers a terminal tab instead of a private one (its terminals run in hc either way; the app carries no Node or node-pty). `bun run start` then runs the app from `stage/`
 without packaging it. Nothing downloaded is committed.
+
+On macOS, run `OVIS_BUILD_STAGING=1 bun run dist` for a staging preview. If you stage and package
+separately, set `OVIS_BUILD_STAGING=1` on the `package` step. The packaged app opens the staging
+account service and relay without a launcher script. Its default home is `~/.ost` and its profile
+is `~/.ost/app`. If the core socket path would be too long, both move under `/tmp/ost-<uid>`.
+Environment overrides and `--user-data-dir` still take precedence. The login `HOME` by itself
+is not a home override. Packaging without the switch leaves out the staging marker.
 
 To try it without touching your own hc core or Ovis state, give it a fresh user data folder and hc
 session:
