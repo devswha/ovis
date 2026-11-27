@@ -286,7 +286,11 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
   const finishCase = process.env["SIDEBAR_FINISH_CASE"];
   if (!finishCase || finishCase === "announcements") {
     await withPage(browser, { alertsOn: false }, async (page) => {
-      await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 99), panes.api);
+      await page.evaluate(async ({ api, flaky }) => {
+        await window.sidebarFixture.split(flaky, api);
+        await window.sidebarFixture.finish(api, "working", 99);
+        await window.sidebarFixture.finish(flaky, "working", 199);
+      }, panes);
       await page.goto(`${url}?pane=${encodeURIComponent(panes.omp)}`);
       const log = page.getByRole("log");
       await log.waitFor();
@@ -331,13 +335,19 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
         await window.sidebarFixture.finish(other, "done", 100);
         await window.sidebarFixture.finish(other, "done", 100);
       }, { open: panes.omp, other: panes.api });
-      await background.getByText("Claude finished in checkout-api", { exact: true }).waitFor({ state: "attached" });
+      const apiDone = "Idempotent payments finished in checkout-api";
+      const apiInput = "Idempotent payments needs input in checkout-api";
+      const flakyDone = "Fix the flaky retry test finished in checkout-api";
+      await background.getByText(apiDone, { exact: true }).waitFor({ state: "attached", timeout: 5000 });
       await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.api);
       await waitStatus(page, API, "working");
       await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 100), panes.api);
       await waitStatus(page, API, "done");
       await page.evaluate((id) => window.sidebarFixture.finish(id, "blocked", 100), panes.api);
-      await background.getByText("Claude needs input in checkout-api", { exact: true }).waitFor({ state: "attached" });
+      await background.getByText(apiInput, { exact: true }).waitFor({ state: "attached" });
+      // A second Claude pane in the same workspace must name its own task.
+      await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 200), panes.flaky);
+      await background.getByText(flakyDone, { exact: true }).waitFor({ state: "attached" });
       const recovered = reply(2, "Reply after a failed read");
       await page.evaluate((id) => window.sidebarFixture.block(id, "failed"), panes.omp);
       await update([old, next, recovered], "idle", "failed");
@@ -345,7 +355,7 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
       await page.evaluate(() => window.sidebarFixture.unblock());
       await update([old, next, recovered], "idle", "recovered");
       await chat.getByText("Reply after a failed read", { exact: true }).waitFor({ state: "attached" });
-      assert.deepEqual(await changes.jsonValue(), ["New answer", "Claude finished in checkout-api", "Claude needs input in checkout-api", "Reply after a failed read"]);
+      assert.deepEqual(await changes.jsonValue(), ["New answer", apiDone, apiInput, flakyDone, "Reply after a failed read"]);
 
       await agent(page, API).locator(".agent-select").click();
       await log.locator(".chat-turn").first().waitFor();
@@ -367,7 +377,7 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
         ] };
         await page.evaluate(({ id, first }) => window.sidebarFixture.conversation(id, first), { id: panes.omp, first });
         await page.evaluate((id) => window.sidebarFixture.frame({ type: "conversation-changed", pane_id: id, signature: "first-finish" }), panes.omp);
-        await page.getByText("First completed answer", { exact: true }).waitFor();
+        await page.getByRole("log").getByText("First completed answer", { exact: true }).waitFor();
         await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 101), panes.omp);
         await waitStatus(page, INFRA, "idle");
         const count = await page.evaluate((id) => window.sidebarFixture.reads[id] ?? 0, panes.omp);
@@ -384,7 +394,7 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
           window.sidebarFixture.conversation(id, second);
           window.sidebarFixture.frame({ type: "conversation-changed", pane_id: id, signature: "second-finish" });
         }, { id: panes.omp, second });
-        await page.getByText("Second completed answer", { exact: true }).waitFor();
+        await page.getByRole("log").getByText("Second completed answer", { exact: true }).waitFor();
         await waitStatus(page, INFRA, "idle");
       });
       console.log(`PASS ${source}: finish identity rejects the previous answer and accepts the new answer past notices`);
@@ -525,7 +535,8 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
       ] };
       await page.evaluate(({ id, pending }) => window.sidebarFixture.conversation(id, pending), { id: panes.omp, pending });
       await page.evaluate((id) => window.sidebarFixture.finish(id, "working", 100), panes.omp);
-      await page.getByText("Still working", { exact: true }).waitFor({ state: "attached" });
+      const log = page.getByRole("log");
+      await log.getByText("Still working", { exact: true }).waitFor({ state: "attached" });
       const before = await page.evaluate((id) => window.sidebarFixture.reads[id] ?? 0, panes.omp);
       await page.evaluate((id) => window.sidebarFixture.finish(id, "done", 101), panes.omp);
       await page.waitForFunction(({ id, before }) => (window.sidebarFixture.reads[id] ?? 0) > before, { id: panes.omp, before });
@@ -538,7 +549,7 @@ await withDemoBrowser({ tempPrefix: "herdr-sidebar-activity-demo-", afterTranspo
         window.sidebarFixture.conversation(id, finished);
         window.sidebarFixture.frame({ type: "conversation-changed", pane_id: id, signature: "final-answer" });
       }, { id: panes.omp, finished });
-      await page.getByText("Final answer arrived", { exact: true }).waitFor();
+      await log.getByText("Final answer arrived", { exact: true }).waitFor();
       await waitStatus(page, INFRA, "idle");
     });
     console.log("PASS hook-driven DONE waits for transcript final-answer evidence");

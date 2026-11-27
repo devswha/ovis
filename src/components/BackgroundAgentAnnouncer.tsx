@@ -6,6 +6,7 @@ import { useT } from "../lib/i18n.ts";
 import { shownStatus } from "../lib/sidebarOrder.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { usePageVisible } from "../lib/visibility.ts";
+import { alertPaneTitle } from "./Sidebar.tsx";
 
 type PaneState = { readonly status: AgentStatus | undefined; readonly epoch: string | undefined; readonly lastDone: number };
 
@@ -39,8 +40,10 @@ export function BackgroundAgentAnnouncer({ machines, openMachineId, openPaneId }
         const newFinish = finish > lastDone && lastDone > 0;
         if (before.status === status && !newFinish) continue;
         const workspace = workspaces.find((row) => row.workspace_id === pane.workspace_id)?.label || pane.workspace_id;
+        // Name the pane as its alert does, so two agents of one kind in a workspace stay apart.
+        const title = alertPaneTitle(pane);
         lines.push(t(status === "blocked" ? "{agent} needs input in {workspace}" : "{agent} finished in {workspace}", {
-          agent: agentDisplayLabel(pane.agent), workspace,
+          agent: title === pane.pane_id ? agentDisplayLabel(pane.agent) : title, workspace,
         }));
       }
     }
