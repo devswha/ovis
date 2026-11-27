@@ -66,14 +66,21 @@ export class AccountMove {
     const pc = relay.publicFields();
     // a move under way is finished, or given up, by the journal it wrote: what stands now is the journal's to judge
     if (held !== null) {
-      if (stage === "prepare" && !this.committed(held) && pc && binding?.bind_id === held.from.bind_id && pc.server_id === held.server_id) return { state: "prepare", pc };
-      return this.run(held);
+      if (stage === "prepare" && !this.committed(held) && pc && binding?.bind_id === held.from.bind_id && pc.server_id === held.server_id) {
+        void this.run(held);
+        return { state: "prepare", pc };
+      }
+      // the window's own ask after its admit: an attempt that looked before the admission was there looks again
+      return this.run(held, stage === undefined);
     }
     if (binding?.account === into) return moved(into);
     if (!binding) return refuse("not_in_account", "This PC is not in an account");
     if (binding.list || devices.listFollowed() || devices.listRemovedFrom(into)) return listAccount();
     if (this.ports.safety?.state().locked) return refuse("locked", "Unlock this PC on its own screen first");
     if (devices.failsClosed || binding.pending || holds.enrolling() || devices.revokeAllError || mailbox.serviceOff() || !pc) return unavailable();
+    // the window's ask after a move given up meanwhile (by a retry of the server's own) answers how it ended
+    const ended = this.journal.aborted();
+    if (stage === undefined && ended !== null && ended.answer.account === into && ended.from === binding.account) return ended.answer;
     if (stage !== "prepare") return refuse("move_not_started", "Start moving this PC from its own window first");
     try {
       const started = this.journal.begin({ v: 1, id: randomBytes(16).toString("hex"), server_id: pc.server_id, from: { account: binding.account, bind_id: binding.bind_id },
@@ -81,6 +88,10 @@ export class AccountMove {
       if (typeof started === "string" || started === null) return unavailable();
       if (started.into !== into) return refuse("move_in_progress", "This PC is already moving to a different account");
       if (started.from.bind_id !== binding.bind_id || started.server_id !== pc.server_id) return this.run(started);
+      // from the journal on the move advances by itself: it takes the admission as soon as the window's admit makes it,
+      // whether or not the window asks again (until then each attempt answers sign_in, and is asked again)
+      this.retries = 0;
+      void this.run(started);
       return { state: "prepare", pc };
     } catch (error) { return this.failed(error, unavailable()); }
   }
@@ -113,8 +124,12 @@ export class AccountMove {
     return result;
   }
 
-  private run(intent: MoveJournal): Promise<MoveOutcome> {
-    if (this.attempt?.id === intent.id) return this.attempt.result;
+  /** `again`: an attempt already out that ends at sign_in (it looked before an admission was made) is followed by another. */
+  private run(intent: MoveJournal, again = false): Promise<MoveOutcome> {
+    const running = this.attempt;
+    if (running?.id === intent.id) {
+      return again ? running.result.then(outcome => "state" in outcome && outcome.state === "sign_in" && !this.stopped ? this.run(intent) : outcome) : running.result;
+    }
     clearTimeout(this.timer);
     this.timer = undefined;
     let wait = 0;

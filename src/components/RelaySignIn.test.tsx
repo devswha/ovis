@@ -447,6 +447,8 @@ describe("the relay tab's Sign in in the desktop app", () => {
   let moveRequest: (body: AccountMoveRequest) => Response | Promise<Response>;
   /** what this PC says of its move (GET /api/account/move) */
   let moveStatus: AccountMoveStatus;
+  /** the PC cannot say how its move stands */
+  let moveStatusFails: boolean;
   let refuseAdmit: boolean;
 
   beforeEach(() => {
@@ -454,6 +456,7 @@ describe("the relay tab's Sign in in the desktop app", () => {
     refuseAdmit = false;
     moveRequest = () => Response.json({}, { status: 404 });
     moveStatus = { into: null };
+    moveStatusFails = false;
     fake = new FakeAccountService();
     fake.offerLinkPage(["google"]);
     opened = Promise.withResolvers<string>();
@@ -468,7 +471,8 @@ describe("the relay tab's Sign in in the desktop app", () => {
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7317");
       if (url.pathname === "/api/account/status") return Response.json({ account: pcAccountId, unlinked: [] });
-      if (url.pathname === "/api/account/move") return typeof init?.body === "string" ? moveRequest(JSON.parse(init.body)) : Response.json(moveStatus);
+      if (url.pathname === "/api/account/move") return typeof init?.body === "string" ? moveRequest(JSON.parse(init.body))
+        : moveStatusFails ? Response.json({ error: { code: "busy", message: "Try again" } }, { status: 503 }) : Response.json(moveStatus);
       if (url.pathname === "/api/account/pc-proof") return Response.json({});
       if (refuseAdmit && url.pathname.endsWith("/admit")) return Response.json({ error: { code: "pc_add_cap", message: "Add limit reached" } }, { status: 429 });
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
@@ -553,6 +557,68 @@ describe("the relay tab's Sign in in the desktop app", () => {
     await press("Continue with Google");
     answer.resolve(await returned(await opened.promise));
     expect(await home.promise).toBe(true);
+  });
+
+  /** Signs in to "acct_new" on a PC in "acct_mine", presses Move, and leaves the move pending on the PC. */
+  const pendingMove = async () => {
+    pcAccountId = "acct_mine";
+    fake.signInAs("google", "acct_new");
+    fake.opensAll = true;
+    const { publicKey } = generateKeyPair();
+    const serverId = deriveServerId(publicKey);
+    const pending = Promise.withResolvers<void>();
+    moveRequest = (body) => {
+      if (body.stage === "prepare") return Response.json({ state: "prepare", pc: { server_id: serverId, public_key: exportPublicKey(publicKey), relay: "wss://relay.test" } });
+      moveStatus = { into: "acct_new" };
+      pending.resolve();
+      return Response.json({ state: "pending" }, { status: 202 });
+    };
+    const account = { service: SERVICE, opensAll: () => true, onOpen: () => undefined, onSignedIn: () => undefined };
+    const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
+    await page.render(tab(false));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await press("Continue with Google");
+    answer.resolve(await returned(await opened.promise));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await page.render(tab(true));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    jest.useFakeTimers();
+    await press("Move this PC to this account");
+    await act(async () => { await pending.promise; });
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    expect(buttons()).toContain("Cancel");
+  };
+  const nextRead = async () => {
+    await act(async () => { jest.advanceTimersByTime(MOVE_STATUS_MS); });
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+  };
+
+  it("a pending move whose journal went without the PC in the destination is not shown as moved", async () => {
+    try {
+      await pendingMove();
+      // the PC was taken into a third account meanwhile: that move was given up, and the guide shows again
+      moveStatus = { into: null };
+      pcAccountId = "acct_other";
+      await nextRead();
+      expect(buttons()).not.toContain("Cancel");
+      expect(buttons()).toContain("Move this PC to this account");
+      expect(text(page.container)).toContain("This PC is in another account.");
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("a move status read that fails keeps the move pending and reads again", async () => {
+    try {
+      await pendingMove();
+      moveStatusFails = true;
+      await nextRead();
+      expect(buttons()).toContain("Cancel");
+      moveStatusFails = false;
+      moveStatus = { into: null };
+      pcAccountId = "acct_new";
+      await nextRead();
+      expect(buttons()).not.toContain("Cancel");
+      expect(buttons()).not.toContain("Move this PC to this account");
+    } finally { jest.useRealTimers(); }
   });
 
   it("refreshes a pending move until it settles, then offers neither Move nor Cancel", async () => {

@@ -190,7 +190,11 @@ test("plain one press still refuses a PC bound to the named account", async () =
 
 test.each(["relay_limit", "cancel"] as const)("%s keeps W and leaves the G listing visible", async (reason) => {
   const f = await fixture({ limit: reason === "relay_limit" });
-  await f.ready();
+  // the window cancels a move whose admit it could not make; a refused relay pass gives one up after its admit
+  if (reason === "cancel") {
+    expect((await f.move("prepare")).status).toBe(200);
+    expect((await f.put()).status).toBe(200);
+  } else await f.ready();
   const answer = reason === "cancel" ? await f.move("cancel") : await f.move();
   expect(answer.body).toMatchObject({ state: "aborted", account: INTO });
   expect(f.pc.devices.account()).toBe(FROM);
@@ -232,10 +236,19 @@ test("after the switch the W leave is retried whatever the destination's complet
   expect(f.keptRows()).toEqual(f.original);
 });
 
-test("a cancel after the admission was taken finishes the move instead", async () => {
+test("a prepared move whose window closed after its admit finishes without another request", async () => {
   const f = await fixture();
   await f.ready();
+  await journalGone(f.pc.stateDir);
+  expect(f.pc.devices.account()).toBe(INTO);
+  expect(f.keptRows()).toEqual(f.original);
+  expect(await f.rows(FROM)).toEqual([]);
+});
+
+test("a cancel after the admission was taken finishes the move instead", async () => {
+  const f = await fixture();
   f.faults.pass = true;
+  await f.ready();
   expect((await f.move()).status).toBe(202);
   expect(await f.move("cancel")).toMatchObject({ status: 202, body: { state: "pending" } });
   expect(f.journal()).toBe(true);
@@ -248,7 +261,8 @@ test("a cancel after the admission was taken finishes the move instead", async (
 
 test("a cancel the mailbox cannot answer leaves the move as it is", async () => {
   const f = await fixture();
-  await f.ready();
+  expect((await f.move("prepare")).status).toBe(200);
+  expect((await f.put()).status).toBe(200);
   f.faults.mailbox = true;
   expect(await f.move("cancel")).toMatchObject({ status: 202, body: { state: "pending" } });
   expect(f.journal()).toBe(true);

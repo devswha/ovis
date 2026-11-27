@@ -220,6 +220,9 @@ export class RelayPassKeeper {
         return;
       }
       if (!response.ok) return this.failed(response);
+      // a pass asked for under an account this PC left while the request was out is no pass of its own now: the one a
+      // move took stays, and a refresh asked meanwhile asks again under the account it is in
+      if (this.options.account() !== account) return;
       if (!this.take(await response.json(), identity, service)) return this.failed(null);
     } catch { this.failed(null); }
     finally { if (this.inflight === inflight) this.inflight = undefined; }

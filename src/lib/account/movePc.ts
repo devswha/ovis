@@ -13,7 +13,9 @@ let active: { readonly into: string; readonly stop: AbortController; readonly ru
 
 export async function pcMoveStatus(signal: AbortSignal): Promise<AccountMoveStatus> {
   const response = await apiFetch(path, { signal });
-  if (!response.ok) return { into: null };
+  // a PC with no move route (Step 2 off, an older Ovis) has no move; any other failed read says nothing of one
+  if (response.status === 404) return { into: null };
+  if (!response.ok) throw new Error(`PC move status returned ${response.status}`);
   return await response.json();
 }
 

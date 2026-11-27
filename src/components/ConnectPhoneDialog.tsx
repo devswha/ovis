@@ -923,9 +923,15 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
       void pcMoveStatus(read.signal).then(({ into, aborted }) => {
         if (read.signal.aborted) return;
         if (into === settling) setSettleReads((reads) => reads + 1);
-        else if (into === null) acceptMove(aborted?.account === settling ? aborted : { state: "moved", account: settling });
-        else setSettling(null);
-      }, () => { if (!read.signal.aborted) setSettleReads((reads) => reads + 1); });
+        else if (into === null && aborted?.account === settling) acceptMove(aborted);
+        else if (into !== null) setSettling(null);
+        // the journal went with no notice of giving up: moved only if the PC is in the destination now
+        else return pcAccountStatus(apiFetch).then(({ account: now }) => {
+          if (read.signal.aborted) return;
+          if (now === settling) acceptMove({ state: "moved", account: settling });
+          else { setSettling(null); setMoveAnswer(null); setPcAccount(now); }
+        });
+      }).catch(() => { if (!read.signal.aborted) setSettleReads((reads) => reads + 1); });
     }, MOVE_STATUS_MS);
     return () => { read.abort(); clearTimeout(timer); };
   }, [settling, settleReads, acceptMove]);

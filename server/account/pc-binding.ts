@@ -225,6 +225,37 @@ const LOCK_WAIT_MS = 500;
 /** The wall clock, whatever a test set `Date.now` to: a lock's age is real time. */
 const wallNow = (): number => performance.timeOrigin + performance.now();
 
+/** A lock as one look at it found it: which file it is (its inode and change time, to the nanosecond) and how old. */
+function lockSeen(lock: string): { readonly id: string; readonly age: number } | null {
+  try {
+    const stat = statSync(lock, { bigint: true });
+    return { id: `${stat.ino}-${stat.ctimeNs}`, age: wallNow() - Number(stat.mtimeMs) };
+  } catch { return null; }
+}
+
+/**
+ * Removes the stale lock `seen` found, and never another: there is no unlink of "this file only", so the one writer
+ * that makes the claim named for that very lock looks again and removes it only while it is still the one there.
+ * Nobody else removes it meanwhile (they would need the same claim), and nobody makes a lock in its place while it is
+ * there, so a lock another writer made after it is never removed. True when the lock there is no longer the one seen.
+ * A claim its writer left behind (it ended while reclaiming) is itself taken over once that old.
+ */
+function reclaimLock(lock: string, seen: string): boolean {
+  const claim = `${lock}.${seen}.reclaim`;
+  try { closeSync(bindingFs.openSync(claim, "wx", 0o600)); } catch {
+    const left = lockSeen(claim);
+    if (left !== null && left.age > LOCK_STALE_MS) { try { bindingFs.unlinkSync(claim); } catch { /* another took it over */ } }
+    return lockSeen(lock)?.id !== seen;
+  }
+  try {
+    if (lockSeen(lock)?.id !== seen) return true;
+    bindingFs.unlinkSync(lock);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  } finally { try { bindingFs.unlinkSync(claim); } catch { /* a claim left behind is taken over once old */ } }
+}
+
 /**
  * Whether the process that wrote `lock` (the pid it holds) is gone for certain: no process answers to that pid. A pid
  * that answers may be another process that reuses it, so such a lock, as one that names nobody, waits out its age.
@@ -251,11 +282,13 @@ export function withFileLock<T>(path: string, work: () => T): T {
     try { fd = bindingFs.openSync(lock, "wx", 0o600); } catch (error) {
       // nothing is written without the lock: a folder that takes no lock file ends the write with an error
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error(`${path} cannot be locked (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
-      let age = Number.POSITIVE_INFINITY;
-      try { age = wallNow() - statSync(lock).mtimeMs; } catch { /* gone meanwhile: taken at the next turn */ }
-      // a lock left by a server that ended while it wrote (its process is gone, or it is that old) is taken over. One
-      // that cannot be deleted is waited for like any other, and no longer: the wait ends in an error, never in a loop
-      if (age > LOCK_STALE_MS || lockOwnerGone(lock)) { try { bindingFs.unlinkSync(lock); continue; } catch (gone) { if ((gone as NodeJS.ErrnoException).code === "ENOENT") continue; } }
+      const seen = lockSeen(lock);
+      // gone meanwhile: taken at the next turn
+      if (seen === null) continue;
+      // a lock left by a server that ended while it wrote (its process is gone, or it is that old) is taken over, that
+      // very lock alone. One that cannot be deleted is waited for like any other, and no longer: the wait ends in an
+      // error, never in a loop
+      if ((seen.age > LOCK_STALE_MS || lockOwnerGone(lock)) && reclaimLock(lock, seen.id)) continue;
       if (performance.now() >= deadline) throw new Error(`${path} is being written by another Ovis on this PC`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       continue;
