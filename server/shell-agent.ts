@@ -1,6 +1,6 @@
 /**
  * Agents herdr's agent.start cannot launch (`herdr agent start --kind` lists its
- * kinds; omo, gjc and DeepSeek Harness's dsh-tui are not among them). The pane's shell runs the command
+ * kinds; omo, gjc, DeepSeek Harness's dsh-tui and Command Code are not among them). The pane's shell runs the command
  * instead, and the pane's process tree, not the prompt, says when it is up.
  *
  * A Windows pane differs in three ways, each live-verified on a Windows PC (herdr 0.9.3):
@@ -13,7 +13,8 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isAbsolute } from "node:path";
-import { paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
+import { HerdrError, paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
+import { isCmdProcess } from "./agent-identity.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
@@ -27,6 +28,8 @@ export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> 
   gjc: isGjcProcess,
   // dsh-tui's host process (node …/@deepseek-harness-tui/dsh-tui/lib/…/host-entry.js), behind its launcher shims
   "dsh-tui": isDshProcess,
+  // not on Windows (WINDOWS_SHELL_AGENTS), where `cmd` is cmd.exe
+  cmd: isCmdProcess,
 };
 /** The shell-started agents known to start on Windows; the others are not offered there. */
 const WINDOWS_SHELL_AGENTS = new Set(["omo", "gjc"]);
@@ -35,8 +38,12 @@ export function isShellAgentKind(kind: string): boolean { return Object.hasOwn(S
 
 /** Where this server finds `kind` on its own PATH; the pane's shell is herdr's child and may carry another PATH. */
 export function shellAgentExecutable(kind: string, platform: string = process.platform, path: string = process.env["PATH"] ?? ""): string | null {
-  if (platform === "win32" && !WINDOWS_SHELL_AGENTS.has(kind)) return null;
+  if (!shellAgentOnPlatform(kind, platform)) return null;
   return Bun.which(kind, { PATH: path });
+}
+
+function shellAgentOnPlatform(kind: string, platform: string): boolean {
+  return platform !== "win32" || WINDOWS_SHELL_AGENTS.has(kind);
 }
 
 const isExecutableFile = (path: string): boolean => {
@@ -296,7 +303,7 @@ export class ShellAgentLocator {
   }
 
   async #lookup(probe: LoginPathProbe): Promise<void> {
-    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
+    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentOnPlatform(kind, this.#platform) && shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
     const found = new Map<string, string>();
     const result = missing.length === 0 ? null : await probe(this.#abort.signal).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
     if (this.#stopped) return;
@@ -319,7 +326,7 @@ export class ShellAgentLocator {
   }
 
   async executable(kind: string): Promise<string | null> {
-    if (!isShellAgentKind(kind)) return null;
+    if (!isShellAgentKind(kind) || !shellAgentOnPlatform(kind, this.#platform)) return null;
     const own = shellAgentExecutable(kind, this.#platform, this.#servicePath());
     if (own !== null || this.#probe === null) return own;
     await this.#fresh(this.#probe);
@@ -360,6 +367,14 @@ export function cmdQuote(word: string): string {
 }
 
 export type PaneShell = "posix" | "powershell" | "cmd";
+const POSIX_SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
+const POSIX_SHELL_FLAGS = new Set(["-l", "--login", "-i", "--noprofile", "--norc"]);
+
+/** A POSIX shell that was not started to run a command or script. */
+export function plainPosixShell(argv: readonly string[]): boolean {
+  return POSIX_SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => POSIX_SHELL_FLAGS.has(arg));
+}
+
 export function paneShell(argv0: string): PaneShell {
   const name = argv0.split(/[\\/]/).pop()!.toLowerCase();
   if (name === "powershell.exe" || name === "pwsh.exe" || name === "powershell" || name === "pwsh") return "powershell";
@@ -445,6 +460,17 @@ export async function startShellAgent(kind: string, paneId: string, args: string
     }
     // through env(1), as the herdr-core adapter does: the shell's own `NAME=value` syntax differs between shells
     const env = options.env ? [shellCommandLine("posix", "/usr/bin/env", Object.entries(options.env).map(([name, value]) => `${name}=${value}`))] : [];
+    if (kind === "cmd") {
+      // Looking up the executable can run a login shell. Read the pane after that wait, just before writing.
+      const info = await processInfo(paneId);
+      const shellPid = info?.shell_pid;
+      const processes = info?.foreground_processes ?? [];
+      const [front] = processes;
+      if (shellPid == null || shellPid !== info?.foreground_process_group_id || processes.length !== 1
+        || front?.pid !== shellPid || !plainPosixShell(front.argv ?? [])) {
+        throw new HerdrError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+      }
+    }
     await paneSendText(paneId, `${[...env, command, ...args.map(quote)].join(" ")}\n`);
   } else {
     const executable = await (options.locator ?? servicePathOnly).executable(kind);
