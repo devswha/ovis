@@ -44,7 +44,10 @@ export type TaskAgent = "agy" | "grok";
 export const isTaskAgent = (agent: string | null | undefined): agent is TaskAgent => agent === "agy" || agent === "grok";
 
 interface Task { at: number; due: number | null }
-export interface SessionTasks { tasks: Map<string, Task>; promptAt: number | null }
+type GrokReminder =
+  | { kind: "prefix"; index: number | null; prefix: string; at: number }
+  | { kind: "notice"; index: number | null; tail: string };
+export interface SessionTasks { tasks: Map<string, Task>; promptAt: number | null; grokReminder?: GrokReminder }
 export interface TaskCount { running: number; turnRunning: number; promptAt: number | null; capped: boolean }
 
 type Row = Record<string, unknown>;
@@ -66,6 +69,9 @@ const AGY_SENDER = /sender=([\w-]+\/task-\d+)/g;
 const AGY_STATUS = /Task: ([\w-]+\/task-\d+)\s+Status: (\w+)/g;
 const AGY_TIMER = /Task Description: Timer: ((?:\d+[hms]\s?)+)/;
 const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000 };
+const GROK_REMINDER = "<system-reminder>";
+const GROK_REMINDER_END = "</system-reminder>";
+const GROK_ANSWER = new Set<unknown>(["agent_message_chunk", "agent_thought_chunk", "tool_call", "turn_completed"]);
 
 function timerDue(content: string, at: number): number | null {
   const timer = content.match(AGY_TIMER)?.[1];
@@ -74,8 +80,21 @@ function timerDue(content: string, at: number): number | null {
   return Number.isFinite(due) && due - at <= TIMER_LIMIT_MS ? due : null;
 }
 
+function grokNoticeChunk(state: SessionTasks, index: number | null, text: string, tail = ""): void {
+  // Indexed chunks stay in the same prompt; older logs need the closing tag as their boundary.
+  if (index !== null) {
+    state.grokReminder = { kind: "notice", index, tail: "" };
+    return;
+  }
+  const keep = GROK_REMINDER_END.length - 1;
+  if (text.includes(GROK_REMINDER_END) || (tail + text.slice(0, keep)).includes(GROK_REMINDER_END)) delete state.grokReminder;
+  else state.grokReminder = { kind: "notice", index, tail: (tail + text.slice(-keep)).slice(-keep) };
+}
+
 export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string): void {
-  if (agent === "agy" ? !/USER_INPUT|SYSTEM_MESSAGE|\/task-\d/.test(line) : !line.includes('"background_tasks"') && !line.includes('"user_message_chunk"')) return;
+  if (agent === "agy" ? !/USER_INPUT|SYSTEM_MESSAGE|\/task-\d/.test(line)
+    : !/"(?:background_tasks|user_message_chunk|rewind_marker)"/.test(line)
+      && (!state.grokReminder || !/"(?:agent_message_chunk|agent_thought_chunk|tool_call|turn_completed)"/.test(line))) return;
   let entry: Row | null;
   try { entry = row(JSON.parse(line)); } catch { return; }
   if (entry === null) return;
@@ -99,9 +118,42 @@ export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string
       const at = Date.parse(String(task?.["started_at"]));
       if (task?.["status"] === "running" && typeof task["task_id"] === "string" && Number.isFinite(at)) state.tasks.set(task["task_id"], { at, due: null });
     }
+  } else if (update?.["sessionUpdate"] === "rewind_marker") {
+    delete state.grokReminder; // The next prompt can reuse the old index.
+  } else if (GROK_ANSWER.has(update?.["sessionUpdate"])) {
+    if (state.grokReminder?.kind === "prefix") state.promptAt = state.grokReminder.at;
+    delete state.grokReminder;
   } else if (update?.["sessionUpdate"] === "user_message_chunk") {
     const text = row(update["content"])?.["text"];
-    if (typeof text === "string" && !text.trimStart().startsWith("<system-reminder>") && typeof entry["timestamp"] === "number") state.promptAt = entry["timestamp"] * 1000;
+    if (typeof text !== "string" || typeof entry["timestamp"] !== "number") return;
+    const rawIndex = row(update["_meta"])?.["promptIndex"];
+    const index = typeof rawIndex === "number" && Number.isSafeInteger(rawIndex) && rawIndex >= 0 ? rawIndex : null;
+    const at = entry["timestamp"] * 1000;
+    const previous = state.grokReminder;
+    if (previous?.kind === "notice" && previous.index === index) {
+      if (index === null) grokNoticeChunk(state, index, text, previous.tail);
+      return;
+    }
+    if (previous?.kind === "prefix" && previous.index !== index) state.promptAt = previous.at;
+    const prefix = previous?.kind === "prefix" && previous.index === index ? previous.prefix : "";
+    const part = prefix === "" ? text.trimStart() : text;
+    const remaining = GROK_REMINDER.length - prefix.length;
+    const head = prefix + part.slice(0, remaining);
+    if (head === GROK_REMINDER) {
+      const body = part.slice(remaining);
+      // A legacy one-record notice can have no closing tag. Only keep following unindexed
+      // records as body when the split opener or the opener on its own shows more is coming.
+      if (index === null && prefix === "" && body !== "") delete state.grokReminder;
+      else grokNoticeChunk(state, index, body);
+      return;
+    }
+    if (GROK_REMINDER.startsWith(head)) {
+      // Keep at most the undecided opening tag, never the notice body.
+      state.grokReminder = { kind: "prefix", index, prefix: head, at };
+      return;
+    }
+    delete state.grokReminder;
+    state.promptAt = at;
   }
 }
 
@@ -124,7 +176,10 @@ function readOn(tracked: Tracked): void {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return;
     const { ino, size } = stat;
-    if (ino !== tracked.ino || size < tracked.offset) Object.assign(tracked, { ino, offset: 0, decoder: new StringDecoder("utf8"), partial: "", promptAt: null, tasks: new Map() });
+    if (ino !== tracked.ino || size < tracked.offset) {
+      delete tracked.grokReminder;
+      Object.assign(tracked, { ino, offset: 0, decoder: new StringDecoder("utf8"), partial: "", promptAt: null, tasks: new Map() });
+    }
     const buffer = Buffer.alloc(Math.min(READ_CHUNK, Math.max(0, size - tracked.offset)));
     while (tracked.offset < size) {
       const read = readSync(fd, buffer, 0, Math.min(buffer.length, size - tracked.offset), tracked.offset);
