@@ -875,7 +875,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         if (target && !codexDisagrees(context.pane, target.threadId)) {
           const anchor = await prepareCodexReceipt(paneId, context.identity);
           const clientId = crypto.randomUUID(), at = Date.now();
+          let steerMark = mark;
           const reply = await target.send(text, clientId, async () => {
+            steerMark = pending.mark(paneId);
             const current = await pendingContext(owner, paneId, lease, identity, false, true);
             if (!current.working || current.collapsed || codexDisagrees(current.pane, target.threadId))
               throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
@@ -884,7 +886,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             authorizePending(owner, paneId, lease);
             if (row.withdrawn?.() || Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS))
               throw new HerdrError("submit_timeout", "The message expired before delivery");
-            committing(true, false, pending.mark(paneId));
+            committing(true, false, steerMark);
             wrote = true;
           });
           if (reply === "accepted") { noteSubmitted(paneId, text, command, at); return { ok: true }; }
@@ -1651,6 +1653,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (!waited) pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
             const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly, noPiSession);
+            // the lease was last checked before the awaits above (pinPiSession, a send put off): a page that left the pane
+            // meanwhile was held by holdPending before this row existed, so it is held now as that would have held it
+            try { authorizePending(client, message.pane_id, lease!); } catch { pending.hold(client, message.pane_id); }
             if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
             return { ok: true, pending: item.message };
           }).catch((error): SubmitReply => ({ ok: false, ...pendingFault(error, options.herdrFailure) })));
