@@ -620,7 +620,9 @@ export function createServer(
   readToldSessions((paneId, kind) => approvals.toldSession(paneId, kind));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
-    return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;
+    if (!entry) return null;
+    const { state, executable } = await agentDetector.probe(entry, catalogPlatformHere);
+    return { version: state.version, executable };
   }, codexServers);
   const installFolder = (binary: string): { path: string; mark: string } | null => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(binary));

@@ -53,7 +53,7 @@ export default function sessionMod(cmd: ModApi, report?: (id: string | null) => 
   let published: string | null = null;
   const publish = (sessionId: unknown) => {
     if (typeof sessionId !== "string" || !/^[\w-]{1,128}$/.test(sessionId) || sessionId === published) return;
-    if (report) { published = sessionId; report(sessionId); return; }
+    report?.(sessionId);
     try {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const temporary = `${file}.${Date.now()}.tmp`;
@@ -66,8 +66,8 @@ export default function sessionMod(cmd: ModApi, report?: (id: string | null) => 
     onSessionStart: ({ sessionId }) => publish(sessionId),
     onSessionEnd: () => {
       published = null;
-      if (report) report(null);
-      else rmSync(file, { force: true });
+      report?.(null);
+      rmSync(file, { force: true });
     },
   });
   cmd.on("run_start", ({ sessionId }) => publish(sessionId));

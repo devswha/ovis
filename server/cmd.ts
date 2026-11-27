@@ -1,6 +1,7 @@
 import { constants, closeSync, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import slugify from "@sindresorhus/slugify";
 
 import type { PaneProcessInfoProcess } from "../shared/herdr-api.generated.ts";
 import type { ToldSession } from "./approvals/hub.ts";
@@ -13,11 +14,10 @@ export { transcriptInStore as cmdTranscriptInStore, unwrittenSession } from "./t
 
 /**
  * Command Code's session store. One directory per project (the cwd), under
- * `~/.commandcode/projects/<slug>`, where `<slug>` is the cwd with its leading
- * slash dropped and every other slash turned into a dash, lowercased.
+ * `~/.commandcode/projects/<slug>`; command-code@1.93.4 uses @sindresorhus/slugify's defaults.
  */
 export function cmdSlug(cwd: string): string {
-  return cwd.replace(/^[/\\]+/, "").replace(/[/\\]/g, "-").toLowerCase();
+  return slugify(cwd) || "root";
 }
 
 export function defaultCmdHome(): string {
@@ -52,7 +52,7 @@ async function cmdPid(paneId: string, processes?: readonly PaneProcessInfoProces
   return cmds.length === 1 ? cmds[0]?.pid ?? null : null;
 }
 
-export async function toldCmdSession(paneId: string, told: ToldSession, processes?: readonly PaneProcessInfoProcess[]): Promise<string | null> {
+async function toldCmdSession(paneId: string, told: ToldSession, processes?: readonly PaneProcessInfoProcess[]): Promise<string | null> {
   if (await cmdPid(paneId, processes) !== told.pid) return null;
   if (process.platform !== "linux") return told.session;
   const reading = readProcessBirth(told.pid);

@@ -353,14 +353,19 @@ then restart gentle-shell. Without it a gentle-shell pane uses Terminal. This wo
 Ovis cannot read a running pi's environment, so it looks for the extension in its own pi home only,
 and a gentle-shell pane there uses Terminal too.
 
-When Ovis starts Command Code 1.93.4 or later in the 1.x series, it passes a session-only
-`--mod` that identifies the session and reports turn ends. It changes no Command Code settings.
+When Ovis starts Command Code 1.93.4 or later in the 1.x series on local herdr-core, it passes
+a session-only `--mod` if the pane's PATH selects the executable whose version Ovis checked.
+If the workspace selects another `cmd`, or the runtime cannot verify the command (including
+herdr's manifest-based launcher), it starts normally without the mod. The mod identifies the
+session and reports turn ends. It changes no Command Code settings.
 A connected device can answer a permission request or `ask_user_question` in Chat. Command Code
 waits for the mod before drawing its own prompt: choose **Answer in terminal**, or wait five
 minutes, to return it there. Leaving Chat on the last device that can answer also releases the
 request. With no connected device viewing the pane's Chat, an unreachable bridge,
 a safety-forced prompt, or an option preview the card cannot show, the native prompt takes over.
-Chat cannot grant permissions for future calls.
+The mod offers only one-time decisions. After a handoff, the existing screen-based cards reflect
+Command Code's own terminal choices. The per-process session file keeps Chat bound to the same
+session if Ovis restarts while Command Code is running.
 
 Starting `cmd` yourself, `--safe-mode`, and older or unrecognized versions keep the existing
 terminal behavior and screen-based permission cards. For self-started sessions only, you can

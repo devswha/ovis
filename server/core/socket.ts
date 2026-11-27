@@ -241,6 +241,10 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         const frame = typeof message.type === "string" && Object.hasOwn(handlers, message.type)
           ? handlers[message.type as keyof FrameHandlers] as (client: Client, message: ClientMessage) => void | Promise<void> : undefined;
         await frame?.(client, message);
+        if (message.type === "conversation-watch" && !message.detached) {
+          const attached = client.data.attached.get(message.pane_id);
+          if (attached) attached.visibleCards = message.enabled && message.visible_cards === true;
+        }
         if (message.type === "detach" || (message.type === "role" && message.mode === "observe")
           || ((message.type === "conversation-watch" || message.type === "prompt-watch") && !message.enabled)) chatLeft?.();
       } catch (error) {

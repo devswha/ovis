@@ -1716,6 +1716,15 @@ describe("herdr-core adapter, agents", () => {
     await expect(agentStart({ name: "hermes-1", kind: "hermes", paneId: "t1" }, socket)).resolves.toMatchObject({ type: "agent_started", pane_id: "t1" });
   });
 
+  it("confirms a cmd launch when Command Code renames itself command-code", async () => {
+    const shell = { pid: 10, name: "bash" };
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
+    const { socket, cores } = await posix([record], {
+      "terminal.get": () => ({ ...record, foreground: cores[0]?.typed.length ? { pid: 11, name: "command-code", argv: ["command-code"] } : shell }),
+    });
+    await expect(agentStart({ name: "cmd-1", kind: "cmd", paneId: "t1" }, socket)).resolves.toMatchObject({ type: "agent_started" });
+  });
+
   it("lets what is typed after a start reach the pane while the start waits for its agent", async () => {
     const shell = { pid: 10, name: "bash" };
     const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });

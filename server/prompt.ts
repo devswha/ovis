@@ -26,7 +26,6 @@ import { heldQuestionAnswer, showsHeldQuestion } from "./claude-question.ts";
 import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
 import { answerCmdCard, cmdCard, cmdPending } from "./approvals/cmd-card.ts";
-import { toldCmdSession } from "./cmd.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "./dialogs/registry.ts";
@@ -1043,8 +1042,7 @@ async function readKnownPrompt(
   ompBindings = ompLookups,
 ): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true;
   settled?: InteractivePrompt }> {
-  const cmdSession = agent === "cmd" ? approvalHub?.toldSession(paneId, "cmd") : null;
-  if (cmdSession && await toldCmdSession(paneId, cmdSession)) return { prompt: null, suppressFallback: true };
+  if (agent === "cmd" && cmdPending(approvalHub, paneId)) return { prompt: null, suppressFallback: true };
   // no native card (no session herdr reports, no verified v2 service, no pending permission or form): OpenCode
   // v1's own question prompt is read off the screen below (dialogs/opencode.ts, #1386), and the fallback card stands
   // for what no reader knows

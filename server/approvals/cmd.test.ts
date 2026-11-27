@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { watch } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PanePromptResponse, PromptAnswer } from "../../shared/protocol.ts";
@@ -19,12 +20,13 @@ afterEach(() => { for (const stop of cleanup.splice(0).reverse()) stop(); });
 function setup(connected = true, heldMs?: number) {
   const dir = root();
   let held = Promise.withResolvers<void>();
+  const settled = Promise.withResolvers<void>();
   const began = Promise.withResolvers<void>();
   const pane = "cmd-pane";
   const turns: string[] = [];
   const hub = new ApprovalHub(join(dir, "h"), APPROVAL_ADAPTERS, {
     chatConnected: id => connected && id === pane, heldMs,
-    onHeld: () => held.resolve(), onTurn: (_id, _kind, event) => { turns.push(event.turn); if (event.turn === "began") began.resolve(); },
+    onHeld: () => held.resolve(), onSettled: () => settled.resolve(), onTurn: (_id, _kind, event) => { turns.push(event.turn); if (event.turn === "began") began.resolve(); },
   });
   cleanup.push(() => { hub.stop(); rmSync(dir, { recursive: true, force: true }); });
   const launch = () => {
@@ -39,15 +41,16 @@ function setup(connected = true, heldMs?: number) {
       const handlers = new Map();
       const add = (n, f) => handlers.set(n, [...handlers.get(n) ?? [], f]);
       (await import(process.argv[1])).default({ hooks: h => Object.entries(h).forEach(([n,f]) => add(n,f)), on: add });
+      process.on("message", name => { for (const f of handlers.get(name) ?? []) f({}); });
       const replies = [];
       for (const {hook,event} of JSON.parse(await Bun.stdin.text()))
         for (const f of handlers.get(hook) ?? []) replies.push(await f(event));
-      console.log(JSON.stringify(replies));`, path], {
+      console.log(JSON.stringify(replies)); process.disconnect();`, path], {
       env: { ...process.env, HOME: dir, USERPROFILE: dir, HERDR_ENV: "", HERDR_SOCKET: join(dir, "absent") },
-      stdin: new Blob([JSON.stringify(rows)]), stdout: "pipe", stderr: "pipe", timeout: 10_000,
+      ipc() {}, stdin: new Blob([JSON.stringify(rows)]), stdout: "pipe", stderr: "pipe", timeout: 10_000,
     });
     cleanup.push(() => { if (child.exitCode === null) child.kill(); });
-    return { pid: child.pid, result: (async () => {
+    return { pid: child.pid, emit: (name: string) => child.send(name), result: (async () => {
       const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect(err).toBe("");
       expect(code).toBe(0);
@@ -70,7 +73,7 @@ function setup(connected = true, heldMs?: number) {
     }), url, { approvals: hub });
     return response?.status;
   }
-  return { pane, hub, launch, run, card, answer, turns, began: began.promise, disconnect() { connected = false; hub.releaseUnwatched(); } };
+  return { pane, dir, hub, launch, run, card, answer, turns, settled: settled.promise, began: began.promise, disconnect() { connected = false; hub.releaseUnwatched(); } };
 }
 
 it("adds no mod for unknown versions, below the floor, another major or safe mode", () => {
@@ -81,10 +84,13 @@ it("adds no mod for unknown versions, below the floor, another major or safe mod
 
 it.each([[0, "allow"], [1, "deny"], [2, null]] as const)("answers permission option %i as data, once", async (index, result) => {
   const s = setup();
-  const child = s.run(s.launch(), [events[0], events[1], events[2], events[4], events[5]]);
+  const path = s.launch();
+  const child = s.run(path, [events[0], events[1], events[2], events[4], events[5]]);
   const shown = await s.card();
   await s.began;
   expect(s.hub.toldSession(s.pane, "cmd")).toMatchObject({ session: events[0].event.sessionId, pid: child.pid });
+  const file = join(s.dir, ".commandcode", "ovis", `${child.pid}.json`);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ sessionId: events[0].event.sessionId, pid: child.pid });
   expect(shown.options.map(o => o.label)).toEqual(["Allow once", "Deny", "Answer in terminal"]);
   expect(shown.body).toContain("pwd");
   expect(await s.answer(shown.id, { option_index: 5 })).toBe(400);
@@ -93,6 +99,30 @@ it.each([[0, "allow"], [1, "deny"], [2, null]] as const)("answers permission opt
   expect((await child.result).filter((v: unknown) => v !== null)).toEqual(result ? [result] : []);
   expect(s.turns).toEqual(["began", "ended"]);
   expect(s.hub.toldSession(s.pane)).toBeNull();
+  expect(existsSync(file)).toBe(false);
+  expect(readdirSync(join(s.dir, "h")).filter(name => name.endsWith(".key"))).toEqual([]);
+  expect(await s.run(path, [events[2]]).result).toEqual([null]);
+});
+
+it.each([["interrupted", 2], ["run_end", 3]] as const)("withdraws a pending card on %s", async (name, row) => {
+  const s = setup();
+  const child = s.run(s.launch(), [events[row]]);
+  const shown = await s.card();
+  child.emit(name);
+  await s.settled;
+  expect(await s.answer(shown.id, { option_index: 0 })).toBe(409);
+  expect(await child.result).toEqual([null]);
+});
+
+it("revokes the key when the mod process exits without SessionEnd", async () => {
+  const s = setup();
+  const path = s.launch(), folder = join(s.dir, "h");
+  const key = readdirSync(folder).find(name => name.endsWith(".key"))!;
+  const watching = watch(folder, { signal: AbortSignal.timeout(5_000) });
+  const revoked = (async () => { for await (const event of watching) if (event.filename === key && !existsSync(join(folder, key))) break; })();
+  await s.run(path, [events[0], events[1]]).result;
+  await revoked;
+  expect(await s.run(path, [events[2]]).result).toEqual([null]);
 });
 
 it("returns the native question result only after every field is answered", async () => {
@@ -104,7 +134,8 @@ it("returns the native question result only after every field is answered", asyn
   const next = await s.card();
   expect(next.multi_select).toBe(true);
   expect(await s.answer(first.id, { option_index: 1 })).toBe(409);
-  expect(await s.answer(next.id, { option_indices: [0], custom_text: "CSV" })).toBe(200);
+  expect(next.options.slice(0, 2).map(option => option.description)).toEqual([null, null]);
+  expect(await s.answer(next.id, { option_indices: [0], custom_text: "CSV, compact" })).toBe(200);
   expect(await child.result).toEqual([{ result: events[3].result }]);
 });
 

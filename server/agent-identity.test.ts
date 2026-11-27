@@ -22,6 +22,8 @@ describe("which agent a pane runs", () => {
     // Letta Code 0.34.44 as npm installs it: node running the bin script (hc's foreground, old-desktop 2026-11-08)
     expect(paneAgent({ foreground: ["node", "/home/u/.npm-global/lib/node_modules/.bin/letta", "--backend", "local"] }, "linux")).toBe("letta");
     expect(paneAgent({ foreground: ["devin"] }, "linux")).toBe("devin");
+    expect(paneAgent({ foreground: ["command-code"] }, "linux")).toBe("cmd");
+    expect(paneAgent({ foreground: ["node", "/opt/bin/command-code"] }, "macos")).toBe("cmd");
     expect(paneAgent({ foreground: ["/home/u/.local/bin/hermes", "chat"] }, "macos")).toBe("hermes");
     expect(paneAgent({ foreground: ["C:\\Users\\u\\AppData\\Roaming\\npm\\letta.cmd"] }, "windows")).toBe("letta");
     expect(paneAgent({ foreground: ["bun", "/opt/x/node_modules/.bin/dsh-tui"] }, "linux")).toBe("dsh-tui");

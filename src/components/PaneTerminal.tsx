@@ -1162,7 +1162,7 @@ export function PaneTerminal({
             refreshKey={chatRefresh}
             invalidationKey={chatInvalidation}
             onConversationWatch={onConversationWatch}
-            conversationPushes={conversationPushes && !released}
+            conversationPushes={conversationPushes && !released && chatView}
             onTerminalOutput={onTerminalOutput}
             sentKey={chatSent}
             unsentKey={chatUnsent}

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,11 @@ import { join } from "node:path";
 import type { AgentInfo } from "../shared/herdr-api.generated.ts";
 import { cmdContextWindow, cmdSlug, cmdTranscriptInStore, unwrittenSession } from "./cmd.ts";
 import { transcriptPage } from "./conversation.ts";
-import { answerKeys, parseFallbackPrompt, parseInteractivePrompt } from "./prompt.ts";
+import { answerKeys, OpenCodePromptState, parseFallbackPrompt, parseInteractivePrompt, readHeldApprovals, waitingCard } from "./prompt.ts";
+import { ApprovalHub } from "./approvals/hub.ts";
+import * as live from "./dialogs/live.ts";
+import * as herdr from "./herdr/client.ts";
+import { readProcessBirth } from "./process-owner.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-cmd-store-"));
 const project = join(root, "projects", cmdSlug(root));
@@ -32,6 +36,8 @@ describe("Command Code's session store holds the transcript a pane reads", () =>
   it("names the project directory after the cwd", () => {
     expect(cmdSlug("/home/daigou/Projects/herdr-web-ui")).toBe("home-daigou-projects-herdr-web-ui");
     expect(cmdSlug("/home/daigou/Projects/Yaba-Definitive")).toBe("home-daigou-projects-yaba-definitive");
+    expect(cmdSlug("/home/alice/.herdr/worktrees/demo")).toBe("home-alice-herdr-worktrees-demo");
+    expect(cmdSlug("/")).toBe("root");
   });
 
   it("accepts a session file inside the store", () => {
@@ -195,6 +201,18 @@ const permission = [
 ].join("\n");
 
 describe("Command Code's permission prompt is a card", () => {
+  it("shows the native dialog after the mod passes even while its process still reports this session", async () => {
+    const hub = new ApprovalHub(root, []);
+    const birth = readProcessBirth(process.pid);
+    const told = spyOn(hub, "toldSession").mockReturnValue({ session: "live", pid: process.pid, birth: birth.state === "identified" ? birth.birth.value : null });
+    const processes = spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: "p", foreground_processes: [{ pid: process.pid, name: "command-code" }] });
+    const screen = spyOn(live, "liveScreen").mockResolvedValue(permission);
+    const pane = { pane_id: "p", terminal_id: "t", workspace_id: "w", tab_id: "tab", focused: true, revision: 0, agent: "cmd", agent_status: "blocked" };
+    readHeldApprovals(hub);
+    try {
+      expect(await waitingCard(pane, [pane], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() })).toMatchObject({ kind: "permission" });
+    } finally { readHeldApprovals(null); screen.mockRestore(); processes.mockRestore(); told.mockRestore(); hub.stop(); }
+  });
   // command-code@1.88.0 dist/cli.mjs: Overlay, ShellPermissionPrompt,
   // PermissionFooter and getShellPermissionChoices. Static source, not an account session.
   const heading = "Execute Shell Command";

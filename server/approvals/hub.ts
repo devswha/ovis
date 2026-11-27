@@ -34,6 +34,7 @@ import type { PaneContext } from "../../shared/protocol.ts";
 import { settingsFile } from "../claude-settings-file.ts";
 import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
 import { readProcessBirth } from "../process-owner.ts";
+import { processAlive, processStartIdentity } from "../process-start.ts";
 import { isNonce, isPid, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
 export type ApprovalDecision = "allow" | "deny";
@@ -107,7 +108,7 @@ export interface ToldMode {
 }
 
 /** What an agent's hook says of the session it runs: that session, or that it ended. */
-export type SessionEvent = { readonly session: string } | { readonly ended: string };
+export type SessionEvent = { readonly session: string } | { readonly ended: string | null };
 
 /**
  * The session the agent started in a pane last told it runs, and the process that ran the hook (the agent itself, with
@@ -167,6 +168,7 @@ interface Launch {
   key: string;
   paneId: string;
   adapter: ApprovalAdapter;
+  owner?: { pid: number; start: number | null; watch: ReturnType<typeof setInterval> };
 }
 
 /** Only the launch whose agent herdr saw in front may keep reporting after that sighting. */
@@ -463,6 +465,7 @@ export class ApprovalHub {
     if (pid === null) return void socket.destroy();
     const event = unseal(launch.key, "request", nonce, envelope!["sealed"], pid);
     if (event === null || Buffer.byteLength(event) > EVENT_MAX) return void socket.destroy();
+    if (launch.adapter.kind === "cmd" && (pid === undefined || !this.bindCmdProcess(launch, pid))) return void socket.destroy();
     const reply = (decision: ApprovalDecision | null, answered?: QuestionAnswer) => {
       if (socket.destroyed) return;
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, launch.adapter.toAnswer(decision, answered)) })}\n`);
@@ -479,6 +482,7 @@ export class ApprovalHub {
     const context = launch.adapter.context?.(parsed);
     if (context !== undefined || turn !== null || command !== null || session !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
+      if (launch.adapter.kind === "cmd" && session && "ended" in session) this.dropLaunch(keyDigest(launch.key));
       if (context !== undefined) {
         const report = this.contexts.get(launch.paneId);
         if (report?.launch === launch) {
@@ -659,9 +663,27 @@ export class ApprovalHub {
     for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
   }
 
+  /** Replaying a shell history line is another process, even before the old key has been reaped. */
+  private bindCmdProcess(launch: Launch, pid: number): boolean {
+    const start = processStartIdentity(pid);
+    if (launch.owner) return launch.owner.pid === pid && launch.owner.start === start;
+    if (!processAlive(pid)) return false;
+    // An abrupt exit sends no session-end hook and may leave a relay waiting on a card.
+    const watch = setInterval(() => {
+      if (!processAlive(pid) || processStartIdentity(pid) !== start) this.dropLaunch(keyDigest(launch.key));
+    }, 1_000);
+    watch.unref();
+    launch.owner = { pid, start, watch };
+    return true;
+  }
+
   /** A launch no request is taken for any more, and its key file, so its hook finds no key and gives no decision. */
   private dropLaunch(digest: string): void {
     const launch = this.launches.get(digest);
+    if (launch?.owner) {
+      clearInterval(launch.owner.watch);
+      for (const entry of this.pending.get(launch.paneId) ?? []) if (entry.adapter === launch.adapter) entry.settle(null);
+    }
     this.launches.delete(digest);
     this.dropKey(digest);
     // a session told through a key no request is taken for any more could not be told again (its /clear): it goes too
@@ -675,6 +697,7 @@ export class ApprovalHub {
 
   stop(): void {
     this.stopped = true;
+    for (const [digest, launch] of this.launches) if (launch.owner) this.dropLaunch(digest);
     this.contexts.clear();
     this.sessions.clear();
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes

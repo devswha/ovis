@@ -11,7 +11,7 @@ const idOf = (entry: HeldApproval) => `cmd.${entry.id}`;
 /** Only the relay can open these cards; a terminal screen can neither open nor answer one. */
 export function cmdCard(entry: HeldApproval): InteractivePrompt {
   const q = entry.question;
-  const options: InteractivePromptOption[] = q?.options.map((label, i) => ({ label, description: q.descriptions?.[i] ?? null })) ?? [];
+  const options: InteractivePromptOption[] = q?.options.map((label, i) => ({ label, description: q.descriptions?.[i] || null })) ?? [];
   const labels: Record<number, CardText> = {};
   const append = (text: CardText) => {
     labels[options.length] = text;
@@ -55,7 +55,7 @@ export function answerCmdCard(hub: ApprovalHub | undefined, body: PromptAnswer):
     const values = picks.map(i => q.options[i]);
     if (text !== undefined) values.push(text.trim());
     if (!values.length) return "invalid";
-    hub.settle(body.pane_id, entry.id, "allow", { input: {}, answers: { [q.text]: values.join(", ") } });
+    hub.settle(body.pane_id, entry.id, "allow", { input: {}, answers: { [q.text]: q.multiple ? JSON.stringify(values) : values.join("") } });
   }
   return "answered";
 }

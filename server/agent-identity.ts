@@ -120,6 +120,7 @@ function agentOn(argv: readonly string[], platform: CatalogPlatform): string | n
   const first = fileName(argv[0] ?? "", platform, true);
   const program = INTERPRETERS.has(first) ? fileName(scriptOf(argv) ?? "", platform, false) : first;
   if (!program) return null;
+  if (program === "command-code") return "cmd";
   const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !candidate.detect.unreliable_on?.[platform]);
   return entry?.id ?? null;
 }

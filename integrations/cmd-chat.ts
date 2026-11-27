@@ -18,7 +18,7 @@ interface Mod {
     onSessionEnd(): void;
     onSessionStart(): void;
   }): void;
-  on(name: "run_start" | "run_end", listener: () => void): void;
+  on(name: "run_start" | "run_end" | "interrupted" | "run_error", listener: () => void): void;
 }
 
 /** The relay prints only an authenticated hub reply. No retries: Command Code blocks its own
@@ -38,16 +38,21 @@ export default function chatMod(cmd: Mod, hook: Hook): (id: string | null) => vo
   const tell = (event: unknown) => {
     telling = telling.then(async () => { await ask(event, AbortSignal.timeout(5_000)); });
   };
-  cmd.on("run_start", () => tell({ run: "began" }));
-  cmd.on("run_end", () => tell({ run: "ended" }));
+  cmd.on("run_start", () => {
+    if (lifetime.signal.aborted) lifetime = new AbortController();
+    tell({ run: "began" });
+  });
+  cmd.on("interrupted", () => lifetime.abort());
+  cmd.on("run_error", () => lifetime.abort());
+  cmd.on("run_end", () => { lifetime.abort(); tell({ run: "ended" }); });
   cmd.hooks({
     onSessionEnd: () => lifetime.abort(),
     onSessionStart: () => { if (lifetime.signal.aborted) lifetime = new AbortController(); },
     async onPermissionRequest({ toolName, input, description, isSafetyPrompt }) {
       if (isSafetyPrompt !== false) return;
-      const answer = await ask({ permission: { toolName, input, description } },
-        AbortSignal.any([lifetime.signal, AbortSignal.timeout(hook.timeout)]));
-      return answer === "allow" || answer === "deny" ? answer : undefined;
+      const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(hook.timeout)]);
+      const answer = await ask({ permission: { toolName, input, description } }, signal);
+      return !signal.aborted && (answer === "allow" || answer === "deny") ? answer : undefined;
     },
     async beforeToolCall({ toolName, input }, context) {
       if (toolName !== "ask_user_question" || typeof input !== "object" || !input || !("questions" in input)
@@ -68,7 +73,7 @@ export default function chatMod(cmd: Mod, hook: Hook): (id: string | null) => vo
   let session: string | null = null;
   return (id) => {
     if (id !== null) tell({ session: id });
-    else if (session !== null) tell({ ended: session });
+    else tell({ ended: session });
     session = id;
   };
 }
