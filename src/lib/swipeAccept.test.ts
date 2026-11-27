@@ -41,6 +41,7 @@ describe("trackAcceptSwipe", () => {
   test("a forward stroke survives a stray point back at the start, but not a turn into a vertical drag", () => {
     expect(verdicts([[130, 300], [100, 300], [150, 301]])).toEqual(["pending", "pending", "accept"]);
     expect(verdicts([[130, 300], [135, 340], [200, 340]])).toEqual(["pending", "cancel", "cancel"]);
+    expect(verdicts([[140, 300], [140, 322], [150, 322]])).toEqual(["pending", "cancel", "cancel"]);
   });
 
   test("a finger that rests before it moves is a long press", () => {

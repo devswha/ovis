@@ -42,20 +42,24 @@ export type SwipeVerdict = "accept" | "pending" | "cancel";
 export function trackAcceptSwipe(start: SwipeStart): (move: SwipeMove) => SwipeVerdict {
   const atEdge = start.x < SCREEN_EDGE_PX || start.x > start.viewportWidth - SCREEN_EDGE_PX;
   let verdict: SwipeVerdict = atEdge ? "cancel" : "pending";
-  let moved = false;
+  // the point the last stretch of at least SLOP_PX was measured from; null while the finger rests
+  let from: { x: number; y: number } | null = null;
   return ({ x, y, at, touches }) => {
     if (verdict !== "pending") return verdict;
     const dx = (x - start.x) * (start.rtl ? -1 : 1);
     const dy = Math.abs(y - start.y);
     const horizontal = dx > HORIZONTAL_RATIO * dy;
     if (touches !== 1) return (verdict = "cancel");
-    if (!moved) {
+    if (from === null) {
       if (Math.abs(dx) < SLOP_PX && dy < SLOP_PX) return verdict;
-      moved = true;
       if (at - start.at > LONG_PRESS_MS || !horizontal) return (verdict = "cancel");
-    } else if (dy >= SLOP_PX && !horizontal) {
-      // the stroke turned into a vertical drag; a stray point back near the start is not one
-      return (verdict = "cancel");
+      from = { x, y };
+    } else {
+      // a stretch that runs up or down turns the stroke into a vertical drag, also after a sideways
+      // start; a stray point back near the start runs sideways and is not one
+      const stepX = Math.abs(x - from.x), stepY = Math.abs(y - from.y);
+      if ((stepY >= SLOP_PX && stepX <= HORIZONTAL_RATIO * stepY) || (dy >= SLOP_PX && !horizontal)) return (verdict = "cancel");
+      if (stepX >= SLOP_PX || stepY >= SLOP_PX) from = { x, y };
     }
     if (horizontal && dx >= ACCEPT_SWIPE_PX) verdict = "accept";
     return verdict;

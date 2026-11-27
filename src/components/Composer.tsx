@@ -724,28 +724,41 @@ export function Composer({
   }, []);
 
   // a forward swipe across the empty box takes the suggestion, as Tab does; a phone has no Tab.
-  // Not while text is selected: the finger is dragging the selection's handles
+  // Not while text is selected: the finger is dragging the selection's handles. A finger that
+  // comes down anywhere else, even briefly, ends the stroke: the box never sees its events
   const swipe = useRef<((move: SwipeMove) => SwipeVerdict) | null>(null);
+  const stopSwipe = useCallback(() => {
+    swipe.current = null;
+    document.removeEventListener("touchstart", stopSwipe, { capture: true });
+  }, []);
+  useEffect(() => stopSwipe, [stopSwipe]);
   const swipeable = offered !== null && text === "" && !viewOnly;
-  const swipeAccept = useMemo(() => ({
-    onTouchStart: (event: React.TouchEvent<HTMLTextAreaElement>) => {
-      const touch = event.touches[0];
-      swipe.current = swipeable && event.touches.length === 1 && touch && document.getSelection?.()?.isCollapsed !== false
-        ? trackAcceptSwipe({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, viewportWidth: window.innerWidth,
-          rtl: window.getComputedStyle?.(event.currentTarget).direction === "rtl" })
-        : null;
-    },
-    onTouchMove: (event: React.TouchEvent<HTMLTextAreaElement>) => {
-      const touch = event.touches[0];
+  const swipeAccept = useMemo(() => {
+    const follow = (event: React.TouchEvent<HTMLTextAreaElement>, touch: React.Touch | undefined, touches: number) => {
       if (!swipe.current || !touch) return;
-      const verdict = swipe.current({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, touches: event.touches.length });
+      const verdict = swipe.current({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, touches });
       if (verdict === "pending") return;
-      swipe.current = null;
+      stopSwipe();
       if (verdict === "accept" && document.getSelection?.()?.isCollapsed !== false) acceptSuggestionRef.current();
-    },
-    onTouchEnd: () => { swipe.current = null; },
-    onTouchCancel: () => { swipe.current = null; },
-  }), [swipeable]);
+    };
+    return {
+      onTouchStart: (event: React.TouchEvent<HTMLTextAreaElement>) => {
+        stopSwipe();
+        const touch = event.touches[0];
+        if (!swipeable || event.touches.length !== 1 || !touch || document.getSelection?.()?.isCollapsed === false) return;
+        swipe.current = trackAcceptSwipe({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, viewportWidth: window.innerWidth,
+          rtl: window.getComputedStyle?.(event.currentTarget).direction === "rtl" });
+        document.addEventListener("touchstart", stopSwipe, { capture: true, passive: true });
+      },
+      onTouchMove: (event: React.TouchEvent<HTMLTextAreaElement>) => follow(event, event.touches[0], event.touches.length),
+      // the lift can carry the stroke's last stretch
+      onTouchEnd: (event: React.TouchEvent<HTMLTextAreaElement>) => {
+        follow(event, event.changedTouches[0], 1);
+        stopSwipe();
+      },
+      onTouchCancel: stopSwipe,
+    };
+  }, [swipeable, stopSwipe]);
 
   const acceptSuggestion = useCallback(() => {
     if (viewOnly || offered === null || textRef.current !== "" || composingRef.current) return;

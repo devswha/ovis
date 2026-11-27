@@ -51,7 +51,7 @@ type Point = [x: number, y: number, msSinceDown?: number];
 
 function touch(field: Element, type: string, [x, y, at = 0]: Point): void {
   const point = new page.window.Touch({ identifier: 1, target: field as never, clientX: x, clientY: y });
-  const event = new page.window.TouchEvent(type, { bubbles: true, cancelable: true, touches: [point], changedTouches: [point] });
+  const event = new page.window.TouchEvent(type, { bubbles: true, cancelable: true, touches: type === "touchend" ? [] : [point], changedTouches: [point] });
   // React reads a zero timeStamp as missing and uses the clock instead
   Object.defineProperty(event, "timeStamp", { value: 1000 + at });
   field.dispatchEvent(event as never);
@@ -101,7 +101,23 @@ it("does nothing while text is selected or in a pane that may only be watched", 
   expect(await swipe("", "run the tests", [[100, 300], [200, 305]], { role: "observe" })).toBe("");
 });
 
-it("adds nothing to the box: no hint and no extra room", async () => {
-  await swipe("", "run the tests", [[200, 300], [100, 300]]);
-  expect(page.container.querySelectorAll(".composer-swipe-hint, .has-swipe-hint")).toHaveLength(0);
+it("a stroke that turns down after starting sideways is a scroll", async () => {
+  expect(await swipe("", "run the tests", [[100, 300], [140, 300], [140, 322], [150, 322]])).toBe("");
+});
+
+it("a second finger elsewhere, even one already lifted, ends the swipe", async () => {
+  await swipe("", "run the tests", [[100, 300], [130, 300]]);
+  const box = page.one("textarea.composer-text"), transcript = page.container.ownerDocument.body;
+  await act(async () => {
+    touch(transcript, "touchstart", [300, 100]);
+    touch(transcript, "touchend", [300, 100]);
+    touch(box, "touchmove", [190, 300]);
+  });
+  expect(composerDrafts.read(draftKey).text).toBe("");
+});
+
+it("takes the suggestion when the finger lifts past the threshold", async () => {
+  await swipe("", "run the tests", [[100, 300], [145, 300]]);
+  await act(async () => { touch(page.one("textarea.composer-text"), "touchend", [152, 300]); });
+  expect(composerDrafts.read(draftKey).text).toBe("run the tests");
 });
