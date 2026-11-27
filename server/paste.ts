@@ -34,12 +34,13 @@ function tooLarge(maxBytes = MAX_IMAGE_BYTES): PasteImageError {
   return new PasteImageError("image_too_large", `file exceeds ${maxBytes} bytes`, 413);
 }
 
-/** Bun's own limit answers an empty 413 the browser cannot explain, so this one answers first with the reason. */
-export async function readImageBody(request: Request): Promise<string> {
+/** Bun's own limit answers an empty 413 the browser cannot explain, so this one answers first with the reason; `maxBytes`: the file's own limit, which bounds the body. */
+export async function readImageBody(request: Request, maxBytes = MAX_IMAGE_BYTES): Promise<string> {
+  const most = encodedBytes(maxBytes) + ENVELOPE_ALLOWANCE;
   const announced = Number(request.headers.get("content-length"));
-  if (Number.isFinite(announced) && announced > MAX_IMAGE_BODY_BYTES) {
+  if (Number.isFinite(announced) && announced > most) {
     void request.body?.cancel().catch(() => undefined);
-    throw tooLarge();
+    throw tooLarge(maxBytes);
   }
   if (request.body === null) return "";
   const reader = request.body.getReader();
@@ -49,9 +50,9 @@ export async function readImageBody(request: Request): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
-    if (total > MAX_IMAGE_BODY_BYTES) {
+    if (total > most) {
       void reader.cancel().catch(() => undefined);
-      throw tooLarge();
+      throw tooLarge(maxBytes);
     }
     chunks.push(value);
   }

@@ -59,6 +59,8 @@ describe("the files of another machine of herdr-core (#4905, #4504)", () => {
     writeFileSync(join(folder, "with space.png"), PNG);
     writeFileSync(join(folder, ".env"), "secret");
     writeFileSync(join(folder, "big.bin"), Buffer.alloc(8_000_001));
+    writeFileSync(join(folder, "zeros.bin"), Buffer.alloc(3_000_000));
+    writeFileSync(join(folder, "long.txt"), "x".repeat(20_000));
     symlinkSync("a.txt", join(folder, "link.txt"));
     symlinkSync("nowhere", join(folder, "broken"));
   });
@@ -78,9 +80,11 @@ describe("the files of another machine of herdr-core (#4905, #4504)", () => {
       expect(await listed.json()).toEqual({
         path: folder, parent: dir, home: process.env["HOME"],
         directories: ["sub"], truncated: false,
-        files: [{ name: "a.txt", size: 5 }, { name: "big.bin", size: 8_000_001 }, { name: "link.txt", size: 5 }, { name: "with space.png", size: PNG.byteLength }],
+        files: [{ name: "a.txt", size: 5 }, { name: "big.bin", size: 8_000_001 }, { name: "link.txt", size: 5 }, { name: "long.txt", size: 20_000 }, { name: "with space.png", size: PNG.byteLength }, { name: "zeros.bin", size: 3_000_000 }],
       });
     }
+    const bsd = serve(core(undefined, null, `${shims}:${process.env["PATH"]}`).hc);
+    expect(await (await bsd(`/api/workspace/directories?path=${q(folder)}&hidden=1`)).json()).toMatchObject({ directories: [".hidden", "sub"] });
     const ask = serve(core().hc);
     const hidden = await (await ask(`/api/workspace/directories?path=${q(folder)}&hidden=1`)).json() as { directories: string[]; files?: unknown };
     expect(hidden.directories).toEqual([".hidden", "sub"]);
@@ -107,7 +111,14 @@ describe("the files of another machine of herdr-core (#4905, #4504)", () => {
     expect([head.status, head.headers.get("content-length")]).toEqual([200, "5"]);
     const image = await ask(`/api/fs/file?path=${q(join(folder, "with space.png"))}`);
     expect(Buffer.from(await image.arrayBuffer()).equals(PNG)).toBe(true);
-  });
+    // a file of NULs is sent as it is, at once: its bytes are never split on them
+    const zeros = await ask(`/api/fs/file?path=${q(join(folder, "zeros.bin"))}`);
+    expect(Buffer.from(await zeros.arrayBuffer()).equals(Buffer.alloc(3_000_000))).toBe(true);
+    // HEAD tells the whole file's length, and refuses what GET would
+    const longHead = await ask(`/api/fs/file?path=${q(join(folder, "long.txt"))}`, { method: "HEAD" });
+    expect([longHead.status, longHead.headers.get("content-length")]).toEqual([200, "20000"]);
+    expect((await ask(`/api/fs/file?path=${q(join(folder, "big.bin"))}`, { method: "HEAD" })).status).toBe(413);
+  }, 10_000);
 
   it("reads a relative path from the folder of the pane it belongs to there", async () => {
     const ask = serve(core().hc);
@@ -143,6 +154,8 @@ describe("the files of another machine of herdr-core (#4905, #4504)", () => {
     // another machine's terminal, and bytes that are no image, are refused before anything is sent
     expect(await error(await paste(ask, { pane_id: "other/t3", content_type: "image/png", data_base64: PNG.toString("base64") }))).toEqual([404, "pane_not_found"]);
     expect(await error(await paste(ask, { pane_id: "t3", content_type: "image/png", data_base64: Buffer.from("no image").toString("base64") }))).toEqual([400, "invalid_image"]);
+    // a body larger than an 8 MB image could need is refused while it is read, not after
+    expect(await error(await paste(ask, { pane_id: "t3", content_type: "image/png", data_base64: PNG.toString("base64"), name: "x".repeat(12_000_000) }))).toEqual([413, "image_too_large"]);
     expect(puts).toHaveLength(1);
   });
 

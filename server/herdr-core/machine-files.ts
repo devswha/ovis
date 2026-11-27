@@ -34,9 +34,11 @@ const CALL_MS = 30_000;
  * `$1` what to do (`list`, `stat`, `read`), `$2` the path as written (empty or `~` for home, `~/…`, absolute,
  * or relative to `$3`, the pane's folder). Every value is printed NUL-terminated, so any name survives.
  * - list: home, the folder as `cd` resolves it, then `<d|f|l> <size> <name>` for each entry, `-L`: a link
- *   is what it points at (`l`: dangling). GNU find gives them in one pass; elsewhere a loop of `test`.
+ *   is what it points at (`l`: dangling). GNU find gives them in one pass; elsewhere a loop of `test`, which
+ *   sizes files only when they are asked for (`$4` = 1) and looks at hidden names only when asked (`$5` = 1).
  * - stat: the file's path, size and modification time, then its first bytes, to tell text from binary.
- * - read: the same facts, then the whole file, when it is at most `$4` bytes.
+ * - read: the same facts, then the file, when it is at most `$4` bytes: at most one byte more is read, so a
+ *   file that grew or shrank since it was sized is told by its length.
  * Exit 2: not a folder; 3: a relative path without a folder; 4: no readable file; 5: too large.
  */
 const SCRIPT = `unset CDPATH
@@ -48,15 +50,18 @@ case $p in
   *) [ -n "$base" ] || exit 3; p=$base/$p ;;
 esac
 if [ "$op" = list ]; then
-  cd -- "$p" 2>/dev/null || exit 2
-  printf '%s\\000%s\\000' "$HOME" "$(pwd)"
+  cd -- "$p" 2>/dev/null && [ -r . ] || exit 2
+  printf '%s\\000%s\\000' "$HOME" "$PWD"
   if find . -maxdepth 0 -printf '' 2>/dev/null; then
     find -L . -mindepth 1 -maxdepth 1 -printf '%y %s %f\\000' 2>/dev/null
   else
-    for f in ./* ./.[!.]* ./..?*; do
+    sized=$4 hidden=$5
+    set -- ./*
+    [ "$hidden" = 1 ] && set -- "$@" ./.[!.]* ./..?*
+    for f do
       [ -e "$f" ] || continue
       if [ -d "$f" ]; then printf 'd 0 %s\\000' "\${f#./}"
-      elif [ -f "$f" ]; then printf 'f %s %s\\000' "$(wc -c < "$f" 2>/dev/null | tr -d ' ')" "\${f#./}"
+      elif [ "$sized" = 1 ] && [ -f "$f" ]; then s=$(wc -c < "$f" 2>/dev/null) || s=0; printf 'f %s %s\\000' "$((s))" "\${f#./}"
       fi
     done
   fi
@@ -66,13 +71,14 @@ d=\${p%/*} n=\${p##*/}
 [ -n "$n" ] && [ "$n" != . ] && [ "$n" != .. ] || exit 4
 cd -- "\${d:-/}" 2>/dev/null || exit 4
 [ -f "./$n" ] && [ -r "./$n" ] || exit 4
-s=$(wc -c < "./$n" | tr -d ' ') || exit 4
+s=$(wc -c < "./$n") || exit 4
+s=$((s))
 t=$(date -r "./$n" +%s 2>/dev/null || stat -c %Y -- "./$n" 2>/dev/null || stat -f %m -- "./$n" 2>/dev/null) || t=0
-d=$(pwd)
+d=$PWD
 printf '%s\\000%s\\000%s\\000' "\${d%/}/$n" "$s" "$t"
-if [ "$op" = stat ]; then head -c ${SNIFF_BYTES} < "./$n"; exit 0; fi
+if [ "$op" = stat ]; then exec head -c ${SNIFF_BYTES} < "./$n"; fi
 [ "$s" -le "$4" ] || exit 5
-exec cat < "./$n"`;
+exec head -c $(($4 + 1)) < "./$n"`;
 
 class MachineFileRefusal extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
@@ -113,34 +119,39 @@ async function offered(hc: MachineHc, method: "machine.exec" | "terminal.put"): 
 
 const NOT_FOUND = { code: "not_found", message: "no readable file at that path" };
 
-/** The script's answer: its exit code and its NUL-terminated values; `cut` when hc kept only the first of them. */
-async function run(hc: MachineHc, op: "list" | "stat" | "read", path: string, base: string | null): Promise<{ code: number | null; values: Buffer[]; cut: boolean }> {
+/**
+ * The script's answer: its exit code, its first NUL-terminated values (all of them, or `fields`), and the bytes
+ * after them in one piece (a file's own, never split on its NULs); `cut` when hc kept only the first of them.
+ */
+async function run(hc: MachineHc, args: [op: "list" | "stat" | "read", path: string, base: string | null, extra: string[]], fields = Infinity): Promise<{ code: number | null; values: Buffer[]; rest: Buffer; cut: boolean }> {
+  const [op, path, base, extra] = args;
   await offered(hc, "machine.exec");
   const ran = await calling(() => hc.call("machine.exec", {
-    argv: ["/bin/sh", "-c", SCRIPT, "ovis-files", op, path, base ?? "", String(MACHINE_FILE_BYTES)],
+    argv: ["/bin/sh", "-c", SCRIPT, "ovis-files", op, path, base ?? "", ...extra],
     env: { LC_ALL: "C" }, timeout: EXEC_SECONDS,
   }, CALL_MS), NOT_FOUND);
   if (ran.timed_out) throw refusal(504, "machine_timeout", "that machine did not answer in time");
   const out = Buffer.from(ran.stdout, "base64");
   const values: Buffer[] = [];
   let start = 0;
-  for (let end = out.indexOf(0); end !== -1; end = out.indexOf(0, start)) {
+  for (let end = out.indexOf(0); end !== -1 && values.length < fields; end = out.indexOf(0, start)) {
     values.push(out.subarray(start, end));
     start = end + 1;
   }
-  // what follows the last NUL: the file's own bytes, or a value cut short
-  values.push(out.subarray(start));
-  return { code: ran.code ?? null, values, cut: ran.truncated };
+  return { code: ran.code ?? null, values, rest: out.subarray(start), cut: ran.truncated };
 }
+
+/** A path hc can pass to a program: none holds a NUL. */
+const passable = (path: string): boolean => !path.includes("\0");
 
 /** GET /api/workspace/directories there (shared/directories.ts), without making a folder. */
 async function listFolder(hc: MachineHc, path: string, hidden: boolean, withFiles: boolean, base: string | null): Promise<Response> {
-  const { code, values, cut } = await run(hc, "list", path.trim(), base);
-  if (code === 2 || code === 3) return badRequest("invalid_cwd", "path must be a directory this user can read");
-  if (code !== 0 || values.length < 3) throw refusal(502, "machine_refused", "that machine did not list the folder");
+  const invalid = () => badRequest("invalid_cwd", "path must be a directory this user can read");
+  if (!passable(path)) return invalid();
+  const { code, values, cut } = await run(hc, ["list", path.trim(), base, [withFiles ? "1" : "0", hidden ? "1" : "0"]]);
+  if (code === 2 || code === 3) return invalid();
+  if (code !== 0 || values.length < 2) throw refusal(502, "machine_refused", "that machine did not list the folder");
   const [home, target, ...entries] = values.map((value) => value.toString("utf8"));
-  // the last value had no NUL: empty, or an entry hc cut short
-  entries.pop();
   const directories: string[] = [];
   const files: { name: string; size: number }[] = [];
   for (const entry of entries) {
@@ -156,13 +167,17 @@ async function listFolder(hc: MachineHc, path: string, hidden: boolean, withFile
 /** The file there and its facts, `read`: with its bytes; null when there is no readable file at `path`. */
 async function machineFile(hc: MachineHc, op: "stat" | "read", path: string, base: string | null): Promise<{ info: FileInfo; bytes: Buffer } | null> {
   const asked = path.trim();
-  if (asked === "" || (base === null && !asked.startsWith("/") && asked !== "~" && !asked.startsWith("~/"))) return null;
-  const { code, values, cut } = await run(hc, op, asked, base);
+  if (asked === "" || !passable(asked) || (base === null && !asked.startsWith("/") && asked !== "~" && !asked.startsWith("~/"))) return null;
+  const tooLarge = () => refusal(413, "file_too_large", `that machine's file is larger than the ${MACHINE_FILE_BYTES} bytes herdr-core carries at once`);
+  const { code, values, rest: bytes, cut } = await run(hc, [op, asked, base, [String(MACHINE_FILE_BYTES)]], 3);
   if (code === 3 || code === 4) return null;
-  if (code === 5 || cut) throw refusal(413, "file_too_large", `that machine's file is larger than the ${MACHINE_FILE_BYTES} bytes herdr-core carries at once`);
-  if (code !== 0 || values.length < 4) throw refusal(502, "machine_refused", "that machine did not read the file");
-  const [named, size, modified] = values.slice(0, 3).map((value) => value.toString("utf8"));
-  const bytes = values.slice(3).reduce((all, value, index) => index === 0 ? value : Buffer.concat([all, Buffer.from([0]), value]));
+  if (code === 5 || cut) throw tooLarge();
+  if (code !== 0 || values.length < 3) throw refusal(502, "machine_refused", "that machine did not read the file");
+  const [named, size, modified] = values.map((value) => value.toString("utf8"));
+  if (op === "read" && bytes.byteLength !== Number(size)) {
+    if (bytes.byteLength > MACHINE_FILE_BYTES) throw tooLarge();
+    throw refusal(409, "file_changed", "the file changed while it was read; open it again");
+  }
   const mime = mimeOf(named!);
   const seconds = Number(modified);
   const info: FileInfo = {
@@ -172,26 +187,30 @@ async function machineFile(hc: MachineHc, op: "stat" | "read", path: string, bas
   return { info, bytes };
 }
 
-/** GET/HEAD /api/fs/file there: the bytes as this PC's own are sent (`fileResponse`), a page as plain text. */
-function sendFile(request: Request, info: FileInfo, bytes: Buffer, download: boolean): Response {
+/**
+ * GET/HEAD /api/fs/file there: the bytes as this PC's own are sent (`fileResponse`), a page as plain text. A HEAD
+ * (`bytes` null) describes the whole file from its facts, and is refused past the cap as its GET would be.
+ */
+function sendFile(request: Request, info: FileInfo, bytes: Buffer | null, download: boolean): Response {
+  if (bytes === null && info.size > MACHINE_FILE_BYTES) return jsonResponse({ error: { code: "file_too_large", message: `that machine's file is larger than the ${MACHINE_FILE_BYTES} bytes herdr-core carries at once` } }, 413);
   const { headers, type } = fileHeaders(info, download);
   headers.set("content-type", type);
   headers.set("accept-ranges", "bytes");
-  const range = request.method === "GET" ? byteRange(request.headers.get("range"), request.headers.has("if-range"), bytes.byteLength) : null;
+  const range = bytes !== null ? byteRange(request.headers.get("range"), request.headers.has("if-range"), info.size) : null;
   if (range === "unsatisfiable") {
-    headers.set("content-range", `bytes */${bytes.byteLength}`);
+    headers.set("content-range", `bytes */${info.size}`);
     return new Response(null, { status: 416, headers });
   }
-  const [start, end] = range ?? [0, bytes.byteLength - 1];
+  const [start, end] = range ?? [0, info.size - 1];
   headers.set("content-length", String(end - start + 1));
-  if (range !== null) headers.set("content-range", `bytes ${start}-${end}/${bytes.byteLength}`);
-  return new Response(request.method === "HEAD" ? null : new Uint8Array(bytes.subarray(start, end + 1)), { status: range === null ? 200 : 206, headers });
+  if (range !== null) headers.set("content-range", `bytes ${start}-${end}/${info.size}`);
+  return new Response(bytes === null ? null : new Uint8Array(bytes.subarray(start, end + 1)), { status: range === null ? 200 : 206, headers });
 }
 
 /** POST /api/pane/image there: the image put beside the terminal (`terminal.put`), and the path it landed at. */
 async function pasteImage(request: Request, hc: MachineHc): Promise<Response> {
   let payload: unknown;
-  try { payload = JSON.parse(await readImageBody(request)); } catch (error) {
+  try { payload = JSON.parse(await readImageBody(request, HC_BYTES)); } catch (error) {
     if (error instanceof PasteImageError) throw error;
     return badRequest("invalid_json", "request body must be JSON");
   }
@@ -232,10 +251,11 @@ export async function handleMachineFileRequest(request: Request, url: URL, pathn
       if (crossSiteFileRead(request)) return jsonResponse({ error: { code: "cross_site", message: "A file is read from this app or opened in a tab, not loaded by another page" } }, 403);
       const { base, unread } = await folderOf();
       const path = url.searchParams.get("path") ?? "";
-      const found = await machineFile(hc, pathname === "/api/fs/file" && request.method === "GET" ? "read" : "stat", path, base);
+      const read = pathname === "/api/fs/file" && request.method === "GET";
+      const found = await machineFile(hc, read ? "read" : "stat", path, base);
       if (found === null && unread && !path.trim().startsWith("/") && !path.trim().startsWith("~")) return jsonResponse({ error: { code: "pane_unknown", message: "the pane a relative path belongs to could not be read" } }, 404);
       if (found === null) return jsonResponse({ error: { code: "not_found", message: "no readable file at that path" } }, 404);
-      return pathname === "/api/fs/stat" ? jsonResponse(found.info) : sendFile(request, found.info, found.bytes, url.searchParams.get("download") === "1");
+      return pathname === "/api/fs/stat" ? jsonResponse(found.info) : sendFile(request, found.info, read ? found.bytes : null, url.searchParams.get("download") === "1");
     }
     if (pathname === "/api/pane/image") {
       if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
