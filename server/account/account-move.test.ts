@@ -178,6 +178,16 @@ test("Revoke all wins over a pending move", async () => {
   expect(existsSync(fx.path)).toBe(false);
 });
 
+test("a pending attempt logs the error explaining why it could not finish", async () => {
+  const fx = await setup({ accountFetch: (req, fake) => route(req) === "/v1/pc/transfer"
+    ? Promise.reject(new Error("Account service connection dropped")) : fake.fetch(req) });
+  const warnings = spyOn(console, "warn");
+  try {
+    expect((await fx.order()).status).toBe(202);
+    expect(warnings).toHaveBeenCalledWith(expect.stringContaining("Account service connection dropped"));
+  } finally { warnings.mockRestore(); }
+});
+
 test("move admission age uses the injected clock", async () => {
   const fx = await setup({ memberAge: 2 * 60 * 60_000 });
   const { AccountMove } = await import("./account-move.ts");

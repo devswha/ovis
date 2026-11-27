@@ -181,7 +181,7 @@ export class AccountMove {
     if (this.attempt) return this.attempt;
     this.cancelRetry?.();
     const turn = this.settle(journal, fresh, invite).catch((error: unknown) => {
-      if (!(error instanceof Error)) console.warn("[account] an account move attempt failed");
+      console.warn(error instanceof Error ? `[account] an account move attempt failed: ${error.message}` : "[account] an account move attempt failed");
       return pending;
     }).then(outcome => {
       if ("state" in outcome && outcome.state === "pending" && !this.stopped) this.retry();
@@ -224,7 +224,7 @@ export class AccountMove {
       return answer.account === journal.into ? this.finish(journal, identity, answer.listing_id) : pending;
     } catch (error) {
       if (!(error instanceof AccountServiceRefusal) || error.path !== "/v1/pc/transfer" || error.status >= 500
-        || error.status < 400 || error.status === 401 || error.status === 408 || error.status === 429) return pending;
+        || error.status < 400 || error.status === 401 || error.status === 408 || error.status === 429) throw error;
       const where = await mailbox.whereami(identity, journal.merge_id);
       if (where?.account === journal.into) return where.listing_id === null ? pending : this.finish(journal, identity, where.listing_id);
       this.remove(journal);
