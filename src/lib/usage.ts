@@ -6,14 +6,13 @@ import type { UsageCount, UsageGlance } from "./settings.ts";
 import { currentLocale, t } from "./i18n.ts";
 import { lastSeen } from "./lastSeen.ts";
 import { usePageVisible } from "./visibility.ts";
+import { PROVIDER_NAME } from "./usage-provider-names.ts";
+
+export { PROVIDER_NAME } from "./usage-provider-names.ts";
 
 /** The server asks a provider at most every 5 minutes; a minute here only picks that up sooner. */
 const POLL_MS = 60_000;
 export const HIGH_PERCENT = 80;
-
-export const PROVIDER_NAME: Readonly<Record<UsageProviderId, string>> = {
-  claude: "Claude", codex: "Codex", cursor: "Cursor", copilot: "GitHub Copilot", grok: "Grok", antigravity: "Antigravity", opencode: "OpenCode", devin: "Devin",
-};
 
 export const PROVIDER_MARK: Readonly<Record<UsageProviderId, string>> = {
   claude: "claude", codex: "codex", cursor: "cursor", copilot: "copilot", grok: "grok", antigravity: "agy", opencode: "opencode", devin: "devin",
@@ -54,7 +53,7 @@ export function composerUsage(providers: readonly ProviderUsage[], agent: string
 }
 
 export function statusWindows(usage: ProviderUsage): UsageWindow[] {
-  return (["session", "day", "week"] as const)
+  return (usage.id === "devin" ? ["session", "day", "week"] as const : ["session", "week"] as const)
     .map((kind) => usage.windows.find((window) => window.kind === kind && window.scope === null))
     .filter((window): window is UsageWindow => window !== undefined);
 }

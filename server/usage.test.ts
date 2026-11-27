@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { UsageReport } from "../shared/protocol.ts";
 import { FRESH_MS, handleStatuslineRequest, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
 import { installStatusline } from "./statusline-install.ts";
+import { UsageLoginService } from "./usage-login.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const HOUR = 3600_000;
@@ -1305,8 +1306,8 @@ describe("providers", () => {
     expect(report.providers).toEqual([]);
   });
 
-  // Devin CLI keeps one sign-in per machine: credentials.toml under its XDG data directory, with a
-  // Windsurf-family key the seat-management endpoint takes inside the request's metadata envelope
+  // Devin CLI keeps one sign-in in credentials.toml, with a Windsurf-family key the
+  // seat-management endpoint takes inside the request's metadata envelope.
   const DEVIN_STATUS = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus";
 
   function signInDevin(extra = "", dir = join(home, ".local", "share", "devin")) {
@@ -1347,19 +1348,41 @@ describe("providers", () => {
     expect(JSON.stringify((await new UsageService(context("linux"), only("devin")).report()))).not.toMatch(/devin-session-token/);
   });
 
-  it("asks Devin's seat endpoint at the api_server_url the login recorded, never a plain-HTTP one", async () => {
-    signInDevin('api_server_url = "https://seat.example.com"');
-    replies.set("https://seat.example.com/exa.seat_management_pb.SeatManagementService/GetUserStatus", devinReply({ weeklyQuotaRemainingPercent: 50 }));
+  it("keeps the configured Devin seat endpoint's tenant path, without the query or hash", async () => {
+    signInDevin('api_server_url = "https://seat.example.com/tenant/api/?query=value#fragment"');
+    replies.set("https://seat.example.com/tenant/api/exa.seat_management_pb.SeatManagementService/GetUserStatus", devinReply({ weeklyQuotaRemainingPercent: 50 }));
     const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
     expect(usage).toMatchObject({ id: "devin", windows: [{ kind: "week", used_percent: 50 }] });
-    expect(requests.map((request) => request.url)).toEqual(["https://seat.example.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"]);
+  });
 
-    rmSync(join(home, ".local", "share", "devin"), { recursive: true });
-    signInDevin('api_server_url = "http://seat.example.com"');
-    requests.length = 0;
+  it.each(['"http://seat.example.com"', '"garbage"', '""', '"https://"', '"https:///tenant"', "123"])("never sends the Devin key with an unusable configured endpoint: %s", async (endpoint) => {
+    signInDevin(`api_server_url = ${endpoint}`);
     replies.set(DEVIN_STATUS, devinReply({ weeklyQuotaRemainingPercent: 50 }));
+    const report = await new UsageService(context("linux"), only("devin")).report();
+    expect(requests.map(({ url }) => url)).toEqual([]);
+    expect(report.providers).toEqual([]);
+  });
+
+  it("refuses redirects on the Devin seat-status POST", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, { status: 307 });
     await new UsageService(context("linux"), only("devin")).report();
-    expect(requests.map((request) => request.url)).toEqual([DEVIN_STATUS]);
+    expect(requests.map(({ init }) => init.redirect)).toEqual(["error"]);
+  });
+
+  it.each([
+    ["", false], ["?providers=codex,devin,future", true], ["?providers=codex,future", false], ["?providers=", false],
+  ] as const)("lists Devin in usage and sign-in discovery only when the client knows it (%s)", async (query, known) => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({ overageBalanceMicros: 1_000_000 }));
+    const ctx = context("linux");
+    const service = new UsageService(ctx, only("devin"));
+    const login = new UsageLoginService(home, { PATH: "" }, ctx);
+    const url = new URL(`http://localhost/api/usage${query}`);
+    const report: UsageReport = await (await handleUsageRequest(new Request(url), url, service)).json();
+    const discovery: { providers: { id: string }[] } = await (await login.handle(new Request(`http://localhost/api/usage/login${query}`))).json();
+    expect({ usage: report.providers.map(({ id }) => id), discovery: discovery.providers.some(({ id }) => id === "devin") })
+      .toEqual({ usage: known ? ["devin"] : [], discovery: known });
   });
 
   it("shows Devin's daily share as the weekly one on a plan that hides it, without its own reset", async () => {
@@ -1393,6 +1416,33 @@ describe("providers", () => {
     ]);
   });
 
+  it("drops a Devin quota window with an unreadable share even when its reset is valid", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({
+      dailyQuotaRemainingPercent: "unavailable", dailyQuotaResetAtUnix: "1795766400",
+      weeklyQuotaRemainingPercent: 40,
+    }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage?.windows.map(({ kind, used_percent }) => ({ kind, used_percent }))).toEqual([{ kind: "week", used_percent: 60 }]);
+  });
+
+  it.each([false, true])("keeps hidden Devin weekly quota out of the report (daily hidden: %s)", async (hideDailyQuota) => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({
+      planInfo: { hideWeeklyQuota: true, hideDailyQuota },
+      dailyQuotaRemainingPercent: 40, weeklyQuotaRemainingPercent: 50,
+    }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage?.windows.map(({ kind }) => kind)).toEqual(hideDailyQuota ? [] : ["day"]);
+  });
+
+  it.each([{}, { userStatus: null }, { userStatus: [] }])("reports bad_response for a Devin answer without a userStatus object (%j)", async (body) => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, { body });
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage).toMatchObject({ id: "devin", problem: "failed", failure: "bad_response", windows: [] });
+  });
+
   it("lists a signed-in Devin account whose plan reports no quota", async () => {
     signInDevin();
     replies.set(DEVIN_STATUS, devinReply({ planInfo: { planName: "Pro" } }));
@@ -1407,16 +1457,20 @@ describe("providers", () => {
     expect(requests).toEqual([]);
   });
 
-  it("reads Devin's credentials.toml under DEVIN_DATA_DIR, else XDG_DATA_HOME", async () => {
-    signInDevin("", join(home, "devin-data"));
+  it("reads Devin's credentials.toml under XDG_DATA_HOME on Linux", async () => {
     signInDevin("", join(home, "xdg", "devin"));
     replies.set(DEVIN_STATUS, devinReply({ weeklyQuotaRemainingPercent: 25 }));
-    for (const env of [{ USER: "me", DEVIN_DATA_DIR: join(home, "devin-data") }, { USER: "me", XDG_DATA_HOME: join(home, "xdg") }]) {
-      requests.length = 0;
-      const [usage] = (await new UsageService({ ...context("linux"), env }, only("devin")).report()).providers;
-      expect(usage).toMatchObject({ id: "devin", problem: null });
-      expect(requests).toHaveLength(1);
-    }
+    const [usage] = (await new UsageService({ ...context("linux"), env: { XDG_DATA_HOME: join(home, "xdg") } }, only("devin")).report()).providers;
+    expect(usage).toMatchObject({ id: "devin", problem: null });
+  });
+
+  it.each([true, false])("reads Devin's Windows credentials from Roaming AppData (APPDATA set: %s)", async (configured) => {
+    const appData = join(home, "custom-roaming");
+    const env = { APPDATA: configured ? appData : undefined, XDG_DATA_HOME: join(home, "xdg") };
+    signInDevin("", join(configured ? appData : join(home, "AppData", "Roaming"), "devin"));
+    replies.set(DEVIN_STATUS, devinReply({ weeklyQuotaRemainingPercent: 25 }));
+    const [usage] = (await new UsageService({ ...context("win32"), env }, only("devin")).report()).providers;
+    expect(usage).toMatchObject({ id: "devin", problem: null });
   });
 
   it("says the Devin sign-in expired when the seat endpoint refuses its key", async () => {

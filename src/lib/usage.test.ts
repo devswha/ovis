@@ -55,6 +55,9 @@ describe("usage meters", () => {
     expect(statusWindows(provider("cursor", [window(80, "month")]))).toEqual([]);
     expect(statusWindows(provider("devin", [window(40, "day"), window(84)]))).toEqual([window(40, "day"), window(84)]);
   });
+  it("keeps Codex's weekly status chip even when it has a daily window", () => {
+    expect(statusWindows(provider("codex", [window(40, "day"), window(84)]))).toEqual([window(84)]);
+  });
   it("shows the limit closest to running out", () => {
     expect(tightestWindow(provider("codex", [window(12, "session"), window(77)]))).toEqual(window(77));
     expect(tightestWindow(provider("claude", []))).toBeNull();

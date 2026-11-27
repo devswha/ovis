@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
+import { knownUsageProviders } from "../shared/usage.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
 import { homeBefore, loginAccount, type LoginAccount, type LoginTarget } from "./usage-login-account.ts";
@@ -216,7 +217,7 @@ export class UsageLoginService {
       if (pathname.endsWith("/prompt")) {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
         const login = this.owned(searchParams.get("login") ?? "", request, owner);
-        if (login === undefined) return gone();
+        if (login === undefined || !knownUsageProviders(searchParams).has(login.provider)) return gone();
         if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: login.signedIn !== null, account: login.signedIn?.label ?? null } satisfies UsageLoginPrompt);
         login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
@@ -398,7 +399,8 @@ export class UsageLoginService {
   async handle(request: Request, trackPane?: (paneId: string) => void, owner: string | null = null): Promise<Response> {
     const executableFor = (id: UsageProviderId) => LOGIN[id].binaries.map((cli) => Bun.which(cli, { PATH: this.env["PATH"] ?? "" })).find(Boolean);
     if (request.method === "GET") {
-      const id = new URL(request.url).searchParams.get("provider");
+      const { searchParams } = new URL(request.url);
+      const id = searchParams.get("provider");
       if (id !== null) {
         const provider = USAGE_PROVIDERS.find((provider) => provider.id === id);
         if (!provider) return badRequest("invalid_provider", "Unknown usage provider");
@@ -407,7 +409,8 @@ export class UsageLoginService {
           return jsonResponse({ accounts: found.map((signIn) => signIn.account?.label ?? signIn.account?.id ?? null) });
         } catch (error) { return errorResponse(error); }
       }
-      return jsonResponse({ providers: USAGE_PROVIDERS.map(({ id }) => ({
+      const known = knownUsageProviders(searchParams);
+      return jsonResponse({ providers: USAGE_PROVIDERS.filter(({ id }) => known.has(id)).map(({ id }) => ({
         id, cli: LOGIN[id].cli, installed: Boolean(executableFor(id)), local: LOGIN[id].args !== null,
         separate_home: id === "claude" || id === "codex",
       })) });

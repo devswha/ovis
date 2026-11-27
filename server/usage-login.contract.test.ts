@@ -906,9 +906,9 @@ for (const [provider, cli, argv] of [
   });
 }
 
-it("lists every provider in discovery order without requesting upstream usage", async () => {
+it("lists every advertised provider in discovery order without requesting upstream usage", async () => {
   const local = new UsageLoginService(root, { PATH: bin }, { ...ctx, fetch: async () => { throw new Error("upstream usage requested"); } });
-  const response = await local.handle(new Request("http://localhost/api/usage/login"));
+  const response = await local.handle(new Request("http://localhost/api/usage/login?providers=claude,codex,cursor,copilot,grok,antigravity,opencode,devin"));
   const result = await response.json();
   expect(result.providers.map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode", "devin"]);
   expect(result.providers.filter((provider: { separate_home: boolean }) => provider.separate_home).map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex"]);

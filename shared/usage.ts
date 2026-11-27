@@ -1,5 +1,16 @@
+/** The usage providers clients before Devin know. */
+const LEGACY_USAGE_PROVIDER_IDS = ["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode"] as const;
+const USAGE_PROVIDER_IDS = [...LEGACY_USAGE_PROVIDER_IDS, "devin"] as const;
+
 /** The subscriptions whose plan limits GET /api/usage can read from a CLI's own sign-in. */
-export type UsageProviderId = "claude" | "codex" | "cursor" | "copilot" | "grok" | "antigravity" | "opencode" | "devin";
+export type UsageProviderId = typeof USAGE_PROVIDER_IDS[number];
+
+export function knownUsageProviders(query: URLSearchParams): ReadonlySet<UsageProviderId> {
+  const providers = query.get("providers");
+  if (providers === null) return new Set(LEGACY_USAGE_PROVIDER_IDS);
+  const advertised = new Set(providers.split(","));
+  return new Set(USAGE_PROVIDER_IDS.filter((id) => advertised.has(id)));
+}
 
 /** One limit of a plan: how much of it is used and when it starts over. */
 export interface UsageWindow {
