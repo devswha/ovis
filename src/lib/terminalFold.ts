@@ -157,8 +157,12 @@ export function cellStyle(cell: ScreenCell, theme: RendererTheme, minimumContras
 }
 
 const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const isKittyPlaceholder = (text: string): boolean => text.startsWith("\u{10eeee}");
 const run = (text: string, style: string): string => !text ? "" : style ? `<span style="${style}">${escapeHtml(text)}</span>` : escapeHtml(text);
-const blank = (cell: ScreenCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
+const blank = (cell: ScreenCell): boolean => {
+  const ch = cell.getChars();
+  return (ch === "" || ch === " " || isKittyPlaceholder(ch)) && cell.isBgDefault() && cell.isInverse() === 0;
+};
 
 export interface FoldCursor { x: number; shape: "block" | "outline" | "bar" | "underline" | "none" }
 
@@ -196,11 +200,19 @@ export function rowHtml(line: ScreenLine, cols: number, theme: RendererTheme, sc
     const cell = line.getCell(x, scratch);
     if (!cell) break;
     if (cell.getWidth() === 0) continue;
-    const next = cellStyle(cell, theme, minimumContrast);
+    const raw = cell.getChars();
+    const placeholder = isKittyPlaceholder(raw);
+    const drawn = placeholder ? " " : raw || " ";
+    const next = placeholder
+      ? (() => {
+          const bg = cssOf(colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor()), theme);
+          return bg ? `background:${bg};` : "";
+        })()
+      : cellStyle(cell, theme, minimumContrast);
     if (cursor !== null && x <= at && at < x + Math.max(1, cell.getWidth())) {
       html += run(text, style);
       const drawnStyle = next + cursorStyle(cursor.shape, theme);
-      html += `<span class="${FOLD_CURSOR_CLASS}"${drawnStyle ? ` style="${drawnStyle}"` : ""}>${escapeHtml(cell.getChars() || " ")}</span>`;
+      html += `<span class="${FOLD_CURSOR_CLASS}"${drawnStyle ? ` style="${drawnStyle}"` : ""}>${escapeHtml(drawn)}</span>`;
       text = "";
       style = next;
       continue;
@@ -210,7 +222,7 @@ export function rowHtml(line: ScreenLine, cols: number, theme: RendererTheme, sc
       text = "";
       style = next;
     }
-    text += cell.getChars() || " ";
+    text += drawn;
   }
   return html + run(text, style);
 }
