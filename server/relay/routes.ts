@@ -5,6 +5,7 @@ import type { ServerContext } from "../dispatch.ts";
 import { RELAY_CONTROLS } from "../dispatch-routes.ts";
 import { accountLabel } from "../../shared/account-asker.ts";
 import { updateRequestAllowed } from "../update-api.ts";
+import { joinVerdict } from "./join-verdict.ts";
 import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError, ResetNotAskedError, ResetRegistryUnavailableError } from "./service.ts";
 
 /** Why an approval of a join marked `list_unknown` (pairing-approvals.ts) let nobody in, as `ovis approve` says it. */
@@ -48,14 +49,19 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (!own) return fail("own_window_required", "Only this PC's own window lists account joins.", 403);
     // a join into the list that this PC cannot sign says why before anybody approves it here: its Ovis is behind the
     // list, it joined by an invite and signs for nobody, or it came in as its account moved with no key of its own
-    // (a device of the account allows it then); and one whose key this PC itself keeps out says that, list or not
+    // (a device of the account allows it then); and one whose key this PC itself keeps out says that, list or not: a
+    // join of no list says why (`held_why`, join-verdict.ts), and `list_held` still marks a block for an older reader
     const list = context.services.accountList;
     const refusal = list?.allowRefusal();
     const why = refusal === "behind" ? { list_behind: true as const } : refusal === "not_signer" ? { list_not_signer: true as const }
       : refusal === "needs_keys" ? { list_needs_keys: true as const } : null;
     return reply({ joins: service.approvals.ownJoins().map((join) => {
       const key = service.approvals.keyOf(join.id);
-      if (join.list !== true) return key !== null && context.services.devices.keptOutByBlock(key) ? { ...join, list_held: true as const } : join;
+      if (join.list !== true) {
+        const verdict = key === null ? null : joinVerdict(context.services, key);
+        if (verdict?.lets !== "out" || verdict.why === null) return join;
+        return { ...join, held_why: verdict.why, ...verdict.why === "block" || verdict.why === "freeze" ? { list_held: true as const } : {} };
+      }
       const held = key !== null && list?.holdsBack(key) === true ? { list_held: true as const } : {};
       return { ...join, ...why ?? {}, ...held };
     }) });

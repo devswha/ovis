@@ -93,7 +93,7 @@ async function http(pc: Pc, path: string, headers: Record<string, string>, body?
     method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string }[]; error?: { code: string } } };
+  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string; held_why?: string; list_held?: boolean }[]; error?: { code: string } } };
 }
 
 for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const) {
@@ -227,20 +227,43 @@ test("a PC with an account member keeps the member's approval: its own window ge
   expect(pc.app.context.services.relay.approvals.ownJoins()).toHaveLength(1);
 });
 
-test("a first join of a key a block here keeps out is marked held for ovis approve, and the device hears why its typed digits let it in nowhere", async () => {
-  const pc = await boundPc("darwin");
-  // a block in force on this PC closes it to every key that came after its target (devices.ts admissionAllowed)
-  const [signer, target] = await Promise.all([phone(), phone()]);
-  const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2, signer: signer.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey);
-  pc.app.context.services.safetyLog!.append({ record, got: "handed", asof: { signer_no: 1, target_no: 2, after: 2, joined: 2, signer_removed: false } });
-  const device = await phone();
-  const waiting = ownJoinWaiting(pc);
-  const { link, next, digits } = await join(pc, device);
-  await waiting;
-  const listed = await http(pc, "/api/relay/joins", terminal(pc));
-  expect(listed.body.joins).toEqual([expect.objectContaining({ digits, list_held: true })]);
-  expect((await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits })).status).toBe(200);
-  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
-  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_held_here" } });
-  expect(pc.devices.hasKey(device.spki)).toBe(false);
-});
+/**
+ * What keeps a first join's key out on this PC, made while the join waits for its approval: each is named to this PC's
+ * own window and `ovis approve` (`held_why`; `list_held` too for a block, as older readers know it), an approval
+ * here lets nobody in, and the device hears why rather than that nobody approved it.
+ */
+const keptOut: readonly { why: string; heard: string; make: (pc: Pc, device: Phone) => Promise<void> }[] = [
+  { why: "block", heard: "list_held_here", make: async (pc) => {
+    // a block in force on this PC closes it to every key that came after its target (devices.ts admissionVerdict)
+    const [signer, target] = await Promise.all([phone(), phone()]);
+    const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2, signer: signer.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey);
+    expect(pc.app.context.services.safetyLog!.append({ record, got: "handed", asof: { signer_no: 1, target_no: 2, after: 2, joined: 2, signer_removed: false } }).outcome).toBe("applied");
+  } },
+  { why: "freeze", heard: "list_held_here", make: async (pc) => {
+    // the account service's freeze that follows a member's block: every key the account did not number up to it is out
+    const target = await phone();
+    expect(pc.app.context.services.safetyLog!.append({ got: "snapshot", record: { v: 1, kind: "freeze", id: `f:${"a".repeat(64)}`, account: "acct_1", target: target.spki, after: 1, signer: "service", signed_at: new Date().toISOString(), signature: "" } }).outcome).toBe("applied");
+  } },
+  { why: "account_hold", heard: "kept_out_account_hold", make: async (pc, device) => { pc.app.context.services.accountHolds.hold([device.spki]); } },
+  { why: "account_removed", heard: "kept_out_account_removed", make: async (pc, device) => {
+    pc.devices.removeAccountKey(device.spki, "acct_1", { id: newRecordId(), issuedAt: new Date().toISOString() });
+  } },
+];
+
+for (const { why, heard, make } of keptOut) {
+  test(`a first join of a key this PC keeps out (${why}) is named so to ovis approve, and the device approved anyway hears why`, async () => {
+    const pc = await boundPc("darwin");
+    const device = await phone();
+    const waiting = ownJoinWaiting(pc);
+    const { link, next, digits } = await join(pc, device);
+    await waiting;
+    await make(pc, device);
+    const listed = await http(pc, "/api/relay/joins", terminal(pc));
+    expect(listed.body.joins).toEqual([expect.objectContaining({ digits, held_why: why })]);
+    expect(listed.body.joins![0]!.list_held).toBe(why === "block" || why === "freeze" ? true : undefined);
+    expect((await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits })).status).toBe(200);
+    link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: heard } });
+    expect(pc.devices.hasKey(device.spki)).toBe(false);
+  });
+}

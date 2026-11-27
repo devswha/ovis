@@ -4452,6 +4452,22 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     expect(out.join("")).not.toMatch(/Approved:|is let in;/);
   });
 
+  it("never says a first or members join is let in or approved where this PC keeps the device out, and says each reason its own way", async () => {
+    // what GET /api/relay/joins names in held_why (server/devices.ts KeptOut), and one this command does not know yet
+    const reasons = ["block", "freeze", "account_hold", "account_removed", "untrusted", "closed", "locked", "a_later_reason"];
+    const said = new Set<string>();
+    for (const held_why of reasons) {
+      for (const join of [{ ...joinOf("j1"), held_why }, { ...joinOf("j1"), digits: "482913", held_why }]) {
+        const { code, out } = await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); } });
+        expect(code).toBe(0);
+        expect(out.join("")).not.toMatch(/Approved:|is let in;|was received/);
+        expect(out.at(-1)).toStartWith("Tablet one was not let in");
+        said.add(out.at(-1)!);
+      }
+    }
+    expect(said.size).toBe(reasons.length);
+  });
+
   it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
     const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
     expect(code).toBe(1);

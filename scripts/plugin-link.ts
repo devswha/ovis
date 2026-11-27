@@ -644,7 +644,7 @@ export function lockRefusal(code: "locked" | "strict"): string {
  * them, for the own window's card to show; this terminal never shows them, and asks for them typed all the same.
  */
 /** `list`: the join is let in by the account's signed list, so an approval is only received here: the device is in once its entry is in the list. */
-export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean; readonly list_not_signer?: boolean; readonly list_needs_keys?: boolean; readonly list_held?: boolean; readonly list_unknown?: boolean }
+export interface OwnJoin { readonly id: string; readonly label: string; readonly asked_at?: string; readonly digits?: string; readonly list?: boolean; readonly list_behind?: boolean; readonly list_not_signer?: boolean; readonly list_needs_keys?: boolean; readonly list_held?: boolean; readonly list_unknown?: boolean; readonly held_why?: string }
 
 /**
  * A join this PC cannot let in (`list_unknown`, server/relay/session.ts): it is pinned to its account's signed list, and
@@ -652,30 +652,58 @@ export interface OwnJoin { readonly id: string; readonly label: string; readonly
  */
 const olderAppWords = (label: string): string => `${label} cannot be let in here: this PC lets devices into your account by its signed list, and ${label} asked without its part of that list, as an Ovis older than 0.5.10 does. Update Ovis on ${label}, then have it ask to join again.\n`;
 
-/** Why this PC lets nobody into its list by an approval here (GET /api/relay/joins), or keeps that one device out. */
-type CannotSign = "behind" | "not_signer" | "needs_keys" | "held";
+/**
+ * Why this PC lets nobody into its list by an approval here (GET /api/relay/joins), or keeps that one device out: a
+ * block here (`held`), or what `held_why` names (server/devices.ts KeptOut); `kept_out` for a reason this command
+ * does not know yet.
+ */
+type CannotSign = "behind" | "not_signer" | "needs_keys" | "held" | "freeze" | "account_hold" | "account_removed" | "untrusted" | "closed" | "locked" | "kept_out";
+
+/** `held_why` as this command says it. A Revoke here keeps out no key approved here, so the joins never name one. */
+const HELD_WHY: Readonly<Record<string, CannotSign>> = {
+  block: "held", freeze: "freeze", account_hold: "account_hold", account_removed: "account_removed", untrusted: "untrusted", closed: "closed", locked: "locked",
+};
 
 /**
  * What a terminal says once this PC took the approval of `label`: it is let in at once, or, by the account's list, once
  * its entry is there. `cannot`: why the approval here lets nobody in: this PC signs nobody into its list (`behind`;
  * `not_signer` for a PC that joined by an invite; `needs_keys` for one that came in as its account moved, with no key
- * of its own in the list yet), or it keeps that very device out (`held`, a block on this PC). `command`: how this
- * command is typed here.
+ * of its own in the list yet), or it keeps that very device out (CannotSign). `command`: how this command is typed here.
  */
-const approvedWords = (label: string, list: boolean, cannot: CannotSign | null = null, command = "ovis"): string => cannot === "held"
-  ? `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it${list ? ", whether or not your account's list holds it" : ""}. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`
-  : cannot === "behind"
-  ? `${label} was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have ${label} ask again; or allow it on another device of your account.\n`
-  : cannot === "needs_keys"
-  ? `${label} was not let in: this PC came into your account's list as your account moved, and holds no key of its own in it yet, so it lets nobody into the list itself. Allow ${label} on another device of your account, or run ${command} add on this PC to give it its keys (compare the number with a device of your account), then have ${label} ask again.\n`
-  : cannot === "not_signer"
-  ? `${label} was not let in: this PC joined your account by an invite, and a PC that did lets nobody into your account's list itself. Allow ${label} on another device of your account.\n`
-  : list
-  ? `The approval of ${label} was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n`
-  : `${label} is let in; it opens this PC in a moment.\n`;
+function approvedWords(label: string, list: boolean, cannot: CannotSign | null = null, command = "ovis"): string {
+  switch (cannot) {
+    case "held":
+      return `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it${list ? ", whether or not your account's list holds it" : ""}. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`;
+    case "freeze":
+      return `${label} was not let in here: your Ovis account keeps out every device that came after a device it blocked, and this PC keeps to that. Lift the block on a device of your account that is older than it and signs in with two-step sign-in. ${label} can open this PC after that.\n`;
+    case "account_hold":
+      return `${label} was not let in here: your Ovis account holds its key back on this PC, as a removal of it was seen or still waits here. Approving it here again does not change that.\n`;
+    case "account_removed":
+      return `${label} was not let in here: its key was removed from your Ovis account, and this PC lets no removed key in, whoever approves it here.\n`;
+    case "untrusted":
+      return `${label} was not let in here: this PC holds an earlier pairing of it whose time it cannot trust, and keeps that key out. Remove ${label} from this PC's devices, then have it ask again.\n`;
+    case "closed":
+      return `${label} was not let in: this PC cannot trust its account records right now, and lets no new device in. Open it on its own screen, or run ${command} recover there, then have ${label} ask again.\n`;
+    case "locked":
+      return `${label} was not let in: this PC is locked, and lets in only a device approved on its own screen. Unlock it there, then have ${label} ask again.\n`;
+    case "kept_out":
+      return `${label} was not let in here: this PC keeps it out, whoever approves it here.\n`;
+    case "behind":
+      return `${label} was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have ${label} ask again; or allow it on another device of your account.\n`;
+    case "needs_keys":
+      return `${label} was not let in: this PC came into your account's list as your account moved, and holds no key of its own in it yet, so it lets nobody into the list itself. Allow ${label} on another device of your account, or run ${command} add on this PC to give it its keys (compare the number with a device of your account), then have ${label} ask again.\n`;
+    case "not_signer":
+      return `${label} was not let in: this PC joined your account by an invite, and a PC that did lets nobody into your account's list itself. Allow ${label} on another device of your account.\n`;
+    case null:
+      return list
+        ? `The approval of ${label} was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n`
+        : `${label} is let in; it opens this PC in a moment.\n`;
+  }
+}
 
-/** Why an approval here lets this join into nobody's list, as GET /api/relay/joins says of it; null when it may. */
-const cannotSign = (join: OwnJoin): CannotSign | null => join.list_held === true ? "held" : join.list_behind === true ? "behind"
+/** Why an approval here lets this join into nobody's list, or this PC keeps it out, as GET /api/relay/joins says of it; null when it may. */
+const cannotSign = (join: OwnJoin): CannotSign | null => join.held_why !== undefined ? Object.hasOwn(HELD_WHY, join.held_why) ? HELD_WHY[join.held_why]! : "kept_out"
+  : join.list_held === true ? "held" : join.list_behind === true ? "behind"
   : join.list_needs_keys === true ? "needs_keys" : join.list_not_signer === true ? "not_signer" : null;
 
 /** What `POST /api/relay/join` made of the six digits typed: `away` when its answer did not come. */
@@ -733,7 +761,7 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
       // a join into the account's list is let in by its entry, first join or not: the approval was received, no more
-      out(outcome === "approved" ? first || join.list === true || join.list_held === true ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
+      out(outcome === "approved" ? first || join.list === true || cannotSign(join) !== null ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);
