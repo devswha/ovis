@@ -57,7 +57,7 @@ irm https://ovis.sh/install.ps1 | iex
 
 Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in makes it), and the computers in it show up on your other devices: the desktop app on Mac, Windows or Linux, the iPhone and Android apps, and any browser at [app.ovis.sh](https://app.ovis.sh). The apps connect directly when they share a Wi-Fi or Tailscale with the computer; otherwise, and in a browser, they go through the Ovis relay, end-to-end encrypted, with nothing to set up on your network. [How accounts work →](docs/guide.md#through-an-account)
 
-- **Add a computer.** On it, open **Settings → Devices and PCs → Add a connection → Ovis relay**, sign in and choose **Add this PC to my account** (it turns the relay on too). A new account's first computer, or one added right after a two-step sign-in, can go in with that one press. Otherwise, finish from a phone signed in to the same account: on the computer, open **Add a connection → Phones and devices**, choose **Phone QR code** and scan it.
+- **Add a computer.** On it, open **Settings → Devices and PCs → Add a connection → Ovis relay**, sign in and choose **Add this PC to my account** (it turns the relay on too). A new account's first computer, or one added right after a two-step sign-in, can go in with that one press. Otherwise, finish from a phone signed in to the same account: on the computer, open **Add a connection → Ovis relay**, choose **Phone QR code** and scan it.
 - **Add a phone or another device.** Sign in to the same account on it and open the computer. If the computer asks, approve the device on that computer or on a device that already uses it.
 - **Without an account.** Tailscale, your Wi-Fi or SSH work too: **Start without signing in** on the phone, or **Add a connection → Tailscale** or **Direct** on the desktop. The Android app reaches a computer over SSH by itself, and can install Ovis there. [Remote PCs →](docs/remote-pcs.md)
 
@@ -88,13 +88,14 @@ Sign in to your Ovis account with GitHub, Google or Apple (your first sign-in ma
 
 ## Documentation
 
-- **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [terminal client](docs/tui.md) · [configuration](docs/guide.md#configuration) · [FAQ](docs/guide.md#faq)
+- **[User guide](docs/guide.md):** [quick start](docs/guide.md#quick-start) · [supported agents](docs/guide.md#supported-agents) · [phone](docs/guide.md#on-your-phone) · [remote PCs](docs/remote-pcs.md) · [terminal screen (`ovis tui`)](docs/tui.md) · [configuration](docs/guide.md#configuration) · [FAQ](docs/guide.md#faq)
 - **[INSTALL.md](INSTALL.md):** every way to install, step by step.
+- **[Set up a PC with a coding agent](docs/agent-setup.md):** one sentence to paste, and the [skill](skills/ovis-setup/SKILL.md) the agent follows to install Ovis and add the PC to your account.
 - **[Demo](https://ovis.sh/demo/)** · **[Changelog](CHANGELOG.md)**
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the setup and the checks, with [development](docs/development.md), [DESIGN.md](DESIGN.md) and [SECURITY.md](SECURITY.md). Coding agents install Ovis for someone with [INSTALL.md](INSTALL.md), and follow [AGENTS.md](AGENTS.md) and the [review rules](.github/REVIEW.md) for changes.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the setup and the checks, with [development](docs/development.md), [DESIGN.md](DESIGN.md) and [SECURITY.md](SECURITY.md). Coding agents install Ovis for someone with [INSTALL.md](INSTALL.md), set up a PC and add it to an account with the [ovis-setup skill](skills/ovis-setup/SKILL.md), and follow [AGENTS.md](AGENTS.md) and the [review rules](.github/REVIEW.md) for changes.
 
 ## Thanks
 

@@ -1,10 +1,12 @@
-import { describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { GROK_QUEUED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { translate } from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import * as settingsModule from "../lib/settings.ts";
 import { PendingMessages } from "./PendingMessages.tsx";
 
 const render = (code: string, message: string, languages: string[], serverOwned = true, state: "held" | "uncertain" = "held"): string => {
@@ -23,6 +25,29 @@ const render = (code: string, message: string, languages: string[], serverOwned 
 };
 
 describe("a pending row's refusal note", () => {
+  let page: Page | undefined;
+  afterEach(async () => { await page?.close(); page = undefined; });
+
+  it.each([true, false])("the real uncertain row X connected=%p carries display-only intent without Send or Edit", async (connected) => {
+    const browser = page = openPage();
+    const calls: unknown[] = [];
+    const settings = spyOn(settingsModule, "useSettings").mockReturnValue({ resolvedLanguage: "en" } as ReturnType<typeof settingsModule.useSettings>);
+    try {
+      await browser.render(createElement(PendingMessages, {
+        messages: [{ id: "uncertain-id", request_id: 1, text: "/thinking high", state: "uncertain", created_at: "2026-11-17T00:00:00Z", serverOwned: true }],
+        connected, blocked: true, unsaved: false, isBusy: () => false,
+        onSendNow: async (id) => { calls.push(["send", id]); }, onEdit: async (id) => { calls.push(["edit", id]); },
+        onDiscard: async (id, displayOnly) => { calls.push([id, displayOnly]); },
+      }));
+      expect(browser.container.querySelectorAll('[class="icon-button pending-message-action pending-message-send"]')).toHaveLength(0);
+      const discard = browser.one<HTMLButtonElement>('button[title="Discard saved copy"]');
+      expect(discard.disabled).toBe(false);
+      await act(async () => { discard.dispatchEvent(new browser.window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }) as unknown as MouseEvent); });
+      expect(calls).toEqual([["uncertain-id", true]]);
+    } finally {
+      settings.mockRestore();
+    }
+  });
   it("does not offer Edit on another tab's saved held copy", () => {
     const html = render("held_input", "held", ["en"], false);
     expect(html).not.toContain("Edit queued message");

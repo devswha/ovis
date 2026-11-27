@@ -1,14 +1,12 @@
 /**
- * The image addon keeps a picture's id in its cells and a new addon
- * numbers from 1 again: one loaded anew drew its first picture into the cells an old picture 1 had
- * left.
+ * Pictures in the terminal: libghostty draws iTerm2 and sixel pictures the browser converts to Kitty ones, the setting
+ * takes them away and brings them back only where they are printed again (an old picture's cells draw nothing).
  * Demo fixtures only: no herdr, hc or user state.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
 import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
@@ -16,6 +14,7 @@ import { chromePath } from "./chrome-path.ts";
 import { openSettingsFolds } from "./settings-page.ts";
 import { shownRows } from "./shown-rows.ts";
 import { serveDemo } from "./demo-server.ts";
+import { squarePng } from "./terminal-demo-pictures.ts";
 
 interface ImagesFixture { print(data: string): void }
 interface ImagesConfig { core?: boolean; first?: string }
@@ -64,24 +63,6 @@ function installImagesFixture(): void {
  * A 24x24 PNG square of one colour as an iTerm2 inline image. iTerm2's pictures decode in the browser
  * itself; sixel's WebAssembly decoder starts after the addon loads, so a first sixel could be missed.
  */
-const squarePng = (rgb: [number, number, number]): Buffer => {
-  const chunk = (type: string, data: Uint8Array) => {
-    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
-    const out = Buffer.alloc(12 + data.length);
-    out.writeUInt32BE(data.length, 0);
-    body.copy(out, 4);
-    out.writeUInt32BE(Bun.hash.crc32(body), 8 + data.length);
-    return out;
-  };
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(24, 0);
-  header.writeUInt32BE(24, 4);
-  header.set([8, 2, 0, 0, 0], 8);
-  const row = Buffer.concat([Buffer.from([0]), ...Array.from({ length: 24 }, () => Buffer.from(rgb))]);
-  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header),
-    chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: 24 }, () => row)))), chunk("IEND", new Uint8Array())]);
-  return png;
-};
 const square = (rgb: [number, number, number]): string => {
   const png = squarePng(rgb);
   return `\x1b]1337;File=inline=1;size=${png.length}:${png.toString("base64")}\x07`;
@@ -126,6 +107,18 @@ const chafaTiff = (rgb: [number, number, number], side = 24): string => {
 };
 
 const pixel = (page: Page, x: number, y: number) => page.evaluate(({ x, y }) => {
+  const ghostty = document.querySelector(".pane-frame.is-current .ghostty-layer");
+  if (ghostty) {
+    const origin = ghostty.getBoundingClientRect();
+    for (const canvas of [...ghostty.querySelectorAll<HTMLCanvasElement>("canvas.ghostty-image")].reverse()) {
+      const rect = canvas.getBoundingClientRect();
+      const dx = origin.left + x - rect.left, dy = origin.top + y - rect.top;
+      if (dx < 0 || dy < 0 || dx >= rect.width || dy >= rect.height) continue;
+      const rgba = canvas.getContext("2d")?.getImageData(dx * canvas.width / rect.width, dy * canvas.height / rect.height, 1, 1).data;
+      if (rgba && rgba[3]) return [...rgba.slice(0, 3)];
+    }
+    return null;
+  }
   const layer = document.querySelector<HTMLCanvasElement>(".pane-frame.is-current canvas.xterm-image-layer");
   if (!layer || layer.width === 0) return null;
   const [r, g, b, a] = layer.getContext("2d")!.getImageData(x, y, 1, 1).data;
@@ -175,14 +168,13 @@ try {
       page.setDefaultTimeout(10000);
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      const addonLoaded = page.waitForResponse((response) => /addon-image-[^/]*\.js$/.test(new URL(response.url()).pathname));
       await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
-      await page.locator(".pane-frame.is-current .xterm").waitFor();
-      await addonLoaded;
+      await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
       await settled(page);
 
-      await print(page, `\x1b[H\x1b[2J${RED}`, "RED-PRINTED");
-      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "a sixel picture is drawn where it is printed");
+      // A PNG for the sample pixel, independent of sixel startup
+      await print(page, `\x1b[H\x1b[2J\x1bPq\x1b\\${RED}`, "RED-PRINTED");
+      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "the picture is drawn where it is printed");
 
       await setPictures(page, false);
       assert.equal(await pixel(page, 4, 4), null, "off: the pictures go");
@@ -192,17 +184,13 @@ try {
       await setPictures(page, true);
       await print(page, `\x1b[20;1H${BLUE}`, "BLUE-PRINTED");
       const below = await page.evaluate(() => {
-        const layer = document.querySelector<HTMLCanvasElement>(".pane-frame.is-current canvas.xterm-image-layer")!;
-        const data = layer.getContext("2d")!.getImageData(0, 0, layer.width, layer.height).data;
-        let first = -1;
-        for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) { first = Math.floor((i - 3) / 4 / layer.width); break; }
-        return { first, height: layer.height };
+        const layer = document.querySelector(".pane-frame.is-current .ghostty-layer")!;
+        const tops = [...layer.querySelectorAll<HTMLCanvasElement>("canvas.ghostty-image")].map((canvas) => canvas.getBoundingClientRect().top - layer.getBoundingClientRect().top);
+        return { first: tops.length ? Math.min(...tops) : -1, pictures: tops.length };
       });
       assert.ok(below.first > 0, `on again: the new picture is drawn lower down, where it was printed (${JSON.stringify(below)})`);
+      assert.deepEqual(await pixel(page, 4, below.first + 4), [0, 0, 255], "on again: the new picture is drawn where it was printed");
       assert.equal(await pixel(page, 4, 4), null, "on again: the cells the first picture left draw nothing, not the new picture");
-      const held = await page.evaluate(() => (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => number[] | null }).imageAt?.(0, 0));
-      assert.notEqual(held, undefined, "the demo build's probe answers");
-      assert.equal(held, null, `on again: the top left cell holds no picture (${JSON.stringify(held)})`);
 
       // imgcat's multipart form and chafa's TIFF without a size, which the addon takes neither of by itself (#3147)
       await print(page, `\x1b[H\x1b[2J${multipart([0, 255, 0])}`, "IMGCAT-PRINTED");

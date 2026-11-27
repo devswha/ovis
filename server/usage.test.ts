@@ -15,7 +15,8 @@ function jwt(claims: Record<string, unknown>): string {
   return ["e30", Buffer.from(JSON.stringify(claims)).toString("base64url"), "sig"].join(".");
 }
 
-type Reply = { status?: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> };
+/** `raw`: the body as sent, in place of `body` as JSON; `error`: what fetch throws instead of answering */
+type Reply = { status?: number; body?: unknown; raw?: string; error?: Error; headers?: Record<string, string>; gate?: Promise<void> };
 
 let home: string;
 let now: number;
@@ -35,7 +36,8 @@ function context(platform: NodeJS.Platform = "linux"): UsageContext {
       const reply = replies.get(url);
       if (!reply) throw new Error(`unexpected request ${url}`);
       await reply.gate;
-      return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
+      if (reply.error) throw reply.error;
+      return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
     },
     keychain: async (service, account) => keychain.get(`${service}|${account ?? ""}`) ?? { status: "missing" },
     run: async (argv) => {
@@ -311,21 +313,108 @@ describe("providers", () => {
     expect(requests).toEqual([]);
   });
 
-  it("asks the endpoint over a capture older than five minutes, and falls back to it with its own time", async () => {
+  it("takes a capture hours old over the endpoint while its windows stand, and asks the endpoint once one started over", async () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
     const path = join(home, ".herdr", "statusline-last.json");
-    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
-    const taken = NOW - 10 * 60_000;
-    utimesSync(path, new Date(taken), new Date(taken));
+    const taken = NOW - 4 * HOUR;
+    const capture = (fiveHourResets: number) => {
+      write(path, { _herdr: { account: { id: "a" } }, rate_limits: {
+        five_hour: { used_percentage: 17, resets_at: fiveHourResets / 1000 }, seven_day: { used_percentage: 30, resets_at: (NOW + 48 * HOUR) / 1000 },
+      } });
+      utimesSync(path, new Date(taken), new Date(taken));
+    };
+    capture(NOW + HOUR);
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
+    const [standing] = (await new UsageService(context(), only("claude")).report()).providers;
+    expect(standing).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 17 }, { used_percent: 30 }] });
+    expect(requests).toEqual([]);
+    // its five hours have started over: the endpoint is asked, and refused, the week the capture still holds stands in
+    capture(NOW - 60_000);
     const [answered] = (await new UsageService(context(), only("claude")).report()).providers;
     expect(answered).toMatchObject({ problem: null, checked_at: new Date(NOW).toISOString(), windows: [{ used_percent: 42 }] });
     expect(requests).toHaveLength(1);
     replies.set(CLAUDE_USAGE, { status: 403, body: { error: { message: "Request not allowed" } } });
     const [refused] = (await new UsageService(context(), only("claude")).report()).providers;
-    expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 17 }] });
+    expect(refused).toMatchObject({ problem: null, checked_at: new Date(taken).toISOString(), windows: [{ used_percent: 30 }] });
     expect(requests).toHaveLength(2);
+    // even a capture a minute old is not taken once a window it named has started over
+    replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17, resets_at: (NOW - 1000) / 1000 }, seven_day: { used_percentage: 30, resets_at: (NOW + 48 * HOUR) / 1000 } } });
+    utimesSync(path, new Date(NOW - 60_000), new Date(NOW - 60_000));
+    expect((await new UsageService(context(), only("claude")).report()).providers[0]?.windows[0]?.used_percent).toBe(42);
+    expect(requests).toHaveLength(3);
+  });
+
+  it("shows a status-line reading that comes during a 429's backoff, without asking the endpoint, and keeps the offer meanwhile", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 2 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    replies.set(CLAUDE_USAGE, { status: 429, headers: { "retry-after": "3600" } });
+    const service = new UsageService(context(), only("claude"));
+    expect((await service.report()).providers[0]).toMatchObject({ problem: "rate_limited", statusline_offer: true });
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers[0]).toMatchObject({ problem: "rate_limited", statusline_offer: true });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 37, resets_at: (NOW + HOUR) / 1000 } } });
+    utimesSync(path, new Date(now), new Date(now));
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers[0]).toMatchObject({ problem: null, windows: [{ used_percent: 37 }] });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("asks the endpoint over a capture whose window names no reset once it is minutes old", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 96 } } });
+    utimesSync(path, new Date(NOW - 30 * 60_000), new Date(NOW - 30 * 60_000));
+    replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 4 } } });
+    expect((await new UsageService(context(), only("claude")).report()).providers[0]?.windows[0]?.used_percent).toBe(4);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("reads again when a capture grows too old, and keeps what only the endpoint gives beside it", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 8 * HOUR } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
+    replies.set(CLAUDE_USAGE, { body: { seven_day: { utilization: 20, resets_at: new Date(NOW + 48 * HOUR).toISOString() }, seven_day_opus: { utilization: 100, resets_at: new Date(NOW + 48 * HOUR).toISOString() },
+      extra_usage: { is_enabled: true, monthly_limit: 2000, used_credits: 1321, utilization: 66, currency: "USD" } } });
+    const service = new UsageService(context(), only("claude"));
+    await service.report();
+    const path = join(home, ".herdr", "statusline-last.json");
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { seven_day: { used_percentage: 17, resets_at: (NOW + 48 * HOUR) / 1000 } } });
+    now += FRESH_MS;
+    const taken = now - (6 * HOUR - 60_000);
+    utimesSync(path, new Date(taken), new Date(taken));
+    const [merged] = (await service.report()).providers;
+    expect(merged!.windows.map((window) => [window.scope, window.used_percent])).toEqual([[null, 17], ["Opus", 100]]);
+    expect(merged!.credits).toMatchObject({ kind: "spend", used: 13.21 });
+    expect(requests).toHaveLength(1);
+    // a minute later the capture is six hours old: no longer a reading, so the endpoint is asked though FRESH_MS has not passed
+    now += 61_000;
+    expect((await service.report()).providers[0]!.windows[0]!.used_percent).toBe(20);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("names what a failed Claude read ran into, and offers the status line for it and for a 429", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + HOUR } });
+    const read = async (reply: Reply) => {
+      replies.set(CLAUDE_USAGE, reply);
+      return (await new UsageService(context(), only("claude")).report()).providers[0];
+    };
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect(await read({ status: 529, body: { type: "error", error: { type: "overloaded_error" } } })).toMatchObject({ problem: "failed", failure: "upstream", statusline_offer: true });
+      expect(await read({ raw: "<!DOCTYPE html><title>Just a moment...</title>" })).toMatchObject({ problem: "failed", failure: "bad_response", statusline_offer: true });
+      expect(await read({ error: new DOMException("The operation timed out.", "TimeoutError") })).toMatchObject({ problem: "failed", failure: "timeout" });
+      expect(await read({ error: Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" }) })).toMatchObject({ problem: "failed", failure: "network" });
+      const notFound = await read({ status: 404 });
+      expect(notFound).toMatchObject({ problem: "failed", statusline_offer: true });
+      expect(notFound).not.toHaveProperty("failure");
+      expect(await read({ status: 429, headers: { "retry-after": "60" } })).toMatchObject({ problem: "rate_limited", statusline_offer: true });
+      installStatusline({ home });
+      expect(await read({ status: 529 })).not.toHaveProperty("statusline_offer");
+    } finally { console.warn = warn; }
   });
 
   it("offers the status line for a 403 to a token that has not expired, never for a real expiry or once it is on", async () => {
@@ -417,9 +506,10 @@ describe("providers", () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "k", expiresAt: NOW + 2 * HOUR } });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: "a" } });
     const path = join(home, ".herdr", "statusline-last.json");
-    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17 } } });
-    utimesSync(path, new Date(NOW - 10 * 60_000), new Date(NOW - 10 * 60_000));
     replies.set(CLAUDE_USAGE, { body: { five_hour: { utilization: 42 } } });
+    // a capture whose five hours started over is not taken before the endpoint
+    write(path, { _herdr: { account: { id: "a" } }, rate_limits: { five_hour: { used_percentage: 17, resets_at: (NOW - 60_000) / 1000 }, seven_day: { used_percentage: 30 } } });
+    utimesSync(path, new Date(NOW - 10 * 60_000), new Date(NOW - 10 * 60_000));
     const service = new UsageService(context(), only("claude"));
     expect((await service.report()).providers[0]).toMatchObject({ problem: null, windows: [{ used_percent: 42 }] });
     now += 6 * 60_000;
@@ -819,7 +909,36 @@ describe("providers", () => {
     if (result === "failing") commands.set("secret-tool lookup service gemini username antigravity", "");
     const report = await new UsageService(context("linux"), only("antigravity")).report();
     expect(report).toEqual({ server_time: expect.any(String), providers: [] });
-    expect(commandCalls).toEqual([["secret-tool", "lookup", "service", "gemini", "username", "antigravity"]]);
+    // An empty lookup is followed by `search`, which tells a locked keyring from no item.
+    expect(commandCalls).toEqual([
+      ["secret-tool", "lookup", "service", "gemini", "username", "antigravity"],
+      ["secret-tool", "search", "service", "gemini", "username", "antigravity"],
+    ]);
+  });
+
+  it("shows Antigravity as locked when the Linux keyring lists its item but keeps the secret locked", async () => {
+    commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic\nattribute.service = gemini");
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.providers).toHaveLength(1);
+    expect(report.providers[0]).toMatchObject({ id: "antigravity", problem: "locked" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("reads Antigravity's token file over a locked Linux keyring, without searching the keyring", async () => {
+    write(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), { token: { access_token: "ya29-file", expiry: new Date(NOW + HOUR).toISOString() } });
+    commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic");
+    replies.set("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", { body: { response: { groups: [] } } });
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report.providers).toMatchObject([{ id: "antigravity", problem: null }]);
+    expect((requests[0]!.init.headers as Record<string, string>)["authorization"]).toBe("Bearer ya29-file");
+    expect(commandCalls.filter(([command]) => command === "secret-tool")).toEqual([["secret-tool", "lookup", "service", "gemini", "username", "antigravity"]]);
+  });
+
+  it("treats a listed item whose secret the search itself reads as no sign-in, not a locked keyring", async () => {
+    commands.set("secret-tool search service gemini username antigravity", "[/9]\nlabel = \nschema = org.freedesktop.Secret.Generic\nattribute.service = gemini\nsecret = not-empty");
+    const report = await new UsageService(context("linux"), only("antigravity")).report();
+    expect(report).toEqual({ server_time: expect.any(String), providers: [] });
+    expect(requests).toHaveLength(0);
   });
 
   it("names secret-tool when Linux lacks it and no Antigravity sign-in was found, and looks again on the next report", async () => {
@@ -925,13 +1044,13 @@ describe("providers", () => {
    * OpenCode 2's own credential store, the `credential` table of the DB `server/opencode.ts` reads;
    * `v1` leaves out `session_v2`, as in a 1.x store, whose `credential` table stays empty.
    */
-  function opencodeStore(rows: Array<{ id?: string; integration?: string; value: unknown; active?: number | null; updated?: number }>, dir = join(home, ".local", "share", "opencode"), v1 = false) {
+  function opencodeStore(rows: Array<{ id?: string; integration?: string; label?: string; value: unknown; active?: number | null; updated?: number }>, dir = join(home, ".local", "share", "opencode"), v1 = false) {
     mkdirSync(dir, { recursive: true });
     const db = new Database(join(dir, "opencode.db"));
     db.exec("create table credential (id text primary key, integration_id text, label text, value text, active integer, time_created integer, time_updated integer)");
     if (!v1) db.exec("create table session_v2 (id text primary key)");
     const insert = db.query("insert into credential values (?, ?, ?, ?, ?, ?, ?)");
-    rows.forEach((row, i) => insert.run(row.id ?? `cred_${i}`, row.integration ?? "opencode-go", "OpenCode Go", JSON.stringify(row.value), row.active === undefined ? 1 : row.active, i, row.updated ?? i));
+    rows.forEach((row, i) => insert.run(row.id ?? `cred_${i}`, row.integration ?? "opencode-go", row.label ?? "OpenCode Go", JSON.stringify(row.value), row.active === undefined ? 1 : row.active, i, row.updated ?? i));
     db.close();
   }
 
@@ -963,6 +1082,155 @@ describe("providers", () => {
   it("leaves out the auth.json OpenCode 2 no longer reads when its store holds no key", async () => {
     opencodeStore([{ value: { type: "oauth", methodID: "browser", refresh: "rt" }, active: null }]);
     write(join(home, ".local", "share", "opencode", "auth.json"), { "opencode-go": { type: "api", key: "oc_sk_signed_out" } });
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  /** A device sign-in as OpenCode 2 stores it: the console account and workspace in `metadata`, both tokens beside it. */
+  const opencodeOauth = (metadata: Record<string, unknown> | null = { server: "https://console.opencode.ai", accountID: "acc_1", email: "me@example.com", orgID: "wrk_1", orgName: "Personal" }, expires = NOW + 24 * HOUR) =>
+    ({ type: "oauth", methodID: "device", refresh: "oc_refresh", access: "oc_access", expires, ...(metadata ? { metadata } : {}) });
+  const OPENCODE_USAGE = "https://opencode.ai/zen/go/v1/usage";
+
+  it("reads the Go limits of OpenCode 2's active OAuth sign-in as OpenCode asks for them", async () => {
+    opencodeStore([
+      { integration: "opencode", label: "Personal", value: { ...opencodeOauth(), access: "oc_access_old" }, active: 0 },
+      { integration: "opencode", label: "Personal", value: opencodeOauth(), active: 1 },
+    ]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 12 } } } });
+    const report = await new UsageService(context("linux"), only("opencode")).report();
+    expect(report.providers).toMatchObject([{ id: "opencode", key: "opencode:acc_1__wrk_1", account: "me@example.com", plan: "Go", problem: null, windows: [{ kind: "week", scope: null, used_percent: 12 }] }]);
+    expect(requests.map((request) => request.init.headers)).toMatchObject([{ authorization: "Bearer oc_access", "x-opencode-org-id": "wrk_1" }]);
+    expect(requests[0]?.init.redirect).toBe("manual");
+    expect(JSON.stringify(report)).not.toMatch(/oc_access|oc_refresh/);
+  });
+
+  // a key names no account, so one without Go is not listed; an OAuth sign-in is an account, signed in either way (#4683)
+  it("lists an OpenCode OAuth sign-in without Go as signed in, with no limits", async () => {
+    opencodeStore([{ integration: "opencode", label: "Personal", value: opencodeOauth(), active: 1 }]);
+    replies.set(OPENCODE_USAGE, { status: 403 });
+    const { providers } = await new UsageService(context("linux"), only("opencode")).report();
+    expect(providers).toMatchObject([{ id: "opencode", account: "me@example.com", plan: null, windows: [], problem: null }]);
+  });
+
+  it("still leaves out an OpenCode key without Go", async () => {
+    opencodeStore([{ value: { type: "key", key: "oc_sk_zen_only" } }]);
+    replies.set(OPENCODE_USAGE, { status: 403 });
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toEqual([]);
+  });
+
+  it("keeps OpenCode environment-key limits alongside a sign-in without a workspace", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth({ accountID: "acc_1", email: "me@example.com" }) }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 7 } } } });
+    const { providers } = await new UsageService({ ...context(), env: { OPENCODE_API_KEY: "oc_sk_env" } }, only("opencode")).report();
+    expect(providers).toHaveLength(2);
+    expect(providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account: "me@example.com", windows: [] }),
+      expect.objectContaining({ plan: "Go", windows: [expect.objectContaining({ kind: "week", used_percent: 7 })] }),
+    ]));
+    expect(requests.map((request) => new Headers(request.init.headers).get("authorization"))).toEqual(["Bearer oc_sk_env"]);
+  });
+
+  it("keeps the OpenCode OAuth account visible when an imported key has no Go subscription", async () => {
+    opencodeStore([
+      { integration: "opencode-go", value: { type: "key", key: "oc_sk_imported" }, active: null },
+      { integration: "opencode", value: opencodeOauth() },
+    ]);
+    replies.set(OPENCODE_USAGE, { status: 403 });
+    const { providers } = await new UsageService(context(), only("opencode")).report();
+    expect(providers).toMatchObject([{ account: "me@example.com", windows: [], problem: null }]);
+    expect(requests.map((request) => new Headers(request.init.headers).get("authorization"))).toEqual(
+      expect.arrayContaining(["Bearer oc_sk_imported", "Bearer oc_access"]),
+    );
+  });
+
+  it("keeps OpenCode environment-key limits when the OAuth workspace sign-in is expired", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth(undefined, NOW - HOUR) }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 7 } } } });
+    const { providers } = await new UsageService({ ...context(), env: { OPENCODE_API_KEY: "oc_sk_env" } }, only("opencode")).report();
+    expect(providers).toHaveLength(2);
+    expect(providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ account: "me@example.com", problem: "expired", windows: [] }),
+      expect.objectContaining({ plan: "Go", problem: null, windows: [expect.objectContaining({ kind: "week", used_percent: 7 })] }),
+    ]));
+    expect(requests.map((request) => new Headers(request.init.headers).get("authorization"))).toEqual(["Bearer oc_sk_env"]);
+  });
+
+  it("does not carry OpenCode usage across consoles with matching account and workspace IDs", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth() }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 12 } } } });
+    const service = new UsageService(context(), only("opencode"));
+    const first = await service.report();
+    expect(first.providers).toMatchObject([{ account: "me@example.com", windows: [{ used_percent: 12 }] }]);
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([{ integration: "opencode", value: opencodeOauth({
+      server: "https://console.example.com", accountID: "acc_1", orgID: "wrk_1", email: "other@example.com",
+    }, NOW - HOUR) }]);
+    now += MIN_REFRESH_MS;
+    const second = await service.report(true);
+    expect(second.providers).toMatchObject([{ account: "other@example.com", windows: [], problem: "expired" }]);
+    expect(second.providers[0]?.key).not.toBe(first.providers[0]?.key);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("keeps OpenCode rate-limit backoff with its issuing console after a credential switch", async () => {
+    opencodeStore([{ integration: "opencode", value: opencodeOauth() }]);
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 12 } } } });
+    const service = new UsageService(context(), only("opencode"));
+    expect((await service.report()).providers).toMatchObject([{ account: "me@example.com", windows: [{ used_percent: 12 }] }]);
+
+    now += MIN_REFRESH_MS;
+    replies.set(OPENCODE_USAGE, { status: 429, headers: { "retry-after": "3600" } });
+    expect((await service.report(true)).providers).toMatchObject([{ account: "me@example.com", problem: "rate_limited", windows: [{ used_percent: 12 }] }]);
+
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([{ integration: "opencode", value: opencodeOauth({
+      server: "https://console.example.com", accountID: "acc_1", orgID: "wrk_1", email: "other@example.com",
+    }) }]);
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers).toMatchObject([{ account: "other@example.com", problem: null, windows: [] }]);
+
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([{ integration: "opencode", value: opencodeOauth() }]);
+    now += MIN_REFRESH_MS;
+    expect((await service.report(true)).providers).toMatchObject([{ account: "me@example.com", problem: "rate_limited", windows: [] }]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("names an OpenCode OAuth sign-in by its row's label and asks nothing when it names no workspace or another server", async () => {
+    for (const metadata of [null, { accountID: "acc_1", orgID: "wrk_1", server: "https://console.example.com" }]) {
+      rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+      opencodeStore([{ id: "cred_a", integration: "opencode", label: "Personal", value: opencodeOauth(metadata), active: 1 }]);
+      const { providers } = await new UsageService(context("linux"), only("opencode")).report();
+      expect(providers).toMatchObject([{ id: "opencode", account: "Personal", plan: null, windows: [], problem: null }]);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it("reports an OpenCode OAuth sign-in whose access token ran out as expired, asking nothing", async () => {
+    opencodeStore([{ integration: "opencode", label: "Personal", value: opencodeOauth(undefined, NOW - HOUR), active: 1 }]);
+    const { providers } = await new UsageService(context("linux"), only("opencode")).report();
+    expect(providers).toMatchObject([{ id: "opencode", account: "me@example.com", problem: "expired", windows: [] }]);
+    expect(requests).toEqual([]);
+  });
+
+  it("reads an OpenCode key ahead of an OAuth sign-in, and the row OpenCode has active within one integration", async () => {
+    replies.set(OPENCODE_USAGE, { body: { usage: { weekly: { percent: 5 } } } });
+    opencodeStore([
+      { integration: "opencode", label: "Personal", value: opencodeOauth(), active: 1 },
+      { integration: "opencode-go", value: { type: "key", key: "oc_sk_go" }, active: 1 },
+    ]);
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toMatchObject([{ id: "opencode", account: null, plan: "Go" }]);
+    rmSync(join(home, ".local", "share", "opencode"), { recursive: true, force: true });
+    opencodeStore([
+      { integration: "opencode", label: "Personal", value: opencodeOauth(), active: 0 },
+      { integration: "opencode", value: { type: "key", key: "oc_sk_zen" }, active: 1 },
+    ]);
+    expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toMatchObject([{ id: "opencode", account: null, plan: "Go" }]);
+    expect(requests.map((request) => (request.init.headers as Record<string, string>)["authorization"])).toEqual(["Bearer oc_sk_go", "Bearer oc_sk_zen"]);
+  });
+
+  it("takes an OpenCode OAuth row that is not active for no sign-in", async () => {
+    opencodeStore([{ integration: "opencode", label: "Personal", value: opencodeOauth(), active: 0 }]);
     expect((await new UsageService(context("linux"), only("opencode")).report()).providers).toEqual([]);
     expect(requests).toEqual([]);
   });
@@ -1573,7 +1841,9 @@ describe("the service", () => {
     const warn = console.warn;
     console.warn = () => {};
     try {
-      expect((await service.report()).providers[0]!.problem).toBe("failed");
+      const [failed] = (await service.report()).providers;
+      expect(failed).toMatchObject({ problem: "failed", failure: "upstream" });
+      expect(failed).not.toHaveProperty("statusline_offer");
       now += RETRY_MS;
       replies.set(CODEX_USAGE, codexReply());
       expect((await service.report()).providers[0]!.problem).toBeNull();
@@ -1594,7 +1864,7 @@ describe("bounded reads", () => {
     const warn = console.warn;
     console.warn = () => {};
     try {
-      expect((await new UsageService(context(), only("codex")).report()).providers[0]!.problem).toBe("failed");
+      expect((await new UsageService(context(), only("codex")).report()).providers[0]).toMatchObject({ problem: "failed", failure: "bad_response" });
     } finally { console.warn = warn; }
   });
 

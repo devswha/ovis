@@ -4,13 +4,14 @@
  * terminal; input that is not a terminal answers nothing.
  */
 import type { RecoveryAction, RecoveryStanding } from "../shared/account-devices-api.ts";
+import { shortAccount } from "./plugin-cli.ts";
 
 export interface RecoverIo {
   out(text: string): void;
   terminal: boolean;
   platform: NodeJS.Platform;
   ask(question: string): Promise<string>;
-  send(request: RecoveryAction): Promise<unknown>;
+  send(request: RecoveryAction, timeoutSeconds?: number): Promise<unknown>;
 }
 
 interface WaitingRow {
@@ -22,7 +23,7 @@ interface WaitingRow {
   refusal: string | null;
 }
 
-const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all]\n";
+const USAGE = "usage: ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all | --restamp]\n";
 
 function terminalText(text: string): string {
   return text.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, (char) => {
@@ -37,17 +38,42 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
     return 1;
   }
   const [flag, ...ids] = args;
+  const restamp = flag === "--restamp";
   const targetAction = flag === "--remove" || flag === "--lift";
   const admitWithoutId = flag === "--admit" && ids.length === 0;
-  if (flag !== undefined && flag !== "--release" && flag !== "--undo" && flag !== "--admit" && flag !== "--revoke-all" && !targetAction) { io.out(USAGE); return 2; }
+  if (flag !== undefined && flag !== "--release" && flag !== "--undo" && flag !== "--admit" && flag !== "--revoke-all" && !targetAction && !restamp) { io.out(USAGE); return 2; }
   if (flag === "--admit" && ids.length > 1) { io.out(USAGE); return 2; }
   if (admitWithoutId) io.out(USAGE);
-  if (((flag === "--release" || targetAction) && ids.length === 0) || (flag === "--revoke-all" && ids.length !== 0)) { io.out(USAGE); return 2; }
+  if (((flag === "--release" || targetAction) && ids.length === 0) || ((flag === "--revoke-all" || restamp) && ids.length !== 0)) { io.out(USAGE); return 2; }
+  if (restamp && !io.terminal) {
+    io.out("Restamp needs a terminal on this PC (over ssh, run ssh -t). Nothing was queued.\n");
+    return 1;
+  }
   if ((flag === "--release" || (flag === "--admit" && !admitWithoutId) || flag === "--revoke-all" || targetAction) && !io.terminal) {
     io.out("This is not run in a terminal, so nothing can be released here. Run it in a terminal on this PC (over ssh, run ssh -t).\n");
     return 1;
   }
   try {
+    if (restamp) {
+      const preview = await io.send({ act: "restamp" }) as { error?: string; confirm?: string; reconcile?: boolean; moves?: { old: string; new: string }[] };
+      if (preview.error !== undefined) { io.out(`${terminalText(preview.error)}\n`); return 1; }
+      if (preview.confirm === undefined || !Array.isArray(preview.moves) || (preview.moves.length === 0 && preview.reconcile !== true)) {
+        io.out("Ovis did not return a restamp plan.\n");
+        return 1;
+      }
+      for (const { old, new: next } of preview.moves) io.out(`${terminalText(old)} -> ${terminalText(next)}\n`);
+      const answer = (await io.ask(preview.reconcile === true
+        ? "Keep the independently changed current times and finish rollback on the next start? [y/N] "
+        : "Apply these timestamp changes on the next start? [y/N] ")).trim().toLowerCase();
+      if (answer !== "y" && answer !== "yes") { io.out("Not queued.\n"); return 0; }
+      const reply = await io.send({ act: "restamp", confirm: preview.confirm }) as { error?: string; queued?: boolean; install?: string };
+      if (reply.error !== undefined) { io.out(`${terminalText(reply.error)}\n`); return 1; }
+      if (reply.queued !== true) { io.out("Ovis did not queue the restamp.\n"); return 1; }
+      io.out("Restamp queued. No account or device timestamps have changed yet.\n");
+      io.out(reply.install === "plugin" ? "In herdr, run Stop Ovis, then Start Ovis.\n"
+        : reply.install === "desktop" ? "Quit and reopen Ovis to apply it.\n" : "Restart Ovis to apply it.\n");
+      return 0;
+    }
     if (targetAction || flag === "--revoke-all") {
       const confirmed: string[] = [];
       if (flag === "--revoke-all") {
@@ -135,6 +161,64 @@ export async function runRecover(args: readonly string[], io: RecoverIo): Promis
     io.out("Ovis did not answer on its recovery socket. Is it running on this PC, as this user, with recovery turned on?\n");
     return 1;
   }
+}
+
+export interface LogoutIo extends RecoverIo {
+  /** this PC's name, as `ovis login` lists it */
+  label: string;
+  /** the PC's account and its member count; null when Ovis does not answer */
+  account(): Promise<{ readonly account: string | null; readonly members: number } | null>;
+  /** takes this PC off `account`'s list at the account service, by its own proof; false where that did not happen */
+  leave(account: string): Promise<boolean>;
+}
+
+/**
+ * `ovis logout`: this PC leaves its Ovis account. The PC's account is cleared only with every row (docs/account.md,
+ * "Revoke all"; server/account/pc-binding.ts), so this is Revoke all, said as leaving the account and asked for with a
+ * typed yes at a terminal. Only once that went through is the PC taken off the account's list (`leave`); a service
+ * from before that route keeps listing it, and the command says to remove it in the app.
+ */
+export async function runLogout(io: LogoutIo): Promise<number> {
+  if (io.platform === "win32") {
+    io.out("On Windows, leave the account in Ovis on this PC: Settings → Devices and PCs → Revoke all.\n");
+    return 1;
+  }
+  const state = await io.account();
+  if (state === null) {
+    io.out("Could not read this PC's account: is Ovis running? Run ovis status.\n");
+    return 1;
+  }
+  if (state.account === null) {
+    io.out("This PC is in no Ovis account.\n");
+    return 0;
+  }
+  if (!io.terminal) {
+    io.out("ovis logout asks you to type yes, so it runs only in a terminal on this PC (over ssh, run ssh -t).\n");
+    return 1;
+  }
+  io.out(`This PC (${terminalText(io.label)}) is in Ovis account ${terminalText(shortAccount(state.account))}, with ${state.members} device${state.members === 1 ? "" : "s"} of it.\n`
+    + "Leaving cuts off every device that uses this PC: your account's devices, and also every device paired with a code.\n"
+    + "All of them are revoked (Revoke all) and must be paired again with ovis login or ovis pair.\n");
+  if ((await io.ask("Leave the account? Type yes: ")).trim() !== "yes") {
+    io.out("Nothing was changed.\n");
+    return 1;
+  }
+  let reply: unknown;
+  try { reply = await io.send({ act: "revoke_all" }); } catch {
+    io.out("Ovis did not answer on its recovery socket. Is it running on this PC, as this user, with recovery turned on?\n");
+    return 1;
+  }
+  const answer = reply as { revoked?: unknown; error?: unknown } | null;
+  if (typeof answer?.error === "string") { io.out(`Could not leave the account: ${terminalText(answer.error)}\n`); return 1; }
+  if (typeof answer?.revoked !== "number") { io.out("Ovis did not return a recovery result.\n"); return 1; }
+  const unlisted = await io.leave(state.account);
+  io.out([
+    `Left. This PC is in no account; ${answer.revoked} device${answer.revoked === 1 ? " was" : "s were"} revoked.`,
+    unlisted ? "Taken off your account's list of PCs." : "Your account may still list this PC: remove it in the Ovis app (Settings → Devices and PCs → Manage account).",
+    "To join again: ovis login",
+    "",
+  ].join("\n"));
+  return 0;
 }
 
 function describe(row: WaitingRow): string {

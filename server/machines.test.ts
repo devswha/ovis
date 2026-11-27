@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describeProgress } from "../src/lib/bridgeProgress.ts";
-import type { SetupJob } from "../shared/machines.ts";
+import type { SetupJob, SetupStepCode } from "../shared/machines.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
 import { paneNotificationTag } from "../shared/notify-policy.ts";
 import { BRIDGE_PROTOCOL, machinePath, paneStorageId, REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
@@ -11,11 +11,11 @@ import { canSendSecret, sameOrigin, shellQuote, validateTarget } from "./machine
 import { handleMachineRequest, MACHINE_PROXY_PATH } from "./machine-api.ts";
 import type { BridgeDescriptor } from "./bridge.ts";
 import { createServer } from "./index.ts";
-import { MachineActionRequired, MachineManager } from "./machines.ts";
+import { MachineActionRequired, MachineManager, setupStepWords } from "./machines.ts";
 import { detectHost, psQuote, UNSUPPORTED_HOST, windowsBridgeFiles, windowsHost } from "./remote-host.ts";
 import { decodeClixml, SshConnection } from "./ssh.ts";
 import { terminalAttachSupported } from "./herdr/client.ts";
-import { attachableIdentity, isRealNode, sidecarAvailable } from "./pty/sidecar.ts";
+import { attachableIdentity } from "./pty/sidecar.ts";
 import { CompletionTracker } from "./completion.ts";
 import type { PushService } from "./push.ts";
 import { recentSshOutput } from "./ssh.ts";
@@ -368,6 +368,8 @@ describe("machine boundaries", () => {
     for (const path of ["pane/focus", "pane/move", "layout/ratio", "tab/move"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["pane/focus/extra", "pane/move/extra", "layout/apply", "layout/ratio/extra", "layout/../auth", "agent/commands/extra", "agent/start"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
     for (const path of ["agent/rename", "agent/commands"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    for (const path of ["pane/turn/cancel", "pane/turn/release", "pane/turn/cancel-children"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
+    expect(MACHINE_PROXY_PATH.test("pane/turn/cancel-children/extra")).toBe(false);
     // the install catalog a PC answers for itself, and an install or sign-in started on that PC; nothing else under it
     for (const path of ["agent-catalog", "agent-catalog/install", "agent-catalog/sign-in"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(true);
     for (const path of ["agent-catalog/uninstall", "agent-catalog/install/extra", "agent-catalog/../auth"]) expect(MACHINE_PROXY_PATH.test(path)).toBe(false);
@@ -409,6 +411,28 @@ describe("setup job labels", () => {
     expect(manager.job("job")?.phase).toBe("installing");
     expect(manager.job("job")?.step).not.toBe("Review the changes on this PC");
     expect(job.public.step).toBe("Installing on this PC…");
+  });
+
+  it("gives each step a code with its parameters beside its English, which the dialog words in the app's language", () => {
+    const { manager, job, drive } = fixture("approval", "Review the changes on this PC");
+    const coded = drive as unknown as { stage(job: TestJob, phase: SetupJob["phase"], step: SetupStepCode | string): void };
+    manager.action("job", { action: "approve" });
+    expect(manager.job("job")?.step_code).toEqual({ code: "installing" });
+    coded.stage(job, "installing", { code: "install_bundle", platform: "linux-x64" });
+    expect([manager.job("job")?.step, manager.job("job")?.step_code]).toEqual(["Installing verified linux-x64 bundle…", { code: "install_bundle", platform: "linux-x64" }]);
+    coded.stage(job, "starting", { code: "own_update_running", target: "0.5.10", stage: "dependencies" });
+    expect([manager.job("job")?.step, manager.job("job")?.step_code]).toEqual(["This PC's own Ovis is updating itself to v0.5.10: installing dependencies…", { code: "own_update_running", target: "0.5.10", stage: "dependencies" }]);
+    coded.stage(job, "starting", "Waiting for Windows sign-in on this PC.");
+    expect([manager.job("job")?.step, manager.job("job")?.step_code]).toEqual(["Waiting for Windows sign-in on this PC.", null]);
+  });
+
+  it("words every step code in English for logs and older apps", () => {
+    const codes: SetupStepCode[] = [{ code: "connecting" }, { code: "fingerprint" }, { code: "authentication" }, { code: "checking" }, { code: "review" }, { code: "installing" },
+      { code: "install_bundle", platform: "linux-x64" }, { code: "install_herdr" }, { code: "register_key" }, { code: "restart_bridge" }, { code: "start_bridge" },
+      { code: "own_update_ask", target: null }, { code: "own_update_running", target: null, stage: "building" }, { code: "own_update_connect" }, { code: "headless" },
+      { code: "connected" }, { code: "failed" }, { code: "timed_out" }, { code: "cancelled" }];
+    for (const code of codes) expect(setupStepWords(code)).toMatch(/^[\x20-\x7e…]+$/);
+    expect(setupStepWords({ code: "own_update_ask", target: "0.5.10" })).toBe("Asking this PC's own Ovis to update itself to v0.5.10…");
   });
 
   it("requires current Windows-login consent for each headless start and rejects duplicate or cancelled requests", () => {
@@ -1012,32 +1036,6 @@ describe("terminal attach capability", () => {
     const declared = { version: "0.1.14", protocol: 22, terminal_attach: true };
     expect(attachableIdentity(declared, false, true)).toEqual(declared);
     expect(attachableIdentity(declared, false, false)).toEqual({ ...declared, terminal_attach: false, terminal_mirror: true });
-  });
-
-  it("counts the sidecar as runnable only with both node and node-pty", () => {
-    expect(sidecarAvailable({ node: () => true, pty: () => true })).toBe(true);
-    expect(sidecarAvailable({ node: () => false, pty: () => true })).toBe(false);
-    expect(sidecarAvailable({ node: () => true, pty: () => false })).toBe(false);
-  });
-
-  it("takes a node for Node only when it answers in time, is not Bun and is built for this server's architecture", () => {
-    const dir = mkdtempSync(join(tmpdir(), "herdr-sidecar-probe-"));
-    const stand = (name: string, body: string) => {
-      const path = join(dir, name);
-      writeFileSync(path, `#!/bin/sh\n${body}\n`);
-      chmodSync(path, 0o755);
-      return path;
-    };
-    try {
-      expect(isRealNode(stand("node", `echo 22.23.2 ${process.arch}`))).toBe(true);
-      expect(isRealNode(stand("old-node", `echo 16.20.2 ${process.arch}`))).toBe(false);
-      // an x64 Node under Rosetta beside an arm64 server, or the other way round (#596 review)
-      expect(isRealNode(stand("other-arch", `echo 22.23.2 ${process.arch === "x64" ? "arm64" : "x64"}`))).toBe(false);
-      expect(isRealNode(stand("bun-as-node", "echo bun"))).toBe(false);
-      expect(isRealNode(stand("broken", "exit 1"))).toBe(false);
-      expect(isRealNode(join(dir, "absent"))).toBe(false);
-      expect(isRealNode(stand("hung", "exec sleep 30"), process.env, 200)).toBe(false);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

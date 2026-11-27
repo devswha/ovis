@@ -2,9 +2,58 @@
  * The `ovis recover` command (device-row-states rows T70, R11, N6, E41, E46): it lists the rows that wait for a whole
  * read, releases the ones its user names one at a time at a terminal, and undoes releases.
  */
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { RecoveryAction } from "../shared/account-devices-api.ts";
-import { runRecover, type RecoverIo } from "./plugin-recover.ts";
+import { runLogout, runRecover, type RecoverIo } from "./plugin-recover.ts";
+
+test.each([
+  ["linux", false, "yes", "other", 1, 0, /terminal/i],
+  ["win32", true, "yes", "desktop", 1, 0, /Windows/],
+  ["linux", true, "no", "other", 0, 1, /Not queued/],
+  ["linux", true, "yes", "plugin", 0, 2, /Stop Ovis.*Start Ovis/],
+  ["darwin", true, "yes", "desktop", 0, 2, /Quit and reopen Ovis/],
+  ["linux", true, "yes", "other", 0, 2, /Restart Ovis/],
+] as const)("restamp 9: %s terminal=%p answer=%s install=%s", async (platform, terminal, answer, install, exit, requests, wording) => {
+  const transcript: string[] = [];
+  const sent: RecoveryAction[] = [];
+  const old = "2026-10-17T12:00:00.000Z";
+  const next = "2026-10-15T12:00:00.001Z";
+  const status = await runRecover(["--restamp"], {
+    platform, terminal,
+    out: (text) => { transcript.push(text); },
+    ask: async (prompt) => {
+      expect(transcript.join("")).toContain(`${old} -> ${next}`);
+      expect(prompt).toContain("[y/N]");
+      return answer;
+    },
+    send: async (request) => {
+      sent.push(request);
+      if (sent.length === 1) return { confirm: "test-plan", moves: [{ old, new: next }] };
+      expect(request).toEqual({ act: "restamp", confirm: "test-plan" });
+      return { queued: true, install };
+    },
+  });
+  expect(status).toBe(exit);
+  expect(sent).toHaveLength(requests);
+  expect(transcript.join("")).toMatch(wording);
+});
+
+test("restamp explicitly confirms retaining independently changed times with no timestamp moves", async () => {
+  const sent: RecoveryAction[] = [];
+  const status = await runRecover(["--restamp"], {
+    terminal: true, platform: "linux", out: () => {},
+    ask: async prompt => {
+      expect(prompt).toMatch(/keep.*current.*times/i);
+      return "yes";
+    },
+    send: async request => {
+      sent.push(request);
+      return sent.length === 1 ? { confirm: "reconcile", moves: [], reconcile: true } : { queued: true };
+    },
+  });
+  expect(status).toBe(0);
+  expect(sent).toEqual([{ act: "restamp" }, { act: "restamp", confirm: "reconcile" }]);
+});
 
 const rows = [
   { id: "a1", label: "Phone", origin: { from: "remote", how: "list" }, waiting: "catching_up", last_seen_at: "2026-11-19T10:00:00Z", refusal: null },
@@ -254,4 +303,78 @@ test("P22/T70: in the plain list, a waiting device's fingerprint stands on its o
   const at = lines.findIndex((line) => line.includes("Phone AB12-CD34"));
   expect(lines[at]!.includes("ZZ99-YY88")).toBe(false);
   expect(lines.slice(at + 1).some((line) => line.trim().startsWith("key ZZ99-YY88"))).toBe(true);
+});
+
+describe("ovis logout", () => {
+  const inAccount = async () => ({ account: "acct_1", members: 2 });
+
+  test("Revoke all, after a typed yes at a terminal, said as leaving the account", async () => {
+    const at = io({ answers: ["yes"] });
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(0);
+    expect(at.sent).toEqual([{ act: "revoke_all" }]);
+    expect(at.prompts).toEqual(["Leave the account? Type yes: "]);
+    expect(at.text()).toContain("This PC (desk) is in Ovis account acct_1, with 2 devices of it.");
+    expect(at.text()).toContain("Left. This PC is in no account; 2 devices were revoked.");
+  });
+
+  test("names the account in the short form ovis login uses, never its whole id", async () => {
+    const at = io({ answers: ["no"] });
+    await runLogout({ ...at.value, label: "desk", account: async () => ({ account: "acct_0123456789abcdef", members: 1 }), leave: async () => false });
+    expect(at.text()).toContain("This PC (desk) is in Ovis account acct_0123456, with 1 device of it.");
+    expect(at.text()).not.toContain("789abcdef");
+  });
+
+  test.each(["y", "", "YES please"])("%j is not yes: nothing is sent", async (answer) => {
+    const at = io({ answers: [answer] });
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
+    expect(at.sent).toEqual([]);
+    expect(at.text()).toContain("Nothing was changed.");
+  });
+
+  test("without a terminal nothing is asked or sent", async () => {
+    const at = io({ terminal: false });
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
+    expect([at.sent, at.prompts]).toEqual([[], []]);
+  });
+
+  test("takes the PC off the account's list after the local leave, and says when that did not happen", async () => {
+    const left: string[] = [];
+    const at = io({ answers: ["yes"] });
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async (account) => { left.push(account); return at.sent.length === 1; } })).toBe(0);
+    expect(left).toEqual(["acct_1"]);
+    expect(at.text()).toContain("Taken off your account's list of PCs.");
+    const kept = io({ answers: ["yes"] });
+    expect(await runLogout({ ...kept.value, label: "desk", account: inAccount, leave: async () => false })).toBe(0);
+    expect(kept.text()).toContain("Your account may still list this PC");
+  });
+
+  test("leaves the list only once the local leave went through", async () => {
+    const left: string[] = [];
+    for (const at of [io({ answers: ["no"] }), io({ answers: ["yes"], writeError: "log_unreadable" })]) {
+      await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async (account) => { left.push(account); return true; } });
+    }
+    expect(left).toEqual([]);
+  });
+
+  test("a PC in no account has nothing to leave", async () => {
+    const at = io();
+    expect(await runLogout({ ...at.value, label: "desk", account: async () => ({ account: null, members: 0 }), leave: async () => false })).toBe(0);
+    expect(at.text()).toBe("This PC is in no Ovis account.\n");
+    expect(at.sent).toEqual([]);
+  });
+
+  test("a refusal and an unanswered socket are failures", async () => {
+    const refused = io({ answers: ["yes"], writeError: "log_unreadable" });
+    expect(await runLogout({ ...refused.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
+    expect(refused.text()).toContain("Could not leave the account: log_unreadable");
+    const away = io({ answers: ["yes"], unreachable: true });
+    expect(await runLogout({ ...away.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
+    expect(away.text()).toContain("recovery socket");
+  });
+
+  test("Windows is sent to the app's Revoke all", async () => {
+    const at = io({ platform: "win32" });
+    expect(await runLogout({ ...at.value, label: "desk", account: inAccount, leave: async () => false })).toBe(1);
+    expect(at.sent).toEqual([]);
+  });
 });

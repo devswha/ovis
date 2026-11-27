@@ -124,8 +124,12 @@ export function openRecoverySocket(options: {
 }
 
 /** One request to the recovery socket of `stateDir`, as `ovis recover` sends it. */
-export function askRecovery(stateDir: string, request: unknown): Promise<unknown> {
-  const path = join(stateDir, RECOVER_DIR, RECOVER_SOCKET);
+export function askRecovery(stateDir: string, request: unknown, timeoutSeconds?: number): Promise<unknown> {
+  return askRecoverySocket(join(stateDir, RECOVER_DIR, RECOVER_SOCKET), request, timeoutSeconds);
+}
+
+/** One request to a recovery socket at `path`: this PC's own, or another PC's forwarded over SSH (server/machines.ts). */
+export function askRecoverySocket(path: string, request: unknown, timeoutSeconds?: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
     let buffered = "";
@@ -137,7 +141,10 @@ export function askRecovery(stateDir: string, request: unknown): Promise<unknown
       else resolve(value);
     };
     Bun.connect({ unix: path, socket: {
-      open(socket) { socket.write(`${JSON.stringify(request)}\n`); },
+      open(socket) {
+        if (timeoutSeconds !== undefined) socket.timeout(timeoutSeconds);
+        socket.write(`${JSON.stringify(request)}\n`);
+      },
       data(_socket, chunk) {
         if (settled) return;
         buffered += decoder.decode(chunk, { stream: true });
@@ -146,6 +153,7 @@ export function askRecovery(stateDir: string, request: unknown): Promise<unknown
         try { settle(null, JSON.parse(buffered.slice(0, newline))); } catch (error) { settle(error as Error); }
       },
       close() { settle(new Error("The server answered nothing on its recovery socket")); },
+      timeout() { settle(new Error("The recovery socket timed out")); },
       error(_socket, error) { settle(error); },
       connectError(_socket, error) { settle(error); },
     } }).catch((error: unknown) => settle(error instanceof Error ? error : new Error(String(error))));
