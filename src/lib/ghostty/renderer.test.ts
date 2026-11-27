@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createRowsRenderer } from "./renderer.ts";
-import { STYLE_UNDERLINE_MASK, type GhosttyRun, type GhosttyVt } from "./vt.ts";
+import { STYLE_INVERSE, STYLE_UNDERLINE_MASK, type GhosttyRun, type GhosttyVt } from "./vt.ts";
 import { rowHtml } from "../terminalFold.ts";
 import { testTerminal } from "./testTerminal.test-support.ts";
 
@@ -70,7 +70,7 @@ afterEach(() => {
   else delete (globalThis as { document?: unknown }).document;
 });
 
-function renderRows(rows: GhosttyRun[][], selection: (y: number) => readonly [number, number] | null = () => null) {
+function renderRows(rows: GhosttyRun[][], selection: (y: number) => readonly [number, number] | null = () => null, next: GhosttyRun[][] = rows) {
   Object.defineProperty(globalThis, "document", {
     configurable: true,
     value: { createElement: (tag: string) => makeElement(tag) },
@@ -80,7 +80,8 @@ function renderRows(rows: GhosttyRun[][], selection: (y: number) => readonly [nu
   const vt = {
     setColors() {},
     frame(draw: (y: number, runs: GhosttyRun[]) => void) {
-      for (let y = 0; y < rows.length; y++) draw(y, rows[y]!);
+      const drawn = frameIndex === 0 ? rows : next;
+      for (let y = 0; y < drawn.length; y++) draw(y, drawn[y]!);
       frameIndex++;
       return frameIndex > 0;
     },
@@ -99,7 +100,7 @@ function renderRows(rows: GhosttyRun[][], selection: (y: number) => readonly [nu
   }));
   renderer.fit(40, rows.length, 8, 16);
   renderer.draw(selection, true, true);
-  // Second draw exercises newLines() announcement with primed = true.
+  // the second draw announces the lines `next` changed
   renderer.draw(selection, true, true);
   const layer = screen.children[0]!;
   const textLayer = layer.children[1]!;
@@ -110,70 +111,50 @@ function renderRows(rows: GhosttyRun[][], selection: (y: number) => readonly [nu
   return { html, announced };
 }
 
-test("hides Kitty Unicode placeholders in the text layer while preserving columns, backgrounds and following text", () => {
-  const placeholder = "\u{10eeee}\u0305\u0305";
-  const nextCol = "\u{10eeee}\u0305\u030d";
-  const { html } = renderRows([
-    [
-      {
-        x: 1,
-        fg: "#000001",
-        bg: null,
-        flags: STYLE_UNDERLINE_MASK,
-        cells: [
-          { text: placeholder, wide: false },
-          { text: nextCol, wide: false },
-          { text: " ", wide: false },
-          { text: "O", wide: false },
-          { text: "K", wide: false },
-        ],
-      },
-    ],
-    [
-      {
-        x: 0,
-        fg: "#000002",
-        bg: "#112233",
-        flags: 0,
-        cells: [
-          { text: placeholder, wide: false },
-          { text: nextCol, wide: false },
-        ],
-      },
-    ],
-  ]);
+const placeholder = "\u{10eeee}\u0305\u0305";
+const nextCol = "\u{10eeee}\u0305\u030d";
+/** each painted span of a row: its style and its text */
+const spans = (html: string): { style: string; text: string }[] =>
+  [...html.matchAll(/<span style="([^"]*)">([^<]*)<\/span>/g)].map((m) => ({ style: m[1]!, text: m[2]! }));
 
-  expect(html[0]).not.toContain("\u{10eeee}");
+test("hides Kitty Unicode placeholders in the text layer while preserving columns, backgrounds and following text", () => {
+  const { html } = renderRows([
+    [{ x: 1, fg: "#000001", bg: null, flags: STYLE_UNDERLINE_MASK, cells: [{ text: placeholder, wide: false }, { text: nextCol, wide: false }, { text: " ", wide: false }, { text: "O", wide: false }, { text: "K", wide: false }] }],
+    [{ x: 0, fg: "#000002", bg: "#112233", flags: 0, cells: [{ text: placeholder, wide: false }, { text: nextCol, wide: false }] }],
+  ]);
+  expect(html.join("")).not.toContain("\u{10eeee}");
   expect(html[0]).not.toContain("ghostty-icon");
-  expect(html[0]).toContain('<span style="left:calc(var(--ghostty-cw)*1)">  </span>');
-  expect(html[0]).toContain('left:calc(var(--ghostty-cw)*3)');
-  expect(html[0]).toContain("> OK</span>");
-  expect(html[1]).toBe('<span style="left:calc(var(--ghostty-cw)*0);background:#112233">  </span>');
+  const [blank, text] = spans(html[0]!);
+  expect(blank!.text).toBe("  ");
+  expect(blank!.style).toContain("left:calc(var(--ghostty-cw)*1)");
+  expect(blank!.style).not.toContain("underline");
+  expect(text!.text).toBe(" OK");
+  expect(text!.style).toContain("left:calc(var(--ghostty-cw)*3)");
+  expect(text!.style).toContain("underline");
+  expect(spans(html[1]!).map((span) => span.text)).toEqual(["  "]);
+  expect(html[1]).toContain("background:#112233");
 });
 
-test("omits placeholder background on selected cells and keeps placeholders out of announcements", () => {
-  const placeholder = "\u{10eeee}\u0305\u0305";
-  const { html, announced } = renderRows(
-    [
-      [
-        {
-          x: 0,
-          fg: "#000001",
-          bg: "#112233",
-          flags: 0,
-          cells: [
-            { text: placeholder, wide: false },
-            { text: placeholder, wide: false },
-          ],
-        },
-      ],
-    ],
+test("a placeholder under reverse video paints the background its neighbour of the same style paints", () => {
+  const { html } = renderRows([[{ x: 0, fg: "#aabbcc", bg: "#112233", flags: STYLE_INVERSE, cells: [{ text: placeholder, wide: false }, { text: "x", wide: false }] }]]);
+  const backgrounds = spans(html[0]!).map((span) => /background:([^;]*)/.exec(span.style)?.[1]);
+  expect(backgrounds).toEqual(["#aabbcc", "#aabbcc"]);
+});
+
+test("omits placeholder background on selected cells", () => {
+  const { html } = renderRows(
+    [[{ x: 0, fg: "#000001", bg: "#112233", flags: 0, cells: [{ text: placeholder, wide: false }, { text: placeholder, wide: false }] }]],
     (y) => (y === 0 ? [0, 1] : null),
   );
+  const [selected, unselected] = spans(html[0]!);
+  expect(selected!.style).not.toContain("background");
+  expect(unselected!.style).toContain("background:#112233");
+});
 
-  expect(html[0]).toBe(
-    '<span style="left:calc(var(--ghostty-cw)*0)"> </span><span style="left:calc(var(--ghostty-cw)*1);background:#112233"> </span>',
-  );
+test("announces a new line without its placeholders", () => {
+  const row = (text: string): GhosttyRun[] => [{ x: 0, fg: null, bg: null, flags: 0, cells: [{ text: placeholder, wide: false }, ...[...text].map((ch) => ({ text: ch, wide: false }))] }];
+  const { announced } = renderRows([row("")], () => null, [row(" done")]);
+  expect(announced).toContain("done");
   expect(announced).not.toContain("\u{10eeee}");
 });
 
@@ -186,7 +167,7 @@ test("folded row HTML replaces Kitty Unicode placeholders with spaces", async ()
     if (!line) throw new Error("missing line");
     const html = rowHtml(line, 20, { foreground: "#d4d4d4", background: "#1e1e1e" }, rows.getNullCell(), 4.5);
     expect(html).not.toContain("\u{10eeee}");
-    expect(html).toBe("   Swarm");
+    expect(html.replace(/<[^>]*>/g, "")).toBe("   Swarm");
   } finally {
     term.dispose();
   }

@@ -245,13 +245,10 @@ export function createRowsRenderer(screen: HTMLElement, vt: GhosttyVt, style: ()
     return `<span style="${(leaves ? box : [...box, ...glyph]).join(";")}">${body}</span>`;
   };
 
-  const placeholderHtml = (run: GhosttyRun, selected: boolean): string => {
-    const box = [`left:calc(var(--ghostty-cw)*${run.x})`];
-    if (run.bg && !selected) box.push(`background:${run.bg}`);
-    let count = 0;
-    for (const cell of run.cells) count += cell.wide ? 2 : 1;
-    return `<span style="${box.join(";")}">${" ".repeat(count)}</span>`;
-  };
+  // a placeholder cell is drawn as a blank cell of its style (inverse and selection included), undecorated: the image
+  // layer paints the placement
+  const placeholderHtml = (run: GhosttyRun, selected: boolean): string =>
+    pieceHtml({ ...run, flags: run.flags & ~(STYLE_UNDERLINE_MASK | STYLE_STRIKE), cells: run.cells.map((cell) => ({ ...cell, text: " " })) }, selected);
 
   const runHtml = (run: GhosttyRun, selected: readonly [number, number] | null): string => {
     const hasPlaceholder = run.cells.some((cell) => isKittyPlaceholder(cell.text));
