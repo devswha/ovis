@@ -9,7 +9,7 @@
       ],
       "improved": [
         "Claude, Copilot, Codex and Grok tell Ovis their state directly.",
-        "Every terminal runs on the Rust PTY host; node-pty is gone.",
+        "Linux and Mac terminals run on the Rust PTY host; node-pty is gone.",
         "Adding a PC over SSH shows each step with a progress bar.",
         "Beta desktop apps also take a release newer than their beta."
       ],
@@ -30,7 +30,7 @@
       ],
       "improved": [
         "Claude·Copilot·Codex·Grok이 상태를 Ovis에 직접 알려요.",
-        "모든 터미널이 Rust PTY 호스트에서 돌아요. node-pty는 빠졌어요.",
+        "리눅스·맥 터미널은 Rust PTY 호스트에서 돌아요. node-pty는 빠졌어요.",
         "SSH로 PC를 추가할 때 단계와 진행 막대가 보여요.",
         "베타 데스크톱 앱도 베타보다 새 정식 버전을 받아요."
       ],
@@ -51,7 +51,7 @@
       ],
       "improved": [
         "Claude・Copilot・Codex・Grok が状態を Ovis に直接伝えます。",
-        "すべてのターミナルが Rust PTY ホストで動き、node-pty はなくなりました。",
+        "Linux・Mac のターミナルは Rust PTY ホストで動き、node-pty はなくなりました。",
         "SSH で PC を追加するとき、手順と進捗バーが表示されます。",
         "ベータ版デスクトップアプリもベータより新しい正式版を受け取ります。"
       ],
@@ -72,7 +72,7 @@
       ],
       "improved": [
         "Claude、Copilot、Codex 和 Grok 直接向 Ovis 报告状态。",
-        "所有终端都运行在 Rust PTY 主机上，node-pty 已移除。",
+        "Linux 和 Mac 上的终端运行在 Rust PTY 主机上，node-pty 已移除。",
         "通过 SSH 添加 PC 时会显示步骤和进度条。",
         "测试版桌面应用也会更新到比测试版更新的正式版。"
       ],
