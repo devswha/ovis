@@ -282,6 +282,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Saved": "已保存",
   "Saved on this PC. Leave the field empty to keep it.": "已保存在这台电脑上。留空则保持不变。",
   "Messages have no link a phone can open yet. Save once from this PC's network address, not localhost or the relay.": "消息中还没有手机能打开的链接。请通过这台电脑的网络地址（不是 localhost 或中继）保存一次。",
+  "Link to the pane": "窗格链接",
+  "Adds a link that opens the pane to each message. Off sends only the text.": "在每条消息中附上打开窗格的链接。关闭后只发送文字。",
   "Send a test": "发送测试",
   "Test sent. Check the destination.": "已发送测试，请查看发送目标。",
   "Sends alerts to another app too, with the PC and pane names and a link to open the pane.": "提醒也会发送到其他应用，包含 PC、窗格名称和打开链接。",

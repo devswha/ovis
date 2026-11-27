@@ -6,7 +6,7 @@
  * alert-webhook.json in the state dir holds the destination, owner-only like the push keys: its URL
  * or token is what posts into someone's chat. It is never answered back, only masked.
  *
- * A message names the PC, the pane and what happened, with a link to open the pane; never what the
+ * A message names the PC, the pane and what happened, with a link to open the pane unless that is turned off; never what the
  * agent asked or answered, which would leave the PC for a third party.
  *
  * One post at a time, and at most one waiting: an alert that comes while another is being sent or
@@ -37,6 +37,8 @@ interface StoredWebhook {
   secret: string;
   chat_id?: string;
   alerts: AlertPrefs;
+  /** written only when turned off: messages leave the pane link out */
+  link?: false;
   link_base?: string;
   /** who saved it, as a push subscription's `device_id`: a device, null for a local/token sign-in, absent for the open LAN */
   owner?: string | null;
@@ -93,6 +95,7 @@ function parseStored(value: unknown): StoredWebhook | null {
     secret,
     ...(typeof record["chat_id"] === "string" ? { chat_id: record["chat_id"] } : {}),
     alerts: parseAlerts(record["alerts"]),
+    ...(record["link"] === false ? { link: false as const } : {}),
     ...(typeof record["link_base"] === "string" ? { link_base: record["link_base"] } : {}),
     ...(typeof record["owner"] === "string" || record["owner"] === null ? { owner: record["owner"] as string | null } : {}),
   };
@@ -141,7 +144,7 @@ interface Post { url: string; init: RequestInit }
 
 export function buildPost(stored: StoredWebhook, alert: WebhookAlert | null, telegramApi = "https://api.telegram.org"): Post {
   const text = alert ? alertText(alert) : "Ovis: alerts reach this destination";
-  const link = alert ? paneLink(stored.link_base, alert) : null;
+  const link = alert && stored.link !== false ? paneLink(stored.link_base, alert) : null;
   const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   switch (stored.preset) {
     case "ntfy":
@@ -245,6 +248,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       target: target ? maskSecret(target.preset, target.secret) : null,
       chat_id: target?.chat_id ?? null,
       alerts: target?.alerts ?? DEFAULT_ALERTS,
+      link: target?.link !== false,
       reachable_link: reachable(target?.link_base),
       last_success_at: iso(lastSuccess),
       last_failure_at: iso(lastFailure),
@@ -316,6 +320,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
       const saved: StoredWebhook = {
         preset: input.preset, secret, ...(chatId ? { chat_id: chatId } : {}),
         alerts: input.alerts === undefined ? same?.alerts ?? DEFAULT_ALERTS : parseAlerts(input.alerts),
+        ...((input.link ?? same?.link) === false ? { link: false as const } : {}),
         ...(base ? { link_base: base } : {}),
         ...(owner === undefined ? {} : { owner }),
       };
@@ -362,6 +367,7 @@ export async function handleAlertWebhookRequest(request: Request, pathname: stri
       ...(text("token") === undefined ? {} : { token: text("token")! }),
       ...(text("chat_id") === undefined ? {} : { chat_id: text("chat_id")! }),
       ...(body["alerts"] === undefined ? {} : { alerts: parseAlerts(body["alerts"]) }),
+      ...(typeof body["link"] === "boolean" ? { link: body["link"] } : {}),
     }, request.headers.get("origin") ?? new URL(request.url).origin, owner);
     return jsonResponse(saved, 200, noStore);
   } catch (error) {
