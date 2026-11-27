@@ -1,9 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { privateStateFs } from "../private-state.ts";
+import { createServer } from "../index.ts";
 import { bounded } from "../relay/test-helpers.ts";
-import { FROM, INTO, JOURNAL, MERGE, filesOf, movePc, reopen } from "./account-move.test-helpers.ts";
+import { ACCOUNT_SERVICE, FROM, INTO, JOURNAL, MERGE, filesOf, movePc, reopen } from "./account-move.test-helpers.ts";
 import type { Pc } from "./pairing.test-helpers.ts";
 import { PcAccountState } from "./pc-binding.ts";
 
@@ -20,6 +22,32 @@ const LISTED = "account-devices.json";
 const RELAY = join("relay", "account.json");
 const BOUNDARIES = [JOURNAL, "transfer-sent", ROWS, LISTED, PC, RELAY, "journal-gone"] as const;
 const cases = BOUNDARIES.flatMap(boundary => [false, true].map(cancel => [boundary, cancel] as const));
+
+test("starting a sibling without the relay identity keeps the pending transfer recoverable", async () => {
+  const { pc, order } = await movePc({ memberAge: 2 * 60 * 60_000, accountFetch: async (request, fake) => {
+    const response = await fake.fetch(request);
+    return new URL(request.url).pathname === "/v1/pc/transfer" && response.ok ? new Response(null, { status: 503 }) : response;
+  } });
+  pcs.push(pc);
+  expect((await order()).status).toBe(202);
+  await pc.app.stop();
+  const sibling = mkdtempSync(join(tmpdir(), "ovis-account-move-sibling-"));
+  try {
+    const second = createServer({ stateDir: sibling, siblingStateDir: pc.stateDir, port: 0, hostname: "127.0.0.1",
+      token: "", tailscaleOwner: null, sidecar: false, accountOpensAll: true, accountService: { url: ACCOUNT_SERVICE, fetch: pc.account.fetch } });
+    try {
+      expect(second.context.services.relay.currentIdentity()).toBeUndefined();
+      await second.context.services.accountMove?.idle();
+      expect([pc.stateDir, sibling].map(dir => existsSync(join(dir, JOURNAL)))).toEqual([true, true]);
+    } finally { await second.stop(); }
+    const resumed = reopen(pc, { siblingStateDir: sibling });
+    try {
+      await resumed.context.services.accountMove?.idle();
+      expect(resumed.context.services.devices.account()).toBe(INTO);
+      expect([pc.stateDir, sibling].map(dir => existsSync(join(dir, JOURNAL)))).toEqual([false, false]);
+    } finally { await resumed.stop(); }
+  } finally { rmSync(sibling, { recursive: true, force: true }); }
+});
 
 test.skipIf(process.platform === "win32").each(cases)("SIGKILL after %s (cancel before restart: %s)", async (boundary, cancel) => {
   const { pc, services, body } = await setup();
@@ -47,6 +75,7 @@ test.skipIf(process.platform === "win32").each(cases)("SIGKILL after %s (cancel 
     const { createServer } = await import(${JSON.stringify(join(import.meta.dir, "../index.ts"))});
     const { privateStateFs } = await import(${JSON.stringify(join(import.meta.dir, "../private-state.ts"))});
     const { join } = await import("node:path");
+    const { existsSync } = await import("node:fs");
     const app = createServer({
       stateDir: c.stateDir, port: 0, hostname: "127.0.0.1", token: "", tailscaleOwner: null, sidecar: false,
       accountOpensAll: true, accountService: { url: "https://account.test", fetch: async req => {
@@ -59,7 +88,7 @@ test.skipIf(process.platform === "win32").each(cases)("SIGKILL after %s (cancel 
     const rename = privateStateFs.renameSync;
     privateStateFs.renameSync = (from, to) => {
       rename(from, to);
-      if (String(to) === join(c.stateDir, c.boundary)) process.kill(process.pid, "SIGKILL");
+      if (String(to) === join(c.stateDir, c.boundary) && existsSync(join(c.stateDir, "account-move.json"))) process.kill(process.pid, "SIGKILL");
     };
     const unlink = privateStateFs.unlinkSync;
     privateStateFs.unlinkSync = path => {
@@ -125,7 +154,10 @@ test.each([[ROWS, "EIO"], [PC, "EPERM"], [PC, "EBUSY"], [RELAY, "EIO"], [JOURNAL
     const unlink = privateStateFs.unlinkSync;
     const fail = file === JOURNAL
       ? spyOn(privateStateFs, "unlinkSync").mockImplementation(at => { if (at === path) throw filesystemError(); unlink(at); })
-      : spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => { if (to === path) throw filesystemError(); rename(from, to); });
+      : spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+        if (to === path && existsSync(join(pc.stateDir, JOURNAL))) throw filesystemError();
+        rename(from, to);
+      });
     try {
       expect((await order()).body).toEqual({ state: "pending" });
       expect(pc.devices.account()).toBe(file === JOURNAL || file === RELAY ? INTO : FROM);
@@ -146,9 +178,15 @@ test.each([[ROWS, "EIO"], [PC, "EPERM"], [PC, "EBUSY"], [RELAY, "EIO"], [JOURNAL
 );
 
 test("a dead writer's lock delays a move but does not lose it", async () => {
-  const { pc, services, order } = await setup();
+  const { pc, services, order } = await movePc({ memberAge: 2 * 60 * 60_000, accountFetch: async (req, fake) => {
+    const response = await fake.fetch(req);
+    if (new URL(req.url).pathname === "/v1/pc/transfer" && response.ok) {
+      writeFileSync(join(pc.stateDir, `${PC}.lock`), "", { mode: 0o600 });
+    }
+    return response;
+  } });
+  pcs.push(pc);
   const path = join(pc.stateDir, `${PC}.lock`);
-  writeFileSync(path, "", { mode: 0o600 });
   expect((await order()).body).toEqual({ state: "pending" });
   expect(pc.devices.account()).toBe(FROM);
   const stale = new Date(Date.now() - 11_000);

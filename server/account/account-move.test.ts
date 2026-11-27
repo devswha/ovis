@@ -1,10 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { accountDeviceId } from "../../shared/account-records.ts";
+import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { privateStateFs } from "../private-state.ts";
 import { bounded, deferred, TestClock } from "../relay/test-helpers.ts";
-import { FROM, INTO, JOURNAL, LISTING, MERGE, filesOf, movePc } from "./account-move.test-helpers.ts";
+import { ACCOUNT_SERVICE, FROM, INTO, JOURNAL, LISTING, MERGE, filesOf, movePc } from "./account-move.test-helpers.ts";
+import { DeviceJournal } from "./device-journal.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { phone, type Pc } from "./pairing.test-helpers.ts";
 import { PcAccountState } from "./pc-binding.ts";
@@ -18,10 +19,12 @@ async function setup(options?: Parameters<typeof movePc>[0]) {
 }
 const route = (request: Request) => new URL(request.url).pathname;
 
-test("the journal is already private and complete when the first challenge is asked", async () => {
+test("the journal is already private and complete when the transfer challenge is asked", async () => {
   let check: (() => void) | undefined;
-  const fx = await setup({ accountFetch: (req, fake) => {
-    if (check) { const inspect = check; check = undefined; inspect(); }
+  const fx = await setup({ accountFetch: async (req, fake) => {
+    if (check && route(req) === "/v1/pc/challenge" && Object.hasOwn(await req.clone().json(), "transfer")) {
+      const inspect = check; check = undefined; inspect();
+    }
     return fake.fetch(req);
   } });
   let observed: unknown;
@@ -33,6 +36,43 @@ test("the journal is already private and complete when the first challenge is as
     started_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
   if (process.platform !== "win32") expect(mode).toBe(0o600);
   expect(existsSync(fx.path)).toBe(false);
+});
+
+test.each(["try_again", "directory_full", "list_account"])("a final transfer refusal preserves %s", async code => {
+  const fx = await setup({ accountFetch: async (req, fake) => route(req) === "/v1/pc/transfer"
+    ? Response.json({ error: { code } }, { status: 409 }) : fake.fetch(req) });
+  const answer = await fx.order();
+  expect([answer.status, answer.body.error?.code]).toEqual([409, code]);
+});
+
+test.each(["mailbox", "snapshot"])("a failed old-account %s read refuses a new move without writing intent", async path => {
+  let broken = false;
+  const fx = await setup({ accountFetch: async (req, fake) => broken && route(req) === `/v1/pc/${path}`
+    ? new Response(null, { status: 503 }) : fake.fetch(req) });
+  const before = filesOf(fx.pc.stateDir, ["account-pc.json"]);
+  broken = true;
+  const answer = await fx.order();
+  expect([answer.status, answer.body.error?.code]).toEqual([503, "account_unavailable"]);
+  expect(existsSync(fx.path)).toBe(false);
+  expect(filesOf(fx.pc.stateDir, ["account-pc.json"])).toEqual(before);
+});
+
+test("a move reads the old account's uncollected removals before carrying listed devices", async () => {
+  const { pc, services, order } = await setup();
+  const serverId = services.relay.currentIdentity()?.server_id;
+  if (!serverId) throw new Error("Missing PC identity");
+  const lost = await phone();
+  const past = spyOn(Date, "now").mockReturnValue(Date.now() - JOIN_HOLD_MS - 1_000);
+  try {
+    pc.account.registerDevice(FROM, lost.spki, "Lost phone");
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  } finally { past.mockRestore(); }
+  const id = accountDeviceId(serverId, lost.spki);
+  expect(pc.devices.sessionRow(id)?.key).toBe(lost.spki);
+  pc.account.removeDevice(FROM, lost.spki);
+  expect((await order()).status).toBe(200);
+  expect(pc.devices.sessionRow(id)).toBeNull();
+  expect(pc.stored().find(row => row.id === id)).toBeUndefined();
 });
 
 test("a confirmed transfer saves the pairings before the binding, then the relay name before unlinking the journal", async () => {
@@ -48,7 +88,7 @@ test("a confirmed transfer saves the pairings before the binding, then the relay
   const saved = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
     rename(from, to);
     const name = basename(String(to));
-    if (name !== JOURNAL && expected.includes(name) && !writes.includes(JOURNAL)) writes.push(name);
+    if (name !== JOURNAL && existsSync(fx.path) && expected.includes(name) && !writes.includes(JOURNAL)) writes.push(name);
   });
   const removed = spyOn(privateStateFs, "unlinkSync").mockImplementation(path => {
     unlink(path);
@@ -119,7 +159,7 @@ test("an unanswered transfer holds unlisting, and a cancelled ticket lifts the g
   expect(fx.pc.devices.clearAccountBinding("unlisted", "account")).toBe(false);
   const before = PcAccountState.open(fx.pc.stateDir).binding()?.bind_id;
   if (!before) throw new Error("guard allowed the standing binding to end");
-  expect(await fx.services.accountMailbox.confirmsListing(before)).toBe("unreachable");
+  expect(await fx.services.accountMailbox.readSnapshot()).toMatchObject({ committed: false, reason: "unconfirmed" });
   confirmed = true;
   fx.services.accountMove?.resume();
   await fx.services.accountMove?.idle();
@@ -138,13 +178,37 @@ test("Revoke all wins over a pending move", async () => {
   expect(existsSync(fx.path)).toBe(false);
 });
 
-test("an unreadable journal holds unlisting and is visible in status, but cannot block Revoke all", async () => {
+test("an unreadable journal is set aside and reported once without stopping mailbox pulls", async () => {
   const fx = await setup();
   writeFileSync(fx.path, "{", { mode: 0o600 });
+  expect(await fx.services.accountMailbox.freshen()).toBe(true);
   expect(await fx.pc.status()).toMatchObject({ account_move: { state: "refuses", code: "journal_unreadable" } });
-  expect(fx.pc.devices.clearAccountBinding("unlisted", "account")).toBe(false);
-  fx.pc.devices.revokeAll();
-  expect(fx.pc.devices.account()).toBeNull();
+  expect(await fx.pc.status()).toMatchObject({ account_move: { state: "idle" } });
+  expect(existsSync(fx.path)).toBe(false);
+  const [quarantined, ...others] = readdirSync(fx.pc.stateDir).filter(name => name.startsWith(`${JOURNAL}.corrupt-`));
+  if (quarantined === undefined) throw new Error("No quarantined move journal");
+  expect(others).toEqual([]);
+  expect(readFileSync(join(fx.pc.stateDir, quarantined), "utf8")).toBe("{");
+  expect(DeviceJournal.open(fx.pc.stateDir).entries()).toContainEqual(expect.objectContaining({ kind: "account", how: "journal_unreadable" }));
+});
+
+test.each(["corrupt", "pending"] as const)("a %s journal cannot hold a signed mailbox remove", async journal => {
+  const fx = await setup({ memberAge: 2 * 60 * 60_000,
+    accountFetch: (req, fake) => route(req) === "/v1/pc/transfer" ? Promise.resolve(new Response(null, { status: 503 })) : fake.fetch(req) });
+  if (journal === "corrupt") writeFileSync(fx.path, "{", { mode: 0o600 });
+  else expect((await fx.order()).status).toBe(202);
+  const serverId = fx.services.relay.currentIdentity()?.server_id;
+  if (!serverId) throw new Error("Missing PC identity");
+  const { key, row } = fx.member;
+  const remove = await signAccountRecord({ v: 1, kind: "remove", account: FROM, key: key.spki,
+    issued_at: new Date().toISOString(), id: newRecordId(), signer: key.spki }, key.keys.privateKey);
+  const queued = await fx.pc.account.fetch(new Request(`${ACCOUNT_SERVICE}/v1/records`, { method: "POST",
+    headers: { authorization: `Bearer ${fx.pc.account.issueToken(FROM)}` },
+    body: JSON.stringify({ server_ids: [serverId], record: remove }) }));
+  expect(queued.ok).toBe(true);
+  await fx.services.accountMailbox.pull();
+  expect(fx.pc.devices.sessionRow(row.id)).toBeNull();
+  expect(fx.pc.devices.accountRemovals()).toEqual([remove]);
 });
 
 test("a move whose transfer did not answer retries after five seconds on its own", async () => {
@@ -164,5 +228,30 @@ test("a move whose transfer did not answer retries after five seconds on its own
     await mover.idle();
     expect(devices.account()).toBe(INTO);
     expect(existsSync(fx.path)).toBe(false);
+  } finally { mover.stop(); }
+});
+
+test("a retry still runs after a transiently unreadable journal could not be quarantined", async () => {
+  let online = false;
+  const fx = await setup({ accountFetch: async (req, fake) => route(req) === "/v1/pc/transfer" && !online ? new Response(null, { status: 429 }) : fake.fetch(req) });
+  const { AccountMove } = await import("./account-move.ts");
+  const clock = new TestClock();
+  const { devices, relay, accountMailbox, accountHolds, safetyLog } = fx.services;
+  const mover = AccountMove.open({ stateDir: fx.pc.stateDir, sibling: null, devices, relay, mailbox: accountMailbox, holds: accountHolds, safety: safetyLog, clock });
+  try {
+    expect(await mover.order({ ...fx.body, by: "pc" })).toEqual({ state: "pending" });
+    const saved = readFileSync(fx.path);
+    writeFileSync(fx.path, "{");
+    const rename = privateStateFs.renameSync;
+    const fault = spyOn(privateStateFs, "renameSync").mockImplementation((from, to) => {
+      if (from === fx.path) throw Object.assign(new Error("Sharing violation"), { code: "EBUSY" });
+      return rename(from, to);
+    });
+    try { clock.advance(5_000); await mover.idle(); } finally { fault.mockRestore(); }
+    writeFileSync(fx.path, saved);
+    online = true;
+    clock.advance(15_000);
+    await mover.idle();
+    expect(devices.account()).toBe(INTO);
   } finally { mover.stop(); }
 });

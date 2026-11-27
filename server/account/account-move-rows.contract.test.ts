@@ -1,11 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { FrameType } from "../../shared/relay-mux.ts";
+import { folderTombstones } from "../devices.ts";
 import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { FROM, INTO, MERGE, movePc, reopen } from "./account-move.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { ask, phone, type Pc, type Phone } from "./pairing.test-helpers.ts";
 import { applyAccountRecords } from "./records.ts";
+import { EXPIRY_DAYS } from "./row-expiry.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -39,8 +41,6 @@ test("a member row keeps its pairing, ceases to approve, and still signs in afte
   const add = await signAccountRecord({ v: 1, kind: "add", account: INTO, key: (await phone()).spki,
     issued_at: new Date().toISOString(), id: newRecordId(), signer: member.key.spki, role: "drive", label: "Guest" }, member.key.keys.privateKey);
   expect(await applyAccountRecords(pc.devices, [add], serverId)).toMatchObject([{ outcome: "refused", code: "signer_not_member" }]);
-  expect(pc.devices.removeAccountKey(member.key.spki, INTO, { id: newRecordId(), issuedAt: new Date().toISOString() })).toBe(false);
-  expect(pc.devices.sessionRow(before.id)).not.toBeNull();
   await pc.app.stop();
   const restart = reopen(pc);
   try {
@@ -72,8 +72,38 @@ test("a live listed row survives the move and keeps its old remote limits; a hel
     expect(pc.stored().find(row => row.relay_public_key === held.spki)).toBeUndefined();
     const all = await ask(link, "/api/devices/revoke-all", { method: "POST", body: {} });
     expect([all.status, all.body.error?.code]).toEqual([403, "local_required"]);
+    const webhook = await ask(link, "/api/alerts/webhook", { method: "POST", body: {} });
+    expect([webhook.status, webhook.body.error?.code]).toEqual([403, "member_required"]);
     expect((await ask(link, `/api/devices/${member.row.id}`, { method: "DELETE" })).status).toBe(403);
   } finally { time.mockRestore(); }
+});
+
+test("carried listed rows expire from their original admission or last sign-in, not from the move", async () => {
+  const { pc, services, serverId, order } = await setup();
+  const day = 86_400_000;
+  const start = Date.now();
+  const clock = spyOn(Date, "now").mockReturnValue(start);
+  try {
+    const idle = await phone();
+    const recent = await phone();
+    const device = (key: Phone) => ({ id: accountDeviceId(serverId, key.spki), keys: key.keys, publicKey: key.spki });
+    for (const key of [idle, recent]) pc.account.registerDevice(FROM, key.spki, "Listed");
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    clock.mockReturnValue(start + 30 * day);
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    expect(services.accountRows?.access(device(idle).id)).toEqual({ ok: true });
+    const used = await relayConnection(pc, { serverId });
+    await used.auth(device(recent));
+    expect((await order()).body).toEqual({ state: "moved", account: INTO });
+    expect(pc.stored().filter(row => row.before_merge?.listed).map(row => row.id).sort()).toEqual([device(idle).id, device(recent).id].sort());
+    clock.mockReturnValue(start + (EXPIRY_DAYS + 1) * day);
+    const signIn = async (key: Phone) => {
+      const link = await relayConnection(pc, { serverId });
+      return bounded(Promise.race([link.auth(device(key)).then(() => true, () => false), link.serverError.then(() => false)]));
+    };
+    expect(await signIn(recent)).toBe(true);
+    expect(await signIn(idle)).toBe(false);
+  } finally { clock.mockRestore(); }
 });
 
 test("only an old key's own signed remove revokes its old pairing; replay does not apply", async () => {
@@ -95,7 +125,34 @@ test("only an old key's own signed remove revokes its old pairing; replay does n
   expect(await submit(own)).toEqual([{ id: own.id, outcome: "applied" }]);
   expect(await bounded(ended.promise)).toBe("auth_revoked");
   expect(pc.devices.isTombstoned(member.key.spki)).toBe(true);
+  expect(folderTombstones(pc.stateDir)).toContainEqual(expect.objectContaining({ key: own.key, account: FROM, records: [own] }));
   expect(await submit(own)).toEqual([{ id: own.id, outcome: "refused", code: "account_mismatch" }]);
+});
+
+test("a locked PC refuses a before-merge row's own signed remove", async () => {
+  const { pc, services, member, serverId, order } = await setup();
+  expect((await order()).status).toBe(200);
+  expect(services.safetyLog?.appendLock({ account: INTO })).toMatchObject({ outcome: "applied" });
+  const record = await signAccountRecord({ v: 1, kind: "remove", account: FROM, key: member.key.spki,
+    issued_at: new Date().toISOString(), id: newRecordId(), signer: member.key.spki }, member.key.keys.privateKey);
+  expect(await applyAccountRecords(pc.devices, [record], serverId)).toMatchObject([{ outcome: "refused", code: "signer_not_member" }]);
+});
+
+test("a new-account remove keeps its signed evidence without dropping the old pairing", async () => {
+  const { pc, member, order } = await setup();
+  expect((await order()).status).toBe(200);
+  const record = await signAccountRecord({ v: 1, kind: "remove", account: INTO, key: member.key.spki,
+    issued_at: new Date().toISOString(), id: newRecordId(), signer: member.key.spki }, member.key.keys.privateKey);
+  expect(pc.devices.removeAccountKey(record.key, INTO, { id: record.id, issuedAt: record.issued_at, signed: record })).toBe(true);
+  expect(pc.devices.accountRemovals()).toEqual([record]);
+  expect(pc.devices.sessionRow(member.row.id)?.key).toBe(member.key.spki);
+  expect(pc.devices.linkAccountKey(member.row.id, member.key.spki, member.key.spki, INTO)).toBeNull();
+  await pc.app.stop();
+  const restart = reopen(pc);
+  try {
+    expect(restart.context.services.devices.accountRemovals()).toEqual([record]);
+    expect(restart.context.services.devices.sessionRow(member.row.id)?.key).toBe(member.key.spki);
+  } finally { await restart.stop(); }
 });
 
 test("linking an ordinary old pairing into the new account drops its mark", async () => {

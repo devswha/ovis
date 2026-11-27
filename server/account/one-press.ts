@@ -34,21 +34,26 @@ const refuse = (code: string, message: string, status: number): { readonly refus
 export const LIST_ADD_ONLY = "This account keeps a signed list of its devices, and takes a PC only by that list. Run ovis add on this PC, or ovis join with an invite made since the account has its list.";
 const SET_UP_FOR_ANOTHER = "This PC was set up for another account. Sign in to that one, or add this PC again.";
 
-export async function pressOnce(services: PressServices, account: string): Promise<PressOutcome> {
+export async function pressOnce(services: PressServices, account: string, signal?: AbortSignal): Promise<PressOutcome> {
   const { devices, relay, accountMailbox } = services;
-  // the account the owner's browser is signed in to must be the one named for this PC, which a press never sets
   const old = devices.standingAccountBinding();
-  if (old !== null && (old.account === account || old.list !== undefined || !await accountMailbox.mergedAway(old.account))) {
-    return refuse("in_account", "This PC is already in an account", 409);
-  }
-  if (relay.savedRelayAccount() !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
-  // an account whose signed list removed this PC takes it back on no path: only as a new PC, after a reset relay identity
-  if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
+  const named = relay.savedRelayAccount();
   // a Revoke all, a reset or a denial while the service answers raises this: the press then binds nothing (PADD-1).
   // Read before the first thing this press asks of the account service, so one that ends while any of it is out counts
   const generation = devices.gen();
   // a relay identity reset meanwhile makes this another PC to the account service: its answer was for the old one
   const identity = relay.currentIdentity()?.server_id ?? null;
+  if (old !== null) {
+    try {
+      if (old.account === account || old.list !== undefined || !await accountMailbox.mergedAway(old.account)) {
+        return refuse("in_account", "This PC is already in an account", 409);
+      }
+    } catch {
+      return refuse("account_unavailable", "The account service did not answer for this PC's old account", 503);
+    }
+  } else if (named !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
+  // an account whose signed list removed this PC takes it back on no path: only as a new PC, after a reset relay identity
+  if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
   // an account that keeps a signed list takes a PC by that list alone: never on the account service's word
   try {
     if (await accountMailbox.listNamed(account) !== null) return refuse("list_add", LIST_ADD_ONLY, 409);
@@ -73,12 +78,16 @@ export async function pressOnce(services: PressServices, account: string): Promi
   const listing = admitted.listing_id;
   if (listing === undefined) return refuse("listing_unnamed", "The account service named no listing for this add", 502);
   // what the PC was named for, or its account, may have changed while the service answered: decided again now
-  if (relay.savedRelayAccount() !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
+  if (relay.savedRelayAccount() !== named) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
   if (devices.standingAccountBinding()?.bind_id !== old?.bind_id) return refuse("in_account", "This PC's account changed while it was being added", 409);
   if ((relay.currentIdentity()?.server_id ?? null) !== identity) return refuse("identity_changed", "This PC's relay identity was reset while it was being added. Add it again.", 409);
   if (devices.gen() !== generation) return refuse("revoked", "Every device was revoked on this PC while it was being added. Add it again.", 409);
   if (old === null) devices.bindByService(account, listing);
-  else switchMovedAccount(devices, old, { account, listing_id: listing, merge: null, at: new Date().toISOString(), by: "pc" });
+  else {
+    if (signal?.aborted) return refuse("account_unavailable", "The request stopped before this PC joined. Run ovis add again.", 503);
+    switchMovedAccount(devices, old, { account, listing_id: listing, merge: null, at: new Date().toISOString(), by: "pc" });
+    relay.setRelayAccount(account, null);
+  }
   const binding = devices.serviceBinding();
   await accountMailbox.readSnapshot();
   // the account may have stopped listing this PC during that first read: then it is in no account, and says so

@@ -764,6 +764,7 @@ describe("ovis link, on the PC itself", () => {
   it("starts sign-in instead of returning early when the PC is in a merged account", async () => {
     const local = localPc((_request, path) => {
       if (path === "/api/account/status") return Response.json({ account: "acct_before", account_merged: true });
+      if (path === "/api/account/one-press") return Response.json({ error: { code: "invalid_account" } }, { status: 400 });
       if (path === "/api/relay") return Response.json({ phase: "online", blocked: null });
       return undefined;
     });
@@ -1766,6 +1767,7 @@ describe("ovis link, on the PC itself", () => {
    */
   async function pressing(options: {
     pressAfter?: number; stopAt?: number;
+    merged?: true;
     args?: string[]; terminal?: boolean; isTty?: boolean; settings?: Record<string, string | undefined>;
     /** what the person types at "Is this your account?" (yes by default); false: nothing */
     confirm?: string | false;
@@ -1804,7 +1806,7 @@ describe("ovis link, on the PC itself", () => {
     service.opensAll = true;
       await options.prepare?.(service, pc, time);
     const stop = new AbortController();
-    const state = { account: null as string | null };
+    const state: { account: string | null } = { account: options.merged ? "acct_before" : null };
     const askedAt: number[] = [];
     const pressed: unknown[] = [];
     const named: unknown[] = [];
@@ -1824,7 +1826,8 @@ describe("ovis link, on the PC itself", () => {
     };
     const refuse = (code: string, message: string, status: number) => Response.json({ error: { code, message } }, { status });
     const local = localPc(async (request, path) => {
-      if (path === "/api/account/status") return Response.json({ account: state.account, enrolling: false, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/account/status") return Response.json({ account: state.account, enrolling: false, unlinked: [], removals: [], adds: [], blocked: [],
+        ...(options.merged && state.account === "acct_before" ? { account_merged: true } : {}) });
       if (path === "/api/relay" && request.method === "GET") {
         if (options.stopWhenBound === "relay" && state.account !== null) stop.abort();
         return Response.json({ phase: options.relay?.() ?? (state.account === null ? "connecting" : "online"), blocked: null });
@@ -1916,6 +1919,22 @@ describe("ovis link, on the PC itself", () => {
     const signedOut = (await service.fetch(new Request(`${SERVICE}/v1/session`, { headers: { authorization: `Bearer ${token}` } }))).status === 401;
     return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, signedOutBeforeAdded, listCalls, resets: () => resets, resetBodies, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
   }
+
+  it.each(["timeout", "Ctrl+C", "service unavailable"] as const)("left-behind add can be retried after %s without naming the destination", async how => {
+    const run = await pressing({
+      merged: true,
+      ...(how === "Ctrl+C" ? { stopAt: 1 } : {}),
+      answer: (asks) => {
+        const unavailable = asks === 1 && how === "service unavailable";
+        return Response.json({ error: { code: unavailable ? "account_unavailable" : "no_admission" } }, { status: unavailable ? 503 : 404 });
+      },
+    });
+    expect(run.code).toBe(1);
+    expect(run.pressed[0]).toBe("acct_1");
+    expect(run.named).toEqual([]);
+    expect(run.text).toMatch(/run ovis add (again|to try again)/i);
+    expect(run.text).not.toMatch(/joined another Ovis account|Revoke all|^Added[.:]/m);
+  });
 
   // the id first, with where to compare it; the PCs as what that account lists, which a decoy account can copy
   const ASKED = [

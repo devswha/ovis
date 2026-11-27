@@ -22,7 +22,7 @@ import type { AccountHolds } from "./holds.ts";
 import { UNPINNED_CLEAR } from "./pc-binding.ts";
 import type { Readmission } from "./readmission.ts";
 import type { UsedReport } from "../../shared/account-snapshot.ts";
-import { readSnapshot, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
+import { readSnapshot, SnapshotWriteRefused, type PageAnswer, type ReadOutcome, type SnapshotPorts } from "./snapshot-read.ts";
 import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcome } from "./records.ts";
 
 /** The account service refused a PC route: its status and error code, when it named one. */
@@ -363,15 +363,27 @@ export class AccountMailbox {
 
   private waiting(): unknown[] { return [...this.draining, ...this.pending]; }
 
+  private wholePullFor: string | null = null;
+
+  /** One new mailbox and snapshot read of the old binding, not a snapshot on its own or a previous pull. */
+  async readBeforeMove(binding: string): Promise<boolean> {
+    if (this.pulling) await this.pulling;
+    await this.pull();
+    return this.wholePullFor === binding;
+  }
+
   pull(readmission?: Readmission): Promise<number> {
-    if (this.options.devices.accountMovePending()) return Promise.resolve(0);
     this.pulling ??= this.exclusively(async () => {
-      if (this.options.devices.accountMovePending()) return 0;
       const began = Date.now();
+      const binding = this.options.devices.standingAccountBinding()?.bind_id;
+      this.wholePullFor = null;
+      this.drainedAt = null;
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
       const read = await this.readSnapshotNow(readmission, this.drainedListing);
       const adds = applied + read.adds;
+      if (binding !== undefined && this.drainedAt !== null && this.error === null && read.outcome?.committed
+        && this.options.devices.standingAccountBinding()?.bind_id === binding) this.wholePullFor = binding;
       // a pull that ended with no error and read the account's rows whole: what the account let in by then has its row
       // here. A snapshot that did not commit (a page that failed, a stale answer) is no such read, unless the service
       // reads no rows by its own word (step2_off); nothing to read counts as read. A read only refuses: it lets no key in
@@ -421,8 +433,7 @@ export class AccountMailbox {
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
   readSnapshot(): Promise<ReadOutcome | null> {
-    if (this.options.devices.accountMovePending()) return Promise.resolve(null);
-    return this.exclusively(async () => this.options.devices.accountMovePending() ? null : (await this.readSnapshotNow(undefined, await this.askListingNamed())).outcome);
+    return this.exclusively(async () => (await this.readSnapshotNow(undefined, await this.askListingNamed())).outcome);
   }
 
   /**
@@ -447,7 +458,6 @@ export class AccountMailbox {
    * LISTING_CONFIRMED_MS from when it was asked for, so a burst of sign-ins asks once; nothing else is kept.
    */
   async confirmsListing(binding: string): Promise<ListingVerdict> {
-    if (this.options.devices.accountMovePending()) return "unreachable";
     const key = this.listingKey(binding);
     if (key === null) return "refused";
     if (this.listingStands(key)) return "confirmed";
@@ -501,7 +511,7 @@ export class AccountMailbox {
     const account = devices.account();
     let identity: RelayIdentity | undefined;
     try { identity = this.options.identity(); } catch { return null; }
-    if (this.stopped || devices.accountMovePending(binding) || !identity || account === null || devices.serviceBinding() !== binding) return null;
+    if (this.stopped || !identity || account === null || devices.serviceBinding() !== binding) return null;
     return [binding, account, identity.server_id, devices.serviceListing() ?? ""].join("\0");
   }
 
@@ -648,8 +658,7 @@ export class AccountMailbox {
   /** `whole`: the account's rows were read whole, or there were none to read, or the service reads none (step2_off): what unreadKey may rest on. */
   private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number; whole: boolean }> {
     const empty = { outcome: null, adds: 0, whole: true };
-    const guarded = { ...empty, whole: false };
-    if (this.options.devices.accountMovePending()) return guarded;
+    const { devices } = this.options;
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
     const account = snapshot.account();
@@ -667,7 +676,7 @@ export class AccountMailbox {
     const pinned = linked === null ? undefined : this.options.devices.serviceListing();
     // a PC pinned to its signed list stays in its account whatever listing the service names: it reads on, and the read
     // widens nothing (`widen` below), so the members' signed blocks still reach it
-    if (pinned !== undefined && typeof named === "string" && named !== pinned && !this.options.devices.listFollowed()) {
+    if (pinned !== undefined && typeof named === "string" && named !== pinned && !devices.listFollowed() && !devices.accountMovePending()) {
       logAccess({ event: "account.listing.replaced" });
       this.options.devices.clearAccountBinding("unlisted", "account");
       return empty;
@@ -688,13 +697,15 @@ export class AccountMailbox {
           throw error;
         });
         return page;
-      }, { ...ports, scope: () => this.stopped || this.options.devices.accountMovePending() ? null : ports.scope(),
+      }, { ...ports, scope: () => this.stopped ? null : ports.scope(),
         // the snapshot is whole and checked, so the service answered this PC: the listing's answer is the newest thing the commit rests on
         // one a link bound lets more in only under the listing its rows were let in under, named by this read's own mailbox
-        widen: async () => binding !== null ? await this.checkListing(binding) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned,
+        widen: async () => !devices.accountMovePending() && (binding !== null
+          ? await this.checkListing(binding) === "confirmed" && this.listingFresh(binding) : pinned === undefined || named === pinned),
         // on a PC pinned to its signed list the rows are the list's: the snapshot's word that a key was removed drops none
         narrow: (snapshot) => { if (!this.options.devices.listFollowed()) this.options.devices.dropListedRemoved(snapshot.removed.map((row) => row.key)); this.options.devices.narrowedRead(); },
         commit: (stage) => {
+        if (devices.accountMovePending()) throw new SnapshotWriteRefused("An account move is pending");
         // Validate pins and persist the safety decisions before applying staged adds.
         const committedLifts = ports.commit(stage);
         const removed = new Set(stage.snapshot.removed.map((row) => row.key));
@@ -713,7 +724,6 @@ export class AccountMailbox {
         return committedLifts;
       } });
       if (step2Off && !this.stopped) ports.step2Off?.();
-      const devices = this.options.devices;
       // A PC stands in its account on the account's listing of it: once the account stops listing it, it leaves. One a
       // device's link just bound is listed by that device after its link: until then, for a bounded time, it is not yet listed
       if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
@@ -786,7 +796,8 @@ export class AccountMailbox {
     if (!identity || !binding || binding.account !== account || devices.accountMovePending(binding.bind_id) || this.moveService() === null) return false;
     try { await this.page(identity, account, null); return false; }
     catch (error) {
-      return error instanceof AccountServiceRefusal && error.path === "/v1/pc/mailbox" && error.status === 410 && error.code === "account_merged"
+      if (!(error instanceof AccountServiceRefusal) || error.status >= 500 || error.status === 429 || error.status === 408 || error.status === 401) throw error;
+      return error.path === "/v1/pc/mailbox" && error.status === 410 && error.code === "account_merged"
         && devices.standingAccountBinding()?.bind_id === binding.bind_id && this.options.identity()?.server_id === identity.server_id;
     }
   }
@@ -1147,7 +1158,7 @@ export class AccountMailbox {
     const { devices } = this.options;
     const account = devices.account();
     const binding = devices.standingAccountBinding()?.bind_id;
-    const current = () => devices.account() === account && devices.standingAccountBinding()?.bind_id === binding && !devices.accountMovePending(binding);
+    const current = () => devices.account() === account && devices.standingAccountBinding()?.bind_id === binding;
     let identity: RelayIdentity | undefined;
     try { identity = this.options.identity(); } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
@@ -1170,7 +1181,6 @@ export class AccountMailbox {
       if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending]);
     };
     let complete = false;
-    this.drainedAt = null;
     try {
       const admissions = new Map<string, number>();
       await retry();
@@ -1282,10 +1292,10 @@ export class AccountMailbox {
    * A completion's proof answers for its account and listing alone (account#57): its context is not the wire nonce.
    */
   private async prove(identity: RelayIdentity, completion?: CompletionScope, transfer?: string): Promise<{ challenge_id: string; proof: string }> {
-    const challenge = await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)),
-      ...(completion ? { completion } : {}), ...(transfer === undefined ? {} : { transfer: { merge_id: transfer } }) });
+    const challenge = (await this.call("/v1/pc/challenge", { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)),
+      ...(completion ? { completion } : {}), ...(transfer === undefined ? {} : { transfer: { merge_id: transfer } }) }))!;
     // Rollback exposes the original native property-read error for a JSON null response.
-    if (challenge === null || typeof challenge.challenge_id !== "string") throw new Error("The account service sent no challenge");
+    if ((this.options.devices.opensAll() && challenge === null) || typeof challenge.challenge_id !== "string") throw new Error("The account service sent no challenge");
     const context = completion ? `pc-complete/1:${completion.account}:${completion.listing_id}:${challenge.challenge_id}`
       : transfer === undefined ? challenge.challenge_id : `pc-transfer/1:${transfer}:${challenge.challenge_id}`;
     const proof = answerServerChallenge(challenge.frame, importSecretKey(identity.secret_key),

@@ -1531,19 +1531,26 @@ relay session of its current account that has been admitted on this PC for at
 least one hour. A watch session or an old pairing cannot order a move.
 Accounts that follow a signed list are not supported.
 
-The PC proves its identity to the service in a challenge scoped to the merge.
+Before transferring, the PC reads its old account's mailbox and snapshot so
+it does not carry devices the old account removed. If either read fails, it
+does not start the move. The PC proves its identity in a challenge scoped to the merge.
 It keeps a private recovery record until it knows which account lists it.
 An answer of `200 { state: "moved", account }` means it switched; `202
 { state: "pending" }` with `Retry-After: 5` means it will retry on its own,
-also after restarting. The same order can be repeated. Cancelling a merge
+also after restarting. The PC's own window or the device that ordered the
+move can repeat that order. Cancelling a merge
 does not move a PC back if the service already transferred it.
 
 `GET /api/account/status` shows `account_move` and the IDs in `before_merge`.
 Paired devices stay paired when a PC moves, but devices from the old account
-no longer act as members. A device may still send a signed remove for its
-own old key and account. A PC left behind reports `account_merged: true`
-without learning the destination. Its owner can run `ovis add` on that PC
-to add it again without removing the devices paired with it.
+no longer act as members. Carried account-listed devices still expire after
+60 unused days; moving the PC does not reset the clock. An unlocked PC still
+accepts a signed remove for a device's own old key and account.
+
+A PC left behind reports `account_merged: true` without learning the
+destination. Its owner can run `ovis add` on that PC. The account changes
+only after Add succeeds. Pairings already stored on the PC stay, but
+account-listed devices have to come from the new account's snapshot.
 
 ## On the PC
 

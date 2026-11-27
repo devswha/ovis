@@ -64,7 +64,7 @@ export interface AccountClear {
   readonly by: string;
   readonly admits?: number;
   readonly removed_as?: { readonly account: string; readonly server_id: string };
-  readonly merged?: { readonly from: string; readonly into: string; readonly merge: string | null };
+  readonly merged?: { readonly from: string; readonly into: string; readonly merge: string | null; readonly by?: string };
 }
 export interface AccountBinding {
   readonly account: string;
@@ -153,6 +153,7 @@ export function parsePcAccount(value: unknown): (PcDoc & { counterOnly?: true })
     && (clear.merged === undefined || (typeof clear.merged === "object" && clear.merged !== null
       && typeof clear.merged.from === "string" && ACCOUNT.test(clear.merged.from)
       && typeof clear.merged.into === "string" && ACCOUNT.test(clear.merged.into)
+      && (clear.merged.by === undefined || (typeof clear.merged.by === "string" && /^[0-9a-f]{16}$/.test(clear.merged.by)))
       && (clear.merged.merge === null || (typeof clear.merged.merge === "string" && ACCOUNT.test(clear.merged.merge))))))) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
@@ -676,7 +677,7 @@ export class PcAccountState {
   }
 
   /** Replace the standing account without a moment in which the PC has no binding. */
-  rebind(fromBindId: string, { account, listing_id, merge }: { readonly account: string; readonly listing_id: string; readonly merge: string | null }): void {
+  rebind(fromBindId: string, { account, listing_id, merge, by }: { readonly account: string; readonly listing_id: string; readonly merge: string | null; readonly by?: string }): void {
     this.refresh();
     const binding = this.doc.binding;
     if (binding === null || binding.bind_id !== fromBindId || binding.pending === true) {
@@ -684,7 +685,7 @@ export class PcAccountState {
     }
     if (binding.list !== undefined) throw new PinnedOnDiskError(`${this.path}: the binding to move is pinned to a signed list`);
     const clear: AccountClear = { bind_id: fromBindId, reason: "unlisted", by: MERGE_CLEAR, admits: this.doc.next_admit,
-      merged: { from: binding.account, into: account, merge } };
+      merged: { from: binding.account, into: account, merge, ...(by === undefined || by === "pc" ? {} : { by }) } };
     this.write({ ...this.doc, binding: { account, listing_id, bind_id: randomBytes(16).toString("hex"), service: true },
       clears: [...this.doc.clears, clear], first: null, others_ever: true, gen: this.doc.gen + 1 });
   }

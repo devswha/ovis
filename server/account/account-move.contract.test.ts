@@ -42,6 +42,37 @@ test.each([
   }
 });
 
+test("the relay device that received 202 can repeat its order after recovery, even after restart", async () => {
+  const { pc, services, member, body } = await setup({ memberAge: 2 * 60 * 60_000, accountFetch: async (request, fake) => {
+    const response = await fake.fetch(request);
+    return new URL(request.url).pathname === "/v1/pc/transfer" && response.ok ? new Response(null, { status: 503 }) : response;
+  } });
+  const serverId = services.relay.currentIdentity()?.server_id;
+  if (!serverId) throw new Error("Missing PC identity");
+  const device = { id: member.row.id, keys: member.key.keys, publicKey: member.key.spki };
+  const link = await relayConnection(pc, { serverId });
+  await link.auth(device);
+  expect((await ask(link, MOVE, { method: "POST", body })).status).toBe(202);
+  await pc.app.stop();
+  const { reopen } = await import("./account-move.test-helpers.ts");
+  const restarted = reopen(pc);
+  try {
+    await restarted.context.services.accountMove?.idle();
+    const again = await relayConnection({ ...pc, app: restarted }, { serverId });
+    await again.auth(device);
+    expect((await ask(again, MOVE, { method: "POST", body })).body).toEqual({ state: "moved", account: INTO });
+    const different = await ask(again, MOVE, { method: "POST", body: { ...body, merge_id: "a_different_merge" } });
+    expect([different.status, different.body.error?.code]).toEqual([403, "not_member"]);
+  } finally { await restarted.stop(); }
+});
+
+test("a locked PC refuses to order an account move", async () => {
+  const { services, order } = await setup();
+  expect(services.safetyLog?.appendLock({ account: FROM })).toMatchObject({ outcome: "applied" });
+  const answer = await order();
+  expect([answer.status, answer.body.error?.code, services.devices.account()]).toEqual([409, "locked", FROM]);
+});
+
 test.each(["unlinked", "before_merge", "watch", "cookie"] as const)("a %s pairing does not authorize an account move", async (kind) => {
   const { pc, services, body } = await setup();
   const key = await phone();

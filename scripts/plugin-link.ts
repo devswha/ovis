@@ -940,13 +940,13 @@ export interface Listing { readonly serverId: string; readonly entry: { label: s
  * A device code's sign-in may end only a pending listing it wrote itself (account#63), and a refresh takes only a
  * confirmed PC: a listing an earlier run wrote is kept as it is, by a PUT, and `unlisted.kept` says so from then on.
  */
-async function listThisPc(api: Api, service: AccountService, now: () => number, unlisted: { listing: Listing | null; kept: boolean }, opened?: Listing): Promise<Listing> {
+async function listThisPc(api: Api, service: AccountService, now: () => number, unlisted: { listing: Listing | null; kept: boolean; readonly listingOnly?: boolean }, opened?: Listing): Promise<Listing> {
   const listing = opened ?? await openedListing(api);
   const listed = (await service.listPcs()).find((pc) => pc.server_id === listing.serverId);
   if (listed === undefined || unlisted.kept || now() - Date.parse(listed.added_at) < NEW_PC_MS - RELIST_MS) {
     await service.putPc(listing.serverId, { ...listing.entry, ...await ownPcProof(listing.serverId, (path) => api("POST", path)) });
     unlisted.listing = null;
-    await nameRelayAccount(api, service);
+    if (!unlisted.listingOnly) await nameRelayAccount(api, service);
     return listing;
   }
   unlisted.listing = listing;
@@ -955,7 +955,7 @@ async function listThisPc(api: Api, service: AccountService, now: () => number, 
     unlisted.kept = true;
   }
   if (await putListing(api, service, listing)) unlisted.listing = null;
-  await nameRelayAccount(api, service);
+  if (!unlisted.listingOnly) await nameRelayAccount(api, service);
   return listing;
 }
 
@@ -1625,6 +1625,8 @@ export interface Pressing {
   readonly listedAt: number | null;
   /** the account listed this PC as its own before this run (a device pressed Add before): no device offers Add for it any more */
   readonly confirmed: boolean;
+  /** An account already merged away is not another account that joined during this run. */
+  readonly previousAccount?: string;
   readonly unlist: () => Promise<Unlisted>;
   /**
    * Lists this PC in the account again after its relay identity was reset, as the new PC it is by then: what the
@@ -1976,7 +1978,10 @@ export async function addByPress(options: LinkOptions, api: Api, press: Pressing
   };
   // the account this PC is in, read on a signal of its own (Ctrl+C aborted the run's): null for none, undefined when it did not answer
   const where = async (ms = 5_000): Promise<string | null | undefined> => {
-    try { return (await api<{ account: string | null }>("GET", "/api/account/status", { signal: AbortSignal.timeout(ms) })).account; }
+    try {
+      const { account } = await api<{ account: string | null }>("GET", "/api/account/status", { signal: AbortSignal.timeout(ms) });
+      return account === press.previousAccount ? undefined : account;
+    }
     catch { return undefined; }
   };
   // this PC took the admission: from here on it is in the account, whatever stops the run
@@ -2473,6 +2478,11 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const takes = !mode.approve && !mode.qr ? await takesPress(api) : null;
   const press = takes === "press";
   const byQr = !mode.approve && !press;
+  const previousAccount = first.account_merged === true ? first.account ?? undefined : undefined;
+  if (previousAccount !== undefined && !press) {
+    out(`Run ${cli(options)} add again from this PC's own terminal without --qr or --approve, then press Add on a device of your account.\n`);
+    return 1;
+  }
   const preview = options.preview === true;
   // Whoever signs in with the code this command shows names the account this PC joins, and a code can leak (a
   // scrollback, a shared screen, a transcript). So the person at this PC confirms the account before anything is
@@ -2514,7 +2524,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   const service = new AccountService({ store, lock, fetch: serviceFetch, now });
   const session = await service.session();
   const signedIn = session?.account ?? null;
-  const pending: { listing: Listing | null; kept: boolean } = { listing: null, kept: false };
+  const pending = { listing: null as Listing | null, kept: false, listingOnly: previousAccount !== undefined };
   const unlisted = "This PC could not be listed in your account again just now; it is tried again until it is.\n";
   let ended = false;
   // the sign-in was only for this: it ends with it, and nothing of it stays on the PC. A listing a renewal took away goes back first
@@ -2559,7 +2569,10 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     if (pending.kept) out(kept);
     if (pending.listing !== null) out(unlisted);
     // a renewal's listing not put back yet goes back first: an account that does not list the PC gives it no pass
-    if (pending.listing !== null && await putListing(api, service, pending.listing)) { pending.listing = null; await nameRelayAccount(api, service); }
+    if (pending.listing !== null && await putListing(api, service, pending.listing)) {
+      pending.listing = null;
+      if (!pending.listingOnly) await nameRelayAccount(api, service);
+    }
     if (lists !== null) {
       // the listing an earlier run left: the account's devices offer Add for ten minutes from its own listing, and none
       // once the account lists the PC as its own (an Add pressed then)
@@ -2569,6 +2582,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       return await addByPress(options, api, {
         signedIn, name: first.entry.label, listedAt: Number.isFinite(at) ? at : null,
         confirmed: lists[1].some((pc) => pc.server_id === first.serverId),
+        ...(previousAccount === undefined ? {} : { previousAccount, admissionOnly: true }),
         named: () => nameRelayAccount(api, service),
         signOut,
         unlist: async () => {
@@ -2581,7 +2595,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         relist: async () => {
           await relayOn(options, api);
           listedAs = await listThisPc(api, service, now, pending, await openedListing(api));
-          await nameRelayAccount(api, service);
+          if (!pending.listingOnly) await nameRelayAccount(api, service);
         },
       });
     }

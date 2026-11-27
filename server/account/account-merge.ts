@@ -119,9 +119,11 @@ export function mergeAccountState(active: string, sibling: string): string | nul
       && (existsSync(a) || existsSync(b))) {
       withFileLock(a, () => withFileLock(b, () => {
         const one = readMoveJournal(a), other = readMoveJournal(b);
-        if (one === "unreadable" || other === "unreadable"
-          || (one !== null && other !== null && !Bun.deepEquals(one, other, true))) {
-          throw new Error(`${ACCOUNT_MOVE_FILE} contains unreadable or conflicting moves`);
+        // An unreadable intent is not account authority. Leave it intact for that server to
+        // quarantine and report; never overwrite it with a sibling copy.
+        if (typeof one === "string" || typeof other === "string") return;
+        if (one !== null && other !== null && !Bun.deepEquals(one, other, true)) {
+          throw new Error(`${ACCOUNT_MOVE_FILE} contains conflicting moves`);
         }
         if (one?.server_id === serverId && other === null) writePrivateState(b, one);
         if (other?.server_id === serverId && one === null) writePrivateState(a, other);

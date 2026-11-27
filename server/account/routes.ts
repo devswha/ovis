@@ -242,10 +242,6 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (outcome.state === "pending") response.headers.set("retry-after", "5");
       return response;
     };
-    if (peer.kind === "relay") {
-      const refused = move.caller(peer.device.id, peer.key);
-      if (refused !== null) return answer(refused);
-    }
     context.timeout(request, 30);
     const requestBody = await readJsonObject(request);
     if (requestBody instanceof Response) return fail("invalid_move", "Send the merge id, both accounts and a join line for the destination", 400);
@@ -407,7 +403,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (peer.kind === "relay") return fail("owner_only", "Add this PC to your account on this PC itself.", 403);
       const account = body.account;
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
-      const pressed = await pressOnce(context.services, account);
+      const pressed = await pressOnce(context.services, account, request.signal);
       notePressAsk(devices, pressed);
       return "refused" in pressed ? fail(pressed.refused.code, pressed.refused.message, pressed.refused.status) : reply(pressed);
     }
