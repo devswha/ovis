@@ -1,15 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, jest, mock } from "bun:test";
-import { act, createElement, useLayoutEffect, useReducer } from "react";
+import { act, createElement, useReducer } from "react";
 import { flushSync } from "react-dom";
 import { openPage, type Page } from "./page.fixture.ts";
-import type { Machine } from "../../shared/machines.ts";
-import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
-import { NAV_KEY, readLink, type AppLink, type CreateDraft } from "./deepLink.ts";
+import type { HerdrPane } from "../../shared/protocol.ts";
+import { NAV_KEY, readLink } from "./deepLink.ts";
 import { FILE_PREVIEW_KEY, sheetStep as sheetTraversal } from "./historyKeys.ts";
-import type { SelectionMark } from "./selectionMark.ts";
 import * as settingsHistory from "./settingsHistory.ts";
 import * as sheetHistory from "./sheetHistory.ts";
-import { popUnread, useAddressBar } from "./useAddressBar.ts";
+import { addressBarRefs, useAddressBarOf, type Preview, type ShownPlace, type Snapshot } from "./useAddressBar.fixture.ts";
+import { popUnread } from "./useAddressBar.ts";
 import { INBOX_FROM_KEY } from "./useInbox.ts";
 
 // The two history modules answer the handler from what their own popstate listeners last saw, on the
@@ -26,10 +25,6 @@ afterAll(() => {
   mock.module("./sheetHistory.ts", () => loaded.sheet);
 });
 
-type Params = Parameters<typeof useAddressBar>[0];
-type Snapshot = NonNullable<Machine["snapshot"]>;
-type Preview = NonNullable<Params["viewing"]>;
-
 const P1 = "?ws=w1-api&pane=p1&view=chat";
 const P2 = "?ws=w2-docs&pane=p2&view=chat";
 const roster = (): Snapshot => ({
@@ -38,8 +33,7 @@ const roster = (): Snapshot => ({
   layouts: [],
 }) as unknown as Snapshot;
 
-let place: { machineId: string; paneId: string | null; newSessionOpen: boolean; newFields: Omit<CreateDraft, "kind"> | null; sidebarCollapsed: boolean; snapshot: Snapshot; viewing: Preview | null; linkLanded: boolean; inbox: { open: boolean; enabled: boolean }; dialogMachineId?: string; rosterOut?: boolean;
-  mode?: boolean };
+let place: ShownPlace;
 let inboxCalls: string[];
 let reopenFiles: boolean;
 let asked: Array<string | null>;
@@ -50,45 +44,17 @@ let index: number;
 let waiting: (() => void) | null;
 let page: Page;
 let redraw: (() => void) | undefined;
-const refs = {
-  selection: { current: { machineId: "local", paneId: null, generation: 0 } as SelectionMark },
-  machines: { current: [] as Machine[] },
-  selectTarget: { current: (_machineId: string, _paneId: string | null): void => {} },
-  pendingFile: { current: null as string | null },
-  pendingLink: { current: null as AppLink | null },
-  pendingCreate: { current: null as CreateDraft | null },
-  newSessionPending: { current: false },
-  linkSince: { current: 0 },
-  rosterSeq: { current: 0 },
-};
+const refs = addressBarRefs();
 
 function Probe() {
   const [, refresh] = useReducer((version: number) => version + 1, 0);
   redraw = refresh;
-  const { machineId, paneId, newSessionOpen, newFields, sidebarCollapsed, snapshot, viewing, linkLanded, inbox, dialogMachineId, rosterOut, mode } = place;
-  const machine = { id: machineId, name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;
-  const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId) as HerdrPane;
-  refs.machines.current = rosterOut ? [] : [machine];
-  useLayoutEffect(() => { refs.selection.current = { machineId, paneId, generation: 0 }; }, [machineId, paneId]);
-  useAddressBar({
-    inbox: {
-      shown: inbox.open && inbox.enabled, enabled: inbox.enabled,
-      show: () => { inboxCalls.push("show"); place.inbox = { ...place.inbox, open: true }; draw(); },
-      leave: () => { inboxCalls.push("leave"); place.inbox = { ...place.inbox, open: false }; draw(); },
-    },
-    mode: mode === undefined ? undefined : { on: mode, lands: () => new URLSearchParams(window.location.search).get("app") === "inbox" },
-    newSessionOpen, newSessionMachineId: dialogMachineId ?? machineId, newFields, sidebarCollapsed, snapshot, selectedPaneId: paneId, selectedPane: pane,
-    selectedWorkspace: snapshot.workspaces.find((workspace) => workspace.workspace_id === pane?.workspace_id) as HerdrWorkspace,
-    selectedMachineId: machineId, selectedMachine: machine, machines: refs.machines.current, machinesRef: refs.machines,
-    viewing, leaveFile: () => { place.viewing = null; draw(); return reopenFiles; },
-    restoreFile: () => {}, fileFromPop: () => 0, forgetLeftFiles: () => {}, openFile: () => {},
-    locked: false, linkLanded, view: "chat", wideScreen: true, autoSelected: false, newTab: null,
-    settingsOpen: false, settingsPage: null, settingsLinkPage: null, settingsLinkSection: null,
-    pendingFile: refs.pendingFile, pendingLink: refs.pendingLink, pendingCreate: refs.pendingCreate, newSessionPending: refs.newSessionPending, linkSince: refs.linkSince, rosterSeq: refs.rosterSeq,
-    selectTargetRef: refs.selectTarget, selectionRef: refs.selection,
-    setLinkLanded: () => {}, setHeaderNote: () => {},
-    setNewSessionOpen: (open: boolean) => { place.newSessionOpen = open; draw(); },
-  } as unknown as Params);
+  useAddressBarOf(place, refs, {
+    showInbox: () => { inboxCalls.push("show"); place.inbox = { ...place.inbox, open: true }; draw(); },
+    leaveInbox: () => { inboxCalls.push("leave"); place.inbox = { ...place.inbox, open: false }; draw(); },
+    leaveFile: () => { place.viewing = null; draw(); return reopenFiles; },
+    setNewSessionOpen: (open) => { place.newSessionOpen = open; draw(); },
+  });
   return null;
 }
 
@@ -325,6 +291,30 @@ it("writes at once what a listener after the handler changes: the entry is read 
   expect(writes).toEqual(during);
 });
 
+it("where the browser tells no entry's key, keeps the other pane's entry after a sheet's refused Back, and writes on the entry a sheet then makes", async () => {
+  let over: (() => void) | null = null;
+  mock.module("./sheetHistory.ts", () => ({
+    ...loaded.sheet, sheetSteppedOff: () => sheetStep,
+    onSheetTraversalOver: (listener: () => void) => { over = listener; return () => { over = null; }; },
+  }));
+  try {
+    await mount([P1, P2]);
+    sheetStep = true;
+    await back();
+    sheetStep = false;
+    await act(async () => { place.snapshot = roster(); draw(); });
+    expect(writes).toEqual([]);
+
+    window.history.pushState({ "ovis:sheet": "sheet-1" }, "");
+    await act(async () => { over?.(); });
+
+    expect(addresses()).toEqual([P1, P2]);
+    expect(writes).toEqual([`pushState 1 ${P1}`, `replaceState 1 ${P2}`]);
+  } finally {
+    mock.module("./sheetHistory.ts", () => ({ ...loaded.sheet, sheetSteppedOff: () => sheetStep }));
+  }
+});
+
 it("keeps the other pane's entry intact when a sheet's refused Back does not return", async () => {
   Object.defineProperty(window, "navigation", { value: { get currentEntry() { return { key: String(index) }; } } });
   await mount([P1, P2]);
@@ -356,6 +346,48 @@ it("writes the file URL on a new entry after a sheet's refused Back does not ret
     draw();
   });
   expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
+});
+
+for (const [when, earlier] of [["made in this run", false], ["made before this run", true]] as const) it(`writes the new file entry after a refused Back onto an entry ${when}, without the Navigation API`, async () => {
+  const traversal = { ...sheetTraversal };
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator")!;
+  place.paneId = earlier ? "p2" : "p1";
+  try {
+    await mount(earlier ? [P1, P2] : [P1], async () => {
+      Object.defineProperty(window, "navigation", { configurable: true, value: undefined });
+      Object.defineProperty(globalThis, "navigator", {
+        ...originalNavigator,
+        value: { userAgent: "Chrome/145.0.0.0", userActivation: { isActive: false } },
+      });
+      // a fresh copy each time, so it counts on this window's history
+      const modulePath = `./sheetHistory.ts?address-bar-counted-file=${crypto.randomUUID()}`;
+      const sheets: typeof sheetHistory = await import(modulePath);
+      mock.module("./sheetHistory.ts", () => ({ ...sheets, sheetSteppedOff: () => sheetStep }));
+    });
+    if (!earlier) await act(async () => { place.paneId = "p2"; draw(); });
+
+    sheetStep = true;
+    await back();
+    sheetStep = false;
+    expect(window.location.search).toBe(P1);
+    expect(asked).toEqual([]);
+    await act(async () => { place.snapshot = roster(); draw(); });
+    expect(addresses()).toEqual([P1, P2]);
+
+    const preview = { path: "README.md", paneId: "p2", machineId: "local" };
+    await act(async () => {
+      window.history.pushState({ [FILE_PREVIEW_KEY]: preview }, "");
+      place.viewing = preview;
+      draw();
+    });
+
+    expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
+    expect(entries[1]!.state).toHaveProperty(FILE_PREVIEW_KEY, preview);
+  } finally {
+    mock.module("./sheetHistory.ts", () => ({ ...loaded.sheet, sheetSteppedOff: () => sheetStep }));
+    Object.assign(sheetTraversal, traversal);
+    Object.defineProperty(globalThis, "navigator", originalNavigator);
+  }
 });
 
 it("holds nothing once the dispatch is over, though the handler never heard the pop", async () => {
