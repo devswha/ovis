@@ -1465,8 +1465,7 @@ async function status(args: readonly string[] = []): Promise<number> {
     process.stdout.write(`account: ${account.account === null ? "none (run ovis login)" : `${shortAccount(account.account)} (${account.members} device${account.members === 1 ? "" : "s"})`}\n`);
   }
   if (typeof answer?.relay === "string") process.stdout.write(`relay: ${answer.relay}\n`);
-  const told = await accountTold();
-  if (told !== null && "merged" in told && told.merged) {
+  if (account?.merged) {
     process.stdout.write("This PC's account was merged into another one. Run ovis add on this PC: the devices paired with it stay.\n");
   }
   // the groups of the app's own answer, which carries no token: on a machine profile's owner socket, or over TCP when

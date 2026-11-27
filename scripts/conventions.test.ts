@@ -503,6 +503,7 @@ describe("demo transport", () => {
     "/api/account/confirm-page": "opens the PC's own confirm page for a key that waits: only with the release flag on, which the demo never is",
     "/api/account/forget": "a PC-local recovery act (ovis recover / the PC's screen); the demo's browser never asks for it",
     "/api/account/leave": "the PC leaving its account is a PC-local act; the app's own leave goes through the account service",
+    "/api/account/move": "the demo never receives a merge ticket and no app screen orders an account move yet",
     "/api/account/pc-proof": "this PC's own proof for its listing: asked only by a signed-in window on this PC itself, which the demo never is",
     "/api/account/list": "how this PC follows its account's signed list: read by this PC's own window and CLI for diagnosis, and no screen of the app asks for it",
     "/api/account/list/pin": "a person at the PC names the list it pins: this PC's own window and CLI alone, and no screen of the app asks for it yet",
