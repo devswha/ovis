@@ -470,7 +470,10 @@ export class SshConnection {
   }
   async forward(port: number, remotePort: number, requireReady = false): Promise<SshForward> {
     if (this.closed) throw new Error("SSH connection closed");
-    const spec = `127.0.0.1:${port}:127.0.0.1:${remotePort}`;
+    // a browser's forward names the remote loopback as localhost, so sshd tries its IPv4 and IPv6 addresses (a dev server
+    // started on localhost often listens on ::1 alone); the bridge's own forward keeps 127.0.0.1
+    const remoteHost = requireReady ? "localhost" : "127.0.0.1";
+    const spec = `127.0.0.1:${port}:${remoteHost}:${remotePort}`;
     if (this.multiplexed) {
       // Mux commands read SSH config too: even a master with ClearAllForwardings
       // would accept those extra tunnels here. -O uses only our existing control
@@ -479,9 +482,10 @@ export class SshConnection {
       const args = ["-L", spec, this.target.destination];
       try { await this.exec([...control, "forward", ...args]); }
       catch (error) {
-        // The master might have bound the port without replying. End it rather than leave an
+        // The master might have bound the port without replying: cancel it once, best effort, rather than end the whole
+        // connection (its terminals and bridge) over a clicked link, or leave an
         // untracked listener; an ordinary mux refusal (for example a bind collision) is not ambiguous.
-        if (requireReady && error instanceof SshCommandInterrupted) this.master?.kill();
+        if (requireReady && error instanceof SshCommandInterrupted) await this.exec([...control, "cancel", ...args]).catch(() => undefined);
         throw error;
       }
       return {
@@ -534,7 +538,7 @@ export class SshConnection {
     // authenticated, and names no forward. A LogVerbose config puts a source location after the
     // level, so the messages are looked for anywhere in a debug line. The rest of stderr is drained
     // and only ssh's own words, not the debug lines, are kept for an error.
-    const own = `Local connections to 127.0.0.1:${port} forwarded to remote address 127.0.0.1:${remotePort}`;
+    const own = `Local connections to 127.0.0.1:${port} forwarded to remote address ${remoteHost}:${remotePort}`;
     const ready = Promise.withResolvers<void>();
     void (async () => {
       const decoder = new TextDecoder();
