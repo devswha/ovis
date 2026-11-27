@@ -11,6 +11,7 @@ import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, holdListNumber, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
+import { availableFrom, settlingUntil } from "../lib/account/methodSettling.ts";
 import { AccountHintError, isEmailHintProvider, type AccountHint, type AccountHintChoice, type SignInCreation } from "../lib/account/accountHint.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, cancelListAdd, confirmListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
@@ -1399,6 +1400,22 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     document.addEventListener("visibilitychange", read);
     return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", read); };
   }, [linkPage, ownRedirect, signedOut, recheck]);
+  // the account service rings every device of the account when a way in is added by its email or taken back: the ring
+  // brings the app to the front, where the ways in are read again
+  const shownSession = view.kind === "signed-in" ? view.session : null;
+  useEffect(() => {
+    if (shownSession === null) return;
+    let live = true;
+    const read = (): void => {
+      if (pageHidden()) return;
+      indexedAccountService.forSignIn(shownSession).identities().then((methods) => {
+        if (live) setView((current) => current.kind === "signed-in" && sameSignIn(current.session, shownSession) ? { ...current, methods } : current);
+      }, (error: unknown) => console.warn("Ovis: the ways to sign in could not be read", error instanceof Error ? error.name : error));
+    };
+    window.addEventListener("focus", read);
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; window.removeEventListener("focus", read); document.removeEventListener("visibilitychange", read); };
+  }, [shownSession]);
 
   if (!offered) return null;
 
@@ -1419,6 +1436,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
         ? t("This sign-in already belongs to another Ovis account. Nothing was changed.")
         : t("This {provider} account is linked to another Ovis account. Take {provider} off that account first, then you can add it here.", { provider: name });
       case "no_sign_in": return t("The sign-in did not finish. Try again.");
+      case "email_unavailable": return t("Could not check your email. Try again.");
     }
   };
 
@@ -1550,6 +1568,19 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     });
   };
 
+  /** Not me on a way in the service added by its email; once its 24 hours are over (409 `settled`), the ordinary removal. */
+  const notMe = (provider: AccountProvider): void => {
+    if (view.kind !== "signed-in") return;
+    const session = view.session;
+    indexedAccountService.forSignIn(session).notMe(provider).then(() => load(), (error: unknown) => {
+      if (error instanceof AccountServiceError && error.code === "settled") { removeMethod(provider, session); return; }
+      console.warn("Ovis: the sign-in method was not taken back", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      if (error instanceof SignedOutError) { void load(); return; }
+      const message = methodRefusalText(t, { action: "not_me", provider, code: error instanceof AccountServiceError ? error.code : "failed", until: error instanceof AccountServiceError ? error.until ?? undefined : undefined }, currentLocale());
+      setView((current) => current.kind === "signed-in" && sameSignIn(current.session, session) ? { ...current, error: message } : current);
+    });
+  };
+
   /**
    * The service wants a sign-in from the last ten minutes to change the ways in: sign in again
    * with the method this device uses, then repeat the change, on the same account only.
@@ -1645,7 +1676,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
       deletion.current = null;
       if (error instanceof SignedOutError) { void load(); return; }
       setDeleteFailed({ account: session.account, message: error instanceof AccountServiceError && error.code === "subscription_active"
-        ? t("Cancel your subscription first, then delete the account.") : t("The account could not be deleted. Try again.") });
+        ? t("Cancel your subscription first, then delete the account.")
+        : error instanceof AccountServiceError && error.code === "method_settling" && error.until !== null ? availableFrom(t, currentLocale(), error.until)
+        : t("The account could not be deleted. Try again.") });
     });
   };
 
@@ -1810,7 +1843,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   );
   const plan = view.kind === "signed-in" && view.limits !== null ? formatAccountLimits(t, view.limits, view.pcs?.filter((pc) => pc.listed).length ?? 0) : null;
   const deleteRefused = view.kind === "signed-in" && deleteFailed?.account === view.account ? deleteFailed.message : null;
-  const deleteParts = view.kind === "signed-in" && (
+  // a way in still settling may not delete the account: the ways in say from when
+  const settling = view.kind === "signed-in" && view.methods !== null ? settlingUntil(view.methods.identities, view.provider, Date.now()) : null;
+  const deleteParts = view.kind === "signed-in" && settling === null && (
     <>
       {/* A PC's own page in a browser signs in with a device code or the link page, whose sign-in the service never lets
           delete the account (web_sign_in_required): it says where to delete instead. */}
@@ -1845,7 +1880,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   const methodsPart = view.kind === "signed-in" && view.methods !== null && (
     <AccountMethods methods={view.methods.identities} history={view.methods.history} current={view.provider}
       offered={bridge === null ? [] : providers} hint={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}
-      onAdd={(provider) => addMethod(provider)} onRemove={(provider) => removeMethod(provider)}>
+      onAdd={(provider) => addMethod(provider)} onRemove={(provider) => removeMethod(provider)} onNotMe={notMe}>
       {reauthShown !== null && reauthShown.action !== "delete" && (
         <div className="account-reauth" role="alert">
           <p className="settings-description">{bridge === null

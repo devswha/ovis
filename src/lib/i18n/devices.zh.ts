@@ -276,7 +276,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "Key {fingerprint}": "密钥 {fingerprint}",
   "{count} older notices from {pc} were cleared before this device saw them.": "{pc} 的 {count} 条较早通知在此设备看到之前已被清除。",
   "An older notice from {pc} was cleared before this device saw it.": "{pc} 的 1 条较早通知在此设备看到之前已被清除。",
-  "Not me": "不是我",
   "this device joined that PC after it": "在那台 PC 上，本设备加入得更晚",
   "this device was removed from that PC": "本设备已从那台 PC 移除",
   "this device is frozen on that PC": "本设备在那台 PC 上已被冻结",

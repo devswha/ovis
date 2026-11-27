@@ -276,7 +276,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Key {fingerprint}": "キー {fingerprint}",
   "{count} older notices from {pc} were cleared before this device saw them.": "{pc} の古いお知らせ {count} 件は、このデバイスが見る前に消去されました。",
   "An older notice from {pc} was cleared before this device saw it.": "{pc} の古いお知らせ 1 件は、このデバイスが見る前に消去されました。",
-  "Not me": "自分ではない",
   "this device joined that PC after it": "その PC にはこのデバイスのほうが後から参加しています",
   "this device was removed from that PC": "その PC からこのデバイスは削除されています",
   "this device is frozen on that PC": "その PC でこのデバイスは凍結されています",

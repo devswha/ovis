@@ -276,7 +276,6 @@ export const DEVICES_KO: Record<string, string> = {
   "Key {fingerprint}": "키 {fingerprint}",
   "{count} older notices from {pc} were cleared before this device saw them.": "{pc}의 오래된 알림 {count}개는 이 기기가 보기 전에 지워졌어요.",
   "An older notice from {pc} was cleared before this device saw it.": "{pc}의 오래된 알림 1개는 이 기기가 보기 전에 지워졌어요.",
-  "Not me": "내가 아니에요",
   "this device joined that PC after it": "그 PC에는 이 기기가 더 나중에 들어왔어요",
   "this device was removed from that PC": "그 PC에서 이 기기가 제거됐어요",
   "this device is frozen on that PC": "그 PC에서 이 기기가 멈춰 있어요",

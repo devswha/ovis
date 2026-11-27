@@ -90,6 +90,7 @@ import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
 import { NewPcNotices } from "./components/NewPcNotices.tsx";
+import { JoinedNotice } from "./components/JoinedNotice.tsx";
 import { UnconfirmedPcNotices } from "./components/UnconfirmedPcNotices.tsx";
 import { AccountJoinRequests } from "./components/AccountJoinRequests.tsx";
 import { hostedAccountItems } from "./components/AccountHead.tsx";
@@ -1209,6 +1210,7 @@ export function App() {
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {deviceNotices}
         {health !== null && <NewPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} ownWindowOf={ownWindowHere(health.auth) ? health.web_ui?.server_id : undefined} signIn={accountSignedIn ?? undefined} />}
+        {health !== null && <JoinedNotice />}
         {/* NewPcNotices above tells of a PC confirmed here; the hosted app's sign-in again comes back to this page, which goes on with the add */}
         {health !== null && <UnconfirmedPcNotices enabled={machineSessions.peek("local")?.socket?.accountOpensAll() === true} tellConfirmed={false}
           onSignInAgain={hostedSignIn?.signInAgain} />}

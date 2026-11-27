@@ -21,7 +21,7 @@ const shell = (extra: Partial<Shell> = {}): Shell => ({
   provider: "github", account: "acct", session,
   methods: async () => ways(["github", "google"]),
   offered: async () => ["github", "google", "apple"],
-  addMethod: async () => {}, removeMethod: async () => {},
+  addMethod: async () => {}, removeMethod: async () => {}, notMe: async () => {},
   ...extra,
 });
 
@@ -172,6 +172,67 @@ describe("the hosted Manage account's ways to sign in", () => {
       await press(add("apple"));
       expect(alerts()).toHaveLength(1);
       expect(signInAgain()).toBeNull();
+    });
+  });
+
+  describe("a way in added because it has the same email", () => {
+    const hoursFromNow = (hours: number): string => new Date(Date.now() + hours * 3_600_000).toISOString();
+    const joined = (provider: AccountProvider, hours: number, how: "email" | "fold" = "email"): AccountIdentity => ({ provider, added_at: at(27), how, deniable_until: hoursFromNow(hours) });
+    const cards = (): Element[] => [...page.container.querySelectorAll('[data-testid="account-method-attached"]')];
+    const notMeButton = (): HTMLElement => page.one('[data-testid="account-method-attached"] button');
+    const settling = (): Element | null => page.container.querySelector('[data-testid="account-method-settling"]');
+
+    it.each(["email", "fold"] as const)("tells of a way in added by %s on the row, with Not me, while it can be taken back", async (how) => {
+      await show(shell({ methods: async () => ({ identities: [way("github"), joined("google", 5, how)], history: [] }) }));
+      expect(cards().map(providerOf)).toEqual(["google"]);
+      expect(cards()[0]?.firstChild?.textContent).toBe("Google was added to this account because it has the same email");
+      expect(notMeButton().textContent).toBe("Not me");
+    });
+
+    it("tells nothing once the way in has settled", async () => {
+      await show(shell({ methods: async () => ({ identities: [way("github"), joined("google", -1)], history: [] }) }));
+      expect(cards()).toEqual([]);
+      expect(removable()).toEqual(["google"]);
+    });
+
+    it("takes it back through the shell when Not me is pressed, then reads the ways in again", async () => {
+      let now: AccountIdentityList = { identities: [way("github"), joined("google", 5)], history: [] };
+      const notMe = jest.fn(async (_provider: AccountProvider, _shown: AccountSession): Promise<void> => { now = ways(["github"], [{ ...changed("remove", "google", 27, null), how: "not_me" }]); });
+      await show(shell({ methods: async () => now, notMe }));
+      await press(notMeButton());
+      expect(notMe.mock.calls).toEqual([["google", session]]);
+      expect(cards()).toEqual([]);
+      expect(linked()).toEqual(["github"]);
+    });
+
+    it("says in one line why Not me was refused", async () => {
+      let outcome: Outcome;
+      const notMe = async (provider: AccountProvider): Promise<void> => { outcome = { account: session.account, provider, error: "web_sign_in_required" }; };
+      await show(shell({ methods: async () => ({ identities: [way("github"), joined("google", 5)], history: [] }), notMe, methodsChange: () => outcome }));
+      await press(notMeButton());
+      expect(alerts()).toHaveLength(1);
+    });
+
+    it("offers no change to the ways in while this device's own way in settles, and says from when", async () => {
+      await show(shell({ provider: "google", session: { ...session, provider: "google" }, methods: async () => ({ identities: [way("github"), joined("google", 5)], history: [] }) }));
+      expect(linked()).toEqual(["github", "google"]);
+      expect(addable()).toEqual([]);
+      expect(removable()).toEqual([]);
+      expect(cards()).toEqual([]);
+      expect(settling()).not.toBeNull();
+    });
+
+    it("names in Recent changes a way in added by email and one taken back with Not me", async () => {
+      await show(shell({ methods: async () => ways(["github"], [{ ...changed("remove", "google", 27, null), how: "not_me" }, { ...changed("add", "google", 26, null), how: "email" }]) }));
+      expect(recent()).toEqual(["Nov 27 · Google removed with Not me", "Nov 26 · Google added by email"]);
+    });
+
+    it("reads the ways in again when the app comes back to the front, as a ring about the account brings it", async () => {
+      let reads = 0;
+      await show(shell({ methods: async () => { reads++; return ways(["github"]); } }));
+      expect(reads).toBe(1);
+      await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
+      expect(reads).toBe(2);
     });
   });
 });
