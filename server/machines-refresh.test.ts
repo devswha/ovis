@@ -126,6 +126,16 @@ async function fixture(options: { bootId?: string; now?: () => number; serverId?
   return { manager, drive, local, rosters, stopRecording };
 }
 
+it("dates accepted status changes before anyone asks for the roster", async () => {
+  const { manager, local, stopRecording } = await fixture();
+  stopRecording();
+  local.set(snapshot("blocked"));
+  await manager.refreshLocal();
+  local.set(snapshot("working"));
+  await manager.refreshLocal();
+  expect(manager.list()[0]?.snapshot?.panes[0]?.changed_at).toBeGreaterThan(0);
+});
+
 it("keeps internal machine listeners without counting them as roster viewers", async () => {
   const { manager, stopRecording } = await fixture();
   stopRecording();
@@ -231,6 +241,53 @@ it("records a remote bridge failure and a later recovery without its address or 
 });
 
 describe("machine snapshot refresh races", () => {
+  it("dates a newer counter after the remote observer disconnects with an unmatched status frame", async () => {
+    const { manager, drive, remote, runtime, endpoint, send } = await remoteFixture();
+    const counted = (status: string, state_change_seq: number): SessionSnapshot => {
+      const state = snapshot(status);
+      return { ...state, agents: [{ ...state.panes[0]!, state_change_seq }] };
+    };
+    remote.set(counted("working", 12));
+    await drive.refresh(runtime);
+    remote.hold();
+    const frame = Promise.withResolvers<number | undefined>();
+    const off = manager.subscribe((event) => {
+      if (event.type === "machine-message" && event.machine_id === "remote" && event.message.type === "pane-status") frame.resolve(event.message.changed_at);
+    });
+    try {
+      send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "done" });
+      await until(() => manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.changed_at !== undefined);
+      const before = await frame.promise;
+      expect(before).toBeGreaterThan(0);
+      drive.disconnect(runtime);
+      remote.set(counted("done", 15));
+      remote.finish();
+      await until(() => !runtime.refreshing && Date.now() > (before ?? Infinity));
+      runtime.endpoint = endpoint;
+      runtime.ssh = { close() {} };
+      await drive.observe(runtime);
+      expect(runtime.machine.snapshot?.agents[0]?.state_change_seq).toBe(15);
+      expect(manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.changed_at).toBeGreaterThan(before ?? Infinity);
+    } finally { off(); }
+  });
+
+  it("forwards the hub's timestamp in the remote snapshot as well as the roster", async () => {
+    const { manager, send } = await remoteFixture();
+    const incoming = snapshot("done");
+    incoming.panes[0]!.changed_at = 99;
+    const forwarded = Promise.withResolvers<SessionSnapshot>();
+    const off = manager.subscribe((event) => {
+      if (event.type === "machine-message" && event.machine_id === "remote" && event.message.type === "snapshot") forwarded.resolve(event.message.snapshot);
+    });
+    try {
+      send({ type: "snapshot", snapshot: incoming });
+      await until(() => manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.agent_status === "done");
+      const roster = manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.changed_at;
+      expect(roster).toBeGreaterThan(99);
+      expect((await forwarded.promise).panes[0]?.changed_at).toBe(roster);
+    } finally { off(); }
+  });
+
   it("preserves newest snapshot on oversized stale refresh", async () => {
     const { manager, drive, rosters, remote, runtime, send, answerNext } = await remoteFixture();
     const asked = Promise.withResolvers<void>();
@@ -281,6 +338,50 @@ describe("machine snapshot refresh races", () => {
     await drive.refresh(runtime);
     expect(runtime.machine.snapshot?.panes[0]?.agent_status).toBe("working");
     expect(runtime.machine.error).toBeNull();
+  });
+
+  it("dates a remote agent's status change by this server's clock, never by the PC's own", async () => {
+    const { manager, drive, remote, runtime, send } = await remoteFixture();
+    remote.set(snapshot("working"));
+    await drive.refresh(runtime);
+    const next = (): Promise<ServerMessage> => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { unsubscribe(); reject(new Error("no remote status event")); }, 2000);
+      const unsubscribe = manager.subscribe((event) => {
+        if (event.type === "machine-message" && event.machine_id === "remote" && event.message.type === "pane-status") {
+          clearTimeout(timer); unsubscribe(); resolve(event.message);
+        }
+      });
+    });
+    const before = Date.now();
+    // the PC's own Ovis names a time of its own clock: it is dropped
+    let told = next();
+    send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "working", changed_at: 99 });
+    expect(await told).not.toHaveProperty("changed_at");
+    told = next();
+    send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "done", changed_at: 99 });
+    const changed = (await told) as Extract<ServerMessage, { type: "pane-status" }>;
+    expect(changed.changed_at).toBeGreaterThanOrEqual(before);
+    // the roster every browser gets names the same time
+    const pane = manager.list().find((machine) => machine.id === "remote")?.snapshot?.panes[0];
+    expect(pane).toMatchObject({ agent_status: "done", changed_at: changed.changed_at });
+  });
+
+  it("keeps a PC's change times while it is not listed yet, as at a start before its catalog answers", async () => {
+    const { manager, drive, remote, runtime, send } = await remoteFixture();
+    remote.set(snapshot("working"));
+    await drive.refresh(runtime);
+    const told = new Promise<void>((resolve) => {
+      const off = manager.subscribe((event) => { if (event.type === "machine-message" && event.message.type === "pane-status") { queueMicrotask(off); resolve(); } });
+    });
+    send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "done" });
+    await told;
+    const dated = manager.list().find((machine) => machine.id === "remote")?.snapshot?.panes[0]?.changed_at;
+    expect(dated).toBeNumber();
+    // the roster is read while the PC is not among the manager's PCs
+    drive.machines.delete("remote");
+    manager.list();
+    drive.machines.set("remote", runtime);
+    expect(manager.list().find((machine) => machine.id === "remote")?.snapshot?.panes[0]?.changed_at).toBe(dated!);
   });
 
   it("preserves a remote bridge's finish identity through HTTP snapshots and status events", async () => {
