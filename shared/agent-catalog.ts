@@ -115,6 +115,8 @@ export interface AgentCatalogEntry {
 
 /** What GET /api/agent-catalog found for one agent on the PC it asked. */
 export interface AgentInstallState {
+  /** Antigravity is configured to use a Gemini API key; does not verify a credential. */
+  auth_mode?: "gemini-api-key";
   /** null: this platform cannot tell (detect.unreliable_on) */
   installed: boolean | null;
   /** the binary that was found */

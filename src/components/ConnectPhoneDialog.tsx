@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
-import { Check, RefreshCw, Smartphone, X } from "lucide-react";
+import { Check, Copy, RefreshCw, Smartphone, X } from "lucide-react";
 
 import "./ConnectPhoneDialog.css";
 import "./DevicesPanel.css";
@@ -85,6 +85,26 @@ export const relayPending = (relay: RelayState): boolean => !relay.unsupported &
  */
 export function signInLink(app: string, serverId: string, provider: AccountProvider | null): string {
   return `${new URL(app).origin}/s/${serverId}/${provider === null ? "" : `#sign-in=${provider}`}`;
+}
+
+/**
+ * This PC's page in the hosted app (signInLink without a sign-in), the address its QR code opens, to paste in any
+ * browser. Copying asks nothing of the PC; where the browser will not copy, the address is selected instead.
+ */
+function PcAddress({ url }: { readonly url: string }) {
+  const t = useT();
+  const shown = useRef<HTMLElement>(null);
+  const [copied, setCopied] = useState(false);
+  const label = copied ? t("Copied") : t("Copy address");
+  return (
+    <p className="connect-pc-address" data-testid="connect-pc-address">
+      <span className="connect-pc-address-label">{t("This PC's address")}</span>
+      <code ref={shown}>{url}</code>
+      <button type="button" className="icon-button" aria-label={label} title={label} onClick={() => void copyText(url, shown.current).then(setCopied)}>
+        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      </button>
+    </p>
+  );
 }
 
 const relayOn = (relay: RelayState): boolean => relay.status !== null && relay.status.blocked === null && relay.status.phase !== "off";
@@ -1444,6 +1464,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
   // standing in another account than this page's, nothing is said: the tab above is its sign-in buttons (owner #25)
   const standingLabel = standing && signedIn && here !== "other";
   const phoneLink = standing && online && serverId !== null && relay.status !== null ? signInLink(relay.status.app, serverId, here === "mine" ? provider : null) : null;
+  const address = standing && here === "mine" && online && serverId !== null && relay.status !== null ? <PcAddress url={signInLink(relay.status.app, serverId, null)} /> : null;
   const labelled = standing ? standingLabel : told || shown;
   return (
     <section className="connect-account-qr" aria-labelledby={labelled ? id : undefined} data-testid="connect-account-qr" data-account={here ?? undefined} data-first={first || undefined}>
@@ -1456,11 +1477,13 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
             </div>
           </PhoneScan>
           <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{t("This PC is in your account.")}</p>
+          {address}
           {enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
         </>
       ) : standing ? (
         <>
           {standingLabel && <p ref={heading} className="settings-label" id={id} tabIndex={-1}>{here === "mine" ? t("This PC is in your account.") : t("Sign in to this PC's account.")}</p>}
+          {address}
           {here === "mine" && enrolling && <p className="settings-description connect-account-qr-warning" role="status">{t("Not finished yet: the device that added this PC is still setting it up. If it stopped, open this PC on that device and choose Try again.")}</p>}
           {!online && <>{relayControls}{relayState}</>}
           {phoneLink !== null && <PhoneScan><QrCode value={phoneLink} label={t("QR code that opens this PC in the Ovis app")} size={132} /></PhoneScan>}

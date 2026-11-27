@@ -266,7 +266,7 @@ The chat view reads the agent's own session files wherever it knows where they a
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
 | **gjc** | Native session file reported by the web UI's GJC extension, verified against the pane's process | — use Terminal |
 | **pi** | Native session file, resolved through herdr; after `/tree`, the branch in play | ✓ its dialogs: a question, a confirmation, an answer typed in |
-| **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, named by the session herdr reports for the pane (see below); after `/tree`, the branch in play | ✓ its permission prompts: Yes / Yes, don't ask again / No |
+| **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, named by the session herdr reports for the pane (see below); after `/tree`, the branch in play. Start it from **New workspace**, **New tab with agent…** or **New worktree** on Linux and macOS | ✓ its permission prompts: Yes / Yes, don't ask again / No |
 | **OpenCode** | Native session in OpenCode 2's own database, resolved through herdr: `~/.local/share/opencode/opencode.db` (`%USERPROFILE%\.local\share\opencode\opencode.db` on Windows), or where the server's `XDG_DATA_HOME` or `OPENCODE_DB` puts it | ✓ its questions on OpenCode 2.0 or later, answered through its background service (`~/.local/state/opencode/service.json`, or under the server's `XDG_STATE_HOME`) one question at a time, with Back to change an earlier one; its permission requests on OpenCode 2 (a shell command, a file edit with its patch, a web fetch, an MCP tool with its input), answered Allow once, Always allow or Deny through the same service, the card closing when the terminal answers first; other prompts, and OpenCode 1 — use Terminal |
 | **Devin CLI** | Native SQLite session, showing the active branch when herdr or the live process explicitly identifies the session; otherwise terminal text | — use Terminal |
 | **Grok** | Native update log on Linux and macOS. Any Grok executable named `grok` or `grok-…` that holds the `events.jsonl` for the session Herdr reported in exactly one directory, with a newer write time than every other held session. Linux reads `/proc`; macOS reads that process's held files through `lsof` and its environment through `sysctl KERN_PROCARGS2`, not the bridge's home. It verifies the kernel's microsecond process start time through `sysctl kern.proc.pid` around those reads and a fresh pane foreground lookup. Older open files do not hide it; ambiguous IDs, tied times, and a held file that may be a renamed events file use Terminal. After a `/resume` Herdr does not hear about, Chat can keep showing the previous conversation until the resumed session writes; it then uses Terminal until Herdr names that session. Windows uses Terminal. See [Grok setup and limits](grok-chat.md). | — use Terminal |
@@ -682,9 +682,9 @@ Only devices in your tailnet can open that address. Your own devices get in with
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
 whether the test was sent or failed; a missing subscription offers **Turn alerts on again**.
 
-While the app is in front on any device, its window visible and focused, no alert goes to any
-device: you are already looking at the change. Alerts resume once no window of the app is in use.
-The test push is always sent.
+A visible, focused Ovis window on any device holds back alerts. If a question is still unanswered
+or a finish still has no follow-up five minutes after the change, its alert goes out even if a
+window is still focused. The test push is always sent.
 
 Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
 30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.
@@ -1169,9 +1169,13 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
   Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
   own), so its agents' chat history is not read here: their transcripts are on that machine.
-  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
-  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
-  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  Its files are read there through the core (`machine.exec` with that machine's `/bin/sh`, as
+  its user): the Files view's browser, the folder picker and file previews, up to 8 MB a file
+  (a larger one is described but not opened; an HTML page shows as text). A pasted or attached
+  image is put beside the terminal on that machine (`terminal.put`, 8 MB at most) and its path
+  there is inserted. Diffs, git, Markdown lists, file search, editing and New folder are refused
+  for it, and so is all of it on a machine without `/bin/sh` (Windows). A folder typed for a new
+  workspace there is passed to that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
   there. Temporary machines (`hc machine add --temp`) are not shown, and
   PCs added over SSH or through the relay keep working beside them.
 

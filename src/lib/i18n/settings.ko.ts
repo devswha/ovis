@@ -282,6 +282,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Saved": "저장했습니다",
   "Saved on this PC. Leave the field empty to keep it.": "이 PC에 저장되어 있습니다. 칸을 비워 두면 그대로 씁니다.",
   "Messages have no link a phone can open yet. Save once from this PC's network address, not localhost or the relay.": "아직 메시지에 폰에서 열리는 링크가 없습니다. localhost나 릴레이가 아닌 이 PC의 네트워크 주소로 접속해 한 번 저장하세요.",
+  "Link to the pane": "패널 링크",
+  "Adds a link that opens the pane to each message. Off sends only the text.": "메시지마다 패널을 여는 링크를 붙입니다. 끄면 글만 보냅니다.",
   "Send a test": "테스트 보내기",
   "Test sent. Check the destination.": "테스트를 보냈습니다. 받는 곳을 확인하세요.",
   "Sends alerts to another app too, with the PC and pane names and a link to open the pane.": "알림을 다른 앱에도 보냅니다. PC·패널 이름과 열기 링크가 포함됩니다.",

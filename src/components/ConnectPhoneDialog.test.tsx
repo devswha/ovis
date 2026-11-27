@@ -1434,7 +1434,8 @@ describe("the relay tab's QR code behind a press", () => {
   const update = async (options?: TabOptions) => { await page.render(tab(options)); await flush(); };
   const advance = async (ms: number) => { await act(async () => { jest.advanceTimersByTime(ms); }); await flush(); };
   const section = () => one('[data-testid="connect-account-qr"]');
-  const buttons = () => all<HTMLButtonElement>("button", section()).map((node) => text(node).trim());
+  // the section's actions: the copy button on this PC's address line is none
+  const buttons = () => all<HTMLButtonElement>("button", section()).filter((node) => node.closest('[data-testid="connect-pc-address"]') === null).map((node) => text(node).trim());
   const press = async (label: string) => {
     const found = all<HTMLButtonElement>("button", section()).filter((node) => text(node).trim() === label);
     expect(found.map(text)).toEqual([label]);
@@ -1475,6 +1476,34 @@ describe("the relay tab's QR code behind a press", () => {
     expect(all('[data-testid="connect-other-account"]')).toHaveLength(0);
     expect(text(document.body)).not.toContain("This PC is in an account. Add PCs from your account.");
     expect(all<HTMLButtonElement>("button").filter((node) => text(node) === "Add from account")).toHaveLength(0);
+  });
+
+  // the address the QR code opens, without a sign-in in it, to paste in any browser: copying it asks nothing of the PC
+  it("signed in to a bound PC's own account, shows this PC's address in one line and copies it without a code", async () => {
+    const copied: string[] = [];
+    Object.defineProperty(page.window.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+    const url = signInLink(ONLINE.app, SERVER_ID, null);
+    pcAccount = ACCOUNT_ID;
+    // the second is the tab that also pairs from here (beside its six digits), the third the QR code alone
+    for (const options of [{ pcAdd: true, joinBySignIn: true, provider: "github" }, { pcAdd: true, joinBySignIn: true, provider: "github", addsOverSsh: true }, { signedIn: true, joinBySignIn: true }] as const) {
+      copied.length = 0;
+      await mount(options);
+      const line = all('[data-testid="connect-pc-address"]', section());
+      expect(line.map((node) => text(node))).toEqual([`This PC's address${url}`]);
+      const copy = all<HTMLButtonElement>("button", line[0]);
+      expect(copy.map((node) => node.getAttribute("aria-label"))).toEqual(["Copy address"]);
+      await act(async () => { copy[0]!.click(); });
+      await flush();
+      expect(copied).toEqual([url]);
+      expect(minted()).toEqual([]);
+      await page.render(null);
+    }
+    // signed out, or signed in to another account: the QR code alone, no address
+    for (const options of [{ signedIn: false }, { pcAdd: true, accountId: "acct_mine_0000000000000" }] as const) {
+      await mount(options);
+      expect(all('[data-testid="connect-pc-address"]')).toHaveLength(0);
+      await page.render(null);
+    }
   });
 
   // owner #25: a sign-in that ended in another account than the PC's is no sign-in to this PC: the tab is its sign-in

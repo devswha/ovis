@@ -114,6 +114,7 @@ import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { holdOpenCodeNative } from "./opencode-native.ts";
 import { holdCommandHistory } from "./claude-command-history.ts";
 import { holdFilePool } from "./file-pool.ts";
+import type { MachineHc } from "./herdr-core/machine-files.ts";
 import { handleRequest, type RequestServices, type ServerContext } from "./dispatch.ts";
 import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPeer, type LanHttpsConfig } from "./lan-https.ts";
 
@@ -245,6 +246,8 @@ export function createServer(
     bridgeOnly?: boolean;
     /** false: the panes' files are on another machine (server/herdr-core/machine-entry.ts), so no route reads or makes files on this disk for them */
     localFiles?: boolean;
+    /** with `localFiles: false`, the core that reads that machine's files there (herdr-core/machine-files.ts); without it they are all refused */
+    machineFiles?: () => MachineHc;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     herdrConfigPath?: string;
     registerBridge?: boolean;

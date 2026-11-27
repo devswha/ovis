@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, jest } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { handleMachineRequest } from "./machine-api.ts";
 import { createServer } from "./index.ts";
 import { MachineManager } from "./machines.ts";
 import { createPushService } from "./push.ts";
+import { startFakePushService } from "./push.fake.ts";
 
 describe("slow structural roster refreshes", () => {
   for (const remote of [false, true]) {
@@ -115,6 +116,52 @@ describe("slow structural roster refreshes", () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+  }
+});
+
+it("cancels a deferred remote question when a refresh sees it answered without a status frame", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ovis-test-remote-alert-"));
+  const workspace = await workspaceCreate({ cwd: root, label: "ovis-test-remote-alert" });
+  const source = await sessionSnapshot();
+  const paneId = workspace.root_pane.pane_id;
+  const device = await startFakePushService();
+  const push = createPushService({ stateDir: root, loopbackHttp: true, inUse: () => true });
+  push.subscribe(device.subscription);
+  let answered = false;
+  const bridge = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch: () => Response.json({ snapshot: {
+      ...source, order_epoch: undefined, read_seq: undefined,
+      panes: source.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: answered ? "working" : "idle" } : pane),
+    } }),
+  });
+  const manager = new MachineManager(root, push, new CompletionTracker(null), sessionSnapshot);
+  try {
+    type TestRuntime = { machine: Machine; endpoint?: { url: string; token: string } };
+    const drive = manager as unknown as { runtime(machine: Machine): TestRuntime; refresh(runtime: TestRuntime): Promise<void> };
+    const runtime = drive.runtime({ id: "remote", name: "Fixture", kind: "ssh", enabled: true, state: "connected", error: null, snapshot: null });
+    runtime.endpoint = { url: `http://127.0.0.1:${bridge.port}`, token: "fixture" };
+    await drive.refresh(runtime);
+    expect(runtime.machine.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent_status).toBe("idle");
+    jest.useFakeTimers();
+    try {
+      await push.onStatus(paneId, "blocked", "remote");
+      jest.advanceTimersByTime(10_000);
+      answered = true;
+      await drive.refresh(runtime);
+      expect(runtime.machine.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent_status).toBe("working");
+      jest.advanceTimersByTime(5 * 60_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await push.settled();
+    expect(device.received).toHaveLength(0);
+  } finally {
+    manager.stop();
+    bridge.stop(true);
+    device.stop();
+    await workspaceClose(workspace.workspace.workspace_id);
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
