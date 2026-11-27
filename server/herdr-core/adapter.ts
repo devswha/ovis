@@ -6,7 +6,7 @@ import type { Socket } from "bun";
 import { AGENT_LABELS } from "../agents-routes.ts";
 import { LINE_BYTES } from "../herdr/client.ts";
 import { makeLineReader } from "../herdr/line-reader.ts";
-import { cmdQuote, powershellNativeArgs, SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
+import { cmdQuote, plainPosixShell, powershellNativeArgs, SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
 import { descendantProcesses, type ProcessRow, windowsProcessTable } from "../windows-processes.ts";
 import { jobProcessesBelow } from "../foreground-job.ts";
 import { PAINT_END } from "./attach-session.ts";
@@ -313,10 +313,6 @@ const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent
  * (`/bin/bash`, a login `-zsh`): the POSIX ones, and fish, which reads the same quoting for an
  * agent's name and plain arguments (nu does not).
  */
-const SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
-/** The flags a plain interactive shell may be started with; anything else (`-c`) runs a program in it. */
-const SHELL_FLAGS = new Set(["-l", "--login", "-i"]);
-const plainShell = (argv: readonly string[]): boolean => SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => SHELL_FLAGS.has(arg));
 /** The switches that leave PowerShell an interactive shell. */
 const POWERSHELL_SWITCHES = new Set(["-nologo", "-noexit", "-noprofile", "-login"]);
 /** How the `-Command` of hc's own PowerShell begins (a live record, hc 0.1.17): its prompt hook, which keeps the terminal's cwd current. */
@@ -339,7 +335,7 @@ type StartShell = "posix" | "powershell" | "pwsh" | "cmd";
  * there; WSL's bash runs the agent where this PC's process table does not see it.
  */
 function startShellOf(argv: readonly string[], platform: NodeJS.Platform): StartShell | null {
-  if (platform !== "win32") return plainShell(argv) ? "posix" : null;
+  if (platform !== "win32") return plainPosixShell(argv) ? "posix" : null;
   const name = windowsProgram(argv[0] ?? "");
   const args = argv.slice(1);
   // cmd runs what follows a /c, /k or /r, even one run together with another switch (`/q/c`), and
@@ -894,12 +890,11 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     // none, so the kinds Ovis knows are offered, and the start types the command into the pane's
     // shell as a person would. Ovis's own shell-started agents are offered and started by the
     // server itself (shell-agent.ts), through pane.send_text, except Command Code, which uses
-    // agent.start here so the adapter checks for an idle shell. On Windows that shell is PowerShell or
-    // cmd (startShellOf), and another machine's terminals, whose programs its table does not show,
-    // are offered no kind; nor is Command Code, whose command `cmd` is cmd.exe there.
+    // agent.start here so the adapter checks for an idle shell. Its resolved executable is local, and
+    // `cmd` is cmd.exe on Windows; neither Windows nor a machine-scoped adapter offers Command Code.
     async "server.agent_manifests"() {
       if (programsUnseen) return { manifests: [] };
-      const manifests = Object.keys(AGENT_LABELS).filter((agent) => agent === "cmd" ? platform !== "win32" : !Object.hasOwn(SHELL_AGENTS, agent))
+      const manifests = Object.keys(AGENT_LABELS).filter((agent) => agent === "cmd" ? platform !== "win32" && !options.otherMachine : !Object.hasOwn(SHELL_AGENTS, agent))
         .map((agent) => ({ agent, source: "herdr-core", source_kind: "herdr-core", local_override_shadowing_remote: false }));
       return { manifests };
     },

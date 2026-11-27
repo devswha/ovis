@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isAbsolute } from "node:path";
-import { paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
+import { HerdrError, paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
 import { isCmdProcess } from "./agent-identity.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
@@ -367,6 +367,14 @@ export function cmdQuote(word: string): string {
 }
 
 export type PaneShell = "posix" | "powershell" | "cmd";
+const POSIX_SHELL = /(?:^|\/)-?(?:sh|bash|dash|zsh|ksh|mksh|ash|fish)$/u;
+const POSIX_SHELL_FLAGS = new Set(["-l", "--login", "-i", "--noprofile", "--norc"]);
+
+/** A POSIX shell that was not started to run a command or script. */
+export function plainPosixShell(argv: readonly string[]): boolean {
+  return POSIX_SHELL.test(argv[0] ?? "") && argv.slice(1).every((arg) => POSIX_SHELL_FLAGS.has(arg));
+}
+
 export function paneShell(argv0: string): PaneShell {
   const name = argv0.split(/[\\/]/).pop()!.toLowerCase();
   if (name === "powershell.exe" || name === "pwsh.exe" || name === "powershell" || name === "pwsh") return "powershell";
@@ -452,6 +460,17 @@ export async function startShellAgent(kind: string, paneId: string, args: string
     }
     // through env(1), as the herdr-core adapter does: the shell's own `NAME=value` syntax differs between shells
     const env = options.env ? [shellCommandLine("posix", "/usr/bin/env", Object.entries(options.env).map(([name, value]) => `${name}=${value}`))] : [];
+    if (kind === "cmd") {
+      // Looking up the executable can run a login shell. Read the pane after that wait, just before writing.
+      const info = await processInfo(paneId);
+      const shellPid = info?.shell_pid;
+      const processes = info?.foreground_processes ?? [];
+      const [front] = processes;
+      if (shellPid == null || shellPid !== info?.foreground_process_group_id || processes.length !== 1
+        || front?.pid !== shellPid || !plainPosixShell(front.argv ?? [])) {
+        throw new HerdrError("agent_pane_busy", `pane ${paneId} has no idle shell in front`);
+      }
+    }
     await paneSendText(paneId, `${[...env, command, ...args.map(quote)].join(" ")}\n`);
   } else {
     const executable = await (options.locator ?? servicePathOnly).executable(kind);

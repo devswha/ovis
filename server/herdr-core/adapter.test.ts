@@ -2559,7 +2559,10 @@ describe("another machine of the core, as its own PC (#2497)", () => {
       const holder: { cores: FakeCore[] } = { cores: [] };
       const ready = await setup([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 42, name: "claude" } : shell }) }, undefined, "lab", { platform, processTable: () => { throw new Error("no process table off Windows"); } });
       holder.cores = ready.cores;
-      expect((await agentManifests(ready.socket)).manifests.map((manifest) => manifest.agent)).toContain("claude");
+      const kinds = (await agentManifests(ready.socket)).manifests.map((manifest) => manifest.agent);
+      expect(kinds).toContain("claude");
+      expect(kinds).toContain("codex");
+      expect(kinds).not.toContain("cmd");
       await agentStart({ name: "x", kind: "claude", paneId: "t1" }, ready.socket);
       expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'claude'\r");
     }
