@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
+import { isShellAgentKind, shellAgentExecutable, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
 import { agentStart, HerdrError, paneGet, sessionSnapshot } from "./herdr/client.ts";
 import { requestFault } from "./http.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
@@ -149,15 +149,19 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   try {
     const kind = agent.kind as string;
     const shell = isShellAgentKind(kind);
+    const coreCmd = kind === "cmd" && capabilities().launcher;
     // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
     if (shell && hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
+    const coreCmdProgram = !coreCmd ? null
+      : locator === undefined ? shellAgentExecutable(kind, options.platform) : await locator.executable(kind);
+    if (coreCmd && coreCmdProgram === null) return { agent_started: false, error: { code: "agent_start_failed", message: `${kind} is not on this server's PATH or its login shell's` } };
     // an agent another machine of the core starts could not reach this PC's hub
     // a Claude's status line is the one its project's settings set, above the user's (server/approvals/claude.ts)
     const paneCwd = (): Promise<string | null> => kind === "claude" ? paneGet(paneId).then((pane) => pane.cwd ?? null, () => null) : Promise.resolve(null);
     const args = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
       ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind), await paneCwd()) : agent.args as string[] | undefined;
     await markLocalAgentLaunch(paneId, options.platform ?? process.platform);
-    if (shell) {
+    if (shell && !coreCmd) {
       const shellOptions = locator ? { locator } : {};
       tool = kind === "dsh-tui" ? null : launchHarnessTool(paneId, kind, { args, platform: options.platform ?? process.platform, browsers: null });
       const pid = kind === "dsh-tui" && args !== undefined
@@ -173,6 +177,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
       const launchArgs = tool?.args ?? withBrowserTool(kind, args, options.platform ?? process.platform);
       const startArgs = launchArgs === undefined ? undefined : agentStartArgs(kind, launchArgs, { platform: options.platform, dir: options.settingsDir });
       program = await codexLauncher(kind, paneId, startArgs, options.platform ?? process.platform);
+      const executable = coreCmdProgram ?? program;
       // herdr refuses a name another agent holds. Two creations at once can pick the same
       // free one: the refused one picks again. It also refuses a pane whose shell is not up
       // yet (`agent_pane_busy`, herdr 0.9.3), which a pane made a moment ago can be.
@@ -184,7 +189,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
             kind,
             paneId,
             ...(startArgs === undefined ? {} : { args: startArgs }),
-            ...(program === undefined ? {} : { program }),
+            ...(executable === undefined ? {} : { program: executable }),
             ...(tool ? { toolDoor: { socket: tool.socket, tokenFile: tool.tokenFile } } : {}),
             timeoutMs: 60_000,
           });
