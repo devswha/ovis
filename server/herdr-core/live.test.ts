@@ -205,6 +205,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     await until("first paint", () => painted !== null);
     // the paint's end is told once its 9001 mark is in, from a real core too
     expect(painted!.split(PAINT_END)).toHaveLength(2);
+    expect(painted!).toMatch(/\x1b\[\?9001[hl]/);
     session.resize(90, 20);
     await until("resize", () => sizes.includes('"cols":90'));
     const sized = await hc.call("terminal.get", { terminal: record.address });

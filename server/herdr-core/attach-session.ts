@@ -32,6 +32,48 @@ export const CURSOR_KEY_NAMES: Record<string, string> = { A: "up", B: "down", C:
 
 type Display = { fg?: string; bg?: string; cursor?: string; cell?: [number, number] };
 
+/** Where terminal output stands: between sequences, or inside an escape, a CSI, or an OSC/DCS/APC/PM/SOS string. */
+type SequenceState = "ground" | "escape" | "csi" | "string" | "string-escape";
+
+/** Where `text` leaves output that stood at `state`: CAN and SUB cancel a sequence, BEL or ST ends a string. */
+function sequenceAfter(state: SequenceState, text: string): SequenceState {
+  for (let at = 0; at < text.length; at++) {
+    const code = text.charCodeAt(at);
+    if (code === 0x18 || code === 0x1a) {
+      state = "ground";
+      continue;
+    }
+    switch (state) {
+      case "ground":
+        if (code === 0x1b) state = "escape";
+        break;
+      case "escape":
+        if (code === 0x5b) state = "csi";
+        else if (code === 0x5d || code === 0x50 || code === 0x5f || code === 0x5e || code === 0x58) state = "string";
+        // an intermediate (0x20-0x2f) or another ESC keeps it an escape
+        else if (code !== 0x1b && (code < 0x20 || code > 0x2f)) state = "ground";
+        break;
+      case "csi":
+        if (code === 0x1b) state = "escape";
+        else if (code >= 0x40 && code <= 0x7e) state = "ground";
+        break;
+      case "string":
+        if (code === 0x07) state = "ground";
+        else if (code === 0x1b) state = "string-escape";
+        break;
+      case "string-escape":
+        // ESC \ is ST; any other byte follows an ESC that ended the string, so it is read as an escape's
+        if (code === 0x5c) state = "ground";
+        else {
+          state = "escape";
+          at--;
+        }
+        break;
+    }
+  }
+  return state;
+}
+
 function rgb(body: string): string | undefined {
   const parts = /^rgb:([0-9a-f]+)\/([0-9a-f]+)\/([0-9a-f]+)$/i.exec(body);
   if (!parts) return undefined;
@@ -123,11 +165,18 @@ export class CoreAttachSession {
   /** where hc's stream stands in a sequence that may change the cursor mode, carried from frame to frame */
   private modeParse: "ground" | "escape" | "csi" | "private" | "bang" = "ground";
   private modeParams = "";
+  /** where hc's stream stands, so a display query never lands inside a sequence a frame boundary cut */
+  private sequence: SequenceState = "ground";
+  /** an ask that came while hc's stream stood inside a sequence (whether it turns focus reports on), made once it ends */
+  private askWaiting: boolean | null = null;
 
   constructor(options: CoreAttachOptions) {
     this.cols = options.cols;
     this.rows = options.rows;
-    this.ask = (focusOn = false) => options.onData((focusOn ? FOCUS_ON : "") + ASK_DISPLAY, "display-query");
+    this.ask = (focusOn = false) => {
+      if (this.sequence !== "ground") this.askWaiting = (this.askWaiting ?? false) || focusOn;
+      else options.onData((focusOn ? FOCUS_ON : "") + ASK_DISPLAY, "display-query");
+    };
     const { promise, resolve } = Promise.withResolvers<void>();
     this.exited = promise;
     const decoder = new TextDecoder();
@@ -151,6 +200,7 @@ export class CoreAttachSession {
         this.settle();
         let text = decoder.decode(payload, { stream: true });
         this.trackCursorMode(text);
+        this.sequence = sequenceAfter(this.sequence, text);
         const painted = paintTail !== null && PAINT_ENDED.test(paintTail + text);
         if (paintTail !== null) paintTail = painted ? null : (paintTail + text).slice(-PAINT_END.length);
         if (text && first) {
@@ -161,6 +211,11 @@ export class CoreAttachSession {
         // insert right after FOCUS_OFF so a trailing incomplete escape sequence at a 16 KiB chunk boundary stays intact
         if (text) options.onData(text.includes(FOCUS_OFF) ? text.replaceAll(FOCUS_OFF, FOCUS_OFF + FOCUS_ON) : text);
         if (painted) options.onPaintEnd();
+        if (this.askWaiting !== null && this.sequence === "ground") {
+          const focusOn = this.askWaiting;
+          this.askWaiting = null;
+          this.ask(focusOn);
+        }
       },
       onClose: (reason) => this.end(typeof reason?.["exit_code"] === "number" ? reason["exit_code"] : null),
     }).then(({ channel }) => {

@@ -266,12 +266,34 @@ describe("CoreAttachSession", () => {
       if (data !== ASKED) events.push(data);
       if (data.endsWith("live 2")) live.resolve();
     }, {}, () => events.push("END"));
-    core.output("\x18history\r\nscreen\x1b[0m\x1b[?90");
-    core.output("01lprompt");
-    core.output("live 1\x1b[?9001h");
+    // ConPTY's program asked for win32-input-mode: the mark is `h`, and the frame ends one byte before it
+    core.output("\x18history\r\nscreen\x1b[0m\x1b[?9001");
+    core.output("hprompt");
+    core.output("live 1\x1b[?9001l");
     core.output("live 2");
     await live.promise;
-    expect(events).toEqual([`${CLEARED}\x18history\r\nscreen\x1b[0m\x1b[?90`, "01lprompt", "END", "live 1\x1b[?9001h", "live 2"]);
+    expect(events).toEqual([`${CLEARED}\x18history\r\nscreen\x1b[0m\x1b[?9001`, "hprompt", "END", "live 1\x1b[?9001l", "live 2"]);
+    session.kill();
+  });
+
+  it("asks the viewer's terminal again only once hc's stream is between sequences, never inside one a frame cut", async () => {
+    const seen: string[] = [];
+    const next = { want: ASKED, hit: Promise.withResolvers<void>() };
+    const { core, session } = attach((data) => { seen.push(data); if (seen.join("").includes(next.want)) next.hit.resolve(); });
+    await next.hit.promise;
+    const heard = async (frame: string, want: string) => {
+      next.want = want;
+      next.hit = Promise.withResolvers<void>();
+      core.output(frame);
+      await next.hit.promise;
+    };
+    for (const [cut, rest] of [["Label:\x1b[", "31mRED"], ["title\x1b]2;a", "b\x1b\\done"], ["osc\x1b]2;x\x1b", "\\end"]]) {
+      await heard(cut!, cut!);
+      // the viewer gains focus while the sequence is cut: its ask waits for the rest
+      session.write("\x1b[I");
+      await heard(rest!, rest!);
+      expect(seen.join("")).toEndWith(cut! + rest! + ASKED_AGAIN);
+    }
     session.kill();
   });
 
