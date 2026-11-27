@@ -332,6 +332,39 @@ it("service miss resolves the same executable for offer and start", async () => 
   expect(runs()).toBe(1);
 });
 
+it("types Command Code only if herdr's own idle shell is still in front after executable lookup", async () => {
+  const f = fixture();
+  const executable = join(f.loginBin, "cmd");
+  writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const { probe, found } = manual();
+  const locator = new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe });
+  const typed: string[] = [];
+  let front = { pid: 7, argv: ["/bin/bash", "--noprofile", "--norc"] };
+  const rpc = spyOn(client, "herdrRpc").mockImplementation((async (method: string, params: { text?: string }) => {
+    if (method === "pane.send_text") {
+      typed.push(params.text ?? "");
+      front = { pid: 4242, argv: ["command-code"] };
+      return {};
+    }
+    if (method === "pane.process_info") return { process_info: { shell_pid: 7, foreground_process_group_id: front.pid, foreground_processes: [front] } };
+    throw new Error(`unexpected ${method}`);
+  }) as typeof client.herdrRpc);
+  try {
+    const started = startShellAgent("cmd", "w1-1", ["a b"], { locator });
+    front = { pid: 8, argv: ["vim"] };
+    found(f.loginBin);
+    await expect(started).rejects.toMatchObject({ code: "agent_pane_busy" });
+    expect(typed).toEqual([]);
+
+    front = { pid: 7, argv: ["/bin/bash", "--noprofile", "--norc"] };
+    expect(await startShellAgent("cmd", "w1-1", ["a b"], { locator })).toBe(4242);
+    expect(typed).toEqual([`${shellCommandLine("posix", executable, ["a b"])}\n`]);
+  } finally {
+    rpc.mockRestore();
+    await locator.stop();
+  }
+});
+
 it("finds a kind installed on the kept login PATH after a miss, with no new login shell", async () => {
   const f = fixture();
   const { probe, runs } = counted(async () => ({ path: `${f.loginBin}:/usr/bin` }));
