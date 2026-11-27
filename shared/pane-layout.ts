@@ -50,7 +50,11 @@ export interface PaneSwapped {
   target_pane_id: string | null;
 }
 
-/** POST /api/pane/move: the pane leaves its place for `side` of another pane of its own tab, taking half of that pane's. */
+/**
+ * POST /api/pane/move: the pane leaves its place for `side` of another pane, taking half of that pane's: of its
+ * own tab, or of another tab, which it then joins (a tab it leaves empty closes). A bridge before that answers
+ * cross_tab for a target in another tab.
+ */
 export interface MovePaneRequest {
   pane_id: string;
   target_pane_id: string;
@@ -58,7 +62,8 @@ export interface MovePaneRequest {
 }
 
 /**
- * `changed` false names why nothing moved: same_pane, or cross_tab for a target in another tab.
+ * `changed` false names why nothing moved: same_pane, or cross_tab for a target in another tab where the
+ * bridge moves none there (one before panes moved between tabs).
  * `changed` true with a reason: the pane moved but stayed right of or below its target, herdr having
  * refused, or failed, the swap that puts it left or above. An error means the pane is not beside its
  * target: its message says it went back into its tab, or where it waits.
