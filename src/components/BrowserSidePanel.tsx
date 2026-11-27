@@ -89,7 +89,7 @@ function TabCard({ tab, agent, onOpen }: { tab: DesktopBrowserTab; agent: string
   useEffect(() => {
     if (tab.loading) return;
     let alive = true;
-    // nothing to look at while the app is hidden or minimised
+    // nothing to look at while the app is hidden or minimised; a new picture at once when it shows again
     // a picture that no longer comes (the app could not draw the tab) is not kept as if it were live
     let missed = 0;
     const take = () => {
@@ -103,7 +103,8 @@ function TabCard({ tab, agent, onOpen }: { tab: DesktopBrowserTab; agent: string
     };
     take();
     const timer = setInterval(take, CARD_PICTURE_MS);
-    return () => { alive = false; clearInterval(timer); };
+    document.addEventListener("visibilitychange", take);
+    return () => { alive = false; clearInterval(timer); document.removeEventListener("visibilitychange", take); };
   }, [tab.id, tab.loading, tab.address]);
   const name = tab.title || tab.address;
   const who = tab.held ? t("You have control") : agent ? t("{agent} is using it", { agent: agentName(agent) }) : t("An agent is using it");

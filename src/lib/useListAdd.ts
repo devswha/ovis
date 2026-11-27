@@ -3,14 +3,15 @@ import { useEffect, useState } from "react";
 import type { ListAddState } from "../../shared/machines.ts";
 import { ADDED_POLL_MS } from "../components/AccountSection.tsx";
 import { ApiError, fetchListAdd } from "./api.ts";
+import type { MachineSessionRegistry } from "./machineSession.ts";
 
 /**
  * Where an add of this PC by its account's signed list stands (GET /api/account/list/add), read every ADDED_POLL_MS
- * while `enabled` and the page shows, and at once whenever `again` changes: each read also takes the adding device's
- * next message, as `ovis add` does. A 403, 404 or 405 is final: a window that is not the PC's own, or a PC that
+ * while `enabled` and the page shows, and at once whenever `again` changes, the page shows again or the local socket
+ * opens: each read also takes the adding device's next message, as `ovis add` does. A 403, 404 or 405 is final: a window that is not the PC's own, or a PC that
  * follows no list (or has no such route), is not asked again. Null until it was read.
  */
-export function useListAdd(enabled: boolean, again = 0): ListAddState | null {
+export function useListAdd(enabled: boolean, again = 0, machineSessions?: MachineSessionRegistry): ListAddState | null {
   const [state, setState] = useState<ListAddState | null>(null);
   useEffect(() => {
     if (!enabled) { setState(null); return; }
@@ -33,7 +34,14 @@ export function useListAdd(enabled: boolean, again = 0): ListAddState | null {
     };
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
-  }, [enabled, again]);
+    const offOpen = machineSessions?.get("local").socket.onBeforeReplay(read);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      offOpen?.();
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [enabled, again, machineSessions]);
   return state;
 }
