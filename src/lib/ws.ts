@@ -495,7 +495,7 @@ export class HerdrSocket {
         // never send an unknown frame to an older bridge or replay a hidden/detached chat.
         if (first && this.features.has("conversation-watch")) {
           for (const paneId of this.attached.keys()) {
-            if (this.conversationWanted.has(paneId)) this.rawSend({ type: "conversation-watch", pane_id: paneId, enabled: true });
+            if (this.conversationWanted.has(paneId)) this.rawSend({ type: "conversation-watch", pane_id: paneId, enabled: true, visible_cards: true });
           }
         }
         if (this.features.has("watch")) {
@@ -941,7 +941,7 @@ export class HerdrSocket {
     this.attached.set(paneId, { cols, rows, keepSize, releaseSizeOwed: !keepSize, windowsFit });
     this.send({ type: "attach", pane_id: paneId, cols, rows, flow_control: "ack", ...(windowsFit ? { windows_fit: true } : {}), receipt_resume_id: receiptResumeId(), ...(keepSize ? { keep_size: true } : {}) });
     if (this.conversationWanted.has(paneId) && this.features.has("conversation-watch")) {
-      this.send({ type: "conversation-watch", pane_id: paneId, enabled: true });
+      this.send({ type: "conversation-watch", pane_id: paneId, enabled: true, visible_cards: true });
     }
     if (this.stopped) {
       this.stopped = false;
@@ -956,7 +956,7 @@ export class HerdrSocket {
     if (enabled) this.conversationWanted.add(paneId);
     else this.conversationWanted.delete(paneId);
     if (this.attached.has(paneId) && this.features.has("conversation-watch")) {
-      this.send({ type: "conversation-watch", pane_id: paneId, enabled });
+      this.send({ type: "conversation-watch", pane_id: paneId, enabled, ...(enabled ? { visible_cards: true } : {}) });
     }
   }
 

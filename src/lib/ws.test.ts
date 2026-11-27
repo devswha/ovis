@@ -1444,7 +1444,7 @@ it("asks again for a visible chat's conversation pushes when its pane is attache
   client.watchConversation("w1:p1", true);
   expect(watches()).toEqual([]);
   client.attach("w1:p1", 80, 24, true);
-  expect(watches()).toEqual([{ type: "conversation-watch", pane_id: "w1:p1", enabled: true }]);
+  expect(watches()).toEqual([{ type: "conversation-watch", pane_id: "w1:p1", enabled: true, visible_cards: true }]);
   client.detach("w1:p1");
   client.attach("w1:p1", 80, 24, true);
   expect(watches()).toHaveLength(2);
@@ -1452,8 +1452,8 @@ it("asks again for a visible chat's conversation pushes when its pane is attache
   client.detach("w1:p1");
   client.attach("w1:p1", 80, 24, true);
   expect(watches()).toEqual([
-    { type: "conversation-watch", pane_id: "w1:p1", enabled: true },
-    { type: "conversation-watch", pane_id: "w1:p1", enabled: true },
+    { type: "conversation-watch", pane_id: "w1:p1", enabled: true, visible_cards: true },
+    { type: "conversation-watch", pane_id: "w1:p1", enabled: true, visible_cards: true },
     { type: "conversation-watch", pane_id: "w1:p1", enabled: false },
   ]);
   client.close();

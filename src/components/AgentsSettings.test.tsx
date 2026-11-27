@@ -4,15 +4,23 @@ import { act } from "react";
 import { AGENT_CATALOG, catalogRow } from "../../shared/agent-catalog.ts";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { SETTINGS_STORAGE_KEY } from "../lib/themeBoot.ts";
 import { AgentsSettings } from "./AgentsSettings.tsx";
 
-async function withAgentsPage({ installed, pathProblem, recheck }: { installed: boolean | null; pathProblem?: string; recheck?: () => Promise<Response> }, check: (page: Page) => Promise<void> | void) {
+async function withAgentsPage({ installed, pathProblem, recheck, antigravity }: {
+  installed: boolean | null;
+  pathProblem?: string;
+  recheck?: () => Promise<Response>;
+  antigravity?: "missing-keyring-tool" | "no-account";
+}, check: (page: Page) => Promise<void> | void) {
   const page = openPage();
-  const agents = AGENT_CATALOG.filter(({ id }) => id === "claude" || id === "codex").map((entry) => {
-    const present = entry.id === "claude" ? true : installed;
+  if (antigravity) page.window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ showUsage: true }));
+  const agents = AGENT_CATALOG.filter(({ id }) => id === "claude" || id === "codex" || (id === "agy" && antigravity)).map((entry) => {
+    const present = entry.id === "codex" ? installed : true;
     return catalogRow(entry, "linux", {
       installed: present, binary: present ? entry.detect.binaries[0] ?? null : null, on_path: present,
       version: null, version_error: null, meets_min_version: null,
+      ...(entry.id === "agy" ? { auth_mode: "gemini-api-key" } : {}),
     });
   });
   const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => {
@@ -23,6 +31,11 @@ async function withAgentsPage({ installed, pathProblem, recheck }: { installed: 
         : Response.json({ platform: "linux", agents, path_problem: pathProblem });
       case "/api/integrations": return Response.json({ integrations: [] });
       case "/api/cliproxy": return Response.json({ configured: false });
+      case "/api/usage": return Response.json({
+        server_time: new Date().toISOString(), providers: [],
+        ...(antigravity === "missing-keyring-tool" ? { missing_commands: [{ provider: "antigravity", command: "secret-tool" }] } : {}),
+      });
+      case "/api/usage/statusline": return Response.json({ supported: false, installed: false });
       default: throw new Error(`Unexpected request: ${String(input)}`);
     }
   }, { preconnect: globalThis.fetch.preconnect }));
@@ -44,6 +57,16 @@ async function withAgentsPage({ installed, pathProblem, recheck }: { installed: 
     }
   }
 }
+
+test.each(["missing-keyring-tool", "no-account"] as const)("shows API-key mode instead of Antigravity OAuth controls (%s)", (antigravity) =>
+  withAgentsPage({ installed: false, antigravity }, async (page) => {
+    const row = page.one('[data-agent="agy"]');
+    expect(row.textContent).toContain("Using a Gemini API key");
+    expect(row.querySelector(".agents-row-action")).toBeNull();
+    await act(async () => { page.one<HTMLButtonElement>('[data-agent="agy"] .agents-toggle').click(); });
+    expect(row.textContent).not.toContain("secret-tool");
+    expect(row.textContent).not.toContain("Add account");
+  }));
 
 test.each([
   { label: "known missing", installed: false, showsNote: true },

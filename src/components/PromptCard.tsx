@@ -316,7 +316,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
                 {shown.hidden_lines !== undefined && <p className="prompt-card-hint">{t("{n} more lines Claude left out", { n: shown.hidden_lines })}</p>}
               </div>
             );
-            if (prompt.multi_select) {
+            if (prompt.multi_select && option.action !== "terminal") {
               const checked = selected.has(index);
               return (
                 <Fragment key={index}>

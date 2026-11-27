@@ -769,17 +769,22 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       }
     };
     conversationRefresh.setRead(read);
-    onConversationWatch?.(paneId, true);
     return () => {
       cancelled = true;
       // Older pages queued behind this reader must not start for a hidden/replaced screen.
       olderGeneration.current += 1;
       loadingOlder.current = false; setOlderState("idle");
       setStale(false);
-      onConversationWatch?.(paneId, false);
       conversationRefresh.stop();
     };
-  }, [paneId, pagePrompts, fetchPaneConversation, fetchPaneTranscript, conversationRefresh, visible, onConversationWatch, agent]);
+  }, [paneId, pagePrompts, fetchPaneConversation, fetchPaneTranscript, conversationRefresh, visible, agent]);
+
+  // Terminal peek keeps the transcript mounted for the return to Chat, but covers its cards.
+  useEffect(() => {
+    if (!visible || covered || ended) return;
+    onConversationWatch?.(paneId, true);
+    return () => onConversationWatch?.(paneId, false);
+  }, [paneId, visible, covered, ended, onConversationWatch]);
 
   useEffect(() => {
     if (visible) conversationRefresh.refresh();
