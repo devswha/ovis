@@ -11,7 +11,7 @@ import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, holdListNumber, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
-import { availableFrom, settlingUntil } from "../lib/account/methodSettling.ts";
+import { availableFrom, settlingUntil, useSettlingDeadline } from "../lib/account/methodSettling.ts";
 import { AccountHintError, isEmailHintProvider, type AccountHint, type AccountHintChoice, type SignInCreation } from "../lib/account/accountHint.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, cancelListAdd, confirmListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
@@ -1406,16 +1406,20 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   useEffect(() => {
     if (shownSession === null) return;
     let live = true;
+    // focus and visibilitychange often come together: only the latest read's answer is shown
+    let latest = 0;
     const read = (): void => {
       if (pageHidden()) return;
+      const mine = ++latest;
       indexedAccountService.forSignIn(shownSession).identities().then((methods) => {
-        if (live) setView((current) => current.kind === "signed-in" && sameSignIn(current.session, shownSession) ? { ...current, methods } : current);
+        if (live && mine === latest) setView((current) => current.kind === "signed-in" && sameSignIn(current.session, shownSession) ? { ...current, methods } : current);
       }, (error: unknown) => console.warn("Ovis: the ways to sign in could not be read", error instanceof Error ? error.name : error));
     };
     window.addEventListener("focus", read);
     document.addEventListener("visibilitychange", read);
     return () => { live = false; window.removeEventListener("focus", read); document.removeEventListener("visibilitychange", read); };
   }, [shownSession]);
+  useSettlingDeadline(view.kind === "signed-in" ? view.methods?.identities : undefined);
 
   if (!offered) return null;
 

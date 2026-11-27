@@ -510,14 +510,16 @@ export class FakeAccountService {
   /**
    * The account a sign-in of `provider` opens, whose identity the provider ties to `account`: with `link=auto` and
    * linking on, an identity no account has is added, `how: "email"`, to the account holding its email (unless that
-   * account has the provider or removed it), whose every device is rung. Null: the email could not be checked.
+   * account has the provider, removed it or keeps a signed list), whose every device is rung. Null: the email could not
+   * be checked.
    */
   private signedInto(provider: SignInProvider, account: string, link: boolean): string | null {
     if (!link || this.emailLink !== true || this.identityList.get(account)?.has(provider)) return account;
     if (this.emailUnavailable.has(provider)) return null;
     const holder = this.emailHolders[provider];
     const methods = holder === undefined ? undefined : this.identityList.get(holder);
-    if (holder === undefined || methods === undefined || holder === account || methods.has(provider) || this.denied(holder, provider)) return account;
+    if (holder === undefined || methods === undefined || holder === account || methods.has(provider) || this.denied(holder, provider)
+      || this.listOfAccount(holder) !== undefined) return account;
     this.addedByEmail(holder, provider);
     this.moved.set(provider, holder);
     this.ring(holder, "");
@@ -554,6 +556,8 @@ export class FakeAccountService {
     if (this.signIns.get(provider) === account) this.signIns.delete(provider);
     if (this.moved.get(provider) === account) this.moved.delete(provider);
     for (const held of [...this.tokens.values()]) if (held.account === account && held.provider === provider) this.revokeFamily(held.family);
+    // its sign-in codes not yet redeemed go with it, as the service's cascade takes them
+    for (const [code, held] of this.codes) if (held.account === account && held.provider === provider) this.codes.delete(code);
   }
 
   /** POST /v1/identities/{provider}/not-me, as the service's method-removal.ts judges it. */
@@ -708,6 +712,7 @@ export class FakeAccountService {
         // the email is the signed token's: a field in the body names none
         const into = this.signedInto("apple", this.moved.get("apple") ?? apple.account, body.link === "auto");
         if (into === null) return problem(400, "email_unavailable", "The email could not be checked");
+        this.addIdentity(into, "apple");
         return this.grant(into, "apple");
       }
       case "urn:ietf:params:oauth:grant-type:device_code": {

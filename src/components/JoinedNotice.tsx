@@ -1,7 +1,9 @@
 import { UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { shellAccountActions } from "../lib/account/hostedSignIn.ts";
+import { shownOf } from "../lib/account/listLeave.ts";
 import { closePcNotice, pcNoticeClosed } from "../lib/account/newPcNotice.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountServiceError, indexedAccountService, SignedOutError, type JoinedAccount } from "../lib/account/service.ts";
 import { ACCOUNT_SESSION_EVENT, indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { useLocale, useT } from "../lib/i18n.ts";
@@ -66,13 +68,20 @@ export function JoinedNotice() {
     inFlight.current = true;
     setSending(true);
     setRefused(null);
+    let action: "not_me" | "remove" = "not_me";
     try {
-      await indexedAccountService.forSignIn(session).notMe(session.provider);
+      const bound = indexedAccountService.forSignIn(session);
+      try { await bound.notMe(session.provider); } catch (error) {
+        // past its 24 hours (a notice left open), the way in is taken out the ordinary way
+        if (!(error instanceof AccountServiceError && error.status === 409 && error.code === "settled")) throw error;
+        action = "remove";
+        await bound.removeIdentity(session.provider);
+      }
     } catch (error) {
       // the way in's own sign-in ends with it: one already gone took it out
       if (!(error instanceof SignedOutError)) {
         if (!(error instanceof Error)) throw error;
-        setRefused(methodRefusalText(t, { action: "not_me", provider: session.provider, code: error instanceof AccountServiceError ? error.code : "failed" }, locale));
+        setRefused(methodRefusalText(t, { action, provider: session.provider, code: error instanceof AccountServiceError ? error.code : "failed" }, locale));
         return;
       }
     } finally {
@@ -81,7 +90,8 @@ export function JoinedNotice() {
     }
     close();
     const shell = shellAccountActions();
-    if (shell !== null) shell.signOut();
+    // the account this notice named: a sign-in to another one stored meanwhile is not the one ended
+    if (shell !== null) shell.signOut(shownOf(pageAccountList(), session.account));
     else await indexedAccountService.forSignIn(session).signOut();
   };
   const madeWith = joined.methods.find((provider) => provider !== session.provider) ?? joined.methods[0];

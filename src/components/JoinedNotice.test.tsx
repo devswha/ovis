@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
 import { act } from "react";
-import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
+import { FakeAccountService, METHOD_SETTLE_MS, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
+import { keepShellAccount, type ShellAccount } from "../lib/account/hostedSignIn.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
 import { indexedAccountStore, memoryAccountStore, memoryLock, type AccountProvider, type AccountStore } from "../lib/account/store.ts";
@@ -13,6 +14,7 @@ const globals = new Map<string, PropertyDescriptor | undefined>();
 let page: Page;
 let fake: FakeAccountService;
 let store: AccountStore;
+let ahead: number;
 const spies: { mockRestore(): void }[] = [];
 
 async function signIn(provider: AccountProvider, into: AccountStore = store) {
@@ -28,7 +30,8 @@ beforeEach(() => {
     globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true });
   }
-  fake = new FakeAccountService();
+  ahead = 0;
+  fake = new FakeAccountService(() => Date.now() + ahead);
   fake.emailLink = true;
   fake.signInAs("github", "acct_made");
   fake.signInAs("google", "acct_new");
@@ -92,4 +95,35 @@ it("Not my account takes this method out of that account and signs this device o
   const owner = new AccountService({ store: own, fetch: fake.fetch, lock: memoryLock() });
   expect((await owner.identities()).identities.map(({ provider }) => provider)).toEqual(["github"]);
   expect(fake.denied("acct_made", "google")).toBe(true);
+});
+
+it("Not my account, left open past the 24 hours, takes the method out the ordinary way, then signs this device out", async () => {
+  const own = memoryAccountStore();
+  await signIn("github", own);
+  fake.addedByEmail("acct_made", "google");
+  // signed in again with it a minute before it settles: recent enough for the ordinary removal
+  ahead = METHOD_SETTLE_MS - 60_000;
+  const token = fake.issueToken("acct_made", { provider: "google" });
+  await store.set("session", { service: SERVICE, account: "acct_made", provider: "google", sign_in_id: "again", access_token: token, refresh_token: "r", expires_at: Date.now() + 3_600_000 });
+  await show();
+  expect(notice()).not.toBeNull();
+  ahead = METHOD_SETTLE_MS + 60_000;
+  await act(async () => { page.one<HTMLElement>('[data-testid="joined-notice"] [data-action="not-my-account"]').click(); });
+  expect(notice()).toBeNull();
+  expect(await store.get("session")).toBeUndefined();
+  const owner = new AccountService({ store: own, fetch: fake.fetch, lock: memoryLock() });
+  expect((await owner.identities()).identities.map(({ provider }) => provider)).toEqual(["github"]);
+  expect(fake.denied("acct_made", "google")).toBe(true);
+});
+
+it("Not my account signs the hosted shell out of the account the notice named", async () => {
+  await signIn("github", memoryAccountStore());
+  await signIn("google");
+  const signOut = mock((_shown?: Parameters<ShellAccount["signOut"]>[0]) => {});
+  keepShellAccount({ signOut, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null, signOutEverywhere: async () => null });
+  try {
+    await show();
+    await act(async () => { page.one<HTMLElement>('[data-testid="joined-notice"] [data-action="not-my-account"]').click(); });
+    expect(signOut.mock.calls).toEqual([[{ account: "acct_made", scope: null }]]);
+  } finally { keepShellAccount(null); }
 });

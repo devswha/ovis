@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } fr
 import { Check, Plus, X } from "lucide-react";
 
 import type { HostedSignIn } from "../lib/account/hostedSignIn.ts";
-import { availableFrom, settlingUntil } from "../lib/account/methodSettling.ts";
+import { availableFrom, settlingUntil, useSettlingDeadline } from "../lib/account/methodSettling.ts";
 import type { AccountIdentity, AccountIdentityChange, AccountIdentityList } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
@@ -97,7 +97,9 @@ export function AccountMethods({ methods, current, offered, history, hint, onAdd
       {joined.map(({ provider }) => (
         <div key={provider} className="account-reauth" data-testid="account-method-attached" data-provider={provider}>
           <p className="settings-description">{t("{provider} was added to this account because it has the same email", { provider: PROVIDER_NAMES[provider] })}</p>
-          {onNotMe !== undefined && <button type="button" className="btn" data-action="not-me" onClick={() => onNotMe(provider)}>{t("Not me")}</button>}
+          {onNotMe !== undefined
+            ? <button type="button" className="btn" data-action="not-me" onClick={() => onNotMe(provider)}>{t("Not me")}</button>
+            : <p className="settings-description">{t("Use Not me in the Ovis app or at app.ovis.sh.")}</p>}
         </div>
       ))}
       {children}
@@ -182,7 +184,8 @@ export function HostedAccountMethods({ signIn, onSettling }: {
       if (reads.current === mine) setList(now);
     } catch (error) {
       console.warn("Ovis: the ways to sign in could not be read", error instanceof Error ? error.name : error);
-      if (reads.current === mine) setList("failed");
+      // a read again that fails keeps what the last one said: a way in still settling stays so until one says otherwise
+      if (reads.current === mine) setList((shown) => shown === null ? "failed" : shown);
     }
   };
 
@@ -236,6 +239,7 @@ export function HostedAccountMethods({ signIn, onSettling }: {
     void again?.catch((error: unknown) => console.warn("Ovis: the sign-in again did not finish", error instanceof Error ? error.name : error));
   };
 
+  useSettlingDeadline(list === null || list === "failed" ? undefined : list.identities);
   const settling = list === null || list === "failed" ? null : settlingUntil(list.identities, signIn.provider, Date.now());
   useEffect(() => { onSettling?.(settling); }, [onSettling, settling]);
 

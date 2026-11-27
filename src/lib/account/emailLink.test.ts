@@ -88,6 +88,14 @@ describe("a first sign-in is linked by its verified email", () => {
     });
     expect(await made.service.joined()).toBeNull();
   });
+
+  it("leaves an account that keeps a signed list alone: the sign-in makes an account of its own", async () => {
+    const { signIn, fake } = world();
+    const made = await signIn("github");
+    await fake.forgeBirth("acct_made");
+    expect((await signIn("google")).session.account).toBe("acct_new");
+    expect((await made.service.identities()).identities.map(({ provider }) => provider)).toEqual(["github"]);
+  });
 });
 
 describe("the device flow and the link page", () => {
@@ -180,6 +188,15 @@ describe("Not me", () => {
     expect((await signIn("google")).session.account).toBe("acct_new");
   });
 
+  it("takes the method's sign-in code not yet redeemed with it, which brings it back no more", async () => {
+    const { signIn, redirect } = world();
+    const made = await signIn("github");
+    const pending = await redirect("google", memoryAccountStore());
+    await made.service.notMe("google");
+    await expect(pending.finish()).rejects.toThrow();
+    expect((await made.service.identities()).identities.map(({ provider }) => provider)).toEqual(["github"]);
+  });
+
   it.each([
     { case: "a method made by hand", target: "github", status: 409, code: "not_auto" },
     { case: "a method past its 24 hours", target: "google", late: true, status: 409, code: "settled" },
@@ -230,6 +247,20 @@ describe("Sign in with Apple in the iOS app", () => {
       expect(grants).toEqual([{ grant_type: "apple_id_token", id_token: expect.any(String), nonce: expect.any(String), link: "auto" }]);
       expect(session).toMatchObject({ account: "acct_made", provider: "apple" });
     } finally { send.mockRestore(); }
+  });
+
+  it("keeps Apple as a way in of the account it made, which a later sign-in by the same email joins", async () => {
+    const { fake, fetch, signIn } = world();
+    fake.emailHolders = { google: "acct_apple" };
+    Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
+      isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }],
+      nativePromise: async (_plugin: string, _method: string, { nonce }: { nonce: string }) => ({ idToken: fake.appleIdToken("acct_apple", nonce) }),
+    } });
+    const send = spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: () => {} }));
+    try {
+      expect(await nativeSignIn("apple", { store: memoryAccountStore(), service: SERVICE })).toMatchObject({ account: "acct_apple", provider: "apple" });
+    } finally { send.mockRestore(); }
+    expect((await signIn("google")).session).toMatchObject({ account: "acct_apple", provider: "google" });
   });
 });
 

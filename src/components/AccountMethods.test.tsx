@@ -222,6 +222,42 @@ describe("the hosted Manage account's ways to sign in", () => {
       expect(settling()).not.toBeNull();
     });
 
+    const ownSettling = (until: string): Partial<Shell> => ({ provider: "google", session: { ...session, provider: "google" },
+      methods: async () => ({ identities: [way("github"), { provider: "google", added_at: at(27), how: "email", deniable_until: until }], history: [] }) });
+    const showTelling = async (signIn: Shell): Promise<(string | null)[]> => {
+      const told: (string | null)[] = [];
+      await page.render(<SettingsProvider><HostedAccountMethods signIn={signIn} onSettling={(until) => { told.push(until); }} /></SettingsProvider>);
+      return told;
+    };
+
+    it("keeps what this device's settling way in may not do hidden when a read again fails", async () => {
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      let fails = false;
+      const { methods } = ownSettling(hoursFromNow(5));
+      const told = await showTelling(shell({ ...ownSettling(hoursFromNow(5)), methods: async (shown) => { if (fails) throw new Error("offline"); return methods!(shown); } }));
+      expect(settling()).not.toBeNull();
+      fails = true;
+      await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
+      expect(settling()).not.toBeNull();
+      expect(removable()).toEqual([]);
+      expect(told.at(-1)).not.toBeNull();
+    });
+
+    it("offers the changes again when this device's own way in settles while the sheet is open", async () => {
+      const told = await showTelling(shell(ownSettling(new Date(Date.now() + 150).toISOString())));
+      expect(settling()).not.toBeNull();
+      for (let turn = 0; turn < 200 && settling() !== null; turn++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+      expect(settling()).toBeNull();
+      expect(removable()).toEqual(["github"]);
+      expect(told.at(-1)).toBeNull();
+    });
+
+    it("says where to use Not me where this sign-in has none to offer", async () => {
+      await show(shell({ notMe: undefined, methods: async () => ({ identities: [way("github"), joined("google", 5)], history: [] }) }));
+      expect(cards()[0]?.querySelector("button")).toBeNull();
+      expect(cards()[0]?.lastElementChild?.textContent).toBe("Use Not me in the Ovis app or at app.ovis.sh.");
+    });
+
     it("names in Recent changes a way in added by email and one taken back with Not me", async () => {
       await show(shell({ methods: async () => ways(["github"], [{ ...changed("remove", "google", 27, null), how: "not_me" }, { ...changed("add", "google", 26, null), how: "email" }]) }));
       expect(recent()).toEqual(["Nov 27 · Google removed with Not me", "Nov 26 · Google added by email"]);
