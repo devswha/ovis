@@ -267,6 +267,11 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   does not resize it, and taking control from another viewer still requires an explicit takeover.
   Windows installations without a verified control stream keep their fixed mirror.
   ([#4138](https://github.com/devswha/ovis/pull/4138) by @YuuuXie)
+- Add PC over SSH with "Add it to my account" no longer offers "Continue in background" while it
+  updates that PC's Ovis first: the add runs from the dialog once the update connects, so closing it
+  there left a plain SSH PC that was never added. The dialog now asks to stay open until the PC
+  connects.
+  ([#4883](https://github.com/devswha/ovis/pull/4883))
 
 ### Maintenance
 - The tests' own herdr session no longer runs the herdr plugins you installed: an installed Ovis
