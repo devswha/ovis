@@ -176,6 +176,28 @@ describe("signing in on a PC's own page", () => {
     expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status" && path !== "/api/health")).toEqual([]);
   });
 
+  it.each([true, false])("asks the link page to link a first sign-in by its email only where the service offers it (%p)", async (offered) => {
+    if (offered) fake.emailLink = true;
+    await mount();
+    await until(() => buttons().includes("Sign in and add this PC"));
+    await press("Sign in and add this PC");
+    await until(() => buttons().includes("Stop waiting"));
+    expect(fake.deviceStartLinks).toEqual([offered]);
+  });
+
+  it("offers no Not me to a sign-in made with a code, which the service refuses it", async () => {
+    fake.addedByEmail(ACCOUNT, "github");
+    const token = fake.issueToken(ACCOUNT, { device: true, provider: "github" });
+    await indexedAccountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", sign_in_id: "code", access_token: token, refresh_token: "r", expires_at: Date.now() + 3_600_000 });
+    ahead = 25 * 3_600_000;
+    fake.addedByEmail(ACCOUNT, "google");
+    await mount();
+    await until(() => buttons().includes("Manage account"));
+    await press("Manage account");
+    await until(() => document.body.querySelector('[data-testid="account-method-attached"]') !== null);
+    expect(document.body.querySelector('[data-testid="account-method-attached"] button')).toBeNull();
+  });
+
   it.each([true, false])("retrying a stale listing uses the local binding at write time (bound: %s)", async (bound) => {
     // an account service from before listings had IDs: a stale invitation is renewed by listing the PC again
     fake.completions = false;

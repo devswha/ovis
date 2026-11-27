@@ -5,7 +5,7 @@ import type { Translate } from "../i18n.ts";
  * and what it was refused is available from `until`, when it has settled.
  */
 export function availableFrom(t: Translate, locale: string, until: string): string {
-  return t("Available from {time}", { time: new Date(until).toLocaleString(locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) });
+  return t("Changes available from {time}", { time: new Date(until).toLocaleString(locale, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) });
 }
 
 /** When the way in `current` settles, while it is still settling (`deniable_until` ahead); null once it has, or for one made by hand. */

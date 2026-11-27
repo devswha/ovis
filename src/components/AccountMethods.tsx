@@ -150,6 +150,8 @@ export function methodRefusalText(t: Translate, { action, provider, code, until 
     case "identity_exists": return t("Your account already signs in with {provider}.", { provider: name });
     case "last_identity": return t("Add another way to sign in before removing this one.");
     case "denied": return t("{provider} refused the sign-in.", { provider: name });
+    // a sign-in made with a code takes back only its own way in
+    case "web_sign_in_required": return t("Use Not me in the Ovis app or at app.ovis.sh.");
     default: return action === "add" ? t("The sign-in did not finish. Try again.") : t("The sign-in method could not be removed. Try again.");
   }
 }

@@ -1449,8 +1449,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     return (async () => {
       const requester = { label: thisDeviceLabel(), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
       const started = provider === "ovis"
-        ? await startLinkPageSignIn({ service: pcServiceOrigin, store, requester }, offer?.device[0] ?? "github")
-        : await startDeviceSignIn({ service: pcServiceOrigin, store, provider, requester });
+        ? await startLinkPageSignIn({ service: pcServiceOrigin, store, requester, emailLink: offer?.emailLink === true }, offer?.device[0] ?? "github")
+        : await startDeviceSignIn({ service: pcServiceOrigin, store, provider, requester, emailLink: offer?.emailLink === true });
       controller.signal.throwIfAborted();
       startedProvider.current = started.provider;
       setView({ kind: "device-code", provider: started.provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
@@ -1880,7 +1880,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   const methodsPart = view.kind === "signed-in" && view.methods !== null && (
     <AccountMethods methods={view.methods.identities} history={view.methods.history} current={view.provider}
       offered={bridge === null ? [] : providers} hint={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}
-      onAdd={(provider) => addMethod(provider)} onRemove={(provider) => removeMethod(provider)} onNotMe={notMe}>
+      onAdd={(provider) => addMethod(provider)} onRemove={(provider) => removeMethod(provider)}
+      // a PC's own page in a browser signs in with a code there, whose Not me the service refuses (web_sign_in_required)
+      onNotMe={bridge !== null || ownRedirect ? notMe : undefined}>
       {reauthShown !== null && reauthShown.action !== "delete" && (
         <div className="account-reauth" role="alert">
           <p className="settings-description">{bridge === null
@@ -1931,7 +1933,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
             <ManageAccountSheet account={view.account} onClose={() => { setManagedAccount(null); deleteAsks.current++; setDeleteAsked(null); }}>
               {methodsPart}
               {plan !== null && <div className="settings-row account-plan-row"><span className="settings-label">{t("Plan|account plan")}</span><span className="account-plan">{plan}</span></div>}
-              <AccountManageLists key={view.account} account={view.account} watching={watching} />
+              <AccountManageLists key={view.account} account={view.account} watching={watching} settling={settling !== null} />
               {deleteParts}
               {/* a change made in the sheet says why it failed in the sheet */}
               {view.error !== null && errorLine}

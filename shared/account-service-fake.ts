@@ -341,6 +341,8 @@ export class FakeAccountService {
   readonly emailUnavailable = new Set<SignInProvider>();
   /** GET /v1/session `email_hint`, by account */
   emailHints: Readonly<Record<string, string>> = {};
+  /** Whether each device or link page start asked to be linked by email (`link: "auto"`), in order */
+  readonly deviceStartLinks: boolean[] = [];
   /** `account\0provider`: a provider removed from that account, which is never added to it by email again (until added by hand) */
   private readonly denials = new Set<string>();
   /** A provider's identity that the service added to another account by email: it signs in there, not to its own */
@@ -453,10 +455,10 @@ export class FakeAccountService {
   constructor(private readonly now: () => number = Date.now, private readonly accessTokenTtlS = ACCESS_TOKEN_TTL_S) {}
 
   /** `device`: the token is a device code's sign-in (a PC's), never an app's own */
-  issueToken(account: string, { twoStep = null, device = false }: { twoStep?: boolean | null; device?: boolean } = {}): string {
+  issueToken(account: string, { twoStep = null, device = false, provider = "test" }: { twoStep?: boolean | null; device?: boolean; provider?: SignInProvider | "test" } = {}): string {
     const token = randomHex(32);
     const family = randomHex(16);
-    this.tokens.set(token, { account, provider: "test", family, expires: Number.POSITIVE_INFINITY });
+    this.tokens.set(token, { account, provider, family, expires: Number.POSITIVE_INFINITY });
     this.signedInAt.set(family, this.now());
     this.twoStep.set(family, twoStep);
     if (device) this.deviceFamilies.add(family);
@@ -516,12 +518,19 @@ export class FakeAccountService {
     const holder = this.emailHolders[provider];
     const methods = holder === undefined ? undefined : this.identityList.get(holder);
     if (holder === undefined || methods === undefined || holder === account || methods.has(provider) || this.denied(holder, provider)) return account;
-    methods.set(provider, { added_at: this.iso(), how: "email" });
-    this.methodsChanged(holder);
-    this.recordIdentityChange(holder, provider, "add", "email");
+    this.addedByEmail(holder, provider);
     this.moved.set(provider, holder);
     this.ring(holder, "");
     return holder;
+  }
+
+  /** Adds `provider` to `account` as the service adds a sign-in by its verified email: it settles in 24 hours. */
+  addedByEmail(account: string, provider: SignInProvider): void {
+    const methods = this.identityList.get(account) ?? new Map<SignInProvider, { added_at: string; how?: AutoMethod }>();
+    this.identityList.set(account, methods);
+    methods.set(provider, { added_at: this.iso(), how: "email" });
+    this.methodsChanged(account);
+    this.recordIdentityChange(account, provider, "add", "email");
   }
 
   /** The way in this session signed in with, while it settles after the service added it by email. */
@@ -922,6 +931,7 @@ export class FakeAccountService {
         const pick = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => letters[byte % letters.length]).join("");
         const userCode = `${pick()}-${pick()}`;
         this.deviceSignIns.set(deviceCode, { provider: "github", userCode, account: null, denied: false, interval: DEVICE_POLL_S, nextPoll: this.now(), expires: this.now() + 600_000, challenge: body.code_challenge, page: true, requester: { label: typeof label === "string" ? label : null, os: accountOsOf(body.os) }, link: body.link === "auto" });
+        this.deviceStartLinks.push(body.link === "auto");
         const page = new URL("/link", url.origin);
         const complete = new URL(page);
         complete.searchParams.set("code", userCode);
@@ -943,6 +953,7 @@ export class FakeAccountService {
         const deviceCode = randomHex(32);
         const userCode = `${randomHex(2).toUpperCase()}-${randomHex(2).toUpperCase()}`;
         this.deviceSignIns.set(deviceCode, { provider: deviceProvider as SignInProvider, userCode, account: null, denied: false, interval: DEVICE_POLL_S, nextPoll: this.now(), expires: this.now() + DEVICE_CODE_TTL_S * 1000, challenge: bound ? challenge.code_challenge as string : null, link: link === "auto" });
+        this.deviceStartLinks.push(link === "auto");
         return json({ device_code: deviceCode, user_code: userCode, verification_uri: DEVICE_PAGES[deviceProvider], expires_in: DEVICE_CODE_TTL_S, interval: DEVICE_POLL_S, ...(bound ? { code_challenge_method: "S256" } : {}) });
       }
       if (url.pathname === "/v1/push/key" && request.method === "GET") return json({ public_key: "BFakeVapidPublicKeyForTests" });
@@ -1220,6 +1231,9 @@ export class FakeAccountService {
       const named = new URL(request.url).searchParams.get("listing_id");
       if (named !== null && !LISTING_ID.test(named)) return problem(400, "invalid_request", "That is no listing ID");
       const listed = directory.get(pc);
+      // a sign-in still settling removes only a listing that asks to join, never a PC of the account
+      const settling = listed !== undefined && !this.askingToJoin(listed) ? this.settlingRefusal(session) : null;
+      if (settling !== null) return settling;
       const changed = named !== null && (listed === undefined || listed.listing_id !== named || listed.admitted_at != null || listed.digit_admitted === true || listed.completed_at != null);
       // PCR-1: removing unbinds the PC and cuts the account's devices off it, so it asks what deleting the account asks. The
       // compat ruling's one exception: a device code's sign-in ends its own listing (written by it, never confirmed, admitted
@@ -2172,7 +2186,12 @@ export class FakeAccountService {
     if (limited !== null) return limited;
     const caller = { family: session.family };
     switch (route) {
-      case "POST genesis": return await this.genesis(request, session);
+      case "POST genesis": {
+        // a list is forever: a sign-in still settling makes none
+        const settling = this.settling(session);
+        if (settling !== null) return this.v2Problem(403, "method_settling", "This sign-in method was just added", { until: new Date(settling.at + METHOD_SETTLE_MS).toISOString() });
+        return await this.genesis(request, session);
+      }
       case "GET mine": {
         const list = this.listOfAccount(account);
         // an account on the migrate switch with no list yet may move onto one by the one-request birth (F10b)

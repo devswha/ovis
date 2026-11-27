@@ -210,7 +210,7 @@ describe("the hosted Manage account's ways to sign in", () => {
       const notMe = async (provider: AccountProvider): Promise<void> => { outcome = { account: session.account, provider, error: "web_sign_in_required" }; };
       await show(shell({ methods: async () => ({ identities: [way("github"), joined("google", 5)], history: [] }), notMe, methodsChange: () => outcome }));
       await press(notMeButton());
-      expect(alerts()).toHaveLength(1);
+      expect(alerts().map((alert) => alert.firstChild?.textContent)).toEqual(["Use Not me in the Ovis app or at app.ovis.sh."]);
     });
 
     it("offers no change to the ways in while this device's own way in settles, and says from when", async () => {

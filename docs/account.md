@@ -2509,12 +2509,15 @@ no account to sign in to. A signed-in person adds another method on purpose, fro
 | `GET /v1/session` | | `{ "account", "own_sign_in", "signed_in_at", "email_hint"?, "joined"? }`: `email_hint`, the account's masked email (`d***@example.com`); `joined` `{ "how", "at", "settles_at", "methods", "pcs" }` while the method this sign-in used is settling after it was added by email. The client then tells this sign-in once which account it is in (the one made with the oldest of `methods`, with `email_hint`), with **Not my account**: Not me on its own method, then a sign-out |
 
 A method added by email settles in 24 hours. Until then its sign-ins are refused what reshapes the
-account (adding, removing or rejecting another method, signing every device out, deleting the account,
-and more) with 403 `method_settling` and `error.until`, when it settles: the client says it is
-available from then, and offers none of those controls meanwhile. Manage account shows each method
-another device's sign-in can still take back on one line, "<provider> was added to this account because
-it has the same email", with **Not me**, and reads its methods again when the app comes back to the
-front, as the service's ring brings it.
+account (adding, removing or rejecting another method, removing a PC of the account, making the
+account's list, signing every device out, deleting the account, and more) with 403 `method_settling`
+and `error.until`, when it settles: the client says "Changes available from <time>", and Manage account
+offers none of those controls meanwhile (a listing that asks to join may still be removed). Manage
+account shows each method another device's sign-in can still take back on one line, "<provider> was
+added to this account because it has the same email", with **Not me** where this sign-in may press it
+(not a PC's own page in a browser, signed in with a code: there the service answers 403
+`web_sign_in_required`), and reads its methods again when the app comes back to the front, as the
+service's ring brings it.
 
 A refresh keeps a sign-in's time: only signing in again makes it recent. On `reauth_required` the
 client asks the person to sign in again, then repeats what they asked for.

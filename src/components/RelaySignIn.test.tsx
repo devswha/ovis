@@ -286,6 +286,14 @@ describe("the relay tab's Sign in", () => {
     expect(tab?.closed).toBe(false);
   });
 
+  it.each([true, false])("asks the link page to link a first sign-in by its email only where the service offers it (%p)", async (offered) => {
+    if (offered) fake.emailLink = true;
+    await mount();
+    await signIn();
+    await act(async () => { await firstPoll; });
+    expect(fake.deviceStartLinks).toEqual([offered]);
+  });
+
   it("shows the link page and its code here when the browser blocks the new tab", async () => {
     popupBlocked = true;
     await mount();

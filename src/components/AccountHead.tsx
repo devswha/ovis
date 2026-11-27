@@ -135,7 +135,7 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   return (
     <ManageAccountSheet onClose={onClose} account={signIn?.account}>
       {signIn !== null && <HostedAccountMethods key={`ways ${signIn.account}`} signIn={signIn} onSettling={setSettling} />}
-      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={(shown) => leave(signIn, shown)} />}
+      {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} settling={settling !== null} onLeave={(shown) => leave(signIn, shown)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
       {signIn !== null && settling === null && <div className="settings-item account-sign-out-everywhere">
         {everywhere === "asked" && <SignOutEverywhereSays account={signIn.account} named={question?.confirmed ?? []}><p className="settings-description" role="status" data-testid="sign-out-everywhere-says">{t("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.")}</p></SignOutEverywhereSays>}
