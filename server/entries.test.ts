@@ -44,8 +44,8 @@ describe("server entries", () => {
     await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
     const port = (probe.address() as AddressInfo).port;
     await new Promise<void>((resolve) => probe.close(() => resolve()));
-    // were the entry to run, it would serve this throwaway state and reach no herdr
-    const isolated = { HOST: "127.0.0.1", PORT: String(port), OVIS_STATE_DIR: dir, HERDR_SOCKET: join(dir, "none.sock"), HERDR_SOCKET_PATH: join(dir, "none.sock") };
+    // were the entry to run, it would serve this throwaway state and home, and reach no herdr
+    const isolated = { HOST: "127.0.0.1", PORT: String(port), HOME: dir, USERPROFILE: dir, OVIS_STATE_DIR: dir, HERDR_SOCKET: join(dir, "none.sock"), HERDR_SOCKET_PATH: join(dir, "none.sock") };
     try {
       for (const args of [["serve", "--help"], ["serve", "-h"], ["serve", "--desktop-owner-fd", "3", "--help"], ["machine", "--help"]]) {
         const { code, stdout, stderr } = await main(args, isolated, 10_000);
@@ -54,17 +54,44 @@ describe("server entries", () => {
         expect(stdout + stderr).not.toContain("Ovis listening");
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+  }, 60_000);
 
   it("leaves -h and --help to the entries that answer them with their own usage", async () => {
-    const { code, stdout } = await main(["remote", "--help"]);
-    expect(code).toBe(0);
-    expect(stdout).toContain("usage: ovis-server remote [--discover");
+    for (const help of ["--help", "-h"]) {
+      const { code, stdout } = await main(["remote", help]);
+      expect([help, code]).toEqual([help, 0]);
+      expect(stdout).toContain("usage: ovis-server remote [--discover");
+    }
   });
+
+  it.skipIf(process.platform === "win32")("hands askpass a prompt of -h or --help as the prompt, not as a request for the usage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-askpass-help-"));
+    const prompts: string[] = [];
+    const responder = listen((socket) => {
+      let line = "";
+      socket.on("data", (chunk) => {
+        line += chunk;
+        if (!line.includes("\n")) return;
+        prompts.push(JSON.parse(line).prompt);
+        socket.end(JSON.stringify({ answer: "the answer" }) + "\n");
+      });
+    });
+    await new Promise<void>((resolve) => responder.listen(join(dir, "ask.sock"), resolve));
+    try {
+      for (const prompt of ["--help", "-h"]) {
+        const { code, stdout } = await main(["askpass", prompt], { HERDR_ASKPASS_SOCKET: join(dir, "ask.sock"), HERDR_ASKPASS_TOKEN: "t" }, 10_000);
+        expect([prompt, code, stdout]).toEqual([prompt, 0, "the answer\n"]);
+      }
+      expect(prompts).toEqual(["--help", "-h"]);
+    } finally {
+      await new Promise<void>((resolve) => responder.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("refuses an argument serve does not take, before it starts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ovis-serve-argument-"));
-    const isolated = { HOST: "127.0.0.1", PORT: "1", OVIS_STATE_DIR: dir, HERDR_SOCKET: join(dir, "none.sock"), HERDR_SOCKET_PATH: join(dir, "none.sock") };
+    const isolated = { HOST: "127.0.0.1", PORT: "1", HOME: dir, USERPROFILE: dir, OVIS_STATE_DIR: dir, HERDR_SOCKET: join(dir, "none.sock"), HERDR_SOCKET_PATH: join(dir, "none.sock") };
     try {
       const { code, stdout, stderr } = await main(["serve", "--port", "8080"], isolated, 10_000);
       expect(code).toBe(2);
@@ -72,7 +99,7 @@ describe("server entries", () => {
       expect(stderr).toContain("usage: ovis-server <");
       expect(stdout).not.toContain("Ovis listening");
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
+  }, 30_000);
 
   it("runs the named entry, which refuses a machine start nothing asked for", async () => {
     const { code, stderr } = await main(["machine"]);
