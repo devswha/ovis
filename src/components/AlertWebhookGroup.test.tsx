@@ -17,7 +17,7 @@ let refuse: boolean;
 beforeEach(() => {
   puts = [];
   refuse = false;
-  held = { configured: true, preset: "ntfy", target: "https://ntfy.sh/…pic", chat_id: null, alerts: { input: false, done: "long" }, reachable_link: true, last_success_at: null, last_failure_at: null, last_error: null };
+  held = { configured: true, preset: "ntfy", target: "https://ntfy.sh/…pic", chat_id: null, alerts: { input: false, done: "long" }, link: true, reachable_link: true, last_success_at: null, last_failure_at: null, last_error: null };
   page = openPage("http://127.0.0.1:7421/");
   resizeObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
   Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: page.window.ResizeObserver });
@@ -27,7 +27,8 @@ beforeEach(() => {
     if ((init?.method ?? "GET") === "GET") return Response.json(held);
     puts.push(JSON.parse(String(init?.body)));
     if (refuse) return Response.json({ error: { code: "webhook_failed", message: "the destination answered 500" } }, { status: 500 });
-    held = { ...held, alerts: (JSON.parse(String(init?.body)) as { alerts: AlertWebhookView["alerts"] }).alerts };
+    const body = JSON.parse(String(init?.body)) as Pick<AlertWebhookView, "alerts" | "link">;
+    held = { ...held, alerts: body.alerts, link: body.link };
     return Response.json(held);
   };
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -57,9 +58,20 @@ describe("a saved destination's alert switch", () => {
     expect(view.switchOf("Needs input").getAttribute("aria-checked")).toBe("false");
     await act(async () => { view.switchOf("Needs input").click(); });
     await settle();
-    expect(puts).toEqual([{ preset: "ntfy", alerts: { input: true, done: "long" } }]);
+    expect(puts).toEqual([{ preset: "ntfy", alerts: { input: true, done: "long" }, link: true }]);
     expect(view.switchOf("Needs input").getAttribute("aria-checked")).toBe("true");
     expect(view.text()).toContain("Saved on this PC");
+  });
+
+  it("saves the link turned off, and stops warning about a link a phone cannot open (#3854)", async () => {
+    held = { ...held, reachable_link: false };
+    const view = await open();
+    expect(view.text()).toContain("Messages have no link a phone can open yet.");
+    await act(async () => { view.switchOf("Link to the pane").click(); });
+    await settle();
+    expect(puts).toEqual([{ preset: "ntfy", alerts: { input: false, done: "long" }, link: false }]);
+    expect(view.switchOf("Link to the pane").getAttribute("aria-checked")).toBe("false");
+    expect(view.text()).not.toContain("Messages have no link a phone can open yet.");
   });
 
   it("goes back to the value the server holds when it refuses the save, and says why (G-010)", async () => {

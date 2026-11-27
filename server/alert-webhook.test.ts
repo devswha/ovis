@@ -96,6 +96,32 @@ describe("alert webhook presets", () => {
     expect(JSON.parse(json!.body)).toEqual({ type: "alert", kind: "input", text: "Work PC · codex: waiting for your input", title: "codex", body: "waiting for your input", pc: "Work PC", pane_id: "w1:p1", workspace_id: "w1", url: link });
   });
 
+  it("leaves the pane link out of every preset when the link is turned off, and keeps that choice across saves (#3854)", async () => {
+    const hook = webhook();
+    const base = "https://pc.tail.ts.net:7421";
+    expect(hook.save({ preset: "telegram", token: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ", chat_id: "-1001", link: false }, base).link).toBe(false);
+    hook.send(alert);
+    await hook.settled();
+    // a save that does not name the link keeps it off
+    hook.save({ preset: "telegram", alerts: { input: true, done: "always" } }, base);
+    hook.send(alert);
+    await hook.settled();
+    hook.save({ preset: "ntfy", url: destination.url("/topic"), link: false }, base);
+    hook.send(alert);
+    await hook.settled();
+    hook.save({ preset: "json", url: destination.url("/json"), link: false }, base);
+    hook.send(alert);
+    await hook.settled();
+
+    const [telegram, again, ntfy, json] = destination.received;
+    expect(JSON.parse(telegram!.body)).toEqual({ chat_id: "-1001", text: "Work PC · codex: waiting for your input", disable_web_page_preview: true });
+    expect(JSON.parse(again!.body).text).toBe("Work PC · codex: waiting for your input");
+    expect(ntfy!.headers.get("click")).toBeNull();
+    expect(JSON.parse(json!.body).url).toBeUndefined();
+    expect(webhook().view().link).toBe(false);
+    expect(hook.save({ preset: "json", link: true }, base).link).toBe(true);
+  });
+
   it("keeps the secret owner-only on disk and answers it only masked", () => {
     const hook = webhook();
     const view = hook.save({ preset: "discord", url: "https://discord.com/api/webhooks/1/SECRETabcd" }, undefined);
