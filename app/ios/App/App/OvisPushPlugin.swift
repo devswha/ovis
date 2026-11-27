@@ -110,22 +110,22 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
     /// The PC whose page asks: the current one only where its own page is on screen. While the person chooses another
     /// way the PC stays current, but the page asking is the hosted Connect a PC screen or the app's own, which get
     /// what a page with no PC gets: no subscription to read, replace or forget.
-    private var shownPc: String? {
+    @MainActor private var shownPc: String? {
         (bridge?.viewController as? HerdrBridgeViewController)?.showsPc == true ? PCStore.current : nil
     }
 
     @objc func subscribe(_ call: CAPPluginCall) {
-        guard let origin = shownPc else {
-            call.reject("Push needs an open PC", "no_pc")
-            return
-        }
-        guard let vapidKey = call.getString("applicationServerKey"),
-              vapidKey.range(of: "^[A-Za-z0-9_-]+={0,2}$", options: .regularExpression) != nil,
-              let point = decodeURL(vapidKey), point.count == 65, point.first == 4 else {
-            call.reject("applicationServerKey must be the PC's VAPID public key", "invalid_key")
-            return
-        }
         Task { @MainActor in
+            guard let origin = shownPc else {
+                call.reject("Push needs an open PC", "no_pc")
+                return
+            }
+            guard let vapidKey = call.getString("applicationServerKey"),
+                  vapidKey.range(of: "^[A-Za-z0-9_-]+={0,2}$", options: .regularExpression) != nil,
+                  let point = decodeURL(vapidKey), point.count == 65, point.first == 4 else {
+                call.reject("applicationServerKey must be the PC's VAPID public key", "invalid_key")
+                return
+            }
             do {
                 let center = UNUserNotificationCenter.current()
                 var settings = await center.notificationSettings()
@@ -148,6 +148,10 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
                 } else {
                     endpoint = try await register(token: token, vapidKey: vapidKey, environment: environment)
                 }
+                guard shownPc == origin else {
+                    call.reject("Push needs an open PC", "no_pc")
+                    return
+                }
                 let entry = Endpoint(endpoint: endpoint, token: token, vapidKey: vapidKey, environment: environment)
                 UserDefaults.standard.set(try JSONEncoder().encode(entry), forKey: storageKey(origin))
                 call.resolve(["subscription": subscription(endpoint, keys)])
@@ -156,31 +160,39 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
     }
 
     @objc func getSubscription(_ call: CAPPluginCall) {
-        do {
-            guard let origin = shownPc, let saved = savedEndpoint(origin) else {
+        Task { @MainActor in
+            do {
+                guard let origin = shownPc, let saved = savedEndpoint(origin) else {
+                    call.resolve(["subscription": NSNull()])
+                    return
+                }
+                if call.getBool("endpointOnly") == true {
+                    call.resolve(["subscription": ["endpoint": saved.endpoint]])
+                    return
+                }
+                guard let keys = try keyStore().read() else {
+                    call.resolve(["subscription": NSNull()])
+                    return
+                }
+                call.resolve(["subscription": subscription(saved.endpoint, keys)])
+            } catch PushKeyStore.Failure.damaged {
                 call.resolve(["subscription": NSNull()])
-                return
-            }
-            if call.getBool("endpointOnly") == true {
-                call.resolve(["subscription": ["endpoint": saved.endpoint]])
-                return
-            }
-            guard let keys = try keyStore().read() else {
-                call.resolve(["subscription": NSNull()])
-                return
-            }
-            call.resolve(["subscription": subscription(saved.endpoint, keys)])
-        } catch PushKeyStore.Failure.damaged {
-            call.resolve(["subscription": NSNull()])
-        } catch { call.reject("The push keys could not be read", "failed") }
+            } catch { call.reject("The push keys could not be read", "failed") }
+        }
     }
 
     @objc func unsubscribe(_ call: CAPPluginCall) {
-        if let origin = shownPc { UserDefaults.standard.removeObject(forKey: storageKey(origin)) }
-        call.resolve()
+        Task { @MainActor in
+            if let origin = shownPc { Self.forgetEndpoint(origin) }
+            call.resolve()
+        }
     }
 
     private static let endpointPrefix = "ovis.push.endpoint."
+
+    static func forgetEndpoint(_ origin: String) {
+        UserDefaults.standard.removeObject(forKey: endpointPrefix + origin)
+    }
 
     private func storageKey(_ origin: String) -> String { Self.endpointPrefix + origin }
 

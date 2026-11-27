@@ -43,23 +43,25 @@ public enum Alert {
 
     /// The saved PC an alert is about, or nil: one that names no pane (the confirmation push) or no PC this phone
     /// keeps. `stored`: the key the alert's endpoint was kept under (OvisPushPlugin), the PC whose page subscribed.
+    /// A relay ID by itself does not identify the sender.
     /// A PC saved by its own address is that key. A relay PC shares the shell's origin (`shell`, PCStore.shellOrigin)
     /// with every other, and with the hosted app the person may have kept as the PC: it is named by its relay ID
     /// (`serverId`) instead, and its pane rides in its scope's fragment, which the hosted app's host never hears. A
     /// relay ID never moves an alert from a PC's own address, nor from one relay PC's scope, to another scope.
-    public static func link(saved: [String], stored: String?, serverId: String?, machine: String?, workspace: String?, pane: String?, shell: URL?) -> Link? {
-        guard let pane, !pane.isEmpty else { return nil }
-        let machine = machine.flatMap { $0.isEmpty ? nil : $0 } ?? "local"
-        let workspace = workspace.flatMap { $0.isEmpty ? nil : $0 }
+    public static func link(saved: [String], stored: String?, alert: Payload, shell: URL?, knownServerId: String? = nil) -> Link? {
+        guard let stored, let pane = alert.pane, !pane.isEmpty else { return nil }
+        let machine = alert.machine.flatMap { $0.isEmpty ? nil : $0 } ?? "local"
+        let workspace = alert.workspace.flatMap { $0.isEmpty ? nil : $0 }
         let query = "machine=" + encoded(machine) + (workspace.map { "&ws=" + encoded($0) } ?? "") + "&pane=" + encoded(pane) + "&view=chat"
         guard let selection = selection(pane: pane, machine: machine, workspace: workspace) else { return nil }
-        if let stored, saved.contains(stored), !scoped(stored), !Home.sameOrigin(URL(string: stored), shell) {
+        if saved.contains(stored), !scoped(stored), !Home.sameOrigin(URL(string: stored), shell) {
+            if let knownServerId, let serverId = alert.serverId, knownServerId != serverId { return nil }
             return Link(pc: stored, address: (stored.hasSuffix("/") ? stored : stored + "/") + "?" + query, selection: selection)
         }
-        guard let id = Home.relayId(serverId), let shell,
+        guard let id = Home.relayId(alert.serverId), let shell,
               let scope = Home.relayScope(URL(string: "/s/\(id)/", relativeTo: shell)?.absoluteURL, appOrigin: shell),
               saved.contains(scope) else { return nil }
-        if let stored, stored != scope, scoped(stored) || !Home.sameOrigin(URL(string: stored), shell) { return nil }
+        guard stored == scope || (!scoped(stored) && Home.sameOrigin(URL(string: stored), shell)) else { return nil }
         return Link(pc: scope, address: scope + "#" + query, selection: selection)
     }
 

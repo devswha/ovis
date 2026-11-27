@@ -690,8 +690,9 @@ one more browser's and is unchanged.
   has no service worker.
 - On iOS the tap is read from the PC's encrypted alert again, with the phone's keys
   (`OvisPushPlugin.tapped`), never from what the notification shows, so a tap still works where
-  the extension ran out of time. A tap that launched the app opens the alert's PC as the first
-  screen, at its pane. A relay PC's page in the hosted app the person kept as the PC is that relay
+  the extension ran out of time. Only an endpoint the app still knows can open a PC. A tap that
+  launched the app opens the alert's PC as the first screen, at its pane. A relay PC's page in
+  the hosted app the person kept as the PC is that relay
   PC's own: its alert selects the pane there too. While a sheet is over the page (an SSH setup, the
   scanner) a tap only brings the app forward, leaving the sheet as it was. An alert whose endpoint
   the app kept under the hosted origin before the shell moved inside the app (`PCStore.settleShell`)
