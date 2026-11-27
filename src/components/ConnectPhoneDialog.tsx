@@ -859,6 +859,25 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
+  // signed in to another account than the one this PC is in: the PC says how its owner signed in to that one, once read
+  const elsewhere = signedIn && accountId !== null && typeof pcAccount === "string" && pcAccount !== accountId ? pcAccount : null;
+  const [pcWay, setPcWay] = useState<{ readonly account: string; readonly provider: AccountProvider | null } | null>(null);
+  useEffect(() => {
+    if (elsewhere === null) return;
+    let live = true;
+    pcAccountStatus(apiFetch).then(
+      (status) => { if (live && status.account === elsewhere) setPcWay({ account: elsewhere, provider: status.provider ?? null }); },
+      () => { if (live) setPcWay({ account: elsewhere, provider: null }); },
+    );
+    return () => { live = false; };
+  }, [elsewhere]);
+  const otherAccountLine = elsewhere !== null && pcWay?.account === elsewhere ? (
+    <p className="settings-hint" role="note" data-testid="connect-other-account">
+      {pcWay.provider === null
+        ? t("This PC is in another account. Sign in the way you used when you first added this PC.")
+        : t("This PC is in another account. Sign in with {provider}.", { provider: PROVIDER_NAMES[pcWay.provider] })}
+    </p>
+  ) : null;
   const signInView = useRef<HTMLDivElement>(null);
   /** the sign-in that just finished on this tab, handed once to Add this PC below, which offers its one press at once */
   const signedInHere = useRef<SignedInHere | null>(null);
@@ -927,6 +946,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
+        {otherAccountLine}
         <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
       </div>
       {qr(false)}
