@@ -62,10 +62,11 @@ function forbiddenDeclarations(source: string, fileName?: string): string[] {
 }
 
 /**
- * The Codex approval adapter subscribes to its threads to receive their approvals (`thread/resume` with no overrides)
- * and reads when a turn starts (`turn/started`): those two names only, there; it sends no turn and no command.
+ * The Codex approval adapter subscribes to its threads to receive their approvals (`thread/resume` with no overrides),
+ * reads when a turn starts (`turn/started`), and starts a turn of the pane's own thread for a plain chat message to an
+ * idle Codex (`turn/start`, never a command): those three names only, there.
  */
-const CODEX_APPROVALS = { file: "server/approvals/codex.ts", names: new Set(["thread/resume", "turn/started"]) };
+const CODEX_APPROVALS = { file: "server/approvals/codex.ts", names: new Set(["thread/resume", "turn/started", "turn/start"]) };
 
 /** OpenCode's command route, only where commands sent as data call it (docs/agent-commands.md#commands-sent-as-data). */
 const OPENCODE_COMMAND = { file: "server/opencode-service.ts", text: "/api/session/${}/command" };
@@ -85,7 +86,7 @@ function forbiddenBoundaryLiterals(source: string, fileName?: string): string[] 
         ["service.ensure", "turn/start", "thread/resume", "skill.invoke"].some((method) => text.includes(method)) ||
         /\/api\/session\/[^/]+\/command(?:[/?#]|$)/.test(text) ||
         // Only the terminal attachment may take over, after an explicit user request.
-        (text.includes("--takeover") && fileName !== "server/core/terminal-process.ts")
+        (text.includes("--takeover") && fileName !== "server/core/terminal-process.ts" && fileName !== "server/windows-control.ts")
       ) {
         violations.push(text);
       }
@@ -279,6 +280,7 @@ describe("agent command catalog conventions", () => {
   it("allows takeover only in the user-requested terminal attachment path", () => {
     const source = 'args.push("--takeover"); const method = "service.ensure";';
     expect(forbiddenBoundaryLiterals(source, "server/core/terminal-process.ts")).toEqual(["service.ensure"]);
+    expect(forbiddenBoundaryLiterals(source, "server/windows-control.ts")).toEqual(["service.ensure"]);
     expect(forbiddenBoundaryLiterals(source, "server/other.ts")).toEqual(["--takeover", "service.ensure"]);
   });
 
