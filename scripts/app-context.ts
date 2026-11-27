@@ -12,18 +12,29 @@ import type { Browser, BrowserContext, BrowserContextOptions, Page } from "playw
  */
 export const APP_CONTEXT = { serviceWorkers: "block", locale: "en-US" } as const satisfies BrowserContextOptions;
 
+/** Pages of an appContext context that have not been sent anywhere yet: no goto, no setContent. */
+const fresh = new WeakSet<Page>();
+
 /** A context that starts from APP_CONTEXT. `overrides` are the script's own choices and win, key by key. */
-export function appContext(browser: Browser, overrides: BrowserContextOptions = {}): Promise<BrowserContext> {
-  return browser.newContext({ ...APP_CONTEXT, ...overrides });
+export async function appContext(browser: Browser, overrides: BrowserContextOptions = {}): Promise<BrowserContext> {
+  const context = await browser.newContext({ ...APP_CONTEXT, ...overrides });
+  context.on("page", (page) => {
+    fresh.add(page);
+    const goto = page.goto.bind(page);
+    page.goto = (url, options) => { fresh.delete(page); return goto(url, options); };
+    const setContent = page.setContent.bind(page);
+    page.setContent = (html, options) => { fresh.delete(page); return setContent(html, options); };
+  });
+  return context;
 }
 
 /**
- * Starts Playwright's clock on a page that has loaded nothing yet: no navigation, and no setContent, which loads a
- * document while the address stays about:blank. A clock that starts or moves under a loaded page lets that page's
- * timers take the new time before the next navigation unloads it (#4795), so it is refused there.
+ * Starts Playwright's clock on a page that has loaded nothing yet: one an appContext context made, before its first
+ * goto or setContent (setContent loads a document, and its scripts may leave no node behind, while the address stays
+ * about:blank). A clock that starts or moves under a loaded page lets that page's timers take the new time before the
+ * next navigation unloads it (#4795), so it is refused there.
  */
 export async function installClock(page: Page, options?: Parameters<Page["clock"]["install"]>[0]): Promise<void> {
-  const untouched = page.url() === "about:blank" && await page.evaluate(() => document.head.childNodes.length === 0 && document.body.childNodes.length === 0);
-  assert.ok(untouched, "installClock: start the clock before the page loads anything (a goto, a setContent), not under a loaded page");
+  assert.ok(fresh.has(page) && page.url() === "about:blank", "installClock: start the clock before the page loads anything (a goto, a setContent), on a page of an appContext context");
   await page.clock.install(options);
 }
