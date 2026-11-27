@@ -923,8 +923,8 @@ describe("PC account transfers", () => {
   const from = "acct_before";
   const into = "acct_after";
   const merge_id = `mrg_${"a".repeat(22)}`;
-  async function setup(list = true) {
-    const service = new FakeAccountService();
+  async function setup(list = true, now?: () => number) {
+    const service = new FakeAccountService(now);
     service.opensAll = service.completions = true;
     const machine = pc();
     const token = service.issueToken(from, { twoStep: true });
@@ -938,15 +938,16 @@ describe("PC account transfers", () => {
     }
     const { line, key } = await newInvite(BASE, into, null);
     service.openMerge({ merge_id, from, into, invite_key: key });
-    const call = async (path: string, body: object, scope?: { account: string; listing_id: string }) => {
-      const merge = path === "transfer" && "merge_id" in body && typeof body.merge_id === "string" ? body.merge_id : undefined;
+    const call = async (path: string, body: object, scope?: { account: string; listing_id: string } | "plain") => {
+      const merge = scope !== "plain" && path === "transfer" && "merge_id" in body && typeof body.merge_id === "string" ? body.merge_id : undefined;
+      const completion = scope === "plain" ? undefined : scope;
       const challenge = await (await service.fetch(post("/v1/pc/challenge", {
-        server_id: machine.serverId, public_key: machine.publicKey, ...(scope ? { completion: scope } : {}),
+        server_id: machine.serverId, public_key: machine.publicKey, ...(completion ? { completion } : {}),
         ...(merge === undefined ? {} : { transfer: { merge_id: merge } }),
       }))).json();
       const proof = answerServerChallenge(challenge.frame, machine.keys.secretKey, {
         server_id: machine.serverId, role: "account",
-        connection_id: scope ? `pc-complete/1:${scope.account}:${scope.listing_id}:${challenge.challenge_id}`
+        connection_id: completion ? `pc-complete/1:${completion.account}:${completion.listing_id}:${challenge.challenge_id}`
           : merge === undefined ? challenge.challenge_id : `pc-transfer/1:${merge}:${challenge.challenge_id}`,
       });
       const fields = { ...body, server_id: machine.serverId, challenge_id: challenge.challenge_id, proof };
@@ -967,16 +968,69 @@ describe("PC account transfers", () => {
   }
 
   test("a transfer moves a PC's listing in one step and the new listing can be completed", async () => {
-    const { machine, directory, transfer, call } = await setup();
+    const { service, machine, directory, transfer, call } = await setup();
     expect([await directory(from), await directory(into)]).toEqual([[machine.serverId], []]);
+    const prior = service.pcs(from)[0]?.listing_id;
     const response = await transfer();
     expect(response.status).toBe(200);
     const receipt = await response.json();
-    expect(receipt).toEqual({ account: into, listing_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(prior).toMatch(/^[0-9a-f]{32}$/);
+    expect(receipt).toEqual({ account: into, listing_id: prior });
     expect([await directory(from), await directory(into)]).toEqual([[], [machine.serverId]]);
     const box = await call("mailbox", { account: into, ack: null, with_listing_id: true });
     expect(await box.json()).toMatchObject({ listing_id: receipt.listing_id, listing_admitted: true });
     expect((await call("complete", receipt, receipt)).ok).toBe(true);
+    expect(Date.parse(service.pcs(into)[0]?.new_until ?? "") - Date.parse(service.pcs(into)[0]?.admitted_at ?? "")).toBe(24 * 60 * 60_000);
+  });
+
+  test("transfer rejects a plain proof but whereami accepts it", async () => {
+    const { call } = await setup();
+    const plain = await call("transfer", { merge_id }, "plain");
+    expect(plain.status).toBe(401);
+    expect(await plain.json()).toMatchObject({ error: { code: "proof_invalid" } });
+    expect((await call("whereami", { merge_id })).status).toBe(200);
+  });
+
+  test("after a move, B's proved routes hide the listing even after the merge is finished", async () => {
+    const { service, transfer, call } = await setup();
+    const receipt = await (await transfer()).json();
+    service.setMergeState(merge_id, "finished");
+    for (const path of ["mailbox", "snapshot", "complete"] as const) {
+      const scope = { account: from, listing_id: receipt.listing_id };
+      const response = await call(path, path === "mailbox" ? { account: from, ack: null } : scope, path === "complete" ? scope : undefined);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+    }
+  });
+
+  test("a closed merge stops answering for its moved PC after 30 days", async () => {
+    let time = Date.now();
+    const { service, transfer, call } = await setup(true, () => time);
+    const first = await transfer();
+    expect(first.status).toBe(200);
+    const receipt = await first.json();
+    service.setMergeState(merge_id, "cancelled");
+    time += 30 * 24 * 60 * 60_000 - 1;
+    expect(await (await transfer()).json()).toEqual(receipt);
+    time++;
+    const repeat = await transfer();
+    expect(repeat.status).toBe(409);
+    expect(await repeat.json()).toMatchObject({ error: { code: "merge_closed" } });
+    expect((await call("whereami", { merge_id })).status).toBe(404);
+  });
+
+  test("if A removes the moved PC, transfer no longer returns a receipt", async () => {
+    const { service, machine, transfer, call } = await setup();
+    expect((await transfer()).status).toBe(200);
+    const token = service.issueToken(into, { twoStep: true });
+    const remove = await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+      method: "DELETE", headers: { authorization: `Bearer ${token}` },
+    }));
+    expect(remove.status).toBe(204);
+    const repeat = await transfer();
+    expect(repeat.status).toBe(409);
+    expect(await repeat.json()).toMatchObject({ error: { code: "merge_closed" } });
+    expect(await (await call("whereami", { merge_id })).json()).toEqual({ account: null, listing_id: null, merge: "open" });
   });
 
   test("the same PC and merge return the same transfer receipt even after finish", async () => {

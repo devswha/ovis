@@ -36,6 +36,7 @@ interface FakeMerge {
   readonly expires: number;
   readonly invites: Map<string, string | null>;
   readonly moves: Map<string, { readonly account: string; readonly listing_id: string }>;
+  readonly held: Set<string>;
   state: MergeState;
   closedAt?: number;
 }
@@ -455,7 +456,8 @@ export class FakeAccountService {
       return;
     }
     if (this.listOfAccount(from) || this.listOfAccount(into)) throw new Error("Signed-list accounts cannot merge");
-    this.merges.set(merge_id, { from, into, state: "open", expires: this.now() + 7 * PC_NEW_MS, invites: new Map([[invite_key, null]]), moves: new Map() });
+    this.merges.set(merge_id, { from, into, state: "open", expires: this.now() + 7 * PC_NEW_MS, invites: new Map([[invite_key, null]]),
+      moves: new Map(), held: new Set(this.directories.get(from)?.keys()) });
   }
 
   setMergeState(id: string, state: Exclude<MergeState, "open">): void {
@@ -464,6 +466,7 @@ export class FakeAccountService {
     ticket.state = state;
     ticket.closedAt = this.now();
     if (state === "finished") {
+      for (const id of this.directories.get(ticket.from)?.keys() ?? []) ticket.held.add(id);
       this.mergedAccounts.add(ticket.from);
       this.directories.delete(ticket.from);
     }
@@ -1500,7 +1503,7 @@ export class FakeAccountService {
     const target = this.directories.get(ticket.into)?.get(server_id);
     const old = from?.get(server_id);
     if (!transfer) {
-      if (!receipt && !old) return hidden();
+      if (!receipt && !old && !ticket.held.has(server_id)) return hidden();
       const placement = receipt && target?.listing_id === receipt.listing_id ? receipt
         : !receipt && old && this.confirmed(old) ? { account: ticket.from, listing_id: old.listing_id ?? null } : { account: null, listing_id: null };
       return json({ ...placement, merge: this.mergeState(ticket) });
