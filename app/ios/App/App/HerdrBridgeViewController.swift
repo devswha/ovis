@@ -725,6 +725,16 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// that PC is still current, but what is on screen is the hosted screen or the app's own page.
     var showsPc: Bool { Home.pcShown(screen: screen, phase: phase) }
 
+    /// The app is replacing this view controller (leave): it is on its way out, though it may stay a moment longer.
+    private var replaced = false
+
+    /// The address of a PC's page this view controller shows when it is up: its cover lifted, and the app not on its
+    /// way to another screen. Nil for any other (the error page, the hosted screen, the app's own page).
+    private var pcPageUp: URL? {
+        guard showsPc, openingView == nil, !replaced, let url = webView?.url, !Home.bundledPage(url) else { return nil }
+        return url
+    }
+
     /// For the page's own back control (HerdrShell getState `back`): "current", "home" or "".
     var backWay: String {
         let current = PCStore.current != nil
@@ -771,8 +781,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 
     /// The app is going to another screen (reopen): what the hosted screen's page still does counts for nothing, and
-    /// its clock stops.
+    /// its clock stops. Whatever the page, it is handed no alert from here on.
     private func leave() {
+        replaced = true
         guard let phase else { return }
         self.phase = Home.after(phase, .left)
         if self.phase == .left { ticker?.invalidate() }
@@ -1299,6 +1310,70 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     private static var window: UIWindow? {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         return (scene?.delegate as? SceneDelegate)?.window
+    }
+
+    /// Run in a PC's page the app is about to replace: the client keeps the pane state it holds in memory alone in
+    /// storage for the next page of its address (src/lib/paneLifetime.ts carry), never sending it.
+    private static let leavingScript = "window.dispatchEvent(new Event('ovis-page-leaving'))"
+    private static let leavingWait: TimeInterval = 1
+
+    /// The alert whose PC opens once the page on screen has kept what it holds in memory alone (carryThenOpen): a later
+    /// tap meanwhile takes its place.
+    private static var carrying: Alert.Link?
+
+    /// A tapped alert (OvisPushPlugin.tapped, `stored` the key its endpoint was kept under): its pane on the saved PC
+    /// that sent it (Alert.link). The page of that PC on screen and up is handed the pane, nothing loaded; otherwise that
+    /// PC opens at the alert's address, as a PC picked does, after a PC's page on screen kept what it holds in memory
+    /// alone. Nothing happens for an alert that names no pane or no saved PC, nor while a sheet is over the page (an
+    /// SSH setup, the scanner), which stays as the person left it. Before the app's first screen is made (a tap that
+    /// launched the app) that PC is only made the one it opens.
+    static func openAlert(_ alert: Alert.Payload, stored: String?) {
+        guard let link = Alert.link(saved: PCStore.saved, stored: stored, serverId: alert.serverId, machine: alert.machine,
+                                    workspace: alert.workspace, pane: alert.pane, shell: PCStore.shellOrigin) else { return }
+        if carrying != nil {
+            carrying = link
+            return
+        }
+        guard let root = window?.rootViewController else {
+            PCStore.open(link.pc, start: link.address)
+            return
+        }
+        if root.presentedViewController != nil { return }
+        let shown = root as? HerdrBridgeViewController
+        let page = shown?.pcPageUp
+        if let shown, let webView = shown.webView, let page,
+           Alert.handsToPage(link, shown: page.absoluteString, belongs: PCStore.belongs(page, to: link.pc)) {
+            webView.evaluateJavaScript(Alert.selectionScript(link.selection)) { ran, _ in
+                // a page that could not run it (its web content process gone): the alert's address
+                guard (ran as? Bool) != true, carrying == nil else { return }
+                PCStore.open(link.pc, start: link.address)
+                reopen()
+            }
+            return
+        }
+        guard let shown, let webView = shown.webView, page != nil else {
+            PCStore.open(link.pc, start: link.address)
+            reopen()
+            return
+        }
+        carryThenOpen(link, from: webView)
+    }
+
+    /// Opens `link`'s PC once the page in `webView` kept what it holds in memory alone, or a second on, whichever comes
+    /// first: a page that does not answer keeps the alert waiting no longer.
+    private static func carryThenOpen(_ link: Alert.Link, from webView: WKWebView) {
+        carrying = link
+        var done = false
+        let open = {
+            guard !done else { return }
+            done = true
+            guard let link = carrying else { return }
+            carrying = nil
+            PCStore.open(link.pc, start: link.address)
+            reopen()
+        }
+        webView.evaluateJavaScript(leavingScript) { _, _ in open() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + leavingWait, execute: open)
     }
 
     /// Replaces the app's view controller, so the next page (a PC, or the connect screen) is a
