@@ -7,8 +7,9 @@ import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScroll
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
 import { paneProcessRoots } from "../conversation.ts";
+import { claudeRestoredPaste } from "../claude-store.ts";
 import type { CommandSend } from "../outcome.ts";
-import { commandDataRoute, sendCommandAsData } from "../command-data-send.ts";
+import { commandDataRoute, sendCodexTextAsData, sendCommandAsData } from "../command-data-send.ts";
 import { processStartedAt } from "../process-start.ts";
 import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
@@ -63,6 +64,16 @@ export const closeMention = (text: string): string => {
   const body = text.slice(open.length, text.length - close.length);
   return /(?:^|\s)@\S+$/.test(body) ? `${open}${body} ${close}` : text;
 };
+
+/**
+ * Whether a chat message may go to Codex as data (its server's turn/start or turn/steer) rather than typed: sent as it
+ * was written (`sent`, after the agent's own shaping), and nothing the TUI reads itself: a shell command, a slash
+ * command, a mention, a $skill, or a path (a pasted picture, which the TUI attaches), also one named by a picture's
+ * file name alone, quoted or relative.
+ */
+export const codexTakesAsData = (text: string, sent: string): boolean =>
+  sent === text && closeMention(sent) === text && !/(?:^|\s)[!/@$]\S*/u.test(text)
+  && !/\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|svg)(?![\p{L}\p{N}_])/iu.test(text);
 
 /**
  * The longest line the terminal's input line types raw; a longer one goes to the pane's agent as its prompt.
@@ -367,8 +378,14 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   const refusal = (error: unknown): never => { throw refused ?? error; };
   const [live, colors] = await claudeBoxReads(paneId);
   if (!claudeInputDraft(live, colors)) return;
-  if (working || automatic || claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) === null) {
+  const typed = claudeRestoredDraft(live, colors, lastChatSubmitted(paneId)) !== null;
+  if (working || automatic || (!typed && !await restoredPaste(paneId, live))) {
     throw new InputDraftError(claudeClearableDraft(live, colors), undefined, claudeSendAnywayBox(live), claudeRefusalMessage(live));
+  }
+  // Claude's records were read meanwhile: the box they were checked for must still be the one the Esc presses clear
+  if (!typed) {
+    const [now] = await claudeBoxReads(paneId);
+    if (claudeInputBoxContent(now) !== claudeInputBoxContent(live)) throw new InputDraftError(null, undefined, claudeSendAnywayBox(now), claudeRefusalMessage(now));
   }
   if (deadline - Date.now() < RESTORED_CLEAR_RESERVE_MS) throw new HerdrError("submit_timeout", "Too little time was left to clear Claude Code's input box and send; nothing was typed");
   // the read proved the box holds the copy: a lone Esc on an EMPTY box would open Claude's
@@ -382,6 +399,14 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   // fixed wait: the box redraws after the two Esc presses before it reads empty
   await Bun.sleep(RESTORED_CLEAR_SETTLE_MS);
   if (claudeInputDraft(...await claudeBoxReads(paneId))) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
+}
+
+/** The chat's own last message, which Claude put back folded into one paste placeholder, by Claude's own records (#3563). */
+async function restoredPaste(paneId: string, live: string): Promise<boolean> {
+  const sent = lastChatSubmitted(paneId);
+  const box = claudeInputBoxContent(live);
+  if (sent === null || box === null || !foldedPlaceholder(box, true)) return false;
+  return claudeRestoredPaste((await paneProcessRoots(paneId, "claude")).processes?.foreground_processes ?? [], box, sent);
 }
 
 /**
@@ -733,6 +758,21 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             if (error instanceof HerdrError && error.code === "submit_changed") throw error;
             throw new HerdrError("submit_partial", "Part of the message was typed into OpenCode's input, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
           }
+        }
+        // a Codex on the server Ovis started for it takes plain text as a turn of its thread, at rest: nothing joins what
+        // is typed in its own box, and none of its own screens takes it
+        if (pane && agent === "codex" && !command && clearDraft === undefined && !sendAnyway && codexTakesAsData(text, sent)) {
+          const viaData = await sendCodexTextAsData(pane, text, () => {
+            try { inTime(); } catch (error) { refused = error; return false; }
+            return mayType();
+          });
+          if (viaData) {
+            noteSubmitted(paneId, text, recorded(command), viaData.at);
+            return;
+          }
+          if (refused !== undefined) throw refused;
+          writeStarted = false;
+          inTime();
         }
         // the last read before herdr is written to: one of Codex's own screens gets no paste and no Enter
         // and what a person typed into the agent's own box, which the paste would join (Claude's and Hermes' were read
