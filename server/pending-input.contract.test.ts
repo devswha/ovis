@@ -68,7 +68,10 @@ mock.module("./codex.ts", () => ({
   paneCodexHomePlaced: async (...args: Parameters<typeof realCodexHome>) => fakeCodexTranscripts.has(args[0])
     ? { home: root, placed: true } : realCodexHome(...args),
   codexOpenRollout: async (...args: Parameters<typeof realCodexRollout>) => fakeCodexTranscripts.get(args[0]) ?? realCodexRollout(...args),
-  codexTranscriptPath: async (...args: Parameters<typeof realCodexTranscript>) => fakeCodexTranscripts.get(args[0]) ?? realCodexTranscript(...args),
+  codexTranscriptPath: async (...args: Parameters<typeof realCodexTranscript>) => {
+    const path = fakeCodexTranscripts.get(args[0]);
+    return path === undefined ? realCodexTranscript(...args) : { path, how: "inferred" as const };
+  },
 }));
 const launches: string[] = [];
 const realLaunch = agentLaunchModule.agentLaunch;
@@ -1103,7 +1106,7 @@ describe("connection-owned pending input", () => {
     const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, threadId, input, _id, mayWrite) => {
       if (!mayWrite()) return "unsent";
       turns.push(`${threadId}:${input}`);
-      return "accepted";
+      return { turn: "started", over: Promise.resolve(true) };
     });
     try {
       const f = await setup("codex-queued-turn", "codex");
@@ -1122,7 +1125,7 @@ describe("connection-owned pending input", () => {
     const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, _threadId, _input, _id, mayWrite) => {
       asked.resolve();
       await discarded.promise;
-      return mayWrite() ? "accepted" : "unsent";
+      return mayWrite() ? { turn: "started", over: Promise.resolve(true) } : "unsent";
     });
     try {
       const f = await setup("codex-queued-turn-discard", "codex");
