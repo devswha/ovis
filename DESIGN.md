@@ -5176,7 +5176,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a `.modal` sheet (`ManageAccountSheet` in `components/AccountHead.tsx`, rows from
   `AccountManageLists` in `components/AccountManage.tsx`), as the Claude and Codex apps keep
   account settings to compact rows with each destructive action behind one confirm. In order: the
-  ways to sign in; the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
+  ways to sign in (`AccountMethods` in `components/AccountMethods.tsx`, the same row in the desktop
+  app, on app.ovis.sh and in the phone app): one chip for each with the provider's mark, a remove
+  `X` on all but the only one and the one this device signed in with, and a dashed add chip for each
+  provider the account service offers that the account lacks (none on a PC's own page in a browser,
+  which adds none). Under the row, why a change was refused, with **See how** for a provider account
+  that another Ovis account holds, or the sign-in again it waits for; then **Recent changes**, at
+  most the three latest changes to the ways in as dim one-line entries ("Nov 27 · Google added ·
+  Device 3", the device left out where the service numbers none), drawn only when there are any, as
+  Google Account's Security page keeps recent security activity beside how you sign in. Left out on
+  purpose: a box or a rule around the entries, a full history, and a way to join two accounts. Then
+  the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
   each other device of the account (on the hosted app first **This device**, whose Disconnect leaves
   the account); **PCs**, a dot and the name on each PC in the directory, with **Remove** only on one
   not heard from for 15 minutes; **Delete account** last. Each action asks once in a
@@ -5200,7 +5210,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
   itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
   language), whichever line it shows.
-- My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
+- My devices (`MyPcRows` in SettingsDevicesPage.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
   dimmed, and one this app added over SSH or the relay carries a **Remove PC** trash button that asks

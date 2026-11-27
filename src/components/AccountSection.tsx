@@ -5,7 +5,7 @@
  * and the Ovis link page where the service has it, else the provider's device flow.
  */
 import { useCallback, useContext, useEffect, useEffectEvent, useRef, useState } from "react";
-import { Check, Plus, X } from "lucide-react";
+import { Check } from "lucide-react";
 
 import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
@@ -19,7 +19,7 @@ import { pagePcs } from "../lib/account/listPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { ownSignIn, ownWindowSignIn, pcServiceHere, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
-import { AccountService, AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, sameSignIn, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
+import { AccountService, AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, sameSignIn, SignedOutError, type AccountIdentityList, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
 import { postKept, refusalShown, unsentBlocks, type UnsentBlocks } from "../lib/account/unsentBlocks.ts";
@@ -27,9 +27,10 @@ import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceOs, thisDeviceLabel } from "../lib/phone.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
-import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark, providerChoice } from "./AccountPcs.tsx";
+import { AccountPcList, AccountSignIn, PROVIDER_NAMES, providerChoice } from "./AccountPcs.tsx";
 import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
 import { AccountManageLists } from "./AccountManage.tsx";
+import { AccountMethods, InUseSteps } from "./AccountMethods.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { aroundDigits } from "./RelayPairingPrompt.tsx";
 import { statusText } from "./RelayPanel.tsx";
@@ -44,7 +45,7 @@ type View =
   /** `link`: the sign-in page the browser would not open in a tab of its own, offered to open by hand */
   | { kind: "signing-in"; link?: string }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
-  | { kind: "signed-in"; provider: AccountProvider; account: string; session: AccountSession; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; account: string; session: AccountSession; pcs: MyPc[] | null; methods: AccountIdentityList | null; limits: AccountLimits | null; error: string | null };
 
 export function formatRelayBytes(bytes: number): string {
   const safe = Math.max(0, bytes);
@@ -79,10 +80,11 @@ export async function accountLimitsOf(service: AccountService, session: AccountS
 }
 
 /**
- * The account's PCs and sign-in methods as `session` reads them; null once another sign-in (or none) is stored,
- * before the reads or while their answers were on the way: those are not this section's to show under its heading.
+ * The account's PCs and sign-in methods, with the methods' latest changes, as `session` reads them; null once another
+ * sign-in (or none) is stored, before the reads or while their answers were on the way: those are not this section's to
+ * show under its heading.
  */
-export async function accountListsOf(service: AccountService, session: AccountSession): Promise<{ pcs: Awaited<ReturnType<AccountService["listPcs"]>>; methods: Awaited<ReturnType<AccountService["identities"]>> | null } | null> {
+export async function accountListsOf(service: AccountService, session: AccountSession): Promise<{ pcs: Awaited<ReturnType<AccountService["listPcs"]>>; methods: AccountIdentityList | null } | null> {
   const shown = service.forSignIn(session);
   const replaced = async (): Promise<boolean> => {
     const current = await service.session();
@@ -153,8 +155,6 @@ type AddThisPcState =
 const pageHidden = (): boolean => typeof document !== "undefined" && document.hidden === true;
 
 const offering = (state: AddThisPcState): boolean => state.kind === "offer" || state.kind === "expired" || state.kind === "declined" || state.kind === "error" || state.kind === "relay-off";
-
-const IN_USE_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#a-sign-in-method-that-belongs-to-another-account";
 
 const warned = (what: string) => (error: unknown): void => console.warn(what, error instanceof Error ? error.name : error);
 
@@ -680,7 +680,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (settling === null) return;
     let live = true;
     let asking = false;
-    const timer = setInterval(() => {
+    // also at once when the page shows again: an enrollment that ended while it was hidden is said without a tick's wait
+    const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling, needsKeys }) => {
@@ -689,8 +690,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (account !== settling) setState(account === null ? { kind: "offer" } : { kind: "hidden" });
         else if (!enrolling) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling: false });
       }, warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
-    }, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    };
+    const timer = setInterval(ask, ADDED_POLL_MS);
+    document.addEventListener("visibilitychange", ask);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", ask); };
   }, [settling]);
   const attempt = useRef(0);
   /**
@@ -737,7 +740,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (keysRun === null || keysAccount === null) return;
     let live = true;
     let asking = false;
-    const timer = setInterval(() => {
+    // also at once when the page shows again
+    const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, fetchListAdd(keysRun)).then(async (now) => {
@@ -753,8 +757,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         }
         if (now.state === "none" || now.state === "replaced") setState({ kind: "keys", account: keysAccount, run: null, note: null });
       }, warned("Ovis: this PC's add by the account's list could not be read")).finally(() => { asking = false; });
-    }, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    };
+    const timer = setInterval(ask, ADDED_POLL_MS);
+    document.addEventListener("visibilitychange", ask);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", ask); };
   }, [keysRun, keysAccount, joinedAs]);
   const stopKeys = (account: string, run: string): void => {
     attempt.current++;
@@ -1363,7 +1369,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   // with its relay on (the sign-in never turns it on), to a browser that drives it (a watching one lists nothing).
   // What the button says at the press is what the sign-in does (`signIn`), so words read a moment ago never add
   // the PC behind a plain "Sign in"; they follow the relay, which its switch in the same fold turns on and off:
-  // read again every few seconds while the page shows, and when Settings asks (`recheck`).
+  // read again every few seconds while the page shows, at once when it shows again, and when Settings asks (`recheck`).
   const signedOut = view.kind === "signed-out";
   const [addsPc, setAddsPc] = useState(false);
   useEffect(() => {
@@ -1389,13 +1395,11 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     };
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", read); };
   }, [linkPage, ownRedirect, signedOut, recheck]);
 
   if (!offered) return null;
-
-  const unlinked = bridge !== null && view.kind === "signed-in" && view.methods !== null
-    ? providers.filter((provider) => !view.methods?.some((method) => method.provider === provider)) : [];
 
   const cancelDeviceSignIn = (): void => {
     deviceSignIn.current?.abort();
@@ -1818,35 +1822,11 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     </>
   );
 
-  const errorLine = view.kind === "signed-in" && view.error !== null && <p className="settings-condition" role="alert">{view.error}{view.error === inUseShown && <> <ExternalLink kind="link" className="settings-link" href={IN_USE_HELP}>{t("See how")}</ExternalLink></>}</p>;
+  const errorLine = view.kind === "signed-in" && view.error !== null && <p className="settings-condition" role="alert">{view.error}{view.error === inUseShown && <> <InUseSteps /></>}</p>;
   const methodsPart = view.kind === "signed-in" && view.methods !== null && (
-    <div className="settings-item account-methods">
-      <div className="account-method-row" title={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}>
-        <span className="settings-label">{t("Ways to sign in")}{bridge === null && <span className="visually-hidden"> {t("Add another way to sign in from the Ovis desktop app.")}</span>}</span>
-        <ul className="account-method-list">
-          {view.methods.map((method) => (
-            <li key={method.provider} className="account-method account-chip" data-provider={method.provider} title={PROVIDER_NAMES[method.provider]}>
-              <ProviderMark provider={method.provider} />
-              <span className="visually-hidden">{t("{provider}, connected", { provider: PROVIDER_NAMES[method.provider] })}</span>
-              <Check className="account-chip-icon" aria-hidden="true" />
-              {/* the method this device signed in with stays: removing it would end this sign-in. */}
-              {view.methods !== null && view.methods.length > 1 && method.provider !== view.provider && (
-                <button type="button" className="account-chip-remove" title={t("Remove {provider}", { provider: PROVIDER_NAMES[method.provider] })} onClick={() => removeMethod(method.provider)}>
-                  <X aria-hidden="true" /><span className="visually-hidden">{t("Remove {provider}", { provider: PROVIDER_NAMES[method.provider] })}</span>
-                </button>
-              )}
-            </li>
-          ))}
-          {unlinked.map((provider) => (
-            <li key={provider}>
-              <button type="button" className="account-chip account-chip-add" data-provider={provider} title={t("Add {provider}", { provider: PROVIDER_NAMES[provider] })} onClick={() => addMethod(provider)}>
-                <Plus className="account-chip-icon" aria-hidden="true" /><ProviderMark provider={provider} />
-                <span className="visually-hidden">{t("Add {provider}", { provider: PROVIDER_NAMES[provider] })}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
+    <AccountMethods methods={view.methods.identities} history={view.methods.history} current={view.provider}
+      offered={bridge === null ? [] : providers} hint={bridge === null ? t("Add another way to sign in from the Ovis desktop app.") : undefined}
+      onAdd={(provider) => addMethod(provider)} onRemove={(provider) => removeMethod(provider)}>
       {reauthShown !== null && reauthShown.action !== "delete" && (
         <div className="account-reauth" role="alert">
           <p className="settings-description">{bridge === null
@@ -1856,7 +1836,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
           {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
         </div>
       )}
-    </div>
+    </AccountMethods>
   );
 
   // signed out where the relay tab signs in: no card here, only why the last sign-in ended
