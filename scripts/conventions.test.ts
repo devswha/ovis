@@ -592,6 +592,7 @@ describe("demo transport", () => {
     "/api/account/relay-account": "relay pass: named by a signed-in owner's account screen, which the demo never reaches (no sign-in there)",
     "/api/account/ssh-add": "adding another PC to the account over SSH: this PC's own window, signed in, after a setup job reached that PC's own Ovis; the demo has no sign-in and no SSH",
     "/api/account/one-press": "one-press PC add: only with the release flag on and after the account service admitted the PC, which the demo never reaches (no sign-in there)",
+    "/api/account/move": "moving a PC requires its own window and an account sign-in, neither of which the demo offers",
     "/api/devices/pair/cancel": "called by the plugin's terminal `link --code` only (scripts/plugin-link.ts); no screen of the app asks for it",
     "/api/auth": "the demo is never locked (/api/health says authenticated), so neither the token form nor sign-out runs",
     "/api/bridge": "a remote PC's bridge endpoint, asked by another server, never by the browser",

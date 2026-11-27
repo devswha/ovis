@@ -112,6 +112,10 @@ export interface Settings {
   terminalAttachButton: boolean;
   terminalKeyboardOnRequest: boolean;
   terminalFoldKeyBar: boolean;
+  /** a terminal's password prompt is answered in a masked field of its own (SecretInput) instead of the grid; null, not
+   *  chosen: on a touch screen, where the keyboard would learn and complete what is typed, and off with a mouse, where
+   *  the grid takes it as any terminal does (secretFieldOn). The chat lens has no grid and always shows the field. */
+  terminalSecretField: boolean | null;
   /** a pane whose grid this device does not size and is wider than this screen (a mirrored pane: a Windows
    *  PC, no terminal attach; an attached pane it only watches, or holds under the keyboard, at the grid
    *  another device gave the pty) is drawn folded to the screen's width (lib/terminalFold.ts); false draws
@@ -219,7 +223,7 @@ type TelemetrySourceSettings = Omit<Settings,
   | "agentHarnessTool"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "markdownStyle" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
-  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
+  | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "terminalSecretField" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
   return JSON.stringify(value) !== JSON.stringify(defaultValue);
@@ -296,6 +300,7 @@ export const SETTING_SCOPE = {
   terminalAttachButton: "device",
   terminalKeyboardOnRequest: "device",
   terminalFoldKeyBar: "device",
+  terminalSecretField: "device",
   terminalMirrorWrap: "device",
   // a desk that follows herdr's focus must not move a phone open on another pane
   followHerdrFocus: "device",
@@ -373,6 +378,7 @@ export const DEFAULT_SETTINGS: Settings = {
   terminalAttachButton: false,
   terminalKeyboardOnRequest: false,
   terminalFoldKeyBar: false,
+  terminalSecretField: null,
   terminalMirrorWrap: null,
   releasePaneAway: false,
   followHerdrFocus: false,
@@ -596,6 +602,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     terminalAttachButton: record["terminalAttachButton"] === true,
     terminalKeyboardOnRequest: record["terminalKeyboardOnRequest"] === true,
     terminalFoldKeyBar: record["terminalFoldKeyBar"] === true,
+    terminalSecretField: typeof record["terminalSecretField"] === "boolean" ? record["terminalSecretField"] : null,
     terminalMirrorWrap: typeof record["terminalMirrorWrap"] === "boolean" ? record["terminalMirrorWrap"] : null,
     releasePaneAway: typeof record["releasePaneAway"] === "boolean" ? record["releasePaneAway"] : DEFAULT_SETTINGS.releasePaneAway,
     followHerdrFocus: typeof record["followHerdrFocus"] === "boolean" ? record["followHerdrFocus"] : DEFAULT_SETTINGS.followHerdrFocus,
@@ -688,6 +695,7 @@ const LEGACY_TERMINAL_IMAGES_STORAGE_KEY = "ovis:terminal-images";
 export const TERMINAL_ATTACH_BUTTON_STORAGE_KEY = "ovis:terminal-attach-button";
 export const TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY = "ovis:terminal-keyboard-on-request";
 export const TERMINAL_FOLD_KEY_BAR_STORAGE_KEY = "ovis:terminal-fold-key-bar";
+export const TERMINAL_SECRET_FIELD_STORAGE_KEY = "ovis:terminal-password-field";
 export const REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY = "ovis:reuse-external-link-tab";
 export const FILES_PANEL_STORAGE_KEY = "ovis:files-panel";
 export const COMPOSER_PASTE_SEND_STORAGE_KEY = "ovis:composer-paste-send";
@@ -768,6 +776,7 @@ const SEPARATE_STORAGE_KEYS: readonly (readonly [keyof Settings, string])[] = [
   ["terminalAttachButton", TERMINAL_ATTACH_BUTTON_STORAGE_KEY],
   ["terminalKeyboardOnRequest", TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY],
   ["terminalFoldKeyBar", TERMINAL_FOLD_KEY_BAR_STORAGE_KEY],
+  ["terminalSecretField", TERMINAL_SECRET_FIELD_STORAGE_KEY],
 ];
 
 function coarsePointer(): boolean {
@@ -784,6 +793,10 @@ export function phoneInboxOn(settings: Pick<Settings, "phoneInbox">): boolean {
 
 export function enterSendsOn(settings: Pick<Settings, "enterSends">, touch: boolean): boolean {
   return settings.enterSends ?? !touch;
+}
+
+export function secretFieldOn(settings: Pick<Settings, "terminalSecretField">, touch: boolean): boolean {
+  return settings.terminalSecretField ?? touch;
 }
 
 export function loadSettings(): Settings {
@@ -823,6 +836,7 @@ export function loadSettings(): Settings {
     terminalAttachButton: readBool(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
     terminalKeyboardOnRequest: readBool(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest),
     terminalFoldKeyBar: readBool(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar),
+    terminalSecretField: readChosen(TERMINAL_SECRET_FIELD_STORAGE_KEY),
     customThemes: sanitizeCustomThemes(readStorageJson(CUSTOM_THEMES_STORAGE_KEY)),
     markdownStyle: savedMarkdownStyle(() => window.localStorage),
   };
@@ -936,12 +950,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const onStorage = (event: StorageEvent): void => {
-      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== VOICE_ENGINE_STORAGE_KEY && event.key !== PHONE_TABS_STORAGE_KEY && event.key !== null)) return;
+      if (event.storageArea !== window.localStorage || (event.key !== SETTINGS_STORAGE_KEY && event.key !== ENTER_SENDS_STORAGE_KEY && event.key !== VOICE_ENGINE_STORAGE_KEY && event.key !== PHONE_TABS_STORAGE_KEY && event.key !== TERMINAL_SECRET_FIELD_STORAGE_KEY && event.key !== null)) return;
       // the recognition another tab chose: audio must not keep going where this tab last sent it; the phone's tab
-      // placement is the device's, so a tab still open moves its row with the one that changed it
-      const { shortcutOverrides, enterSends, voiceEngine, phoneTabs } = loadSettings();
-      stored.current = { ...stored.current, shortcutOverrides, enterSends, voiceEngine, phoneTabs };
-      advance({ ...held.current, shortcutOverrides, enterSends, voiceEngine, phoneTabs });
+      // placement is the device's, so a tab still open moves its row with the one that changed it; so does where a
+      // password is typed
+      const { shortcutOverrides, enterSends, voiceEngine, phoneTabs, terminalSecretField } = loadSettings();
+      stored.current = { ...stored.current, shortcutOverrides, enterSends, voiceEngine, phoneTabs, terminalSecretField };
+      advance({ ...held.current, shortcutOverrides, enterSends, voiceEngine, phoneTabs, terminalSecretField });
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

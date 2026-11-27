@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from "bun:test";
 import { act } from "react";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
-import type { RelayStatus } from "../../shared/protocol.ts";
+import type { AccountMoveRequest, AccountMoveStatus, RelayStatus } from "../../shared/protocol.ts";
+import { MOVE_STATUS_MS } from "../lib/account/movePc.ts";
+import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
 import { beginSignIn, finishOwnSignIn } from "../lib/account/signin.ts";
 import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
@@ -441,9 +444,19 @@ describe("the relay tab's Sign in in the desktop app", () => {
   let answer: ReturnType<typeof Promise.withResolvers<string>>;
   /** the account this PC says it is in (/api/account/status) */
   let pcAccountId: string | null;
+  let moveRequest: (body: AccountMoveRequest) => Response | Promise<Response>;
+  /** what this PC says of its move (GET /api/account/move) */
+  let moveStatus: AccountMoveStatus;
+  /** the PC cannot say how its move stands */
+  let moveStatusFails: boolean;
+  let refuseAdmit: boolean;
 
   beforeEach(() => {
     pcAccountId = null;
+    refuseAdmit = false;
+    moveRequest = () => Response.json({}, { status: 404 });
+    moveStatus = { into: null };
+    moveStatusFails = false;
     fake = new FakeAccountService();
     fake.offerLinkPage(["google"]);
     opened = Promise.withResolvers<string>();
@@ -458,6 +471,10 @@ describe("the relay tab's Sign in in the desktop app", () => {
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7317");
       if (url.pathname === "/api/account/status") return Response.json({ account: pcAccountId, unlinked: [] });
+      if (url.pathname === "/api/account/move") return typeof init?.body === "string" ? moveRequest(JSON.parse(init.body))
+        : moveStatusFails ? Response.json({ error: { code: "busy", message: "Try again" } }, { status: 503 }) : Response.json(moveStatus);
+      if (url.pathname === "/api/account/pc-proof") return Response.json({});
+      if (refuseAdmit && url.pathname.endsWith("/admit")) return Response.json({ error: { code: "pc_add_cap", message: "Add limit reached" } }, { status: 429 });
       if (url.origin !== SERVICE) return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
       return fake.fetch(input, init);
     };
@@ -542,13 +559,135 @@ describe("the relay tab's Sign in in the desktop app", () => {
     expect(await home.promise).toBe(true);
   });
 
-  // owner #25: a sign-in that lands in another account (an identity the PC's account does not have makes a new one)
-  // stays on the tab with the sign-in buttons alone, so the right one can be picked
-  it("a sign-in through the app's loopback that lands in another account stays, with the sign-in buttons alone", async () => {
+  /** Signs in to "acct_new" on a PC in "acct_mine", presses Move, and leaves the move pending on the PC. */
+  const pendingMove = async () => {
     pcAccountId = "acct_mine";
     fake.signInAs("google", "acct_new");
+    fake.opensAll = true;
+    const { publicKey } = generateKeyPair();
+    const serverId = deriveServerId(publicKey);
+    const pending = Promise.withResolvers<void>();
+    moveRequest = (body) => {
+      if (body.stage === "prepare") return Response.json({ state: "prepare", pc: { server_id: serverId, public_key: exportPublicKey(publicKey), relay: "wss://relay.test" } });
+      moveStatus = { into: "acct_new" };
+      pending.resolve();
+      return Response.json({ state: "pending" }, { status: 202 });
+    };
+    const account = { service: SERVICE, opensAll: () => true, onOpen: () => undefined, onSignedIn: () => undefined };
+    const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
+    await page.render(tab(false));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await press("Continue with Google");
+    answer.resolve(await returned(await opened.promise));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await page.render(tab(true));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    jest.useFakeTimers();
+    await press("Move this PC to this account");
+    await act(async () => { await pending.promise; });
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    expect(buttons()).toContain("Cancel");
+  };
+  const nextRead = async () => {
+    await act(async () => { jest.advanceTimersByTime(MOVE_STATUS_MS); });
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+  };
+
+  it("a pending move whose journal went without the PC in the destination is not shown as moved", async () => {
+    try {
+      await pendingMove();
+      // the PC was taken into a third account meanwhile: that move was given up, and the guide shows again
+      moveStatus = { into: null };
+      pcAccountId = "acct_other";
+      await nextRead();
+      expect(buttons()).not.toContain("Cancel");
+      expect(buttons()).toContain("Move this PC to this account");
+      expect(text(page.container)).toContain("This PC is in another account.");
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("a move status read that fails keeps the move pending and reads again", async () => {
+    try {
+      await pendingMove();
+      moveStatusFails = true;
+      await nextRead();
+      expect(buttons()).toContain("Cancel");
+      moveStatusFails = false;
+      moveStatus = { into: null };
+      pcAccountId = "acct_new";
+      await nextRead();
+      expect(buttons()).not.toContain("Cancel");
+      expect(buttons()).not.toContain("Move this PC to this account");
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("refreshes a pending move until it settles, then offers neither Move nor Cancel", async () => {
+    pcAccountId = "acct_mine";
+    fake.signInAs("google", "acct_new");
+    fake.opensAll = true;
+    const { publicKey } = generateKeyPair();
+    const serverId = deriveServerId(publicKey);
+    const pending = Promise.withResolvers<void>();
+    moveRequest = (body) => {
+      if (body.stage === "prepare") return Response.json({ state: "prepare", pc: { server_id: serverId, public_key: exportPublicKey(publicKey), relay: "wss://relay.test" } });
+      moveStatus = { into: "acct_new" };
+      pending.resolve();
+      return Response.json({ state: "pending" }, { status: 202 });
+    };
+    const account = { service: SERVICE, opensAll: () => true, onOpen: () => undefined, onSignedIn: () => undefined };
+    const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
+    await page.render(tab(false));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await press("Continue with Google");
+    answer.resolve(await returned(await opened.promise));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    await page.render(tab(true));
+    await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    jest.useFakeTimers();
+    try {
+      await press("Move this PC to this account");
+      await act(async () => { await pending.promise; });
+      await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+      expect(buttons()).toContain("Cancel");
+      // the PC finishes the move by itself; the open dialog reads that and leaves the guide
+      moveStatus = { into: null };
+      pcAccountId = "acct_new";
+      await act(async () => { jest.advanceTimersByTime(MOVE_STATUS_MS); });
+      await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
+    } finally { jest.useRealTimers(); }
+    expect(buttons()).not.toContain("Move this PC to this account");
+    expect(buttons()).not.toContain("Cancel");
+  });
+
+  it.each([false, true])("offers an explicit move when the PC is in a different account (refused admit: %s)", async (refused) => {
+    pcAccountId = "acct_mine";
+    refuseAdmit = refused;
+    fake.signInAs("google", "acct_new");
+    fake.opensAll = true;
+    const settled = Promise.withResolvers<void>();
+    const { publicKey } = generateKeyPair();
+    const serverId = deriveServerId(publicKey);
+    moveRequest = (body) => {
+      expect(body.into).toBe("acct_new");
+      switch (body.stage) {
+        case "prepare":
+          expect(fake.pcs("acct_new")).toHaveLength(0);
+          return Response.json({ state: "prepare", pc: { server_id: serverId, public_key: exportPublicKey(publicKey), relay: "wss://relay.test" } });
+        case "cancel":
+          expect(refused).toBe(true);
+          expect(fake.pcs("acct_new")).toMatchObject([{ server_id: serverId }]);
+          settled.resolve();
+          return Response.json({ state: "aborted", reason: "cancelled", account: "acct_new" });
+        case undefined:
+          expect(refused).toBe(false);
+          expect(fake.pcs("acct_new")).toMatchObject([{ server_id: serverId, admitted_at: expect.any(String) }]);
+          pcAccountId = "acct_new";
+          settled.resolve();
+          return Response.json({ state: "moved", account: "acct_new" });
+      }
+    };
     const home = Promise.withResolvers<boolean>();
-    const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: (goesHome: boolean) => home.resolve(goesHome) };
+    const account = { service: SERVICE, opensAll: () => true, onOpen: () => undefined, onSignedIn: (goesHome: boolean) => home.resolve(goesHome) };
     const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
     await page.render(tab(false));
     await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
@@ -557,11 +696,15 @@ describe("the relay tab's Sign in in the desktop app", () => {
     expect(await home.promise).toBe(false);
     await page.render(tab(true));
     await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
-    expect(buttons()).toContain("Continue with Google");
+    expect(buttons()).toContain("Move this PC to this account");
     expect(buttons()).not.toContain("Add from account");
     expect(text(page.container)).not.toContain("Sign in to this PC's account.");
     expect(text(page.container)).not.toContain("If that account is not yours");
     expect(text(page.container)).not.toContain("This PC is in an account.");
+    await press("Move this PC to this account");
+    await act(async () => { await settled.promise; });
+    expect(buttons().includes("Move this PC to this account")).toBe(refused);
+    if (refused) expect(text(page.container)).toContain("remove it there if you don't want it.");
   });
 
   it("keeps no sign-in that comes back after Cancel", async () => {

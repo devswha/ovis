@@ -90,7 +90,7 @@ export async function memberRow(account: string) {
  * of createServer. `relayPort`: a relay the test runs on this machine (relay/bun.ts), which its relay links to and comes
  * online on, over plain ws at its `wss://` name, in place of a socket that never opens.
  */
-export async function pairingPc(options: { rows?: readonly { created_at: string }[]; accountFetch?: (request: Request, service: FakeAccountService) => Promise<Response>; accountService?: string; server?: Partial<Parameters<typeof createServer>[0]>; prepare?: (stateDir: string) => void; startRelay?: boolean; relayPort?: number } = {}) {
+export async function pairingPc(options: { rows?: readonly { created_at: string }[]; accountFetch?: (request: Request, service: FakeAccountService) => Promise<Response>; accountService?: string; server?: Partial<Parameters<typeof createServer>[0]>; prepare?: (stateDir: string) => void; startRelay?: boolean; relayPort?: number; relayPass?: boolean } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-pairing-"));
   const first = options.rows?.[0];
   if (first) writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: first.created_at, devices: options.rows }), { mode: 0o600 });
@@ -98,7 +98,10 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
   const account = new FakeAccountService();
   const accountFetch = options.accountFetch;
   const port = options.relayPort;
-  const service = port === undefined ? new RelayService({ stateDir, relay: "wss://relay.test", connect: () => idleSocket() })
+  // `relayPass`: the relay keeps a pass from the test account service, as a PC on one of Ovis's relays does
+  const pass = options.relayPass ? { accountService: "https://account.test", ovisRelays: ["wss://relay.test"],
+    accountFetch: (request: Request) => accountFetch ? accountFetch(request, account) : account.fetch(request) } : {};
+  const service = port === undefined ? new RelayService({ stateDir, relay: "wss://relay.test", connect: () => idleSocket(), ...pass })
     : new RelayService({ stateDir, relay: `wss://127.0.0.1:${port}`, connect: (url) => { const target = new URL(url); return new WebSocket(`ws://127.0.0.1:${port}${target.pathname}${target.search}`); } });
   const app = createServer({ ...options.server, port: 0, hostname: "127.0.0.1", stateDir, token: options.server?.token ?? "", tailscaleOwner: null, sidecar: false, relay: service,
     accountService: { url: options.accountService ?? "https://account.test", fetch: accountFetch ? (request) => accountFetch(request, account) : account.fetch } });

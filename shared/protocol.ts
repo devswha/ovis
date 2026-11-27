@@ -1,5 +1,5 @@
 import type { HerdrKeys } from "./herdr-keys.ts";
-import type { ACCOUNT_OPENS_ALL_CAPABILITY, BlockReceipt, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen } from "./account-devices-api.ts";
+import type { ACCOUNT_OPENS_ALL_CAPABILITY, BlockReceipt, DeviceNotice, NoticeAnswer, NoticeReplay, NoticeSeen, SignInMethod } from "./account-devices-api.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -33,6 +33,30 @@ export type {
   TabInfo,
   WorkspaceInfo,
 } from "./herdr-api.generated.ts";
+
+/** POST /api/account/move, from the PC's own window. Prepare persists intent before the window lists the PC. */
+export interface AccountMoveRequest {
+  readonly into: string;
+  readonly stage?: "prepare" | "cancel";
+  readonly provider?: SignInMethod;
+}
+export type AccountMoveAnswer =
+  | { readonly state: "prepare"; readonly pc: { readonly server_id: string; readonly public_key: string; readonly relay: string; readonly name?: string } }
+  | { readonly state: "moved" | "sign_in"; readonly account: string }
+  | AccountMoveAborted
+  | { readonly state: "pending" };
+
+export interface AccountMoveAborted {
+  readonly state: "aborted";
+  readonly account: string;
+  readonly reason: "cancelled" | "relay_limit" | "list_account" | "listing_changed" | "binding_changed";
+}
+
+/** GET /api/account/move, from the PC's own window. */
+export interface AccountMoveStatus {
+  readonly into: string | null;
+  readonly aborted?: AccountMoveAborted;
+}
 
 import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo, WorkspaceWorktreeInfo } from "./herdr-api.generated.ts";
 

@@ -19,6 +19,7 @@ import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.
 import { isWssOrigin } from "./relay-offer.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
+import { RELAY_PASS_LIFETIME_S, RELAY_PASS_REFRESH_S, RELAY_PASS_SKEW_S, signRelayPass } from "./relay-pass.ts";
 import { isListKeyEncoding, isListPoint } from "./account-list-entry.ts";
 import { verifyInviteRedeem, verifyLineProof } from "./account-list-invite.ts";
 import { MIGRATION_CARRIED_MAX, linkBytes } from "./account-list-migrate.ts";
@@ -358,6 +359,11 @@ export class FakeAccountService {
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
   /** box(server_id, account): when the PC left that account by its own proof */
   private readonly pcLeaves = new Map<string, number>();
+  private readonly relaySlots = new Map<string, Map<string, number>>();
+  private readonly relayIssues = new Map<string, { day: number; count: number }>();
+  private passKey?: Promise<CryptoKeyPair>;
+  /** Null imitates a service with no relay-pass issuer; otherwise, slots per account. */
+  relayPassSlots: number | null = null;
   private readonly admissionList: FakeAdmission[] = [];
   /** quiet admissions: only an app's own sign-in posts one, and only a PC the account lists reads them */
   private readonly quietList: FakeAdmission[] = [];
@@ -1004,7 +1010,8 @@ export class FakeAccountService {
       if (entry === undefined) return problem(400, "unknown_pc", "List PCs of this account only");
       if (this.askingExpired(entry)) return problem(409, "listing_expired", "This PC asked to join more than ten minutes ago; start adding it again on the PC");
       if (this.cardExpired(admitted, account, entry)) return problem(409, "listing_expired", "This PC's card ran out; a new invite opens it again");
-      if (open !== undefined && !open.taken && this.now() - open.at <= ADMISSION_TTL_MS && entry.new_until != null) {
+      // as the service's RETRY_OF: the admission made for this listing within ten minutes answers again, taken or not
+      if (open !== undefined && (open.listing === undefined || open.listing === entry.listing_id) && this.now() - open.at <= ADMISSION_TTL_MS && entry.new_until != null) {
         return json({ server_id: admitted, account, admitted_at: new Date(open.at).toISOString(), new_until: entry.new_until });
       }
       // C4: the account's one-press adds of the last day
@@ -1355,7 +1362,9 @@ export class FakeAccountService {
 
   private async pc(request: Request, path: string): Promise<Response> {
     if (request.method !== "POST") return problem(404, "not_found", "Unknown request");
-    const body = await request.json() as Record<string, unknown>;
+    const parsed: unknown = await request.json();
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return problem(400, "invalid_request", "Send a JSON object");
+    const body = parsed as Record<string, unknown>;
     if (path === "/v1/pc/challenge") {
       const key = proofKey(body.public_key);
       if (!key || typeof body.server_id !== "string" || deriveServerId(key) !== body.server_id) return problem(401, "server_key_mismatch", "That key does not give that server_id");
@@ -1368,6 +1377,31 @@ export class FakeAccountService {
       this.challenges.set(context, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
       return json({ challenge_id: challengeId, frame });
     }
+    if (path === "/v1/pc/relay-pass") {
+      const max = this.relayPassSlots;
+      // as the service with no RELAY_PASS_SIGNING_KEY: refused before the body or the proof is read
+      if (max === null) return problem(503, "relay_pass_unavailable", "This service issues no relay passes");
+      const challenge = this.takeProof({ server_id: body.server_id, challenge_id: body.challenge_id, proof: body.proof });
+      if (!challenge) return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
+      if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
+      const id = challenge.server_id;
+      const listing = this.directories.get(body.account)?.get(id);
+      if (listing === undefined || !this.confirmed(listing)) return problem(403, "not_listed", "List this PC in that account first");
+      const now = this.now();
+      const day = Math.floor(now / 86_400_000);
+      const issued = this.relayIssues.get(id);
+      const count = issued?.day === day ? issued.count : 0;
+      if (count >= 48) return problem(429, "rate_limited", "Too many relay passes today");
+      const slots = this.relaySlots.get(body.account) ?? new Map<string, number>();
+      for (const [pc, expires] of slots) if (expires <= now) slots.delete(pc);
+      if (!slots.has(id) && slots.size >= max) return problem(409, "relay_limit", "The account has no relay slot");
+      slots.set(id, now + (RELAY_PASS_LIFETIME_S + RELAY_PASS_SKEW_S) * 1000);
+      this.relaySlots.set(body.account, slots);
+      this.relayIssues.set(id, { day, count: count + 1 });
+      this.passKey ??= crypto.subtle.generateKey("Ed25519", false, ["sign"]);
+      const pass = await signRelayPass((await this.passKey).privateKey, "face0001", id, Math.floor(now / 1000));
+      return json({ pass, expires_in: RELAY_PASS_LIFETIME_S, refresh_in: RELAY_PASS_REFRESH_S });
+    }
     if (path === "/v1/pc/complete" && this.completions) {
       const scope = completionScope({ account: body.account, listing_id: body.listing_id });
       const context = scope && typeof body.challenge_id === "string" ? completionKey(scope, body.challenge_id) : null;
@@ -1378,7 +1412,8 @@ export class FakeAccountService {
       }
       const entry = this.directories.get(scope.account)?.get(challenge.server_id);
       // the listing still current, and its own evidence: an admission of it taken (or a completion already stamped)
-      const taken = this.pcAdmissions.get(box(challenge.server_id, scope.account))?.taken === true;
+      const admission = this.pcAdmissions.get(box(challenge.server_id, scope.account));
+      const taken = admission?.taken === true && admission.listing === scope.listing_id;
       // a listing still current and confirmed, with evidence of its own: completed already, a mailbox pull of this PC since it
       // was made (so a list account's PC, which takes no one-press admission, completes on its pull), a digit admission, or a
       // one-press admission it took

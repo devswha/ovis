@@ -377,5 +377,10 @@ export const DEVICES_JA: Record<string, string> = {
   "Not added: listed with a sign-in code": "未追加: サインインコードで登録された PC",
   "{name} was listed in your account with a sign-in code and never added. It leaves your account; to add it later, start again on {name}.": "{name} はサインインコードでアカウントに登録されましたが、追加されていません。アカウントから外れます。後で追加するには {name} でやり直してください。",
   "This PC is in another account. Sign in with {provider}.": "この PC は別のアカウントに接続されています。{provider} でサインインしてください。",
+  "This PC is in another account.": "この PC は別のアカウントに接続されています。",
+  "Move this PC to this account": "この PC をこのアカウントに移す",
+  "Sign in with the PC's account": "PC のアカウントでサインイン",
+  "Couldn't move this PC. Try again.": "PC を移せませんでした。もう一度お試しください。",
+  "This PC is still listed in {account}; remove it there if you don't want it.": "この PC は {account} の PC 一覧に残っています。不要ならその一覧から削除してください。",
   "This PC is in another account. Sign in the way you used when you first added this PC.": "この PC は別のアカウントに接続されています。この PC を最初に追加したときと同じ方法でサインインしてください。",
 };
