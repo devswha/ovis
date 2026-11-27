@@ -9,7 +9,7 @@ import { kimiUsage } from "./usage-kimi.ts";
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const HOUR = 3600_000;
 
-type Reply = { status?: number; body?: unknown; headers?: Record<string, string> };
+type Reply = { status?: number; body?: unknown; raw?: string; headers?: Record<string, string>; error?: Error };
 
 let home: string;
 let now: number;
@@ -24,7 +24,8 @@ function context(env: Record<string, string | undefined> = {}): UsageContext {
       requests.push({ url, init });
       const reply = replies.get(url);
       if (!reply) throw new Error(`unexpected request ${url}`);
-      return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
+      if (reply.error) throw reply.error;
+      return new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200, headers: reply.headers });
     },
     keychain: async () => ({ status: "missing" }),
     run: async () => null,
@@ -145,6 +146,19 @@ describe("kimi usage provider", () => {
     replies.set("https://api.kimi.com/coding/v1/me", { status: 404 });
     await new UsageService(context(), [kimiUsage]).report();
     expect(requests.map((request) => request.init?.redirect)).toEqual(["error", "error"]);
+  });
+
+  it("says why the limits could not be read: a page that is not its usage, or a redirect it refused", async () => {
+    signInKimi();
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      replies.set(KIMI_USAGE, { raw: "<!DOCTYPE html><title>Just a moment...</title>" });
+      expect((await new UsageService(context(), [kimiUsage]).report()).providers[0]).toMatchObject({ problem: "failed", failure: "bad_response" });
+      // fetch with redirect: "error" rejects with a TypeError when the answer is a redirect
+      replies.set(KIMI_USAGE, { error: new TypeError("fetch failed: unexpected redirect") });
+      expect((await new UsageService(context(), [kimiUsage]).report()).providers[0]).toMatchObject({ problem: "failed", failure: "network" });
+    } finally { console.warn = warn; }
   });
 
   it("reports an expired token without asking the API", async () => {

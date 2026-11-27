@@ -4,96 +4,16 @@
  * (default ~/.kimi-code), or the global region's `kimi-code-env-<digest>.json` beside it,
  * against the managed `/usages` endpoint the CLI's own /usage command reads. The token is never
  * refreshed here: an expired one is reported, and the CLI renews its own file the next time it
- * runs. Helpers mirror server/usage.ts so this file stays self-contained.
+ * runs.
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { UsageCredits, UsageWindow } from "../shared/protocol.ts";
-import { MAX_READ_BYTES, UsageHttpError, type CredentialHome, type UsageContext, type UsageProvider } from "./usage.ts";
+import { epochMs, isoTime, number, parseJson, percent, readText, record, requestJson as usageJson, text, UsageHttpError, type CredentialHome, type Json, type UsageContext, type UsageProvider } from "./usage.ts";
 
-type Json = Record<string, unknown>;
-const record = (value: unknown): Json => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
-const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
-const number = (value: unknown): number | null => {
-  const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
-  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
-};
-const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
-
-function parseJson(source: string | null): unknown {
-  if (source === null) return null;
-  try { return JSON.parse(source); } catch { return null; }
-}
-
-function isoTime(value: unknown): string | null {
-  const n = number(value);
-  if (n !== null && n > 0) return new Date(n < 1e12 ? n * 1000 : n).toISOString();
-  const s = text(value);
-  if (!s) return null;
-  const parsed = Date.parse(s);
-  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-}
-
-function epochMs(value: unknown): number | null {
-  const iso = isoTime(value);
-  return iso === null ? null : Date.parse(iso);
-}
-
-function readText(path: string): string | null {
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, "r");
-    const buffer = Buffer.alloc(MAX_READ_BYTES + 1);
-    let size = 0;
-    for (let read = 1; read > 0 && size <= MAX_READ_BYTES; size += read) read = readSync(fd, buffer, size, buffer.length - size, null);
-    return size > MAX_READ_BYTES ? null : buffer.toString("utf8", 0, size);
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-async function readCapped(stream: ReadableStream<Uint8Array> | null): Promise<string | null> {
-  if (!stream) return "";
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_READ_BYTES) { await reader.cancel(); return null; }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function retryAfter(header: string | null): number | null {
-  if (!header) return null;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const at = Date.parse(header);
-  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
-}
-
-async function requestJson(ctx: UsageContext, url: string, init: RequestInit): Promise<Json> {
-  // the bearer token goes to Kimi's own host and nowhere a redirect names
-  const response = await ctx.fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new UsageHttpError(response.status, retryAfter(response.headers.get("retry-after")));
-  }
-  const body = await readCapped(response.body);
-  if (body === null) throw new Error(`${new URL(url).host} answered more than ${MAX_READ_BYTES} bytes`);
-  return record(JSON.parse(body));
-}
+/** A Kimi API read: the bearer token goes to Kimi's own host and nowhere a redirect names. */
+const requestJson = (ctx: UsageContext, url: string, init: RequestInit): Promise<Json> => usageJson(ctx, url, { ...init, redirect: "error" });
 
 // managed-usage.ts:8-9, constants.ts:3, region.ts:29-46
 const DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1";
