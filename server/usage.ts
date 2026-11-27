@@ -75,6 +75,8 @@ interface SignIn {
    * when it names none, or a console other than opencode.ai, so nothing is asked with its token.
    */
   opencodeOrg?: string | null;
+  /** Devin: the seat-management endpoint the key was issued against, from its credentials.toml. */
+  devinServer?: string;
 }
 
 type Found = { source: string; home?: CredentialHome } & (SignIn | { locked: true; account?: Account | null });
@@ -931,7 +933,99 @@ const opencode: UsageProvider = {
   },
 };
 
-export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode];
+// ---- Devin CLI: credentials.toml under DEVIN_DATA_DIR, <XDG data>/devin or ~/.local/share/devin ----
+
+/**
+ * Where the seat-management endpoint lives when credentials.toml names no `api_server_url`, or names
+ * one that is not a usable HTTPS origin: the key is a bearer secret, so it is sent only to a server
+ * it was written for, over HTTPS.
+ */
+const DEVIN_API_SERVER = "https://server.codeium.com";
+/** the client version reported in the request's metadata, the one OpenUsage converged on */
+const DEVIN_CLIENT_VERSION = "1.108.2";
+const DEVIN_DAY_SECONDS = 24 * 3600;
+const DEVIN_WEEK_SECONDS = 7 * 24 * 3600;
+
+/**
+ * `devin auth login` writes credentials.toml with a Windsurf-family API key
+ * (`devin-session-token$…`) and the seat-management endpoint it belongs to. The sign-in names no
+ * account: the GetUserStatus answer does (its email and user id).
+ */
+function devinSignIn(source: string | null): SignIn | null {
+  let parsed: unknown;
+  try { parsed = source === null ? null : Bun.TOML.parse(source); } catch { parsed = null; }
+  const credentials = record(parsed);
+  const token = text(credentials["windsurf_api_key"]);
+  if (!token) return null;
+  const url = URL.parse(text(credentials["api_server_url"]) ?? "");
+  const origin = url !== null && url.protocol === "https:" && url.host !== "" ? url.origin : null;
+  return { token, expiresAt: null, devinServer: origin ?? DEVIN_API_SERVER };
+}
+
+/**
+ * One quota window from the seat-management answer. Devin reports the share each window has LEFT,
+ * which the meter inverts into used. Proto3 JSON omits zero-valued fields, so a window whose reset
+ * is present but whose share is absent has nothing left; a share present but unreadable is a schema
+ * change, and the window is left out rather than reported at a made-up number.
+ */
+function devinWindow(planStatus: Json, remainingKey: string, resetKey: string, seconds: number, kind: UsageWindow["kind"]): UsageWindow | null {
+  const resetsAt = isoTime(planStatus[resetKey]);
+  const remaining = number(planStatus[remainingKey]);
+  if (remaining === null && resetsAt === null) return null;
+  return { kind, scope: null, used_percent: percent(100 - (remaining ?? 0)), resets_at: resetsAt, starts_at: startOf(resetsAt, seconds) };
+}
+
+/**
+ * The account a GetUserStatus answer names: the user id keys the row (it survives an email change),
+ * the email labels it.
+ */
+function devinAccount(user: Json): Account | null {
+  const email = text(user["email"]);
+  const id = text(user["userId"]) ?? email;
+  return id === null ? null : { id, label: email ?? text(user["name"]) };
+}
+
+const devin: UsageProvider = {
+  id: "devin",
+  async signIns(ctx) {
+    // the data directory is XDG-based on every platform Devin ships for, as the CLI resolves it
+    const dir = ctx.env["DEVIN_DATA_DIR"] || join(ctx.env["XDG_DATA_HOME"] || join(ctx.home, ".local", "share"), "devin");
+    const signIn = devinSignIn(readText(join(dir, "credentials.toml")));
+    return signIn === null ? [] : [{ ...signIn, source: dir }];
+  },
+  async read(ctx, signIn) {
+    // the Connect-protocol call Devin's own tooling makes for account status: the API key travels
+    // inside the request's metadata envelope, not an Authorization header
+    const body = await requestJson(ctx, `${signIn.devinServer ?? DEVIN_API_SERVER}/exa.seat_management_pb.SeatManagementService/GetUserStatus`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "connect-protocol-version": "1", accept: "application/json", "user-agent": USER_AGENT },
+      body: JSON.stringify({ metadata: {
+        apiKey: signIn.token, ideName: "devin", ideVersion: DEVIN_CLIENT_VERSION,
+        extensionName: "devin", extensionVersion: DEVIN_CLIENT_VERSION, locale: "en",
+      } }),
+    });
+    const user = record(body["userStatus"]);
+    const planStatus = record(user["planStatus"]);
+    const planInfo = record(planStatus["planInfo"]);
+    const daily = devinWindow(planStatus, "dailyQuotaRemainingPercent", "dailyQuotaResetAtUnix", DEVIN_DAY_SECONDS, "day");
+    const weekly = devinWindow(planStatus, "weeklyQuotaRemainingPercent", "weeklyQuotaResetAtUnix", DEVIN_WEEK_SECONDS, "week");
+    // A plan that hides its daily window still meters it: with no weekly window the daily share is
+    // shown as the weekly one — without its reset, which would read as the week's own.
+    const windows = planInfo["hideDailyQuota"] === true
+      ? [weekly ?? (daily === null ? null : { kind: "week" as const, scope: null, used_percent: daily.used_percent, resets_at: null, starts_at: null })].filter((window): window is UsageWindow => window !== null)
+      : [daily, weekly].filter((window): window is UsageWindow => window !== null);
+    // the extra-usage wallet is a dollar balance with no window: a balance in USD major units,
+    // negative when the account owes (proto3 drops an absent field, so only a present one is shown)
+    const micros = number(planStatus["overageBalanceMicros"]);
+    return {
+      plan: text(planInfo["planName"]), windows,
+      credits: micros === null ? null : { kind: "balance", balance: micros / 1_000_000, unlimited: false, currency: "USD" },
+      account: devinAccount(user),
+    };
+  },
+};
+
+export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode, devin];
 
 /** Keychain services whose read hung (an access prompt nobody answered): not asked again. */
 const promptedServices = new Set<string>();

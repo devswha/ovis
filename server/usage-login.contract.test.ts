@@ -30,7 +30,7 @@ const ctx: UsageContext = {
 };
 beforeAll(async () => {
   mkdirSync(bin);
-  for (const provider of ["claude", "codex", "agent", "gh", "grok", "opencode"]) {
+  for (const provider of ["claude", "codex", "agent", "gh", "grok", "opencode", "devin"]) {
     writeFileSync(join(bin, provider), `#!${process.execPath}
 import { renameSync } from "node:fs";
 import { join } from "node:path";
@@ -882,6 +882,7 @@ for (const [provider, cli, argv] of [
   ["copilot", "gh", ["auth", "login", "--hostname", "github.com"]],
   ["grok", "grok", ["login", "--device-auth"]],
   ["opencode", "opencode", ["auth", "login"]],
+  ["devin", "devin", ["auth", "login"]],
 ] as const) {
   it(`starts ${provider} with official argv and the discovery home when no named homes are supported`, async () => {
     const receipt = `${cli}-receipt.json`;
@@ -909,7 +910,7 @@ it("lists every provider in discovery order without requesting upstream usage", 
   const local = new UsageLoginService(root, { PATH: bin }, { ...ctx, fetch: async () => { throw new Error("upstream usage requested"); } });
   const response = await local.handle(new Request("http://localhost/api/usage/login"));
   const result = await response.json();
-  expect(result.providers.map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode"]);
+  expect(result.providers.map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode", "devin"]);
   expect(result.providers.filter((provider: { separate_home: boolean }) => provider.separate_home).map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex"]);
 });
 
@@ -942,7 +943,7 @@ it("omits device auth when the installed Grok help does not list it", async () =
 
 it("rejects unknown providers and names for single-home providers before launching a tab", async () => {
   const bodies = [{ provider: "unknown" }, { provider: "constructor" }, { provider: "grok;id" },
-    ...["cursor", "copilot", "grok", "opencode"].flatMap((provider) => ["work", "../escape", "$(id)"].map((name) => ({ provider, name })))];
+    ...["cursor", "copilot", "grok", "opencode", "devin"].flatMap((provider) => ["work", "../escape", "$(id)"].map((name) => ({ provider, name })))];
   const responses = await Promise.all(bodies.map(start));
   expect(responses.map((response) => response.status)).toEqual(bodies.map(() => 400));
 });

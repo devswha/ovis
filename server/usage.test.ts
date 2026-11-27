@@ -1214,6 +1214,127 @@ describe("providers", () => {
     expect(requests).toHaveLength(1);
     expect(report.providers).toEqual([]);
   });
+
+  // Devin CLI keeps one sign-in per machine: credentials.toml under its XDG data directory, with a
+  // Windsurf-family key the seat-management endpoint takes inside the request's metadata envelope
+  const DEVIN_STATUS = "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus";
+
+  function signInDevin(extra = "", dir = join(home, ".local", "share", "devin")) {
+    write(join(dir, "credentials.toml"), `windsurf_api_key = "devin-session-token$test"\n${extra}`);
+  }
+
+  function devinReply(planStatus: Record<string, unknown>, user: Record<string, unknown> = {}): Reply {
+    return { body: { userStatus: { email: "me@example.com", userId: "user-1", name: "Me", planStatus, ...user } } };
+  }
+
+  it("reads Devin's daily and weekly windows, its plan, account and extra-usage balance", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({
+      planInfo: { planName: "Pro" },
+      dailyQuotaRemainingPercent: 68, dailyQuotaResetAtUnix: "1795766400",
+      weeklyQuotaRemainingPercent: "11", weeklyQuotaResetAtUnix: "1795939200",
+      overageBalanceMicros: "-318375",
+    }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage).toEqual({
+      id: "devin", key: "devin:user-1", account: "me@example.com", plan: "Pro", problem: null,
+      windows: [
+        { kind: "day", scope: null, used_percent: 32, resets_at: "2026-11-27T08:00:00.000Z", starts_at: "2026-11-26T08:00:00.000Z" },
+        { kind: "week", scope: null, used_percent: 89, resets_at: "2026-11-29T08:00:00.000Z", starts_at: "2026-11-22T08:00:00.000Z" },
+      ],
+      credits: { kind: "balance", balance: -0.318375, unlimited: false, currency: "USD" },
+      checked_at: new Date(NOW).toISOString(),
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe(DEVIN_STATUS);
+    expect(requests[0]!.init.method).toBe("POST");
+    expect(new Headers(requests[0]!.init.headers).get("connect-protocol-version")).toBe("1");
+    expect(JSON.parse(String(requests[0]!.init.body))).toEqual({ metadata: {
+      apiKey: "devin-session-token$test", ideName: "devin", ideVersion: "1.108.2",
+      extensionName: "devin", extensionVersion: "1.108.2", locale: "en",
+    } });
+    // the key is a bearer secret: the report must never carry it
+    expect(JSON.stringify((await new UsageService(context("linux"), only("devin")).report()))).not.toMatch(/devin-session-token/);
+  });
+
+  it("asks Devin's seat endpoint at the api_server_url the login recorded, never a plain-HTTP one", async () => {
+    signInDevin('api_server_url = "https://seat.example.com"');
+    replies.set("https://seat.example.com/exa.seat_management_pb.SeatManagementService/GetUserStatus", devinReply({ weeklyQuotaRemainingPercent: 50 }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage).toMatchObject({ id: "devin", windows: [{ kind: "week", used_percent: 50 }] });
+    expect(requests.map((request) => request.url)).toEqual(["https://seat.example.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"]);
+
+    rmSync(join(home, ".local", "share", "devin"), { recursive: true });
+    signInDevin('api_server_url = "http://seat.example.com"');
+    requests.length = 0;
+    replies.set(DEVIN_STATUS, devinReply({ weeklyQuotaRemainingPercent: 50 }));
+    await new UsageService(context("linux"), only("devin")).report();
+    expect(requests.map((request) => request.url)).toEqual([DEVIN_STATUS]);
+  });
+
+  it("shows Devin's daily share as the weekly one on a plan that hides it, without its own reset", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({
+      planInfo: { planName: "Max", hideDailyQuota: true },
+      dailyQuotaRemainingPercent: 40, dailyQuotaResetAtUnix: "1795766400", weeklyQuotaResetAtUnix: "1795939200",
+    }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    // the weekly window reports only a reset (proto3 drops a zero share): it wins over the daily one
+    expect(usage!.windows).toEqual([
+      { kind: "week", scope: null, used_percent: 100, resets_at: "2026-11-29T08:00:00.000Z", starts_at: "2026-11-22T08:00:00.000Z" },
+    ]);
+
+    replies.set(DEVIN_STATUS, devinReply({
+      planInfo: { planName: "Max", hideDailyQuota: true },
+      dailyQuotaRemainingPercent: 40, dailyQuotaResetAtUnix: "1795766400",
+    }));
+    const service = new UsageService(context("linux"), only("devin"));
+    now += MIN_REFRESH_MS;
+    const [again] = (await service.report(true)).providers;
+    expect(again!.windows).toEqual([{ kind: "week", scope: null, used_percent: 60, resets_at: null, starts_at: null }]);
+  });
+
+  it("reads a Devin window whose share is absent but reset is present as exhausted", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({ dailyQuotaResetAtUnix: "1795766400" }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage!.windows).toEqual([
+      { kind: "day", scope: null, used_percent: 100, resets_at: "2026-11-27T08:00:00.000Z", starts_at: "2026-11-26T08:00:00.000Z" },
+    ]);
+  });
+
+  it("lists a signed-in Devin account whose plan reports no quota", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, devinReply({ planInfo: { planName: "Pro" } }));
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage).toMatchObject({ id: "devin", key: "devin:user-1", account: "me@example.com", plan: "Pro", windows: [], problem: null });
+  });
+
+  it("lists no Devin account without a key, whatever else the credentials file says", async () => {
+    write(join(home, ".local", "share", "devin", "credentials.toml"), 'api_server_url = "https://server.codeium.com"');
+    write(join(home, ".local", "share", "devin", "credentials.toml.bak"), 'windsurf_api_key = "devin-session-token$old"');
+    expect((await new UsageService(context("linux"), only("devin")).report()).providers).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it("reads Devin's credentials.toml under DEVIN_DATA_DIR, else XDG_DATA_HOME", async () => {
+    signInDevin("", join(home, "devin-data"));
+    signInDevin("", join(home, "xdg", "devin"));
+    replies.set(DEVIN_STATUS, devinReply({ weeklyQuotaRemainingPercent: 25 }));
+    for (const env of [{ USER: "me", DEVIN_DATA_DIR: join(home, "devin-data") }, { USER: "me", XDG_DATA_HOME: join(home, "xdg") }]) {
+      requests.length = 0;
+      const [usage] = (await new UsageService({ ...context("linux"), env }, only("devin")).report()).providers;
+      expect(usage).toMatchObject({ id: "devin", problem: null });
+      expect(requests).toHaveLength(1);
+    }
+  });
+
+  it("says the Devin sign-in expired when the seat endpoint refuses its key", async () => {
+    signInDevin();
+    replies.set(DEVIN_STATUS, { status: 401 });
+    const [usage] = (await new UsageService(context("linux"), only("devin")).report()).providers;
+    expect(usage).toMatchObject({ id: "devin", problem: "expired", windows: [] });
+  });
 });
 
 describe("the service", () => {
