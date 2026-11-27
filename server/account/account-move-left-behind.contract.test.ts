@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { accountDeviceId } from "../../shared/account-records.ts";
-import { relayConnection } from "../relay/test-helpers.ts";
+import { bounded, deferred, relayConnection } from "../relay/test-helpers.ts";
 import { ask, phone, type Pc } from "./pairing.test-helpers.ts";
 import { JOIN_HOLD_MS } from "./join-hold.ts";
 import { FROM, HEADERS, INTO, MERGE, filesOf, listForPress, movePc } from "./account-move.test-helpers.ts";
@@ -28,6 +28,77 @@ test("a left-behind PC says its account was merged and clears no binding or devi
   expect(await pc.status()).toMatchObject({ account: FROM, account_merged: true });
   expect((await pc.local("/api/health")).body).toMatchObject({ account_merged: true });
   expect(filesOf(pc.stateDir, paths)).toEqual(before);
+});
+
+test("a merge first reported by a snapshot appears in account status", async () => {
+  let code = "snapshot_gone";
+  let refuse = false;
+  const { pc, services } = await setup({ accountFetch: (request, fake) =>
+    refuse && new URL(request.url).pathname === "/v1/pc/snapshot"
+      ? Promise.resolve(Response.json({ error: { code } }, { status: 410 })) : fake.fetch(request) });
+  refuse = true;
+  const snapshot = () => services.accountMailbox.snapshotPage(FROM, { snapshot: null, page: 0 });
+  expect(await snapshot()).toEqual({ snapshot_gone: true });
+  code = "account_merged";
+  await expect(snapshot()).rejects.toMatchObject({ status: 410, code });
+  expect(await pc.status()).toMatchObject({ account: FROM, account_merged: true });
+});
+
+test("a delayed snapshot success cannot hide a newer merge refusal", async () => {
+  const sent = deferred<void>();
+  const release = deferred<void>();
+  let delay = false;
+  const { pc, services } = await setup({ accountFetch: async (request, fake) => {
+    const answer = await fake.fetch(request);
+    if (delay && new URL(request.url).pathname === "/v1/pc/snapshot") {
+      delay = false;
+      sent.resolve();
+      await release.promise;
+    }
+    return answer;
+  } });
+  delay = true;
+  const earlier = services.accountMailbox.snapshotPage(FROM, { snapshot: null, page: 0 });
+  try {
+    await bounded(sent.promise);
+    pc.account.setMergeState(MERGE, "finished");
+    expect(await services.accountMailbox.mergedAway(FROM)).toBe(true);
+    expect(await pc.status()).toMatchObject({ account_merged: true });
+  } finally { release.resolve(); await earlier; }
+  expect(await pc.status()).toMatchObject({ account_merged: true });
+});
+
+test("a snapshot on the replacement binding does not count as a complete pull", async () => {
+  const sent = deferred<void>();
+  const release = deferred<void>();
+  let delay = false;
+  const { pc, services } = await setup({ accountFetch: async (request, fake) => {
+    const answer = await fake.fetch(request);
+    if (delay && new URL(request.url).pathname === "/v1/pc/mailbox") {
+      delay = false;
+      sent.resolve();
+      await release.promise;
+    }
+    return answer;
+  } });
+  await listForPress(pc, INTO);
+  expect(await services.accountMailbox.admission(INTO)).toMatchObject({ account: INTO });
+  const binding = pc.devices.standingAccountBinding();
+  const listing = pc.account.pcs(INTO)[0]?.listing_id;
+  if (!binding || !listing) throw new Error("missing binding or listing");
+  const unknown = "d".repeat(16);
+  services.accountMailbox.askedFirst(unknown, Date.now() - 1);
+  delay = true;
+  const reading = services.accountMailbox.pull();
+  try {
+    await bounded(sent.promise);
+    pc.devices.settleMovedRows({ from: FROM, merge: MERGE, at: new Date().toISOString() });
+    pc.devices.rebindAccount(binding.bind_id, { account: INTO, listing_id: listing, merge: MERGE });
+  } finally { release.resolve(); await reading; }
+  expect(pc.devices.account()).toBe(INTO);
+  expect(services.accountMailbox.unreadKey(unknown)).toBe(true);
+  await services.accountMailbox.pull();
+  expect(services.accountMailbox.unreadKey(unknown)).toBe(false);
 });
 
 test.each([

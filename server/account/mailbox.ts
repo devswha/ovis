@@ -300,6 +300,8 @@ export class AccountMailbox {
   private listingChecks = 0;
   private listingCheck: { readonly key: string; readonly verdict: Promise<ListingVerdict> } | null = null;
   private mergedBinding: string | null = null;
+  private nextObservation = 0;
+  private lastObservation = 0;
 
   constructor(private readonly options: AccountMailboxOptions) {
     ({ receipt: this.completion, owed: this.listOwed } = readCompletion(options.completionPath));
@@ -387,7 +389,8 @@ export class AccountMailbox {
       // a pull that ended with no error and read the account's rows whole: what the account let in by then has its row
       // here. A snapshot that did not commit (a page that failed, a stale answer) is no such read, unless the service
       // reads no rows by its own word (step2_off); nothing to read counts as read. A read only refuses: it lets no key in
-      if (this.error === null && read.whole) this.readBegan = began;
+      if (binding !== undefined && this.drainedAt !== null && this.error === null && read.whole
+        && this.options.devices.standingAccountBinding()?.bind_id === binding) this.readBegan = { binding, began };
       await this.sendCompletion();
       return adds;
     }).finally(() => { this.pulling = undefined; });
@@ -395,7 +398,7 @@ export class AccountMailbox {
   }
 
   /** When the last pull that read the mailbox and the account's rows without an error began (Date.now()); null before one. */
-  private readBegan: number | null = null;
+  private readBegan: { readonly binding: string; readonly began: number } | null = null;
   /** When each id this PC holds no row for first asked to sign in here (unreadKey): at most UNREAD_KEYS, in the order they asked. */
   private readonly firstAsked = new Map<string, number>();
 
@@ -428,7 +431,8 @@ export class AccountMailbox {
     if (this.options.service instanceof Error || this.pendingError !== null) return false;
     const first = this.askedFirst(deviceId, now);
     if (first === null || now - first > UNREAD_WAIT_MS) return false;
-    return this.readBegan === null || this.readBegan < first;
+    return this.readBegan === null || this.readBegan.binding !== this.options.devices.standingAccountBinding()?.bind_id
+      || this.readBegan.began < first;
   }
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
@@ -1276,14 +1280,17 @@ export class AccountMailbox {
     early.splice(0, over);
   }
 
-  /** One POST to the account service; `gone` answers 410 with null instead of throwing. */
+  /** One POST to the account service; `gone` turns an expired snapshot into null, not a merge refusal. */
   private async call(path: string, body: unknown, gone = false): Promise<Record<string, unknown> | null> {
     const response = await (this.options.fetch ?? fetch)(new Request(String(this.options.service) + path, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
       ...(path === "/v1/pc/transfer" || path === "/v1/pc/whereami" ? { redirect: "manual" as const } : {}),
     }));
-    if (gone && response.status === 410) return null;
-    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
+    if (!response.ok) {
+      const code = await refusalCode(response);
+      if (gone && response.status === 410 && code !== "account_merged") return null;
+      throw new AccountServiceRefusal(response.status, code, path, retryAfterSeconds(response.headers.get("retry-after")));
+    }
     return await response.json() as Record<string, unknown>;
   }
 
@@ -1308,14 +1315,20 @@ export class AccountMailbox {
   private async proved(identity: RelayIdentity, path: string, body: Record<string, unknown>, gone = false, completion?: CompletionScope): Promise<Record<string, unknown> | null> {
     const watch = path === "/v1/pc/mailbox" || path === "/v1/pc/snapshot" || path === "/v1/pc/complete";
     const binding = watch ? this.options.devices.standingAccountBinding() : null;
-    const current = () => binding !== null && binding.account === body.account
+    const proof = await this.prove(identity, completion);
+    const observation = ++this.nextObservation;
+    const current = () => observation > this.lastObservation && binding !== null && binding.account === body.account
       && this.options.devices.standingAccountBinding()?.bind_id === binding.bind_id && this.options.identity()?.server_id === identity.server_id;
     try {
-      const answer = await this.call(path, { server_id: identity.server_id, ...await this.prove(identity, completion), ...body }, gone);
-      if (answer !== null && this.mergedBinding !== null && current()) this.mergedBinding = null;
+      const answer = await this.call(path, { server_id: identity.server_id, ...proof, ...body }, gone);
+      if (answer !== null && current()) {
+        this.lastObservation = observation;
+        this.mergedBinding = null;
+      }
       return answer;
     } catch (error) {
       if (error instanceof AccountServiceRefusal && error.path === path && error.status === 410 && error.code === "account_merged" && current()) {
+        this.lastObservation = observation;
         this.mergedBinding = binding?.bind_id ?? null;
       }
       throw error;

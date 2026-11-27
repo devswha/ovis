@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { exportAccountKey, newRecordId, pcAddSigningBytes, signAccountRecord, signSafetyRecord, type AccountRecord, type PcAddPurpose } from "./account-records.ts";
@@ -8,6 +8,7 @@ import { toBase64Url } from "./relay-pair-sas.ts";
 import { answerServerChallenge, deriveServerId, serverChallenge, verifyServerProof, type ProofRoute } from "./relay-server-proof.ts";
 import { signInviteRedeem, type InviteRedeem } from "./account-list-invite.ts";
 import { newInvite, readJoinLine } from "./account-list-join.ts";
+import { signGenesis } from "./account-list.ts";
 
 /** How a PC on the test service reads a join line: lines for that service only, and none that names a list. */
 const READER = { service: "https://account.test", followsLists: false } as const;
@@ -966,6 +967,61 @@ describe("PC account transfers", () => {
     };
     return { service, machine, directory, call, transfer: (body: object = {}) => call("transfer", { merge_id, ...body }) };
   }
+
+  test.each([[null], [[]], [42]])("PC routes refuse a non-object JSON body (%j)", async (body) => {
+    const service = new FakeAccountService();
+    for (const path of ["challenge", "transfer", "whereami", "mailbox", "admission", "snapshot", "complete"]) {
+      expect((await service.fetch(post(`/v1/pc/${path}`, body))).status).toBe(400);
+    }
+  });
+
+  test.each([[false], [true]])("a concurrent transfer receipt checks the destination listing (removed: %s)", async (removed) => {
+    const { service, machine, transfer } = await setup();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const verify = crypto.subtle.verify.bind(crypto.subtle);
+    let delayed = false;
+    const spy = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+      const [, , , data] = args;
+      if (!delayed && data instanceof Uint8Array && new TextDecoder().decode(data.subarray(0, 20)) === "ovis-invite-redeem/1") {
+        delayed = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return verify(...args);
+    });
+    const earlier = transfer();
+    try {
+      await entered.promise;
+      const first = await transfer();
+      expect(first.status).toBe(200);
+      if (removed) {
+        const remove = await service.fetch(new Request(`${BASE}/v1/pcs/${machine.serverId}`, {
+          method: "DELETE", headers: { authorization: `Bearer ${service.issueToken(into, { twoStep: true })}` },
+        }));
+        expect(remove.status).toBe(204);
+      }
+      release.resolve();
+      const concurrent = await earlier;
+      expect(concurrent.status).toBe(removed ? 409 : 200);
+      expect(await concurrent.json()).toEqual(removed ? { error: expect.objectContaining({ code: "merge_closed" }) } : await first.json());
+    } finally { release.resolve(); await earlier; spy.mockRestore(); }
+  });
+
+  test.each([from, into])("a signed list created for %s after ticket creation prevents transfer", async (account) => {
+    const { service, directory, machine, transfer } = await setup();
+    service.listAccounts = "*";
+    const owner = await client();
+    const encryption = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+    const entry = await signGenesis({
+      kind: "genesis", account, enc: await exportAccountKey(encryption.publicKey), opens: "a".repeat(64), sealed: null,
+    }, { key: owner.spki, privateKey: owner.pair.privateKey }, Math.floor(Date.now() / 1000));
+    expect((await service.fetch(post("/v2/lists", { entry: entry.text }, service.issueToken(account)))).status).toBe(201);
+    const refused = await transfer();
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: { code: "list_account" } });
+    expect([await directory(from), await directory(into)]).toEqual([[machine.serverId], []]);
+  });
 
   test("a transfer moves a PC's listing in one step and the new listing can be completed", async () => {
     const { service, machine, directory, transfer, call } = await setup();

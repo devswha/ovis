@@ -1369,7 +1369,8 @@ export class FakeAccountService {
 
   private async pc(request: Request, path: string): Promise<Response> {
     if (request.method !== "POST") return problem(404, "not_found", "Unknown request");
-    const body = await request.json() as Record<string, unknown>;
+    const body: unknown = await request.json().catch(() => null);
+    if (!isRecord(body)) return problem(400, "invalid_body", "Send a JSON object");
     if (path === "/v1/pc/challenge") {
       const key = proofKey(body.public_key);
       if (!key || typeof body.server_id !== "string" || deriveServerId(key) !== body.server_id) return problem(401, "server_key_mismatch", "That key does not give that server_id");
@@ -1520,10 +1521,11 @@ export class FakeAccountService {
       return invalidInvite();
     }
     const concurrent = ticket.moves.get(server_id);
-    if (concurrent) return json(concurrent);
+    if (concurrent) return this.directories.get(ticket.into)?.get(server_id)?.listing_id === concurrent.listing_id ? json(concurrent) : unavailable();
     if (this.mergeState(ticket) !== "open") return unavailable();
     if (ticket.invites.get(invite) !== null) return invalidInvite();
     if (from.get(server_id) !== entry) return notListed();
+    if (this.listOfAccount(ticket.from) || this.listOfAccount(ticket.into)) return problem(409, "list_account", "Signed-list accounts cannot merge");
     const into = this.directories.get(ticket.into) ?? new Map<string, FakePc>();
     if (this.mergeRelayLimits.has(ticket.into) || (!into.has(server_id) && into.size >= DIRECTORY_MAX)) {
       return problem(409, "relay_limit", "The destination is at its PC limit");

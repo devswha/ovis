@@ -3834,7 +3834,7 @@ export class DeviceStore {
 
   /**
    * The rows the owner is shown apart (/api/account/status, the owner's /api/health, `ovis status`): relay rows in no
-   * account, and members whose link was on their own word (`joined_by`). A row is in one of them at most.
+   * account, and members whose link was on their own word (`joined_by`). Before-merge rows are also unlinked.
    */
   accountGroups(): { unlinked: { id: string; label: string }[]; own_word: { id: string; label: string }[]; before_merge: { id: string; label: string }[] } {
     const shown = (d: StoredDevice) => ({ id: d.id, label: d.label });
