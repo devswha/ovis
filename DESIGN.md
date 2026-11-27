@@ -894,6 +894,10 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
   link to the system default; the row follows the system's own default-browser list instead, and
   only for web links (`kind` link): sign-ins, Ovis pages and mailto stay with the system default.
   The row is missing where the browser itself shows the link (a browser tab, the phone apps).
+- Antigravity (Settings → Agents) distinguishes API-key mode from account sign-in, as the
+  [Codex app's profile menu](https://developers.openai.com/codex/auth#check-authentication-or-sign-out)
+  does. Ovis uses the existing agent status line, hides the OAuth controls in that mode, and
+  does not present the API key as a subscription.
 - New agents (Settings → Agents): `claudeLaunchMode` (`--permission-mode`: `acceptEdits`,
   `auto`, `plan`, `dontAsk`, `bypassPermissions`) and `codexLaunchMode` (`readOnly`, `auto`,
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
