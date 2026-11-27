@@ -148,6 +148,11 @@ export const VARIANTS: Record<string, { what: string; find: string; put: string 
     find: "if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId) || this.turns.has(paneId)\n",
     put: "if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId)\n",
   },
+  "told-wait-not-counted": {
+    what: "waiting() does not count a turn whose end the agent itself tells, so a message sent to the queue is typed at once into it",
+    find: "    return this.gates.get(paneId)?.committed === true || this.turns.has(paneId)\n",
+    put: "    return this.gates.get(paneId)?.committed === true\n",
+  },
   "lost-end-ends-wait": {
     what: "turnOver() ends the Enter's wait when the turn's end can no longer be told, though no status showed that turn to finish",
     find: "    else if (!turn.gate.sawWorking) turn.gate.deadline = this.now() + this.startTimeoutMs;\n",
@@ -192,6 +197,8 @@ interface Task {
   enterMark: number;
   /** Codex app-server steer was already tried and handed back to the terminal path (nativeItem omitted on retry) */
   rpcTried?: boolean;
+  /** the agent ended the turn this send's request became before the server's answer came */
+  turnEnded?: boolean;
 }
 interface World {
   /** how many of the run's `via` steps the path has taken */
@@ -327,6 +334,16 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
     if (![...inst.records.values()].some((r) => r.paneId === w.pane && r.message.state === "queued")) w.waits = [];
   };
   const inFlight = (inst: Inst, pane: string): boolean => [...inst.records.values()].some((r) => r.paneId === pane && r.inFlight);
+  /** A message sent to the queue is typed at once only where nothing waits: a turn's end Codex's server is to tell is such a wait (waiting). */
+  const atOnceBehindToldTurn = (w: World, task: Task): void => {
+    if (checks("QueueWaitsForTurnEvidence") && task.lane === w.pane && w.told !== null) throw new Violation("QueueWaitsForTurnEvidence", `${task.id}, sent to the queue, was typed at once while Codex's server has not told the end of the turn it runs`);
+  };
+  /** The agent's turn ends: also the one a wait is for, or a request still to be answered became. */
+  const ended = (w: World): void => {
+    w.turn = null;
+    if (w.told) w.told.over = true;
+    for (const task of w.tasks) if (task.pc === "turn sent") task.turnEnded = true;
+  };
   /** Codex's own server says its thread runs no turn: only then does it take a message as a new one (Connection.startTurn). */
   const serverAtRest = (w: World): boolean => config.free || (w.turn === null && w.aq.length === 0);
   /**
@@ -334,10 +351,10 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
    * was taken as. Its start is the server's word, so no start timeout runs for it; and the server ran no turn when it took
    * the message, so every earlier Enter's turn is over
    */
-  const awaits = (w: World, inst: Inst, lane: string, by: string | null): void => {
+  const awaits = (w: World, inst: Inst, lane: string, by: string | null, over = false): void => {
     inst.awaitTurn(lane);
     if (lane !== w.pane) return;
-    w.told = { by, over: false };
+    w.told = { by, over };
     if (by === null) return;
     w.waits = w.waits.filter((wait) => wait.by === by);
     for (const wait of w.waits) { wait.timed = false; wait.late = false; }
@@ -413,7 +430,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
     else {
       // nothing more is read of a pane that has ended: only the events already sent still arrive
       if (!w0.gone) {
-        if (w0.turn !== null && !w0.blocked && (w0.aq.length === 0 || config.ownQueue)) out.push(["the agent's turn ends", (w) => { w.turn = null; if (w.told) w.told.over = true; }]);
+        if (w0.turn !== null && !w0.blocked && (w0.aq.length === 0 || config.ownQueue)) out.push(["the agent's turn ends", (w) => { ended(w); }]);
         if (w0.turn !== null && w0.aq.length > 0) out.push(["the agent takes what waits in its own queue into the turn at work", (w) => { w.turn = "queue"; w.aq = []; }]);
         if (w0.turn === null && w0.aq.length > 0) out.push(["the agent starts a turn with what waits in its own queue", (w) => { w.turn = "queue"; w.aq = []; }]);
         if (w0.turn === null && w0.aq.length === 0 && w0.others < config.others) out.push(["something else starts a turn", (w) => { w.turn = "base"; w.others++; }]);
@@ -561,6 +578,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
             throw new Violation("NoAutomaticEnterIntoQueuedTurn", `${task.id}, sent to the queue, was typed at once while the agent ${w.turn === "queue" ? "is on" : "has yet to begin"} the turn of ${w.waits[0]!.by}, whose wait is still open`);
           }
           // pending.ts: its committing, as a queued message's: PendingInputs.typedAtOnce
+          atOnceBehindToldTurn(w, task);
           inst.typedAtOnce(task.lane, false);
           enterLands(w, null, false);
           end(w, task);
@@ -572,6 +590,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
             if (config.atOnce && checks("NoAutomaticEnterIntoQueuedTurn") && w.waits.length > 0 && (w.turn === "queue" || w.aq.length > 0)) {
               throw new Violation("NoAutomaticEnterIntoQueuedTurn", `${task.id}, sent to the queue, was sent at once while the agent ${w.turn === "queue" ? "is on" : "has yet to begin"} the turn of ${w.waits[0]!.by}, whose wait is still open`);
             }
+            atOnceBehindToldTurn(w, task);
             inst.typedAtOnce(task.lane, false);
             enterLands(w, null, false);
             task.pc = "turn sent";
@@ -667,7 +686,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
       if (t0.pc === "turn sent") {
         // Connection.startTurn's answer names the turn the message became: pending.awaitTurn, then the send is settled
         add("Codex's server answers with the turn: sent, the queue waits for that turn's own end", (w, inst, task) => {
-          awaits(w, inst, task.lane, task.kind === "submit" ? null : task.id);
+          awaits(w, inst, task.lane, task.kind === "submit" ? null : task.id, task.turnEnded === true);
           if (task.kind !== "submit") inst.settle(item(inst, task.id));
           end(w, task);
         });
@@ -781,7 +800,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
         // pending.ts: the write is withheld when the pane's status moved since the read
         if (!t0.lost && (inst0.current(t0.lane) ?? "none") === t0.statusAtRead) add("Escape lands", (w, _inst, task) => {
           // Escape interrupts the turn at work; what waits in Codex's own queue then starts as a turn of its own
-          if (!config.free) { w.turn = null; if (w.told) w.told.over = true; }
+          if (!config.free) ended(w);
           task.pc = "escaped";
         });
       }

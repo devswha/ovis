@@ -58,7 +58,7 @@ every line starts with `ok` and it exits 0:
 | `turns-served` | both rules, with a Codex on the server Ovis started for it [as described](#what-the-check-assumes) | holds |
 | `turns-ahead` | `NoAutomaticEnterIntoQueuedTurn`, with a snapshot ahead of status events put back | holds |
 | `turns-other-turn` | `NoAutomaticEnterIntoQueuedTurn`, with a turn something else starts | holds |
-| `broken-*` (ten) | one rule each, on a copy of the class with one edit (`VARIANTS` in `explore.ts`) | that rule breaks |
+| `broken-*` (eleven) | one rule each, on a copy of the class with one edit (`VARIANTS` in `explore.ts`) | that rule breaks |
 | `finding-*` (one) | one rule, with one thing the real system does put back | that rule breaks: [what it has found](#what-it-has-found) |
 | `limit-*` (two) | `NoAutomaticEnterIntoQueuedTurn`, with one thing status evidence cannot tell put back | it breaks: [known limits](#what-the-check-assumes) |
 

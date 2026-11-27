@@ -68,6 +68,7 @@ breaking means the model no longer checks that rule.
 | `broken-list-after-leave.cfg` | `queueFirstMessage` lists a first message as queued though its page left since the request | `FirstMessageOnlyByItsPage` |
 | `broken-type-unanswered-data.cfg` | a message that went as data and got no answer is typed instead, as one that reached nothing is | `TypedAtMostOnce` |
 | `broken-drain-before-turn-end.cfg` | `next` gives out a message though a turn's end the agent tells is still awaited | `QueueWaitsForToldTurnEnd` |
+| `broken-no-wait-for-turn.cfg` | the queue does not go behind the turn its message became (no `pending.awaitTurn`) | `QueueWaitsForToldTurnEnd` |
 
 Each of these configs names its rule alone, because `/statechart` checks the other rules after a
 break only up to a bound.
@@ -100,7 +101,7 @@ and every `broken-*` config again.
    pane or the right to type from a connection also calls `Lose`, which is what the rules are
    stated on. A new way to type a pending message goes through `Write`.
 2. Run `PendingLease.cfg`. A break here is your change, or your edit of the model: see above.
-3. Run the eight `broken-*` configs. Each must break its rule. A new rule gets a `Break…` constant
+3. Run the nine `broken-*` configs. Each must break its rule. A new rule gets a `Break…` constant
    and a config of its own.
 4. Update the coverage record, then run `.claude/skills/verify-pending-lease/covered.sh --record`
    and `bun scripts/verify-pending-lease.ts --record`, and commit `covered.blobs` and `pins.json`
@@ -146,7 +147,7 @@ tests (`server/core/pending-left-lease.test.ts`, and one at the create route in
   then is kept on the request (`early`) and counted when the route names the pane (`at`).
 - **Wider than the code.** The queue may take up a message at any time: the agent's status and the
   turn gate of `PendingInputs` are left out, except the wait for a turn's end the agent itself
-  tells (`turnWait`), which may be told, or become untellable, at any time. Every send may ask the
+  tells (`turnWait`, beside `toldTurn`, which says that the agent runs such a turn whatever the queue registered), which may be told, or become untellable, at any time. Every send may ask the
   agent's data channel, whatever agent it is, and get any of its answers: nothing went, it went
   and was taken, it went and was taken as a turn whose end will be told, it went with no answer,
   or the agent's own server says a turn runs. Every check on the agent (its process, session,

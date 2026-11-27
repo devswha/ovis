@@ -316,11 +316,12 @@ export class PendingInputs<Owner, Lease> {
    * The agent itself tells the end of the turn the pane runs (a Codex on the server Ovis started for it: that turn's
    * turn/completed). Until `turnOver` takes the wait this gives, the queue gives out no message of the pane, whatever
    * herdr reads of it, and no start timeout decides anything for it (expire). The turn's wait is that of the Enter
-   * committed for it, or one made here for a turn the queue did not start.
+   * committed for it, or one made here for a turn the queue did not start: herdr may have read that one at work already,
+   * and its next ready reading is then that turn's end.
    */
   awaitTurn(paneId: string): object {
     const committed = this.gates.get(paneId);
-    const gate: TurnGate = committed?.committed ? committed : { by: "", committed: true, sawWorking: false, completed: false, deadline: null, since: this.now() };
+    const gate: TurnGate = committed?.committed ? committed : { by: "", committed: true, sawWorking: this.statuses.get(paneId) === "working", completed: false, deadline: null, since: this.now() };
     this.gates.set(paneId, gate);
     const turn = { gate };
     this.turns.set(paneId, turn);

@@ -458,10 +458,11 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    * `sendAnyway`: the user saw the box a refusal naming no draft showed and chose to send: only into
    * the Claude terminal and session that refusal was for (`confirmation` with no draft), and only while
    * the box still shows what they saw or reads empty. Never typed instead of agent.prompt.
+   * Answers with the end of the turn the message became, where a Codex's own server took it as one (ServedTurn).
    */
   async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {},
     clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false, agentOnly = false,
-    sendNow = false, afterWriteFailure?: () => void): Promise<void> {
+    sendNow = false, afterWriteFailure?: () => void): Promise<{ readonly over: Promise<boolean> } | void> {
     ({ text, payload } = submitFraming(text, payload, fromTerminal));
     let clearedDraft = false;
     let writeStarted = false;
@@ -769,7 +770,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           });
           if (viaData?.turn === "started") {
             noteSubmitted(paneId, text, recorded(command), viaData.at);
-            return;
+            // the pane's queue waits for this turn's own end, as it does behind a queued message sent as a turn
+            return { over: viaData.over };
           }
           if (refused !== undefined) throw refused;
           writeStarted = false;

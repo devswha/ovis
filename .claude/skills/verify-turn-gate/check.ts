@@ -39,6 +39,7 @@ export const CONFIGS: Config[] = [
   broken("observe-ignores-mark", "QueueWaitsForTurnEvidence", { free: true }),
   broken("told-end-not-awaited", "QueueWaitsForTurnEvidence", { free: true, served: true }),
   broken("lost-end-ends-wait", "QueueWaitsForTurnEvidence", { free: true, served: true }),
+  broken("told-wait-not-counted", "QueueWaitsForTurnEvidence", { free: true, served: true }),
   broken("ready-without-working", "NoAutomaticEnterIntoQueuedTurn"),
   // what the code does today: see SKILL.md, "What it has found"
   { ...small, name: "finding-late-status-events", agent: "claude", overtake: true, lateEvents: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn" },

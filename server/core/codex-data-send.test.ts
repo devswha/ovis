@@ -130,6 +130,14 @@ it("never types a message the server may have taken without answering", async ()
   expect(pane.noted).toEqual([]);
 });
 
+it("answers with the end of the turn Codex's server took a message sent at once as, for the queue to wait for", async () => {
+  const over = Promise.resolve(true);
+  const d = codexPane(undefined, true, "unsent", "t1", { turn: "started", over });
+  const answer = await d.submit("hello");
+  expect(answer && answer.over).toBe(over);
+  expect(d.typed).toEqual([]);
+});
+
 it("routes only Codex's bare /plan and /compact", () => {
   expect(commandDataRoute(sendOf("/plan", "plan"), "/plan ")).toEqual({ agent: "codex", kind: "plan" });
   expect(commandDataRoute(sendOf("/plan", "plan"), " /plan")).toBeNull();

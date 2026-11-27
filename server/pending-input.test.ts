@@ -584,6 +584,17 @@ describe("a turn whose end the agent itself tells", () => {
     expect(f.queue.waiting("p1")).toBe(false);
   });
 
+  it("counts a reading at work taken before the wait began, once the end can no longer be told", () => {
+    const f = fixture();
+    f.queue.status("p1", "working");
+    const wait = f.queue.awaitTurn("p1"); const second = f.enqueue(2);
+    f.queue.turnOver("p1", wait, false);
+    f.queue.status("p1", "idle");
+    expect(f.queue.next("p1")).toBe(second);
+    f.advance(1_000);
+    expect(second.message.state).toBe("queued");
+  });
+
   it("waits behind a turn the queue did not start, and takes no end told for a wait a later one replaced", () => {
     const f = running();
     const later = f.queue.awaitTurn("p1");
