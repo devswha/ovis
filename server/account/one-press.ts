@@ -43,15 +43,19 @@ export async function pressOnce(services: PressServices, account: string, signal
   const generation = devices.gen();
   // a relay identity reset meanwhile makes this another PC to the account service: its answer was for the old one
   const identity = relay.currentIdentity()?.server_id ?? null;
-  if (old !== null) {
+  let leftBehind = false;
+  if (old !== null && old.account !== account && old.list === undefined) {
     try {
-      if (old.account === account || old.list !== undefined || !await accountMailbox.mergedAway(old.account)) {
-        return refuse("in_account", "This PC is already in an account", 409);
-      }
-    } catch {
-      return refuse("account_unavailable", "The account service did not answer for this PC's old account", 503);
+      leftBehind = await accountMailbox.mergedAway(old.account);
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      // A failed probe does not change the refusal this PC would give without a move.
     }
-  } else if (named !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
+  }
+  if (!leftBehind) {
+    if (named !== account) return refuse("account_mismatch", SET_UP_FOR_ANOTHER, 409);
+    if (old !== null || devices.account() !== null) return refuse("in_account", "This PC is already in an account", 409);
+  }
   // an account whose signed list removed this PC takes it back on no path: only as a new PC, after a reset relay identity
   if (devices.listRemovedFrom(account)) return refuse("list_removed", LIST_REMOVED_FROM, 409);
   // an account that keeps a signed list takes a PC by that list alone: never on the account service's word

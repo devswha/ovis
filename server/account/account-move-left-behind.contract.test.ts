@@ -30,17 +30,22 @@ test("a left-behind PC says its account was merged and clears no binding or devi
   expect(filesOf(pc.stateDir, paths)).toEqual(before);
 });
 
-test("one press does not take a PC out of an account whose proved call still succeeds", async () => {
-  const { pc } = await setup();
+test.each([
+  [FROM, "account_mismatch"],
+  [INTO, "in_account"],
+] as const)("one press keeps the original refusal when named for %s and the proved call still succeeds", async (named, code) => {
+  const { pc, services } = await setup();
+  services.relay.setRelayAccount(named);
+  await listForPress(pc, INTO);
   const answer = await press(pc);
-  expect([answer.status, answer.body.error?.code, pc.devices.account()]).toEqual([409, "in_account", FROM]);
+  expect([answer.status, answer.body.error?.code, pc.devices.account()]).toEqual([409, code, FROM]);
 });
 
 test.each([
-  [404, null, 409, "in_account"],
-  [429, "try_again", 503, "account_unavailable"],
-  [503, null, 503, "account_unavailable"],
-] as const)("a proved mailbox refusal (%s) does not authorize a left-behind press", async (status, code, reply, expected) => {
+  [404, null],
+  [429, "try_again"],
+  [503, null],
+] as const)("a proved mailbox refusal (%s) does not authorize a left-behind press", async (status, code) => {
   let refuse = false;
   const { pc, services } = await setup({ accountFetch: async (request, fake) => refuse && new URL(request.url).pathname === "/v1/pc/mailbox"
     ? Response.json({ error: { code } }, { status }) : fake.fetch(request) });
@@ -53,7 +58,7 @@ test.each([
   const named = services.relay.savedRelayAccount();
   refuse = true;
   const answer = await press(pc);
-  expect([answer.status, answer.body.error?.code]).toEqual([reply, expected]);
+  expect([answer.status, answer.body.error?.code]).toEqual([409, "account_mismatch"]);
   expect(filesOf(pc.stateDir, paths)).toEqual(before);
   expect(services.relay.savedRelayAccount()).toBe(named);
 });
