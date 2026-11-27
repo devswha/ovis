@@ -136,10 +136,6 @@ export class AccountMove {
     const held = readMoveJournal(this.path);
     if (held === "unreadable") return unavailable();
     if (held && held.merge_id !== merge_id) return busy();
-    if (!held) {
-      try { if (await mailbox.listNamed(into) !== null) return listAccount(); }
-      catch { return unavailable(); }
-    }
     const standing = check();
     if (!("bind_id" in standing)) return standing;
     if (standing.bind_id !== before.bind_id || relay.currentIdentity()?.server_id !== identity.server_id || this.stopped) {
@@ -208,6 +204,10 @@ export class AccountMove {
     }
     const service = mailbox.moveService();
     if (service === null) return pending;
+    if (await mailbox.listNamed(journal.into) !== null) {
+      this.remove(journal);
+      return listAccount();
+    }
     const invite = parsed ?? await readJoinLine(journal.invite, { service, followsLists: false });
     const live = this.local(journal, relay.currentIdentity());
     if (live !== "standing") return live;
