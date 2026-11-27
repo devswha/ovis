@@ -12,6 +12,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
   } });
 });
 afterEach(() => {
@@ -368,6 +369,44 @@ it("is over once stopped: a list still being read, a later check and a later che
   expect(sweep.status.size).toBe(0);
   expect(jest.getTimerCount()).toBe(0);
   expect(localStorage.getItem("ovis-pc-check-cursor")).toBeNull();
+});
+
+it("lets the next page sweep at once when a sweep stopped, or its page went, before it opened a connection", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(2);
+  const checked: string[] = [];
+  const answered = { probe: async (device: ProbeTarget): Promise<Found> => { checked.push(device.server_id); return { kind: "offline", reason: "pc" }; } };
+  for (const leave of ["stop", "pagehide"] as const) {
+    const listed = Promise.withResolvers<RelayDevice[]>();
+    const gone = createPcSweep({ ...store, list: () => listed.promise }, { active: () => true, redraw() {} }, answered);
+    const swept = gone.check();
+    if (leave === "stop") gone.stop(); else globalThis.dispatchEvent(new Event("pagehide"));
+    listed.resolve(devices);
+    await swept;
+    expect(checked).toEqual([]);
+    const next = createPcSweep(store, { active: () => true, redraw() {} }, answered);
+    await next.check();
+    expect(checked).toEqual(devices.map((device) => device.server_id));
+    next.stop();
+    gone.stop();
+    checked.length = 0;
+    localStorage.removeItem("ovis-pc-check-at");
+    localStorage.removeItem("ovis-pc-check-cursor");
+  }
+});
+
+it("keeps the minute of a sweep that opened a connection, though its page stopped it at once", async () => {
+  jest.useFakeTimers();
+  const { store } = await savedPcs(2);
+  const { arrived, checked, probe } = heldProbe();
+  const gone = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  void gone.check();
+  await arrived(2);
+  gone.stop();
+  const next = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  await next.check();
+  expect(checked).toHaveLength(2);
+  next.stop();
 });
 
 it("lets the answers it was keeping go when stopped, with no timer left", async () => {
