@@ -113,6 +113,8 @@ describe("agentLaunch", () => {
     useApprovalHub(hub, async () => ({ version: "1.93.4", executable: join(dir, "cmd") }));
     const runtime = spyOn(served, "capabilities").mockReturnValue(served.HERDR_CORE);
     const marked = spyOn(agentToolLaunch, "markLocalAgentLaunch").mockResolvedValue(undefined);
+    // the server's own PATH lookup (#3843), not this machine's
+    const found = spyOn(shellAgent, "shellAgentExecutable").mockReturnValue(join(dir, "cmd"));
     try {
       const plain = ["--name", "a user's run"];
       const start = await launch("cmd", plain, { platform: "linux", settingsDir: dir });
@@ -130,7 +132,7 @@ describe("agentLaunch", () => {
         expect(await agentLaunch(PANE, { kind: "cmd", name: "cmd-launch-test", args: plain }, undefined, undefined, { platform: "linux", settingsDir: dir })).toEqual({ agent_started: true });
         expect(typed.mock.calls.map((call) => call[2])).toEqual([plain]);
       } finally { typed.mockRestore(); }
-    } finally { runtime.mockRestore(); marked.mockRestore(); useApprovalHub(null); hub.stop(); }
+    } finally { found.mockRestore(); runtime.mockRestore(); marked.mockRestore(); useApprovalHub(null); hub.stop(); }
   });
 
   it("starts a Codex through its launcher where the runtime runs one, and drops the launcher of a start that failed", async () => {
