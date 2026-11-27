@@ -8,7 +8,7 @@ import { INBOX_FROM_KEY, type useInbox } from "./useInbox.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import { settingsEntry, settingsSteppedOff } from "./settingsHistory.ts";
-import { onSheetTraversalOver, sheetSteppedOff, sheetTraversalPending } from "./sheetHistory.ts";
+import { onHistoryEntryMade, onSheetTraversalOver, sheetHistoryEntryKey, sheetSteppedOff, sheetTraversalPending } from "./sheetHistory.ts";
 import type { useFilePanels } from "./useFilePanels.ts";
 import type { useNewSessionState } from "./useNewSessionDialog.ts";
 import type { usePaneLens } from "./usePaneLens.ts";
@@ -24,12 +24,15 @@ export function popUnread(dispatching: Event | undefined, read: Event | null): b
   return dispatching !== undefined && dispatching.type === "popstate" && dispatching !== read;
 }
 
-function otherPane(under: Pick<AppLink, "machine" | "pane"> | null, shown: Pick<AppLink, "machine" | "pane">): boolean {
-  return under !== null && (under.machine !== shown.machine || under.pane !== shown.pane);
+function otherPane(one: Pick<AppLink, "machine" | "pane">, other: Pick<AppLink, "machine" | "pane">): boolean {
+  return one.machine !== other.machine || one.pane !== other.pane;
 }
 
-function entryKey(): string | undefined {
-  return (window as Window & { navigation?: { currentEntry?: { key: string } | null } }).navigation?.currentEntry?.key;
+/** No key: a browser that tells none (no Navigation API, and no Chromium whose entries lib/sheetHistory.ts counts) has every entry look the same. */
+const NO_KEY = "";
+
+function entryNow(): string {
+  return sheetHistoryEntryKey() ?? NO_KEY;
 }
 
 export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, newSessionPending, setHeaderNote, selectionRef }: {
@@ -101,13 +104,21 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   // the write is held back until then (heldWrite) and made right after (released).
   const readPop = useRef<Event | null>(null);
   const heldWrite = useRef(false);
-  // Refusing a sheet Back may leave the browser on another pane's entry if the return is lost.
-  // A later render still owns the pane shown, not the entry where that Back stopped.
-  const refusedEntry = useRef<{ link: Pick<AppLink, "machine" | "pane">; key: string | undefined } | null>(null);
-  const wouldOverwriteRefused = (shown: Pick<AppLink, "machine" | "pane">): boolean => {
-    const refused = refusedEntry.current;
-    return refused !== null && (refused.key === undefined || refused.key === entryKey()) && otherPane(refused.link, shown);
+  // The history entries of the place shown, by key: the one its address was last written on or a Back
+  // or Forward the app followed landed on, and every entry the page made since (a sheet's, a Settings
+  // page's, a file's: each made over what is shown). The address goes onto one of these, or onto an
+  // entry that already names the pane shown, and never onto another pane's: a traversal of the sheets'
+  // own (a Back one refused, a way back the browser dropped), or one that landed unheard, can leave
+  // the history on such an entry with this pane still shown.
+  const [ownEntries] = useState(() => new Set([entryNow()]));
+  /** Takes the entry the history is on for the place shown, and says no where it is another pane's. */
+  const takeEntry = (shown: Pick<AppLink, "machine" | "pane">): boolean => {
+    const entry = entryNow();
+    if (!ownEntries.has(entry) && otherPane(readLink(pageSearch()), shown)) return false;
+    ownEntries.add(entry);
+    return true;
   };
+  const takeEntryAlone = (): void => { ownEntries.clear(); ownEntries.add(entryNow()); };
   const [released, setReleased] = useState(0);
   const filePop = fileFromPop();
   const entryLink = fileLeft && filePop !== 0 && popStill.current !== filePop ? readLink(pageSearch()) : null;
@@ -136,7 +147,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       const written = writtenLink.current;
       if (listWritten.current && !newSessionOpen && written?.create && !popUnread(window.event, readPop.current)) {
         const link: AppLink = { ...written, create: null, machine: LOCAL_MACHINE };
-        if (wouldOverwriteRefused(link)) { heldWrite.current = true; return; }
+        if (!takeEntry(link)) { heldWrite.current = true; return; }
         writtenLink.current = link;
         const search = linkSearch(link, pageSearch());
         if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
@@ -161,7 +172,10 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
     const moved = leftInbox ? inboxEnabled && link.pane !== null : previous !== null && !autoSelected && isNavigation(previous, link);
     const navigate = !popped && !settingsOpen && !newSessionOpen && moved;
     const replaces = !navigate || (!leftInbox && (modeOn || (fileLeft && !kept)));
-    if (replaces && wouldOverwriteRefused(link)) { heldWrite.current = true; return; }
+    if (replaces && !takeEntry(link)) { heldWrite.current = true; return; }
+    // A pane that takes the place over leaves the entries of the one before behind. Under Settings
+    // it keeps them: Settings steps back onto the entry it was opened over, and the pane is said there.
+    const alone = navigate || (previous !== null && otherPane(previous, link) && !settingsOpen);
     writtenLink.current = link;
     listWritten.current = inboxShown;
     poppedTo.current = false;
@@ -173,9 +187,10 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
       const state = leftInbox ? { [NAV_KEY]: true, [INBOX_FROM_KEY]: true } : { [NAV_KEY]: true };
       if (modeOn && !leftInbox) window.history.replaceState(fileLeft ? withoutFile(window.history.state) : window.history.state, "", url);
       else if (fileLeft && !kept && !leftInbox) window.history.replaceState(state, "", url);
-      else { window.history.pushState(state, "", url); refusedEntry.current = null; }
+      else window.history.pushState(state, "", url);
       if (selectedPaneId !== null) restoreFileRef.current(selectedMachineId, selectedPaneId);
     } else window.history.replaceState(kept && !popped ? withoutFile(window.history.state) : window.history.state, "", url);
+    if (alone) takeEntryAlone();
   }, [locked, machines.length, snapshot, linkLanded, selectedMachine?.state, selectedMachineId, selectedPaneId, linkWorkspaceId, linkSlug, linkFile, fileLeft, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, newSessionOpen, newSessionMachineId, newTab, newFields, wideScreen, sidebarCollapsed, autoSelected, released, inboxShown, inboxEnabled, modeOn]);
   useEffect(() => {
     shownSelection.current = { machineId: selectedMachineId, paneId: selectedPaneId };
@@ -195,10 +210,11 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   useEffect(() => {
     const listHere = (): boolean => modeRef.current?.lands() ?? inboxRef.current.enabled;
     const onPop = (event: PopStateEvent): void => {
-      if (sheetSteppedOff()) { refusedEntry.current = { link: readLink(pageSearch()), key: entryKey() }; return; }
+      // a traversal of the sheets' own: where the browser tells no key, the entry it landed on cannot be told from the place's, so none is until one is taken
+      if (sheetSteppedOff()) { ownEntries.delete(NO_KEY); return; }
       if (settingsEntry(event.state) !== null) return;
       if (settingsSteppedOff()) { sayShown(); return; }
-      refusedEntry.current = null;
+      takeEntryAlone();
       if (newSessionPending.current && newSessionOpenRef.current && inboxRef.current.shown) { sayShown(); return; }
       const link = readLink(pageSearch());
       if (machinesRef.current.length === 0) {
@@ -244,23 +260,30 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
     const sayShown = (): void => {
       if (heldWrite.current) { poppedTo.current = true; return; }
       const shown = writtenLink.current;
-      if (shown !== null && wouldOverwriteRefused(shown)) { heldWrite.current = true; return; }
+      if (shown !== null && !takeEntry(shown)) { heldWrite.current = true; return; }
       const search = shown ? linkSearch(shown, pageSearch()) : pageSearch();
       if (search !== pageSearch()) window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, search, window.location.hash));
+    };
+    const release = (): void => {
+      if (heldWrite.current) { heldWrite.current = false; setReleased((count) => count + 1); }
     };
     const decidePop = (event: PopStateEvent): void => {
       popMoving.current = false;
       readPop.current = event;
       onPop(event);
-      if (heldWrite.current) { heldWrite.current = false; setReleased((count) => count + 1); }
+      release();
       const pop = fileFromPopRef.current();
       if (pop !== 0 && !popMoving.current) { popStill.current = pop; setPopSettled((count) => count + 1); }
     };
     window.addEventListener("popstate", decidePop);
-    const leaveTraversal = onSheetTraversalOver(() => {
-      refusedEntry.current = null;
-      if (heldWrite.current) { heldWrite.current = false; setReleased((count) => count + 1); }
+    // the sheets say the history is on the entry of what is shown, with no landing to tell it
+    const leaveTraversal = onSheetTraversalOver(() => { ownEntries.add(entryNow()); release(); });
+    // an entry the page makes is made for what is shown; where the browser tells no key, nothing tells it from the entry it was made over
+    const leaveEntries = onHistoryEntryMade(() => {
+      const key = sheetHistoryEntryKey();
+      if (key !== undefined) ownEntries.add(key);
+      release();
     });
-    return () => { window.removeEventListener("popstate", decidePop); leaveTraversal(); };
+    return () => { window.removeEventListener("popstate", decidePop); leaveTraversal(); leaveEntries(); };
   }, []);
 }

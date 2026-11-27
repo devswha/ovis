@@ -187,6 +187,17 @@ function tellTraversalOver(): void {
   for (const listener of [...traversalOver]) listener();
 }
 
+const entriesMade = new Set<() => void>();
+
+/**
+ * Calls `listener` when the page made a history entry, whoever pushed it (a sheet, Settings, a file,
+ * a move to another pane): the history is on an entry no traversal landed on, so no popstate tells of it.
+ */
+export function onHistoryEntryMade(listener: () => void): () => void {
+  entriesMade.add(listener);
+  return () => { entriesMade.delete(listener); };
+}
+
 /** The page a sheet's item leaves for (leavePageFromSheet), loaded once no step of a closing sheet is to come or on its way. */
 let departure: string | null = null;
 
@@ -391,15 +402,19 @@ if (typeof window !== "undefined") {
   history.replaceState = ((state: unknown, ...rest: [string, (string | URL | null)?]) =>
     replace(counting() ? placed(state, placeIn(history.state)) : state, ...rest)) as History["replaceState"];
   history.pushState = ((state: unknown, ...rest: [string, (string | URL | null)?]) => {
+    let made = false;
     try {
-      if (pushing) return pushEntry(state, ...rest);
-      seen = null;
-      if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
-      return pushEntry(without(state), ...rest);
+      if (!pushing) {
+        seen = null;
+        if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
+      }
+      pushEntry(pushing ? state : without(state), ...rest);
+      made = true;
     } finally {
       here = where();
       ahead = null;
       stood = null;
+      if (made) for (const listener of [...entriesMade]) listener();
     }
   }) as History["pushState"];
   here = where();
@@ -563,6 +578,10 @@ if (typeof window !== "undefined") {
   window.addEventListener("popstate", depart);
   sheetStep.holds = (event) => { hear(event as PopStateEvent); return holding; };
   if (sheetOf(window.history.state) !== null) window.history.replaceState(ordinary(window.history.state, true), "");
+}
+
+export function sheetHistoryEntryKey(): string | undefined {
+  return navigation()?.currentEntry?.key;
 }
 
 export function useSheetHistory(active: boolean, onBack: () => boolean | void, stays = false, returns = false): void {
