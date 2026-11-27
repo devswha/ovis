@@ -64,9 +64,11 @@ export class MachineForwardError extends Error {
 }
 
 interface WebForward { port: number; ssh: SshForward; retiring?: true }
+/** One opening shared by every request for the same bind and port: cancelled only once all of them left. */
+interface PendingWebForward { opening: Promise<number>; waiters: number; abort: AbortController }
 interface WebForwards {
   open: Map<string, WebForward>;
-  pending: Map<string, Promise<number>>;
+  pending: Map<string, PendingWebForward>;
   tail: Promise<unknown>;
 }
 
@@ -1968,12 +1970,21 @@ export class MachineManager {
     if (!ssh?.connected() || runtime.machine.state !== "connected") throw offline();
     const forwards: WebForwards = runtime.webForwards ??= { open: new Map(), pending: new Map(), tail: Promise.resolve() };
     const key = `${bind}:${remotePort}`;
+    // Each request waits on its own signal; an aborted one alone is told so.
+    const wait = async (entry: PendingWebForward): Promise<number> => {
+      entry.waiters++;
+      const left = Promise.withResolvers<never>();
+      left.promise.catch(() => undefined);
+      const leave = () => {
+        if (--entry.waiters === 0) entry.abort.abort();
+        left.reject(cancelled());
+      };
+      signal.addEventListener("abort", leave, { once: true });
+      try { return await Promise.race([entry.opening, left.promise]); }
+      finally { signal.removeEventListener("abort", leave); }
+    };
     const pending = forwards.pending.get(key);
-    if (pending) {
-      const port = await pending;
-      if (signal.aborted) throw cancelled();
-      return port;
-    }
+    if (pending) return wait(pending);
     const reuse = () => {
       const existing = forwards.open.get(key);
       if (existing?.retiring) return undefined;
@@ -1985,8 +1996,9 @@ export class MachineManager {
     if (forwards.pending.size >= WEB_FORWARDS_PER_MACHINE) throw new MachineForwardError("forward_busy", "Too many ports are being opened for this PC");
 
     const current = () => runtime.ssh === ssh && runtime.webForwards === forwards && runtime.machine.state === "connected" && ssh.connected();
+    const shared = new AbortController();
     const check = () => {
-      if (signal.aborted) throw cancelled();
+      if (shared.signal.aborted) throw cancelled();
       if (!current()) throw offline();
     };
     const retire = async (key: string, forward: WebForward) => {
@@ -2019,7 +2031,7 @@ export class MachineManager {
         }
         const opened = { port, ssh: tunnel };
         forwards.open.set(key, opened);
-        if (signal.aborted) {
+        if (shared.signal.aborted) {
           await retire(key, opened);
           throw cancelled();
         }
@@ -2029,9 +2041,10 @@ export class MachineManager {
         throw new MachineForwardError("forward_failed", "Ovis could not open this SSH port forward");
       }
     }).finally(() => forwards.pending.delete(key));
-    forwards.pending.set(key, opening);
+    const entry: PendingWebForward = { opening, waiters: 0, abort: shared };
+    forwards.pending.set(key, entry);
     forwards.tail = opening.catch(() => undefined);
-    return opening;
+    return wait(entry);
   }
   private pause(signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {

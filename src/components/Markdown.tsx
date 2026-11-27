@@ -291,7 +291,7 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
       case "code": {
         const file = fileUriPath(node.value);
         if (open !== null && file !== null) return <FilePathLink key={key} path={file} code open={open} />;
-        if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return <ExternalLink kind="link" key={key} className="markdown-code-link" href={node.value} data-link-machine={machineId} onClick={webClick(node.value)}><code>{node.value}</code></ExternalLink>;
+        if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return <ExternalLink kind="link" key={key} className="markdown-code-link" href={node.value} onClick={webClick(node.value)}><code>{node.value}</code></ExternalLink>;
         if (open === null || !codeIsFilePath(node.value)) return <code key={key}>{node.value}</code>;
         return node.value.includes("/") ? <FilePathLink key={key} path={node.value} code open={open} /> : <CodeFileName key={key} name={node.value} open={open} />;
       }
@@ -304,7 +304,7 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
       case "strong": return <strong key={key}><Inline nodes={node.children} interactive={interactive} /></strong>;
       case "em": return <em key={key}><Inline nodes={node.children} interactive={interactive} /></em>;
       case "del": return <del key={key}><Inline nodes={node.children} interactive={interactive} /></del>;
-      case "link": return <ExternalLink kind="link" key={key} href={node.href} title={node.title} data-link-machine={machineId} onClick={webClick(node.href)}><Inline nodes={node.children} interactive={false} standalone={standalone} /></ExternalLink>;
+      case "link": return <ExternalLink kind="link" key={key} href={node.href} title={node.title} onClick={webClick(node.href)}><Inline nodes={node.children} interactive={false} standalone={standalone} /></ExternalLink>;
       case "file": {
         const label = <Inline nodes={node.children} interactive={false} />;
         return open !== null

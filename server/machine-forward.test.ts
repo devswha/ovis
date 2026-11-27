@@ -43,7 +43,7 @@ function fixture() {
       signal: options.signal,
     }), manager, options.onRevoke, undefined, options.readOnly ?? false, undefined, undefined, undefined, undefined, options.owner ?? true);
   return {
-    send, forward, active, closed, open,
+    send, forward, active, closed, open, manager,
     get masterClosed() { return masterClosed; },
     async [Symbol.asyncDispose]() {
       await manager.stop();
@@ -176,13 +176,47 @@ it("rechecks a queued request's authority after another SSH forward finishes", a
     return () => {};
   } });
   const revoke = await subscribed.promise;
-  // The body and route have had a turn, but the first forward still owns the SSH opening slot.
-  await new Promise<void>((done) => setImmediate(done));
   revoke();
   finish.resolve();
   expect((await first).status).toBe(200);
   await refusal(queued, 499, "forward_cancelled");
   expect(f.forward).toHaveBeenCalledTimes(1);
+});
+
+it("one waiter's abort leaves the shared opening to the others", async () => {
+  await using f = fixture();
+  const binding = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  f.forward.mockImplementationOnce(async (_local, remote) => {
+    binding.resolve();
+    await finish.promise;
+    return f.open(remote);
+  });
+  // the second caller joins the pending opening synchronously inside forwardWebPort
+  const joined = Promise.withResolvers<void>();
+  const original = f.manager.forwardWebPort.bind(f.manager);
+  let calls = 0;
+  const spy = spyOn(f.manager, "forwardWebPort").mockImplementation((...args) => {
+    const answer = original(...args);
+    if (++calls === 2) joined.resolve();
+    return answer;
+  });
+  try {
+    const subscribed = Promise.withResolvers<() => void>();
+    const aborted = f.send("desk/forward", "POST", { port: 5173 }, { onRevoke: (close) => { subscribed.resolve(close); return () => {}; } });
+    await binding.promise;
+    const kept = f.send("desk/forward", "POST", { port: 5173 });
+    await joined.promise;
+    (await subscribed.promise)();
+    finish.resolve();
+    await refusal(aborted, 499, "forward_cancelled");
+    const response = await kept;
+    expect(response.status).toBe(200);
+    const [port] = f.forward.mock.calls[0]!;
+    expect(await response.json()).toEqual({ url: `http://127.0.0.1:${port}` });
+    expect(f.active.has(5173)).toBe(true);
+    expect(f.forward).toHaveBeenCalledTimes(1);
+  } finally { spy.mockRestore(); }
 });
 
 it("opens a separate IPv6 listener for a link that must keep its IPv6 address", async () => {
