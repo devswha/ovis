@@ -4477,6 +4477,12 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     }
   });
 
+  it("lets the answer say that nothing keeps the device out any more, whatever the joins said a moment before", async () => {
+    const lifted = async (join: OwnJoin) => (await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); }, approve: () => ({ held_why: null }) })).out.at(-1);
+    expect(await lifted({ ...joinOf("j1"), digits: "482913", held_why: "block", list_held: true })).toBe("Tablet one is let in; it opens this PC in a moment.\n");
+    expect(await lifted({ ...joinOf("j1"), held_why: "freeze", list_held: true })).toStartWith("Approved: Tablet one");
+  });
+
   it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
     const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
     expect(code).toBe(1);

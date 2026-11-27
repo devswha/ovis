@@ -708,17 +708,19 @@ const cannotSign = (join: OwnJoin): CannotSign | null => join.held_why !== undef
 
 /**
  * What `POST /api/relay/join` made of the six digits typed: `away` when its answer did not come. An approval this PC
- * took while it keeps that device out names why (`held_why`, as the answer says it), in place of `approved`.
+ * took names what keeps that device out as it was taken (`held_why`, null: nothing), in place of `approved`, which
+ * an Ovis that does not say it answers.
  */
-export type JoinOutcome = "approved" | { readonly held_why: string } | "wrong_digits" | "gone" | "locked" | "strict" | "away";
+export type JoinOutcome = "approved" | { readonly held_why: string | null } | "wrong_digits" | "gone" | "locked" | "strict" | "away";
 
 /**
- * The join as an approval of it was answered: a reason that keeps it out named by that answer (it may have come since
- * the join was listed) goes before the one listed; one listed still stands where the answer names none, as a device
- * wrongly told it was not let in asks again, and one wrongly told it is in waits for nothing.
+ * The join as an approval of it was answered: what keeps a join of no list out is what that answer says, which may
+ * have changed since the join was listed (null: nothing does). An answer that does not say leaves the join as listed.
  */
 function answeredJoin(join: OwnJoin, answer: { readonly held_why?: unknown }): OwnJoin {
-  return typeof answer.held_why === "string" ? { ...join, held_why: answer.held_why } : join;
+  if (join.list === true || (answer.held_why !== null && typeof answer.held_why !== "string")) return join;
+  const { held_why: _listed, list_held: _held, ...rest } = join;
+  return answer.held_why === null ? rest : { ...rest, held_why: answer.held_why };
 }
 
 export interface JoinOptions extends AnswerInput {

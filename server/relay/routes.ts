@@ -42,9 +42,10 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (verdict?.lets !== "out" || verdict.why === null) return {};
     return { held_why: verdict.why, ...verdict.why === "block" || verdict.why === "freeze" ? { list_held: true as const } : {} };
   };
-  // the answer to an approval here of a join of no list says what keeps it out as the approval was taken, which may
-  // differ from what its list said a moment before
-  const approvedHere = (join: { readonly list?: boolean } | undefined, key: string | null) => reply({ ok: true, ...join !== undefined && join.list !== true ? heldHere(key) : {} });
+  // the answer to an approval here of a join of no list says what keeps it out as the approval was taken (null:
+  // nothing), which may differ from what its list said a moment before
+  const approvedHere = (join: { readonly list?: boolean } | undefined, key: string | null) =>
+    reply({ ok: true, ...join !== undefined && join.list !== true ? { held_why: null, ...heldHere(key) } : {} });
   if (pathname === "/api/relay/pairings" && request.method === "GET") {
     setRequestRoute("/api/relay/pairings");
     if (peer.kind !== "relay") return reply({ pairings: service.approvals.list() });

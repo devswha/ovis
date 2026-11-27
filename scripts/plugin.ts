@@ -1076,7 +1076,7 @@ async function approvePairings(): Promise<number> {
           const typed = await approvalFetch("/api/relay/join", { method: "POST", headers, body: JSON.stringify({ id, digits }), signal: AbortSignal.timeout(15_000) });
           if (typed.ok) {
             const answer = await typed.json().catch(() => ({})) as { held_why?: unknown };
-            return typeof answer.held_why === "string" ? { held_why: answer.held_why } : "approved";
+            return typeof answer.held_why === "string" || answer.held_why === null ? { held_why: answer.held_why } : "approved";
           }
           const code = await errorCode(typed);
           if (code === "wrong_digits" || code === "locked" || code === "strict") return code;

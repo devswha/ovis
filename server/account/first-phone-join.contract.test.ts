@@ -93,7 +93,7 @@ async function http(pc: Pc, path: string, headers: Record<string, string>, body?
     method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string; held_why?: string; list_held?: boolean }[]; held_why?: string; error?: { code: string } } };
+  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string; held_why?: string; list_held?: boolean }[]; held_why?: string | null; error?: { code: string } } };
 }
 
 for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const) {
@@ -111,7 +111,8 @@ for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const)
     // no account member hears of it
     expect(pc.app.context.services.relay.approvals.remoteList()).toEqual([]);
     const allowed = await http(pc, "/api/relay/join", own, { id: listed.body.joins![0]!.id, decision: "approve" });
-    expect(allowed.status).toBe(200);
+    // the answer says that nothing keeps the phone out as the approval is taken
+    expect([allowed.status, allowed.body.held_why]).toEqual([200, null]);
     link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
     expect((await next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
     expect(pc.devices.hasKey(device.spki)).toBe(true);

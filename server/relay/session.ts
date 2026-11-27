@@ -775,9 +775,9 @@ export class RelaySession {
     if (this.listCard !== undefined) { void this.allowIntoList(sas, id, this.listCard).catch(() => this.close("internal_error")); return; }
     const verdict = joinVerdict(this.options.services, sas.publicKey, sas.approvedBy === undefined ? undefined : { by: sas.approvedBy, id });
     if (verdict.lets === "out") {
-      // an account join, which the account vouched for with that key, hears why, as from a list PC. A pairing names a
-      // key it never proves, so any other hears nothing of it: refused here, or below by the guard, as before
-      const cause = verdict.why !== null && this.intent === "account" ? KEPT_OUT_CAUSES[verdict.why] : null;
+      // an account join the account service admitted with that key (membersOnly) hears why, as from a list PC. A
+      // pairing names a key it never proves, so any other hears nothing of it: refused here, or below by the guard
+      const cause = verdict.why !== null && this.intent === "account" && sas.membersOnly ? KEPT_OUT_CAUSES[verdict.why] : null;
       // an approval from afar that no longer stands counts as a failed pairing (failJoin and close both count it)
       if (verdict.by === "approval") { if (cause !== null) this.failJoin(cause); else this.close("auth_failed"); return; }
       if (cause !== null) { this.endPairing(true); this.failJoin(cause); return; }
