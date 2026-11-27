@@ -487,7 +487,6 @@ describe("the demo app's file server", () => {
     "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
     "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
     "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
-    "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
     "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
     "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",
