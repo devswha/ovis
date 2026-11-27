@@ -4,7 +4,7 @@
  * kept (downloads, an agent's screenshots). Null without the desktop app or while its setting is
  * off, where main answers null. Main is the authority on every field; this only reads them.
  */
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 
 export type DesktopBrowserProfile = "mine" | "agent";
 
@@ -175,6 +175,17 @@ export function onBrowserTabOpened(listener: (id: number) => void): () => void {
 /** Tells main whether this page can show a tab now: it opens a clicked web link in the built-in browser only then. */
 export function setBrowserTabsShowable(showable: boolean): void {
   bridge()?.showable?.(showable);
+}
+
+/**
+ * The page's side of Settings → Browser for links = the built-in browser: tells main whether a tab can be shown now
+ * (`showable`), and has each tab main opened for a clicked link shown (`show`, the latest one given).
+ */
+export function useBrowserLinkTabs(showable: boolean, show: (id: number) => void): void {
+  const latest = useRef(show);
+  latest.current = show;
+  useEffect(() => onBrowserTabOpened((id) => latest.current(id)), []);
+  useEffect(() => setBrowserTabsShowable(showable), [showable]);
 }
 
 /** has main draw the tab over `bounds` of the window, in the page's CSS pixels */
