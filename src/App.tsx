@@ -110,7 +110,7 @@ import { folderQueryFor } from "./lib/paletteFolders.ts";
 import { FileViewer } from "./components/FileViewer.tsx";
 import { WebPanel } from "./components/WebPanel.tsx";
 import { BrowserSidePanel } from "./components/BrowserSidePanel.tsx";
-import { useDesktopBrowser, useShownBrowserTab } from "./lib/desktopBrowser.ts";
+import { useBrowserLinkTabs, useDesktopBrowser, useShownBrowserTab } from "./lib/desktopBrowser.ts";
 import { BrowserPanel } from "./components/BrowserPanel.tsx";
 import { BrowserTabsGroup } from "./components/BrowserTabsGroup.tsx";
 import { WebPanelContext } from "./lib/webPanel.ts";
@@ -532,6 +532,8 @@ export function App() {
     if (viewing !== null && fileDocked) closeFile();
     setBrowserTab(tab);
   };
+  // a web link main opened in the built-in browser (Settings → Browser for links) is shown there once main lists it
+  useBrowserLinkTabs(browserTabs !== null && filePanelAvailable && !inMode && locked === false, (id) => { openBrowserTab("new"); setOpeningTab(id); });
   const browserShown = browserTabs !== null && filePanelAvailable && !inMode && (browserTab === "new" || shownBrowserTab !== null) && webPage === null && !(viewing !== null && fileDocked);
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen
