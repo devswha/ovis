@@ -55,7 +55,7 @@ it("keeps native ACP launch hygiene and selects ordinary startup permissions", (
   });
   expect(resolveHarness("gemini")).toEqual({ argv: [join(dir, "gemini"), "--acp"] });
   expect(resolveHarness("kiro")).toEqual({ argv: [join(dir, "kiro-cli"), "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: "/nonexistent/ovis-kiro-agents" } });
-  expect(resolveHarness("qwen")).toEqual({ argv: [join(dir, "qwen"), "--acp", "--approval-mode", "default"] });
+  expect(resolveHarness("qwen")).toEqual({ argv: [join(dir, "qwen"), "--acp", "--approval-mode", "default", "--exclude-tools", "agent"] });
 });
 
 it("lets a child start only in Gemini CLI's, Kiro's and Qwen Code's ordinary modes", () => {

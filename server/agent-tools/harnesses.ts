@@ -33,8 +33,9 @@ export function resolveHarness(kind: string): HarnessCommand | null {
         // elsewhere: a folder that does not exist leaves them as they are, and the child keeps Kiro's own modes
         case "kiro": return { argv: [path, "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: KIRO_NO_AGENTS } };
         // Qwen Code 0.28 opens ACP sessions in `auto` (a model approves actions) or in the person's saved approval mode;
-        // the flag outranks both
-        case "qwen": return { argv: [path, "--acp", "--approval-mode", "default"] };
+        // the flag outranks both. Its `agent` tool starts a subagent in `auto-edit` in a trusted folder (every folder,
+        // unless the person turned folder trust on), so one approved launch would let edits run unasked: the child has none
+        case "qwen": return { argv: [path, "--acp", "--approval-mode", "default", "--exclude-tools", "agent"] };
       }
     }
     case "claude": case "codex": {
