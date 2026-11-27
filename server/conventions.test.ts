@@ -328,6 +328,34 @@ describe("runtime gates", () => {
   });
 });
 
+describe("conversations told by their text", () => {
+  // a pane's conversation chosen by matching what it shows (codexTranscriptPath's `inferred`) is a guess: these may
+  // be called where they are now, and fewer times, never more or anywhere else
+  const TEXT_MATCHED = /(?<!function\s)\b(?:matchCodexTranscript|loadedConversation|matchShortCodexAnswers|lastTurnConversation|opencodeTitled|opencodeSessionsTitled)\s*\(/;
+  const CALLS: Record<string, number> = {
+    "server/codex.ts": 14,
+    "server/herdr-core/adapter.ts": 1,
+    "server/herdr-core/runtime.ts": 1,
+  };
+
+  it("calls the text matchers no more often and nowhere new", () => {
+    const found = matches(serverCode(), TEXT_MATCHED);
+    const count = (file: string) => found.filter((call) => call.file === file).length;
+    fail(found.filter((call) => count(call.file) > (CALLS[call.file] ?? 0)).map((call) => call.at),
+      "Do not tie a pane to a conversation by its text: take what the agent or the pane's own process tells (served or held in codexTranscriptPath), or open the terminal.");
+    fail(Object.entries(CALLS).filter(([file, pinned]) => count(file) < pinned).map(([file]) => file),
+      "These files call the text matchers less often now: lower their count in CALLS in server/conventions.test.ts.");
+  });
+
+  it("knows a call from the definition", () => {
+    expect(TEXT_MATCHED.test("const found = matchCodexTranscript(screen, candidates);")).toBe(true);
+    expect(TEXT_MATCHED.test("const titled = options.opencodeTitled(terminal.title);")).toBe(true);
+    expect(TEXT_MATCHED.test("export function matchShortCodexAnswers(screen: string) {")).toBe(false);
+    expect(TEXT_MATCHED.test("async function loadedConversation(screen: string) {")).toBe(false);
+    expect(TEXT_MATCHED.test("opencodeTitled?: (terminalTitle: string) => readonly string[];")).toBe(false);
+  });
+});
+
 describe("remote PC bundle boundary", () => {
   // scripts/build-remote-bundle.ts ships server/, shared/ and integrations/ but not src/ or relay/: code
   // there that imports either loads from a checkout, where every check runs, and not on a remote PC (#2220)
