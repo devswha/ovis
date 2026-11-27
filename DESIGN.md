@@ -1189,9 +1189,39 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
   words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
-  from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
+  from the left `24px` edge opens the drawer and a swipe to the left closes it. Away from that
+  edge, opening requires `dx >= 2 * |dy|` so diagonal scrolling stays with the page; strokes
+  starting on a split divider (`role="separator"`) or its children cannot open a closed drawer,
+  but still close an open drawer. Interior strokes remain uncancelled until they reach `56px`
+  horizontally at that angle, letting an initially flat stroke turn into vertical scrolling.
+  [Paseo phone web](https://github.com/getpaseo/paseo/blob/main/packages/app/src/mobile-panels/gesture-intent.ts)
+  keeps opening edge-only to protect interior scrollers. Ovis deliberately allows a flatter interior
+  stroke as agreed in [#2705](https://github.com/devswha/ovis/issues/2705), retaining its existing
+  horizontal-scroll, input, selection and modal exclusions. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
+  An interior opening released at or beyond `56px` stays open even when less than half shows,
+  so a slow stroke near the right edge works; reversing below that threshold or flicking left
+  can still close it. Edge-started strokes keep their original settling behavior. The opening
+  yields if a scrollable origin or the page has moved, including a compositor scroll delivered
+  while the finger is held, with one final movement check at lift. Once the stroke ends its
+  origin is discarded: a delayed send receipt's smooth follow is no longer touch scrolling and
+  cannot close the settled drawer. Instant automatic chat scrolling announces its actual writes through
+  `layoutScroll` and the LegendList patch, including delayed end follows and row adjustments.
+  Before a write the gesture checks for an unread native scroll; after it the gesture rebases
+  its origin. Nested writes share that interval. Terminal cursor follows and fit corrections use
+  the same layout notifications. A browser clamp to a shorter end also rebases.
+  This keeps opening available while an answer streams, including near-end and two-stage follows,
+  without excusing a reader's scroll. Smooth scrolling and explicit reader navigation still yield.
+  A committed interior opening tells its connected origin to discard pending touch work:
+  terminal remainder pixels and queued wheel reports cannot escape at the lift. If scrolling has
+  not already won, that claim also locks the origin's auto/scroll axes with inline overflow:hidden.
+  A later upward turn keeps the drawer under the finger instead of starting native scrolling.
+  Lift, cancel, a second touch, a wide viewport, backgrounding, exceptions and cleanup restore
+  each original inline value and priority; the original target also hears end/cancel if detached.
+  Settled openings hold neither a lock nor scroll ownership. Programmatic streaming and cursor follows still
+  work while locked. An actual movement despite the lock retains the scroll-yield fallback. Native end/cancel
+  events still reach their consumers to finish pinch, reorder and other gesture cleanup.
 - A phone's open drawer has no X: the drawer toggle's place holds the Ovis mark (`.drawer-toggle.is-mark`, `OvisMark`),
   still the toggle, named **Close workspace list**, as the app's mark at the head of the Codex and Claude apps'
   sidebars. Beside it the header names the PC and the workspace the list is on (`.drawer-head-title`: the PC, then
@@ -2876,8 +2906,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`enterKeyHint="done"`) rather than its inferred **Next**; moving focus alone makes nothing.
   Unlike Paseo's separate New directory step, this keeps Ovis's existing inline Enter flow without
   another control or step; no code is borrowed.
-- Recent folders appear as neutral `.btn` chips with `--radius-pill` and `--space-2` gaps: the
-  three most recent, on one row that never wraps. Each shows the folder basename with ellipsis
+- Recent folders appear as neutral `.btn` chips with `--radius-pill` and `--space-2` gaps, on one
+  row that never wraps: the ten most recent at first. A wider screen shows as many as the row holds
+  and a `+N` chip counting every other folder kept; it opens a list of the loaded ones with their
+  paths, which ends with **Show N more** while more are kept. That item adds the next ten, leaves
+  the list open and hands the focus to the first folder it added. A phone swipes the row sideways,
+  and its `+N` chip at the end adds the next ten to the row. Keyboard activation follows the
+  wide-screen list: it focuses and reveals the first folder added, even when `+N` disappears.
+  Zed's Open Recent lists every recent project in a searchable picker; here Directory and Browse
+  already search, so the list stays short and grows ten at a time only when asked. Each shows the folder basename with ellipsis
   and the full path in its tooltip and accessible name. Clicking puts the folder in Directory and
   starts nothing. History is per PC in this browser and retained after panes close. Only a
   successful workspace start puts its folder first; a folder merely seen in a connected PC's panes
@@ -4153,9 +4190,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane of about 40) shows the preview in unreadable pieces, so the card shows none. It follows
   Claude Code's terminal, which shows the preview beside the option it belongs to.
 - Height: at most the larger of 60% of the app's height (`--app-height`, so a phone's keyboard
-  counts) and six touch rows (`240px`), at every width. Only the reference text gives way: six
-  lines at rest, two at the least (one for a one-line command), scrolling in itself with a fade
-  on its fold. The header, step chips, question, hint, options, custom answer and confirm row
+  counts) and six touch rows (`240px`). Questions without preceding terminal words use 80%
+  instead, leaving room for their options and up to ten scrollable lines of their own context.
+  The separate terminal words keep the standard limit and give way as described above, following
+  Claude Code's terminal. Reference text gives way too: six lines at rest, two at the least
+  (one for a one-line command), scrolling in itself with a fade on its fold.
+  The header, step chips, question, hint, options, custom answer and confirm row
   never shrink. A card still taller than its limit scrolls as a whole with a fade at its bottom
   edge, and the confirm row of a typed pick stays pinned on that edge. The card's scroll is
   contained (`overscroll-behavior: contain`), so a drag past its top is never the page's
@@ -5597,7 +5637,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   resize it to reveal the caret. No terminal pixels or input handling code are copied from Zed.
   Local wheel panning in an oversized mirror survives subsequent output. A tap or a touch movement
   that produces no history step sends no shared scroll request.
-- A mirrored grid wider than its mount (a Windows PC's pane, whose size a phone cannot change) is
+- A Windows terminal whose CLI and daemon support the native control stream fits the active
+  browser's grid, like a locally sized terminal in Zed, but only after herdr grants the
+  exclusive attachment. Other viewers adopt the confirmed grid; an observe or kept-size
+  attach never claims the slot. Neither opening a second view nor reconnecting takes over.
+  Without verified stream support the existing mirror stays fixed.
+- A mirrored grid wider than its mount (for example, a Windows PC without verified stream support) is
   drawn folded (`lib/terminalFold.ts`): its rows are drawn again as SGR runs in a pre-wrap block at
   the mount's width, over the grid, which stays at the pane's size for input, the masked prompt, the
   input row and Find; it moves down under the folded rows until its cursor row lies on theirs, so an
