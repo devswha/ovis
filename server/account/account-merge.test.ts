@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, signAccountRecord } from "../../shared/account-records.ts";
+import { newInvite } from "../../shared/account-list-join.ts";
+import { relayIdentityPath, rotateRelayIdentity } from "../relay/identity.ts";
 import { mergeAccountState } from "./account-merge.ts";
 import { REMOVAL_FILE } from "./removal-evidence.ts";
 
@@ -14,6 +16,25 @@ function dir(): string {
   return made;
 }
 const put = (at: string, file: string, value: unknown) => writeFileSync(join(at, file), JSON.stringify(value), { mode: 0o600 });
+
+test.each([false, true])("a same-identity sibling journal is copied, but conflicting journals fail closed (%s)", async conflict => {
+  const a = dir();
+  const b = dir();
+  const { server_id } = rotateRelayIdentity(a);
+  mkdirSync(join(b, "relay"));
+  copyFileSync(relayIdentityPath(a), relayIdentityPath(b));
+  const { line: invite } = await newInvite("https://account.test", "acct_after", null);
+  const journal = { v: 1, server_id, merge_id: "move_1", from: { account: "acct_before", bind_id: "a".repeat(32) },
+    into: "acct_after", invite, by: "pc", started_at: "2026-11-27T00:00:00.000Z" };
+  const filename = "account-move.json";
+  put(b, filename, journal);
+  if (conflict) put(a, filename, { ...journal, merge_id: "different" });
+  const result = mergeAccountState(a, b);
+  if (conflict) expect(result).toContain("account-move.json");
+  else expect(result).toBeNull();
+  expect(JSON.parse(readFileSync(join(b, filename), "utf8"))).toEqual(journal);
+  expect(JSON.parse(readFileSync(join(a, filename), "utf8"))).toEqual(conflict ? { ...journal, merge_id: "different" } : journal);
+});
 
 describe("merging two folders' account state fails closed on what it cannot trust (T28, T48, S19)", () => {
   test("T28, S19: removal evidence of an unsupported form is refused, and neither folder is rewritten", () => {
