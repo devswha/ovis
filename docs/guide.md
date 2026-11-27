@@ -694,9 +694,9 @@ Only devices in your tailnet can open that address. Your own devices get in with
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
 whether the test was sent or failed; a missing subscription offers **Turn alerts on again**.
 
-While the app is in front on any device, its window visible and focused, no alert goes to any
-device: you are already looking at the change. Alerts resume once no window of the app is in use.
-The test push is always sent.
+A visible, focused Ovis window on any device holds back alerts. If a question is still unanswered
+or a finish still has no follow-up five minutes after the change, its alert goes out even if a
+window is still focused. The test push is always sent.
 
 Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
 30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.
@@ -1181,9 +1181,13 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   installed on it, and it is added, renamed or removed with `hc machine` or in the Herdr app.
   Ovis starts one more server of its own for each (on loopback, with an empty home folder of its
   own), so its agents' chat history is not read here: their transcripts are on that machine.
-  Its files are not reachable from Ovis yet: file previews, the Files view, diffs, pasted images
-  and the folder picker are refused for it. A folder typed for a new workspace there is passed to
-  that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
+  Its files are read there through the core (`machine.exec` with that machine's `/bin/sh`, as
+  its user): the Files view's browser, the folder picker and file previews, up to 8 MB a file
+  (a larger one is described but not opened; an HTML page shows as text). A pasted or attached
+  image is put beside the terminal on that machine (`terminal.put`, 8 MB at most) and its path
+  there is inserted. Diffs, git, Markdown lists, file search, editing and New folder are refused
+  for it, and so is all of it on a machine without `/bin/sh` (Windows). A folder typed for a new
+  workspace there is passed to that machine as written (empty: its home). Pins and "seen" are not shared with the Herdr app
   there. Temporary machines (`hc machine add --temp`) are not shown, and
   PCs added over SSH or through the relay keep working beside them.
 

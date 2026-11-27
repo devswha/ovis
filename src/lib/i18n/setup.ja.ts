@@ -4,6 +4,7 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETUP_JA: Record<string, string> = {
+  "Using a Gemini API key": "Gemini API キーを使用中",
   "Agents you can install": "インストールできるエージェント",
   "No other agents to install here.": "ここにインストールできるほかのエージェントはありません。",
   "An agent your shell's startup file (.zshrc) puts on PATH may be missing here: Ovis could not read that PATH. Check again reads it once more.": "シェルの起動ファイル（.zshrc）が PATH に追加するエージェントは、ここに表示されないことがあります。Ovis はその PATH を読み取れませんでした。再確認でもう一度読み取ります。",
