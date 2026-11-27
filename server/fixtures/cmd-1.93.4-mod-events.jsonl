@@ -1,0 +1,6 @@
+{"source":"Synthetic fixtures, not a recording: commandcode.ai/docs/mods and command-code@1.93.4 dist/cli.mjs.","hook":"onSessionStart","event":{"source":"startup","sessionId":"7cecb965-acde-4e0b-93f7-6d7d1115f468"}}
+{"hook":"run_start","event":{"type":"run_start","sessionId":"7cecb965-acde-4e0b-93f7-6d7d1115f468"}}
+{"hook":"onPermissionRequest","event":{"toolName":"bash","input":{"command":"pwd"},"description":null,"isSafetyPrompt":false},"allowed":"allow","denied":"deny"}
+{"hook":"beforeToolCall","event":{"toolCallId":"call-1","toolName":"ask_user_question","input":{"questions":[{"header":"Store","question":"Which store?","options":[{"label":"SQL","description":"Use tables."},{"label":"Files","description":"Use plain files."}]},{"header":"Output","question":"Which formats?","multiSelect":true,"options":[{"label":"JSON","description":""},{"label":"Text"}]}]}},"result":[{"type":"text","text":"Which store? → Files\nWhich formats? → [\"JSON\",\"CSV, compact\"]\n\nContinue with the user's answers in mind."}]}
+{"hook":"run_end","event":{"type":"run_end","result":{"stopReason":"end_turn"}}}
+{"hook":"onSessionEnd","event":{"reason":"shutdown"}}
