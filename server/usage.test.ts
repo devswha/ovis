@@ -3,9 +3,9 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, relative } from "node:path";
+import { delimiter, join } from "node:path";
 import type { UsageReport } from "../shared/protocol.ts";
-import { FRESH_MS, handleStatuslineRequest, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, systemUsageContext, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
+import { FRESH_MS, handleStatuslineRequest, handleUsageRequest, MAX_READ_BYTES, MIN_REFRESH_MS, RETRY_MS, runCommand, USAGE_PROVIDERS, UsageHttpError, UsageService, type KeychainRead, type UsageContext, type UsageProvider } from "./usage.ts";
 import { installStatusline } from "./statusline-install.ts";
 import { UsageLoginService } from "./usage-login.ts";
 
@@ -1578,19 +1578,24 @@ it.skipIf(process.platform === "win32")("runs Antigravity usage from an absolute
     chmodSync(file, 0o700);
   };
   stub(relativeBin, "echo relative");
-  stub(absoluteBin, "echo absolute");
-  const oldPath = process.env["PATH"];
-  process.env["PATH"] = [relative(process.cwd(), relativeBin), absoluteBin].join(delimiter);
-  try {
+  stub(absoluteBin, `if [ "$1" != "--print" ]; then exit 1; fi
+if [ "$2" = "/usage" ]; then echo absolute; exit 0; fi
+trap '' TERM
+/bin/sleep 0.4
+echo past-deadline`);
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { systemUsageContext } from ${JSON.stringify(join(import.meta.dir, "usage.ts"))};
     const ctx = systemUsageContext();
-    expect(await ctx.run(["agy", "--print", "/usage"])).toBe("absolute");
-    process.env["PATH"] = absoluteBin;
-    stub(absoluteBin, "trap '' TERM\n/bin/sleep 0.4\necho past-deadline");
-    expect(await ctx.run(["agy", "--print", "/usage"], 100)).toBeNull();
-  } finally {
-    if (oldPath === undefined) delete process.env["PATH"];
-    else process.env["PATH"] = oldPath;
-  }
+    const answer = await ctx.run(["agy", "--print", "/usage"]);
+    const late = await ctx.run(["agy", "--print", "/usage-test-timeout"], 100);
+    console.log(JSON.stringify({ answer, late }));
+  `], {
+    cwd: home, env: { PATH: ["relative-bin", absoluteBin].join(delimiter), HOME: home, ANTIGRAVITY_APP_DATA_DIR: home },
+    stdin: "ignore", stdout: "pipe", stderr: "inherit",
+  });
+  const output = await new Response(child.stdout).json();
+  expect(await child.exited).toBe(0);
+  expect(output).toEqual({ answer: "absolute", late: null });
 });
 
 describe("the service", () => {
