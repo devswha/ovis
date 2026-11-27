@@ -1,6 +1,15 @@
 /** The subscriptions whose plan limits GET /api/usage can read from a CLI's own sign-in. */
 export type UsageProviderId = "claude" | "codex" | "cursor" | "copilot" | "grok" | "antigravity" | "opencode" | "kimi";
 
+/**
+ * Providers newer than the oldest client a PC serves (MIN_SUPPORTED_CLIENT_VERSION): a phone app from before them
+ * has no name or mark for them and fails to draw the list. GET /api/usage and GET /api/usage/login send one only to a
+ * client that names it in `?known=`; drop an id here once the floor reaches the release that added it.
+ */
+export const NEWER_USAGE_PROVIDERS: readonly UsageProviderId[] = ["kimi"];
+/** Whether a reply may name this provider to the client that sent `known` (GET /api/usage and /api/usage/login). */
+export const providerKnown = (known: string | null) => (id: UsageProviderId): boolean => !NEWER_USAGE_PROVIDERS.includes(id) || (known ?? "").split(",").includes(id);
+
 /** One limit of a plan: how much of it is used and when it starts over. */
 export interface UsageWindow {
   /** the span the limit counts over: a rolling session (5 hours), a day, a week or a billing month */

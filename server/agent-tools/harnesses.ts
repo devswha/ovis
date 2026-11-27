@@ -11,6 +11,8 @@ export interface HarnessCommand {
   readonly env?: Record<string, string>;
   readonly sessionMeta?: unknown;
   readonly configOptions?: readonly unknown[];
+  /** A mode set with `session/set_mode` once the session opens, for a harness whose opening report is not its mode */
+  readonly setMode?: string;
 }
 const KIRO_NO_AGENTS = "/nonexistent/ovis-kiro-agents";
 /** The file a link on PATH names, or null once it is gone. */
@@ -32,7 +34,9 @@ export function resolveHarness(kind: string): HarnessCommand | null {
         // rewrites the person's V2 agent files (~/.kiro/agents, the folder's .kiro/agents) unless its agent folder is
         // elsewhere: a folder that does not exist leaves them as they are, and the child keeps Kiro's own modes
         case "kiro": return { argv: [path, "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: KIRO_NO_AGENTS } };
-        case "kimi": return { argv: [path, "acp"] };
+        // Kimi Code 2.8 reports `default` on every new ACP session, though it runs in the mode the person saved
+        // (`default_permission_mode`, e.g. yolo); setting the mode makes the report true
+        case "kimi": return { argv: [path, "acp"], setMode: "default" };
       }
     }
     case "claude": case "codex": {

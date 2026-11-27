@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { UsageCredits, UsageWindow } from "../shared/protocol.ts";
-import { epochMs, isoTime, number, parseJson, percent, readText, record, requestJson as usageJson, text, UsageHttpError, type CredentialHome, type Json, type UsageContext, type UsageProvider } from "./usage.ts";
+import { epochMs, isoTime, number, parseJson, percent, readText, record, requestJson as usageJson, text, UsageFailed, UsageHttpError, type CredentialHome, type Json, type UsageContext, type UsageProvider } from "./usage.ts";
 
 /** A Kimi API read: the bearer token goes to Kimi's own host and nowhere a redirect names. */
 const requestJson = (ctx: UsageContext, url: string, init: RequestInit): Promise<Json> => usageJson(ctx, url, { ...init, redirect: "error" });
@@ -94,6 +94,8 @@ export const kimiUsage: UsageProvider = {
     const baseUrl = signIn.baseUrl ?? DEFAULT_BASE_URL;
     const headers = { authorization: `Bearer ${signIn.token}`, accept: "application/json", "user-agent": "ovis" };
     const body = await requestJson(ctx, `${baseUrl}/usages`, { headers });
+    // an answer without `usages` (an error envelope sent as 200) is not a reading: the last one stays
+    if (body["usages"] === null || typeof body["usages"] !== "object" || Array.isArray(body["usages"])) throw new UsageFailed("bad_response", `${new URL(baseUrl).host} answered without usages`);
     const usages = record(body["usages"]);
     const limit = (value: unknown, kind: UsageWindow["kind"], scope: string | null): UsageWindow | null => {
       const entry = record(value);

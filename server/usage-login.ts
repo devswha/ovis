@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
+import { providerKnown } from "../shared/usage.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
 import { homeBefore, loginAccount, type LoginAccount, type LoginTarget } from "./usage-login-account.ts";
@@ -407,7 +408,8 @@ export class UsageLoginService {
           return jsonResponse({ accounts: found.map((signIn) => signIn.account?.label ?? signIn.account?.id ?? null) });
         } catch (error) { return errorResponse(error); }
       }
-      return jsonResponse({ providers: USAGE_PROVIDERS.map(({ id }) => ({
+      const known = providerKnown(new URL(request.url).searchParams.get("known"));
+      return jsonResponse({ providers: USAGE_PROVIDERS.filter(({ id }) => known(id)).map(({ id }) => ({
         id, cli: LOGIN[id].cli, installed: Boolean(executableFor(id)), local: LOGIN[id].args !== null,
         separate_home: id === "claude" || id === "codex",
       })) });

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { UsageService, type UsageContext } from "./usage.ts";
+import { handleUsageRequest, UsageService, type UsageContext } from "./usage.ts";
 import { kimiUsage } from "./usage-kimi.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
@@ -159,6 +159,31 @@ describe("kimi usage provider", () => {
       replies.set(KIMI_USAGE, { error: new TypeError("fetch failed: unexpected redirect") });
       expect((await new UsageService(context(), [kimiUsage]).report()).providers[0]).toMatchObject({ problem: "failed", failure: "network" });
     } finally { console.warn = warn; }
+  });
+
+  it("keeps the last reading when Kimi answers without usages", async () => {
+    signInKimi();
+    replies.set(KIMI_USAGE, usageReply());
+    replies.set(KIMI_ME, { status: 404 });
+    const service = new UsageService(context(), [kimiUsage]);
+    expect((await service.report()).providers[0]!.windows).toHaveLength(4);
+    replies.set(KIMI_USAGE, { body: { code: "internal_error", message: "try again" } });
+    now += 10 * 60_000;
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      expect((await service.report()).providers[0]).toMatchObject({ problem: "failed", failure: "bad_response", windows: [expect.anything(), expect.anything(), expect.anything(), expect.anything()] });
+    } finally { console.warn = warn; }
+  });
+
+  it("names Kimi only to a client that says it knows it", async () => {
+    signInKimi();
+    replies.set(KIMI_USAGE, usageReply());
+    replies.set(KIMI_ME, { status: 404 });
+    const service = new UsageService(context(), [kimiUsage]);
+    const ids = async (path: string) => ((await (await handleUsageRequest(new Request(`http://localhost${path}`), new URL(`http://localhost${path}`), service)).json()) as { providers: { id: string }[] }).providers.map((usage) => usage.id);
+    expect(await ids("/api/usage?known=kimi")).toEqual(["kimi"]);
+    expect(await ids("/api/usage")).toEqual([]);
   });
 
   it("reports an expired token without asking the API", async () => {

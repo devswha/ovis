@@ -1,3 +1,4 @@
+import { NEWER_USAGE_PROVIDERS } from "../../shared/usage.ts";
 import { apiFetch } from "./api-request-id.ts";
 import { CompactAgentsError, expandMachine, type WireMachine } from "../../shared/compact-agents.ts";
 import { parsePreferencesConflict, type PreferencesConflict, type PreferencesPut, type SharedPreferences } from "../../shared/preferences.ts";
@@ -116,8 +117,11 @@ import { movingHerdrFocus } from "./followFocus.ts";
 import { observeWaitingClock, waitingKey } from "./sentWaiting.ts";
 import type { UsageAccountRemoval, UsageLoginAccounts, UsageLoginCode, UsageLoginFollowed, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
+/** The usage providers newer than old phone apps that this client draws (shared/usage.ts) */
+const KNOWN_PROVIDERS = `known=${NEWER_USAGE_PROVIDERS.join(",")}`;
+
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
-  return getJson("/api/usage/login", { signal });
+  return getJson(`/api/usage/login?${KNOWN_PROVIDERS}`, { signal });
 }
 
 export function fetchUsageLoginAccounts(provider: string, signal: AbortSignal): Promise<UsageLoginAccounts> {
@@ -173,7 +177,7 @@ export async function openTailscaleApp(): Promise<boolean> {
 }
 
 export function fetchUsage(refresh = false): Promise<UsageReport> {
-  return getJson<UsageReport>(refresh ? "/api/usage?refresh=1" : "/api/usage");
+  return getJson<UsageReport>(`/api/usage?${refresh ? "refresh=1&" : ""}${KNOWN_PROVIDERS}`);
 }
 
 export async function removeUsageAccount(account: string): Promise<void> {

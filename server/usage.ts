@@ -24,6 +24,7 @@ import { join, resolve } from "node:path";
 import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
 import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
+import { providerKnown } from "../shared/usage.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { kimiUsage } from "./usage-kimi.ts";
@@ -1528,7 +1529,9 @@ export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex"
 
 export async function handleUsageRequest(request: Request, url: URL, service: Pick<UsageService, "report">): Promise<Response> {
   if (request.method !== "GET") return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET /api/usage" } }, 405, { allow: "GET" });
-  return jsonResponse(await service.report(url.searchParams.get("refresh") === "1"), 200, { "cache-control": "no-store" });
+  const report = await service.report(url.searchParams.get("refresh") === "1");
+  const known = providerKnown(url.searchParams.get("known"));
+  return jsonResponse({ ...report, providers: report.providers.filter((usage) => known(usage.id)) }, 200, { "cache-control": "no-store" });
 }
 
 /**

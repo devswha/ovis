@@ -111,7 +111,7 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
   const replayed = () => readFileSync(join(dir, "replay.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>);
   const scenario = (options: {
     readonly startMode?: string; readonly openingAllowAll?: "on" | "off";
-    readonly updatedMode?: string; readonly updatedAllowAll?: "on" | "off";
+    readonly updatedMode?: string; readonly updatedAllowAll?: "on" | "off"; readonly refuseSetMode?: boolean;
   }) => writeFileSync(join(dir, "scenario.json"), JSON.stringify(options));
   async function rejectEveryCard(session: string) {
     const child = acp.forPane(session)!;
@@ -135,6 +135,9 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
         _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: false } } },
       });
     } else expect(replayed()[0]?.sessionNew).not.toHaveProperty("configOptions");
+    // Kimi Code reports `default` whatever mode the person saved: the child sets it before its first task
+    if (harness === "kimi") expect(replayed().slice(1, 3)).toEqual([{ setMode: "default" }, { prompt: expect.stringContaining("do the actions") }]);
+    else expect(replayed().some(row => "setMode" in row)).toBe(false);
     expect(started.session.version).toBe(version.match(/\d+\.\d+\.\d+/)?.[0]);
     expect(acp.forPane(session)?.client.sessionMode).toBe(mode);
     await rejectEveryCard(session);
@@ -191,7 +194,17 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
       scenario({ startMode });
       expect(await call("start", { harness, cwd: dir, task: "do the actions" })).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
       expect((await acp.terminals()).filter(row => row.state === "live")).toHaveLength(0);
-      expect(replayed()).toEqual([expect.objectContaining({ sessionNew: expect.any(Object) })]);
+      expect(replayed().filter(row => !("setMode" in row))).toEqual([expect.objectContaining({ sessionNew: expect.any(Object) })]);
+    });
+  }
+
+  if (fixture === "kimi-2.8.1-ask-write") {
+    // Kimi Code reports `default` whatever mode the person saved, so only the mode it is set to proves the start
+    it("does not start a child whose mode it could not set", async () => {
+      scenario({ refuseSetMode: true });
+      expect(await call("start", { harness, cwd: dir, task: "do the actions" })).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
+      expect((await acp.terminals()).filter(row => row.state === "live")).toHaveLength(0);
+      expect(replayed().some(row => "prompt" in row)).toBe(false);
     });
   }
 
