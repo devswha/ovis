@@ -45,7 +45,7 @@ PC: server/push.ts ──encrypted push──▶ relay (Cloudflare Worker) ─�
 ### Notifications
 
 The relay looks to `server/push.ts` like one more browser push service, so the PC keeps its
-whole alert policy (the wait before an alert, no alert while a window is in use, per-device
+whole alert policy (the wait before an alert, the grace period for focused windows, per-device
 choices) and changes little:
 
 1. The app registers with APNs and gets a device token.

@@ -682,9 +682,9 @@ Only devices in your tailnet can open that address. Your own devices get in with
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
 whether the test was sent or failed; a missing subscription offers **Turn alerts on again**.
 
-While the app is in front on any device, its window visible and focused, no alert goes to any
-device: you are already looking at the change. Alerts resume once no window of the app is in use.
-The test push is always sent.
+A visible, focused Ovis window on any device holds back alerts. If a question is still unanswered
+or a finish still has no follow-up five minutes after the change, its alert goes out even if a
+window is still focused. The test push is always sent.
 
 Each pane keeps one alert: a new one replaces its last. iOS lets an alert be removed only
 30 seconds after it arrived, so a quicker repeat stays until the pane's next alert.

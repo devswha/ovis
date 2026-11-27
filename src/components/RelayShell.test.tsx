@@ -185,14 +185,14 @@ describe("the front page's account part", () => {
     const pcStatus = new Map([
       ["a".repeat(32), { kind: "answered", route: "lan", rttMs: 9 }],
       ["b".repeat(32), { kind: "answered", route: "relay", relay: "wss://relay-ap.ovis.sh", rttMs: 148 }],
-      ["c".repeat(32), { kind: "offline", reason: "pc" }],
+      ["c".repeat(32), { kind: "offline", reason: "pc", at: Date.now() }],
     ] as const);
     const html = render({ ...props({ kind: "list", devices: [device("a".repeat(32), "home"), device("b".repeat(32), "office"), device("c".repeat(32), "laptop")] }), scoped: false, pcStatus, onCheckPcs: none });
     const text = html.replace(/<[^>]+>/g, "");
     expect(text).toContain("homeAnswers · Same Wi-Fi, direct · 9 ms");
     expect(text).toContain("officeAnswers · Seoul relay · 148 ms");
     expect(html).toContain('<span class="connection-slow">148 ms</span>');
-    expect(text).toContain("laptopMachine offlineIts Ovis relay or power is off, it has no network, or Ovis is not running on it.");
+    expect(text).toContain("laptopMachine offlineThe relay answered, but the PC did not. Checked just now.");
     expect(html.indexOf("Check now")).toBeLessThan(html.indexOf("home"));
     expect(text).not.toContain("Connected");
   });
