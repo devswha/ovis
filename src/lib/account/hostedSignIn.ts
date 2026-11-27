@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { shownOf, type EverywhereAsked, type Shown } from "./listLeave.ts";
 import { pageAccountList } from "./pageList.ts";
-import { ACCOUNT_SIGN_OUT_EVENT } from "./service.ts";
+import { ACCOUNT_SIGN_OUT_EVENT, type AccountIdentityList } from "./service.ts";
 import { ACCOUNT_SESSION_EVENT, indexedAccountStore, type AccountProvider, type AccountSession } from "./store.ts";
 
 /** A fresh own sign-in in `from`'s place, for the same account: the sign-in stored, or null when none was. */
@@ -34,6 +34,10 @@ export interface ShellAccount {
   readonly signInAgain?: (provider: AccountProvider) => void;
   /** the phone app's fresh own sign-in in place (accountController); a browser has none, it signs in by leaving the page */
   readonly freshSignIn?: FreshSignIn | undefined;
+  readonly methods?: () => Promise<AccountIdentityList>;
+  readonly addMethod?: (provider: AccountProvider) => Promise<void>;
+  readonly removeMethod?: (provider: AccountProvider) => Promise<void>;
+  readonly methodsChange?: () => { readonly provider: AccountProvider; readonly error: string | null } | undefined;
 }
 
 export interface HostedSignIn extends ShellAccount {

@@ -419,6 +419,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
     signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
+    methods: account.methods,
+    addMethod: (provider) => account.addMethod(provider, entry.serverId ?? undefined),
+    removeMethod: account.removeMethod,
+    methodsChange: () => account.methodsChange,
     deleteAccount: async () => {
       await account.deleteAccount();
       const now = account.state;
@@ -1581,6 +1585,6 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     return;
   }
   // a sign-in that came back signed in (not refused or cancelled, whose reason the sign-in screen says)
-  if (returning === undefined && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp()) { keepFrontChosen(false); launching = signedInNow = true; await showFront(); signedInNow = false; }
+  if (returning === undefined && account.methodsChange === undefined && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp()) { keepFrontChosen(false); launching = signedInNow = true; await showFront(); signedInNow = false; }
   if (returning === undefined) await entrySignIn((provider, wanted) => account.signIn(provider, undefined, wanted));
 }

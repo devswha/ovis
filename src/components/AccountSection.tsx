@@ -82,7 +82,7 @@ export async function accountLimitsOf(service: AccountService, session: AccountS
  * The account's PCs and sign-in methods as `session` reads them; null once another sign-in (or none) is stored,
  * before the reads or while their answers were on the way: those are not this section's to show under its heading.
  */
-export async function accountListsOf(service: AccountService, session: AccountSession): Promise<{ pcs: Awaited<ReturnType<AccountService["listPcs"]>>; methods: Awaited<ReturnType<AccountService["identities"]>> | null } | null> {
+export async function accountListsOf(service: AccountService, session: AccountSession): Promise<{ pcs: Awaited<ReturnType<AccountService["listPcs"]>>; methods: AccountIdentity[] | null } | null> {
   const shown = service.forSignIn(session);
   const replaced = async (): Promise<boolean> => {
     const current = await service.session();
@@ -91,7 +91,7 @@ export async function accountListsOf(service: AccountService, session: AccountSe
   try {
     const [pcs, methods] = await Promise.all([
       shown.listPcs(),
-      shown.identities().catch((error: unknown) => {
+      shown.identities().then(({ identities }) => identities).catch((error: unknown) => {
         if (error instanceof AccountServiceError) return null;
         throw error;
       }),

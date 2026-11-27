@@ -12,10 +12,13 @@ import { inviteMakeBytes } from "../../../shared/account-list-invite.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
+import { identityAnswer, type AccountIdentityList } from "./identityAnswers.ts";
 import { attemptOf, claimsOf, genesisBody, hintOf, nowOf, pageOf, postsOf, wrapsOf, type ListAttempt, type ListClaim, type ListPost, type PlacedWrap, type ListHint, type ListPage, type ListWrap } from "./listAnswers.ts";
 import type { PcProofFields } from "./pcProof.ts";
-import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
+import type { AccountKey, AccountLock, AccountProvider, AccountSession, AccountStore, LinkSignIn } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock, indexedAccountStore } from "./store.ts";
+
+export type { AccountIdentity, AccountIdentityChange, AccountIdentityList } from "./identityAnswers.ts";
 
 /**
  * The account service this page signs in with, from `<meta name="ovis-account-service">`: an https
@@ -103,12 +106,6 @@ export async function offeredProviders(service: string, fallback: readonly Accou
     device: DEVICE_PROVIDERS.filter((provider) => device.has(provider) && named.has(provider)),
     page: DEVICE_PROVIDERS.filter((provider) => page.has(provider) && named.has(provider)),
   };
-}
-
-/** One way the account signs in (`GET /v1/identities`); the service keeps no email or login to name it by. */
-export interface AccountIdentity {
-  readonly provider: AccountProvider;
-  readonly added_at: string;
 }
 
 /** A refresh this long before the access token runs out, so a request never leaves with one about to. */
@@ -769,12 +766,8 @@ export class AccountService {
     return parseAccountLimits(body);
   }
 
-  async identities(): Promise<AccountIdentity[]> {
-    const body = await this.call("GET", "/v1/identities");
-    const list = isRecord(body) && Array.isArray(body.identities) ? body.identities : [];
-    return list.filter((entry): entry is AccountIdentity => isRecord(entry) && ACCOUNT_PROVIDERS.includes(entry.provider as AccountProvider)
-      && typeof entry.added_at === "string")
-      .map(({ provider, added_at }) => ({ provider, added_at }));
+  async identities(): Promise<AccountIdentityList> {
+    return identityAnswer(await this.call("GET", "/v1/identities"));
   }
 
   /**
@@ -788,12 +781,26 @@ export class AccountService {
    * asks the person to sign in again, then repeats. The link is redeemed by this same sign-in.
    */
   async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string, generation: string) => Promise<AccountSession>): Promise<AccountSession> {
+    const started = await this.startMethodLink(provider);
+    return this.installMethodLink(started, await signIn(started.linkToken, started.bearer, started.generation));
+  }
+
+  /** Only the sign-in that asked for the token may redeem the provider's answer. */
+  async startMethodLink(provider: AccountProvider): Promise<SignInSnapshot & { readonly linkToken: string; readonly bearer: string; readonly link: LinkSignIn }> {
     const started = await this.snapshot();
     const body = await this.forSnapshot(started).call("POST", "/v1/identities/link", { provider });
     const linkToken = isRecord(body) && typeof body.link_token === "string" && body.link_token !== "" ? body.link_token : null;
     if (linkToken === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no link");
     const before = await this.current(started);
-    const after = await signIn(linkToken, before.access_token, started.generation);
+    return {
+      generation: started.generation, session: before, linkToken, bearer: before.access_token,
+      link: { account: before.account, sign_in_id: before.sign_in_id ?? legacySignInId(before.refresh_token) },
+    };
+  }
+
+  /** Keeps the redeemed session only in place of the session whose bearer redeemed it. */
+  async installMethodLink(started: SignInSnapshot, after: AccountSession): Promise<AccountSession> {
+    const before = started.session;
     const end = (session: AccountSession) => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now });
     if (after.account !== before.account) {
       await end(after);
@@ -803,7 +810,7 @@ export class AccountService {
     const outcome = await this.lock(async () => {
       let result: "kept" | "moved-on" | "signed-out" = "signed-out";
       await this.options.store.updateMany(["session", "generation"], (current) => {
-        if (current.generation !== started.generation || current.session === undefined || !sameSignIn(current.session, before)) return current;
+        if (current.generation !== started.generation || current.session === undefined || current.session.account !== before.account || !sameSignIn(current.session, before)) return current;
         if (current.session.refresh_token === before.refresh_token) { result = "kept"; return { ...current, session: after }; }
         // Refreshed by another tab: the link holds at the service, and that session stays.
         result = "moved-on";
