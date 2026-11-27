@@ -23,7 +23,7 @@ export function TerminalPage({ keyBarButtonRef, onEditKeyBar, picturesByDefault 
           <option value="direct">{t("Direct typing")}</option><option value="line">{t("Input line")}</option>
         </SettingsSelect>
       </SettingsRow>
-      <SettingsRow label={t("Password field")} description={t("When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen.")} icon={LockKeyhole} reset={["terminalSecretField"]}>
+      <SettingsRow label={t("Password field")} description={t("When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.")} icon={LockKeyhole} reset={["terminalSecretField"]}>
         <Toggle label={t("Password field")} checked={secretFieldOn(settings, touch)} onChange={(terminalSecretField) => update({ terminalSecretField })} />
       </SettingsRow>
       <SettingsRow label={t("Wheel scroll speed")} description={t("How far one turn of the mouse wheel scrolls a terminal pane on this device: 1× is the terminal's own step, and a higher number scrolls that many times as far.")} icon={Mouse} reset={["terminalWheelSpeed"]}>

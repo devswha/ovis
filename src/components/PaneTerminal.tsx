@@ -377,9 +377,10 @@ export function PaneTerminal({
   const coarse = useMediaQuery("(pointer: coarse)");
   const coarseRef = useRef(coarse); coarseRef.current = coarse;
   const { settings, update: updateSettings } = useSettings();
-  // where the grid is shown and the field is not wanted (a mouse, by default), the prompt is answered in the grid; its
-  // keys stay out of every draft while secretRef holds the prompt
-  const secretField = secretActive && (chatView || secretFieldOn(settings, coarse));
+  // the field stands in for the chat lens's composer and the input line, which a prompt puts away; typing straight
+  // into the grid where it is not wanted (a mouse, by default) answers there, its keys out of every draft while
+  // secretRef holds the prompt
+  const secretField = secretActive && (chatView || settings.terminalInputMode === "line" || secretFieldOn(settings, coarse));
   const reuseExternalLinkTabRef = useRef(settings.reuseExternalLinkTab);
   reuseExternalLinkTabRef.current = settings.reuseExternalLinkTab;
   const availableModifiers = settings.keyBarItems.reduce((mask, item) => item.type === "modifier"

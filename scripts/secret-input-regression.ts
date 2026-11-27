@@ -205,26 +205,30 @@ process.stdin.on("data", chunk => {
       await view.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
       await view.locator(".pane-terminal .xterm-screen").waitFor();
       const masked = view.getByLabel("Password or PIN", { exact: true });
-      await view.waitForFunction(() => document.activeElement?.closest(".pane-terminal") !== null);
+      // the prompt read: the chat lens has no grid to type in, so the field stands there; back on the grid it goes,
+      // and the grid has the keyboard (regression: the field stayed over a desktop's grid)
+      const promptRead = async (): Promise<void> => {
+        await openLens(view, "chat");
+        await masked.waitFor();
+        await openLens(view, "terminal");
+        await masked.waitFor({ state: "detached" });
+        assert.equal(await view.locator(".secret-input").count(), 0, "no masked field over a desktop's grid");
+      };
       rmSync(result, { force: true });
       await paneSendText(pane, "\u0010");
+      await promptRead();
+      await view.waitForFunction(() => document.activeElement?.closest(".pane-terminal") !== null);
       await view.keyboard.type("typed-secret");
       await view.keyboard.press("Enter");
-      await accepted("typed-secret", "the grid did not keep the keyboard at a password prompt");
+      await accepted("typed-secret", "the grid did not take the password typed at its prompt");
       // control: typed into the pty only, never into a draft or the page
       assert.equal(await view.evaluate(() => JSON.stringify({ ...localStorage }).includes("typed-secret")), false);
       assert.equal(await view.locator("body").innerText().then((text) => text.includes("typed-secret")), false);
       assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
-      // the chat lens has no grid to type in, so the field stands there; back on the grid it goes (regression: it stayed
-      // over the grid on a desktop too)
-      await paneSendText(pane, "\u0010");
-      await openLens(view, "chat");
-      await masked.waitFor();
-      await openLens(view, "terminal");
-      await masked.waitFor({ state: "detached" });
-      assert.equal(await view.locator(".secret-input").count(), 0, "no masked field over a desktop's grid");
       // Offline, a secret keystroke is refused with a note, never held for later like other
       // typing (regression: the note; control: nothing held, nothing delivered afterwards).
+      await paneSendText(pane, "\u0010");
+      await promptRead();
       await desktop.setOffline(true);
       await view.evaluate(() => (window as any).dropTestSockets());
       await view.locator(".pane-terminal .xterm-screen").click();
@@ -235,21 +239,23 @@ process.stdin.on("data", chunk => {
       assert.equal(await view.locator(".terminal-banner-draft").count(), 0);
       assert.equal(await view.locator(".draft-held").count(), 0);
       await desktop.setOffline(false);
-      // back online, the prompt read again: the field in the chat lens says so
-      await openLens(view, "chat");
-      await masked.waitFor();
+      // back online, the prompt read again; the one key then typed is all the program gets: nothing typed offline
+      // came with the reconnect, with or without its Enter
+      await promptRead();
       assert.equal(await view.locator(".terminal-banner-draft").count(), 0, "nothing typed offline is held for the reconnect");
-      assert.equal(readFileSync(result, "utf8"), String("typed-secret\r".length), "nothing typed offline reached the program");
-      await view.locator(".secret-input").getByRole("button", { name: "Cancel", exact: true }).click();
-      await masked.waitFor({ state: "detached" });
+      await view.locator(".pane-terminal .xterm-screen").click();
+      await view.keyboard.type("z");
+      await view.keyboard.press("Enter");
+      await accepted("z", "nothing typed offline reached the program");
       await view.close();
-      // chosen on for a desktop, the field stands over the grid's last rows without taking any
+      // chosen on for a desktop, or in place of the input line, which a prompt puts away, the field stands over the
+      // grid's last rows without taking any
       for (const mode of ["direct", "line"] as const) {
         const view = await desktop.newPage();
         view.setDefaultTimeout(10_000);
         await view.addInitScript((mode) => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", terminalInputMode: mode }));
-          localStorage.setItem("ovis:terminal-secret-field", "true");
+          if (mode === "direct") localStorage.setItem("ovis:terminal-secret-field", "true");
         }, mode);
         await view.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
         await view.locator(".pane-terminal .xterm-screen").waitFor();
