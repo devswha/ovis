@@ -1108,7 +1108,8 @@ describe("connection-owned pending input", () => {
     try {
       const f = await setup("codex-queued-turn", "codex");
       const row = await f.queue(1, "follow after work");
-      await f.state("idle");
+      // the turn's end, by report or as herdr reads the screen itself: the row's own send is what is awaited
+      await herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "codex", state: "idle" });
       await f.removed(row.id, "sent");
       expect(turns).toEqual(["t1:follow after work"]);
       expect(f.bytes()).toBe("");
@@ -1126,7 +1127,7 @@ describe("connection-owned pending input", () => {
     try {
       const f = await setup("codex-queued-turn-discard", "codex");
       const row = await f.queue(1, "discard me");
-      await f.state("idle");
+      await herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "codex", state: "idle" });
       await asked.promise;
       f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: row.id, action: "discard" });
       // frames of one connection are handled in order: an answer for another pane says the discard was taken in

@@ -104,6 +104,11 @@ it("types a message the TUI reads itself, and one the server did not take, as be
     expect(pane.typed).toHaveLength(1);
     mock.restore();
   }
+  const left = codexPane(undefined, true, "unsent", "t1");
+  spyOn(herdr, "paneGet").mockImplementation(async () => ({ pane_id: "p", terminal_id: "t", agent: "bash", agent_status: "idle", agent_session: null }) as unknown as HerdrPane);
+  await left.submit("hello").catch(() => {});
+  expect(left.turns).toEqual([]);
+  mock.restore();
   const refused = codexPane(undefined, true, "unsent", "t1", "unsent");
   await refused.submit("hello");
   expect(refused.turns).toEqual(["t1:hello"]);

@@ -829,6 +829,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (context.identity.agent === "codex" && !context.working && context.agentInFront && !context.collapsed && codexTakesAsData(text, sent)) {
         // the rollout this send's receipt is read from, should Codex not answer (reconcileCodexDeliveries)
         const anchor = nativeItem ? await prepareCodexReceipt(paneId, context.identity) : null;
+        // the Codex this message was bound to, by its start: one that took its PID meanwhile gets nothing
+        await sameStart(identity);
         const clientId = crypto.randomUUID(), at = Date.now();
         let stopped: HerdrError | undefined;
         const viaData = await sendCodexTextAsData(context.pane, text, () => {

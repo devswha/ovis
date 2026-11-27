@@ -107,7 +107,10 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
  */
 export async function sendCodexTextAsData(pane: HerdrPane, text: string, mayWrite: () => boolean, clientId: string = crypto.randomUUID()): Promise<DataSent | null> {
   const threadId = servedStatus(pane.pane_id)?.threadId;
-  if (threadId === undefined || codexDisagrees(pane, threadId) || codexDisagrees(await paneGet(pane.pane_id), threadId)) return null;
+  if (threadId === undefined || codexDisagrees(pane, threadId)) return null;
+  // read again right before the request: the pane may have left Codex (its server's connection outlives that)
+  const now = await paneGet(pane.pane_id);
+  if (now.agent !== "codex" || codexDisagrees(now, threadId)) return null;
   const at = Date.now();
   const answer = await servedTurn(pane.pane_id, threadId, text, clientId, mayWrite);
   if (answer === "unsent") return null;
