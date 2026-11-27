@@ -919,6 +919,109 @@ describe("adding a PC with an old sign-in's key proof, and who asks", () => {
 });
 
 
+describe("PC account transfers", () => {
+  const from = "acct_before";
+  const into = "acct_after";
+  const merge_id = "mrg_123";
+  async function setup(list = true) {
+    const service = new FakeAccountService();
+    service.opensAll = service.completions = true;
+    const machine = pc();
+    const token = service.issueToken(from, { twoStep: true });
+    const url = `${BASE}/v1/pcs/${machine.serverId}`;
+    if (list) {
+      expect((await service.fetch(new Request(url, {
+        method: "PUT", headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ label: "Desk", public_key: machine.publicKey, relay: "wss://relay.ovis.sh" }),
+      }))).status).toBe(200);
+      expect((await service.fetch(post(`/v1/pcs/${machine.serverId}/admit`, {}, token))).status).toBe(200);
+    }
+    const { line, key } = await newInvite(BASE, into, null);
+    service.openMerge({ merge_id, from, into, invite_key: key });
+    const call = async (path: string, body: object, scope?: { account: string; listing_id: string }) => {
+      const challenge = await (await service.fetch(post("/v1/pc/challenge", {
+        server_id: machine.serverId, public_key: machine.publicKey, ...(scope ? { completion: scope } : {}),
+      }))).json();
+      const proof = answerServerChallenge(challenge.frame, machine.keys.secretKey, {
+        server_id: machine.serverId, role: "account",
+        connection_id: scope ? `pc-complete/1:${scope.account}:${scope.listing_id}:${challenge.challenge_id}` : challenge.challenge_id,
+      });
+      const fields = { ...body, server_id: machine.serverId, challenge_id: challenge.challenge_id, proof };
+      if (path === "transfer") {
+        const read = await readJoinLine(line, READER);
+        Object.assign(fields, { invite_key: read.key, invite_signature: await signInviteRedeem(read, {
+          server_id: machine.serverId, public_key: machine.publicKey, challenge_id: challenge.challenge_id,
+        }), ...body });
+      }
+      return service.fetch(post(`/v1/pc/${path}`, fields));
+    };
+    const directory = async (account: string) => {
+      const result = await service.fetch(new Request(`${BASE}/v1/pcs`, { headers: { authorization: `Bearer ${service.issueToken(account)}` } }));
+      expect(result.status).toBe(200);
+      return (await result.json()).pcs.map((p: FakePc) => p.server_id);
+    };
+    return { service, machine, directory, call, transfer: (body: object = {}) => call("transfer", { merge_id, ...body }) };
+  }
+
+  test("a transfer moves a PC's listing in one step and the new listing can be completed", async () => {
+    const { machine, directory, transfer, call } = await setup();
+    expect([await directory(from), await directory(into)]).toEqual([[machine.serverId], []]);
+    const response = await transfer();
+    expect(response.status).toBe(200);
+    const receipt = await response.json();
+    expect(receipt).toEqual({ account: into, listing_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect([await directory(from), await directory(into)]).toEqual([[], [machine.serverId]]);
+    const box = await call("mailbox", { account: into, ack: null, with_listing_id: true });
+    expect(await box.json()).toMatchObject({ listing_id: receipt.listing_id, listing_admitted: true });
+    expect((await call("complete", receipt, receipt)).ok).toBe(true);
+  });
+
+  test("the same PC and merge return the same transfer receipt even after finish", async () => {
+    const { service, transfer } = await setup();
+    const before = await transfer();
+    expect(before.status).toBe(200);
+    const receipt = await before.json();
+    expect(await (await transfer()).json()).toEqual(receipt);
+    service.setMergeState(merge_id, "finished");
+    expect(await (await transfer()).json()).toEqual(receipt);
+    expect(service.pcs(into).map(row => row.listing_id)).toEqual([receipt.listing_id]);
+  });
+
+  test.each(["merge_closed", "not_listed", "invite_invalid", "relay_limit"] as const)("a refused transfer (%s) changes no listing", async (code) => {
+    const { service, transfer, directory } = await setup(code !== "not_listed");
+    if (code === "relay_limit") service.setMergeRelayLimit(into, true);
+    const before = [await directory(from), await directory(into)];
+    const response = await transfer(code === "merge_closed" ? { merge_id: "closed" }
+      : code === "invite_invalid" ? { invite_signature: "x".repeat(86) } : {});
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code } });
+    expect([await directory(from), await directory(into)]).toEqual(before);
+  });
+
+  test("whereami names the one listing and distinguishes a cancellation from a move", async () => {
+    const { service, call, machine } = await setup();
+    const listing_id = service.pcs(from).find(row => row.server_id === machine.serverId)?.listing_id;
+    const first = await call("whereami", { merge_id });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ account: from, listing_id, merge: "open" });
+    service.setMergeState(merge_id, "cancelled");
+    const cancelled = await call("whereami", { merge_id });
+    expect(await cancelled.json()).toEqual({ account: from, listing_id, merge: "cancelled" });
+  });
+
+  test.each(["mailbox", "snapshot", "complete"] as const)("a proved %s for a merged account never discloses the other account", async (path) => {
+    const { service, call, machine } = await setup();
+    const listing_id = service.pcs(from).find(row => row.server_id === machine.serverId)?.listing_id;
+    if (!listing_id) throw new Error("missing source listing");
+    const scope = { account: from, listing_id };
+    service.setMergeState(merge_id, "finished");
+    const response = await call(path, path === "complete" ? scope : { account: from, ...(path === "mailbox" ? { ack: null } : {}) }, path === "complete" ? scope : undefined);
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({ error: { code: "account_merged" } });
+    expect(body).not.toContain(into);
+  });
+});
+
 describe("PC invites (POST /v1/pc-invites, /v1/pc-invites/redeem)", () => {
   async function proofOf(service: FakeAccountService, machine: ReturnType<typeof pc>) {
     const challenge = await (await service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: machine.publicKey }))).json() as { challenge_id: string; frame: string };
