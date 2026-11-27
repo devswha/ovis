@@ -29,7 +29,7 @@ import { openCodeNativeState, openCodePanePid, openCodeVerificationCheckpoint, r
 import { opencodeDatabasePath } from "../opencode.ts";
 import { OpencodeSubagentStatus } from "../opencode-subagents.ts";
 import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service.ts";
-import { processStartUpperBoundAsync } from "../process-start.ts";
+import { processStartLowerBound, processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
 import { resolveGrokSession } from "../grok-store.ts";
@@ -353,7 +353,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   });
   const taskAgents = new AgentTaskStatus({
     resolve: async (pane) => {
-      const store = pane.agent === "grok" ? await resolveGrokSession(pane) : await resolveAgyStore(pane);
+      if (pane.agent === "grok") {
+        // no owner: a Grok restarted on the same session keeps the pane's turn, and its start drops what the old one ran
+        const session = await resolveGrokSession(pane);
+        return session === null ? null : { path: session.path, started: processStartLowerBound(session.pid), owner: null };
+      }
+      const store = await resolveAgyStore(pane);
       return store === null ? null : { path: store.path, started: await processStartUpperBoundAsync(store.pid), owner: `${store.pid}:${store.started}` };
     },
     onReset: (paneId) => { if (isTaskAgent(agentNow.get(paneId))) newLifetime(paneId, null); },

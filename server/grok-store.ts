@@ -406,11 +406,10 @@ export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string,
 }
 
 /**
- * resolveGrokStore's file with the Grok process that writes it: its pid and birth identity,
- * read before and after the lookup, so a Grok restarted on the same session reads as another
- * process.
+ * resolveGrokStore's file with the pid of the Grok process that writes it, the same process
+ * (its birth identity) before and after the lookup.
  */
-export async function resolveGrokSession(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<{ path: string; pid: number; started: string } | null> {
+export async function resolveGrokSession(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<{ path: string; pid: number } | null> {
   if (pane.agent !== "grok" || (platform !== "linux" && platform !== "darwin")) return null;
   const reported = herdrReportedGrokSession(pane);
   if (reported.present) {
@@ -424,7 +423,7 @@ export async function resolveGrokSession(pane: HerdrPane, configuredHome?: strin
     if (platform === "darwin") {
       const started = darwinProcess.startTime(ownerPid);
       const path = started === null ? null : await resolveDarwinGrokStore(pane.pane_id, ownerPid, started, reported.id!, configuredHome);
-      return path === null ? null : { path, pid: ownerPid, started: String(started) };
+      return path === null ? null : { path, pid: ownerPid };
     }
     const started = processStartIdentity(ownerPid);
     if (started === null) return null;
@@ -443,7 +442,7 @@ export async function resolveGrokSession(pane: HerdrPane, configuredHome?: strin
       if (linuxPidStart(ownerPid) !== pidStart) return null;
     }
     const path = reportedSessionPath(home, sessionId, held);
-    return path !== null && processStartIdentity(ownerPid) === started ? { path, pid: ownerPid, started: String(started) } : null;
+    return path !== null && processStartIdentity(ownerPid) === started ? { path, pid: ownerPid } : null;
   } catch { return null; }
 }
 
