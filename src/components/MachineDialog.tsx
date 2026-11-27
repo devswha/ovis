@@ -73,7 +73,6 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const choosing = job?.action_required === "choose_herdr" && asksChoice(job.error, job.found_herdr_sessions ?? [], job.found_ovis ?? []);
   const choiceAfterFailure = job?.action_required === "choose_herdr" && !choosing;
   const besideOvis = job?.action_required === "choose_herdr" && !!job.found_ovis?.length;
-  const keepOpen = job?.windows_startup === true;
   const own = job?.remote_ovis ?? (job || !machine ? null : ownOvisAction(machine));
   const ownUpdate = own?.updatable === true;
   // Add another PC to this PC's account over SSH (docs/account.md, "Adding a PC over SSH"): offered for a new PC only, in
@@ -92,6 +91,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const againRun = useRef<AbortController | null>(null);
   // an update asked with "Add it to my account": the server takes the add as its own setup, run once the update connects
   const addAfterUpdate = useRef<string | null>(null);
+  // a Windows start waits on this dialog, and so does such an add: closing it while the update runs would end a plain SSH PC
+  const keepOpen = job?.windows_startup === true || (job !== null && addAfterUpdate.current === job.id);
   const [install, setInstall] = useState<PcInstallJob | null>(null);
   const installing = install !== null && !["connected", "failed", "cancelled"].includes(install.phase);
   useEffect(() => {
