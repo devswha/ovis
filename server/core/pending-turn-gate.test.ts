@@ -3,8 +3,12 @@
 // front and one page, as in pending-left-lease.test.ts: the real createPendingDelivery, PendingInputs and
 // interruptCodexSteering, with herdr's client faked. `on.keys` is what herdr and the agent do as a key lands.
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { Server, ServerWebSocket } from "bun";
+import { CodexServers, onServedStatus, servedStatus } from "../approvals/codex.ts";
+import { ApprovalHub } from "../approvals/hub.ts";
 import type { StatusCollectorDeps } from "../collector.ts";
 import * as gjc from "../gjc-status.ts";
 import * as herdr from "../herdr/client.ts";
@@ -883,4 +887,180 @@ it("keeps a committed turn gate when an uncertain send is confirmed from the nat
   expect(pending.next("p")).toBeNull();
   pending.status("p", "idle");
   expect(pending.next("p")).toBe(y);
+});
+
+// A Codex on the server Ovis started for it tells its turns itself (server/approvals/codex.ts). Where that server took a
+// message as a turn, the queue goes by that turn's own end, and it types nothing into a turn the server says runs.
+// The real CodexServers and its connection, on a stand-in for Codex's server that answers as 0.171.0 does.
+describe("a Codex whose own server tells its turns", () => {
+  type Message = Record<string, unknown>;
+  const stops: (() => void)[] = [];
+  afterEach(() => { for (const stop of stops.splice(0)) stop(); });
+
+  const thread = (method: string, params: Message): Message => ({ method, params: { threadId: "t1", ...params } });
+  const status = (type: "active" | "idle"): Message => thread("thread/status/changed", { status: type === "active" ? { type, activeFlags: [] } : { type } });
+  const started = (id: string): Message => thread("turn/started", { turn: { id, rootTurnId: id } });
+  const completed = (id: string): Message => thread("turn/completed", { turn: { id, status: "completed", error: null } });
+
+  /** Codex's app server on the socket of `program` (a CodexServers launch), with thread `t1` loaded: the test sends as Codex. */
+  function codexServer(program: string) {
+    const received: Message[] = [];
+    const waiting: { match: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
+    let client: ServerWebSocket<undefined> | null = null;
+    let barriers = 0;
+    const server: Server<undefined> = Bun.serve({
+      unix: join(dirname(program), "codex.sock"),
+      fetch: (request, bun) => bun.upgrade(request) ? undefined : new Response("no", { status: 400 }),
+      websocket: {
+        open(socket) { client = socket; },
+        message(socket, data) {
+          const message = JSON.parse(String(data)) as Message;
+          received.push(message);
+          for (const wait of [...waiting]) if (wait.match(message)) { waiting.splice(waiting.indexOf(wait), 1); wait.resolve(message); }
+          const answer = (result: Message): void => { socket.send(JSON.stringify({ id: message["id"], result })); };
+          if (message["method"] === "initialize") answer({ userAgent: "ovis/0.171.0 (Ubuntu; x86_64) xterm (ovis; 0)" });
+          if (message["method"] === "thread/loaded/list") answer({ data: ["t1"], nextCursor: null });
+          if (message["method"] === "thread/resume") answer({});
+        },
+      },
+    });
+    const send = (message: Message): void => { client!.send(JSON.stringify(message)); };
+    const next = (match: (message: Message) => boolean): Promise<Message> => new Promise<Message>((resolve) => {
+      const found = received.find(match);
+      if (found) resolve(found);
+      else waiting.push({ match, resolve });
+    });
+    return {
+      received, send, next, drop: () => client!.close(), stop: () => server.stop(true),
+      /** Resolves once Ovis has read everything sent before: it subscribes to a subagent's thread only after reading it. */
+      async read(): Promise<void> {
+        const id = `b${++barriers}`;
+        send({ method: "thread/started", params: { thread: { id, parentThreadId: "x", ephemeral: false } } });
+        send({ method: "thread/status/changed", params: { threadId: id, status: { type: "active", activeFlags: [] } } });
+        await next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
+      },
+    };
+  }
+
+  /** Pane "p" with Codex on the server Ovis started for it: its own thread `t1` at rest, Ovis subscribed to it. */
+  async function served(options: Record<string, unknown> = {}) {
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), "cq-")));
+    const hub = new ApprovalHub(join(tmp, "h"), [], {});
+    const servers = new CodexServers(hub, { tmp });
+    const codex = codexServer(servers.launch("p", [], "0.171.0")!);
+    stops.push(() => { codex.stop(); servers.stop(); hub.stop(); rmSync(tmp, { recursive: true, force: true }); });
+    const d = pane(["codex"], { codexHome: join(tmp, "codex"), ...options });
+    spyOn(herdr, "paneGet").mockImplementation(async () => ({ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: d.now.status, agent_session: null }) as unknown as HerdrPane);
+    await codex.next((message) => message["method"] === "thread/loaded/list");
+    codex.send({ method: "thread/started", params: { thread: { id: "t1", parentThreadId: null, ephemeral: false } } });
+    await codex.next((message) => message["method"] === "thread/resume");
+    codex.send(status("idle"));
+    await codex.read();
+    const starts = (): Message[] => codex.received.filter((message) => message["method"] === "turn/start");
+    /** Codex takes its next turn/start as turn `id`; resolves with what it was sent. */
+    const takes = async (id: string): Promise<{ clientUserMessageId: string; input: { text: string }[] }> => {
+      const before = starts().length;
+      const request = await codex.next((message) => message["method"] === "turn/start" && starts().indexOf(message) >= before);
+      codex.send({ id: request["id"], result: { turn: { id, rootTurnId: id, status: "inProgress" } } });
+      return request["params"] as { clientUserMessageId: string; input: { text: string }[] };
+    };
+    /** Everything the server sent has been read, and the queue has done what follows from it. */
+    const told = async (): Promise<void> => { await codex.read(); await d.settled(); };
+    return { ...d, codex, starts, takes, told };
+  }
+
+  it.each(["statuses of the turn before that pass for it (#4118 case B)", "a start no status showed in time"])("sends a queued message with its number as a turn, and keeps the next one behind that turn until its own end is told: %s", async (order) => {
+    const stale = order !== "a start no status showed in time";
+    const d = await served({ pendingStartTimeoutMs: 0 });
+    d.event("working");
+    await d.queue("X");
+    await d.queue("Y");
+    // herdr reads the pane at rest and the queue sends X as a turn of the thread
+    const first = d.takes("u1");
+    d.now.status = "idle";
+    d.event("idle");
+    // status events of the turn before arrive behind X's commit
+    if (stale) void d.codex.next((message) => message["method"] === "turn/start").then(() => { d.event("working"); d.event("idle"); });
+    const sent = await first;
+    expect(sent.input[0]!.text).toBe("X");
+    expect(sent.clientUserMessageId).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+    await d.told();
+    // the start timeout has passed, and herdr still reads the pane at rest: it has not seen the turn Codex runs
+    d.delivery.pending.expire();
+    await d.settled();
+    expect(d.typed).toEqual([]);
+    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.starts()).toHaveLength(1);
+    const second = d.takes("u2");
+    d.codex.send(started("u1"));
+    d.codex.send(status("idle"));
+    d.codex.send(completed("u1"));
+    expect((await second).input[0]!.text).toBe("Y");
+    await d.told();
+    expect(d.typed).toEqual([]);
+    expect(d.rows()).toEqual([]);
+  });
+
+  it.each(["a queued message the queue takes up", "a message sent to the queue"])("types nothing into a turn the TUI started that herdr has not read yet: %s waits for that turn's end", async (kind) => {
+    const d = await served();
+    if (kind === "a queued message the queue takes up") { d.event("working"); await d.queue("Y"); }
+    // a turn runs, as Codex's server says; herdr reads the pane at rest
+    d.codex.send(status("active"));
+    d.codex.send(started("u1"));
+    await d.codex.read();
+    d.now.status = "idle";
+    d.event("idle");
+    if (kind === "a message sent to the queue") await d.queue("Y");
+    await d.told();
+    expect(d.typed).toEqual([]);
+    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.starts()).toEqual([]);
+    const sent = d.takes("u2");
+    d.codex.send(status("idle"));
+    d.codex.send(completed("u1"));
+    expect((await sent).input[0]!.text).toBe("Y");
+    await d.told();
+    expect(d.typed).toEqual([]);
+    expect(d.rows()).toEqual([]);
+  });
+
+  it("goes by the statuses again when Codex's server can no longer tell the turn's end", async () => {
+    const d = await served();
+    d.event("working");
+    await d.queue("X");
+    await d.queue("Y");
+    const first = d.takes("u1");
+    d.now.status = "idle";
+    d.event("idle");
+    await first;
+    await d.told();
+    expect(d.rows()).toEqual(["Y queued"]);
+    // the connection to Codex's server ends: what herdr reads of the turn opens the queue, and Y is typed as before
+    const ended = Promise.withResolvers<void>();
+    stops.push(onServedStatus((paneId) => { if (paneId === "p" && servedStatus("p") === null) ended.resolve(); }));
+    d.codex.drop();
+    await ended.promise;
+    await d.settled();
+    expect(d.typed).toEqual([]);
+    await d.turnSeen();
+    expect(d.typed).toEqual(["paste:Y", "Enter"]);
+    expect(d.rows()).toEqual([]);
+  });
+
+  it("keeps a message Codex's server did not answer, types it never, and holds what waits behind it", async () => {
+    const d = await served();
+    d.event("working");
+    await d.queue("X");
+    await d.queue("Y");
+    d.now.status = "idle";
+    d.event("idle");
+    // the connection ends with the request sent and no answer to it
+    await d.codex.next((message) => message["method"] === "turn/start");
+    d.codex.drop();
+    await d.settled();
+    expect(d.rows()).toEqual(["X uncertain", "Y held"]);
+    await d.turnSeen();
+    expect(d.typed).toEqual([]);
+    expect(d.rows()).toEqual(["X uncertain", "Y held"]);
+  });
 });

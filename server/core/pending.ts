@@ -219,6 +219,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       return path === null ? null : captureCodexDelivery(path);
     } catch { return null; }
   };
+  /**
+   * The pane's queue goes behind a turn Codex's own server tells the end of (PendingInputs.awaitTurn), and on again once
+   * that end is told or can no longer be.
+   */
+  const behindCodexTurn = (paneId: string, over: Promise<boolean>): void => {
+    const wait = pending.awaitTurn(paneId);
+    void over.then((told) => { pending.turnOver(paneId, wait, told); drainPending(paneId); });
+  };
   async function reconcileCodexDeliveries(paneId: string): Promise<void> {
     if (codexTyped.values(paneId).length === 0) return;
     await serialize(paneId, async () => {
@@ -825,7 +833,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
       // a Codex on the server Ovis started for it takes plain text at rest as a turn of its thread (sendCodexTextAsData):
-      // nothing joins what is typed in its own box
+      // nothing joins what is typed in its own box, and the pane's next message waits for that turn's own end
       if (context.identity.agent === "codex" && !context.working && context.agentInFront && !context.collapsed && codexTakesAsData(text, sent)) {
         // the rollout this send's receipt is read from, should Codex not answer (reconcileCodexDeliveries)
         const anchor = nativeItem ? await prepareCodexReceipt(paneId, context.identity) : null;
@@ -847,11 +855,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           throw error;
         });
         if (viaData?.turn === "started") {
+          behindCodexTurn(paneId, viaData.over);
           noteSubmitted(paneId, text, undefined, viaData.at);
           return { ok: true };
         }
         // withdrawn or late while the server was asked: it is not typed instead
         if (stopped !== undefined) throw stopped;
+        // nor does the queue type into a turn the server says the thread runs, whatever herdr reads of the pane: the
+        // message waits for that turn's end. A Send now is the user's own, and is typed as before
+        if (viaData && (automatic || queued)) {
+          behindCodexTurn(paneId, viaData.over);
+          throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
+        }
       }
       // a draft typed in the terminal is the user's: the paste would join it and the Enter send both (#609).
       // The box is the live screen's; only the viewport read tells Claude's grey text from a draft.

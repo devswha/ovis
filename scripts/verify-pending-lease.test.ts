@@ -39,6 +39,9 @@ describe("verify-pending-lease enforcement", () => {
       .toBe(extractPendingInputLeaseSlice(pendingInput));
     expect(extractPendingInputLeaseSlice(pendingInput.replace("item.inFlight ? \"uncertain\" : \"held\"", "\"held\"")))
       .not.toBe(extractPendingInputLeaseSlice(pendingInput));
+    // the queue giving out a message while a turn's end the agent tells is awaited
+    expect(extractPendingInputLeaseSlice(pendingInput.replace("this.gates.has(paneId) || this.turns.has(paneId)\n", "this.gates.has(paneId)\n")))
+      .not.toBe(extractPendingInputLeaseSlice(pendingInput));
 
     const connections = read("server/core/connections.ts");
     expect(extractConnectionsLeaseSlice(connections.replace("const WATCHES = 64;", "const WATCHES = 128;")))
@@ -102,6 +105,13 @@ describe("verify-pending-lease enforcement", () => {
     expect(neverHolds).not.toBe(pendingCode);
     for (const mutated of [lenient, neverHolds]) {
       expect(extractLeaseCallerSlice("server/core/pending.ts", mutated, pendingCaller.pattern, pendingCaller.wholeDecls))
+        .not.toBe(extractLeaseCallerSlice("server/core/pending.ts", pendingCode, pendingCaller.pattern, pendingCaller.wholeDecls));
+    }
+    // the queue no longer going behind the turn Codex's server took a message as, or behind one it says runs
+    for (const taken of ["          behindCodexTurn(paneId, viaData.over);\n          noteSubmitted(", "          behindCodexTurn(paneId, viaData.over);\n          throw new HerdrError(\"pending_wait\""]) {
+      const unawaited = pendingCode.replace(taken, taken.slice(taken.indexOf("\n") + 1));
+      expect(unawaited).not.toBe(pendingCode);
+      expect(extractLeaseCallerSlice("server/core/pending.ts", unawaited, pendingCaller.pattern, pendingCaller.wholeDecls))
         .not.toBe(extractLeaseCallerSlice("server/core/pending.ts", pendingCode, pendingCaller.pattern, pendingCaller.wholeDecls));
     }
     // The Codex steer's authorizePending moved from its writing callback to the end of its checkPane callback, an await
