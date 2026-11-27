@@ -38,13 +38,15 @@ const KIRO_TRUNCATED_END_RE = /(?:\[\d+ more characters not shown\]|\.\.\.\+\d+ 
 const sameLabels = (actual: readonly string[], expected: readonly string[]): boolean =>
   actual.length === expected.length && actual.every((label, index) => label === expected[index]);
 
-/** The footer's first line, tried on one line or wrapped over up to three (matching live.ts `ends`). */
+/**
+ * The footer's first line when Kiro's footer ends the screen, on one line or wrapped over up to three (matching
+ * live.ts `ends`); -1 when it does not. A footer above later output is an answered menu, not one waiting.
+ */
 function hintStart(lines: string[]): number {
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    for (let span = 1; span <= 3; span += 1) {
-      const text = lines.slice(index, index + span).map(cleanLine).filter(Boolean).join(" ");
-      if (KIRO_APPROVAL_HINT_RE.test(text)) return index;
-    }
+  const shown = lines.flatMap((line, index) => cleanLine(line) && !isDivider(line) ? [index] : []);
+  for (let span = 1; span <= 3 && span <= shown.length; span += 1) {
+    const tail = shown.slice(-span);
+    if (KIRO_APPROVAL_HINT_RE.test(tail.map((index) => cleanLine(lines[index]!)).join(" "))) return tail[0]!;
   }
   return -1;
 }
@@ -166,21 +168,30 @@ function readKiroApproval(screen: string): ParsedKiroApproval | null {
 }
 
 /**
- * Whether Kiro V3's approval dialog truncated or folded its command preview (`[N more characters not shown]`,
- * `...+N lines`, or exceeds `CARD_BODY_MAX`): no card (neither `kiro-approval` nor a generic fallback card) answers
- * an incomplete command — the terminal answers it.
+ * Whether Kiro's approval is one the terminal must answer: its command preview is truncated or folded
+ * (`[N more characters not shown]`, `...+N lines`, or over `CARD_BODY_MAX`), also when a row the reader cannot read
+ * (a label wrapped on a narrow pane) keeps it from a card, or the screen holds two header/detail pairs. Neither
+ * `kiro-approval` nor a generic fallback card answers it.
  */
-export function kiroTruncatedApproval(screen: string): boolean {
-  return readKiroApproval(screen)?.truncated === true;
+export function kiroApprovalLeftToTerminal(screen: string): boolean {
+  const parsed = readKiroApproval(screen);
+  if (parsed !== null) return parsed.truncated || parsed.ambiguous;
+  const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);
+  const hintIndex = hintStart(lines);
+  if (hintIndex < 0) return false;
+  for (let at = hintIndex - 1; at >= 0; at -= 1) {
+    if (KIRO_APPROVAL_HEADER_RE.test(cleanLine(lines[at]!))) return detailTruncated(formatDetail(lines.slice(at + 1, hintIndex)));
+  }
+  return false;
 }
 
 /**
- * Whether Kiro V3's approval menu is open on screen (even when focused on a rule-creation row whose footer replaces
- * the arrow hint with `Enter to see more options`, or when the preview is folded/truncated): queued messages must hold
- * rather than pressing Enter into the menu.
+ * Whether Kiro's approval footer ends the screen (any of its forms, the rule row's `Enter to see more options` among
+ * them, and whether or not the reader could read the rows): queued messages must hold rather than pressing Enter
+ * into the menu.
  */
 export function kiroApprovalWaits(screen: string): boolean {
-  return readKiroApproval(screen) !== null;
+  return hintStart(screen.replace(ANSI_RE, "").split(/\r?\n/)) >= 0;
 }
 
 /**

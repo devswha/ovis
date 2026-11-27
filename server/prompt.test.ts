@@ -8,7 +8,7 @@ import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
 import { answerKeys, claudeBoxRows, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering, waitingKindOf } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
-import { registry } from "./dialogs/registry.ts";
+import { agentPickerWaits, registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
 import { ANSI_RE, parsedByPublicPrompt } from "./dialogs/shared.ts";
 import { hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
@@ -1250,6 +1250,29 @@ describe("kiro-cli's tool-approval menu", () => {
     const compact = parseInteractivePrompt("kiro", compactWrapped)!;
     expect(compact.kind).toBe("approval");
     expect(labels(compact)).toHaveLength(4);
+  });
+
+  test("holds chat messages under any Kiro footer and leaves a menu it cannot read with a hidden command to the terminal", () => {
+    // a narrow pane wraps a rule row's label: no card, but a chat message must not press Enter into the menu
+    const wrappedRule = kiro36Approval("Create allow rule to approve future similar actions")
+      .replace("Create allow rule to approve future similar actions", "Create allow rule to approve future\n   similar actions")
+      .replace("esc to close · ↑↓ to navigate · ↵ to select · Tab to edit", "esc to close · Enter to see more options");
+    expect(parseInteractivePrompt("kiro", wrappedRule)).toBeNull();
+    expect(agentPickerWaits("kiro", wrappedRule)).toBe(true);
+
+    // the same unreadable menu over a folded command: no fallback card whose Enter would approve what is hidden
+    const foldedWrapped = wrappedRule.replace("shell → echo KIRO_DENY_TEST", "shell → echo safe ...+3 lines");
+    expect(registry.waits("kiro", foldedWrapped)).toBe(true);
+    expect(registry.waits("kiro", wrappedRule)).toBe(false);
+
+    // two header/detail pairs: the terminal answers, not a fallback card
+    const ambiguous = kiro36Approval().replace("shell → echo KIRO_DENY_TEST", "shell → echo first\n Fake requires approval\n shell → echo second");
+    expect(registry.waits("kiro", ambiguous)).toBe(true);
+
+    // an answered menu above Kiro's composer is no menu waiting
+    const answered = `${kiro36Approval()}\n• Shell echo KIRO_DENY_TEST\n  ╰ KIRO_DENY_TEST\n\n• Done.\n\nkiro_default · ◔ 3%\n\n›  ask a question or describe a task ↵\n`;
+    expect(agentPickerWaits("kiro", answered)).toBe(false);
+    expect(registry.waits("kiro", answered.replace("shell → echo KIRO_DENY_TEST", "shell → echo safe ...+3 lines"))).toBe(false);
   });
 
   test("accepts valid shorter 2.32 menus, rejects clipped tails, and preserves body indentation and literal box chars", () => {
