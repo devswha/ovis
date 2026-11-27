@@ -113,8 +113,8 @@ export class DeviceReadOnlyError extends Error {
 /** What a key confirm proves to the admission guard: that code's reserved key, confirmed on this PC's screen or by ovis recover. */
 export interface ConfirmProof { readonly codeId: string; readonly key: string; readonly source: "screen" | "recover"; readonly recoveredOver?: readonly string[] }
 /**
- * Why the admission guard keeps a key out (DeviceStore.keptOut), in the order it asks: this PC cannot trust its account
- * state (`closed`); a row of the key here has a pairing time it cannot trust (`untrusted`); the account holds the key
+ * Why the admission guard keeps a key out (DeviceStore.keptOut), a block or a freeze named before the rest: this PC
+ * cannot trust its account state (`closed`); a row of the key here has a pairing time it cannot trust (`untrusted`); the account holds the key
  * back (`account_hold`) or removed it (`account_removed`); it was revoked here (`revoked`, never for a pairing on this
  * PC); the PC is locked (`locked`); a block (`block`), or the account service's freeze that follows one (`freeze`),
  * keeps out every key newer than its target.
@@ -1070,21 +1070,21 @@ export class DeviceStore {
     if (this.failsClosed || (this.opensAll() && proof !== "legacy_credential" && this.accountError !== null)) return "closed";
     const state = this.safety?.state();
     if (state === undefined) return null;
-    if (key !== undefined) {
-      if (proof !== "legacy_credential" && this.devices.some(row => row.relay_public_key === key && row.untrusted_created_at === row.created_at)) return "untrusted";
-      if (this.accountHeld?.(key)) return "account_hold";
-      if (this.removedByAccount(key)) return "account_removed";
-      if (!options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0)) return "revoked";
-    }
+    const keyWhy = key === undefined ? null
+      : proof !== "legacy_credential" && this.devices.some(row => row.relay_public_key === key && row.untrusted_created_at === row.created_at) ? "untrusted"
+      : this.accountHeld?.(key) ? "account_hold"
+      : this.removedByAccount(key) ? "account_removed"
+      : !options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0) ? "revoked"
+      : null;
     // only a proof admitConfirmed minted from a live reservation counts: a hand-built one passes nothing
     const confirm = typeof proof === "string" ? undefined : proof;
     const confirmed = confirm !== undefined && MINTED_PROOFS.has(confirm) && key !== undefined && confirm.key === key;
     // a locked PC admits only the key approved on its own screen (P11); a recover admit is ended by the lock (P22)
-    if (state.locked && !(confirmed && confirm.source === "screen")) return "locked";
-    if (state.freezes.length === 0) return null;
+    const lockWhy = state.locked && !(confirmed && confirm.source === "screen") ? "locked" : null;
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
-    if (confirmed) return null;
-    return this.freezeKeepingOut(state.freezes, key, proof, options?.retainedRow);
+    const freezeWhy = state.freezes.length === 0 || confirmed ? null : this.freezeKeepingOut(state.freezes, key, proof, options?.retainedRow);
+    // any of them keeps the key out; a block or a freeze is named first, as readers that know only that one name it
+    return freezeWhy ?? keyWhy ?? lockWhy;
   }
 
   /** The kind of the first block or freeze in force that keeps `key` out: a key with no row here counts as newer than its target. */

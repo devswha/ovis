@@ -2100,9 +2100,13 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   `block`, `freeze` (the account service's freeze that follows a block), `account_hold`,
   `account_removed`, `untrusted` (an earlier pairing of that key here whose time this PC cannot
   trust), `closed` (this PC cannot trust its account state) or `locked`; a block or a freeze marks
-  it `list_held` too, as before. `ovis approve` then says that the device was not let in and why,
-  never that it is let in or approved (a reason it does not know: only that this PC keeps it out).
-  A device approved anyway hears why in its refusal's `message`, not that nobody approved it:
+  it `list_held` too, as before (a block or a freeze is named first where several reasons stand).
+  The answer to an approval of such a join (`POST /api/relay/join`) names `held_why` again as it
+  stands when the approval is taken, which may have come since the join was listed. `ovis approve`
+  then says that the device was not let in and why, never that it is let in or approved (a reason
+  it does not know: only that this PC keeps it out).
+  A device whose account join is approved anyway hears why in its refusal's `message`, not that
+  nobody approved it (any other pairing names a key it never proves, and hears only `auth_failed`):
   `list_held_here` for a block or a freeze, else `kept_out_` and the reason (`kept_out_account_hold`,
   `kept_out_account_removed`, `kept_out_untrusted`, `kept_out_closed`, `kept_out_locked`, and
   `kept_out_revoked` for one a member approved from afar whose key was revoked here). An app that

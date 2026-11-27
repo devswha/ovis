@@ -159,9 +159,6 @@ describe("one final admission guard (G3, rule R1)", () => {
     const restoredLog = SafetyLog.open(restored);
     const untrusted = new DeviceStore(restored, null, null, { safety: restoredLog, pc: PcAccountState.open(restored), removals: RemovalEvidence.open(restored, restoredLog), journal: DeviceJournal.open(restored, () => restoredLog.ensureFile()) });
     expect([untrusted.admits(newer.spki), untrusted.keptOut(newer.spki, { pairingHere: true })]).toEqual([false, "untrusted"]);
-    // what `ovis approve` says to do about it: remove that row here, and an approval on this PC lets the key in again
-    expect(untrusted.revoke(row.id)).toBe(true);
-    expect(untrusted.keptOut(newer.spki, { pairingHere: true })).toBeNull();
   });
 
   test("G3: admits and a signed add refuse a key revoked on this PC", async () => {

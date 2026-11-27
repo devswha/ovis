@@ -4468,6 +4468,15 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     expect(said.size).toBe(reasons.length);
   });
 
+  it("goes by what the approval's answer names, which may have come since the joins were read, and never says the device is let in", async () => {
+    for (const join of [joinOf("j1"), { ...joinOf("j1"), digits: "482913" }, { ...joinOf("j1"), list_held: true }]) {
+      const { code, out } = await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); }, approve: () => ({ held_why: "account_hold" }) });
+      expect(code).toBe(0);
+      expect(out.join("")).not.toMatch(/Approved:|is let in;|was received|blocked/);
+      expect(out.at(-1)).toStartWith("Tablet one was not let in here");
+    }
+  });
+
   it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
     const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
     expect(code).toBe(1);

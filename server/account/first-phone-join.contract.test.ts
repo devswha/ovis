@@ -93,7 +93,7 @@ async function http(pc: Pc, path: string, headers: Record<string, string>, body?
     method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string; held_why?: string; list_held?: boolean }[]; error?: { code: string } } };
+  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string; held_why?: string; list_held?: boolean }[]; held_why?: string; error?: { code: string } } };
 }
 
 for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const) {
@@ -267,3 +267,52 @@ for (const { why, heard, make } of keptOut) {
     expect(pc.devices.hasKey(device.spki)).toBe(false);
   });
 }
+
+test("a hold that comes after ovis approve read the joins is named in the approval's own answer, and the device hears it", async () => {
+  const pc = await boundPc("darwin");
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  const listed = await http(pc, "/api/relay/joins", terminal(pc));
+  expect(listed.body.joins![0]!.held_why).toBeUndefined();
+  pc.app.context.services.accountHolds.hold([device.spki]);
+  const approved = await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits });
+  expect([approved.status, approved.body.held_why]).toEqual([200, "account_hold"]);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "kept_out_account_hold" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+});
+
+test("a key both frozen and held is named by its freeze, as older readers know it, and the device hears list_held_here", async () => {
+  const pc = await boundPc("darwin");
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  await keptOut.find(({ why }) => why === "freeze")!.make(pc, device);
+  pc.app.context.services.accountHolds.hold([device.spki]);
+  const listed = await http(pc, "/api/relay/joins", terminal(pc));
+  expect(listed.body.joins).toEqual([expect.objectContaining({ held_why: "freeze", list_held: true })]);
+  expect((await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits })).status).toBe(200);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_held_here" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+});
+
+test("a members join a member approved from afar, whose key the account holds before it confirms, hears that hold", async () => {
+  const member = await memberRow("acct_1");
+  const pc = await startedPc("darwin", [member.row]);
+  await firstPairingRead(pc);
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  const approvals = pc.app.context.services.relay.approvals;
+  const [card] = approvals.remoteList();
+  expect(approvals.decideRemote(card!.id, true, digits, { id: member.row.id, label: "Account phone", role: "drive" }).outcome).toBe("decided");
+  pc.app.context.services.accountHolds.hold([device.spki]);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "kept_out_account_hold" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+});

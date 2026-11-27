@@ -675,13 +675,13 @@ function approvedWords(label: string, list: boolean, cannot: CannotSign | null =
     case "held":
       return `${label} was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it${list ? ", whether or not your account's list holds it" : ""}. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`;
     case "freeze":
-      return `${label} was not let in here: your Ovis account keeps out every device that came after a device it blocked, and this PC keeps to that. Lift the block on a device of your account that is older than it and signs in with two-step sign-in. ${label} can open this PC after that.\n`;
+      return `${label} was not let in here: your Ovis account keeps out every device that came after a device it blocked, and this PC keeps to that. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ${command} recover on this PC, which lists the block with the command that lifts it. ${label} can open this PC after that.\n`;
     case "account_hold":
-      return `${label} was not let in here: your Ovis account holds its key back on this PC, as a removal of it was seen or still waits here. Approving it here again does not change that.\n`;
+      return `${label} was not let in here: your Ovis account holds new devices or this one back on this PC for now, and approving it here does not change that.\n`;
     case "account_removed":
       return `${label} was not let in here: its key was removed from your Ovis account, and this PC lets no removed key in, whoever approves it here.\n`;
     case "untrusted":
-      return `${label} was not let in here: this PC holds an earlier pairing of it whose time it cannot trust, and keeps that key out. Remove ${label} from this PC's devices, then have it ask again.\n`;
+      return `${label} was not let in here: this PC holds an earlier pairing of its key whose time it cannot trust, and keeps that key out.\n`;
     case "closed":
       return `${label} was not let in: this PC cannot trust its account records right now, and lets no new device in. Open it on its own screen, or run ${command} recover there, then have ${label} ask again.\n`;
     case "locked":
@@ -706,8 +706,20 @@ const cannotSign = (join: OwnJoin): CannotSign | null => join.held_why !== undef
   : join.list_held === true ? "held" : join.list_behind === true ? "behind"
   : join.list_needs_keys === true ? "needs_keys" : join.list_not_signer === true ? "not_signer" : null;
 
-/** What `POST /api/relay/join` made of the six digits typed: `away` when its answer did not come. */
-export type JoinOutcome = "approved" | "wrong_digits" | "gone" | "locked" | "strict" | "away";
+/**
+ * What `POST /api/relay/join` made of the six digits typed: `away` when its answer did not come. An approval this PC
+ * took while it keeps that device out names why (`held_why`, as the answer says it), in place of `approved`.
+ */
+export type JoinOutcome = "approved" | { readonly held_why: string } | "wrong_digits" | "gone" | "locked" | "strict" | "away";
+
+/**
+ * The join as an approval of it was answered: a reason that keeps it out named by that answer (it may have come since
+ * the join was listed) goes before the one listed; one listed still stands where the answer names none, as a device
+ * wrongly told it was not let in asks again, and one wrongly told it is in waits for nothing.
+ */
+function answeredJoin(join: OwnJoin, answer: { readonly held_why?: unknown }): OwnJoin {
+  return typeof answer.held_why === "string" ? { ...join, held_why: answer.held_why } : join;
+}
 
 export interface JoinOptions extends AnswerInput {
   readonly approve: (id: string, digits: string) => Promise<JoinOutcome>;
@@ -757,11 +769,13 @@ export async function approveJoins(joins: readonly OwnJoin[], options: JoinOptio
       const typed = line.normalize("NFKC").replace(/\s/g, "");
       if (typed === "") { out(`${label} is left waiting until its time runs out.\n`); break; }
       if (!SIX_DIGITS.test(typed)) { out(`That line answered nothing: only all six digits ${label} shows let it in. Answer again.\n`); continue; }
-      const outcome = await options.approve(join.id, typed);
+      const answer = await options.approve(join.id, typed);
+      const outcome = typeof answer === "string" ? answer : "approved";
       if (outcome === "locked" || outcome === "strict") { out(lockRefusal(outcome)); return 1; }
       if (outcome === "away") { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
       // a join into the account's list is let in by its entry, first join or not: the approval was received, no more
-      out(outcome === "approved" ? first || join.list === true || cannotSign(join) !== null ? approvedWords(label, join.list === true, cannotSign(join), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
+      const answered = outcome === "approved" ? answeredJoin(join, typeof answer === "string" ? {} : answer) : join;
+      out(outcome === "approved" ? first || join.list === true || cannotSign(answered) !== null ? approvedWords(label, join.list === true, cannotSign(answered), command.replace(/ approve$/, "")) : `Approved: ${label} joins your account once it confirms.\n`
         : outcome === "wrong_digits" ? first ? `That is not the number ${label} shows, so it was not let in. To try again, have ${label} ask again, then run ${command} again.\n`
           : `That is not the number ${label} shows. It was not let in; it can ask again.\n`
         : `${label} is no longer waiting.\n`);
@@ -1806,7 +1820,7 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
   const stopAt = now() + FIRST_JOIN_MS;
   interface Question { readonly prompt: string; shownAt: number | null }
   const intro: Question = { prompt: `Open ${name} from My PCs on your phone. If the phone shows six digits, type them here (Enter to finish without): `, shownAt: null };
-  let asked: (Question & { readonly id: string; readonly label: string; readonly list: boolean; readonly cannot: CannotSign | null }) | null = null;
+  let asked: (Question & { readonly id: string; readonly label: string; readonly list: boolean; readonly join: OwnJoin }) | null = null;
   const current = (): Question => asked ?? intro;
   const seen = new Set<string>();
   let onScreen: Question | null = null;
@@ -1852,8 +1866,8 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
         const { id, label } = asked;
         if (!SIX_DIGITS.test(typed)) { say(`That line answered nothing: type all six digits ${label} shows, or press Enter by itself to finish without. Answer again.\n`); continue; }
         try {
-          await api("POST", "/api/relay/join", { body: { id, digits: typed } });
-          say(approvedWords(label, asked.list, asked.cannot, cli(options)));
+          const answer = await api<{ held_why?: unknown } | undefined>("POST", "/api/relay/join", { body: { id, digits: typed } });
+          say(approvedWords(label, asked.list, cannotSign(answeredJoin(asked.join, answer ?? {})), cli(options)));
           return true;
         } catch (error) {
           if (signal.aborted || !(error instanceof LocalError || error instanceof AwayError)) throw error;
@@ -1888,7 +1902,7 @@ async function watchFirstJoins(options: LinkOptions, api: Api, watched: { readon
           const label = plainLabel(next.label);
           // a join this PC cannot let in is asked nothing: its six digits would let nobody in
           if (next.list_unknown === true) say(olderAppWords(label));
-          else asked = { id: next.id, label, list: next.list === true, cannot: cannotSign(next), prompt: `${firstJoinLead(next, account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `, shownAt: null };
+          else asked = { id: next.id, label, list: next.list === true, join: next, prompt: `${firstJoinLead(next, account)} Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `, shownAt: null };
         }
         const rows = await throughAccount();
         if (rows !== null && known === null) known = new Map(rows.map((row) => [row.id, usage(row)]));

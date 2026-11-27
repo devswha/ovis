@@ -775,11 +775,12 @@ export class RelaySession {
     if (this.listCard !== undefined) { void this.allowIntoList(sas, id, this.listCard).catch(() => this.close("internal_error")); return; }
     const verdict = joinVerdict(this.options.services, sas.publicKey, sas.approvedBy === undefined ? undefined : { by: sas.approvedBy, id });
     if (verdict.lets === "out") {
-      if (verdict.why === null) { this.close("auth_failed"); return; }
-      // a key this PC itself keeps out: the device hears why, as from a list PC
-      this.endPairing(true);
-      this.failJoin(KEPT_OUT_CAUSES[verdict.why]);
-      return;
+      // an account join, which the account vouched for with that key, hears why, as from a list PC. A pairing names a
+      // key it never proves, so any other hears nothing of it: refused here, or below by the guard, as before
+      const cause = verdict.why !== null && this.intent === "account" ? KEPT_OUT_CAUSES[verdict.why] : null;
+      // an approval from afar that no longer stands counts as a failed pairing (failJoin and close both count it)
+      if (verdict.by === "approval") { if (cause !== null) this.failJoin(cause); else this.close("auth_failed"); return; }
+      if (cause !== null) { this.endPairing(true); this.failJoin(cause); return; }
     }
     let device: DeviceMatch | undefined;
     try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }), ...(this.intent === "vouched" && this.vouchedEndpoint !== null ? { vouchedPc: this.vouchedEndpoint } : {}) }, undefined, this.admitNewDevice)?.device; }
