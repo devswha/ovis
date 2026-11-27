@@ -91,7 +91,7 @@ export class AccountMove {
       return refused("not_member", "Only a device of this PC's account or its own window can move it", 403);
     }
     if (!devices.canOrderAccountMove(id)) return refused("join_hold", "Wait for this device's join hold to end", 403);
-    const age = Date.now() - Date.parse(devices.originOf(id)?.at ?? devices.addedAt(id) ?? "");
+    const age = this.clock.now() - Date.parse(devices.originOf(id)?.at ?? devices.addedAt(id) ?? "");
     const remaining = Number.isFinite(age) ? Math.max(0, MOVE_MIN_ROW_AGE_MS - Math.max(0, age)) : MOVE_MIN_ROW_AGE_MS;
     return remaining > 0 ? refused("too_new", "This device must have been admitted to this PC at least an hour ago", 409, Math.ceil(remaining / 1000)) : null;
   }

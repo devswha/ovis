@@ -178,6 +178,21 @@ test("Revoke all wins over a pending move", async () => {
   expect(existsSync(fx.path)).toBe(false);
 });
 
+test("move admission age uses the injected clock", async () => {
+  const fx = await setup({ memberAge: 2 * 60 * 60_000 });
+  const { AccountMove } = await import("./account-move.ts");
+  const clock = new TestClock();
+  clock.advance(Date.parse(fx.member.row.created_at) + 30 * 60_000);
+  const { devices, relay, accountMailbox, accountHolds, safetyLog } = fx.services;
+  const mover = AccountMove.open({ stateDir: fx.pc.stateDir, sibling: null, devices, relay, mailbox: accountMailbox, holds: accountHolds, safety: safetyLog, clock });
+  try {
+    expect(await mover.order({ ...fx.body, by: fx.member.row.id, callerKey: fx.member.key.spki })).toMatchObject({
+      refused: { code: "too_new", retryAfter: 1800 },
+    });
+    expect(existsSync(fx.path)).toBe(false);
+  } finally { mover.stop(); }
+});
+
 test("an unreadable journal is set aside and reported once without stopping mailbox pulls", async () => {
   const fx = await setup();
   writeFileSync(fx.path, "{", { mode: 0o600 });
