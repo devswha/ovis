@@ -65,11 +65,27 @@ export function checkNetwork({ fresh = false }: { readonly fresh?: boolean } = {
   return done;
 }
 
-/** Whether an open should say the device is offline: asked of the account service now while the device says so. */
+/**
+ * Whether an open should say the device is offline: asked now while the device says so. An ask started since (Try
+ * again) replaces this one, so the open waits for that one's answer too rather than for an answer no one counts.
+ */
 export async function confirmOffline(): Promise<boolean> {
   if (!navigatorOffline()) return false;
   await checkNetwork({ fresh: true });
+  while (asking !== null) await asking.done;
   return deviceOffline();
+}
+
+/**
+ * A click on a link to a PC's page: while the device says it is offline the page opens nothing with no network, so the
+ * click is held until confirmOffline answers, then followed, or `offline` runs instead.
+ */
+export function followUnlessOffline(href: string, offline: () => void) {
+  return (event: { preventDefault(): void }): void => {
+    if (!navigatorOffline()) return;
+    event.preventDefault();
+    void confirmOffline().then((still) => { if (still) offline(); else window.location.assign(href); });
+  };
 }
 
 function networkChanged(): void {
