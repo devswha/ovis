@@ -61,7 +61,7 @@ const receipt = process.env.TEST_LOGIN_RECEIPT ?? join(${JSON.stringify(root)}, 
 await Bun.write(receipt + ".tmp", JSON.stringify({ argv: process.argv.slice(2), home,
   ...(["claude", "codex"].includes(provider) ? { configured: process.env[variable] ?? null } : {}),
   ...(provider === "agent" ? { noOpenBrowser: process.env.NO_OPEN_BROWSER } : {}),
-  ...(["gh", "opencode"].includes(provider) ? { configHome: process.env[provider === "gh" ? "XDG_CONFIG_HOME" : "XDG_DATA_HOME"] } : {}) }));
+  ...(["gh", "opencode", "devin"].includes(provider) ? { configHome: process.env[provider === "gh" ? "XDG_CONFIG_HOME" : "XDG_DATA_HOME"] } : {}) }));
 renameSync(receipt + ".tmp", receipt);
 console.log("Signed in to the isolated fixture.");
 // a login still open in its tab: it ends when the tab closes
@@ -899,7 +899,7 @@ for (const [provider, cli, argv] of [
       expect(JSON.parse(readFileSync(join(root, receipt), "utf8"))).toEqual({
         argv, home: root,
         ...(provider === "cursor" ? { noOpenBrowser: "1" } : {}),
-        ...(provider === "copilot" ? { configHome: join(root, "xdg-config") } : provider === "opencode" ? { configHome: join(root, "xdg-data") } : {}),
+        ...(provider === "copilot" ? { configHome: join(root, "xdg-config") } : provider === "opencode" || provider === "devin" ? { configHome: join(root, "xdg-data") } : {}),
       });
       expect(readdirSync(root).some((name) => name.startsWith(`.${provider}-`))).toBe(false);
     } finally { clearTimeout(timer); watcher.close(); }

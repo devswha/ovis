@@ -524,7 +524,7 @@ export class UsageLoginService {
       if (id === "copilot") env["XDG_CONFIG_HOME"] = this.env["XDG_CONFIG_HOME"] || join(this.home, ".config");
       if (id === "cursor") env["NO_OPEN_BROWSER"] = "1";
       if (id === "copilot" && this.env["GH_CONFIG_DIR"]) env["GH_CONFIG_DIR"] = this.env["GH_CONFIG_DIR"];
-      if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
+      if (id === "opencode" || id === "devin") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
       if (follow && owner !== null) {
         // a CLI the browser cannot follow: an old Claude Code without `auth login` signs in inside the agent, and
         // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach
