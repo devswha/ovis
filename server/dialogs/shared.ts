@@ -123,6 +123,11 @@ export type ParsedPrompt = InteractivePrompt & {
   catalogChanged?: true;
   responder: Responder;
   omoQuestion?: { call: string; index: number };
+  /**
+   * An OmO question its call asks alone, and does not wait on: the key OmO files its answer under and its options' labels
+   * as OmO keeps them (trimmed, as its ask-user schema does), for an answer sent as data on the pane's control socket (omo-answer.ts).
+   */
+  omoData?: { key: string; labels: string[] };
   nativeSteps?: NativeSteps;
   openCodeForm?: {
     formId: string;
@@ -160,8 +165,8 @@ export type ParsedPrompt = InteractivePrompt & {
    * the shell command of an approval dialog the approval hub binds a held request to (server/approvals/hub.ts): Claude's
    * Bash approval, as its panel shows it between its dashed rules, and OmO's permission dialog for a shell command and
    * the one Ovis's pi extension draws like it (dialogs/pi.ts), omp's bash approval (dialogs/omp.ts), and the command of
-   * Codex's approval of a request it asks a client on its own app server (dialogs/codex.ts); null for a dialog the screen
-   * does not show whole
+   * Codex's approval of a request it asks a client on its own app server (dialogs/codex.ts), and the words of Claude's
+   * one-question dialog (kind `question`); null for a dialog the screen does not show whole
    */
   approvalCommand?: string | null;
   /** which of the agent's approval dialogs it is, where it has several (server/approvals/hub.ts ApprovalDialog.kind) */
@@ -398,7 +403,8 @@ export function publicPrompt(parsed: ParsedPrompt): InteractivePrompt {
 
 export interface OmoAsk {
   id?: string;
-  questions: { header: string; question: string; multiSelect: boolean; options: { label: string; description: string | null }[] }[];
+  /** `id`: the key OmO files this question's answer under, where its call says it (omo-questions.ts omoAskOf) */
+  questions: { id?: string; header: string; question: string; multiSelect: boolean; options: { label: string; description: string | null }[] }[];
   /** false: the call does not wait for its answer, and OmO folds it into a widget over its input box */
   wait?: boolean;
 }
