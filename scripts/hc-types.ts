@@ -21,6 +21,7 @@ export const HC_METHODS = [
   "terminal.kill",
   "terminal.label",
   "terminal.list",
+  "terminal.put",
   "terminal.read",
   "terminal.rm",
   "terminal.run",
