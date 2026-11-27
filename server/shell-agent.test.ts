@@ -341,9 +341,8 @@ it("does not return an obsolete cache when a profile edit supersedes a locator r
   revision++;
   const latest = locator.executable("gjc");
   await secondStarted.promise;
+  // The older read answers first; it was superseded when the newer one started, whatever the order they finish in.
   first.resolve({ path: null, reason: "obsolete PATH" });
-  // Let the older read finish while the new result is still pending.
-  await new Promise<void>((resolve) => setImmediate(resolve));
   second.resolve({ path: f.loginBin });
   expect(await Promise.all([prior, latest])).toEqual([f.gjc, f.gjc]);
 });

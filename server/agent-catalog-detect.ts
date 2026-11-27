@@ -40,15 +40,30 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
   let kept: { path: string | null; at: number } | null = null;
   let reading: Promise<string | null> | null = null;
   let checkedRevision = -1;
+  let lookupId = 0;
+  let latest: Promise<string | null> | null = null;
+  // One probe run. A run started later owns the cache, and an older one answers with its PATH, the one searchPath()
+  // reports, so an executable is never version-checked on another lookup's PATH. `latest` only ever names a run that
+  // started after this one, so a run never waits on itself.
+  const lookup = (probe: LoginPathProbe, wanted: number | null | undefined): Promise<string | null> => {
+    const id = ++lookupId;
+    const run: Promise<string | null> = probe(signal, wanted)
+      .then((result) => result.path, () => null)
+      .then((path) => {
+        if (id !== lookupId) return latest ?? path;
+        kept = { path, at: now() };
+        return path;
+      });
+    latest = run;
+    return run;
+  };
   const loginPath = async (probe: LoginPathProbe, checkProfile: boolean): Promise<string | null> => {
     const wanted = checkProfile && probe.profileRevision !== undefined ? await probe.profileRevision() : null;
     const changed = wanted !== null && wanted > checkedRevision;
     if (!changed && reading !== null) return reading;
     if (!changed && kept !== null && now() - kept.at < LOGIN_PATH_KEPT_MS) return kept.path;
     if (wanted !== null) checkedRevision = Math.max(checkedRevision, wanted);
-    const run: Promise<string | null> = probe(signal, wanted)
-      .then((result) => result.path, () => null)
-      .then((path) => { if (reading === run) kept = { path, at: now() }; return path; })
+    const run: Promise<string | null> = lookup(probe, wanted)
       .finally(() => { if (reading === run) reading = null; });
     reading = run;
     return run;
@@ -78,9 +93,8 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
         if (queued === run) queued = null;
         const wanted = probe.profileRevision === undefined ? undefined : await probe.profileRevision();
         if (wanted !== undefined) checkedRevision = Math.max(checkedRevision, wanted);
-        return probe(signal, wanted).then((result) => result.path, () => null);
+        return lookup(probe, wanted);
       })
-      .then((path) => { if (reading === run) kept = { path, at: now() }; return path; })
       .finally(() => { if (reading === run) reading = null; });
     queued = run;
     reading = run;
