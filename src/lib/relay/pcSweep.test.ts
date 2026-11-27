@@ -391,8 +391,49 @@ it("lets the next page sweep at once when a sweep stopped, or its page went, bef
     gone.stop();
     checked.length = 0;
     localStorage.removeItem("ovis-pc-check-at");
-    localStorage.removeItem("ovis-pc-check-cursor");
+    localStorage.removeItem("ovis-pc-check-returned");
   }
+});
+
+it("never hands back the minute of another tab's sweep that began after its own", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(2);
+  const { arrived, checked, probe } = heldProbe();
+  const listed = Promise.withResolvers<RelayDevice[]>();
+  const gone = createPcSweep({ ...store, list: () => listed.promise }, { active: () => true, redraw() {} }, { probe });
+  void gone.check();
+  jest.advanceTimersByTime(60_000);
+  // another tab's sweep, a minute on, opens its connections
+  const other = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  void other.check();
+  await arrived(2);
+  gone.stop();
+  listed.resolve(devices);
+  const next = createPcSweep(store, { active: () => true, redraw() {} }, { probe });
+  await next.check();
+  expect(checked).toHaveLength(2);
+  for (const sweep of [other, next]) sweep.stop();
+});
+
+it("does not bring back an answer that lapsed while the check it queued waited, when its page goes", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]!.server_id;
+  const { pending, arrived, probe } = heldProbe();
+  let shown = true;
+  const sweep = createPcSweep(store, { active: () => shown, redraw() {} }, { probe, pauseOutOfSight: true });
+  const answered = sweep.checkOne(id);
+  await arrived(1);
+  pending[0]!.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+  await answered;
+  shown = false;
+  void sweep.check();
+  for (let turn = 0; turn < 50 && sweep.status.get(id)?.kind !== "checking"; turn++) await Promise.resolve();
+  expect(sweep.status.get(id)?.kind).toBe("checking");
+  jest.advanceTimersByTime(OFFLINE_AFTER_MS);
+  globalThis.dispatchEvent(new Event("pagehide"));
+  expect(sweep.status.has(id)).toBe(false);
+  sweep.stop();
 });
 
 it("keeps the minute of a sweep that opened a connection, though its page stopped it at once", async () => {

@@ -11,6 +11,8 @@ const CHECK_AT_ONCE = 2;
 export const CHECK_GAP_MS = 60_000;
 const CHECK_KEY = "ovis-pc-check-at";
 const CHECK_CURSOR_KEY = "ovis-pc-check-cursor";
+/** "<stamp> <the stamp before it>": a stamp its sweep handed back, read as the one before it while no tab stamped since */
+const CHECK_RETURNED_KEY = "ovis-pc-check-returned";
 
 function localStorageGet(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -18,16 +20,21 @@ function localStorageGet(key: string): string | null {
 function localStorageSet(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch {}
 }
-function localStorageRestore(key: string, value: string | null): void {
-  try { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch {}
+/** when the last sweep of any tab began, a stamp handed back read as the one before it */
+function stampedAt(): number {
+  const stamp = localStorageGet(CHECK_KEY);
+  const [returned, before] = localStorageGet(CHECK_RETURNED_KEY)?.split(" ") ?? [];
+  const at = Number((stamp !== null && returned === stamp ? before : stamp) || NaN);
+  return Number.isFinite(at) ? at : -Infinity;
 }
 
 /**
- * A sweep's place in the minute, taken before its work starts (the relay's limit counts each connection as it opens). One
- * that opened none when its view stopped or its page went is handed back: the stamp and cursor it wrote are put back,
- * where no other tab wrote since, so the next page sweeps at once.
+ * A sweep's place in the minute, stamped before its work starts (the relay's limit counts each connection as it opens).
+ * One that opened none when its view stopped or its page went is handed back, so the next page sweeps at once: the
+ * stamp is never taken off (another tab may have stamped since), it is marked handed back. The cursor moves on when
+ * the sweep's first check starts.
  */
-interface Ticket { readonly at: number; readonly before: string | null; cursor: { readonly before: string | null; readonly after: string } | null; opened: boolean; handedBack: boolean }
+interface Ticket { readonly at: number; readonly before: number; cursor: number | null; opened: boolean; handedBack: boolean }
 
 interface QueuedCheck { readonly device: ProbeTarget; readonly before: PcFinding | undefined; readonly settled: ReturnType<typeof Promise.withResolvers<void>>; readonly ticket?: Ticket }
 
@@ -41,6 +48,8 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   const directSocket = options.directSocket;
   const sockets = { relay: (url: string) => new WebSocket(url), ...(directSocket ? { direct: directSocket } : {}) };
   let lastCheck = -Infinity;
+  /** the last sweep's ticket while none of its checks has started, heard of by `pagehide` meanwhile */
+  let unused: Ticket | null = null;
   let deferred: ReturnType<typeof setTimeout> | undefined;
   let sweeping: Promise<void> | undefined;
   const queue: QueuedCheck[] = [];
@@ -72,7 +81,7 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
   const probeNext = async (): Promise<void> => {
     // a view out of sight starts no new check: what is queued waits for the next time it is shown
     for (let next = startsNow() ? queue.shift() : undefined; next; next = startsNow() ? queue.shift() : undefined) {
-      if (next.ticket) next.ticket.opened = true;
+      if (next.ticket) spend(next.ticket);
       const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
       // stopped while this check ran: its answer goes nowhere
       if (stopped) { next.settled.resolve(); return; }
@@ -123,8 +132,8 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     // a sweep that paused while its view was out of sight goes on from its queue, before any wait on it
     drain();
     if (sweeping) { void sweeping.then(checkPcs); return; }
-    const stored = Number(localStorageGet(CHECK_KEY) ?? "");
-    const wait = CHECK_GAP_MS - (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity));
+    const stored = stampedAt();
+    const wait = CHECK_GAP_MS - (Date.now() - Math.max(lastCheck, stored));
     if (wait > 0) {
       later(wait);
       redraw();
@@ -132,12 +141,13 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     }
     // the work starts here, so the page is asked here: a timer or a sweep waited on may come due after it was hidden
     if (globalThis.document?.visibilityState === "hidden") { later(CHECK_GAP_MS); return; }
-    const ticket: Ticket = { at: Date.now(), before: localStorageGet(CHECK_KEY), cursor: null, opened: false, handedBack: false };
+    const ticket: Ticket = { at: Date.now(), before: stored, cursor: null, opened: false, handedBack: false };
     lastCheck = ticket.at;
     localStorageSet(CHECK_KEY, String(lastCheck));
+    if (unused === null) globalThis.addEventListener?.("pagehide", handBack);
     unused = ticket;
     later(CHECK_GAP_MS);
-    sweeping = sweepPcs(ticket).finally(() => { sweeping = undefined; if (unused === ticket && ticket.opened) unused = null; });
+    sweeping = sweepPcs(ticket).finally(() => { sweeping = undefined; });
     await sweeping;
   };
   const sweepPcs = async (ticket: Ticket): Promise<void> => {
@@ -148,8 +158,7 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     const turn = CHECK_PCS - again.length;
     const saved = [...again, ...sweepOf(devices, cursor, turn).filter((device) => !again.includes(device))]
       .filter((device) => pcStatus.get(device.server_id)?.kind !== "checking");
-    ticket.cursor = { before: localStorageGet(CHECK_CURSOR_KEY), after: String(cursor + turn) };
-    localStorageSet(CHECK_CURSOR_KEY, ticket.cursor.after);
+    ticket.cursor = cursor + turn;
     const settled = saved.map((device) => enqueue(device, "back", ticket));
     redraw();
     drain();
@@ -177,30 +186,37 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     await settled;
   };
 
-  /** the last sweep's ticket while none of its checks has started */
-  let unused: Ticket | null = null;
-  const handBack = (): void => {
-    const ticket = unused;
+  const letGo = (): void => {
     unused = null;
-    if (ticket === null || ticket.opened) return;
+    globalThis.removeEventListener?.("pagehide", handBack);
+  };
+  /** the sweep's first check starts: its minute is spent, and the rotation moves past what it took */
+  function spend(ticket: Ticket): void {
+    if (ticket.opened) return;
+    ticket.opened = true;
+    if (unused === ticket) letGo();
+    if (ticket.cursor !== null) localStorageSet(CHECK_CURSOR_KEY, String(ticket.cursor));
+  }
+  /** a sweep none of whose checks started gives its minute back, and what it queued goes with it */
+  function handBack(): void {
+    const ticket = unused;
+    if (ticket === null) return;
+    letGo();
     ticket.handedBack = true;
-    if (localStorageGet(CHECK_KEY) === String(ticket.at)) localStorageRestore(CHECK_KEY, ticket.before);
-    if (ticket.cursor !== null && localStorageGet(CHECK_CURSOR_KEY) === ticket.cursor.after) localStorageRestore(CHECK_CURSOR_KEY, ticket.cursor.before);
+    localStorageSet(CHECK_RETURNED_KEY, `${ticket.at} ${Number.isFinite(ticket.before) ? ticket.before : ""}`);
     if (lastCheck === ticket.at) lastCheck = -Infinity;
-    // what it queued and never started goes with it, the rows back to what they said
     for (const entry of queue.filter((queued) => queued.ticket === ticket)) {
       queue.splice(queue.indexOf(entry), 1);
-      if (entry.before === undefined) pcStatus.delete(entry.device.server_id); else pcStatus.set(entry.device.server_id, entry.before);
+      // the row says again what it said, unless that answer lapsed meanwhile
+      if (entry.before === undefined || lapsed.has(entry.before)) pcStatus.delete(entry.device.server_id); else pcStatus.set(entry.device.server_id, entry.before);
       entry.settled.resolve();
     }
     redraw();
-  };
-  globalThis.addEventListener?.("pagehide", handBack);
+  }
 
   /** The view that used this sweep is gone: nothing more is scheduled or started, and what waited is let go. */
   const stop = (): void => {
     handBack();
-    globalThis.removeEventListener?.("pagehide", handBack);
     stopped = true;
     clearTimeout(deferred);
     deferred = undefined;
