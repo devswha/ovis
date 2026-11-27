@@ -82,7 +82,7 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     // a view out of sight starts no new check: what is queued waits for the next time it is shown
     for (let next = startsNow() ? queue.shift() : undefined; next; next = startsNow() ? queue.shift() : undefined) {
       if (next.ticket) spend(next.ticket);
-      const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+      const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay", at: Date.now() }));
       // stopped while this check ran: its answer goes nowhere
       if (stopped) { next.settled.resolve(); return; }
       const serverId = next.device.server_id;

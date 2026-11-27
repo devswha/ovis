@@ -39,7 +39,7 @@ export function PcApprovalWait({ reason, name, digits = null, onQr, onCheck, onA
     switch (reason) {
       case "allow": return t("Press [Allow] on {name}", { name: name ?? t("this PC") });
       case "type": return t("Type this number on {name}", { name: name ?? t("this PC") });
-      case "off": return name === null ? t("Turn on Ovis on the PC") : t("{name} is off. Turn on Ovis on it.", { name });
+      case "off": return name === null ? t("Turn on Ovis on the PC") : t("{name} is not answering. Check that Ovis is running on it.", { name });
       case "declined": return t("Not allowed. Ask again, then press [Allow] on {name}.", { name: name ?? t("this PC") });
       // the PC turned the request down before anybody was asked (in no account yet, paused after too many tries): nobody declined it
       case "refused": return t("{name} cannot take this device yet", { name: name ?? t("this PC") });
