@@ -6,6 +6,7 @@ import {
   CALLER_PATTERNS,
   computePendingLeasePins,
   diffPendingLeasePins,
+  extractCodexWriteSlice,
   extractComposerLeaseSlice,
   extractConnectionsLeaseSlice,
   extractHerdrClientWriteSlice,
@@ -48,6 +49,18 @@ describe("verify-pending-lease enforcement", () => {
     const herdrClient = read("server/herdr/client.ts");
     expect(extractHerdrClientWriteSlice(herdrClient.replace("if (guard && !guard()) {", "if (false) {")))
       .not.toBe(extractHerdrClientWriteSlice(herdrClient));
+    // paneSendText no longer handing herdrRpc its guard
+    const unguarded = herdrClient.replace("await herdrRpc(\"pane.send_text\", { pane_id: paneId, text }, socketPath, undefined, guard);",
+      "await herdrRpc(\"pane.send_text\", { pane_id: paneId, text }, socketPath);");
+    expect(unguarded).not.toBe(herdrClient);
+    expect(extractHerdrClientWriteSlice(unguarded)).not.toBe(extractHerdrClientWriteSlice(herdrClient));
+
+    // turn/start no longer asking its guard right before the request
+    const codex = read("server/approvals/codex.ts");
+    const startTurn = codex.slice(codex.indexOf("  async startTurn("));
+    const unasked = codex.replace(startTurn, startTurn.replace("if (!alone || !ready() || !mayWrite()) return \"unsent\";", "if (!alone || !ready()) return \"unsent\";"));
+    expect(unasked).not.toBe(codex);
+    expect(extractCodexWriteSlice(unasked)).not.toBe(extractCodexWriteSlice(codex));
 
     const composer = read("server/core/composer.ts");
     expect(extractComposerLeaseSlice(composer.replace("TYPED_LINE_MAX = 200", "TYPED_LINE_MAX = 250")))
@@ -81,6 +94,16 @@ describe("verify-pending-lease enforcement", () => {
       pendingCaller.pattern,
       pendingCaller.wholeDecls,
     )).not.toBe(extractLeaseCallerSlice("server/core/pending.ts", pendingCode, pendingCaller.pattern, pendingCaller.wholeDecls));
+    // the typing guard answering yes when its check throws, and the refusal that holds the pane never holding it
+    const allowedBody = pendingCode.slice(pendingCode.indexOf("      const allowed = (): boolean => {"));
+    const lenient = pendingCode.replace(allowedBody, allowedBody.replace(/return false;/u, "return true;"));
+    expect(lenient).not.toBe(pendingCode);
+    const neverHolds = pendingCode.replace("const unannounced = !wrote && error instanceof CodexOwnScreenRefusal;", "const unannounced = false;");
+    expect(neverHolds).not.toBe(pendingCode);
+    for (const mutated of [lenient, neverHolds]) {
+      expect(extractLeaseCallerSlice("server/core/pending.ts", mutated, pendingCaller.pattern, pendingCaller.wholeDecls))
+        .not.toBe(extractLeaseCallerSlice("server/core/pending.ts", pendingCode, pendingCaller.pattern, pendingCaller.wholeDecls));
+    }
     // The Codex steer's authorizePending moved from its writing callback to the end of its checkPane callback, an await
     // (thread/loaded/list) before the write: the calls keep their order, only the callback that owns the check changes.
     const steerWrite = "            await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);\n          }, () => {\n            authorizePending(owner, paneId, lease);\n";

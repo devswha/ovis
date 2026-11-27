@@ -181,7 +181,7 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 | `Took`, `Ended`, `Restart` | `terminal-process.ts` `took`, `ended`, `again`, `relookup`; `pending.ts` `holdPendingPane` (and `server-core.ts` when an ACP child's status turns `unknown`); `pending-input.ts` `holdPane` |
 | `Observe`, `Interact` | `server/core/socket.ts` `role` |
 | `Close`, `Revoke` | `socket.ts` `close`; `connections.ts` `end` (including `untilLock`); `pending.ts` `closeConnection`; `pending-input.ts` `close`; `terminals.ts` `detachClaimed`, `dropClaims` |
-| `Submit`, `RequestRuns`, `AcceptRefused`, `AcceptEnqueue`, `AcceptTypeNow`, `TypeNowWaits` | `pending.ts` `pendingFrames.submit`, its `waits` (and ACP child) branch; `pending-input.ts` `enqueue` |
+| `Submit`, `RequestRuns`, `AcceptRefused`, `AcceptEnqueue`, `AcceptHeld`, `AcceptTypeNow`, `TypeNowWaits` | `pending.ts` `pendingFrames.submit`, its `waits` (and ACP child) branch, with the `authorizePending` right after `pending.enqueue` and the `pending.hold` when it refuses; `pending-input.ts` `enqueue` |
 | `SendNow`, `SteerRefused`, `SteerClaim` | `pending.ts` `pendingFrames["pending-action"]`, action `steer` |
 | `DrainPick`, `DrainSkips`, `DrainClaim`, `DrainClaimNoLease`, `Typist`, `NextUp`, `CanClaim` | `pending.ts` `drainPending`, `typists`, `dispatchPending`; `pending-input.ts` `next`, `claim` |
 | `RefusedForNow`, `RefusedForGood`, `RefusedHoldPane`, `LeaseFailed`, `FailedAfterPaste` | `pending.ts` `pendingContext`, `dispatchPendingText` (including `refusedFirstWrite`, Codex `unannounced` own-screen `holdPane`, and Codex app-server `"changed"` `holdPane`) and its `catch` |

@@ -49,6 +49,7 @@ export function step(action: string, from: Vars, to: Vars): string | null {
     case "RequestRuns": return `${pageName(to.lane.by)}'s request gets its turn`;
     case "AcceptRefused": return "the message is refused";
     case "AcceptEnqueue": return to.st.Q === "queued" ? "the message is accepted and waits" : "the message is accepted and held";
+    case "AcceptHeld": return "the message is accepted, and held: its page lost the pane meanwhile";
     case "AcceptTypeNow": return "the agent is at rest: the message is typed at once";
     case "SteerRefused": return "Send now is refused";
     case "SteerClaim": return `Send now starts for ${what}`;

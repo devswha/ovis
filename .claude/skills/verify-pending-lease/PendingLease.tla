@@ -315,12 +315,21 @@ AcceptRefused ==
   /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"}
   /\ Free /\ Still /\ UNCHANGED <<st, fl, lease, order, armed>>
 
-\* pending.enqueue right after pendingContext's last authorizePending passed
+\* pending.enqueue, with the authorizePending right after it passing
 AcceptEnqueue ==
   /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"} /\ Authorized(lane.by, laneLease)
   /\ st' = [st EXCEPT !["Q"] = IF lane.pc = "queue" THEN "queued" ELSE "held"]
   /\ lease' = laneLease /\ Accepted
   /\ armed' = (lane.pc = "queue" /\ laneIntact)
+  /\ Free /\ Still /\ UNCHANGED fl
+
+\* pending.enqueue after the lease was lost during the awaits since pendingContext's check (pinPiSession, a send put
+\* off): the authorizePending right after it refuses, and pending.hold holds the row, as holdPending would have
+AcceptHeld ==
+  /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"} /\ ~Authorized(lane.by, laneLease)
+  /\ st' = [st EXCEPT !["Q"] = "held"]
+  /\ lease' = laneLease /\ Accepted
+  /\ armed' = FALSE
   /\ Free /\ Still /\ UNCHANGED fl
 
 \* a queue request that finds the agent ready and nothing waiting is typed at once, with no record
@@ -493,7 +502,7 @@ Next ==
   \/ CloseAttachment \/ Took \/ Ended \/ Restart
   \/ \E kind \in {"queue", "hold"} : Submit(kind)
   \/ \E m \in Msgs, c \in Clients : SendNow(m, c)
-  \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
+  \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptHeld \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
   \/ DrainPick \/ DrainSkips \/ DrainClaim \/ DrainClaimNoLease
   \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ RefusedHoldPane \/ LeaseFailed
   \/ Paste \/ SubmitAsData \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent

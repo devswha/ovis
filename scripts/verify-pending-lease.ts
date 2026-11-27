@@ -29,12 +29,20 @@ const COMPOSER_DECLS = new Set(["refusedFirstWrite", "freeClaudeBox"]);
 
 const SKILL_ATTACH_DECLS = new Set(["herdrSkillAttachIo", "typeWithSkills"]);
 
+/** herdr's write and the wrappers that hand it a typing guard */
+const HERDR_WRITE_DECLS = new Set(["writeRequest", "herdrRpc", "paneSendText", "paneSendKeys"]);
+
+/** Codex's own server: the steer and turn/start requests a pending message goes as, each asking its guard right before */
+const CODEX_WRITE_METHODS = new Set(["steer", "startTurn"]);
+
 export const CALLER_PATTERNS: ReadonlyArray<{ file: string; pattern: RegExp; wholeDecls?: ReadonlySet<string> }> = [
   {
     file: "server/core/pending.ts",
     wholeDecls: new Set([
       "FIRST_MESSAGE_RETRY_CODES", "pendingLease", "authorizePending", "holdPending",
       "holdPendingPane", "holdRequested", "closeConnection", "askFirstMessage", "queueFirstMessage",
+      // the typing guard dispatchPendingText hands herdr, and the refusal that holds the pane (RefusedHoldPane)
+      "allowed", "unannounced",
     ]),
     pattern: /\b(?:pendingAuthorities|pendingLease|authorizePending|authorizeSocket|holdPending|holdPendingPane|holdRequested|closeConnection|askFirstMessage|queueFirstMessage|typists|paneSendText|paneSendKeys|typeWithSkills|freeClaudeBox|refusedFirstWrite|child\.client\.submit|target\.send|pending\.(?:enqueue|next|claim|settle|discard|hold|holdItem|rehold|holdPane|move|close)|item\.lease|way\.(?:at|left)|arrived)\b/,
   },
@@ -188,7 +196,23 @@ export function extractConnectionsLeaseSlice(code: string): string {
 }
 
 export function extractHerdrClientWriteSlice(code: string): string {
-  return extractNamedDeclarations("server/herdr/client.ts", code, new Set(["writeRequest"]));
+  return extractNamedDeclarations("server/herdr/client.ts", code, HERDR_WRITE_DECLS);
+}
+
+export function extractCodexWriteSlice(code: string): string {
+  const sf = parseSource("server/approvals/codex.ts", code);
+  const chunks: string[] = [];
+  for (const stmt of sf.statements) {
+    if (ts.isClassDeclaration(stmt) && stmt.name?.text === "Connection") {
+      for (const member of stmt.members) {
+        const name = member.name && ts.isIdentifier(member.name) ? member.name.text : null;
+        if (name && CODEX_WRITE_METHODS.has(name)) chunks.push(`Connection.${name}\n${printer.printNode(ts.EmitHint.Unspecified, member, sf)}`);
+      }
+    } else if (ts.isFunctionDeclaration(stmt) && stmt.name?.text === "servedTurn") {
+      chunks.push(`fn:servedTurn\n${printer.printNode(ts.EmitHint.Unspecified, stmt, sf)}`);
+    }
+  }
+  return chunks.join("\n---\n");
 }
 
 export function extractComposerLeaseSlice(code: string): string {
@@ -256,6 +280,7 @@ export function computePendingLeasePins(readText: (relPath: string) => string = 
     "server/pending-input.ts#lease": sha256(extractPendingInputLeaseSlice(readText("server/pending-input.ts"))),
     "server/core/connections.ts#lease": sha256(extractConnectionsLeaseSlice(readText("server/core/connections.ts"))),
     "server/herdr/client.ts#writeRequest": sha256(extractHerdrClientWriteSlice(readText("server/herdr/client.ts"))),
+    "server/approvals/codex.ts#write": sha256(extractCodexWriteSlice(readText("server/approvals/codex.ts"))),
     "server/core/composer.ts#lease": sha256(extractComposerLeaseSlice(readText("server/core/composer.ts"))),
     "server/opencode-skill-attach.ts#lease": sha256(extractSkillAttachLeaseSlice(readText("server/opencode-skill-attach.ts"))),
     "server/core/input.ts#serialize": sha256(extractInputSerializeSlice(readText("server/core/input.ts"))),
