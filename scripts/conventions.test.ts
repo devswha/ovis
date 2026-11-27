@@ -394,6 +394,12 @@ describe("demo launches", () => {
     expect(found("const { buildDevelopmentDemoApp } = await import(\"./demo-build.ts\");\nconst browser = await chromium.launch();")).toBe(1);
   });
 
+  it("counts a second browser a script launches beside withDemoBrowser's, but not one in a unit test", () => {
+    const second = "import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async () => { const other = await chromium.launch({ args: [\"--force-device-scale-factor=2\"] }); });";
+    expect(found(second)).toBe(1);
+    expect(demoLaunches("scripts/x.test.ts", second)).toEqual([]);
+  });
+
   it("counts none in a script that builds no demo, or leaves the launch to the harness", () => {
     expect(found("const server = await createServer();\nconst browser = await chromium.launch({ headless: true });")).toBe(0);
     expect(found("import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async ({ newContext }) => { await newContext(); });")).toBe(0);

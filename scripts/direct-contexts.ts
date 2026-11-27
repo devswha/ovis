@@ -8,7 +8,8 @@
  *   start every script from the same context instead.
  * - Demo launches, counted in scripts/demo-launches.json: a call of `launch` or `launchPersistentContext` in a script
  *   that imports scripts/demo-build.ts or scripts/demo-browser.ts, under whatever name (a second browser beside
- *   withDemoBrowser's is a launch of its own). withDemoBrowser (scripts/demo-browser.ts) builds, serves
+ *   withDemoBrowser's is a launch of its own). A `*.test.ts` file is not counted here: it tests the factory or the
+ *   harness, and its browser is the one it tests them with. withDemoBrowser (scripts/demo-browser.ts) builds, serves
  *   and launches the same way for all.
  *
  * The calls are read from the parsed file, not matched in its text: `a.newContext()`, `a?.newContext?.()` and
@@ -83,7 +84,8 @@ function scan(file: string, text: string): Found {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  if (!setsUpDemo) found.launches = [];
+  // a unit test that drives the factory or the harness from a browser of its own is not a demo script
+  if (!setsUpDemo || file.endsWith(".test.ts")) found.launches = [];
   scanned.set(file, { text, found });
   return found;
 }
