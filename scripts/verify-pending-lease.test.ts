@@ -81,6 +81,14 @@ describe("verify-pending-lease enforcement", () => {
       pendingCaller.pattern,
       pendingCaller.wholeDecls,
     )).not.toBe(extractLeaseCallerSlice("server/core/pending.ts", pendingCode, pendingCaller.pattern, pendingCaller.wholeDecls));
+    // The Codex steer's authorizePending moved from its writing callback to the end of its checkPane callback, an await
+    // (thread/loaded/list) before the write: the calls keep their order, only the callback that owns the check changes.
+    const steerWrite = "            await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);\n          }, () => {\n            authorizePending(owner, paneId, lease);\n";
+    const authorizeInCheck = pendingCode.replace(steerWrite,
+      "            await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);\n            authorizePending(owner, paneId, lease);\n          }, () => {\n");
+    expect(pendingCode).toContain(steerWrite);
+    expect(extractLeaseCallerSlice("server/core/pending.ts", authorizeInCheck, pendingCaller.pattern, pendingCaller.wholeDecls))
+      .not.toBe(extractLeaseCallerSlice("server/core/pending.ts", pendingCode, pendingCaller.pattern, pendingCaller.wholeDecls));
 
     const terminalsCaller = CALLER_PATTERNS.find((entry) => entry.file === "server/core/terminals.ts")!;
     const terminalsCode = read("server/core/terminals.ts");

@@ -117,6 +117,9 @@ function controlContextPath(node: ts.Node, sf: ts.SourceFile): string {
       parts.unshift(`var:${cur.name.text}`);
     } else if (ts.isPropertyAssignment(cur) && (ts.isIdentifier(cur.name) || ts.isStringLiteral(cur.name))) {
       parts.unshift(`prop:${cur.name.text}`);
+    } else if ((ts.isArrowFunction(cur) || ts.isFunctionExpression(cur)) && ts.isCallExpression(cur.parent) && cur.parent.arguments.includes(cur)) {
+      // which callback of a call holds the node: a lease check in target.send's checkPane is not one in its writing
+      parts.unshift(`arg${cur.parent.arguments.indexOf(cur)}(${printer.printNode(ts.EmitHint.Unspecified, cur.parent.expression, sf)})`);
     } else if (ts.isIfStatement(cur)) {
       if (containsNode(cur.thenStatement, node)) parts.unshift(`if(${elideBlockBodies(cur.expression, sf)})`);
       else if (cur.elseStatement && containsNode(cur.elseStatement, node)) parts.unshift(`else(${elideBlockBodies(cur.expression, sf)})`);

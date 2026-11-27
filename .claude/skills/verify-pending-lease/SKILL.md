@@ -174,7 +174,7 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 | --- | --- |
 | `Init`, `FirstListed`, `askLeft`, `askFault` | `server/workspace-routes.ts`, the create routes (`/api/workspace/create`, `/api/tab/create`: `firstMessages.ask` before the pane is made, `at`, `queue`, `end`); `server/core/pending.ts` `askFirstMessage`, `queueFirstMessage` (`ended()` after the last `await`, including `pinPiSession`) |
 | `Authorized`, `CanLease`, `FactsNow` | `pending.ts` `authorizePending`, `pendingLease`; `server/input-guard.ts` `typingGuards.pendingLease`, `sightingFacts`; `server/core/terminals.ts` `sight`; `server/core/connections.ts` `authorizeSocket` |
-| `HoldPending`, `Age`, `Unauthorize` | `pending.ts` `holdPending`, `holdRequested`; `server/pending-input.ts` `hold`, `holdItem` |
+| `HoldPending`, `Age`, `Unauthorize` | `pending.ts` `holdPending`, `holdRequested` (also called by `terminals.ts` `retireFit`, `fitHeld` and `fitPane` when a native Windows terminal's control passes to another viewer or is retired); `server/pending-input.ts` `hold`, `holdItem` |
 | `Attach` | `terminals.ts` `terminalFrames.attach`; `server/core/terminal-process.ts` `spawnAttachment` |
 | `Detach`, `Leave` | `terminals.ts` `terminalFrames.detach`, `detach` (including `drainingAttachments` on a graceful leave, after `holdPending` and `attachments.delete`) |
 | `CloseAttachment` | `terminals.ts` `closeAttachment`, `closeAttachments` and their callers |
@@ -185,7 +185,7 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 | `SendNow`, `SteerRefused`, `SteerClaim` | `pending.ts` `pendingFrames["pending-action"]`, action `steer` |
 | `DrainPick`, `DrainSkips`, `DrainClaim`, `DrainClaimNoLease`, `Typist`, `NextUp`, `CanClaim` | `pending.ts` `drainPending`, `typists`, `dispatchPending`; `pending-input.ts` `next`, `claim` |
 | `RefusedForNow`, `RefusedForGood`, `RefusedHoldPane`, `LeaseFailed`, `FailedAfterPaste` | `pending.ts` `pendingContext`, `dispatchPendingText` (including `refusedFirstWrite`, Codex `unannounced` own-screen `holdPane`, and Codex app-server `"changed"` `holdPane`) and its `catch` |
-| `Paste`, `SubmitAsData`, `Enter`, `LaterKey` | `dispatchPendingText`: `paneSendText` and `paneSendKeys` with the guard `allowed`, ACP `child.client.submit` and Codex `steerTarget.send` `writing` after `authorizePending`; the guarded writes of `server/core/composer.ts` `freeClaudeBox` and `server/opencode-skill-attach.ts` `typeWithSkills`; `server/herdr/client.ts` `herdrRpc` `writeRequest` |
+| `Paste`, `SubmitAsData`, `Enter`, `LaterKey` | `dispatchPendingText`: `paneSendText` and `paneSendKeys` with the guard `allowed`, ACP `child.client.submit`, Codex `steerTarget.send` `writing` and `sendCodexTextAsData` `mayWrite` (turn/start for a Codex at rest) after `authorizePending`; the guarded writes of `server/core/composer.ts` `freeClaudeBox` and `server/opencode-skill-attach.ts` `typeWithSkills`; `server/herdr/client.ts` `herdrRpc` `writeRequest` |
 | `Settle`, `Unattended`, `LeaseFailRetries`, `Sent` | `pending.ts` `dispatchPending`, `FIRST_MESSAGE_RETRY_CODES`; `pending-input.ts` `settle` |
 | the lane (`lane`, `req`) | `server/core/input.ts` `serialize` |
 | who calls what | `server/core/server-core.ts`, where `createTerminalRegistry`, `createPendingDelivery` and `createConnections` are given each other's functions |
