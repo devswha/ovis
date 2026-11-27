@@ -1797,13 +1797,11 @@ export class DeviceStore {
     const ids: string[] = [];
     // During startup the binding might already have flipped but this folder's listed file still belongs to B.
     if (merge !== null && this.account() === from) for (const row of this.joinedRows?.rows() ?? []) {
-      if (row.state !== "live" || expiresAt(row) <= Date.now() || this.accountRowStale(row)) continue;
-      const held = next.find(device => device.id === row.id || device.relay_public_key === row.key);
-      if (held) {
-        if (held.id === row.id && held.relay_public_key === row.key && held.before_merge?.account === from
-          && held.before_merge.merge === merge && held.before_merge.listed) ids.push(row.id);
+      if (next.some(device => device.id === row.id || device.relay_public_key === row.key)) {
+        ids.push(row.id);
         continue;
       }
+      if (row.state !== "live" || expiresAt(row) <= Date.now() || this.accountRowStale(row)) continue;
       next.push({ id: row.id, label: row.label, role: this.joinedRole(row), relay_public_key: row.key,
         created_at: row.confirmed_at, last_seen_at: null, origin: row.origin, token_hash: randomBytes(32).toString("hex"),
         before_merge: { ...mark, listed: true, origin_day: row.origin.at.slice(0, 10), last_signin_day: row.last_signin_day } });

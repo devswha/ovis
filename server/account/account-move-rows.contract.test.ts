@@ -78,6 +78,29 @@ test("a live listed row survives the move and keeps its old remote limits; a hel
   } finally { time.mockRestore(); }
 });
 
+test("a listed row is retired when the registry already holds its key", async () => {
+  const { pc, services, member, serverId } = await setup();
+  const listed = await phone();
+  const id = accountDeviceId(serverId, listed.spki);
+  pc.account.registerDevice(FROM, listed.spki, "Listed");
+  expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+  const time = spyOn(Date, "now").mockReturnValue(Date.now() + JOIN_HOLD_MS + 1);
+  try {
+    expect(await services.accountMailbox.readSnapshot()).toMatchObject({ committed: true });
+    const rows = services.accountRows;
+    expect(rows?.access(id)).toEqual({ ok: true });
+    const listedRow = rows?.row(id);
+    if (!rows || !listedRow) throw new Error("missing listed row");
+    expect(listedRow.state).toBe("live");
+    // The same key has an ordinary pairing now, but the listed registry still holds its earlier admission.
+    const duplicate = spyOn(rows, "rows").mockReturnValueOnce([{ ...listedRow, key: member.key.spki }]);
+    try { pc.devices.settleMovedRows({ from: FROM, merge: MERGE, at: new Date().toISOString() }); }
+    finally { duplicate.mockRestore(); }
+    expect(rows.row(id)).toBeNull();
+    expect(pc.stored().filter((row) => row.relay_public_key === member.key.spki)).toEqual([expect.objectContaining({ id: member.row.id })]);
+  } finally { time.mockRestore(); }
+});
+
 test("carried listed rows expire from their original admission or last sign-in, not from the move", async () => {
   const { pc, services, serverId, order } = await setup();
   const day = 86_400_000;
