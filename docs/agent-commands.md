@@ -26,7 +26,9 @@ Everything here rests on three rules. A change that breaks one of them is a bug,
    as well, so a command never runs twice. The other native writes the bridge keeps are answers,
    not commands: a pending OpenCode v2 form, and the approvals of a Codex Ovis started on its own app server
    ([`server/approvals/codex.ts`](../server/approvals/codex.ts)), which subscribes to its threads
-   for them (`thread/resume`, no overrides) and starts no turn.
+   for them (`thread/resume`, no overrides). That Codex's server also takes a plain chat message
+   (never a command) as a turn of the pane's own thread while it is idle (`turn/start`), under the
+   same rule: nothing that may have reached it is typed as well.
 3. **An outcome changes only on evidence tied to that send.** Sending a command records
    `accepted` and nothing more. A later state needs evidence that belongs to this send, listed
    under [Outcome states](#outcome-states-and-their-evidence). A screen that changed, an idle agent
@@ -327,7 +329,10 @@ records it; Claude Code records that branch on the next prompt or command.
 `GET /api/sessions/history` lists a folder's earlier sessions from each agent's own store
 ([`server/session-history.ts`](../server/session-history.ts)), newest first. It reads at most the
 first 64 KiB of a file, looks at most at 400 files and returns at most 50 rows, and refuses any
-path that resolves outside the store. Resume opens a new tab with the agent's own resume flag,
+path that resolves outside the store. Codex checks its two optional metadata stores separately
+from the rollout scan. For the append-only name index it reads the last 64 KiB instead, plus
+one preceding byte to distinguish a complete first record from a cut line.
+Resume opens a new tab with the agent's own resume flag,
 only where that flag is cited in the code; a row without one has no Resume button.
 
 ## Starting an agent with a first message

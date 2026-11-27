@@ -184,6 +184,7 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "向上滚动面板",
   "Scroll pane down": "向下滚动面板",
   "Find in terminal": "在终端中查找",
+  "Quote it in your message": "引用到消息中",
   "Previous match": "上一个匹配",
   "Next match": "下一个匹配",
   "Close search": "关闭搜索",
@@ -419,6 +420,7 @@ const BASE: Record<string, string> = {
   "Files": "文件",
   "This image is {size}; download it to view.": "此图片大小为 {size}；请下载后查看。",
   "Download": "下载",
+  "Saved to Downloads.": "已保存到“下载”。",
   "Open {path}": "打开 {path}",
 
   "Continue": "继续",
@@ -437,7 +439,6 @@ const BASE: Record<string, string> = {
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
   "Pairing code": "配对码",
   "Needs HTTPS or localhost.": "需要 HTTPS 或 localhost。",
-  "{agent} is ready": "{agent} 已就绪",
 
 
   "Drag to resize · double-click to reset": "拖动以调整大小 · 双击重置",
@@ -585,7 +586,6 @@ const BASE: Record<string, string> = {
   "Show plan limits": "显示套餐限额",
   "Session": "会话",
   "Weekly": "每周",
-  "Open terminal": "打开终端",
   "Sign in to {agent}": "登录 {agent}",
   "Approve": "批准",
   "Devices waiting for approval": "等待批准的设备",
