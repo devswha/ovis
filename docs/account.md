@@ -529,7 +529,10 @@ and nothing else.
 { "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "own_word": ["0d4c1b7a9e2f3c58"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
-`account` is `null` before the first member. `unlinked` lists relay rows that are not members.
+`account` is `null` before the first member. `account_provider` (`github`, `google` or `apple`), when
+present, is how the owner who named that account for this PC (`relay-account`) signed in to it: the
+relay tab of a page signed in to another account says to sign in that way. It is absent when no naming
+said so (an add from an older Ovis, `ovis add`). `unlinked` lists relay rows that are not members.
 `own_word` lists the members that joined on their own word ([How a device joined](#how-a-device-joined)).
 `removals` lists the signed `remove`s behind this PC's tombstones for its account, as received (a
 Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as received: the one
@@ -704,12 +707,14 @@ refusal's name where the PC joins no list (`list_removed`, `other_account`, `pin
 than what a member wrote into the list, and a PC that is behind does not write itself in); 503
 `not_read` or `unavailable`.
 
-`POST /api/account/relay-account` `{ "account" }` (or `{ "account": null }`, over a direct connection
+`POST /api/account/relay-account` `{ "account", "provider"? }` (or `{ "account": null }`, over a direct connection
 only and only on a PC in no account (409 `in_account` otherwise), which forgets the one named: `ovis
 join` puts back what it found): the account this PC asks its relay pass under while it
 has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
 screen, after it listed the PC), or through the relay only from a drive account member of that same
-account (`account_required` otherwise). Kept in `relay/account.json`; a
+account (`account_required` otherwise). Kept in `relay/account.json`, with `provider` (`github`,
+`google` or `apple`: how the namer signed in; any other value is taken as none, and a naming without
+one keeps the one said before for the same account); a
 name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
 nothing: the service gives a pass only when that account lists the PC.
 While the PC has no member, it is also the account its first member comes from: a `link` that
@@ -2095,9 +2100,24 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   says so, and that `ovis add` on this PC gives it its keys. A join of a key this PC itself keeps out (a
   block here, which closes the PC to every key newer than its target, whatever the list holds) is
   marked `list_held`, and `ovis approve` says that the device is not let in here until that block is
-  lifted, and where. A PC that follows no list marks a first or members join of such a key
-  `list_held` the same way, and a device approved here anyway hears `list_held_here`, not that
-  nobody approved it. A join into the account on a pinned
+  lifted, and where. A PC that follows no list marks a first or members join of a key it keeps out
+  with `held_why`, which names what an approval here would meet (server/relay/join-verdict.ts):
+  `block`, `freeze` (the account service's freeze that follows a block), `account_hold`,
+  `account_removed`, `untrusted` (an earlier pairing of that key here whose time this PC cannot
+  trust), `closed` (this PC cannot trust its account state) or `locked`; a block or a freeze marks
+  it `list_held` too, as before (a block or a freeze is named first where several reasons stand).
+  The answer to an approval of a join of no list (`POST /api/relay/join`) names `held_why` again as
+  it stands when the approval is taken (`null` when nothing keeps it out), which may differ from
+  what the list said a moment before. `ovis approve`
+  then says that the device was not let in and why, never that it is let in or approved (a reason
+  it does not know: only that this PC keeps it out).
+  A device whose account join the account service admitted is approved anyway hears why in its
+  refusal's `message`, not that nobody approved it (any other pairing names a key it never proves,
+  and hears only `auth_failed`):
+  `list_held_here` for a block or a freeze, else `kept_out_` and the reason (`kept_out_account_hold`,
+  `kept_out_account_removed`, `kept_out_untrusted`, `kept_out_closed`, `kept_out_locked`, and
+  `kept_out_revoked` for one a member approved from afar whose key was revoked here). An app that
+  knows none of them shows its general refusal, as before. A join into the account on a pinned
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.

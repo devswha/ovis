@@ -19,7 +19,7 @@ import { pagePcs } from "../lib/account/listPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { ownSignIn, ownWindowSignIn, pcServiceHere, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
-import { AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, sameSignIn, SignedOutError, type AccountIdentity, type AccountService, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
+import { AccountService, AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, sameSignIn, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
 import { postKept, refusalShown, unsentBlocks, type UnsentBlocks } from "../lib/account/unsentBlocks.ts";
@@ -44,7 +44,7 @@ type View =
   /** `link`: the sign-in page the browser would not open in a tab of its own, offered to open by hand */
   | { kind: "signing-in"; link?: string }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
-  | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; account: string; session: AccountSession; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
 
 export function formatRelayBytes(bytes: number): string {
   const safe = Math.max(0, bytes);
@@ -680,7 +680,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (settling === null) return;
     let live = true;
     let asking = false;
-    const timer = setInterval(() => {
+    // also at once when the page shows again: an enrollment that ended while it was hidden is said without a tick's wait
+    const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling, needsKeys }) => {
@@ -689,8 +690,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (account !== settling) setState(account === null ? { kind: "offer" } : { kind: "hidden" });
         else if (!enrolling) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling: false });
       }, warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
-    }, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    };
+    const timer = setInterval(ask, ADDED_POLL_MS);
+    document.addEventListener("visibilitychange", ask);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", ask); };
   }, [settling]);
   const attempt = useRef(0);
   /**
@@ -737,7 +740,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (keysRun === null || keysAccount === null) return;
     let live = true;
     let asking = false;
-    const timer = setInterval(() => {
+    // also at once when the page shows again
+    const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, fetchListAdd(keysRun)).then(async (now) => {
@@ -753,8 +757,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         }
         if (now.state === "none" || now.state === "replaced") setState({ kind: "keys", account: keysAccount, run: null, note: null });
       }, warned("Ovis: this PC's add by the account's list could not be read")).finally(() => { asking = false; });
-    }, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    };
+    const timer = setInterval(ask, ADDED_POLL_MS);
+    document.addEventListener("visibilitychange", ask);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", ask); };
   }, [keysRun, keysAccount, joinedAs]);
   const stopKeys = (account: string, run: string): void => {
     attempt.current++;
@@ -1247,7 +1253,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   /** the in_use line addMethod showed: its steps link shows only while that exact line is the error */
   const [inUseShown, setInUseShown] = useState<string | null>(null);
   /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
-  const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | { action: "delete"; provider: AccountProvider; deletion: Deletion } | null>(null);
+  const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider; session: AccountSession } | { action: "delete"; provider: AccountProvider; deletion: Deletion } | null>(null);
   /**
    * Delete account was pressed once, for this sign-in: the same button now asks, says what goes, and its second press
    * deletes this sign-in's account alone. A sign-out, a sign-in or another account shown drops the question.
@@ -1263,8 +1269,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   const [deleteOut, setDeleteOut] = useState<Deletion | null>(null);
   /** why the last delete was refused, said beside Delete account wherever it is drawn, for the account it was asked for */
   const [deleteFailed, setDeleteFailed] = useState<{ readonly account: string; readonly message: string } | null>(null);
-  /** the sign-in-again prompt, while it is for the account shown: a delete's prompt never carries over to another account */
-  const reauthShown = reauth !== null && (reauth.action !== "delete" || (view.kind === "signed-in" && reauth.deletion.session.account === view.account)) ? reauth : null;
+  const reauthShown = reauth !== null && view.kind === "signed-in" && sameSignIn(view.session, reauth.action === "delete" ? reauth.deletion.session : reauth.session) ? reauth : null;
   const deviceSignIn = useRef<AbortController | null>(null);
   /**
    * The sign-in that just finished on this screen, whether the button pressed for it said it adds this PC, and
@@ -1306,7 +1311,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     const service = indexedAccountService;
     const session = await service.session();
     if (session === undefined) { signedInHere.current = null; show({ kind: "signed-out", error: null }); return; }
-    const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;
+    const signedIn = { kind: "signed-in", provider: session.provider, account: session.account, session } as const;
     show({ ...signedIn, pcs: null, methods: null, limits: null, error: null });
     void accountLimitsOf(service, session).then((limits) => {
       if (loads.current !== generation || limits === null) return;
@@ -1364,7 +1369,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   // with its relay on (the sign-in never turns it on), to a browser that drives it (a watching one lists nothing).
   // What the button says at the press is what the sign-in does (`signIn`), so words read a moment ago never add
   // the PC behind a plain "Sign in"; they follow the relay, which its switch in the same fold turns on and off:
-  // read again every few seconds while the page shows, and when Settings asks (`recheck`).
+  // read again every few seconds while the page shows, at once when it shows again, and when Settings asks (`recheck`).
   const signedOut = view.kind === "signed-out";
   const [addsPc, setAddsPc] = useState(false);
   useEffect(() => {
@@ -1390,7 +1395,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     };
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", read); };
   }, [linkPage, ownRedirect, signedOut, recheck]);
 
   if (!offered) return null;
@@ -1453,9 +1459,16 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
       // held back until it is known not to be cancelled: a sign-in finished after Cancel is never kept
       return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store: holdingSessionStore(store), signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
         .then(async (session) => {
-          let kept = false;
-          await store.update("session", (current) => { if (controller.signal.aborted) return current; kept = true; return session; });
-          if (!kept) throw new DOMException("The sign-in was cancelled", "AbortError");
+          if (!await AccountService.storeSignIn(store, session, () => !controller.signal.aborted)) {
+            try {
+              await AccountService.revokeSession(session);
+            } catch (error) {
+              if (!controller.signal.aborted) throw error;
+              console.warn("Ovis: the cancelled sign-in could not be revoked");
+            }
+            controller.signal.throwIfAborted();
+            throw new SignedOutError();
+          }
           return session;
         })
         .finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
@@ -1494,28 +1507,31 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
    * Adds `provider` to the signed-in account on purpose, from the desktop app only: a link goes
    * through a redirect sign-in, never a device code someone else could have typed.
    */
-  const addMethod = (provider: AccountProvider): void => {
-    if (bridge === null) return;
+  const addMethod = (provider: AccountProvider, session = view.kind === "signed-in" ? view.session : undefined): void => {
+    if (bridge === null || session === undefined) return;
     setView({ kind: "signing-in" });
-    indexedAccountService.addMethod(provider, (linkToken, bearer) => desktopSignIn(provider, bridge, indexedAccountStore, { linkToken, bearer }))
+    indexedAccountService.forSignIn(session).addMethod(provider, (linkToken, bearer, generation) => desktopSignIn(provider, bridge, indexedAccountStore, { linkToken, bearer, generation }))
       .then(() => load(), async (error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         console.warn("Ovis: the sign-in method was not added", error instanceof SignInError || error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
         await load();
-        if (needsReauth(error)) { setReauth({ action: "add", provider }); return; }
+        if (needsReauth(error)) { setReauth({ action: "add", provider, session }); return; }
+        if (error instanceof SignedOutError) return;
         const message = failureText(error, provider);
         setInUseShown(error instanceof SignInError && error.code === "in_use" ? message : null);
-        setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
+        setView((current) => current.kind === "signed-in" && sameSignIn(current.session, session) ? { ...current, error: message } : current);
       });
   };
 
-  const removeMethod = (provider: AccountProvider): void => {
-    indexedAccountService.removeIdentity(provider).then(() => load(), (error: unknown) => {
+  const removeMethod = (provider: AccountProvider, session = view.kind === "signed-in" ? view.session : undefined): void => {
+    if (session === undefined) return;
+    indexedAccountService.forSignIn(session).removeIdentity(provider).then(() => load(), (error: unknown) => {
       console.warn("Ovis: the sign-in method was not removed", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
-      if (needsReauth(error)) { setReauth({ action: "remove", provider }); return; }
+      if (needsReauth(error)) { setReauth({ action: "remove", provider, session }); return; }
+      if (error instanceof SignedOutError) { void load(); return; }
       const message = error instanceof AccountServiceError && error.code === "last_identity"
         ? t("Add another way to sign in before removing this one.") : t("The sign-in method could not be removed. Try again.");
-      setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
+      setView((current) => current.kind === "signed-in" && sameSignIn(current.session, session) ? { ...current, error: message } : current);
     });
   };
 
@@ -1526,35 +1542,34 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   const signInAgain = (): void => {
     if (reauthShown === null || view.kind !== "signed-in") return;
     const { action, provider } = reauthShown;
-    const { account, provider: current } = view;
+    const { session: from, provider: current } = view;
     const resumed = reauthShown.action === "delete" ? reauthShown.deletion : null;
     if (resumed !== null && deletion.current !== resumed) return;
     setReauth(null);
     // a sign-in again for the same account is none that adds the PC: one left untaken does not outlive it either
     signedInHere.current = null;
-    runSignIn(current, false, resumed === null ? indexedAccountStore : holdingSessionStore(indexedAccountStore))?.then(async (session) => {
-      if (resumed !== null) {
-        // kept only in the place of the sign-in the delete was asked for, while it is still on and still stored: a sign-out
-        // or another sign-in made meanwhile (here or in another tab) stays, and nothing is deleted
-        const goesOn = deletion.current === resumed && session.account === resumed.session.account && await installSignInAgain(indexedAccountStore, resumed.session, session, () => deletion.current === resumed);
-        if (deletion.current === resumed && !goesOn) deletion.current = null;
-        await load();
-        if (goesOn && deletion.current === resumed) runDelete(resumed, session);
-        return;
+    runSignIn(current, false, holdingSessionStore(indexedAccountStore))?.then(async (session) => {
+      const goesOn = session.account === from.account && await installSignInAgain(indexedAccountStore, from, session, () => deletion.current === resumed);
+      if (!goesOn) {
+        if (deletion.current === resumed) deletion.current = null;
+        await AccountService.revokeSession(session);
       }
       await load();
-      if (session.account !== account) return;
+      if (!goesOn || deletion.current !== resumed) return;
+      const stored = await indexedAccountService.session();
+      if (stored === undefined || !sameSignIn(stored, session) || deletion.current !== resumed) return;
       switch (action) {
-        case "add": addMethod(provider); return;
-        case "remove": removeMethod(provider); return;
-        case "delete": return;
+        case "add": addMethod(provider, session); return;
+        case "remove": removeMethod(provider, session); return;
+        case "delete": if (resumed !== null) runDelete(resumed, session); return;
         default: action satisfies never;
       }
-    }, async (error: unknown) => {
+    }).catch(async (error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
       await load();
-      setView((now) => now.kind === "signed-in" ? { ...now, error: failureText(error, current) } : now);
+      if (error instanceof SignedOutError) return;
+      setView((now) => now.kind === "signed-in" && sameSignIn(now.session, from) ? { ...now, error: failureText(error, current) } : now);
     });
   };
 
