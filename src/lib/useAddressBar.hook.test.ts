@@ -315,6 +315,52 @@ it("where the browser tells no entry's key, keeps the other pane's entry after a
   }
 });
 
+it("writes the pane shown on the entry Settings steps back onto after a reload on Settings' own entry, an entry that named another pane and was never the place's", async () => {
+  Object.defineProperty(window, "navigation", { value: { get currentEntry() { return { key: String(index) }; } } });
+  mock.module("./settingsHistory.ts", () => ({ ...loaded.settings, settingsSteppedOff: () => true }));
+  try {
+    place.linkLanded = false;
+    await mount([P1, `${P2}&settings=devices`]);
+    await back();
+    await act(async () => { place.linkLanded = true; draw(); });
+
+    expect(writes).toEqual([`replaceState 0 ${P2}`]);
+  } finally {
+    mock.module("./settingsHistory.ts", () => ({ ...loaded.settings, settingsSteppedOff: () => false }));
+  }
+});
+
+it("where the browser tells no entry's key, writes pane p2's file on the file's new entry after a sheet that refused a jump back onto p1's entry closed (#4400)", async () => {
+  place.paneId = "p1";
+  const traversal = { ...sheetTraversal };
+  const history = window.history;
+  history.back = () => history.go(-1);
+  try {
+    let sheets = loaded.sheet;
+    await mount([P1], async () => {
+      const modulePath = "./sheetHistory.ts?address-bar-keyless-file";
+      sheets = await import(modulePath);
+      mock.module("./sheetHistory.ts", () => sheets);
+    });
+    await act(async () => { place.paneId = "p2"; draw(); });
+    const sheet = sheets.enterSheet(() => false, null);
+    await act(async () => { history.go(-2); });
+    expect(addresses()).toEqual([P1, P1]);
+    jest.useFakeTimers();
+    try { await act(async () => { sheets.leaveSheet(sheet); jest.advanceTimersByTime(0); }); }
+    finally { jest.useRealTimers(); }
+    expect(index).toBe(0);
+
+    const preview = { path: "README.md", paneId: "p2", machineId: "local" };
+    await act(async () => { history.pushState({ [FILE_PREVIEW_KEY]: preview }, ""); place.viewing = preview; draw(); });
+
+    expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
+  } finally {
+    mock.module("./sheetHistory.ts", () => ({ ...loaded.sheet, sheetSteppedOff: () => sheetStep }));
+    Object.assign(sheetTraversal, traversal);
+  }
+});
+
 it("keeps the other pane's entry intact when a sheet's refused Back does not return", async () => {
   Object.defineProperty(window, "navigation", { value: { get currentEntry() { return { key: String(index) }; } } });
   await mount([P1, P2]);
@@ -479,6 +525,21 @@ it("in the inbox mode another thread takes the thread's entry and keeps its mark
   await back();
 
   expect(inboxCalls).toEqual(["show"]);
+});
+
+it("in the inbox mode another thread takes the thread's entry also after a sheet closed over that entry", async () => {
+  const LIST = "?app=inbox";
+  const thread = (pane: string): string => `${LIST}&${pane.slice(1)}`;
+  place = { ...place, paneId: "p1", mode: true, inbox: { open: false, enabled: true } };
+  await mount([LIST, thread(P1), thread(P1)]);
+  entries[1]!.state = FROM_INBOX;
+  sheetStep = true;
+  await back();
+  sheetStep = false;
+
+  await act(async () => { place.paneId = "p2"; draw(); });
+
+  expect(writes).toEqual([`replaceState 1 ${thread(P2)}`]);
 });
 
 it("outside the inbox mode a move between two panes opened from the list is still an entry", async () => {
