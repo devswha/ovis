@@ -209,6 +209,7 @@ export class KeeperClient {
     if (!wasConnected && !keeperRunning(this.root)) {
       this.keeperGone = true;
       this.approvals.clear();
+      this.toolCalls.clear();
       this.questions.clear();
       this.answers.close();
       this.changed();
@@ -256,6 +257,7 @@ export class KeeperClient {
     this.history.observe(entry, Buffer.byteLength(line) + 1);
     if (previousSession !== this.history.session) {
       this.approvals.clear();
+      this.toolCalls.clear();
       this.questions.clear();
       this.answers.close();
       this.prompts.clear();

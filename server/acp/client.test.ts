@@ -55,6 +55,11 @@ it("fills in a permission request's tool call from what the agent announced for 
       { title: "Write File", kind: "edit", rawInput, content: null },
       { title: "Other", kind: "read", rawInput: { command: "pwd" }, content: null },
     ]);
+    // a tool call id names a call in its own session only: the next session's request gets nothing from the last one
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "t" } }) })}\n`);
+    fromAgent({ id: "ask-3", method: "session/request_permission", params: { sessionId: "t", toolCall: { toolCallId: "call-1", title: "Write File" },
+      options: [{ optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    expect(client.pending().map((asked) => asked.toolCall)).toEqual([{ title: "Write File", kind: null, rawInput: null, content: null }]);
   } finally { client.close(); }
 });
 
