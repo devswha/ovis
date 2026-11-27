@@ -1,14 +1,16 @@
-/** The subscriptions whose plan limits GET /api/usage can read from a CLI's own sign-in. */
-export type UsageProviderId = "claude" | "codex" | "cursor" | "copilot" | "grok" | "antigravity" | "opencode" | "kimi";
+/** The usage providers clients before Devin know. */
+const LEGACY_USAGE_PROVIDER_IDS = ["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode"] as const;
+const USAGE_PROVIDER_IDS = [...LEGACY_USAGE_PROVIDER_IDS, "devin", "kimi"] as const;
 
-/**
- * Providers newer than the oldest client a PC serves (MIN_SUPPORTED_CLIENT_VERSION): a phone app from before them
- * has no name or mark for them and fails to draw the list. GET /api/usage and GET /api/usage/login send one only to a
- * client that names it in `?known=`; drop an id here once the floor reaches the release that added it.
- */
-export const NEWER_USAGE_PROVIDERS: readonly UsageProviderId[] = ["kimi"];
-/** Whether a reply may name this provider to the client that sent `known` (GET /api/usage and /api/usage/login). */
-export const providerKnown = (known: string | null) => (id: UsageProviderId): boolean => !NEWER_USAGE_PROVIDERS.includes(id) || (known ?? "").split(",").includes(id);
+/** The subscriptions whose plan limits GET /api/usage can read from a CLI's own sign-in. */
+export type UsageProviderId = typeof USAGE_PROVIDER_IDS[number];
+
+export function knownUsageProviders(query: URLSearchParams): ReadonlySet<UsageProviderId> {
+  const providers = query.get("providers");
+  if (providers === null) return new Set(LEGACY_USAGE_PROVIDER_IDS);
+  const advertised = new Set(providers.split(","));
+  return new Set(USAGE_PROVIDER_IDS.filter((id) => advertised.has(id)));
+}
 
 /** One limit of a plan: how much of it is used and when it starts over. */
 export interface UsageWindow {
@@ -36,11 +38,13 @@ export interface UsageResets {
  * Usage paid for beyond the plan's limits, as the provider states it. `spend`: money spent this
  * billing period, in `currency` (ISO 4217) and its major units, against a monthly `limit` (null when
  * uncapped; Claude's extra usage). `balance`: credits left to spend (Codex); `balance` is null when
- * the provider says only that there are some, and `unlimited` when they do not run out.
+ * the provider says only that there are some, and `unlimited` when they do not run out. A `currency`
+ * (ISO 4217) marks the balance as money in its major units rather than credits (Devin's extra-usage
+ * wallet, which can go negative when the account owes).
  */
 export type UsageCredits =
   | { readonly kind: "spend"; readonly currency: string; readonly used: number | null; readonly limit: number | null; readonly used_percent: number | null }
-  | { readonly kind: "balance"; readonly balance: number | null; readonly unlimited: boolean };
+  | { readonly kind: "balance"; readonly balance: number | null; readonly unlimited: boolean; readonly currency?: string };
 
 /**
  * Why a provider's numbers are missing or old: its sign-in expired or was refused; the provider

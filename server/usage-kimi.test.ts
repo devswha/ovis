@@ -176,13 +176,13 @@ describe("kimi usage provider", () => {
     } finally { console.warn = warn; }
   });
 
-  it("names Kimi only to a client that says it knows it", async () => {
+  it("names Kimi only to a client that lists it in ?providers=, as a phone app from before it does not", async () => {
     signInKimi();
     replies.set(KIMI_USAGE, usageReply());
     replies.set(KIMI_ME, { status: 404 });
     const service = new UsageService(context(), [kimiUsage]);
     const ids = async (path: string) => ((await (await handleUsageRequest(new Request(`http://localhost${path}`), new URL(`http://localhost${path}`), service)).json()) as { providers: { id: string }[] }).providers.map((usage) => usage.id);
-    expect(await ids("/api/usage?known=kimi")).toEqual(["kimi"]);
+    expect(await ids("/api/usage?providers=claude,kimi")).toEqual(["kimi"]);
     expect(await ids("/api/usage")).toEqual([]);
   });
 
