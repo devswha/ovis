@@ -92,7 +92,7 @@ const NO_GITHUB_REMOTE = /none of the git remotes|no git remotes/i;
 function failure(stderr: string, fallback: string): PullRequestError {
   if (/no pull requests found/i.test(stderr)) return new PullRequestError("no_pull_request", "This branch has no pull request", 404);
   if (/not a git repository/i.test(stderr)) return new PullRequestError("not_a_repository", "This folder is not inside a git repository", 409);
-  if (NO_GITHUB_REMOTE.test(stderr)) return new PullRequestError("no_github_remote", "This repository has no GitHub remote", 409);
+  if (NO_GITHUB_REMOTE.test(stderr)) return new PullRequestError("no_github_remote", "No remote of this repository is on a GitHub host gh knows", 409);
   return new PullRequestError("gh_failed", firstLine(stderr) || fallback, 502);
 }
 
