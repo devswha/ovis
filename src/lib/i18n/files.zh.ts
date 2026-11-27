@@ -182,7 +182,7 @@ export const FILES_ZH: Record<string, string> = {
   "This PC's bridge cannot show pull requests yet.": "此电脑的桥接程序尚不能显示拉取请求。",
   "This branch has no pull request.": "此分支没有拉取请求。",
   "This pull request is closed.": "此拉取请求已关闭。",
-  "This repository has no GitHub remote.": "此仓库没有 GitHub 远程。",
+  "No remote of this repository is on a GitHub host gh knows. For GitHub Enterprise, run gh auth login --hostname with its host there.": "此仓库的远程都不在 gh 已知的 GitHub 主机上。若是 GitHub Enterprise，请在那台 PC 上用该主机运行 gh auth login --hostname。",
   "Too long for the message box; shorten the draft first.": "对输入框来说太长，请先缩短草稿。",
   "gh took too long to answer.": "gh 响应时间过长。",
   "{count} more on GitHub": "GitHub 上还有 {count} 条",

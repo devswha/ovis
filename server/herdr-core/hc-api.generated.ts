@@ -148,6 +148,11 @@ export interface MachineView {
   why?: string | null;
 }
 
+export interface PutResult {
+  bytes: number;
+  path: string;
+}
+
 export interface ReadResult {
   complete: boolean;
   how: string;
@@ -307,6 +312,12 @@ export interface TerminalListParams {
   labels?: Record<string, string>;
 }
 
+export interface TerminalPutParams {
+  data: string;
+  name: string;
+  terminal: string;
+}
+
 export interface TerminalReadParams {
   caller?: string | null;
   lines?: number;
@@ -377,6 +388,7 @@ export interface HcMethods {
   "terminal.kill": { params: TerminalKillParams; result: Terminal };
   "terminal.label": { params: TerminalLabelParams; result: Terminal };
   "terminal.list": { params: TerminalListParams; result: ListResult };
+  "terminal.put": { params: TerminalPutParams; result: PutResult };
   "terminal.read": { params: TerminalReadParams; result: ReadResult };
   "terminal.rm": { params: TerminalRmParams; result: RemoveResult };
   "terminal.run": { params: TerminalRunParams; result: RunResult };

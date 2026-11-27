@@ -85,6 +85,7 @@ import { useT } from "../lib/i18n.ts";
 import { failureReason, offersRetry, uploadFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
+import { trackAcceptSwipe, type SwipeMove, type SwipeVerdict } from "../lib/swipeAccept.ts";
 
 export interface ComposerProps {
   connected: boolean;
@@ -722,14 +723,53 @@ export function Composer({
     if (activeRef.current) element.focus();
   }, []);
 
+  // a forward swipe across the empty box takes the suggestion, as Tab does; a phone has no Tab.
+  // Not while text is selected: the finger is dragging the selection's handles. A finger that
+  // comes down anywhere else, even briefly, ends the stroke: the box never sees its events
+  const swipe = useRef<((move: SwipeMove) => SwipeVerdict) | null>(null);
+  const stopSwipe = useCallback(() => {
+    swipe.current = null;
+    document.removeEventListener("touchstart", stopSwipe, { capture: true });
+  }, []);
+  useEffect(() => stopSwipe, [stopSwipe]);
+  const swipeable = offered !== null && text === "" && !viewOnly;
+  const swipeAccept = useMemo(() => {
+    const follow = (event: React.TouchEvent<HTMLTextAreaElement>, touch: React.Touch | undefined, touches: number) => {
+      if (!swipe.current || !touch) return;
+      const verdict = swipe.current({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, touches });
+      if (verdict === "pending") return;
+      stopSwipe();
+      if (verdict === "accept" && document.getSelection?.()?.isCollapsed !== false) acceptSuggestionRef.current();
+    };
+    return {
+      onTouchStart: (event: React.TouchEvent<HTMLTextAreaElement>) => {
+        stopSwipe();
+        const touch = event.touches[0];
+        if (!swipeable || event.touches.length !== 1 || !touch || document.getSelection?.()?.isCollapsed === false) return;
+        swipe.current = trackAcceptSwipe({ x: touch.clientX, y: touch.clientY, at: event.timeStamp, viewportWidth: window.innerWidth,
+          rtl: window.getComputedStyle?.(event.currentTarget).direction === "rtl" });
+        document.addEventListener("touchstart", stopSwipe, { capture: true, passive: true });
+      },
+      onTouchMove: (event: React.TouchEvent<HTMLTextAreaElement>) => follow(event, event.touches[0], event.touches.length),
+      // the lift can carry the stroke's last stretch
+      onTouchEnd: (event: React.TouchEvent<HTMLTextAreaElement>) => {
+        follow(event, event.changedTouches[0], 1);
+        stopSwipe();
+      },
+      onTouchCancel: stopSwipe,
+    };
+  }, [swipeable, stopSwipe]);
+
   const acceptSuggestion = useCallback(() => {
-    if (offered === null || textRef.current !== "" || composingRef.current) return;
+    if (viewOnly || offered === null || textRef.current !== "" || composingRef.current) return;
     if (offered.length > MAX_COMPOSER_CHARS) {
       setNote(t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(offered.length - MAX_COMPOSER_CHARS) }));
       return;
     }
     setTextAndCaret(offered, offered.length);
-  }, [offered, setTextAndCaret]);
+  }, [offered, setTextAndCaret, viewOnly]);
+  const acceptSuggestionRef = useRef(acceptSuggestion);
+  acceptSuggestionRef.current = acceptSuggestion;
 
   useEffect(() => onQuoted(paneStorageId(machineId, paneId), () => {
     const element = textareaRef.current;
@@ -1644,6 +1684,7 @@ export function Composer({
           // and a disabled box would lose its focus and the dictated text with it
           onPaste={onPaste}
           onKeyDown={onKeyDown}
+          {...swipeAccept}
           onClick={(event) => {
             setCaret(event.currentTarget.selectionStart);
             setMenuDismissed(false);

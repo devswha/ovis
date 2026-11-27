@@ -3881,7 +3881,7 @@ describe("web push", () => {
     expect(pushed!.vapidValid).toBe(true);
   }, 40_000);
 
-  it("sends no device an alert while a connected page says it is in use, and alerts again once it is not (#751)", async () => {
+  it("does not alert for a question answered while a connected page is in use, then alerts once it is not (#751)", async () => {
     let created: Awaited<ReturnType<typeof workspaceCreate>> | undefined;
     let dir: string | undefined;
     let device: FakePushService | undefined;
@@ -3920,11 +3920,11 @@ describe("web push", () => {
         blocked = await report("blocked");
       }
       expect(blocked).toBe(true);
+      expect(await report("working")).toBe(true);
       await bridge.alertsSettled();
       expect(alerts()).toHaveLength(0);
 
       await tell(false);
-      expect(await report("working")).toBe(true);
       expect(await report("blocked")).toBe(true);
       const pushed = await device.waitFor((push) => push.payload.pane_id === paneId, "alert once no page is in use", 5_000);
       expect(pushed.payload.body).toBe("waiting for your input");

@@ -761,7 +761,7 @@ const BASE: Record<string, string> = {
   "No answer": "応答なし",
   "Machine offline": "マシンがオフライン",
   "Could not reach this machine": "このマシンに接続できません",
-  "Can't reach the PC: it may be off": "PC に接続できません: 電源が切れている可能性があります",
+  "The PC is not answering": "PC が応答しません",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}は応答しましたが、時間内に接続を完了できませんでした。ビジー状態か、再起動中の可能性があります。もう一度お試しください。繰り返す場合は{name}で Ovis を再起動してください。",
   "Account setup is incomplete.": "アカウントの設定が完了していません。",
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
