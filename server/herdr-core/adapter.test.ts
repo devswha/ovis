@@ -2198,6 +2198,22 @@ describe("herdr-core adapter, Ovis's layout document", () => {
     expect(terminals.find((entry) => entry.address === "t4")!.labels).toMatchObject({ "herdr.tab": "U" });
   });
 
+  it("says a pane another move took elsewhere between its labels and the edit was not moved, never that it is beside the target", async () => {
+    const store = documents();
+    let held: HcTerminal[] = [];
+    const read = store.handlers["doc.get"];
+    // the first read of Ovis's document after t3 is labeled into T: another client has just labeled it back into U
+    store.handlers["doc.get"] = (params) => {
+      const at = held.findIndex((entry) => entry.address === "t3");
+      if (params["name"] === "ovis-layout" && at !== -1 && held[at]!.labels?.["herdr.tab"] === "T") held[at] = { ...held[at]!, labels: { ...held[at]!.labels, "herdr.tab": "U" } };
+      return read(params);
+    };
+    const { socket, terminals } = await core([labeled("t1"), labeled("t3", "S", "U"), labeled("t4", "S", "U")], store);
+    held = terminals;
+    await expect(herdrRpc("pane.move", { pane_id: "t3", destination: { type: "tab", tab_id: "T", target_pane_id: "t1", split: "right" } }, socket)).rejects.toMatchObject({ code: "pane_not_moved" });
+    expect(store.writes).toEqual([]);
+  });
+
   it("reorders workspaces and tabs, Other terminals staying last", async () => {
     const { socket } = await core([labeled("t1", "A", "A1"), labeled("t2", "A", "A2"), labeled("t3", "B", "B1"), terminal("t4")]);
     await herdrRpc("workspace.move", { workspace_id: "B", insert_index: 0 }, socket);

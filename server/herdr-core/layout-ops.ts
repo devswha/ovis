@@ -533,12 +533,15 @@ export class LayoutStore {
     const workspaceName = before.workspaces.find((candidate) => candidate.workspace_id === target.workspace_id)?.label ?? "";
     const place = { space: target.workspace_id, tab: target.tab_id, workspaceName, worktree: await this.worktreeLabelOf(before, target.workspace_id) };
     await this.label([paneId], moveLabels(place, held[TAB_NAME_LABEL] ?? ""));
+    let placed: { changed: boolean; reason: string | null };
     try {
-      await this.edit(moveBesideEdit(paneId, tabId, targetId, split));
+      placed = await this.edit(moveBesideEdit(paneId, tabId, targetId, split));
     } catch (error) {
       const reason = error instanceof AdapterError || error instanceof HcError ? error.message : String(error);
       throw new AdapterError("layout_not_saved", `pane ${paneId} moved into tab ${tabId}, but could not be placed ${split === "right" ? "right of" : "below"} ${targetId} (${reason}); it shows at the right of the tab`);
     }
+    // another move of the pane between its labels and this edit took it out of the tab again
+    if (!placed.changed) throw new AdapterError("pane_not_moved", `pane ${paneId} was moved elsewhere before it could be placed beside ${targetId} (${placed.reason ?? "unchanged"})`);
     return pane;
   }
 }

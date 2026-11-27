@@ -138,6 +138,15 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
     expect((await draw(OVIS_CORE, own))(own.panes[0] as HerdrPane)).not.toContain("bring-pane");
   });
 
+  it("closes the picker when another client moves its pane to another tab, so it never lists or moves for a tab out of view", async () => {
+    await draw(TUI, tabbed);
+    await openBring(tabbed.panes[1] as HerdrPane);
+    expect(bringRows()).toHaveLength(3);
+    const moved: SessionSnapshot = { ...tabbed, panes: tabbed.panes.map((item) => item.pane_id === "p2" ? { ...item, tab_id: "t3" } as HerdrPane : item) };
+    await draw(TUI, moved);
+    expect(bringRows()).toHaveLength(0);
+  });
+
   it("says a PC whose bridge moves no pane between tabs does not offer it yet", async () => {
     await draw(TUI, tabbed);
     const { restore } = await moving({ ok: true, changed: false, reason: "cross_tab" });

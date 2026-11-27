@@ -522,6 +522,9 @@ function moveDemoPaneInto(pane: Pane, target: Pane, split: "right" | "down"): bo
   if (snap.focused_pane_id === pane.pane_id) {
     snap.focused_tab_id = target.tab_id;
     snap.focused_workspace_id = target.workspace_id;
+    // as focusDemoPane does: the focused pane's tab is its workspace's active one
+    const into = snap.workspaces.find((workspace) => workspace.workspace_id === target.workspace_id);
+    if (into) into.active_tab_id = target.tab_id;
   }
   for (const tab of snap.tabs) {
     const own = snap.panes.filter((candidate) => candidate.tab_id === tab.tab_id);

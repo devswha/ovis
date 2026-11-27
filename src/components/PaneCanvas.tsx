@@ -169,7 +169,8 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     rowItems(presented)?.tab.find((item) => item.id === "close-tab" && !item.disabled)?.run();
   }, [closeTabRequest]);
   useEffect(() => { if (menu && !snapshot?.panes.some((item) => item.pane_id === menu.paneId)) setMenu(null); }, [snapshot, menu]);
-  useEffect(() => { if (bringing && !snapshot?.panes.some((item) => item.pane_id === bringing.target.pane_id)) setBringing(null); }, [snapshot, bringing]);
+  // the picker's target gone, or moved to another tab by another client: its list and destination would be another tab's
+  useEffect(() => { if (bringing && snapshot?.panes.find((item) => item.pane_id === bringing.target.pane_id)?.tab_id !== bringing.target.tab_id) setBringing(null); }, [snapshot, bringing]);
 
   const run = (operation: () => Promise<unknown>): void => {
     const tabId = pane?.tab_id;
