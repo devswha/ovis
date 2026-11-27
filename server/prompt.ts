@@ -19,6 +19,7 @@ import { gjcCallStillOpen, gjcCallStillOpenInFile, withGjcFallback } from "./gjc
 import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
+import { heldQuestionAnswer, showsHeldQuestion } from "./claude-question.ts";
 import { heldBody, type ApprovalDialog, type ApprovalHub, type CommandEvent } from "./approvals/hub.ts";
 import { acpPrompt, answerAcpPrompt, type AcpCards } from "./approvals/acp.ts";
 import { listPendingPermissions, listPendingQuestionForms, openCodePermissionsRead, openCodeService, replyOpenCodeForm, replyOpenCodePermission, withShellInput } from "./opencode-service.ts";
@@ -49,6 +50,8 @@ import { answerServed, questionClosed, withServedAsk } from "./codex-question.ts
 import { SUGGESTION_READ_MS, claudeHeldIsGrey, claudeInputBoxContent, claudeInputDraft, claudeRestoredDraft, parseClaudeSuggestion, viewportShowsLive } from "./claude-input.ts";
 import { parseGjcSuggestion, parseOmpSuggestion } from "./omp-input.ts";
 import { OMO_FORM_RE, omoAskOf, omoAsksFor } from "./omo-questions.ts";
+import { answerOmoPending } from "./omo-answer.ts";
+import { omoPaneSocket } from "./command-data-send.ts";
 import { codexQueuedPrompt, queuedQuestionCount, type QueueFront } from "./codex-queue.ts";
 import { OpenCodePromptState } from "./opencode-prompt.ts";
 export { removedInvisible } from "./dialogs/claude.ts";
@@ -685,6 +688,8 @@ function contentId(prompt: InteractivePrompt | null): string | undefined {
 
 const formsAnswered = new Map<string, number>();
 const FORM_SETTLE_MS = 3_000;
+/** each pane's OpenCode session whose permission request or form a read last saw go, and when */
+const openCodeClosed = new Map<string, { sessionID: string; at: number }>();
 
 const defaultOpenCodeState = new OpenCodePromptState();
 
@@ -1038,11 +1043,12 @@ async function readKnownPrompt(
     if (signal?.aborted || openCodeState.entries.get(paneId) !== state) return { prompt: null, stale: true };
     if (state.revision === revision && issued >= state.applied) {
       state.applied = issued;
-      // a request answered elsewhere (its own terminal): OpenCode's dialog closes a moment before herdr stops reporting
-      // blocked, the same settling an answer from a card waits out, so no fallback card stands in for it meanwhile
-      if (permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id))) {
-        formsAnswered.set(paneId, Date.now());
-        if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+      const permissionGone = permissions !== null && state.permissions?.some((held) => !permissions.some((listed) => listed.id === held.id));
+      const heldForm = state.listed;
+      const formGone = forms !== null && heldForm !== null && !forms.some((listed) => listed.id === heldForm.id);
+      if (permissionGone || formGone) {
+        openCodeClosed.set(paneId, { sessionID, at: Date.now() });
+        if (openCodeClosed.size > 64) openCodeClosed.delete(openCodeClosed.keys().next().value!);
       }
       state.permissions = permissions;
       state.available = forms !== null;
@@ -1064,6 +1070,14 @@ async function readKnownPrompt(
       return { prompt: publicPrompt(card) };
     }
     const form = state.listed;
+    // a request or form answered or cancelled elsewhere (its own terminal, an interrupt): OpenCode's dialog closes a
+    // moment before herdr stops reporting blocked, so no fallback card stands in for it meanwhile while this session
+    // has nothing else pending, as this read's lists, both read, say
+    const closed = openCodeClosed.get(paneId);
+    const listsRead = forms !== null && (permissions !== null || !openCodePermissionsRead(service!.version));
+    if (!form && listsRead && !state.permissions?.length && closed?.sessionID === sessionID && Date.now() - closed.at < FORM_SETTLE_MS) {
+      return { prompt: null, suppressFallback: true };
+    }
     if (!form || form.fields.length === 0) break native;
 
     const identity = JSON.stringify({
@@ -1518,6 +1532,11 @@ const approvalDialog = (prompt: InteractivePrompt | null): ApprovalDialog | null
 function withHeldPermission(paneId: string, prompt: InteractivePrompt | null, approvals: ApprovalHub | undefined): InteractivePrompt | null {
   const held = approvals?.shown(paneId, approvalDialog(prompt)) ?? null;
   if (held === null || prompt === null) return heldOnly(prompt) ? null : prompt;
+  // a question card keeps what the screen shows, and is bound only where it shows the held question's options whole and
+  // no other request asked the same words
+  if (held.question !== undefined) {
+    return showsHeldQuestion(prompt, held.question) && approvals!.onlyOpen(paneId, approvalDialog(prompt)!, held.id) ? { ...prompt, id: `${prompt.id}.${held.id}` } : prompt;
+  }
   return { ...prompt, id: `${prompt.id}.${held.id}`, body: heldBody(held) };
 }
 
@@ -1801,6 +1820,19 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       };
       // Next goes on to another question and never answers this one: not with an answer in the same body, and not
       // where the card has no supported move (OpenCode would take it as an answer).
+      // a Claude question card bound to the one question its hook holds, still showing it whole: the answer goes back as
+      // that request's input, with no key (claude-question.ts). Any other answer is the dialog's, as keys
+      const heldQuestion = heldId === null || parsedPrompt?.responder !== "claude-question" ? undefined
+        : options.approvals!.held(body.pane_id).find((held) => held.id === heldId)?.question;
+      const questionAnswer = heldQuestion !== undefined && showsHeldQuestion(prompt, heldQuestion) ? heldQuestionAnswer(prompt, body) : null;
+      if (questionAnswer !== null) {
+        if (request.signal.aborted || !options.approvals!.answerQuestion(body.pane_id, approvalDialog(prompt)!, heldId!, questionAnswer)) return promptChanged();
+        delivered = true;
+        way = "native";
+        askingEnded(body.pane_id);
+        form.still = sameContent(contentId(prompt));
+        return jsonResponse({ ok: true });
+      }
       if (body.step_next === true && ((!parsedPrompt?.nativeSteps && !parsedPrompt?.piAskForm && !parsedPrompt?.piAskUser)
         || body.option_index !== undefined || body.option_indices !== undefined || body.custom_text !== undefined)) {
         return badRequest("invalid_answer", "Next goes to another question and answers none.");
@@ -2161,6 +2193,22 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
         throw error;
+      }
+      // an OmO question asked alone that does not wait: its answer, one the keys would take, goes as data on the pane's
+      // own OmO control socket; one that may already have gone that way takes no key
+      if (parsedPrompt?.omoData !== undefined) {
+        const omoData = await answerOmoPending(await omoPaneSocket(pane), parsedPrompt, body, () => !deadline.aborted, deadlineAt);
+        if (omoData === "gone") return promptChanged();
+        if (omoData === "sent") {
+          delivered = true;
+          way = "native";
+          // as the keys' answer marks it, so the widget closing is not read as an unknown screen meanwhile
+          formsAnswered.set(body.pane_id, Date.now());
+          if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+          askingEnded(body.pane_id);
+          form.still = sameContent(contentId(prompt));
+          return jsonResponse({ ok: true });
+        }
       }
       // The asking this answer is for, held to its last key: once anything says it ended (the
       // agent back at work), no key of this answer goes out any more, whatever the screen shows.
