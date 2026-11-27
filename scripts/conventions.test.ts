@@ -122,15 +122,27 @@ describe("what the browser loads", () => {
     return refs;
   }
 
+  const VITE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"] as const;
+  const SCANNABLE_CODE = /\.(?:mjs|js|mts|ts|jsx|tsx)$/;
+
+  function resolveModuleTarget(target: string, source: (path: string) => string | undefined): string {
+    if (SCANNABLE_CODE.test(target) || target.endsWith(".json")) return target;
+    for (const ext of VITE_EXTENSIONS) {
+      const candidate = `${target}${ext}`;
+      if (source(candidate) !== undefined) return candidate;
+    }
+    return `${target}.ts`;
+  }
+
   function protocolValueLoads(entries: readonly string[], source: (path: string) => string | undefined): string[] {
     const isProtocol = (target: string): boolean =>
-      target === "shared/protocol.ts" || target === "shared/protocol" || target === "shared/protocol.js";
+      target === "shared/protocol" || /^shared\/protocol\.(?:mjs|js|mts|ts)$/.test(target);
     const seen = new Set(entries);
     const queue = [...entries];
     const offenders: string[] = [];
     while (queue.length > 0) {
       const file = queue.shift()!;
-      const text = /\.(?:ts|tsx|mjs|js)$/.test(file) ? source(file) : undefined;
+      const text = SCANNABLE_CODE.test(file) ? source(file) : undefined;
       if (text === undefined) continue;
       for (const { target, line, specifier, typeOnly } of browserModuleRefs(file, text)) {
         if (typeOnly) continue;
@@ -138,7 +150,7 @@ describe("what the browser loads", () => {
           offenders.push(`${file}:${line}: ${specifier}`);
           continue;
         }
-        const resolved = /\.(?:ts|tsx|mjs|js)$/.test(target) ? target : `${target}.ts`;
+        const resolved = resolveModuleTarget(target, source);
         if (!seen.has(resolved)) {
           seen.add(resolved);
           queue.push(resolved);
@@ -149,7 +161,7 @@ describe("what the browser loads", () => {
   }
 
   it("imports only types from shared/protocol.ts", () => {
-    const browserEntries = files("{src,site}/**/*.{ts,tsx,mjs,js}").filter((file) => !/\.test\./.test(file));
+    const browserEntries = files("{src,site}/**/*.{mjs,js,mts,ts,jsx,tsx}").filter((file) => !/\.test\./.test(file));
     const repoSource = (path: string) => (existsSync(join(repo, path)) ? read(path) : undefined);
     fail(protocolValueLoads(browserEntries, repoSource),
       "Browser code imports only types from shared/protocol.ts, which reads process.env at module load: write `import type { … } from \"…/shared/protocol.ts\"`, and put runtime constants the browser also needs in another shared/ module (such as shared/web-policy.ts).");
@@ -182,6 +194,9 @@ describe("what the browser loads", () => {
       ].join("\n"),
       "src/transitive-bad.ts": "import { port } from \"../shared/reexport-value.ts\";\nexport { port };",
       "shared/reexport-value.ts": "import { DEFAULT_PORT } from \"./protocol.ts\";\ntype Helper = string;\nexport default Helper;\nexport const port = DEFAULT_PORT;",
+      "src/extless-js-bad.ts": "import { bridgePort } from \"../shared/bridge\";\nexport { bridgePort };",
+      "shared/bridge.js": "import { DEFAULT_PORT } from \"./protocol.ts\";\nexport const bridgePort = DEFAULT_PORT;",
+      "shared/bridge.ts": "export const bridgePort = 0;",
     };
     expect(protocolValueLoads(["src/types-ok.ts"], (path) => graph[path])).toEqual([]);
     expect(protocolValueLoads(["src/direct-bad.ts"], (path) => graph[path])).toEqual([
@@ -200,6 +215,9 @@ describe("what the browser loads", () => {
     ]);
     expect(protocolValueLoads(["src/transitive-bad.ts"], (path) => graph[path])).toEqual([
       "shared/reexport-value.ts:1: ./protocol.ts",
+    ]);
+    expect(protocolValueLoads(["src/extless-js-bad.ts"], (path) => graph[path])).toEqual([
+      "shared/bridge.js:1: ./protocol.ts",
     ]);
   });
 });
