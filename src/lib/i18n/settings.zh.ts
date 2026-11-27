@@ -17,6 +17,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Direct typing": "直接输入",
   "Microphone permission was denied": "麦克风权限已被拒绝",
   "Terminal input mode": "终端输入模式",
+  "Password field": "密码输入框",
+  "When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.": "终端询问密码时，在单独的隐藏输入框里输入，而不是直接输入终端，避免手机键盘记住密码。触摸屏上默认开启；输入框模式始终使用。",
   "Reset shortcuts": "重置快捷键",
   "Your browser or operating system may intercept {keys}.": "浏览器或操作系统可能会拦截 {keys}。",
   "Reserved": "系统保留",

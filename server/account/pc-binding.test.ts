@@ -8,7 +8,7 @@ import { DeviceStore, type StoredDevice } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
 import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
-import { bindingFs, PcAccountState, RemovedOnDiskError } from "./pc-binding.ts";
+import { bindingFs, PcAccountState, RemovedOnDiskError, withFileLock } from "./pc-binding.ts";
 import { PendingRedemptions } from "./pending.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
 
@@ -664,4 +664,31 @@ describe("a binding pinned to the account's signed list", () => {
     split.takeSibling(sibling);
     expect(split.strict).toContain("two lists");
   });
+});
+
+test("a stale lock another server took over first is not removed again: only the lock seen stale goes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-lock-race-"));
+  dirs.push(dir);
+  const path = join(dir, ADMISSION_FILE);
+  const lock = `${path}.lock`;
+  // a lock whose process is gone, and a server that is alive
+  const ended = Bun.spawn([process.execPath, "-e", ""], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  await ended.exited;
+  writeFileSync(lock, String(ended.pid));
+  const alive = String(process.ppid);
+  const read = bindingFs.readFileSync;
+  let replaced = false;
+  // between this writer's look at the dead owner and its reclaim, another writer reclaims the lock and holds a new one
+  const racing = spyOn(bindingFs, "readFileSync").mockImplementation(((...args: Parameters<typeof read>) => {
+    const text = read(...args);
+    if (!replaced && String(args[0]) === lock) {
+      replaced = true;
+      rmSync(lock);
+      writeFileSync(lock, alive);
+    }
+    return text;
+  }) as typeof read);
+  try { expect(() => withFileLock(path, () => "entered")).toThrow("another Ovis"); } finally { racing.mockRestore(); }
+  expect(replaced).toBe(true);
+  expect(readFileSync(lock, "utf8")).toBe(alive);
 });

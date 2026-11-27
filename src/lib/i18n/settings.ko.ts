@@ -17,6 +17,8 @@ export const SETTINGS_KO: Record<string, string> = {
   "Direct typing": "직접 입력",
   "Microphone permission was denied": "마이크 권한이 거부되었습니다",
   "Terminal input mode": "터미널 입력 방식",
+  "Password field": "비밀번호 칸",
+  "When a terminal asks for a password, type it in a masked field instead of the terminal, so a phone keyboard does not learn it. On by default on a touch screen; Input line always uses it.": "터미널이 비밀번호를 물으면 터미널 대신 가려진 칸에 입력해, 폰 키보드가 비밀번호를 배우지 않게 합니다. 터치 화면에서는 기본으로 켜져 있고, 입력창 방식에서는 항상 씁니다.",
   "Reset shortcuts": "단축키 초기화",
   "Your browser or operating system may intercept {keys}.": "브라우저나 운영체제가 {keys} 입력을 가로챌 수 있습니다.",
   "Reserved": "브라우저 단축키와 겹침",

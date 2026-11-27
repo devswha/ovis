@@ -5235,8 +5235,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Add a connection (`components/ConnectPhoneDialog.tsx`, a `.modal`, a bottom sheet on a phone) follows
   herdr's own **Add a machine** sheet: one tab per way across the top (the `.segmented` primitive,
   as FilesDialog's tabs), and under each the things that way found, each with one action, then a
-  field to type one. **SSH** (only for the PC's owner on its own page) lists the PCs saved in herdr
-  (**Connect**), the server's ssh config hosts and its Tailscale login's PCs, one row each: the name,
+  field to type one. If the PC's own window is signed in to a different account, the relay tab keeps
+  this hierarchy: one line explaining the mismatch, **Move this PC to this account** as the primary
+  action, then a quiet button for the PC's existing sign-in path. **SSH** (only for the PC's owner
+  on its own page) lists the PCs saved in herdr (**Connect**), the server's ssh config hosts and its
+  Tailscale login's PCs, one row each: the name,
   the address dim and ellipsized (under the name on a phone), a neutral pill for where it was found
   (herdr, ssh config, Tailscale), then **Add** or a quiet **Added** in the done green; **Add** and the
   typed address close Settings and open the PC setup dialog with the address filled in. **Tailscale**

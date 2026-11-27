@@ -62,6 +62,7 @@ import type { lockRoutes } from "./account/lock-routes.ts";
 import { lockBoundary, untilLockFrom, type LockSignal } from "./lock-boundary.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
+import type { AccountMove } from "./account/account-move.ts";
 import type { AccountHolds } from "./account/holds.ts";
 import type { SafetyLog } from "./account/safety-log.ts";
 import type { CatchUpGate } from "./account/catch-up-gate.ts";
@@ -118,6 +119,7 @@ export interface RequestServices {
   /** the joins no window of this PC has seen yet (server/join-notices.ts) */
   readonly joins: JoinNotices;
   readonly accountMailbox: AccountMailbox;
+  readonly accountMove: AccountMove | null;
   readonly accountIntroductions: AccountIntroductions;
   readonly accountHolds: AccountHolds;
   /** the account safety log; null while OVIS_ACCOUNT_OPENS_ALL is off */
@@ -507,6 +509,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if ((pathname === "/api/account/one-press" || pathname === "/api/account/pc-proof") && !ownWindow) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add this PC to your account on this PC itself." } }, 403);
+  }
+  if (pathname === "/api/account/move" && (!ownWindow || funnel)) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Move this PC from its own window." } }, 403);
   }
   // how this PC follows its account's signed list is for this PC's own window and CLI to read, and only a person at
   // this PC names the list it pins, by its id, by the number it compares with the phone that adds it, or by the line of an invite
