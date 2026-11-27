@@ -73,7 +73,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     coveredRef.current = covered;
     const shared = { activeRef: ref(false), autoSelected: false, coarseRef: ref(false), findOpenRef: ref(false), fitRef: ref(null), fittedRef: ref(nothing), fixedGridRef: ref(false), followCursorRef: ref(nothing), keyboardHoldsRef: ref(() => false), observeRef: ref(false), sharedGridRef: ref(null), socketRef: ref(client), termRef, chatViewRef: ref(false), fontSettledRef: ref(settled) };
     useTerminalRefits({
-      ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false, narrowFont: false, narrowFontFitted: ref(false),
+      ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false,
       colors: COLORS, paneRef, peekRef: ref(null), shown: true, sizesPty: () => !coveredRef.current, terminalFontFamily: "", terminalFontSize: 13,
     });
     const attach: PaneAttachDeps = {
@@ -99,7 +99,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     await draw({ paneId: BEFORE, covered: true });
     const from = socket.sent.length;
     await draw({ paneId: AFTER, covered: true });
-    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true }]);
+    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true, windows_fit: true }]);
     const shown = socket.sent.length;
     await draw({ paneId: AFTER, covered: false });
     expect(sizing(shown)).toEqual([{ type: "resize", pane_id: AFTER, cols: 100, rows: 30 }]);
@@ -110,7 +110,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     layOut();
     const from = socket.sent.length;
     await draw({ paneId: AFTER, covered: false });
-    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String) }]);
+    expect(sizing(from)).toEqual([{ type: "attach", pane_id: AFTER, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), windows_fit: true }]);
   });
 
   describe("how the pane is presented", () => {
