@@ -70,6 +70,8 @@ export type PaneContext = { used: number; window: number | null };
  * translated), and how far it is, 0 to 100.
  */
 export type HerdrPane = PaneInfo & {
+  /** Latest verified Copilot UI activity sample, for badges only. */
+  copilot_processing?: boolean;
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
   /** Stop on this pane cancels a keeper session rather than interrupting a TUI. */
@@ -343,7 +345,8 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         readable store answers no matches, one that loses it after a page was read 409 history_changed.)
  *  GET    /api/pane/summary?pane_id=&pane_id=... -> PaneSummaries (each pane's last words for a
  *         list row, read pane after pane within PANE_SUMMARY_DEADLINE_MS: a pane not read by then
- *         is left out, one with nothing said or no readable conversation is null. 400
+ *         is left out, one not reached is also listed in skipped, and one with nothing said
+ *         or no readable conversation is null. 400
  *         missing_pane_id, 400 too_many_panes past PANE_SUMMARY_MAX_IDS distinct ids)
  *  POST   /api/pane/close { pane_id }         -> { ok: true } (pane.close RPC; the collector's
  *         session-changed broadcast removes it from every client's sidebar)
@@ -570,7 +573,7 @@ export interface ApiError {
 
 export type { PaneFindMatch, PaneFindRequest, PaneFindResponse } from "./find.ts";
 
-export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
+export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageFailure, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
@@ -1217,6 +1220,11 @@ export interface PromptAnswer {
  *  shared pty - the observer instead receives `pane-geometry` and adopts the pty's grid, so
  *  a phone watching a pane can never change the size the operator's PC sees. The client
  *  re-sends its role before the attach replay on reconnect.
+ *  On a supported Windows mirror, `attach {windows_fit:true}` opts into native fitting.
+ *  Only an interact attach without keep_size may claim control. A held slot is never taken
+ *  without `take-over`. `pane-geometry {windows_fit:true, fixed:false}` confirms a controller
+ *  stream frame; every other viewer adopts the fixed grid. Resize alone never takes a slot.
+ *  After release-size, a fresh attach is required to drive again. No HTTP resize RPC is used.
  *  secret requires the "secret-input" feature, an interact attachment, a matching fresh
  *  prompt and an idle input queue. Its result contains only ok/code, never the value.
  *  watch requires the "watch" feature: a read-only view of the pane drawn for the client's grid
@@ -1260,7 +1268,7 @@ export type ClientMessage =
   /** Subscribe to this connection server's authorized machine document; requires machine-events. */
   | { type: "machine-events"; enabled: boolean; compact_agents?: boolean }
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
-  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
+  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Understands an explicit fixed:false geometry grant on a Windows mirror. Never grants authority by itself. */ windows_fit?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
   /** Native invalidations require "conversation-watch" and an attachment; observers may subscribe.
    * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative.
@@ -1458,7 +1466,7 @@ export type ServerMessage =
   /** sent to a client joining an attachment whose stream ended after it was ready, before the replay: the replay is the screen from before, so only output after the next `input-ready` shows the pane as it is. Presentation only; input readiness is unchanged */
   | { type: "output-recovering"; pane_id: string }
   /** the shared pty's grid changed: observe clients adopt it, interact clients drive it. `fixed`: the grid is the pane's own in herdr (a mirrored pane), so every client adopts it and none resizes */
-  | { type: "pane-geometry"; pane_id: string; cols: number; rows: number; fixed?: boolean }
+  | { type: "pane-geometry"; pane_id: string; cols: number; rows: number; fixed?: boolean; /** A fit-aware viewer can ask for control with a fresh interact attach after it released size. */ windows_fit?: true }
   | { type: "role-ack"; mode: ClientRole }
   /** ok after Enter delivery, or bridge acceptance (`pending`); never an agent execution acknowledgement.
    * `draft`: on an immediate send's input_draft, the one-row draft in Claude's input box that a send

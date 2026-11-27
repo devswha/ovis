@@ -180,6 +180,7 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "패널 위로 스크롤",
   "Scroll pane down": "패널 아래로 스크롤",
   "Find in terminal": "터미널에서 찾기",
+  "Quote it in your message": "메시지에 인용",
   "Previous match": "이전 결과",
   "Next match": "다음 결과",
   "Close search": "검색 닫기",
@@ -416,6 +417,7 @@ const BASE: Record<string, string> = {
   "Files": "파일",
   "This image is {size}; download it to view.": "이 이미지는 {size}입니다. 보려면 다운로드하세요.",
   "Download": "내려받기",
+  "Saved to Downloads.": "다운로드 폴더에 저장했습니다.",
   "Open {path}": "{path} 열기",
 
   "Continue": "계속",
@@ -433,7 +435,6 @@ const BASE: Record<string, string> = {
   "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
   "Pairing code": "페어링 코드",
   "Needs HTTPS or localhost.": "HTTPS 또는 localhost가 필요합니다.",
-  "{agent} is ready": "{agent} 준비 완료",
 
   "Drag to resize · double-click to reset": "끌어서 크기 조절 · 두 번 클릭하면 초기화",
   "Failed": "실패",
@@ -578,7 +579,6 @@ const BASE: Record<string, string> = {
   "Show plan limits": "요금제 한도 표시",
   "Session": "세션",
   "Weekly": "주간",
-  "Open terminal": "터미널 열기",
   "Sign in to {agent}": "{agent}에 로그인",
   "Approve": "승인",
   "Devices waiting for approval": "승인을 기다리는 기기",

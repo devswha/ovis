@@ -182,6 +182,7 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "ペインを上にスクロール",
   "Scroll pane down": "ペインを下にスクロール",
   "Find in terminal": "ターミナル内を検索",
+  "Quote it in your message": "メッセージに引用",
   "Previous match": "前の一致",
   "Next match": "次の一致",
   "Close search": "検索を閉じる",
@@ -418,6 +419,7 @@ const BASE: Record<string, string> = {
   "Files": "ファイル",
   "This image is {size}; download it to view.": "この画像は {size} です。表示するにはダウンロードしてください。",
   "Download": "ダウンロード",
+  "Saved to Downloads.": "ダウンロードに保存しました。",
   "Open {path}": "{path} を開く",
 
   "Continue": "続行",
@@ -435,7 +437,6 @@ const BASE: Record<string, string> = {
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
   "Pairing code": "ペアリングコード",
   "Needs HTTPS or localhost.": "HTTPS または localhost が必要です。",
-  "{agent} is ready": "{agent} の準備ができました",
 
   "Drag to resize · double-click to reset": "ドラッグでサイズ変更 · ダブルクリックでリセット",
   "Failed": "失敗",
@@ -580,7 +581,6 @@ const BASE: Record<string, string> = {
   "Show plan limits": "プランの上限を表示",
   "Session": "セッション",
   "Weekly": "週次",
-  "Open terminal": "ターミナルを開く",
   "Sign in to {agent}": "{agent} にサインイン",
   "Approve": "承認",
   "Devices waiting for approval": "承認待ちのデバイス",

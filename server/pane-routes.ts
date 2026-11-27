@@ -339,10 +339,12 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     const gone = new Promise<"gone">((resolve) => { leave = () => resolve("gone"); });
     if (request.signal.aborted) leave(); else request.signal.addEventListener("abort", leave, { once: true });
     for (const [paneId, entry] of summaryReads) if (entry.settledAt !== undefined && Date.now() - entry.settledAt >= PANE_SUMMARY_KEEP_MS) summaryReads.delete(paneId);
+    let attempted = 0;
     try {
       for (const paneId of paneIds) {
         const left = deadline - Date.now();
         if (left <= 0 || request.signal.aborted) break;
+        attempted++;
         const running = summaryReads.get(paneId);
         let entry: SummaryReadEntry;
         if (running?.settledAt !== undefined) {
@@ -378,7 +380,8 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     } finally {
       request.signal.removeEventListener("abort", leave);
     }
-    return jsonResponse({ server_time: new Date().toISOString(), summaries } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
+    const skipped = attempted < paneIds.length ? paneIds.slice(attempted) : undefined;
+    return jsonResponse({ server_time: new Date().toISOString(), summaries, skipped } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/pane/conversation") {
@@ -397,7 +400,8 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       conversationDiagnostics.recovered(paneId, requestIdContext.getStore()?.id);
       // The live extension knows the current window and fill, which the session file does not record together.
       // Only read omp's status bar if its extension has never reported. An unknown sample leaves the file as-is.
-      const kind = conversation.source === "omp-transcript" ? "omp" : conversation.source === "omo-transcript" ? "omo" : null;
+      const kind = conversation.source === "omp-transcript" ? "omp" : conversation.source === "omo-transcript" ? "omo"
+        : conversation.source === "pi-transcript" ? "pi" : null;
       let context = kind === null ? undefined : options.approvals?.contextOf(paneId, kind);
       if (kind === "omp" && context === undefined) {
         const screen = await ompScreenContext(paneId);
