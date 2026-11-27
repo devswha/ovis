@@ -1864,6 +1864,24 @@ describe("herdr-core adapter, agents", () => {
     expect(kinds).not.toContain("omo");
     expect(kinds).toContain("cmd");
   });
+
+  it("starts Command Code and names the pane from its process title", async () => {
+    const shell = { pid: 10, name: "bash" };
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
+    const title = { pid: 11, name: "command-code" };
+    let typed = () => "";
+    let looks = 0;
+    const ready = await posix([record], {
+      "terminal.get": () => ({ ...record, foreground: typed() === "" ? shell : looks++ === 0 ? { pid: 12, name: "node", argv: ["node", "/srv/app/cmd.js"] } : title }),
+      "terminal.list": () => ({ terminals: [{ ...record, foreground: looks > 1 ? title : shell }] }),
+    });
+    typed = () => ready.cores[0]!.typed.map((write) => write.text).join("");
+
+    await agentStart({ name: "cmd-1", kind: "cmd", paneId: "t1", program: "/opt/agent tools/cmd", args: ["a b"] }, ready.socket);
+
+    expect(typed()).toBe("\u0015'/opt/agent tools/cmd' 'a b'\r");
+    expect((await sessionSnapshot(ready.socket)).panes[0]?.agent).toBe("cmd");
+  });
 });
 
 describe("herdr-core adapter, agents on Windows", () => {

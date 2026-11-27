@@ -14,7 +14,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isAbsolute } from "node:path";
 import { paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
-import { isCmdProcess } from "./cmd.ts";
+import { isCmdProcess } from "./agent-identity.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
@@ -38,8 +38,12 @@ export function isShellAgentKind(kind: string): boolean { return Object.hasOwn(S
 
 /** Where this server finds `kind` on its own PATH; the pane's shell is herdr's child and may carry another PATH. */
 export function shellAgentExecutable(kind: string, platform: string = process.platform, path: string = process.env["PATH"] ?? ""): string | null {
-  if (platform === "win32" && !WINDOWS_SHELL_AGENTS.has(kind)) return null;
+  if (!shellAgentOnPlatform(kind, platform)) return null;
   return Bun.which(kind, { PATH: path });
+}
+
+function shellAgentOnPlatform(kind: string, platform: string): boolean {
+  return platform !== "win32" || WINDOWS_SHELL_AGENTS.has(kind);
 }
 
 const isExecutableFile = (path: string): boolean => {
@@ -299,7 +303,7 @@ export class ShellAgentLocator {
   }
 
   async #lookup(probe: LoginPathProbe): Promise<void> {
-    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
+    const missing = Object.keys(SHELL_AGENTS).filter((kind) => shellAgentOnPlatform(kind, this.#platform) && shellAgentExecutable(kind, this.#platform, this.#servicePath()) === null);
     const found = new Map<string, string>();
     const result = missing.length === 0 ? null : await probe(this.#abort.signal).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
     if (this.#stopped) return;
@@ -322,7 +326,7 @@ export class ShellAgentLocator {
   }
 
   async executable(kind: string): Promise<string | null> {
-    if (!isShellAgentKind(kind)) return null;
+    if (!isShellAgentKind(kind) || !shellAgentOnPlatform(kind, this.#platform)) return null;
     const own = shellAgentExecutable(kind, this.#platform, this.#servicePath());
     if (own !== null || this.#probe === null) return own;
     await this.#fresh(this.#probe);
