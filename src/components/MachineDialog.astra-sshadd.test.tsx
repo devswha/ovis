@@ -178,6 +178,29 @@ test("an update whose approval answers only after it connected still runs the ad
   }
 });
 
+test("a Windows PC that connected opens: only an add still due holds Open PC", async () => {
+  Object.defineProperty(page.window, "setTimeout", { configurable: true, value: () => 1 });
+  Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: () => {} });
+  const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
+  const transport = getTransport();
+  setTransport({ ...transport, fetch: async (input) => {
+    switch (String(input)) {
+      case "/api/health": return Response.json({ auth: { via: "local" } });
+      case "/api/account/status": return Response.json({ account: null, pc_add_from_account: false });
+      case "/api/machines/setup": return Response.json({ id: "win", machine_id: "win-pc", phase: "connected", step: "Connected", action_required: null, error: null, challenge: null, installations: [], ssh_output: null, target: { destination: "win" }, windows_startup: true } satisfies SetupJob);
+      default: throw new Error(`Unexpected request: ${input}`);
+    }
+  } });
+  try {
+    await page.render(createElement(MachineDialog, { preset: { destination: "win" }, onClose() {}, onConnected() {} }));
+    await submit();
+    expect(buttons().find((button) => button.textContent === "Open PC")?.disabled).toBe(false);
+  } finally {
+    await page.render(null);
+    setTransport(transport); translation.mockRestore();
+  }
+});
+
 test("an update with no add still goes on in the background", async () => {
   expect(await whileUpdating(null)).toEqual({ background: true, closable: true, keepOpen: false });
 });

@@ -332,7 +332,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         {again.link !== null && <ExternalLink kind="sign-in" className="btn btn-primary" href={again.link}>{t("Open the sign-in page")}</ExternalLink>}
         <button className="btn" onClick={cancelAgain}>{t("Cancel")}</button>
       </>}
-      {job?.phase === "connected" ? <button className={again === null ? "btn btn-primary" : "btn"} disabled={pending || keepOpen} onClick={() => onConnected(job.machine_id)}>{t("Open PC")}</button> : (!job || finished) && <button className={choosing && job?.found_ovis?.length ? "btn" : "btn btn-primary"} form="machine-connect-form" type="submit" disabled={pending}>{t(pending ? "Connecting…" : needsBridgeUpdate && ownUpdate ? (previewVersion(own?.latest_version) ? "Update this PC's Ovis to the preview and connect" : "Update this PC's Ovis and connect") : needsBridgeUpdate ? "Update bridge and connect" : job ? "Retry connection" : "Connect")}</button>}
+      {job?.phase === "connected" ? <button className={again === null ? "btn btn-primary" : "btn"} disabled={pending || addAfterUpdate.current === job.id} onClick={() => onConnected(job.machine_id)}>{t("Open PC")}</button> : (!job || finished) && <button className={choosing && job?.found_ovis?.length ? "btn" : "btn btn-primary"} form="machine-connect-form" type="submit" disabled={pending}>{t(pending ? "Connecting…" : needsBridgeUpdate && ownUpdate ? (previewVersion(own?.latest_version) ? "Update this PC's Ovis to the preview and connect" : "Update this PC's Ovis and connect") : needsBridgeUpdate ? "Update bridge and connect" : job ? "Retry connection" : "Connect")}</button>}
     </footer>
   </dialog>;
 }
