@@ -61,7 +61,6 @@
   "scripts/markdown-outline-browser-qa.ts": 1,
   "scripts/math-browser-qa.ts": 4,
   "scripts/mobile-tabs-regression.ts": 4,
-  "scripts/mobile-viewport-regression.ts": 1,
   "scripts/my-pcs-ways-regression.ts": 1,
   "scripts/newtab-typeahead-regression.ts": 3,
   "scripts/notification-startup-regression.ts": 1,

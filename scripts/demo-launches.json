@@ -1,4 +1,5 @@
 {
+  "scripts/app-context.test.ts": 1,
   "scripts/chat-tool-paths-demo-regression.ts": 1,
   "scripts/cliproxy-settings-regression.ts": 1,
   "scripts/design-gate-qa.ts": 1,
@@ -7,11 +8,13 @@
   "scripts/inbox-mode-demo-regression.ts": 2,
   "scripts/install-state-demo-regression.ts": 1,
   "scripts/pane-mute-demo-run.ts": 1,
+  "scripts/pane-paging-demo-regression.ts": 1,
   "scripts/repo-diff-browser-qa.ts": 1,
   "scripts/revision-bound-update-demo-regression.ts": 1,
   "scripts/settings-pages-demo-regression.ts": 1,
   "scripts/settings-rows-demo-regression.ts": 1,
   "scripts/setup-dialog-demo-regression.ts": 1,
+  "scripts/sidebar-heads-demo-regression.ts": 1,
   "scripts/terminal-autoswitch-demo-regression.ts": 1,
   "scripts/theme-first-paint-demo-regression.ts": 1,
   "scripts/usage-account-management-regression.ts": 1
