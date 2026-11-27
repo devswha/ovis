@@ -11,7 +11,7 @@
 import { createElement, type AnchorHTMLAttributes, type MouseEvent, type ReactElement, type Ref } from "react";
 
 import { isWebLink } from "../../shared/terminal-links.ts";
-import { LOCAL_MACHINE, type Machine, type MachineForwardRequest, type MachineForwardResponse } from "../../shared/machines.ts";
+import { isForwardBind, isForwardLoopbackHost, LOCAL_MACHINE, type Machine, type MachineForwardRequest, type MachineForwardResponse } from "../../shared/machines.ts";
 import { machineRequest } from "./api.ts";
 import { inMacApp, inNativeApp } from "./nativeApp.ts";
 import { safariAddress } from "./safariLinks.ts";
@@ -31,6 +31,8 @@ export interface LinkBrowsers {
   list(): Promise<LinkBrowserChoices | null>;
   choose(id: string | null): Promise<void>;
   open(url: string): void;
+  canForward?(): boolean;
+  openForwarded?(url: string): Promise<boolean>;
 }
 
 /** A web address the chosen browser takes: never this app's own pages, which the app keeps (a new Ovis window). */
@@ -64,7 +66,7 @@ export { isWebLink };
  * steer a tab of another site only as its opener, so the reused tab keeps its opener: the site in it
  * can see and navigate this tab. That is why reuse is a setting, off by default; a new tab has none.
  */
-export function createWebLinkOpener() {
+export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
   let reusable: Window | null = null;
   const newTab = (uri: string): void => {
     const link = document.createElement("a");
@@ -73,7 +75,7 @@ export function createWebLinkOpener() {
     link.rel = "noopener noreferrer";
     link.click();
   };
-  const open = (uri: string, reuse: boolean): void => {
+  return (uri, reuse) => {
     const address = safariAddress(uri);
     if (address !== uri) {
       newTab(address);
@@ -98,41 +100,42 @@ export function createWebLinkOpener() {
       newTab(uri);
     }
   };
-  return (uri: string, reuse: boolean, forwarded?: Promise<string>): void | Promise<void> => {
-    if (!forwarded) return open(uri, reuse);
-    // Hold the user gesture over the API round trip, without giving the remote page an opener.
-    const held = reuse && reusable !== null && !reusable.closed ? null : reserveTab();
-    return forwarded.then((address) => {
-      if (held) {
-        if (held.closed) return;
-        try {
-          held.location.replace(safariAddress(address));
-          if (reuse) reusable = held;
-          return;
-        } catch { held.close(); }
-      }
-      open(address, reuse);
-    });
-  };
 }
 
 const openWebLink = createWebLinkOpener();
 
 type LinkMachine = Pick<Machine, "id" | "kind">;
-const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
-const LINK_LOOPBACK = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*\.)localhost$/i;
-
-export function remoteLoopbackLink(uri: string, machine?: LinkMachine): { url: URL; port: number; id: string } | null {
+function remoteLoopbackLink(uri: string, machine?: LinkMachine) {
   if (machine?.kind !== "ssh" || machine.id === LOCAL_MACHINE || !/^[a-z0-9-]{1,48}$/.test(machine.id)
-    || typeof location === "undefined" || !LOOPBACK.test(location.hostname) || !isWebLink(uri)) return null;
+    || typeof location === "undefined" || !isForwardLoopbackHost(location.hostname) || !isWebLink(uri)) return null;
   // A packaged shell can also be named localhost while its API is on another device.
   if ((location.protocol !== "http:" && location.protocol !== "https:") || getTransport().kind !== "native") return null;
   try {
     const url = new URL(uri);
-    if (!LOOPBACK.test(url.hostname) && !LINK_LOOPBACK.test(url.hostname)) return null;
+    if (!isForwardLoopbackHost(url.hostname)) return null;
     const port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-    return port > 0 ? { url, port, id: machine.id } : null;
+    const browser = linkBrowsers();
+    if (port === 0 || !browser?.openForwarded || !browser.canForward?.()) return null;
+    return { url, port, id: machine.id, open: browser.openForwarded };
   } catch { return null; }
+}
+
+/** Null keeps the caller's normal link handling. An attempted forward never falls back to it. */
+export function openRemoteLoopbackLink(uri: string, machine?: LinkMachine): Promise<void> | null {
+  const remote = remoteLoopbackLink(uri, machine);
+  if (!remote) return null;
+  const bind = isForwardBind(remote.url.hostname) ? remote.url.hostname : "127.0.0.1";
+  const request: MachineForwardRequest = { port: remote.port, ...(bind === "127.0.0.1" ? {} : { bind }) };
+  return machineRequest<MachineForwardResponse>(`/${encodeURIComponent(remote.id)}/forward`, "POST", request)
+    .then(async (answer) => {
+      const local = new URL(answer.url);
+      const port = Number(local.port || 80);
+      if (answer.url !== `http://${bind}:${port}` || port === 0 || port === Number(location.port || (location.protocol === "https:" ? 443 : 80))) {
+        throw new Error("Invalid SSH forward address");
+      }
+      remote.url.port = String(port);
+      if (!await remote.open(remote.url.href)) throw new Error("The built-in browser could not open the link");
+    }).catch(() => { console.warn("Could not open an SSH localhost link in the built-in browser."); });
 }
 
 /**
@@ -143,20 +146,8 @@ export function remoteLoopbackLink(uri: string, machine?: LinkMachine): { url: U
 export function openExternal(url: string, kind: ExternalLinkKind, reuse?: boolean): void;
 export function openExternal(url: string, kind: ExternalLinkKind, reuse: boolean, machine: LinkMachine | undefined): void | Promise<void>;
 export function openExternal(url: string, kind: ExternalLinkKind, reuse = false, machine?: LinkMachine): void | Promise<void> {
-  const remote = kind === "link" ? remoteLoopbackLink(url, machine) : null;
-  if (remote) {
-    const forwarded = machineRequest<MachineForwardResponse>(`/${encodeURIComponent(remote.id)}/forward`, "POST", { port: remote.port } satisfies MachineForwardRequest)
-      .then((answer) => {
-        const port = Number(/^http:\/\/127\.0\.0\.1:(\d{1,5})$/.exec(answer.url)?.[1]);
-        if (!Number.isInteger(port) || port < 1 || port > 65535 || port === Number(location.port || (location.protocol === "https:" ? 443 : 80))) return url;
-        // Separate the hostname, not just the port: cookies are scoped to hosts and ignore ports.
-        remote.url.hostname = `ovis-${remote.id}-${remote.port}.localhost`;
-        remote.url.port = String(port);
-        return remote.url.href;
-      }).catch(() => url);
-    if (!linkBrowsers() && canReuseExternalLinkTab()) return openWebLink(url, reuse, forwarded);
-    return forwarded.then((address) => { openExternal(address, kind, reuse); });
-  }
+  const forwarded = kind === "link" ? openRemoteLoopbackLink(url, machine) : null;
+  if (forwarded) return forwarded;
   const browsers = choosesBrowser(kind, url) ? linkBrowsers() : null;
   if (browsers) browsers.open(url);
   else if (isWebLink(url)) openWebLink(url, reuse);

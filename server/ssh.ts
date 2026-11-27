@@ -468,12 +468,12 @@ export class SshConnection {
     // sftp starts its own build's ssh unless told which
     await this.exec([this.client.sftp, ...(this.client.ssh === "ssh" ? [] : ["-S", this.client.ssh]), ...options, "-b", "-", this.target.destination], put, timeout);
   }
-  async forward(port: number, remotePort: number, requireReady = false): Promise<SshForward> {
+  async forward(port: number, remotePort: number, requireReady = false, bind = "127.0.0.1"): Promise<SshForward> {
     if (this.closed) throw new Error("SSH connection closed");
     // a browser's forward names the remote loopback as localhost, so sshd tries its IPv4 and IPv6 addresses (a dev server
     // started on localhost often listens on ::1 alone); the bridge's own forward keeps 127.0.0.1
     const remoteHost = requireReady ? "localhost" : "127.0.0.1";
-    const spec = `127.0.0.1:${port}:${remoteHost}:${remotePort}`;
+    const spec = `${bind}:${port}:${remoteHost}:${remotePort}`;
     if (this.multiplexed) {
       // Mux commands read SSH config too: even a master with ClearAllForwardings
       // would accept those extra tunnels here. -O uses only our existing control
@@ -538,7 +538,8 @@ export class SshConnection {
     // authenticated, and names no forward. A LogVerbose config puts a source location after the
     // level, so the messages are looked for anywhere in a debug line. The rest of stderr is drained
     // and only ssh's own words, not the debug lines, are kept for an error.
-    const own = `Local connections to 127.0.0.1:${port} forwarded to remote address ${remoteHost}:${remotePort}`;
+    const own = `Local connections to ${bind}:${port} forwarded to remote address ${remoteHost}:${remotePort}`;
+    const ownIpv6 = bind === "[::1]" ? own.replace("[::1]", "::1") : own;
     const ready = Promise.withResolvers<void>();
     void (async () => {
       const decoder = new TextDecoder();
@@ -550,7 +551,7 @@ export class SshConnection {
         partial = lines.pop()!.slice(-4096);
         for (const line of lines) {
           if (!sshVerboseLine(line)) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
-          else if (line.includes(own)) named = true;
+          else if (line.includes(own) || line.includes(ownIpv6)) named = true;
           else if (named && line.includes("Entering interactive session.")) ready.resolve();
         }
       }

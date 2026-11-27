@@ -49,6 +49,8 @@ if (isConnectionScreen) {
     list: (): Promise<unknown> => ipcRenderer.invoke("ovis:browsers"),
     choose: (id: string | null): Promise<void> => ipcRenderer.invoke("ovis:browser-choose", id),
     open: (url: string): void => ipcRenderer.send("ovis:browser-open", url),
+    canForward: (): boolean => ipcRenderer.sendSync("ovis:browser-can-forward") === true,
+    openForwarded: (url: string): Promise<boolean> => ipcRenderer.invoke("ovis:browser-open-forwarded", url),
   });
   // Settings → About → Terminal command (main.ts, terminalCommand.ts): where the `ovis` command is, and adding it
   contextBridge.exposeInMainWorld("ovisCommand", {

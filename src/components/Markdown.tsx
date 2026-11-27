@@ -23,7 +23,7 @@ import type { SkillMatcher } from "../lib/skillMentions.ts";
 import { previewChunks } from "../lib/textPreview.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { useSettings } from "../lib/settings.ts";
-import { ExternalLink, isWebLink, openExternal, remoteLoopbackLink } from "../lib/externalLink.ts";
+import { ExternalLink, isWebLink, openExternal, openRemoteLoopbackLink } from "../lib/externalLink.ts";
 
 const SkillMatcherContext = createContext<SkillMatcher | null>(null);
 
@@ -271,9 +271,11 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
     if (shouldOpenWebPage(event, href, openWebPage, machineId)) event.preventDefault();
     else if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.altKey && isWebLink(href)) {
       const machine = roster?.current.find((candidate) => candidate.id === machineId);
-      if (settings.reuseExternalLinkTab || remoteLoopbackLink(href, machine)) {
+      const forwarded = openRemoteLoopbackLink(href, machine);
+      if (forwarded) event.preventDefault();
+      else if (settings.reuseExternalLinkTab) {
         event.preventDefault();
-        void openExternal(href, "link", settings.reuseExternalLinkTab, machine);
+        openExternal(href, "link", true);
       }
     }
   };

@@ -1,3 +1,3 @@
 ### Fixed
-- When you open Ovis on its own PC, localhost links in an SSH pane's terminal or chat now open
-  the service on the SSH PC instead of a service on the wrong computer.
+- With the desktop built-in browser selected for links, localhost links in an SSH pane's terminal
+  or chat open the service on the SSH PC in that browser's separate profile.

@@ -1,6 +1,6 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
 import { wireMachine, wireMachineEvent, type WireMachine } from "../shared/compact-agents.ts";
-import { LOCAL_MACHINE, type DevicePairedEvent, type DevicePairedSeenEvent, type DeviceRemovedEvent, type Machine, type MachineForwardRequest, type MachineForwardResponse, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateStarted, type PendingRedemptionsEvent, type RelayPairingsEvent, type RemotePairingsEvent, type SetupAction, type SetupRequest } from "../shared/machines.ts";
+import { isForwardBind, LOCAL_MACHINE, type DevicePairedEvent, type DevicePairedSeenEvent, type DeviceRemovedEvent, type Machine, type MachineForwardRequest, type MachineForwardResponse, type MachineRoster, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateStarted, type PendingRedemptionsEvent, type RelayPairingsEvent, type RemotePairingsEvent, type SetupAction, type SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
@@ -453,19 +453,27 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       setRequestRoute("/api/machines/:machine_id/forward");
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
       if (readOnly) return fail("read_only", "this device can only watch", 403);
-      const body: unknown = await request.json().catch(() => null);
-      if (!isJsonObject(body) || Object.keys(body).length !== 1 || typeof body.port !== "number" || !Number.isInteger(body.port) || body.port < 1 || body.port > 65535) {
-        return fail("invalid_body", "Expected one integer port from 1 to 65535", 400);
-      }
-      const input: MachineForwardRequest = { port: body.port };
+      const revoke = new AbortController();
+      const unwatch = onRevoke?.(() => revoke.abort());
+      const signal = AbortSignal.any([request.signal, revoke.signal]);
       try {
-        const port = await manager.forwardWebPort(id, input.port, ovisPort ?? Number(url.port || (url.protocol === "https:" ? 443 : 80)));
-        return jsonResponse({ url: `http://127.0.0.1:${port}` } satisfies MachineForwardResponse);
+        const body: unknown = await request.json().catch(() => null);
+        if (signal.aborted) return fail("forward_cancelled", "Opening this SSH port forward was cancelled", 499);
+        if (!isJsonObject(body) || Object.keys(body).some((key) => key !== "port" && key !== "bind")
+          || typeof body.port !== "number" || !Number.isInteger(body.port) || body.port < 1 || body.port > 65535
+          || (body.bind !== undefined && (typeof body.bind !== "string" || !isForwardBind(body.bind)))) {
+          return fail("invalid_body", "Expected an integer port from 1 to 65535 and, optionally, a loopback address", 400);
+        }
+        const input: MachineForwardRequest = { port: body.port, bind: body.bind };
+        const bind = input.bind ?? "127.0.0.1";
+        const port = await manager.forwardWebPort(id, input.port, bind, ovisPort ?? Number(url.port || (url.protocol === "https:" ? 443 : 80)), signal);
+        if (signal.aborted) return fail("forward_cancelled", "Opening this SSH port forward was cancelled", 499);
+        return jsonResponse({ url: `http://${bind}:${port}` } satisfies MachineForwardResponse);
       } catch (error) {
         if (!(error instanceof MachineForwardError)) throw error;
-        const status = { machine_not_found: 404, forward_failed: 502, machine_offline: 503, forward_not_ssh: 409, forward_busy: 409 }[error.code];
+        const status = { machine_not_found: 404, forward_failed: 502, machine_offline: 503, forward_not_ssh: 409, forward_busy: 409, forward_cancelled: 499 }[error.code];
         return fail(error.code, error.message, status);
-      }
+      } finally { unwatch?.(); }
     }
     if (parts.length === 2 && parts[1] === "update") {
       setRequestRoute("/api/machines/:machine_id/update");

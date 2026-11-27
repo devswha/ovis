@@ -35,10 +35,13 @@ function fixture() {
     };
   };
   const forward = spyOn(ssh, "forward").mockImplementation(async (_local, remote) => open(remote));
-  const send = (suffix: string, method: string, body?: unknown, options: { owner?: boolean; readOnly?: boolean; headers?: HeadersInit } = {}) =>
+  const send = (suffix: string, method: string, body?: unknown, options: {
+    owner?: boolean; readOnly?: boolean; headers?: HeadersInit; signal?: AbortSignal; onRevoke?: (close: () => void) => () => void;
+  } = {}) =>
     handleMachineRequest(new Request(`${origin}/api/machines/${suffix}`, {
       method, headers: options.headers ?? headers, body: body === undefined ? undefined : JSON.stringify(body),
-    }), manager, undefined, undefined, options.readOnly ?? false, undefined, undefined, undefined, undefined, options.owner ?? true);
+      signal: options.signal,
+    }), manager, options.onRevoke, undefined, options.readOnly ?? false, undefined, undefined, undefined, undefined, options.owner ?? true);
   return {
     send, forward, active, closed, open,
     get masterClosed() { return masterClosed; },
@@ -58,7 +61,8 @@ async function refusal(answer: Promise<Response>, status: number, code: string) 
 
 it("accepts only one valid port from the owning Ovis page for a connected SSH PC", async () => {
   await using f = fixture();
-  for (const body of [null, {}, { port: "5173" }, { port: 1.5 }, { port: 0 }, { port: 65536 }, { port: 5173, host: "example.com" }]) {
+  for (const body of [null, {}, { port: "5173" }, { port: 1.5 }, { port: 0 }, { port: 65536 }, { port: 5173, host: "example.com" },
+    ...["0.0.0.0", "[::]", "localhost", "127.0.0.999", "127.0.0.1:1234", "example.com"].map((bind) => ({ port: 5173, bind }))]) {
     await refusal(f.send("desk/forward", "POST", body), 400, "invalid_body");
   }
   await refusal(f.send("desk/forward", "POST", { port: 5173 }, { owner: false }), 403, "forbidden");
@@ -86,7 +90,7 @@ it("reuses simultaneous and later requests, evicts the oldest at eight, and clos
   const [local] = f.forward.mock.calls[0]!;
   expect(first).toEqual({ url: `http://127.0.0.1:${local}` });
   expect(local).not.toBe(7317);
-  expect(f.forward).toHaveBeenCalledWith(local, 5173, true);
+  expect(f.forward).toHaveBeenCalledWith(local, 5173, true, "127.0.0.1");
   await Promise.all(Array.from({ length: 8 }, (_, index) => request(5174 + index)));
   expect([...f.active]).toEqual([5174, 5175, 5176, 5177, 5178, 5179, 5180, 5181]);
   expect(f.closed).toEqual([5173]);
@@ -112,4 +116,80 @@ it("removing a PC closes an in-flight forward without returning its address", as
   await refusal(answer, 503, "machine_offline");
   expect(f.closed).toEqual([5173]);
   expect(f.active.size).toBe(0);
+});
+
+it("a request during eviction never receives the retiring port", async () => {
+  await using f = fixture();
+  const evicting = Promise.withResolvers<void>();
+  const finishEviction = Promise.withResolvers<void>();
+  f.forward.mockImplementationOnce(async (_local, remote) => {
+    const opened = f.open(remote);
+    return { ...opened, close: async () => {
+      evicting.resolve();
+      await finishEviction.promise;
+      await opened.close();
+    } };
+  });
+  const request = (port: number) => f.send("desk/forward", "POST", { port });
+  const first = await request(5173);
+  expect(first.status).toBe(200);
+  for (let port = 5174; port <= 5180; port++) expect((await request(port)).status).toBe(200);
+  const ninth = request(5181);
+  await evicting.promise;
+  const repeated = request(5173);
+  try {
+    const early = await Promise.race([
+      repeated.then(() => true),
+      new Promise<false>((resolve) => setImmediate(() => resolve(false))),
+    ]);
+    expect(early).toBe(false);
+  } finally {
+    finishEviction.resolve();
+  }
+  expect((await ninth).status).toBe(200);
+  expect((await repeated).status).toBe(200);
+  expect(f.forward.mock.calls.filter(([, port]) => port === 5173)).toHaveLength(2);
+});
+
+it("does not open a forward for a disconnected or revoked requester", async () => {
+  await using f = fixture();
+  const signal = AbortSignal.abort();
+  await refusal(f.send("desk/forward", "POST", { port: 5173 }, { signal }), 499, "forward_cancelled");
+  await refusal(f.send("desk/forward", "POST", { port: 5174 }, { onRevoke: (close) => { close(); return () => {}; } }), 499, "forward_cancelled");
+  expect(f.forward).not.toHaveBeenCalled();
+});
+
+it("rechecks a queued request's authority after another SSH forward finishes", async () => {
+  await using f = fixture();
+  const binding = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  f.forward.mockImplementationOnce(async (_local, remote) => {
+    binding.resolve();
+    await finish.promise;
+    return f.open(remote);
+  });
+  const first = f.send("desk/forward", "POST", { port: 5173 });
+  await binding.promise;
+  const subscribed = Promise.withResolvers<() => void>();
+  const queued = f.send("desk/forward", "POST", { port: 5174 }, { onRevoke: (close) => {
+    subscribed.resolve(close);
+    return () => {};
+  } });
+  const revoke = await subscribed.promise;
+  // The body and route have had a turn, but the first forward still owns the SSH opening slot.
+  await new Promise<void>((done) => setImmediate(done));
+  revoke();
+  finish.resolve();
+  expect((await first).status).toBe(200);
+  await refusal(queued, 499, "forward_cancelled");
+  expect(f.forward).toHaveBeenCalledTimes(1);
+});
+
+it("opens a separate IPv6 listener for a link that must keep its IPv6 address", async () => {
+  await using f = fixture();
+  const response = await f.send("desk/forward", "POST", { port: 5173, bind: "[::1]" });
+  expect(response.status).toBe(200);
+  const [port] = f.forward.mock.calls[0]!;
+  expect(f.forward).toHaveBeenCalledWith(port, 5173, true, "[::1]");
+  expect(await response.json()).toEqual({ url: `http://[::1]:${port}` });
 });
