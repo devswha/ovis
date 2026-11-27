@@ -24,6 +24,7 @@ import { parseFoundHerdrSessions, throwawayPath, validHerdrSocket } from "./herd
 import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { AgentChanges } from "./agent-changes.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
 import type { FoundHerdrSession, FoundOvis } from "../shared/machines.ts";
 import { DESKTOP_APP_UPDATES, REVISION, type UpdateStatus } from "../shared/update.ts";
@@ -400,6 +401,7 @@ export class MachineManager {
   private localTimer: ReturnType<typeof setInterval>;
   private saveTimer?: ReturnType<typeof setTimeout>;
   private profileState: HerdrProfileState;
+  private readonly agentChanges: AgentChanges;
   private statePath: string;
   private written: string | undefined;
   private relayStatePath: string;
@@ -475,6 +477,7 @@ export class MachineManager {
     this.now = options.now ?? (() => performance.now());
     if (this.bootId) this.local.source_boot_id = this.bootId;
     this.profileState = new HerdrProfileState(stateDir);
+    this.agentChanges = new AgentChanges(stateDir);
     this.statePath = join(stateDir, "machines.json");
     this.relayStatePath = join(stateDir, "relay-pcs.json");
     this.addressStatePath = join(stateDir, "address-pcs.json");
@@ -572,7 +575,7 @@ export class MachineManager {
             runtime.machine.enabled = false; this.disconnect(runtime);
             for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
             this.dropUpdate(runtime);
-            this.machines.delete(id);
+            this.machines.delete(id); this.agentChanges.forget(id);
             this.emit();
           }
           this.removeKey(id);
@@ -612,7 +615,7 @@ export class MachineManager {
       runtime.machine.enabled = false; this.disconnect(runtime);
       for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
       this.dropUpdate(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -670,7 +673,7 @@ export class MachineManager {
     for (const [id, runtime] of this.machines) {
       if (runtime.machine.kind !== "hc" || wanted.has(id)) continue;
       runtime.machine.enabled = false; this.disconnect(runtime);
-      this.machines.delete(id);
+      this.machines.delete(id); this.agentChanges.forget(id);
       changed = true;
     }
     if (changed) this.emit();
@@ -698,7 +701,14 @@ export class MachineManager {
       runtime.machine.runtime = runtime.machine.state === "connected" && runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
       if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     }
-    return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+    const machines = [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+    // Serving a roster never observes changes: it can be a cached snapshot or a read between a
+    // status frame and its counter. Only accepted live snapshots and status frames date changes.
+    return machines.map((machine) => {
+      if (!machine.snapshot) return machine;
+      const snapshot = this.agentChanges.snapshot(machine.id, machine.snapshot, false);
+      return snapshot === machine.snapshot ? machine : { ...machine, snapshot };
+    });
   }
   private updateOffer(runtime: Runtime): PcUpdateOffer | null {
     const machine = runtime.machine;
@@ -780,6 +790,12 @@ export class MachineManager {
   }
   private emit(event?: MachineEvent): void {
     if (this.stopped) return;
+    if (event?.type === "machine-message" && event.message.type === "pane-status") {
+      const changedAt = this.agentChanges.status(event.machine_id, event.message.pane_id, event.message.agent_status);
+      // a remote PC's own Ovis may name a time of its clock: only this server's is told
+      const { changed_at: _theirs, ...message } = event.message;
+      if (changedAt !== undefined || _theirs !== undefined) event = { ...event, message: changedAt === undefined ? message : { ...message, changed_at: changedAt } };
+    }
     for (const listener of this.listeners.keys()) listener(event ?? { type: "machines", machines: this.list() });
   }
   localMessage(message: ServerMessage): void {
@@ -788,12 +804,12 @@ export class MachineManager {
       this.localRevision++;
       if (this.localBusy) this.localRefreshQueued = true;
     }
-    this.emit({ type: "machine-message", machine_id: LOCAL_MACHINE, message });
     if (message.type === "pane-exited") this.heardAgents.forget(message.pane_id);
     if (message.type === "pane-status" && this.local.snapshot) {
       this.local.snapshot = snapshotAfterStatus(this.local.snapshot, message);
       this.localFinishes.hold(message.finish_epoch, this.bootId);
     }
+    this.emit({ type: "machine-message", machine_id: LOCAL_MACHINE, message });
     if (message.type === "session-changed" || message.type === "pane-exited") void this.refreshLocal();
   }
   /**
@@ -822,7 +838,7 @@ export class MachineManager {
           if (revision !== this.localRevision) { this.localRefreshQueued = true; continue; }
           this.localDiagnostics.recovered(LOCAL_MACHINE, { operation: "snapshot", elapsed_ms: performance.now() - started });
           if (!olderOrderRead(this.local.snapshot, snapshot) && !this.localFinishes.stale(snapshot.finish_epoch)) {
-            this.local.snapshot = snapshot;
+            this.local.snapshot = this.agentChanges.snapshot(LOCAL_MACHINE, snapshot, true);
             this.localFinishes.settle(snapshot);
           }
           this.local.state = "connected"; this.local.error = null;
@@ -2211,7 +2227,17 @@ export class MachineManager {
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.type === "pane-status" && runtime.finishes.stale(message.finish_epoch)) return;
       if (["snapshot", "pane-status", "pane-exited"].includes(message.type)) runtime.snapshotRevision++;
-      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) { runtime.machine.snapshot = message.snapshot; runtime.finishes.hold(message.snapshot.finish_epoch, message.snapshot.order_epoch); this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine)); this.emit(); }
+      if (message.type === "snapshot") {
+        const snapshot = message.snapshot;
+        const admitted = this.admitRemote(runtime, snapshot);
+        message = { ...message, snapshot: this.agentChanges.snapshot(runtime.machine.id, snapshot, admitted) };
+        if (admitted) {
+          runtime.machine.snapshot = snapshot;
+          runtime.finishes.hold(snapshot.finish_epoch, snapshot.order_epoch);
+          this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
+          this.emit();
+        }
+      }
       if (message.type === "pane-status") {
         if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.finishes.hold(message.finish_epoch, runtime.acceptedEpoch); }
         if (runtime.candidate) runtime.candidate = snapshotAfterStatus(runtime.candidate, message);
@@ -2358,6 +2384,7 @@ export class MachineManager {
     return tracked;
   }
   private disconnect(runtime: Runtime): void {
+    if (!this.stopped && runtime.observer) this.agentChanges.disconnected(runtime.machine.id);
     runtime.generation++;
     runtime.refreshQueued = false;
     clearTimeout(runtime.retry); runtime.retry = undefined; clearInterval(runtime.poll);
@@ -2420,6 +2447,7 @@ export class MachineManager {
   }
   private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false, server?: string): void {
     if (runtime.move) { runtime.move.snapshot = snapshot; runtime.move.snapshotServer = settled ? snapshot.order_epoch : server; return; }
+    this.agentChanges.snapshot(runtime.machine.id, snapshot, true);
     runtime.machine.snapshot = snapshot;
     if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
@@ -2496,7 +2524,7 @@ export class MachineManager {
     // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
     if (runtime.machine.kind === "address") removeAddressPcToken(this.addressTokenPath(id));
-    this.machines.delete(id); this.persist();
+    this.machines.delete(id); this.agentChanges.forget(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
     this.emit();
   }
@@ -2764,7 +2792,7 @@ export class MachineManager {
     return runtime.machine;
   }
   async stop(): Promise<void> {
-    this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
+    this.stopped = true; this.agentChanges.flush(); clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }

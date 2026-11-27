@@ -124,7 +124,12 @@ describe("agentLaunch", () => {
       }
       starts.length = 0;
       runtime.mockReturnValue(served.HERDR);
-      expect((await launch("cmd", plain, { platform: "linux", settingsDir: dir })).args).toEqual(plain);
+      // on herdr the pane's shell starts Command Code (shell-agent.ts), without the mod
+      const typed = spyOn(shellAgent, "startShellAgent").mockResolvedValue(null);
+      try {
+        expect(await agentLaunch(PANE, { kind: "cmd", name: "cmd-launch-test", args: plain }, undefined, undefined, { platform: "linux", settingsDir: dir })).toEqual({ agent_started: true });
+        expect(typed.mock.calls.map((call) => call[2])).toEqual([plain]);
+      } finally { typed.mockRestore(); }
     } finally { runtime.mockRestore(); marked.mockRestore(); useApprovalHub(null); hub.stop(); }
   });
 

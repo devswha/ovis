@@ -49,6 +49,16 @@ function fileName(word: string, platform: CatalogPlatform, program: boolean): st
 /** Interpreter options after which the next word is code or a module, not a script file. */
 const NOT_A_SCRIPT = new Set(["-e", "--eval", "-p", "--print", "-c", "-m", "-"]);
 
+const CMD_BINS = new Set(["cmd", "cmdc", "command-code", "commandcode"]);
+const CMD_ENTRY = /(?:^|\/)node_modules\/command-code\/dist\/(?:index|cli)\.mjs$/u;
+
+/** The POSIX launch's process title, or Node still running one of the package's bins or its entry. */
+export function isCmdProcess(argv: readonly string[]): boolean {
+  const program = nodePath.posix.basename(argv[0] ?? "");
+  const script = argv[1] ?? "";
+  return program === "command-code" || (program === "node" && (CMD_BINS.has(nodePath.posix.basename(script)) || CMD_ENTRY.test(script)));
+}
+
 function scriptOf(argv: readonly string[]): string | null {
   for (const word of argv.slice(1)) {
     if (NOT_A_SCRIPT.has(word) || word === "--") return null;
@@ -117,6 +127,7 @@ export function processAgent(argv: readonly string[], platform: ProgramPlatform)
 }
 
 function agentOn(argv: readonly string[], platform: CatalogPlatform): string | null {
+  if (platform !== "windows" && isCmdProcess(argv)) return "cmd";
   const first = fileName(argv[0] ?? "", platform, true);
   const program = INTERPRETERS.has(first) ? fileName(scriptOf(argv) ?? "", platform, false) : first;
   if (!program) return null;
