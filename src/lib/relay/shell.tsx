@@ -343,7 +343,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // browser's return to the page does
     const finished = signingIn && account.state?.kind === "signed-in";
     signingIn = account.state?.kind === "signing-in";
-    if (finished && !scoped) { keepFrontChosen(false); launching = signedInNow = true; }
+    // a return that changed (or failed to change) the ways to sign in stays here, so its outcome is not lost to a launch
+    if (finished && !scoped && account.methodsChange === undefined) { keepFrontChosen(false); launching = signedInNow = true; }
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
