@@ -3592,8 +3592,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   if (homeFromEarlierRead && first !== undefined && ((await processCodexHome(first.pid, first.argv)) ?? defaultCodexHome()) !== home) return null;
   if (attached) {
     const proof = await tmuxRollout(paneId, home, found);
-    if (proof !== null) proofs?.set(proof.path, proof.identity);
-    return proof?.path ?? null;
+    if (proof === null) return null;
+    proofs?.set(proof.path, proof.identity);
+    return { path: proof.path, how: "held" };
   }
   if (open.size === 1) {
     const only = [...open][0]!;

@@ -654,7 +654,7 @@ it.skipIf(process.platform !== "linux")("reads the native rollout behind a verif
   foreground = [{ pid: 2147483647, argv: ["/usr/bin/tmux", "-S", "/synthetic/tmux.sock", "attach-session", "-t", "work"] }];
   const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1`, argvRead: true, argvState: "local" as const });
   try {
-    expect(await resolve()).toBe(path);
+    expect(await resolveHow()).toEqual({ path, how: "held" });
     expect(await codexOpenRollout(root, root, home)).toBe(path);
   } finally { nested.mockRestore(); }
 });
@@ -2427,7 +2427,7 @@ shortIt("does not keep a screen claim from a tmux peer with no attachment proof"
   peerScreens.set("peer", peerScreenOf(peerAnswer));
   const attachment = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue(null);
   try {
-    expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+    expect(await transcriptPath(root, root, home, panes)).toBe(path);
     peerScreens.set("peer", "");
     // Only the direct pane now reports the newest thread. Its background lookup has no screen
     // to match, so a leftover binding to the tmux pane would block reading the report.
