@@ -48,6 +48,14 @@ describe("verify-turn-gate enforcement", () => {
     // Editing arguments, control-flow guards, or steerMark initialization MUST trip the pin.
     expect(extractCallerGateSlice("server/core/pending.ts", caller.replace("committing(true, false, steerMark);", "committing(true, false, pending.mark(paneId));")))
       .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
+    // the steer's commit moved from its writing callback to the end of its checkPane callback, before thread/loaded/list:
+    // the gate calls keep their order, only the callback that owns the commit changes
+    const checkEnd = "            await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);\n          }, () => {\n";
+    const commitInCheck = caller.replace("            committing(true, false, steerMark);\n", "")
+      .replace(checkEnd, checkEnd.replace("          }, () => {\n", "            committing(true, false, steerMark);\n          }, () => {\n"));
+    expect(commitInCheck).toContain("identity);\n            committing(true, false, steerMark);\n          }, () => {\n            authorizePending(");
+    expect(extractCallerGateSlice("server/core/pending.ts", commitInCheck))
+      .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
     expect(extractCallerGateSlice("server/core/pending.ts", caller.replace("let steerMark = mark;", "let steerMark = 0;")))
       .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
     expect(extractCallerGateSlice("server/core/pending.ts", caller.replace("!pending.waiting(message.pane_id)", "true")))
