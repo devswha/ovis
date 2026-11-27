@@ -114,6 +114,7 @@ import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { holdOpenCodeNative } from "./opencode-native.ts";
 import { holdCommandHistory } from "./claude-command-history.ts";
 import { holdFilePool } from "./file-pool.ts";
+import type { MachineHc } from "./herdr-core/machine-files.ts";
 import { handleRequest, type RequestServices, type ServerContext } from "./dispatch.ts";
 import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPeer, type LanHttpsConfig } from "./lan-https.ts";
 
@@ -245,6 +246,8 @@ export function createServer(
     bridgeOnly?: boolean;
     /** false: the panes' files are on another machine (server/herdr-core/machine-entry.ts), so no route reads or makes files on this disk for them */
     localFiles?: boolean;
+    /** with `localFiles: false`, the core that reads that machine's files there (herdr-core/machine-files.ts); without it they are all refused */
+    machineFiles?: () => MachineHc;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     herdrConfigPath?: string;
     registerBridge?: boolean;
@@ -535,6 +538,7 @@ export function createServer(
   // a turn a hook tells of goes to the status of its pane, and a command it ran to the chat's send of it: no hook runs
   // before the core below starts an agent
   const approvals = new ApprovalHub(join(stateDir, "approval hooks"), APPROVAL_ADAPTERS, {
+    chatConnected: (paneId): boolean => core.chatConnected(paneId),
     onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn),
     onCommand: (paneId, kind, command) => noteHookCommand(paneId, kind, command),
     onContext: (paneId, context) => core.hookContextChanged(paneId, context),
@@ -616,10 +620,12 @@ export function createServer(
   // the agent's version as the catalog reads it (its version flag, kept per executable): none read is none supported
   readHeldApprovals(approvals);
   readToldModes((paneId) => approvals.toldMode(paneId));
-  readToldSessions((paneId) => approvals.toldSession(paneId));
+  readToldSessions((paneId, kind) => approvals.toldSession(paneId, kind));
   useApprovalHub(approvals, async (kind) => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === kind);
-    return entry === undefined ? null : (await agentDetector.state(entry, catalogPlatformHere)).version;
+    if (!entry) return null;
+    const { state, executable } = await agentDetector.probe(entry, catalogPlatformHere);
+    return { version: state.version, executable };
   }, codexServers);
   const installFolder = (binary: string): { path: string; mark: string } | null => {
     const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(binary));
@@ -648,6 +654,7 @@ export function createServer(
   let agentTools: AgentToolHub | null = null;
   const core = createCore({ options: { ...options, acp, codexServers, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => { void seen.moved(LOCAL_MACHINE, from, to, renumber).catch((error) => console.warn("seen: could not carry local reads:", error)); },
     hookContextOf: (paneId, kind) => approvals.contextOf(paneId, kind),
+    chatLeft: () => approvals.releaseUnwatched(),
     observeHookAgent: (paneId, kind) => approvals.observeContextAgent(paneId, kind),
     paneVacated: (paneId) => { approvals.forget(paneId); codexServers.forget(paneId); agentTools?.runs.forgetTerminal(paneId); },
   }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });

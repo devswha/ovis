@@ -30,6 +30,7 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     stub("codex", "echo 'codex-cli 0.150.0'");
     stub("omp", "echo 'usage: omp [options]'");
     stub("hermes", "echo 'Hermes Agent v0.21.5'");
+    stub("agy", "echo '1.5.14'");
   });
   afterAll(() => {
     rmSync(bin, { recursive: true, force: true });
@@ -44,6 +45,37 @@ describe.skipIf(process.platform === "win32")("AgentDetector", () => {
     stub("claude", "echo '2.1.320 (Claude Code, updated)'");
     expect(await detector.state(entry("claude"), "linux")).toMatchObject({ version: "2.1.320" });
     expect(runsOf("claude")).toBe(2);
+  });
+
+  it("reads Antigravity auth mode afresh while keeping its version cached", async () => {
+    const initialRuns = runsOf("agy");
+    const dir = join(emptyHome, ".gemini", "antigravity-cli");
+    mkdirSync(dir, { recursive: true });
+    const settings = join(dir, "settings.json");
+    const detector = new AgentDetector({ home: emptyHome, env: {}, locate });
+    expect(await detector.state(entry("agy"), "linux")).not.toHaveProperty("auth_mode");
+    for (const invalid of [
+      '{"modelProvider":"Gemini"}',
+      '{"modelProvider":"gemini "}',
+      '{"modelProvider":"gemini"',
+      '{"modelProvider":"gemini"}' + " ".repeat(1024 * 1024),
+    ]) {
+      writeFileSync(settings, invalid);
+      expect(await detector.state(entry("agy"), "linux")).not.toHaveProperty("auth_mode");
+    }
+    writeFileSync(settings, '{"modelProvider":"gemini"}');
+    expect(await detector.state(entry("agy"), "linux")).toMatchObject({ auth_mode: "gemini-api-key" });
+    rmSync(settings);
+    expect(await detector.state(entry("agy"), "linux")).not.toHaveProperty("auth_mode");
+    expect(runsOf("agy")).toBe(initialRuns + 1);
+  });
+
+  it("reads Antigravity auth mode from the configured app-data directory", async () => {
+    const override = join(emptyHome, "agy-override");
+    mkdirSync(override);
+    writeFileSync(join(override, "settings.json"), '{"modelProvider":"gemini"}');
+    const detector = new AgentDetector({ home: emptyHome, env: { ANTIGRAVITY_APP_DATA_DIR: override }, locate });
+    expect(await detector.state(entry("agy"), "linux")).toMatchObject({ auth_mode: "gemini-api-key" });
   });
 
   it("reads the version again when the executable is replaced by another file of the same size and time", async () => {

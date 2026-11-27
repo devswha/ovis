@@ -759,7 +759,7 @@ const BASE: Record<string, string> = {
   "No answer": "응답 없음",
   "Machine offline": "머신 오프라인",
   "Could not reach this machine": "이 머신에 연결할 수 없음",
-  "Can't reach the PC: it may be off": "PC에 연결할 수 없습니다: 꺼져 있을 수 있습니다",
+  "The PC is not answering": "PC가 응답하지 않습니다",
   "{name} answered but did not finish connecting in time. It may be busy or restarting. Try again; if it keeps happening, restart Ovis on {name}.": "{name}에서 응답이 왔지만 제때 연결을 마치지 못했습니다. 바쁘거나 다시 시작하는 중일 수 있습니다. 다시 시도하고, 계속 그러면 {name}에서 Ovis를 다시 시작하세요.",
   "Account setup is incomplete.": "계정 설정이 완료되지 않았습니다.",
   "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",

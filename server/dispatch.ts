@@ -35,6 +35,8 @@ import { type AgentInstaller, INSTALL_PATH, SIGN_IN_PATH } from "./agent-catalog
 import { forgetPageMedia } from "./file-view.ts";
 import { textEditAllowed } from "./file-edit.ts";
 import { handleFileRequest } from "./file-routes.ts";
+import { handleMachineFileRequest } from "./herdr-core/machine-files.ts";
+import { paneContext } from "./pane-context.ts";
 import { BACKGROUND_AGENT_PATH, handleBackgroundAgentRequest } from "./background-agent.ts";
 import { paneGet, ping } from "./herdr/client.ts";
 import { version } from "../package.json";
@@ -568,10 +570,16 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // so an unauthenticated client cannot hold idle sockets for a minute.
   if (pathname.startsWith("/api/") && authenticated) ctx.timeout(request, 60);
 
-  // the panes' files are on another machine: this disk's would be shown, listed, diffed or written as theirs
+  // the panes' files are on another machine: this disk's would be shown, listed, diffed or written as theirs,
+  // so what is read there is read there (herdr-core/machine-files.ts), and the rest is refused
   if (options.localFiles === false && OTHER_MACHINE_FILES.test(pathname)) {
     setRequestRoute(pathname);
-    return jsonResponse({ error: { code: "unsupported", message: "Files on another machine of herdr-core are not reachable from Ovis yet" } }, 501);
+    const paneCwd = (paneId: string) => paneContext(paneId).then((context) => context.cwd, () => null);
+    try {
+      const served = options.machineFiles ? await handleMachineFileRequest(request, url, pathname, options.machineFiles(), paneCwd) : null;
+      if (served !== null) return served;
+    } catch (error) { return errorResponse(error); }
+    return jsonResponse({ error: { code: "unsupported", message: "Diffs, git, edits and searches of another machine of herdr-core are not reachable from Ovis yet" } }, 501);
   }
 
   if (pathname === "/api/bridge") {

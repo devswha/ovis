@@ -24,7 +24,7 @@ function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
   return platform === "posix" ? ["linux", "macos"] : [platform];
 }
 
-const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "qwen-code": "qwen", "grok-build": "grok" };
+const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "qwen-code": "qwen", "grok-build": "grok", "command-code": "cmd" };
 
 /** The interpreters an agent's script runs under when its install is a script (npm's node bin, a Python entry point). */
 const INTERPRETERS = new Set(["node", "bun", "python", "python3"]);
@@ -131,6 +131,7 @@ function agentOn(argv: readonly string[], platform: CatalogPlatform): string | n
   const first = fileName(argv[0] ?? "", platform, true);
   const program = INTERPRETERS.has(first) ? fileName(scriptOf(argv) ?? "", platform, false) : first;
   if (!program) return null;
+  if (program === "command-code") return "cmd";
   const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !candidate.detect.unreliable_on?.[platform]);
   return entry?.id ?? null;
 }
