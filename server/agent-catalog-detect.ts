@@ -331,12 +331,17 @@ export class AgentDetector {
    * while a program it needs (detect.needs) is missing, it is not installed and nothing is run either.
    */
   async state(entry: AgentCatalogEntry, platform: CatalogPlatform | null): Promise<AgentInstallState> {
+    return (await this.probe(entry, platform)).state;
+  }
+
+  /** Keep the executable and its version together for launches; only the public state goes to the browser. */
+  async probe(entry: AgentCatalogEntry, platform: CatalogPlatform | null): Promise<{ state: AgentInstallState; executable: string | null }> {
     const missing: AgentInstallState = { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
     if (platform !== null && entry.detect.unreliable_on?.[platform] !== undefined) {
-      return { installed: null, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null };
+      return { state: { ...missing, installed: null }, executable: null };
     }
     const dirs = platform === null ? [] : entry.detect.install_dirs?.[platform] ?? [];
-    for (const needed of entry.detect.needs ?? []) if ((await this.executable(needed, dirs, platform)) === null) return missing;
+    for (const needed of entry.detect.needs ?? []) if ((await this.executable(needed, dirs, platform)) === null) return { state: missing, executable: null };
     for (const binary of entry.detect.binaries) {
       const onPath = await this.#locate(binary);
       const executable = onPath ?? (platform === null ? null : this.#inInstallDirs(binary, entry.detect.install_dirs?.[platform] ?? [], platform));
@@ -345,7 +350,7 @@ export class AgentDetector {
       if (fingerprint === null) continue;
       const { version, error } = await this.#version(executable, fingerprint, entry.detect.version_args, entry.detect.version_timeout_ms ?? this.#timeoutMs, this.commandPath(executable));
       const authMode = entry.id === "agy" ? await antigravityAuthMode(this.#home, this.#env["ANTIGRAVITY_APP_DATA_DIR"]) : undefined;
-      return {
+      return { executable, state: {
         installed: true,
         binary,
         on_path: onPath !== null,
@@ -353,8 +358,8 @@ export class AgentDetector {
         version_error: error,
         meets_min_version: entry.min_version === null || version === null ? null : meetsMinVersion(version, entry.min_version.version),
         ...(authMode === undefined ? {} : { auth_mode: authMode }),
-      };
+      } };
     }
-    return missing;
+    return { state: missing, executable: null };
   }
 }

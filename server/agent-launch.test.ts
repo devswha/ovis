@@ -11,6 +11,7 @@ import * as shellAgent from "./shell-agent.ts";
 import * as agentToolLaunch from "./agent-tools/launch.ts";
 import { agentLaunch, dshEffortArgs, readBrowserToolSetting, useApprovalHub } from "./agent-launch.ts";
 import { ApprovalHub, type ApprovalAdapter } from "./approvals/hub.ts";
+import { cmdApprovals } from "./approvals/cmd.ts";
 import type { CodexServers } from "./approvals/codex.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { requestIdContext, wordHerdrFailures } from "./http.ts";
@@ -70,7 +71,7 @@ describe("agentLaunch", () => {
     });
     const hub = new ApprovalHub(join(dirname(settingsDir()), "h"), [adapter("omo"), adapter("hooked")], { relay: ["relay"] });
     const asked: string[] = [];
-    useApprovalHub(hub, async (kind) => { asked.push(kind); return "1.0.0"; });
+    useApprovalHub(hub, async (kind) => { asked.push(kind); return { version: "1.0.0" }; });
     const shell = spyOn(shellAgent, "startShellAgent").mockImplementation(async () => null);
     try {
       expect(await agentLaunch(PANE, { kind: "omo", args: ["--x"] })).toEqual({ agent_started: true });
@@ -91,7 +92,7 @@ describe("agentLaunch", () => {
       toCard: () => null, decision: () => null, toAnswer: () => "{}",
     };
     const hub = new ApprovalHub(join(dirname(settingsDir()), "h"), [claude], { relay: ["relay"] });
-    useApprovalHub(hub, async () => "2.1.330");
+    useApprovalHub(hub, async () => ({ version: "2.1.330" }));
     const pane = spyOn(herdr, "paneGet").mockResolvedValue({ pane_id: PANE, workspace_id: "w1", tab_id: "w1:t1", terminal_id: PANE, cwd: "/work/project", agent_status: "idle", focused: true, revision: 0 });
     try {
       await launch("claude", [], { platform: "linux", settingsDir: settingsDir() });
@@ -103,6 +104,37 @@ describe("agentLaunch", () => {
     }
   });
 
+  it("hands --mod only to the cmd executable probed, not a workspace PATH override", async () => {
+    const dir = dirname(settingsDir());
+    const other = join(dir, "workspace bin");
+    mkdirSync(other);
+    for (const bin of [dir, other]) writeFileSync(join(bin, "cmd"), '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o700 });
+    const hub = new ApprovalHub(join(dir, "h"), [cmdApprovals]);
+    useApprovalHub(hub, async () => ({ version: "1.93.4", executable: join(dir, "cmd") }));
+    const runtime = spyOn(served, "capabilities").mockReturnValue(served.HERDR_CORE);
+    const marked = spyOn(agentToolLaunch, "markLocalAgentLaunch").mockResolvedValue(undefined);
+    // the server's own PATH lookup (#3843), not this machine's
+    const found = spyOn(shellAgent, "shellAgentExecutable").mockReturnValue(join(dir, "cmd"));
+    try {
+      const plain = ["--name", "a user's run"];
+      const start = await launch("cmd", plain, { platform: "linux", settingsDir: dir });
+      for (const path of [dir, other]) {
+        const proc = Bun.spawn([start.program!], { env: { ...process.env, PATH: path }, stdout: "pipe" });
+        const words = (await new Response(proc.stdout).text()).trimEnd().split("\n");
+        expect(await proc.exited).toBe(0);
+        expect(words).toEqual(path === dir ? ["--mod", expect.stringMatching(/ovis-chat-bridge\.ts$/), ...plain] : plain);
+      }
+      starts.length = 0;
+      runtime.mockReturnValue(served.HERDR);
+      // on herdr the pane's shell starts Command Code (shell-agent.ts), without the mod
+      const typed = spyOn(shellAgent, "startShellAgent").mockResolvedValue(null);
+      try {
+        expect(await agentLaunch(PANE, { kind: "cmd", name: "cmd-launch-test", args: plain }, undefined, undefined, { platform: "linux", settingsDir: dir })).toEqual({ agent_started: true });
+        expect(typed.mock.calls.map((call) => call[2])).toEqual([plain]);
+      } finally { typed.mockRestore(); }
+    } finally { found.mockRestore(); runtime.mockRestore(); marked.mockRestore(); useApprovalHub(null); hub.stop(); }
+  });
+
   it("starts a Codex through its launcher where the runtime runs one, and drops the launcher of a start that failed", async () => {
     const launches: { paneId: string; args: readonly string[] | undefined; version: string | null }[] = [];
     const abandoned: string[] = [];
@@ -111,7 +143,7 @@ describe("agentLaunch", () => {
       abandon: (paneId: string, program: string) => { abandoned.push(`${paneId} ${program}`); },
     } as unknown as CodexServers;
     const hub = new ApprovalHub(join(dirname(settingsDir()), "h"), []);
-    useApprovalHub(hub, async () => "0.171.0", codex);
+    useApprovalHub(hub, async () => ({ version: "0.171.0" }), codex);
     const runtimeHere = spyOn(served, "capabilities").mockReturnValue(served.HERDR_CORE);
     const marked = spyOn(agentToolLaunch, "markLocalAgentLaunch").mockResolvedValue(undefined);
     try {

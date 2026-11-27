@@ -1189,6 +1189,8 @@ export interface InteractivePromptAnswer {
 }
 
 export interface InteractivePromptOption {
+  /** Release a blocking hook instead of selecting an answer (also on a multiple-choice card). */
+  action?: "terminal";
   label: string;
   description: string | null;
   /** true when the agent explicitly marked this option as its recommended pick. */
@@ -1286,7 +1288,7 @@ export type ClientMessage =
    * `detached: true` (feature "conversation-watch-detached"): an interest that needs no attachment, for a client that
    * shows the chat and no terminal. It survives attaching and detaching the pane and ends with a `detached: true`
    * disable or the connection; at most 32 per connection (`too_many_conversation_watches`). */
-  | { type: "conversation-watch"; pane_id: string; enabled: boolean; detached?: boolean }
+  | { type: "conversation-watch"; pane_id: string; enabled: boolean; detached?: boolean; visible_cards?: true }
   /** feature "prompt-watch": a `prompt-changed` whenever the prompt on the pane's screen opens, closes or becomes
    * another one, without attaching the pane. Ends with a disable, the connection, or an error `prompt_watch_ended`
    * (the pane closed, or its screen could not be read 10 times in a row); at most 32 per connection
