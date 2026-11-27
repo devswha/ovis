@@ -24,6 +24,7 @@ import { BrowserBroker, brokerPath } from "./browserBroker.ts";
 import { readStagingProfile } from "./stagingProfile.ts";
 import { BROWSER_TOKENS_DIR } from "../../../shared/browser-broker.ts";
 import { BUILT_IN_LINK_BROWSER } from "../../../shared/browser-policy.ts";
+import { isForwardLoopbackHost } from "../../../shared/machines.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -441,17 +442,23 @@ async function openWebLink(url: string): Promise<void> {
  * nobody sees or an empty one.
  */
 async function openInBuiltIn(address: string): Promise<void> {
+  if (await showBuiltInLink(address)) return;
+  openOutside(address);
+  updateLog("The built-in browser could not show a link: the system browser opened it.");
+}
+
+async function showBuiltInLink(address: string, stillAllowed = () => true): Promise<boolean> {
   const contents = window?.webContents;
-  const shown = contents && tabsShowable && serverPage(contents.mainFrame) ? contents : null;
-  const id = shown ? await browser?.openLoaded(address, "mine") ?? null : null;
+  const tabs = browser;
+  if (!contents || !tabs || !tabsShowable || !serverPage(contents.mainFrame) || !stillAllowed()) return false;
+  const id = await tabs.openLoaded(address, "mine");
   // the page may have stopped being able to show it (a narrower window, a lock) while it loaded
-  if (shown === null || id === null || shown.isDestroyed() || !tabsShowable || !serverPage(shown.mainFrame)) {
-    if (id !== null) browser?.close(id);
-    openOutside(address);
-    updateLog("The built-in browser could not show a link: the system browser opened it.");
-    return;
+  if (id === null || contents.isDestroyed() || browser !== tabs || !stillAllowed() || !tabsShowable || !serverPage(contents.mainFrame)) {
+    if (id !== null) tabs.close(id);
+    return false;
   }
-  shown.send("ovis:tabs-opened", id);
+  contents.send("ovis:tabs-opened", id);
+  return true;
 }
 
 function openInstead(browser: LinkBrowser | null, address: string): void {
@@ -856,6 +863,18 @@ if (!app.requestSingleInstanceLock()) {
   });
   ipcMain.on("ovis:browser-open", (event, url: unknown) => {
     if (serverPage(event.senderFrame) && typeof url === "string") void openWebLink(url);
+  });
+  // Only our own desktop window can forward a link, and only into the separate browser profile.
+  const canForward = (event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) => event.sender === window?.webContents
+    && serverPage(event.senderFrame) && linkBrowser === BUILT_IN_LINK_BROWSER && browser !== null && tabsShowable;
+  ipcMain.on("ovis:browser-can-forward", (event) => { event.returnValue = canForward(event); });
+  ipcMain.handle("ovis:browser-open-forwarded", async (event, url: unknown) => {
+    if (!canForward(event) || typeof url !== "string") return false;
+    const address = webAddress(url);
+    if (address === null || !isForwardLoopbackHost(new URL(address).hostname)) return false;
+    // The setting or current page can change while either the SSH forward or the tab is loading.
+    // Never fall back to a browser that could attach the user's localhost cookies.
+    return showBuiltInLink(address, () => canForward(event));
   });
   // Settings → About → Terminal command (terminalCommand.ts): only the server's own page, and only once the launcher is written
   ipcMain.handle("ovis:command", (event) => serverPage(event.senderFrame) && commandLauncher !== null ? commandState(commandHost(commandLauncher)) : null);

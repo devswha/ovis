@@ -76,6 +76,7 @@ describe("approved bridge replacement", () => {
           }, websocket: { message() {} },
         });
         relays.push(relay);
+        return { listening: () => relay.port !== undefined, close: async () => { relay.stop(true); } };
       };
       const first = await request("", { destination: "fixture-only" });
       if (options.onlyFirst) {

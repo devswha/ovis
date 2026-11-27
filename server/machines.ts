@@ -29,7 +29,7 @@ import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from
 import type { FoundHerdrSession, FoundOvis } from "../shared/machines.ts";
 import { DESKTOP_APP_UPDATES, REVISION, type UpdateStatus } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
-import { SshConnection, sshClient } from "./ssh.ts";
+import { SshConnection, sshClient, type SshForward } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
@@ -55,6 +55,22 @@ import { addressBootId, addressOrigin, AddressPcError, AddressPcRefused, checkAd
 const RELAY_FOUND_MS = 10 * 60_000;
 /** the account service keeps an admission for 10 minutes: a key made for another PC of the account waits no longer */
 const ACCOUNT_PC_MS = 10 * 60_000;
+const WEB_FORWARDS_PER_MACHINE = 8;
+
+export class MachineForwardError extends Error {
+  constructor(readonly code: "machine_not_found" | "forward_not_ssh" | "machine_offline" | "forward_busy" | "forward_cancelled" | "forward_failed", message: string) {
+    super(message);
+  }
+}
+
+interface WebForward { port: number; ssh: SshForward; retiring?: true }
+/** One opening shared by every request for the same bind and port: cancelled only once all of them left. */
+interface PendingWebForward { opening: Promise<number>; waiters: number; abort: AbortController }
+interface WebForwards {
+  open: Map<string, WebForward>;
+  pending: Map<string, PendingWebForward>;
+  tail: Promise<unknown>;
+}
 
 export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "unanswered" | "cancelled";
 
@@ -72,6 +88,7 @@ type StoredMachine = { id: string; name: string; enabled: boolean; snapshot?: Se
 interface Runtime {
   machine: Machine;
   ssh?: SshConnection;
+  webForwards?: WebForwards;
   tunnel?: RelayPcTunnel;
   forward?: AddressPcForward;
   routeProbes?: RouteProbes;
@@ -297,9 +314,9 @@ function bridgeUnreachable(descriptor: BridgeDescriptor, error: unknown): string
   return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.`;
 }
 
-async function freePort(): Promise<number> {
+async function freePort(host = "127.0.0.1"): Promise<number> {
   const server = tcpServer();
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, host, resolve); });
   const port = (server.address() as { port: number }).port;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
@@ -1941,6 +1958,94 @@ export class MachineManager {
     await ssh.forward(port, descriptor.port);
     return { url: `http://127.0.0.1:${port}`, token: descriptor.token };
   }
+  /** A browser's local TCP forward is separate from the bridge and belongs to this SSH connection. */
+  async forwardWebPort(id: string, remotePort: number, bind: string, ovisPort: number, signal: AbortSignal): Promise<number> {
+    const cancelled = () => new MachineForwardError("forward_cancelled", "Opening this SSH port forward was cancelled");
+    if (signal.aborted) throw cancelled();
+    const runtime = this.machines.get(id);
+    if (id === LOCAL_MACHINE || (runtime && runtime.machine.kind !== "ssh")) throw new MachineForwardError("forward_not_ssh", "This PC is not connected over SSH");
+    if (!runtime) throw new MachineForwardError("machine_not_found", "PC not found");
+    const ssh = runtime.ssh;
+    const offline = () => new MachineForwardError("machine_offline", "Connect this PC over SSH first");
+    if (!ssh?.connected() || runtime.machine.state !== "connected") throw offline();
+    const forwards: WebForwards = runtime.webForwards ??= { open: new Map(), pending: new Map(), tail: Promise.resolve() };
+    const key = `${bind}:${remotePort}`;
+    // Each request waits on its own signal; an aborted one alone is told so.
+    const wait = async (entry: PendingWebForward): Promise<number> => {
+      entry.waiters++;
+      const left = Promise.withResolvers<never>();
+      left.promise.catch(() => undefined);
+      const leave = () => {
+        if (--entry.waiters === 0) entry.abort.abort();
+        left.reject(cancelled());
+      };
+      signal.addEventListener("abort", leave, { once: true });
+      try { return await Promise.race([entry.opening, left.promise]); }
+      finally { signal.removeEventListener("abort", leave); }
+    };
+    const pending = forwards.pending.get(key);
+    if (pending) return wait(pending);
+    const reuse = () => {
+      const existing = forwards.open.get(key);
+      if (existing?.retiring) return undefined;
+      if (existing?.ssh.listening()) return existing.port;
+      forwards.open.delete(key);
+    };
+    const existing = reuse();
+    if (existing !== undefined) return existing;
+    if (forwards.pending.size >= WEB_FORWARDS_PER_MACHINE) throw new MachineForwardError("forward_busy", "Too many ports are being opened for this PC");
+
+    const current = () => runtime.ssh === ssh && runtime.webForwards === forwards && runtime.machine.state === "connected" && ssh.connected();
+    const shared = new AbortController();
+    const check = () => {
+      if (shared.signal.aborted) throw cancelled();
+      if (!current()) throw offline();
+    };
+    const retire = async (key: string, forward: WebForward) => {
+      // A failed cancellation may already have closed the listener. Keep counting it
+      // against the cap, but do not return it as a working forward.
+      forward.retiring = true;
+      await forward.ssh.close();
+      forwards.open.delete(key);
+    };
+    const opening = forwards.tail.then(async () => {
+      try {
+        check();
+        const cached = reuse();
+        if (cached !== undefined) return cached;
+        const port = await freePort(bind === "[::1]" ? "::1" : bind);
+        // If Ovis listens only on another interface, freePort may still pick its port number.
+        if (port === ovisPort) throw new Error("That port is in use by Ovis");
+        check();
+        const same = forwards.open.get(key);
+        if (same?.retiring) await retire(key, same);
+        else if (forwards.open.size >= WEB_FORWARDS_PER_MACHINE) {
+          const oldest = forwards.open.entries().next().value;
+          if (oldest) await retire(...oldest);
+        }
+        check();
+        const tunnel = await ssh.forward(port, remotePort, true, bind);
+        if (!current() || !tunnel.listening()) {
+          await tunnel.close();
+          throw new Error("The port forward is no longer listening");
+        }
+        const opened = { port, ssh: tunnel };
+        forwards.open.set(key, opened);
+        if (shared.signal.aborted) {
+          await retire(key, opened);
+          throw cancelled();
+        }
+        return port;
+      } catch {
+        check();
+        throw new MachineForwardError("forward_failed", "Ovis could not open this SSH port forward");
+      }
+    }).finally(() => forwards.pending.delete(key));
+    const entry: PendingWebForward = { opening, waiters: 0, abort: shared };
+    forwards.pending.set(key, entry);
+    forwards.tail = opening.catch(() => undefined);
+    return wait(entry);
+  }
   private pause(signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
       const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
@@ -2393,6 +2498,12 @@ export class MachineManager {
     runtime.observer?.close(); runtime.observer = undefined;
     for (const close of runtime.terminals) close(); runtime.terminals.clear();
     runtime.ssh?.close(); runtime.ssh = undefined; runtime.endpoint = undefined;
+    const webForwards = runtime.webForwards;
+    runtime.webForwards = undefined;
+    if (webForwards) {
+      for (const { ssh } of webForwards.open.values()) void ssh.close().catch(() => {});
+      webForwards.open.clear();
+    }
     runtime.tunnel?.close(); runtime.tunnel = undefined; delete runtime.machine.route;
     runtime.forward?.close(); runtime.forward = undefined;
     if (runtime.hc?.bridge) {
