@@ -134,6 +134,50 @@ test("an update that carries Add it to my account asks to keep the dialog open, 
   expect(await whileUpdating("acct_1")).toEqual({ background: false, closable: false, keepOpen: true });
 });
 
+test("an update whose approval answers only after it connected still runs the add", async () => {
+  let poll: (() => void) | undefined;
+  pcPage(PC_META);
+  Object.defineProperty(page.window, "setTimeout", { configurable: true, value: (callback: () => void) => { poll = callback; return 1; } });
+  Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: () => {} });
+  const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
+  const session = spyOn(AccountService.prototype, "session").mockResolvedValue({ service: "https://account.test", account: "acct_1", provider: "google", access_token: "test", refresh_token: "test", expires_at: Date.now() + 60_000 });
+  const transport = getTransport();
+  const sent: SetupRequest[] = [];
+  const failed: SetupJob = { id: "first", machine_id: "initial", phase: "failed", step: "Failed", action_required: "update_bridge", error: "Setup needed", challenge: null, installations: [], ssh_output: null, target: { destination: "lab" },
+    remote_ovis: { version: "0.5.10", latest_version: "0.5.11", updatable: true, reason: null, address: "lab", url: null } };
+  const connected: SetupJob = { ...failed, id: "updating", machine_id: "lab-pc", phase: "connected", action_required: null, error: null };
+  const approved = Promise.withResolvers<Response>();
+  setTransport({ ...transport, fetch: async (input, init) => {
+    switch (String(input)) {
+      case "/api/health": return Response.json({ auth: { via: "local" } });
+      case "/api/account/status": return Response.json({ account: "acct_1", pc_add_from_account: true });
+      case "/api/machines/setup": {
+        const request = JSON.parse(String(init?.body)) as SetupRequest;
+        sent.push(request);
+        if (request.account_add && request.machine_id) return new Promise<Response>(() => {});
+        return Response.json(request.update_remote ? { ...failed, id: "updating", phase: "approval", action_required: null, error: null, installations: ["Ovis 0.5.11"] } : failed);
+      }
+      // the approval's answer comes late; the poll sees the update connected first
+      case "/api/machines/setup/updating": return init?.method === "POST" ? approved.promise : Response.json(connected);
+      default: throw new Error(`Unexpected request: ${input}`);
+    }
+  } });
+  try {
+    await page.render(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} }));
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    await submit();
+    await submit();
+    await act(async () => { buttons().find((button) => button.textContent === "Install and connect")!.click(); });
+    await act(async () => { poll!(); });
+    await act(async () => { approved.resolve(Response.json(connected)); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(sent.slice(1)).toEqual([{ destination: "lab", update_remote: true }, { destination: "lab", machine_id: "lab-pc", account_add: true }]);
+  } finally {
+    await page.render(null);
+    setTransport(transport); session.mockRestore(); translation.mockRestore();
+  }
+});
+
 test("an update with no add still goes on in the background", async () => {
   expect(await whileUpdating(null)).toEqual({ background: true, closable: true, keepOpen: false });
 });
