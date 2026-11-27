@@ -75,7 +75,7 @@ it.skipIf(process.platform !== "linux")("a TUI whose title hides its launch argv
   const tuis: ReturnType<typeof Bun.spawn>[] = [];
   try {
     const store = new RunStore(dir);
-    const [kept, wrong, none] = ["t1", "t2", "t3"].map(self => {
+    const [kept, wrong, none, notShells] = ["t1", "t2", "t3", "t4"].map(self => {
       const run = store.reserve();
       run.bind({ self, harness: "pi", started_by: null, root: run.id, depth: 0 });
       return run;
@@ -84,20 +84,22 @@ it.skipIf(process.platform !== "linux")("a TUI whose title hides its launch argv
       const { OVIS_AGENT_TOKEN_FILE: _, ...rest } = process.env;
       return tokenFile ? { ...rest, OVIS_AGENT_TOKEN_FILE: tokenFile } : rest;
     };
-    for (const [run, tokenFile] of [[kept!, kept!.tokenFile], [wrong!, kept!.tokenFile], [none!, undefined]] as const) {
+    for (const [run, tokenFile] of [[kept!, kept!.tokenFile], [wrong!, kept!.tokenFile], [none!, undefined], [notShells!, notShells!.tokenFile]] as const) {
       const tui = Bun.spawn(["sleep", "30"], { env: env(tokenFile) });
       tuis.push(tui);
       store.rememberForeground(run.id, tui.pid);
     }
     mkdirSync(join(dir, "mcp"), { recursive: true });
-    for (const run of [kept!, wrong!, none!]) writeFileSync(join(dir, "mcp", `${run.id}.js`), "export default () => {};\n");
-    const tokens = [kept!, wrong!, none!].map(run => readFileSync(run.tokenFile, "utf8"));
+    for (const run of [kept!, wrong!, none!, notShells!]) writeFileSync(join(dir, "mcp", `${run.id}.js`), "export default () => {};\n");
+    const tokens = [kept!, wrong!, none!, notShells!].map(run => readFileSync(run.tokenFile, "utf8"));
     const restored = new RunStore(dir);
-    restored.reconcile(tuis.map((tui, i) => ({ address: `t${i + 1}`, state: "live", labels: {}, foreground: { pid: tui.pid, argv: ["pi"] } })), () => undefined);
+    // this test is each pane's shell, which started its TUI; t4's shell is another process: what runs in front there
+    // inherited the token file from something else, a program the agent ran or one it left behind
+    restored.reconcile(tuis.map((tui, i) => ({ address: `t${i + 1}`, state: "live", labels: {}, pid: i === 3 ? tuis[0]!.pid : process.pid, foreground: { pid: tui.pid, argv: ["pi"] } })), () => undefined);
     expect(restored.verify(tokens[0]!)).toMatchObject({ self: "t1", harness: "pi" });
     expect(existsSync(kept!.tokenFile)).toBe(true);
     expect(existsSync(join(dir, "mcp", `${kept!.id}.js`))).toBe(true);
-    for (const [i, run] of [[1, wrong!], [2, none!]] as const) {
+    for (const [i, run] of [[1, wrong!], [2, none!], [3, notShells!]] as const) {
       expect(restored.verify(tokens[i]!)).toBeNull();
       expect(existsSync(run.tokenFile)).toBe(false);
       expect(existsSync(join(dir, "mcp", `${run.id}.js`))).toBe(false);
