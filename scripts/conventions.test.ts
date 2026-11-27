@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
+import ts from "typescript-api";
 import { browserScriptFiles, demoLaunchCounts, demoLaunches, directContextCounts, directContexts } from "./direct-contexts.ts";
 import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
@@ -73,6 +74,133 @@ describe("what the browser loads", () => {
     expect(leadsTo("src/server/list.ts", "./server/row.ts")).toBe("src");
     expect(leadsTo("site/demo/transport.ts", "../../src/lib/phone.ts")).toBe("src");
     expect(leadsTo("shared/web-policy.ts", "../package.json")).toBe("package.json");
+  });
+
+  function browserModuleRefs(file: string, code: string): { target: string; line: number; specifier: string; typeOnly: boolean }[] {
+    const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest);
+    const diagnostic = (source as ts.SourceFile & { readonly parseDiagnostics: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics[0];
+    if (diagnostic) {
+      const line = source.getLineAndCharacterOfPosition(diagnostic.start).line + 1;
+      throw new Error(`${file}:${line}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`);
+    }
+    const refs: { target: string; line: number; specifier: string; typeOnly: boolean }[] = [];
+    const visit = (node: ts.Node): void => {
+      let module: ts.Node | undefined;
+      let typeOnly = false;
+      if (ts.isImportDeclaration(node)) {
+        module = node.moduleSpecifier;
+        typeOnly = node.importClause?.isTypeOnly === true;
+      } else if (ts.isExportDeclaration(node)) {
+        module = node.moduleSpecifier;
+        typeOnly = node.isTypeOnly;
+      } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+        module = node.moduleReference.expression;
+        typeOnly = node.isTypeOnly;
+      } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+        module = node.arguments[0];
+      } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+        module = node.argument.literal;
+      }
+      if (module && ts.isStringLiteralLike(module)) {
+        const specifier = module.text;
+        const clean = specifier.replace(/[?#].*$/, "");
+        const target = clean.startsWith(".")
+          ? posix.normalize(posix.join(posix.dirname(file), clean))
+          : clean.startsWith("@shared/")
+            ? posix.normalize(`shared/${clean.slice("@shared/".length)}`)
+            : clean.startsWith("/")
+              ? posix.normalize(clean.slice(1))
+              : null;
+        if (target !== null) {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+          refs.push({ target, line, specifier, typeOnly });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return refs;
+  }
+
+  function protocolValueLoads(entries: readonly string[], source: (path: string) => string | undefined): string[] {
+    const isProtocol = (target: string): boolean =>
+      target === "shared/protocol.ts" || target === "shared/protocol" || target === "shared/protocol.js";
+    const seen = new Set(entries);
+    const queue = [...entries];
+    const offenders: string[] = [];
+    while (queue.length > 0) {
+      const file = queue.shift()!;
+      const text = /\.(?:ts|tsx|mjs|js)$/.test(file) ? source(file) : undefined;
+      if (text === undefined) continue;
+      for (const { target, line, specifier, typeOnly } of browserModuleRefs(file, text)) {
+        if (typeOnly) continue;
+        if (isProtocol(target)) {
+          offenders.push(`${file}:${line}: ${specifier}`);
+          continue;
+        }
+        const resolved = /\.(?:ts|tsx|mjs|js)$/.test(target) ? target : `${target}.ts`;
+        if (!seen.has(resolved)) {
+          seen.add(resolved);
+          queue.push(resolved);
+        }
+      }
+    }
+    return offenders;
+  }
+
+  it("imports only types from shared/protocol.ts", () => {
+    const browserEntries = files("{src,site}/**/*.{ts,tsx,mjs,js}").filter((file) => !/\.test\./.test(file));
+    const repoSource = (path: string) => (existsSync(join(repo, path)) ? read(path) : undefined);
+    fail(protocolValueLoads(browserEntries, repoSource),
+      "Browser code imports only types from shared/protocol.ts, which reads process.env at module load: write `import type { … } from \"…/shared/protocol.ts\"`, and put runtime constants the browser also needs in another shared/ module (such as shared/web-policy.ts).");
+  });
+
+  it("tells a type-only import of shared/protocol.ts from a direct, aliased or transitive value load", () => {
+    const graph: Record<string, string> = {
+      "src/types-ok.ts": [
+        "import type { SessionSnapshot } from \"../shared/protocol.ts\";",
+        "import type * as Protocol from \"../shared/protocol.ts\";",
+        "export type { CreateTabRequest } from \"../shared/protocol.ts\";",
+        "export type * from \"../shared/protocol.ts\";",
+        "import type DefaultHelper from \"../shared/reexport-value.ts\";",
+        "export type { SessionSnapshot, Protocol, DefaultHelper };",
+      ].join("\n"),
+      "src/direct-bad.ts": [
+        "import { DEFAULT_PORT } from \"../shared/protocol.ts\";",
+        "import { type SessionSnapshot } from \"../shared/protocol.ts\";",
+        "import { type CreateTabRequest, STREAM_COOKIE_PREFIX } from \"../shared/protocol.ts\";",
+        "import \"../shared/protocol.ts\";",
+        "const mod = await import(`../shared/protocol.ts`);",
+        "export * from \"../shared/protocol.ts\";",
+        "export { DEFAULT_PORT } from \"../shared/protocol.ts\";",
+        "type Inline = import(\"../shared/protocol.ts\").SessionSnapshot;",
+        "const req = require(\"../shared/protocol.ts\");",
+        "import eq = require(\"../shared/protocol.ts\");",
+        "import{DEFAULT_PORT as p}from\"@shared/protocol.ts\";",
+        "import \"/shared/protocol.ts?raw\";",
+        "void mod; void req; void eq; void p;",
+      ].join("\n"),
+      "src/transitive-bad.ts": "import { port } from \"../shared/reexport-value.ts\";\nexport { port };",
+      "shared/reexport-value.ts": "import { DEFAULT_PORT } from \"./protocol.ts\";\ntype Helper = string;\nexport default Helper;\nexport const port = DEFAULT_PORT;",
+    };
+    expect(protocolValueLoads(["src/types-ok.ts"], (path) => graph[path])).toEqual([]);
+    expect(protocolValueLoads(["src/direct-bad.ts"], (path) => graph[path])).toEqual([
+      "src/direct-bad.ts:1: ../shared/protocol.ts",
+      "src/direct-bad.ts:2: ../shared/protocol.ts",
+      "src/direct-bad.ts:3: ../shared/protocol.ts",
+      "src/direct-bad.ts:4: ../shared/protocol.ts",
+      "src/direct-bad.ts:5: ../shared/protocol.ts",
+      "src/direct-bad.ts:6: ../shared/protocol.ts",
+      "src/direct-bad.ts:7: ../shared/protocol.ts",
+      "src/direct-bad.ts:8: ../shared/protocol.ts",
+      "src/direct-bad.ts:9: ../shared/protocol.ts",
+      "src/direct-bad.ts:10: ../shared/protocol.ts",
+      "src/direct-bad.ts:11: @shared/protocol.ts",
+      "src/direct-bad.ts:12: /shared/protocol.ts?raw",
+    ]);
+    expect(protocolValueLoads(["src/transitive-bad.ts"], (path) => graph[path])).toEqual([
+      "shared/reexport-value.ts:1: ./protocol.ts",
+    ]);
   });
 });
 
