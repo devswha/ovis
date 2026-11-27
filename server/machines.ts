@@ -2423,7 +2423,10 @@ export class MachineManager {
     runtime.machine.snapshot = snapshot;
     if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
-    this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
+    const panes = forAlerts(snapshot.panes);
+    // A refresh that did not race the observer can recover status changes it missed while disconnected.
+    if (settled) this.push.reconcileRemoteAlertDeferrals(panes, runtime.machine.id);
+    this.push.seed(panes, runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
   }
   private proved(runtime: Runtime, boot: string): void {
     runtime.machine.source_boot_id = boot;
