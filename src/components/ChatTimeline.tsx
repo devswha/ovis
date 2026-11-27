@@ -400,7 +400,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     className="chat-view chat-view-virtual"
     contentContainerClassName="chat-transcript chat-transcript-virtual"
     role="log"
-    aria-live="polite"
+    aria-live="off"
     aria-label={label}
     data-conversation-source={source}
     data-chat-virtual=""

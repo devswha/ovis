@@ -21,6 +21,7 @@ describe("GET /api/agent-catalog", () => {
   let server: ReturnType<typeof createServer>;
   let root: string;
   let bin: string;
+  let profileChecks = 0;
   const savedPath = process.env["PATH"];
   const url = (path: string) => `http://127.0.0.1:${server.port}${path}`;
   const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -36,7 +37,10 @@ describe("GET /api/agent-catalog", () => {
     const agyData = join(home, ".gemini", "antigravity-cli");
     mkdirSync(agyData, { recursive: true });
     writeFileSync(join(agyData, "settings.json"), '{"modelProvider":"gemini"}');
-    const agentDetector = new AgentDetector({ locate: catalogLocator({ probe: null }), home, env: {} });
+    const probe: LoginPathProbe = Object.assign(async () => ({ path: "/nonexistent" }), {
+      profileRevision: async () => { profileChecks++; return 0; },
+    });
+    const agentDetector = new AgentDetector({ locate: catalogLocator({ probe }), home, env: {} });
     server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: state, token: BROWSER_TOKEN, bridgeToken: BRIDGE_TOKEN, machines: false, sidecar: false, tailscaleOwner: null, agentDetector });
   });
   afterEach(() => { process.env["PATH"] = savedPath; });
@@ -69,10 +73,16 @@ describe("GET /api/agent-catalog", () => {
 
   it("answers a watch device and the connection server's bridge token, and refuses no credential and a write", async () => {
     process.env["PATH"] = bin;
+    const checks = profileChecks;
     expect((await fetch(url("/api/agent-catalog"))).status).toBe(401);
     const watched = await fetch(url("/api/agent-catalog"), { headers: { cookie: `ovis_device=${WATCH_TOKEN}`, "x-forwarded-for": "100.64.0.9" } });
     expect(watched.status).toBe(200);
+    expect((await fetch(url("/api/agent-catalog?profile-recheck=0"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBe(checks);
     expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BRIDGE_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBeGreaterThan(checks);
+    expect((await fetch(url("/api/agent-catalog"), { headers: bearer(BROWSER_TOKEN) })).status).toBe(200);
+    expect(profileChecks).toBeGreaterThan(checks);
     const watchPost = await fetch(url("/api/agent-catalog"), { method: "POST", headers: { cookie: `ovis_device=${WATCH_TOKEN}`, "x-forwarded-for": "100.64.0.9", origin: url("") } });
     expect([watchPost.status, ((await watchPost.json()) as { error: { code: string } }).error.code]).toEqual([403, "read_only"]);
     const post = await fetch(url("/api/agent-catalog"), { method: "POST", headers: { ...bearer(BROWSER_TOKEN), origin: url("") } });

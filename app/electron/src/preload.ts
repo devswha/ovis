@@ -64,6 +64,14 @@ if (isConnectionScreen) {
       ipcRenderer.on("ovis:tabs", heard);
       return () => { ipcRenderer.removeListener("ovis:tabs", heard); };
     },
+    // whether the page can show a tab now, so main opens a clicked link there only when it will be seen
+    showable: (showable: boolean): void => ipcRenderer.send("ovis:tabs-showable", showable),
+    // a web link main opened in a tab of the person's own (Settings → Browser for links), for the page to show
+    onOpened: (listener: (id: unknown) => void): (() => void) => {
+      const heard = (_event: unknown, id: unknown) => listener(id);
+      ipcRenderer.on("ovis:tabs-opened", heard);
+      return () => { ipcRenderer.removeListener("ovis:tabs-opened", heard); };
+    },
     open: (url: string): Promise<number | null> => ipcRenderer.invoke("ovis:tabs-open", url),
     show: (id: number, bounds: { x: number; y: number; width: number; height: number }): void => ipcRenderer.send("ovis:tabs-show", id, bounds),
     hide: (): void => ipcRenderer.send("ovis:tabs-hide"),

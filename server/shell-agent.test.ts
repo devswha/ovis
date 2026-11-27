@@ -1,5 +1,5 @@
 import { afterEach, expect, it, jest, mock, spyOn } from "bun:test";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -197,14 +197,14 @@ it("reads the login PATH between its markers, whatever the profile prints around
  * A login shell that also takes `-i`, as zsh does: `-l` sets the login PATH, `-i` runs `rc` (a
  * .zshrc) and puts gjc's folder in front of it.
  */
-function rcFixture(rc = ":") {
+function rcFixture(rc = ":", shellName = "zsh") {
   const f = fixture();
   const rcBin = join(f.root, "rc bin");
   mkdirSync(rcBin);
   const gjc = join(rcBin, "gjc");
   writeFileSync(gjc, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   unlinkSync(f.gjc);
-  const shell = join(f.root, "interactive-shell");
+  const shell = join(f.root, shellName);
   writeFileSync(shell, [
     "#!/bin/sh",
     "PATH=/usr/bin:/bin",
@@ -256,6 +256,152 @@ it("runs the interactive shell once until asked to read it again, with the marke
   expect(runs()).toHaveLength(3);
   await locate.refresh?.();
   expect(runs()).toHaveLength(4);
+});
+
+it("finds agents after a shell profile edit without rerunning an unchanged profile (#3731)", async () => {
+  const f = rcFixture('echo x >> "$HOME/rc-runs"; . "$HOME/.zshrc"');
+  const rc = join(f.home, ".zshrc");
+  const bin = join(f.root, "new-agent-bin");
+  mkdirSync(bin);
+  const claude = join(bin, "claude");
+  const omo = join(bin, "omo");
+  for (const agent of [claude, omo]) writeFileSync(agent, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(rc, "");
+  utimesSync(rc, 1, 1);
+  const runs = () => readFileSync(join(f.home, "rc-runs"), "utf8").trim().split("\n").length;
+  let clock = 0;
+  const probe = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 0 });
+  const options = { probe, servicePath: f.servicePath, now: () => clock };
+  const locate = catalogLocator(options);
+  const locator = new ShellAgentLocator({ ...options, platform: "linux" });
+  const agents = (checkProfile = true) => Promise.all([locate("claude", checkProfile), locator.executable("omo", checkProfile)]);
+  expect(await agents()).toEqual([null, null]);
+
+  writeFileSync(rc, `export PATH="${bin}:$PATH"\n`);
+  utimesSync(rc, 2, 2);
+  clock += 6_000;
+  expect(await agents()).toEqual([claude, omo]);
+  expect(runs()).toBe(2);
+
+  clock += 61_000;
+  writeFileSync(join(f.home, ".bashrc"), "echo unrelated\n");
+  expect(await agents()).toEqual([claude, omo]);
+  expect(runs()).toBe(2);
+
+  writeFileSync(rc, "");
+  utimesSync(rc, 3, 3);
+  clock += 61_000;
+  expect(await agents(false)).toEqual([claude, omo]);
+  expect(runs()).toBe(2);
+  expect(await agents()).toEqual([null, null]);
+  expect(runs()).toBe(3);
+});
+
+it("detects fish config edits, universal variables and a new conf.d script in XDG_CONFIG_HOME", async () => {
+  const f = rcFixture('. "$XDG_CONFIG_HOME/fish/config.fish"; . "$XDG_CONFIG_HOME/fish/fish_variables"; for file in "$XDG_CONFIG_HOME"/fish/conf.d/*.fish; do [ ! -f "$file" ] || . "$file"; done', "fish");
+  const config = join(f.root, "config");
+  const dir = join(config, "fish");
+  const conf = join(dir, "conf.d");
+  mkdirSync(conf, { recursive: true });
+  const rc = join(dir, "config.fish");
+  const variables = join(dir, "fish_variables");
+  writeFileSync(rc, 'export PATH="/old:$PATH"\n');
+  writeFileSync(variables, "");
+  utimesSync(rc, 1, 1);
+  utimesSync(variables, 1, 1);
+  utimesSync(conf, 1, 1);
+  const probe = agentPathProbe({ shell: f.shell, env: { ...f.env, XDG_CONFIG_HOME: config }, rereadGapMs: 0 });
+  expect((await once(probe)).path?.split(":")).toContain("/old");
+  writeFileSync(rc, 'export PATH="/new:$PATH"\n');
+  utimesSync(rc, 2, 2);
+  expect((await once(probe)).path?.split(":")).toContain("/new");
+  writeFileSync(variables, 'export PATH="/universal:$PATH"\n');
+  utimesSync(variables, 2, 2);
+  expect((await once(probe)).path?.split(":")).toContain("/universal");
+  writeFileSync(join(conf, "agent.fish"), 'export PATH="/snippet:$PATH"\n');
+  utimesSync(conf, 2, 2);
+  expect((await once(probe)).path?.split(":")).toContain("/snippet");
+});
+
+it("does not return an obsolete cache when a profile edit supersedes a locator read", async () => {
+  const f = fixture();
+  const first = Promise.withResolvers<LoginPathResult>();
+  const second = Promise.withResolvers<LoginPathResult>();
+  const firstStarted = Promise.withResolvers<void>();
+  const secondStarted = Promise.withResolvers<void>();
+  let revision = 0;
+  const probe: LoginPathProbe = Object.assign((_signal: AbortSignal, wanted?: number | null) => {
+    if (wanted === 0) { firstStarted.resolve(); return first.promise; }
+    secondStarted.resolve();
+    return second.promise;
+  }, { profileRevision: async () => revision });
+  const locator = new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe });
+  const prior = locator.executable("gjc");
+  await firstStarted.promise;
+  revision++;
+  const latest = locator.executable("gjc");
+  await secondStarted.promise;
+  // The older read answers first; it was superseded when the newer one started, whatever the order they finish in.
+  first.resolve({ path: null, reason: "obsolete PATH" });
+  second.resolve({ path: f.loginBin });
+  expect(await Promise.all([prior, latest])).toEqual([f.gjc, f.gjc]);
+});
+
+it("finishes a lookup superseded by a refresh queued during profile revision", async () => {
+  const f = fixture();
+  const revision = Promise.withResolvers<number>();
+  const first = Promise.withResolvers<LoginPathResult>();
+  const second = Promise.withResolvers<LoginPathResult>();
+  const firstStarted = Promise.withResolvers<void>();
+  const secondStarted = Promise.withResolvers<void>();
+  const refreshChecking = Promise.withResolvers<void>();
+  let checks = 0;
+  let runs = 0;
+  const probe: LoginPathProbe = Object.assign(() => {
+    if (++runs === 1) { firstStarted.resolve(); return first.promise; }
+    secondStarted.resolve();
+    return second.promise;
+  }, {
+    profileRevision: () => {
+      if (++checks === 2) refreshChecking.resolve();
+      return revision.promise;
+    },
+  });
+  const locator = new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe });
+  const lookup = locator.executable("gjc");
+  const refresh = locator.refresh();
+  await refreshChecking.promise;
+  revision.resolve(0);
+  await Promise.all([firstStarted.promise, secondStarted.promise]);
+  first.resolve({ path: null, reason: "obsolete PATH" });
+  second.resolve({ path: f.loginBin });
+  await refresh;
+  const next = locator.executable("gjc");
+  // Both probes have answered. A caller still pending at the next event-loop turn is stuck.
+  const pending = new Promise<string>((resolve) => setImmediate(() => resolve("lookup did not settle")));
+  expect(await Promise.race([Promise.all([lookup, next]), pending])).toEqual([f.gjc, f.gjc]);
+});
+
+it("reads an edit that arrives while the interactive shell is still running (#3731)", async () => {
+  const f = rcFixture('. "$HOME/.zshrc"');
+  const rc = join(f.home, ".zshrc");
+  const started = join(f.home, "started");
+  const release = join(f.home, "release");
+  const running = fifo(started);
+  expect(Bun.spawnSync(["mkfifo", release]).exitCode).toBe(0);
+  writeFileSync(rc, 'export PATH="/old:$PATH"; echo ready > "$HOME/started"; read -r _ < "$HOME/release"\n');
+  utimesSync(rc, 1, 1);
+  const probe = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 0, timeoutMs: 5_000 });
+  const first = once(probe);
+  await running;
+  writeFileSync(rc, 'export PATH="/new:$PATH"\n');
+  utimesSync(rc, 2, 2);
+  const second = once(probe);
+  await probe.profileRevision?.();
+  const writer = Bun.spawn(["/bin/sh", "-c", 'echo go > "$1"', "sh", release], { timeout: 3_000 });
+  expect(await writer.exited).toBe(0);
+  expect((await first).path?.split(":")).toContain("/old");
+  expect((await second).path?.split(":")).toContain("/new");
 });
 
 it("an interactive shell that outruns its time leaves the login PATH, is not run again for the next lookups, and says why, once", async () => {

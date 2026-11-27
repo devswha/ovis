@@ -5,7 +5,7 @@ import { basename, delimiter, join } from "node:path";
 
 import { AGENT_CATALOG, type AgentCatalogEntry } from "../shared/agent-catalog.ts";
 import { AgentDetector, catalogLocator, LOGIN_PATH_KEPT_MS, runVersion, TIMEOUT_KEPT_MS, versionSpawn } from "./agent-catalog-detect.ts";
-import type { LoginPathResult } from "./shell-agent.ts";
+import type { LoginPathProbe, LoginPathResult } from "./shell-agent.ts";
 
 const entry = (id: string): AgentCatalogEntry => AGENT_CATALOG.find((candidate) => candidate.id === id)!;
 
@@ -334,5 +334,29 @@ describe("catalogLocator.refresh", () => {
     await reading;
     await Promise.all(refreshes);
     expect(runs).toBe(2);
+  });
+
+  it("answers a read a profile edit superseded with the newer read's PATH, the one searchPath reports", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-catalog-superseded-"));
+    try {
+      const old = join(root, "old"), agents = join(root, "agents"), runtime = join(root, "runtime");
+      for (const dir of [old, agents, runtime]) mkdirSync(dir);
+      for (const dir of [old, agents]) writeFileSync(join(dir, "claude"), "#!/bin/sh\n", { mode: 0o755 });
+      const first = Promise.withResolvers<LoginPathResult>();
+      const second = Promise.withResolvers<LoginPathResult>();
+      let revision = 0;
+      const probe: LoginPathProbe = Object.assign((_signal: AbortSignal, wanted?: number | null) => wanted === 0 ? first.promise : second.promise, { profileRevision: async () => revision });
+      const locate = catalogLocator({ probe, servicePath: () => "" });
+      const cold = locate("claude");
+      revision++;
+      const edited = locate("claude");
+      first.resolve({ path: old });
+      second.resolve({ path: `${agents}${delimiter}${runtime}` });
+      const newer = join(agents, "claude");
+      expect(await Promise.all([cold, edited])).toEqual([newer, newer]);
+      expect(locate.searchPath!()).toBe(`${agents}${delimiter}${runtime}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

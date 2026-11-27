@@ -23,7 +23,7 @@ import type { LegendListRef } from "@legendapp/list/react";
 import { continuesHistory, createChatRowSlots, growChatRowSlots, prependChatRowSlots } from "../lib/chatRows.ts";
 import { chatRowMemory, type ChatRowMemory } from "../lib/chatRowState.tsx";
 import { turnRevision } from "../lib/turnRevision.ts";
-import { conversationFinishEvidence, conversationFinishPresented } from "../lib/panePresentation.ts";
+import { conversationFinishEvidence, conversationFinishPresented, finalAnswerIndex } from "../lib/panePresentation.ts";
 import { seenKey } from "../lib/seenFinishes.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
@@ -357,6 +357,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const skillMatcher = useMemo(() => createSkillMatcher(commands, skillSyntax(agent)), [commands, agent]);
   const pageVisible = usePageVisible();
   const visible = paneVisible && pageVisible;
+  const canAnnounce = active && visible && !covered && connected && !ended;
+  const canAnnounceRef = useRef(canAnnounce);
+  const [replyRead, setReplyRead] = useState(false);
+  useLayoutEffect(() => {
+    canAnnounceRef.current = canAnnounce;
+    if (!canAnnounce) setReplyRead(false);
+  }, [canAnnounce]);
   const lastAnswer = useRef<ConversationResponse | null>(null);
   const [conversationRefresh] = useState(() => new ConversationRefresh());
   const onMetadataRef = useRef(onMetadata);
@@ -723,7 +730,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           // a pane that shows no transcript now has no row to come back to: it follows its end
           restoring.current = null; pagingAway.current = false; stickToBottom.current = true; setAway(false);
         }
-        if (conversation === lastAnswer.current) { setStale(false); setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); return; }
+        if (conversation === lastAnswer.current) {
+          if (canAnnounceRef.current && conversation.source !== "scrollback") setReplyRead(true);
+          setStale(false); setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined);
+          return;
+        }
         const previous = lastAnswer.current;
         const held = heldFrom.current ?? (previous?.source !== "scrollback" && previous?.history_id === conversation.history_id ? previous?.cursor : undefined);
         let moved: ConversationTurn[] = [];
@@ -757,6 +768,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           next = { source: "scrollback", turns: [], messages: toTranscriptMessages(result.text).filter((message) => message.role !== "status"), scrollback: result.text, truncated: result.truncated === true, hint: conversation.hint, unavailable: conversation.unavailable };
         }
         showAnswer(conversation, next, moved);
+        if (canAnnounceRef.current && conversation.source !== "scrollback") setReplyRead(true);
         setReadPresentation(proved ? readKey : undefined);
       } catch (cause) {
         if (cancelled || generation !== olderGeneration.current || (cause instanceof DOMException && cause.name === "AbortError")) return;
@@ -788,7 +800,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
 
   useEffect(() => {
     if (visible) conversationRefresh.refresh();
-  }, [paneId, pagePrompts, presentationKey, refreshKey, pollKey, visible, fetchPaneConversation, fetchPaneTranscript, conversationRefresh, onConversationWatch, agent]);
+  }, [paneId, pagePrompts, presentationKey, refreshKey, pollKey, visible, canAnnounce, fetchPaneConversation, fetchPaneTranscript, conversationRefresh, onConversationWatch, agent]);
 
   useEffect(() => {
     const seen = seenInvalidation.current;
@@ -1601,6 +1613,34 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const waitKey = waitingKey(machineId, paneId);
   const sentWaiting = useWaitingSends(machineId, paneId, connected);
   const turnsRead = loaded && error === null && !stale && state.source === "conversation";
+  // Use the latest transcript page and its stable row slots, not the mounted rows or paged history.
+  const answerIndex = finalAnswerIndex({ source: state.conversationSource, turns: state.turns });
+  const answerKey = answerIndex < 0 ? null : rowSlots[older.length + answerIndex]?.key ?? null;
+  const lastAnnounced = useRef<{ scope: string; key: string | null } | null>(null);
+  const [replyAnnouncement, setReplyAnnouncement] = useState<{ scope: string; key: string; text: string } | null>(null);
+  useEffect(() => {
+    if (!canAnnounce) {
+      lastAnnounced.current = null;
+      setReplyAnnouncement(null);
+      return;
+    }
+    // A cached render is not the opening baseline. A temporary read error is not a new opening.
+    if (!replyRead || !turnsRead) return;
+    const working = workStatus === "working" || workStatus === "waiting" || workStatus === "blocked";
+    const previous = lastAnnounced.current;
+    if (previous?.scope !== timelineScope) {
+      lastAnnounced.current = { scope: timelineScope, key: working ? null : answerKey };
+      setReplyAnnouncement(null);
+      return;
+    }
+    if (working || answerKey === null || answerKey === previous.key) return;
+    lastAnnounced.current = { scope: timelineScope, key: answerKey };
+    const text = state.turns[answerIndex]?.parts
+      .flatMap((part) => part.kind === "text" && part.phase === "final_answer" ? [part.text.trim()] : []).join(" ") ?? "";
+    const limit = 300;
+    setReplyAnnouncement({ scope: timelineScope, key: answerKey, text: text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text });
+  }, [answerIndex, answerKey, canAnnounce, replyRead, state.turns, timelineScope, turnsRead, workStatus]);
+  const replyWords = useAnnouncedText(canAnnounce && replyAnnouncement?.scope === timelineScope ? replyAnnouncement.text : null);
   useLayoutEffect(() => {
     settleWaitingSends(waitKey, state.turns, Date.now(), turnsRead, state.conversationSource);
   }, [sentWaiting, state.conversationSource, state.turns, turnsRead, waitKey]);
@@ -1639,8 +1679,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       && (agentStatus !== "done" || conversationFinishPresented({ source: state.conversationSource, turns: state.turns }))
       && readPresentation === presentationKey && (state.source === "conversation" ? ChatTimeline !== null : agent === null) ? presentationKey : undefined}>
     <div className="chat-frame-body">
+    <p className="visually-hidden chat-announcement" aria-live={canAnnounce ? "polite" : "off"} aria-atomic="true">{replyWords && <span key={replyAnnouncement?.key}>{replyWords}</span>}</p>
     {state.source === "conversation" ? ChatTimeline === null
-      ? <div className="chat-view chat-view-virtual" role="log" aria-live="polite" aria-label={logLabel}>
+      ? <div className="chat-view chat-view-virtual" role="log" aria-live="off" aria-label={logLabel}>
         <div className="chat-transcript chat-transcript-virtual">
           <div className="chat-virtual-header">{header}</div>
           <div className="chat-virtual-footer">{footer}</div>
@@ -1663,7 +1704,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       onFollowed={followed}
       onOpen={readOpened}
       renderRow={renderTurn}
-    /> : <div className="chat-view" ref={scroller} onScroll={() => onScroll()} role="log" aria-live="polite" aria-label={logLabel}>
+    /> : <div className="chat-view" ref={scroller} onScroll={() => onScroll()} role="log" aria-live="off" aria-label={logLabel}>
       <div className="chat-transcript" data-conversation-source={state.conversationSource}>
         <ChatFallback paneId={paneId} agent={agent} visible={visible} messages={state.messages} scrollback={state.scrollback} outcomes={outcomes} restored={restored} actions={outcomeActions} skills={skillMatcher}
           unavailable={state.hint !== undefined ? undefined : state.unavailable} onOpenTerminal={openTerminal} />
