@@ -969,6 +969,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       return;
     }
     if (kind === "copilot") return copilotHookTurn(paneId, event);
+    if (kind === "cmd") {
+      if (agentNow.get(paneId) !== kind) return;
+      // The mod reports the run, not readiness of the terminal's input. Only herdr drains its queue.
+      const status = completions.observe(paneId, turn === "began" ? "working" : "idle", kind);
+      broadcastAll(paneStatus(paneId, status));
+      alert(paneId, status);
+      return;
+    }
     if (kind !== "claude" || agentNow.get(paneId) !== "claude" || omo.runs(paneId) || gjc.runs(paneId)) return;
     const open = hookPrompts.get(paneId) ?? [];
     if (turn === "began") {
