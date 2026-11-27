@@ -358,22 +358,23 @@ it("writes the file URL on a new entry after a sheet's refused Back does not ret
   expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
 });
 
-it("writes the new file entry after a refused Back without the Navigation API", async () => {
+for (const [when, earlier] of [["made in this run", false], ["made before this run", true]] as const) it(`writes the new file entry after a refused Back onto an entry ${when}, without the Navigation API`, async () => {
   const traversal = { ...sheetTraversal };
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator")!;
-  place.paneId = "p1";
+  place.paneId = earlier ? "p2" : "p1";
   try {
-    await mount([P1], async () => {
+    await mount(earlier ? [P1, P2] : [P1], async () => {
       Object.defineProperty(window, "navigation", { configurable: true, value: undefined });
       Object.defineProperty(globalThis, "navigator", {
         ...originalNavigator,
         value: { userAgent: "Chrome/145.0.0.0", userActivation: { isActive: false } },
       });
-      const modulePath = "./sheetHistory.ts?address-bar-counted-file";
+      // a fresh copy each time, so it counts on this window's history
+      const modulePath = `./sheetHistory.ts?address-bar-counted-file=${crypto.randomUUID()}`;
       const sheets: typeof sheetHistory = await import(modulePath);
       mock.module("./sheetHistory.ts", () => ({ ...sheets, sheetSteppedOff: () => sheetStep }));
     });
-    await act(async () => { place.paneId = "p2"; draw(); });
+    if (!earlier) await act(async () => { place.paneId = "p2"; draw(); });
 
     sheetStep = true;
     await back();

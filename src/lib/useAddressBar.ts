@@ -102,7 +102,8 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   const refusedEntry = useRef<{ link: Pick<AppLink, "machine" | "pane">; key: string | undefined } | null>(null);
   const wouldOverwriteRefused = (shown: Pick<AppLink, "machine" | "pane">): boolean => {
     const refused = refusedEntry.current;
-    return refused !== null && (refused.key === undefined || refused.key === sheetHistoryEntryKey()) && otherPane(refused.link, shown);
+    // an entry with no key is told from none: it is the refused one until an entry with a key comes
+    return refused !== null && refused.key === sheetHistoryEntryKey() && otherPane(refused.link, shown);
   };
   const [released, setReleased] = useState(0);
   const filePop = fileFromPop();
