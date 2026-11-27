@@ -10,9 +10,11 @@ import { processStartIdentity } from "./process-start.ts";
 import { darwinArgv } from "./darwin-process.ts";
 import { codexAppServerSocket, codexConversationMode, type CodexConversationMode, isCodexExecutable, isCodexInterpreter, optionValue } from "./codex-executable.ts";
 
+const TMUX = /(?:^|\/)tmux$/;
+
 function attachClient(client: { pid: number; argv?: readonly string[] | null }) {
   const argv = client.argv ?? [];
-  if (!/(?:^|\/)tmux$/.test(argv[0] ?? "")) return null;
+  if (!TMUX.test(argv[0] ?? "")) return null;
   const args: string[] = [];
   let socket: string | null = null;
   let at = 1;
@@ -31,7 +33,7 @@ function attachClient(client: { pid: number; argv?: readonly string[] | null }) 
 
 export function tmuxWrapper(info: ProcessInfo | undefined, platform = process.platform): boolean {
   return (platform === "linux" || platform === "darwin")
-    && (info?.foreground_processes ?? []).some((process) => attachClient(process) !== null);
+    && (info?.foreground_processes ?? []).some(({ argv, name }) => TMUX.test(argv?.[0] ?? (name ?? "").replace(/: client$/, "")));
 }
 
 const FORMAT = "#{client_pid}\t#{client_tty}\t#{pid}\t#{socket_path}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}\t#{client_control_mode}\t#{pane_dead}";
@@ -60,9 +62,6 @@ export async function processTable(): Promise<TerminalProcess[]> {
   return parseTerminalProcesses(stdout);
 }
 
-/** The pane a proven attach client shows: its server (the client's own -S/-L) and the pane's id there. */
-export type TmuxPane = { readonly args: readonly string[]; readonly id: string };
-
 const tty = (value: string) => value.replace(/^\/dev\//, "");
 const pid = (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
 const SHELL = /(?:^|\/)(?:sh|bash|dash|zsh)$/;
@@ -84,7 +83,7 @@ export function codexProcessArgv(pid: number): string[] | null {
 export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform = process.platform,
   readClients = clients, readProcesses = processTable, birth = processStartIdentity,
   readArgv: (pid: number) => readonly string[] | null = codexProcessArgv,
-): Promise<{ pid: number; argv: string[]; identity: string; pane: TmuxPane; argvRead?: boolean; argvState: CodexConversationMode } | null> {
+): Promise<{ pid: number; argv: string[]; identity: string; argvRead: boolean; argvState: CodexConversationMode } | null> {
   const reported = info?.foreground_processes ?? [];
   const attachments = reported.map(attachClient).filter((client) => client !== null);
   if (!tmuxWrapper(info, platform) || attachments.length !== 1) return null;
@@ -92,10 +91,6 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
   try {
     const clientBirth = birth(client.pid);
     if (clientBirth === null) return null;
-    // One process table for both observations: the second asks tmux again whether the client still shows the same
-    // pane, and the births read after it prove every process of both chains is still the one first seen (a process
-    // is reparented only when its parent exits). Each caller's next lookup reads a table of its own.
-    let table: TerminalProcess[] | undefined;
     const observe = async () => {
       const text = await readClients(client.args);
       const lines = text.trimEnd().split("\n").map((line) => line.split("\t"));
@@ -107,7 +102,8 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
         || !isAbsolute(socket!) || (client.socket !== null && resolve(socket!) !== resolve(client.socket))
         || !/^\$\d+$/.test(session!) || !/^@\d+$/.test(window!) || !/^%\d+$/.test(pane!) || control !== "0"
         || !clientTty?.startsWith("/dev/") || !paneTty?.startsWith("/dev/") || clientTty === paneTty) return null;
-      const rows = table ??= await readProcesses();
+      // A client can keep the same pane while the shell takes back its foreground group.
+      const rows = await readProcesses();
       const outer = rows.find((row) => row.pid === client.pid);
       const root = rows.find((row) => row.pid === Number(panePid));
       // Remain-on-exit keeps a dead pane's PID/TTY; only its live server-owned child is proof.
@@ -159,7 +155,7 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
       const [selected] = candidates;
       if (candidates.length !== 1 || selected === undefined) return null;
       const codex = selected.row;
-      const remote = selected.argvRead ? optionValue(selected.argv, "--remote") : null;
+      const remote = selected.argvState === "remote" ? optionValue(selected.argv, "--remote") : null;
       if (codex.group !== codex.foreground) return null;
       const chain: TerminalProcess[] = [codex];
       const argvProofs = new Map<number, { pid: number; birth: number; key: string }>();
@@ -203,18 +199,19 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
           current = parent;
         }
       }
-      return { fields, outer, outerChain, root, codex, chain, argvProofs: [...argvProofs.values()],
-        argv: selected.argv, argvBirth: selected.argvBirth, argvRead: selected.argvRead, candidateBirth: selected.candidateBirth, argvState: selected.argvState, server: Number(serverPid) };
+      const server = Number(serverPid);
+      const serverBirth = birth(server);
+      const outerBirths = outerChain.map((row) => birth(row.pid));
+      const chainBirths = chain.map((row) => birth(row.pid));
+      if (serverBirth === null || [...outerBirths, ...chainBirths].some((value) => value === null)
+        || selected.candidateBirth === null || chainBirths[0] !== selected.candidateBirth) return null;
+      return { fields, outerChain, chain, argvProofs: [...argvProofs.values()], codex, server, serverBirth, outerBirths, chainBirths,
+        argv: selected.argv, argvBirth: selected.argvBirth, argvRead: selected.argvRead, argvState: selected.argvState };
     };
     const first = await observe();
     if (first === null) return null;
-    const serverBirth = birth(first.server);
-    const outerBirths = first.outerChain.map((row) => birth(row.pid));
-    const chainBirths = first.chain.map((row) => birth(row.pid));
-    if (serverBirth === null || [...outerBirths, ...chainBirths].some((value) => value === null)
-      // The first birth also owns a comm-only fallback; unreadable argv cannot discard it.
-      || first.candidateBirth === null || chainBirths[0] !== first.candidateBirth) return null;
     const second = await observe();
+    const { serverBirth, outerBirths, chainBirths } = first;
     if (second === null || JSON.stringify(first) !== JSON.stringify(second)
       || birth(client.pid) !== clientBirth || birth(first.server) !== serverBirth
       || first.outerChain.some((row, index) => birth(row.pid) !== outerBirths[index])
@@ -224,6 +221,6 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
     const identity = `${first.fields.join(":")}:${clientBirth}:${serverBirth}:${first.outerChain.map((row, index) => `${row.pid}:${outerBirths[index]}`).join(",")}:${first.chain.map((row, index) => `${row.pid}:${chainBirths[index]}`).join(",")}${argvKey}`;
     const launchers = first.argvProofs.filter((proof) => first.chain.some((row) => row.pid === proof.pid));
     const launcherKey = launchers.length ? `:${JSON.stringify(launchers)}` : "";
-    return { pid: first.codex.pid, argv: first.argv, identity: identity + launcherKey, argvRead: first.argvRead, argvState: first.argvState, pane: { args: client.args, id: first.fields[6]! } };
+    return { pid: first.codex.pid, argv: first.argv, identity: identity + launcherKey, argvRead: first.argvRead, argvState: first.argvState };
   } catch { return null; }
 }

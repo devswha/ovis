@@ -134,6 +134,8 @@ esac
   it.each([
     [["codex"], "local"], [["codex", "--profile", "e"], "local"],
     [["codex", "--remote=fixture"], "remote"], [["node", "other.js"], "rejected"],
+    [["python3", "wrapper.py", "--remote", "unix:///fixture/codex.sock"], "rejected"],
+    [["codex", "--", "--remote=fixture"], "local"],
     [null, "unavailable"],
   ] as const)("retains native argv evidence without weakening %j into comm-local proof", async (argv, state) => {
     const found = await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births, () => argv);
@@ -198,11 +200,11 @@ esac
       (pid) => pid === 8 && ++reads > 1 ? null : births(pid))).toBeNull();
   });
 
-  it("reads one process table for both observations of a proof", async () => {
-    let lists = 0, tables = 0;
-    expect(await tmuxCodexProcess(info, "linux", async () => { lists++; return mapping; },
-      async () => { tables++; return processes; }, births)).toMatchObject({ pid: 30 });
-    expect({ lists, tables }).toEqual({ lists: 2, tables: 1 });
+  it("refuses the same tmux pane when its shell takes the foreground back from Codex", async () => {
+    let tables = 0;
+    const suspended = processes.map((row) => row.tty === "pts/2" ? { ...row, foreground: 20 } : row);
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping,
+      async () => ++tables === 1 ? processes : suspended, births)).toBeNull();
   });
 
   it("rejects stale reported membership, a missing root and multiple clients", async () => {
@@ -250,7 +252,7 @@ esac
 
   it("proves a recognised Node Codex launcher and its one native child", async () => {
     expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => nodeWrapped, births, launcherArgv))
-      .toMatchObject({ pid: 30, pane: { args: ["-S", "/fixture/tmux.sock"], id: "%4" } });
+      .toMatchObject({ pid: 30 });
   });
 
   it.each([null, ["node", "other.js"], ["node", "-e", "codex.js"], ["bun", "codex.js"]].map((argv) => [argv] as const))
@@ -355,7 +357,6 @@ esac
     expect(found).toMatchObject({ pid: 30, argv: ["/opt/bin/codex"] });
     expect(args).toEqual([["-S", "/fixture/tmux.sock"], ["-S", "/fixture/tmux.sock"]]);
     expect(found!.identity).toContain("$2:@3:%4");
-    expect(found!.pane).toEqual({ args: ["-S", "/fixture/tmux.sock"], id: "%4" });
   });
 
   it.each([
@@ -442,13 +443,18 @@ esac
     expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, () => null)).toBeNull();
   });
 
-  it("does not probe a direct Codex, Kiro wrapper, control-mode command or unsupported platform", async () => {
-    const read = async () => { throw new Error("must not probe"); };
-    for (const argv of [["codex"], ["zsh (kiro-cli-term)"], ["tmux", "-C", "attach"], ["tmux", "-S", "relative.sock", "attach"]]) {
-      const other = { foreground_processes: [{ pid: 10, argv }] } as ProcessInfo;
-      expect(tmuxWrapper(other)).toBe(false);
+  it("recognizes unsupported tmux commands without querying their socket", async () => {
+    let queries = 0;
+    const read = async () => { queries++; return mapping; };
+    for (const [argv, wrapped] of [
+      [["codex"], false], [["zsh (kiro-cli-term)"], false], [["tmux", "-C", "attach"], true],
+      [["tmux", "-S", "relative.sock", "attach"], true], [["tmux", "-f", "/dev/null", "attach"], true],
+    ] as const) {
+      const other: ProcessInfo = { pane_id: "fixture", foreground_processes: [{ pid: 10, name: argv[0], argv: [...argv] }] };
+      expect(tmuxWrapper(other, "linux")).toBe(wrapped);
       expect(await tmuxCodexProcess(other, "linux", read)).toBeNull();
     }
     expect(await tmuxCodexProcess(info, "win32", read)).toBeNull();
+    expect(queries).toBe(0);
   });
 });

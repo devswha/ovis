@@ -56,7 +56,8 @@ export type CodexConversationMode = "local" | "remote" | "rejected" | "unavailab
 /** Readable contradictions are never weakened into an unknown local-history fallback. */
 export function codexConversationMode(argv: readonly string[] | null | undefined): CodexConversationMode {
   if (!argv?.length) return "unavailable";
-  if (argv.some((word) => word === "--remote" || word.startsWith("--remote="))) return "remote";
   if (!isCodexExecutable(argv)) return "rejected";
+  const end = argv.indexOf("--");
+  if (argv.some((word, index) => (end < 0 || index < end) && (word === "--remote" || word.startsWith("--remote=")))) return "remote";
   return "local";
 }

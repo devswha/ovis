@@ -11,7 +11,12 @@ import { testTmuxOwnAppServers } from "./tmux-own-server.test-helpers.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 
 // A real private tmux client in the test herdr, a stand-in executable, and synthetic native files.
-const native = process.platform === "linux";
+const linux = process.platform === "linux";
+const missing = linux ? [
+  !Bun.which("tmux") && "tmux", !Bun.which("node") && "node", !existsSync("/bin/ps") && "procps",
+  !Bun.which("python3") && "python3", !Bun.which("ss") && "iproute2",
+].filter(Boolean) : [];
+const native = linux && (missing.length === 0 || Boolean(process.env.CI));
 const root = mkdtempSync(join(tmpdir(), "ovis-tmux-"));
 const socket = join(root, "tmux.sock");
 const home = join(root, "store");
@@ -44,7 +49,6 @@ async function tmux(...args: string[]): Promise<string> {
 
 beforeAll(async () => {
   if (!native) return;
-  const missing = [!Bun.which("tmux") && "tmux", !Bun.which("node") && "node", !existsSync("/bin/ps") && "procps", !Bun.which("python3") && "python3"].filter(Boolean);
   if (missing.length) throw new Error(`Native tmux contracts require: ${missing.join(", ")}`);
   mkdirSync(join(home, "sessions"), { recursive: true });
   writeFileSync(rollout, [
@@ -215,7 +219,7 @@ it.skipIf(!native)("keeps scrollback for a shared-daemon TUI even when its scree
   expect(JSON.stringify(conversation)).not.toContain("Read the daemon chat");
 });
 
-testTmuxOwnAppServers({ root, socket, home, rollout, tmux, port: () => server?.port });
+testTmuxOwnAppServers({ enabled: native, root, socket, home, rollout, tmux, port: () => server?.port });
 
 it.skipIf(!native)("serves native turns behind a foreground shell launcher instead of its tmux terminal chrome", async () => {
   const pid = Number(readFileSync(join(root, "ready"), "utf8"));

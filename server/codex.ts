@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { parseMarkdown, shownText, type InlineNode } from "../shared/markdown.ts";
 import type { ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
 import { patchFiles, patchText } from "../shared/patch.ts";
-import { processStartedAt, processStartLowerBound, processStartUpperBound } from "./process-start.ts";
+import { processStartedAt, processStartIdentity, processStartLowerBound, processStartUpperBound } from "./process-start.ts";
 import { CODEX_TOOL_IMAGE_REF, codexImageParts, codexOutputPictures } from "./codex-images.ts";
 import { codexReadCall, codexReadSkills, selectedSkill } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -23,6 +23,7 @@ import { codexStartScreenUnused } from "./start-screen.ts";
 import { servedConversations } from "./approvals/codex.ts";
 import { codexAppServerSocket, type CodexConversationMode, isCodexExecutable, optionValue } from "./codex-executable.ts";
 import { tmuxCodexProcess, tmuxWrapper } from "./tmux-terminal.ts";
+import { codexUnixPeer } from "./codex-unix-peer.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -2731,7 +2732,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
   const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId);
   if (tmuxWrapper(processInfo)) {
     const attached = await tmuxCodexProcess(processInfo);
-    return { list: attached === null ? [] : [attached], key: `tmux:${attached?.identity ?? ""}` };
+    return attached === null ? { list: [], key: "" } : { list: [attached], key: `tmux:${attached.identity}` };
   }
   // herdr's schema allows `argv: null`; this reader has always read argv as absent or a list
   // (the cast is the inline result type herdrRpc was given before the typed seam)
@@ -3127,12 +3128,17 @@ async function freshReportedThread(
 }
 
 /** The pane's Codex processes, and the rollouts they hold open (lsof on macOS, /proc elsewhere): one alone is the pane's. */
-async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string>; held: Map<string, string> }> {
+async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null) {
   const { list: codexProcesses, key: processes } = await codexProcessesOf(paneId, known);
+  return { codexProcesses, processes, ...await readHeldRollouts(codexProcesses, home) };
+}
+
+async function readHeldRollouts(codexProcesses: readonly { readonly pid: number }[], home: string) {
   const open = new Set<string>();
   // the exact dev:ino of the file each held rollout is, as the process holds it: a rename over its path cannot change it (#3402)
   const held = new Map<string, string>();
   const conflicted = new Set<string>();
+  let complete = true;
   if (globalThis.process.platform === "darwin" && codexProcesses.length > 0) {
     // lsof is available on macOS, where /proc does not exist. Keep the same
     // canonical-store and unambiguous-open-file checks as the Linux path. One run
@@ -3141,37 +3147,42 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
     // to every 2 s while its transcript changes, the conversation monitor every 5 s, and
     // each run costs about 20 ms of process start and kernel walk
     // D and i (device and inode of each file) come from the open file itself, as with -b lsof makes no stat call (#3402)
-    const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", codexProcesses.map((process) => process.pid).join(","), "-FfnDi"], { stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => child.kill(), 3000);
+    let text: string;
     try {
-      const text = await new Response(child.stdout).text();
-      await child.exited;
-      // each file's D and i lines come before its name; a new descriptor or process starts a new file
-      let device: bigint | null = null;
-      let inode: bigint | null = null;
-      for (const line of text.split("\n")) {
-        if (line.startsWith("f") || line.startsWith("p")) { device = null; inode = null; continue; }
-        if (line.startsWith("D")) { try { device = BigInt(line.slice(1)); } catch { device = null; } continue; }
-        if (line.startsWith("i")) { try { inode = BigInt(line.slice(1)); } catch { inode = null; } continue; }
-        if (!line.startsWith("n")) continue;
-        // a name ends its file: its D and i never carry over to the next one
-        const identity = device !== null && inode !== null ? `${device}:${inode}` : null;
-        device = null;
-        inode = null;
-        if (!line.endsWith(".jsonl")) continue;
-        const path = codexRolloutPath(line.slice(1), home);
-        if (!path) continue;
-        open.add(path);
-        // a file lsof named without both, or two files under one path, prove nothing
-        if (identity === null || conflicted.has(path) || (held.has(path) && held.get(path) !== identity)) { held.delete(path); conflicted.add(path); }
-        else held.set(path, identity);
+      const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", codexProcesses.map((process) => process.pid).join(","), "-FfnDi"], { stdout: "pipe", stderr: "ignore", timeout: 3000 });
+      text = await new Response(child.stdout).text();
+      if (await child.exited !== 0) return { open, held, complete: false };
+    } catch { return { open, held, complete: false }; }
+    // each file's D and i lines come before its name; a new descriptor or process starts a new file
+    let device: bigint | null = null;
+    let inode: bigint | null = null;
+    let numbered = false;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("f") || line.startsWith("p")) {
+        device = null; inode = null; numbered = /^f\d+$/.test(line);
+        continue;
       }
-    } finally { clearTimeout(timer); }
+      if (line.startsWith("D")) { try { device = BigInt(line.slice(1)); } catch { device = null; } continue; }
+      if (line.startsWith("i")) { try { inode = BigInt(line.slice(1)); } catch { inode = null; } continue; }
+      if (!line.startsWith("n")) continue;
+      // a name ends its file: its D and i never carry over to the next one
+      const identity = device !== null && inode !== null ? `${device}:${inode}` : null;
+      device = null;
+      inode = null;
+      if (!numbered || !line.endsWith(".jsonl")) continue;
+      const path = codexRolloutPath(line.slice(1), home);
+      if (!path) continue;
+      open.add(path);
+      // a file lsof named without both, or two files under one path, prove nothing
+      if (identity === null || conflicted.has(path) || (held.has(path) && held.get(path) !== identity)) { held.delete(path); conflicted.add(path); }
+      else held.set(path, identity);
+    }
   }
   for (const process of codexProcesses) {
     if (globalThis.process.platform === "darwin") continue;
     let descriptors: string[];
-    try { descriptors = readdirSync(`/proc/${process.pid}/fd`); } catch { continue; }
+    try { descriptors = readdirSync(`/proc/${process.pid}/fd`); } catch { complete = false; continue; }
+    if (descriptors.length > 512) complete = false;
     for (const descriptor of descriptors.slice(0, 512)) {
       try {
         const link = `/proc/${process.pid}/fd/${descriptor}`;
@@ -3190,10 +3201,10 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
         // two files held under one path, or one whose identity could not be read, prove nothing
         if (identity === null || conflicted.has(path) || (held.has(path) && held.get(path) !== identity)) { held.delete(path); conflicted.add(path); }
         else held.set(path, identity);
-      } catch { /* A descriptor may close while enumerating it. */ }
+      } catch { complete = false; }
     }
   }
-  return { codexProcesses, processes, open, held };
+  return { open, held, complete };
 }
 
 /** The descriptors `pid` has open, each with the file it names, or null when they cannot be listed. */
@@ -3203,23 +3214,30 @@ function descriptorTargets(pid: number): Map<string, string> | null {
   if (descriptors.length > 512) return null;
   const targets = new Map<string, string>();
   for (const descriptor of descriptors) {
-    try { targets.set(descriptor, readlinkSync(`/proc/${pid}/fd/${descriptor}`)); } catch { /* closed while listed */ }
+    try { targets.set(descriptor, readlinkSync(`/proc/${pid}/fd/${descriptor}`)); } catch { return null; }
   }
   return targets;
 }
+
+const socketInodes = (targets: ReadonlyMap<string, string>) =>
+  new Set([...targets.values()].flatMap((target) => /^socket:\[(\d+)\]$/.exec(target)?.[1] ?? []));
+const sameDescriptors = (before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string> | null) =>
+  after !== null && after.size === before.size && [...before].every(([descriptor, target]) => after.get(descriptor) === target);
+
+type RolloutDescriptorProof = { readonly path: string; readonly identity: string; readonly server?: string };
 
 /**
  * The rollout the Codex app server beside a pane's TUI holds, with the identity of the held file. A TUI on
  * `codex --remote unix://<socket>` holds no rollout: the server its launcher started beside it does
  * (server/approvals/codex.ts). That server is the TUI's own when it is the TUI's sibling under the launcher or its child, its
- * command line listens on the socket the TUI names, and the kernel shows it listening there (/proc/net/unix).
+ * command line names the socket the TUI names, and the kernel shows that TUI is its sole connected client.
  * null when no such server is proven: the lookup goes on as before. "unproven" when it is, but does not say which
  * conversation the TUI shows: it holds more or other than one rollout and that thread's write flock (a /new not
  * written yet, a resume), or its descriptors or its birth changed while they were read. Linux only.
  */
-function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[] }[], home: string): { path: string; identity: string } | "unproven" | null {
+async function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[] }[], home: string): Promise<RolloutDescriptorProof | "unproven" | null> {
   if (globalThis.process.platform !== "linux") return null;
-  const servers = new Map<number, string>();
+  const servers = new Map<number, { readonly socket: string; readonly tui: number }>();
   for (const tui of codexProcesses) {
     const remote = optionValue(tui.argv ?? [], "--remote");
     if (remote === null || !remote.startsWith("unix:///")) continue;
@@ -3227,39 +3245,39 @@ function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[
       const stat = readFileSync(`/proc/${tui.pid}/stat`, "utf8");
       const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
       for (const owner of [tui.pid, parent]) {
-        const children = readFileSync(`/proc/${owner}/task/${owner}/children`, "utf8").trim().split(/\s+/).map(Number);
+        let children: number[];
+        try { children = readFileSync(`/proc/${owner}/task/${owner}/children`, "utf8").trim().split(/\s+/).map(Number); }
+        catch { continue; }
         for (const pid of children) {
           if (pid === tui.pid || !Number.isInteger(pid) || pid <= 0) continue;
           let argv: string[];
           try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); } catch { continue; }
-          if (codexAppServerSocket(argv) === remote) servers.set(pid, remote.slice("unix://".length));
+          if (codexAppServerSocket(argv) === remote) servers.set(pid, { socket: remote.slice("unix://".length), tui: tui.pid });
         }
       }
     } catch { return null; }
   }
   if (servers.size !== 1) return null;
-  const [server, socket] = [...servers][0]!;
-  const born = processStartedAt(server);
+  const [entry] = servers;
+  if (entry === undefined) return null;
+  const [server, { socket, tui }] = entry;
+  const born = processStartIdentity(server);
+  const tuiBorn = processStartIdentity(tui);
   const before = descriptorTargets(server);
+  const tuiBefore = descriptorTargets(tui);
+  if (born === null || tuiBorn === null || before === null || tuiBefore === null) return "unproven";
   let socketFile: string;
   let lockFolder: string;
   let table: string;
-  let listening: string;
+  let peer: string | null;
   try {
     // 0.171 makes the socket a link to the one it listens on (serverSocket)
     socketFile = realpathSync(socket);
     lockFolder = join(realpathSync(home), "thread-writer-locks");
-    listening = readFileSync("/proc/net/unix", "utf8");
+    peer = await codexUnixPeer({ path: socketFile, server: socketInodes(before), tui: socketInodes(tuiBefore) });
     table = readFileSync("/proc/locks", "utf8");
-  } catch { return null; }
-  if (born === null || before === null) return null;
-  // the server's own sockets, one of them listening (__SO_ACCEPTCON) at that path
-  const sockets = new Set([...before.values()].flatMap((target) => /^socket:\[(\d+)\]$/.exec(target)?.[1] ?? []));
-  const listens = listening.split("\n").some((line) => {
-    const [, , , flags, , , inode, ...path] = line.trim().split(/\s+/);
-    return flags !== undefined && (Number.parseInt(flags, 16) & 0x10000) !== 0 && sockets.has(inode ?? "") && path.join(" ") === socketFile;
-  });
-  if (!listens) return null;
+  } catch { return "unproven"; }
+  if (peer === null) return "unproven";
   const rollouts = new Map<string, string | null>();
   const opened = new Set<string>();
   for (const [descriptor, target] of before) {
@@ -3285,16 +3303,15 @@ function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[
     const lock = /^\d+:\s+FLOCK\s+\S+\s+WRITE\s+(\d+)\s+[0-9a-f]+:[0-9a-f]+:(\d+)\s/.exec(line);
     return lock !== null && Number(lock[1]) === server ? [lock[2]!] : [];
   }));
-  const after = descriptorTargets(server);
-  const same = after !== null && after.size === before.size && [...before].every(([descriptor, target]) => after.get(descriptor) === target);
-  if (!same || processStartedAt(server) !== born || rollouts.size !== 1 || opened.size !== 1) return "unproven";
+  if (!sameDescriptors(before, descriptorTargets(server)) || !sameDescriptors(tuiBefore, descriptorTargets(tui))
+    || processStartIdentity(server) !== born || processStartIdentity(tui) !== tuiBorn || rollouts.size !== 1 || opened.size !== 1) return "unproven";
   const [path, identity] = [...rollouts][0]!;
   const id = ROLLOUT_NAME.exec(nodePath.basename(path))?.[1]?.toLowerCase();
   const [lockInode] = [...opened];
   let lockOfThread: string;
   try { lockOfThread = statSync(join(lockFolder, `${id}.lock`), { bigint: true }).ino.toString(); } catch { return "unproven"; }
   if (identity === null || id === undefined || lockOfThread !== lockInode || !flocked.has(lockInode!)) return "unproven";
-  return { path, identity };
+  return { path, identity, server: `${server}:${born}:${peer}` };
 }
 
 /**
@@ -3327,14 +3344,24 @@ async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: 
 
 /** The only native histories behind tmux are those proved by descriptors, while still attached. */
 async function tmuxRollout(paneId: string, home: string, found: Awaited<ReturnType<typeof openRollouts>>): Promise<{ path: string; identity: string } | null> {
-  const { codexProcesses, processes, open, held } = found;
+  const { codexProcesses, processes } = found;
   const [tui] = codexProcesses;
-  const [only] = open;
-  const proof = tui?.argvState === "remote" ? ownServerRollout(codexProcesses, home)
-    : tui?.argvState === "local" && open.size === 1 && only !== undefined ? { path: only, identity: held.get(only) ?? "" } : null;
+  if (tui === undefined) return null;
+  const readProof = async (scan?: Awaited<ReturnType<typeof readHeldRollouts>>): Promise<RolloutDescriptorProof | "unproven" | null> => {
+    if (tui.argvState === "remote") return ownServerRollout(codexProcesses, home);
+    if (tui.argvState !== "local") return null;
+    const { open, held, complete } = scan ?? await readHeldRollouts(codexProcesses, home);
+    const [path] = open;
+    if (!complete || open.size !== 1 || path === undefined) return null;
+    const identity = held.get(path);
+    return identity === undefined ? null : { path, identity };
+  };
+  const proof = await readProof(found);
   if (proof === null || proof === "unproven") return null;
   const again = await codexProcessesOf(paneId).catch(() => null);
-  return again?.key === processes ? proof : null;
+  if (again?.key !== processes) return null;
+  const after = await readProof();
+  return after !== null && after !== "unproven" && after.path === proof.path && after.identity === proof.identity && after.server === proof.server ? after : null;
 }
 
 export async function codexOpenRollout(paneId: string, cwd: string | null | undefined, home = defaultCodexHome()): Promise<string | null> {
@@ -3574,7 +3601,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     proofs?.set(only, held.get(only) ?? "");
     return only;
   }
-  const served = open.size === 0 ? ownServerRollout(codexProcesses, home) : null;
+  const served = open.size === 0 ? await ownServerRollout(codexProcesses, home) : null;
   // the pane's own server is known: no screen or folder evidence stands in for what it does not tell
   if (served === "unproven") return null;
   if (served !== null) {
