@@ -188,8 +188,7 @@ export interface PushService {
    * token, local or Tailscale sign-in pairing itself, or a device pairing again. Resolves once delivered.
    */
   devicePaired(event: DevicePairedEvent, origin?: readonly string[]): Promise<void>;
-  seed(panes: readonly HerdrPane[], machineId?: string, machineName?: string, serverId?: string): void;
-  reconcileRemoteAlertDeferrals(panes: readonly HerdrPane[], machineId: string): void;
+  seed(panes: readonly HerdrPane[], machineId?: string, machineName?: string, serverId?: string, options?: { reconcileDeferrals: boolean }): void;
   resync(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
   /**
    * A status the pane already had, where nothing was heard of it yet: nothing is announced, and the change after it (a
@@ -1063,7 +1062,7 @@ export function createPushService(options: PushServiceOptions): PushService {
       await broadcast({ pane_id: null, title: "Ovis", body: `New device paired: ${event.label}`, tag: `herdr-device-paired-${event.event_id}` }, "high", others);
     },
 
-    seed(panes, machineId = "local", machineName, serverId) {
+    seed(panes, machineId = "local", machineName, serverId, seedOptions) {
       if (machineName) pcNames.set(machineId, machineName);
       if (serverId) pcIds.set(machineId, serverId);
       for (const pane of panes) {
@@ -1073,9 +1072,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (pane.agent_kind) kinds.set(key, pane.agent_kind); else kinds.delete(key);
         if (!lastStatus.has(key)) lastStatus.set(key, pane.agent_status);
       }
-    },
-
-    reconcileRemoteAlertDeferrals(panes, machineId) {
+      if (!seedOptions?.reconcileDeferrals) return;
       const statuses = new Map(panes.map((pane) => [pane.pane_id, pane.agent_status]));
       const stale = (paneId: string, question: boolean): boolean => {
         const status = statuses.get(paneId);
