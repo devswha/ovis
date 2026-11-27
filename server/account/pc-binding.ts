@@ -51,13 +51,21 @@ export const FIRST_LISTING_MS = 10 * 60_000;
 export const UNPINNED_CLEAR = "unpinned";
 /** Who made an `unlisted` clear when the account's signed list removed this PC: an entry a member signed, never the account service's word. */
 export const LIST_REMOVED = "list";
+export const MERGE_CLEAR = "merge";
 // A receipt written by an older version still invalidates its bind_id; new clears cannot emit that reason.
 /** `admits`: this PC's next admission number when it cleared, so what it admitted since can be told from what it kept. */
 /**
  * `removed_as`: the account's signed list removed this PC (`by` LIST_REMOVED): the account it was removed from and the
  * relay identity it had. That identity joins that account again on no path.
  */
-export interface AccountClear { readonly bind_id: string; readonly reason: ClearReason | "left_on_pc"; readonly by: string; readonly admits?: number; readonly removed_as?: { readonly account: string; readonly server_id: string } }
+export interface AccountClear {
+  readonly bind_id: string;
+  readonly reason: ClearReason | "left_on_pc";
+  readonly by: string;
+  readonly admits?: number;
+  readonly removed_as?: { readonly account: string; readonly server_id: string };
+  readonly merged?: { readonly from: string; readonly into: string; readonly merge: string | null };
+}
 export interface AccountBinding {
   readonly account: string;
   readonly bind_id: string;
@@ -141,7 +149,11 @@ export function parsePcAccount(value: unknown): (PcDoc & { counterOnly?: true })
   if (!Array.isArray(doc.clears) || !doc.clears.every((clear) => typeof clear === "object" && clear !== null && typeof clear.bind_id === "string" && ID.test(clear.bind_id) && REASONS.has(clear.reason) && typeof clear.by === "string"
     && (clear.admits === undefined || (Number.isSafeInteger(clear.admits) && clear.admits >= 0))
     && (clear.removed_as === undefined || (typeof clear.removed_as === "object" && clear.removed_as !== null && typeof clear.removed_as.account === "string" && ACCOUNT.test(clear.removed_as.account)
-      && typeof clear.removed_as.server_id === "string" && ID.test(clear.removed_as.server_id))))) return "invalid clears";
+      && typeof clear.removed_as.server_id === "string" && ID.test(clear.removed_as.server_id)))
+    && (clear.merged === undefined || (typeof clear.merged === "object" && clear.merged !== null
+      && typeof clear.merged.from === "string" && ACCOUNT.test(clear.merged.from)
+      && typeof clear.merged.into === "string" && ACCOUNT.test(clear.merged.into)
+      && (clear.merged.merge === null || (typeof clear.merged.merge === "string" && ACCOUNT.test(clear.merged.merge))))))) return "invalid clears";
   if (binding !== null && doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "a cleared binding stands";
   const first = doc.first;
   if (first !== null && !(typeof first === "object" && first !== undefined && typeof first.key === "string" && (first.list_key === null || typeof first.list_key === "string"))) return "invalid first";
@@ -277,6 +289,14 @@ const standingIn = (doc: PcDoc): AccountBinding | null => {
  * - the counters never go back, and a number given is one the file had not given.
  */
 function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string): PcDoc {
+  const from = base.binding;
+  const moving = from !== null && next.binding !== null && from.bind_id !== next.binding.bind_id
+    && next.clears.some(clear => clear.bind_id === from.bind_id && clear.merged !== undefined);
+  if (moving) {
+    const held = disk === null ? null : standingIn(disk);
+    if (held?.bind_id !== from.bind_id) throw new AccountRebindError(`${path}: the binding to move no longer stands`);
+    if (held.list !== undefined) throw new PinnedOnDiskError(`${path}: the binding to move is pinned to a signed list`);
+  }
   if (disk === null) return next;
   const clears = mergeClears(disk.clears, next.clears);
   const cleared = (binding: AccountBinding | null) => binding !== null && clears.some((clear) => clear.bind_id === binding.bind_id);
@@ -315,7 +335,7 @@ function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string):
     next_admit: step(next.next_admit, base.next_admit, disk.next_admit),
     gen: step(next.gen, base.gen, disk.gen),
     others_ever: next.others_ever || disk.others_ever,
-    first: next.first ?? disk.first,
+    first: moving ? null : next.first ?? disk.first,
   };
   if (disk.evidence_written === true) doc.evidence_written = true;
   if (JSON.stringify(next.service_step2) === JSON.stringify(base.service_step2) && disk.service_step2 !== undefined) doc.service_step2 = disk.service_step2;
@@ -330,6 +350,7 @@ export class RemovedOnDiskError extends Error {}
 
 /** A write that would end, on the account service's word, a binding the file on disk holds pinned: refused, whoever holds an older document. */
 export class PinnedOnDiskError extends Error {}
+export class AccountRebindError extends Error {}
 
 /** The file as it is written: its version says whether an Ovis that knows no list may read it (PcDoc.v). */
 function onDisk(doc: PcDoc): PcDoc {
@@ -345,7 +366,9 @@ function mergeClears(mine: readonly AccountClear[], theirs: readonly AccountClea
   const merged = new Map<string, AccountClear>();
   for (const clear of [...mine, ...theirs]) {
     const held = merged.get(clear.bind_id);
-    if (held === undefined || held.removed_as === undefined || clear.removed_as !== undefined) merged.set(clear.bind_id, clear);
+    if (held === undefined || clear.removed_as !== undefined || (held.removed_as === undefined && (held.merged === undefined || clear.merged !== undefined))) {
+      merged.set(clear.bind_id, clear);
+    }
   }
   return [...merged.values()];
 }
@@ -648,6 +671,20 @@ export class PcAccountState {
   bindByService(account: string, listingId?: string): void {
     if (this.doc.binding !== null) throw new Error("This PC is already in an account");
     this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true, listing_id: listingId }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
+  }
+
+  /** Replace the standing account without a moment in which the PC has no binding. */
+  rebind(fromBindId: string, { account, listing_id, merge }: { readonly account: string; readonly listing_id: string; readonly merge: string | null }): void {
+    this.refresh();
+    const binding = this.doc.binding;
+    if (binding === null || binding.bind_id !== fromBindId || binding.pending === true) {
+      throw new AccountRebindError(`${this.path}: the binding to move no longer stands`);
+    }
+    if (binding.list !== undefined) throw new PinnedOnDiskError(`${this.path}: the binding to move is pinned to a signed list`);
+    const clear: AccountClear = { bind_id: fromBindId, reason: "unlisted", by: MERGE_CLEAR, admits: this.doc.next_admit,
+      merged: { from: binding.account, into: account, merge } };
+    this.write({ ...this.doc, binding: { account, listing_id, bind_id: randomBytes(16).toString("hex"), service: true },
+      clears: [...this.doc.clears, clear], first: null, others_ever: true, gen: this.doc.gen + 1 });
   }
 
   /**

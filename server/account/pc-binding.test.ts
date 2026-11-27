@@ -8,12 +8,13 @@ import { DeviceStore, type StoredDevice } from "../devices.ts";
 import { relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { ADMISSION_FILE } from "./admission-order.ts";
 import { ACCOUNT_LIST_KEYS_FILE, ListKeyStore } from "./list-keys.ts";
-import { bindingFs, PcAccountState, RemovedOnDiskError } from "./pc-binding.ts";
+import { bindingFs, PcAccountState, PinnedOnDiskError, RemovedOnDiskError } from "./pc-binding.ts";
 import { PendingRedemptions } from "./pending.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
 
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const ACCOUNT = "acct_1";
+const MOVED = { account: "acct_after", listing_id: "a".repeat(32), merge: "merge_1" };
 const dirs: string[] = [];
 const fixtures: ReturnType<typeof relayFixture>[] = [];
 afterEach(() => {
@@ -82,6 +83,79 @@ function memberRow(account: string): StoredDevice {
   return { id: randomBytes(8).toString("hex"), label: "Old phone", role: "drive", token_hash: randomBytes(32).toString("hex"),
     account, created_at: "2026-10-01T00:00:00.000Z", last_seen_at: null };
 }
+
+describe("rebind for a PC account move", () => {
+  const setup = (kind: "service" | "link" | "link_due" | "migrated" | "pending" = "service") => {
+    const dir = stateDir();
+    const pc = PcAccountState.open(dir);
+    const listing = "b".repeat(32);
+    if (kind === "migrated") pc.migrate(ACCOUNT, true);
+    else {
+      pc.migrate(null, true);
+      if (kind === "service") pc.bindByService(ACCOUNT, listing);
+      else {
+        const write = pc.bind(ACCOUNT, "first");
+        if (kind !== "pending") write.commit();
+        if (kind === "link") pc.pinListing(pc.binding()?.bind_id ?? "", listing);
+      }
+    }
+    const binding = pc.binding();
+    if (!binding) throw new Error("missing fixture binding");
+    return { pc, dir, binding, bytes: () => readFileSync(join(dir, ADMISSION_FILE), "utf8") };
+  };
+
+  test.each(["service", "link", "link_due", "migrated"] as const)("a %s binding is replaced by one durable move", (kind) => {
+    const { pc, dir, binding, bytes } = setup(kind);
+    const before = JSON.parse(bytes());
+    const gen = pc.gen();
+    pc.rebind(binding.bind_id, MOVED);
+    const after = pcFile(dir);
+    expect(after).toMatchObject({ v: 1, binding: { account: MOVED.account, listing_id: MOVED.listing_id, service: true }, first: null,
+      next_admit: before.next_admit, others_ever: true });
+    expect(after.binding?.bind_id).not.toBe(binding.bind_id);
+    expect(after.clears.at(-1)).toEqual(expect.objectContaining({ bind_id: binding.bind_id, reason: "unlisted", by: "merge", admits: before.next_admit,
+      merged: { from: ACCOUNT, into: MOVED.account, merge: MOVED.merge } }));
+    expect(pc.gen()).toBe(gen + 1);
+  });
+
+  test.each(["pending", "pinned", "other writer pinned", "locked"] as const)("a %s binding is not changed", (kind) => {
+    const { pc, dir, binding, bytes } = setup(kind === "pending" ? "pending" : "service");
+    const list = "1".repeat(64);
+    if (kind === "pinned") expect(pc.pinToList(binding.bind_id, list)).toBe(true);
+    const before = bytes();
+    const open = bindingFs.openSync;
+    const pinned = JSON.stringify({ ...JSON.parse(before), v: 2, binding: { ...binding, list } });
+    const lock = kind === "locked" || kind === "other writer pinned" ? spyOn(bindingFs, "openSync").mockImplementation((path, ...args) => {
+      if (String(path) === join(dir, `${ADMISSION_FILE}.lock`)) {
+        if (kind === "locked") throw Object.assign(new Error("locked"), { code: "EACCES" });
+        writeFileSync(join(dir, ADMISSION_FILE), pinned, { mode: 0o600 });
+      }
+      return open(path, ...args);
+    }) : undefined;
+    try {
+      if (kind === "other writer pinned") expect(() => pc.rebind(binding.bind_id, MOVED)).toThrow(PinnedOnDiskError);
+      else expect(() => pc.rebind(binding.bind_id, MOVED)).toThrow(/binding|lock|pin|pending|locked/i);
+      expect(bytes()).toBe(kind === "other writer pinned" ? pinned : before);
+    } finally { lock?.mockRestore(); }
+  });
+
+  test("a sibling takes the new binding and the change listener sees it once", () => {
+    const { pc, dir, binding } = setup();
+    const siblingDir = stateDir();
+    const sibling = PcAccountState.open(siblingDir);
+    sibling.takeSibling(dir);
+    sibling.migrate(ACCOUNT, false);
+    expect(sibling.binding()).toEqual(binding);
+    const changes: (string | null)[] = [];
+    const stop = pc.onBindingChange(() => changes.push(pc.account()));
+    try {
+      pc.rebind(binding.bind_id, MOVED);
+      sibling.takeSibling(dir);
+      pc.takeSibling(siblingDir);
+      expect([sibling.account(), sibling.strict, pc.strict, changes]).toEqual([MOVED.account, null, null, [MOVED.account]]);
+    } finally { stop(); }
+  });
+});
 
 describe("the PC's account binding (account-pc.json)", () => {
   test("unlisting retains only owned pairing origins and never retains an imported or invalid origin", async () => {
