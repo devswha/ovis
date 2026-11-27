@@ -176,7 +176,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const fresh = new URL(request.url).searchParams.get("fresh") === "1" ? await mailbox.freshen() : undefined;
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
     // how the owner who named this PC's account signed in to it: a page signed in to another account says which way leads here
-    const named = devices.account() !== null && devices.account() === context.services.relay.savedRelayAccount() ? context.services.relay.savedRelayProvider() : null;
+    const naming = context.services.relay.savedRelayNaming();
+    const named = devices.account() !== null && devices.account() === naming?.account ? naming.provider : null;
     return reply({
       account: devices.account(), ...(named === null ? {} : { account_provider: named }), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
       // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)

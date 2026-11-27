@@ -315,14 +315,11 @@ export class RelayService {
   }
 
   /**
-   * How the owner who named the account signed in to it (GitHub, Google or Apple), or null when no naming said so: the
-   * relay tab tells a person signed in to another account which way leads to this PC's.
+   * The account named for this PC (savedRelayAccount) read once with how the owner who named it signed in to it (GitHub,
+   * Google or Apple; null when no naming said so): the relay tab tells a person signed in to another account which way
+   * leads to this PC's.
    */
-  savedRelayProvider(): SignInMethod | null {
-    return this.savedRelayNaming()?.provider ?? null;
-  }
-
-  private savedRelayNaming(): { readonly account: string; readonly provider: SignInMethod | null } | null {
+  savedRelayNaming(): { readonly account: string; readonly provider: SignInMethod | null } | null {
     try {
       const saved: unknown = JSON.parse(readFileSync(this.relayAccountPath(), "utf8"));
       if (!isJsonObject(saved) || typeof saved.account !== "string" || !ACCOUNT_ID.test(saved.account)) return null;
