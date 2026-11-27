@@ -137,7 +137,9 @@ function shellProfiles(shell: string, env: Record<string, string | undefined>): 
       return files(home, [".bash_profile", ".bash_login", ".profile", ".bashrc"]);
     case "fish": {
       const config = env["XDG_CONFIG_HOME"];
-      return files(config && isAbsolute(config) ? config : isAbsolute(home) ? join(home, ".config") : "", ["fish/config.fish"]);
+      return files(config && isAbsolute(config) ? config : isAbsolute(home) ? join(home, ".config") : "", [
+        "fish/config.fish", "fish/fish_variables", "fish/conf.d",
+      ]);
     }
     default:
       return files(home, [".profile"]);
@@ -162,7 +164,7 @@ export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: numb
     if (checking !== null) return checking;
     const { promise, resolve } = Promise.withResolvers<number>();
     // A slow home mount must not hold up PATH lookup or queue up more stat calls.
-    const timer = setTimeout(() => resolve(revision), options.timeoutMs ?? 2_000);
+    const timer = setTimeout(() => resolve(revision), 500);
     checking = promise;
     void Promise.all(profiles.map(async (file) => {
       let mtime: number | null;
@@ -331,6 +333,7 @@ export class ShellAgentLocator {
   #checkedRevision = -1;
   #lookupId = 0;
   #running: Promise<void> | null = null;
+  #latestLookup: Promise<void> | null = null;
   #queued: Promise<void> | null = null;
   #failure: string | null = null;
   #abort = new AbortController();
@@ -358,9 +361,15 @@ export class ShellAgentLocator {
     const changed = wanted !== null && wanted > this.#checkedRevision;
     if (!changed && this.#running !== null) return this.#running;
     if (!changed && this.#checkedAt !== null && this.#now() - this.#checkedAt < this.#ttlMs) return;
-    const run: Promise<void> = this.#lookup(probe, wanted).finally(() => { if (this.#running === run) this.#running = null; });
+    const run: Promise<void> = this.#startLookup(probe, wanted).finally(() => { if (this.#running === run) this.#running = null; });
     this.#running = run;
     return run;
+  }
+
+  #startLookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
+    const lookup = this.#lookup(probe, wanted);
+    this.#latestLookup = lookup;
+    return lookup;
   }
 
   async #lookup(probe: LoginPathProbe, wanted: number | null): Promise<void> {
@@ -370,8 +379,8 @@ export class ShellAgentLocator {
     const found = new Map<string, string>();
     const result = missing.length === 0 ? null : await probe(this.#abort.signal, wanted).catch((error: unknown): LoginPathResult => ({ path: null, reason: `the login shell probe failed: ${error instanceof Error ? error.message : String(error)}` }));
     if (this.#stopped) return;
-    // A concurrent profile read superseded this run; wait for its cache entry instead of returning the old one.
-    if (id !== this.#lookupId) return this.#running ?? undefined;
+    // Follow only a newer lookup, not the scheduling promise, which can still wrap this lookup.
+    if (id !== this.#lookupId) return this.#latestLookup ?? undefined;
     // only absolute entries: a relative one (`./node_modules/.bin`, common in .zshrc) would make
     // whatever is in this server's working folder an agent
     const loginPath = result?.path ? result.path.split(":").filter((entry) => isAbsolute(entry)).join(":") || null : null;
@@ -411,17 +420,17 @@ export class ShellAgentLocator {
     const run: Promise<void> = (this.#running ?? Promise.resolve()).then(async () => {
       if (this.#queued === run) this.#queued = null;
       const wanted = probe.profileRevision === undefined ? null : await probe.profileRevision();
-      return this.#lookup(probe, wanted);
+      return this.#startLookup(probe, wanted);
     }).finally(() => { if (this.#running === run) this.#running = null; });
     this.#queued = run;
     this.#running = run;
     return run;
   }
 
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.#stopped = true;
     this.#abort.abort();
-    return this.#running ?? Promise.resolve();
+    await Promise.all([this.#running, this.#latestLookup]);
   }
 }
 
