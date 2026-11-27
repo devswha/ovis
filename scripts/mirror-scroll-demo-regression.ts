@@ -242,6 +242,39 @@ await withDemoBrowser({ tempPrefix: "herdr-mirror-scroll-demo-", afterTransport:
       assert.deepEqual((await state(page)).inputs, beforePan.inputs, "new mirror output sends no application input");
       assert.deepEqual((await state(page)).offsets, beforePan.offsets, "new mirror output does not request shared history scrolling");
 
+      if (kind === "native") {
+        // Keep a single finger down: history → local pan → history again. The last two history
+        // movements are fast, but together cover less than the 8 CSS px needed for a fling.
+        const result = await terminal.evaluate((node) => {
+          const rect = node.getBoundingClientRect();
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + 40;
+          const origin = document.elementFromPoint(x, y);
+          if (!origin || !node.contains(origin)) throw new Error("no touch origin on the mirror");
+          node.scrollTop = 0;
+          const emit = (type: string, dy: number, timestamp: number) => {
+            const touch = new Touch({ identifier: 1, target: origin, clientX: x, clientY: y + dy });
+            const touches = type === "touchend" ? [] : [touch];
+            const event = new TouchEvent(type, { bubbles: true, cancelable: true, touches, changedTouches: [touch] });
+            Object.defineProperty(event, "timeStamp", { value: timestamp });
+            origin.dispatchEvent(event);
+          };
+          emit("touchstart", 0, 100);
+          emit("touchmove", 60, 115); // at the top, scroll shared history
+          emit("touchmove", 0, 130); // pan down into the fixed grid
+          const panned = node.scrollTop;
+          emit("touchmove", 60, 145); // pan back to the top
+          const edge = node.scrollTop;
+          emit("touchmove", 63, 150);
+          emit("touchmove", 66, 155);
+          emit("touchend", 66, 160);
+          return { panned, edge, gliding: node.hasAttribute("data-touch-fling") };
+        });
+        assert.ok(result.panned > 0 && result.edge === 0, `the stroke panned and reached its edge (${JSON.stringify(result)})`);
+        assert.equal(result.gliding, false, "pre-pan history travel does not turn post-pan jitter into a fling");
+        console.log("PASS a mirror stroke that pans then returns to history earns its own fling");
+      }
+
       // A mirrored observer can pan its grid, but never changes the shared viewport or types.
       await page.evaluate(() => (window as FixtureWindow).mirrorFixture.sockets.at(-1)!.send(JSON.stringify({ type: "role", mode: "observe" })));
       await settled(page);

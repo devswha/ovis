@@ -1,5 +1,5 @@
 import { LAYOUT_SCROLL_START, LAYOUT_SCROLL_END } from "./layoutScroll.ts";
-import { claimTouchStroke } from "./touchClaim.ts";
+import { claimTouchStroke, terminalTouchSelections } from "./touchClaim.ts";
 
 /*
  * The workspace drawer follows a phone's finger: a rightward swipe opens it, as the menu button
@@ -188,7 +188,7 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
       // the screen turned wide mid-stroke: there is no drawer to swipe any more
       if (!narrow.matches) { onEnd(); return; }
       // a selection begun mid-stroke is the finger's: until the drawer moved, the stroke goes back
-      if (!done && selecting()) { onEnd(); return; }
+      if (!done && (selecting() || start.path.some((node) => terminalTouchSelections.get(node) === "selecting"))) { onEnd(); return; }
       const verdict = done ? "claim" : swipeVerdict(start.open, start.x, touch.clientX - start.x, touch.clientY - start.y);
       // a stroke that was already the drawer's stays so when it comes back near where it started;
       // one that never was waits for a direction. Until the drawer moves, a stroke that turns to
@@ -196,6 +196,14 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
       if (!claimed && verdict === "pending") return;
       // A long press can open a sheet while the stroke is still waiting for the drawer to move.
       if (verdict === "ignore" || (!done && document.querySelector(MODAL) !== null)) { onEnd(); return; }
+      // The first captured move might never cross the open/close distance. Its terminal
+      // hold must not start selecting while the drawer follows the finger.
+      if (!claimed) {
+        for (const node of start.path) {
+          const hold = terminalTouchSelections.get(node);
+          if (typeof hold === "function") hold();
+        }
+      }
       claimed = true;
       // a recognised swipe belongs to the drawer, not to the terminal or list under the finger
       // After an uncancelled first move Chromium may send non-cancelable moves even on a
