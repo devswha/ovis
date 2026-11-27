@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeviceNotice, NoticeReplay } from "../../shared/account-devices-api.ts";
@@ -260,9 +260,21 @@ describe("the device journal (P10, P15)", () => {
     expect(journal.admitsFromList()).toBe(true);
     admit(journal, "ffffffffffffffff", 999);
     expect(journal.admitsFromList()).toBe(false);
-    for (let index = 0; index < 1_100; index += 1) journal.append({ kind: "drop", how: "list", key: null, no: 1, row: "eeeeeeeeeeeeeeee", label: "x", by: null, account: "acct_1" });
-    expect(DeviceJournal.open(dir).openNotices()).toHaveLength(OPEN_NOTICES_MAX);
-    journal.decide(journal.openNotices()[0]!.id);
-    expect(journal.admitsFromList()).toBe(true);
-  }, 30_000);
+    // Seed a full history in one write: 1,100 appends would rewrite and flush the whole file each time.
+    const path = join(dir, JOURNAL_FILE);
+    const doc = JSON.parse(readFileSync(path, "utf8")) as { next_seq: number; entries: unknown[] };
+    for (let index = 0; index < 1_100; index += 1) {
+      doc.entries.push({ kind: "drop", how: "list", key: null, no: 1, row: "eeeeeeeeeeeeeeee", label: "x", by: null, account: "acct_1",
+        seq: doc.next_seq, id: `drop${index}`, at: new Date(0).toISOString() });
+      doc.next_seq += 1;
+    }
+    writeFileSync(path, JSON.stringify(doc));
+    const full = DeviceJournal.open(dir);
+    full.append({ kind: "drop", how: "list", key: null, no: 1, row: "eeeeeeeeeeeeeeee", label: "x", by: null, account: "acct_1" });
+    const reopened = DeviceJournal.open(dir);
+    expect(reopened.entries().length).toBeLessThanOrEqual(1_000);
+    expect(reopened.openNotices()).toHaveLength(OPEN_NOTICES_MAX);
+    reopened.decide(reopened.openNotices()[0]!.id);
+    expect(reopened.admitsFromList()).toBe(true);
+  });
 });
